@@ -15,6 +15,9 @@ import {
   isInputReady,
   getInputDebugInfo,
   StreamingOptions,
+  setClipboardPasteEnabled,
+  setClipboardNotificationEnabled,
+  setClipboardNotificationCallback,
 } from "./streaming";
 
 // ============================================
@@ -328,6 +331,8 @@ interface Settings {
   discord_show_stats?: boolean;
   proxy?: string;
   disable_telemetry: boolean;
+  clipboard_paste_enabled?: boolean;
+  clipboard_notification?: boolean;
 }
 
 interface ProxyConfig {
@@ -376,6 +381,8 @@ let currentSubscription: SubscriptionInfo | null = null;
 let games: Game[] = [];
 let discordRpcEnabled = true; // Discord presence toggle (enabled by default)
 let discordShowStats = false; // Show resolution/fps/ms in Discord (default off)
+let clipboardPasteEnabled = true; // Clipboard paste to GFN session (enabled by default)
+let clipboardNotificationEnabled = true; // Show notification when clipboard is pasted (enabled by default)
 let currentQuality = "auto"; // Current quality preset (legacy/fallback)
 let currentResolution = "1920x1080"; // Current resolution (WxH format)
 let currentFps = 60; // Current FPS
@@ -387,6 +394,109 @@ let availableFpsOptions: number[] = []; // Available FPS options from subscripti
 let currentRegion = "auto"; // Preferred region (auto = lowest ping)
 let cachedServers: Server[] = []; // Cached server latency data
 let isTestingLatency = false; // Flag to prevent concurrent latency tests
+
+// ============================================
+// Toast Notification System
+// ============================================
+
+type ToastType = 'success' | 'info' | 'warning' | 'error';
+
+interface ToastOptions {
+  type?: ToastType;
+  title?: string;
+  message: string;
+  duration?: number; // in milliseconds, 0 for persistent
+}
+
+function showToast(options: ToastOptions): void {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const { type = 'info', title, message, duration = 3000 } = options;
+
+  // Create toast element using safe DOM methods
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  // Icon based on type
+  const iconName = {
+    success: 'check-circle',
+    info: 'info',
+    warning: 'alert-triangle',
+    error: 'x-circle',
+  }[type];
+
+  // Create icon element
+  const icon = document.createElement('i');
+  icon.setAttribute('data-lucide', iconName);
+  icon.className = 'toast-icon';
+  toast.appendChild(icon);
+
+  // Create content wrapper
+  const content = document.createElement('div');
+  content.className = 'toast-content';
+
+  // Add title if provided
+  if (title) {
+    const titleEl = document.createElement('div');
+    titleEl.className = 'toast-title';
+    titleEl.textContent = title;
+    content.appendChild(titleEl);
+  }
+
+  // Add message
+  const messageEl = document.createElement('div');
+  messageEl.className = 'toast-message';
+  messageEl.textContent = message;
+  content.appendChild(messageEl);
+
+  toast.appendChild(content);
+
+  // Create close button
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'toast-close';
+  const closeIcon = document.createElement('i');
+  closeIcon.setAttribute('data-lucide', 'x');
+  closeBtn.appendChild(closeIcon);
+  toast.appendChild(closeBtn);
+
+  // Add to container
+  container.appendChild(toast);
+
+  // Initialize lucide icons
+  if ((window as any).lucide) {
+    (window as any).lucide.createIcons();
+  }
+
+  // Close button handler
+  closeBtn.addEventListener('click', () => {
+    removeToast(toast);
+  });
+
+  // Auto-remove after duration
+  if (duration > 0) {
+    setTimeout(() => {
+      removeToast(toast);
+    }, duration);
+  }
+}
+
+function removeToast(toast: HTMLElement): void {
+  toast.classList.add('toast-exit');
+  setTimeout(() => {
+    toast.remove();
+  }, 300); // Match animation duration
+}
+
+// Helper function to show clipboard paste notification
+function showClipboardNotification(textPreview: string): void {
+  showToast({
+    type: 'success',
+    title: 'Clipboard Pasted',
+    message: textPreview,
+    duration: 2000,
+  });
+}
 
 // Helper to get streaming params - uses direct resolution and fps values
 function getStreamingParams(): { resolution: string; fps: number } {
@@ -972,7 +1082,14 @@ async function loadSettings() {
     currentMaxBitrate = settings.max_bitrate_mbps || 200;
     discordRpcEnabled = settings.discord_rpc !== false; // Default to true
     discordShowStats = settings.discord_show_stats === true; // Default to false
+    clipboardPasteEnabled = settings.clipboard_paste_enabled !== false; // Default to true
+    clipboardNotificationEnabled = settings.clipboard_notification !== false; // Default to true
     currentRegion = settings.region || "auto";
+
+    // Apply clipboard settings to streaming module
+    setClipboardPasteEnabled(clipboardPasteEnabled);
+    setClipboardNotificationEnabled(clipboardNotificationEnabled);
+    setClipboardNotificationCallback(showClipboardNotification);
 
     // Apply to UI elements (non-dropdown)
     const bitrateEl = document.getElementById("bitrate-setting") as HTMLInputElement;
@@ -1032,6 +1149,10 @@ async function loadSettings() {
     }
     if (discordEl) discordEl.checked = discordRpcEnabled;
     if (discordStatsEl) discordStatsEl.checked = discordShowStats;
+    const clipboardPasteEl = document.getElementById("clipboard-paste-setting") as HTMLInputElement;
+    const clipboardNotificationEl = document.getElementById("clipboard-notification-setting") as HTMLInputElement;
+    if (clipboardPasteEl) clipboardPasteEl.checked = clipboardPasteEnabled;
+    if (clipboardNotificationEl) clipboardNotificationEl.checked = clipboardNotificationEnabled;
     if (telemetryEl) telemetryEl.checked = settings.disable_telemetry ?? true;
     if (proxyEl && settings.proxy) proxyEl.value = settings.proxy;
 
@@ -3692,6 +3813,8 @@ async function saveSettings() {
   const telemetryEl = document.getElementById("telemetry-setting") as HTMLInputElement;
   const discordEl = document.getElementById("discord-setting") as HTMLInputElement;
   const discordStatsEl = document.getElementById("discord-stats-setting") as HTMLInputElement;
+  const clipboardPasteEl = document.getElementById("clipboard-paste-setting") as HTMLInputElement;
+  const clipboardNotificationEl = document.getElementById("clipboard-notification-setting") as HTMLInputElement;
 
   // Get dropdown values
   const resolution = getDropdownValue("resolution-setting") || "1920x1080";
@@ -3703,6 +3826,12 @@ async function saveSettings() {
   // Update global state
   discordRpcEnabled = discordEl?.checked || false;
   discordShowStats = discordStatsEl?.checked || false;
+  clipboardPasteEnabled = clipboardPasteEl?.checked ?? true;
+  clipboardNotificationEnabled = clipboardNotificationEl?.checked ?? true;
+
+  // Apply clipboard settings to streaming module
+  setClipboardPasteEnabled(clipboardPasteEnabled);
+  setClipboardNotificationEnabled(clipboardNotificationEnabled);
   currentResolution = resolution;
   currentFps = parseInt(fps, 10);
   currentCodec = codec;
@@ -3723,6 +3852,8 @@ async function saveSettings() {
     region: region || undefined,
     discord_rpc: discordRpcEnabled,
     discord_show_stats: discordShowStats,
+    clipboard_paste_enabled: clipboardPasteEnabled,
+    clipboard_notification: clipboardNotificationEnabled,
     proxy: proxyEl?.value || undefined,
     disable_telemetry: telemetryEl?.checked || true,
   };

@@ -118,6 +118,107 @@ let streamingState: StreamingState = {
   maxRetries: 3,
 };
 
+// Clipboard settings
+let clipboardPasteEnabled = true;
+let clipboardNotificationEnabled = true;
+let clipboardNotificationCallback: ((text: string) => void) | null = null;
+
+// Maximum clipboard paste buffer size (64KB, matching official client)
+const MAX_CLIPBOARD_BUFFER_SIZE = 65536;
+
+/**
+ * Set clipboard paste enabled state
+ */
+export function setClipboardPasteEnabled(enabled: boolean): void {
+  clipboardPasteEnabled = enabled;
+  console.log("Clipboard paste enabled:", enabled);
+}
+
+/**
+ * Set clipboard notification enabled state
+ */
+export function setClipboardNotificationEnabled(enabled: boolean): void {
+  clipboardNotificationEnabled = enabled;
+  console.log("Clipboard notification enabled:", enabled);
+}
+
+/**
+ * Set callback for clipboard paste notifications
+ */
+export function setClipboardNotificationCallback(callback: ((text: string) => void) | null): void {
+  clipboardNotificationCallback = callback;
+}
+
+/**
+ * Check if clipboard paste is enabled
+ */
+export function isClipboardPasteEnabled(): boolean {
+  return clipboardPasteEnabled;
+}
+
+/**
+ * Send clipboard text to GFN session
+ * Uses the control channel to send clipboard data following GFN protocol
+ */
+export async function sendClipboardToSession(text?: string): Promise<boolean> {
+  if (!clipboardPasteEnabled) {
+    console.log("Clipboard paste is disabled");
+    return false;
+  }
+
+  try {
+    // Read clipboard if no text provided
+    let clipboardText = text;
+    if (!clipboardText) {
+      clipboardText = await navigator.clipboard.readText();
+    }
+
+    if (!clipboardText) {
+      console.log("Clipboard is empty");
+      return false;
+    }
+
+    // Truncate if too large
+    if (clipboardText.length > MAX_CLIPBOARD_BUFFER_SIZE) {
+      console.warn(`Clipboard text truncated from ${clipboardText.length} to ${MAX_CLIPBOARD_BUFFER_SIZE} bytes`);
+      clipboardText = clipboardText.substring(0, MAX_CLIPBOARD_BUFFER_SIZE);
+    }
+
+    // Get control channel
+    const controlChannel = streamingState.dataChannels.get("control");
+    if (!controlChannel || controlChannel.readyState !== "open") {
+      console.error("Control channel not available for clipboard paste");
+      return false;
+    }
+
+    // Send clipboard data via control channel
+    // GFN uses a JSON message format for clipboard updates
+    const clipboardMessage = JSON.stringify({
+      type: "clipboardUpdate",
+      payload: {
+        text: clipboardText,
+        timestamp: Date.now(),
+      },
+    });
+
+    controlChannel.send(clipboardMessage);
+    console.log(`Clipboard sent to GFN session (${clipboardText.length} chars)`);
+
+    // Notify via callback if enabled
+    if (clipboardNotificationEnabled && clipboardNotificationCallback) {
+      const preview = clipboardText.length > 50
+        ? clipboardText.substring(0, 50) + "..."
+        : clipboardText;
+      clipboardNotificationCallback(preview);
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Failed to send clipboard:", error);
+    return false;
+  }
+}
+
 // Signaling sequence counter
 let signalingSeq = 0;
 
@@ -2738,6 +2839,21 @@ export function setupInputCapture(videoElement: HTMLVideoElement): () => void {
     const shouldCapture = hasPointerLock || macOSCapture || inputCaptureActive;
 
     if (shouldCapture) {
+      // Check for Ctrl+V (or Cmd+V on macOS) to handle clipboard paste
+      const isPaste = (e.ctrlKey || e.metaKey) && e.code === "KeyV";
+      if (isPaste && clipboardPasteEnabled) {
+        // Handle clipboard paste asynchronously
+        sendClipboardToSession().then((success) => {
+          if (success) {
+            console.log("Clipboard paste sent to GFN session");
+          }
+        }).catch((err) => {
+          console.error("Clipboard paste failed:", err);
+        });
+        e.preventDefault();
+        return; // Don't send the V key event
+      }
+
       // ESC is sent to the game like any other key - fullscreen exit is handled separately
       // Use proper GFN key code mapping and modifier flags
       const vkCode = getVirtualKeyCode(e);

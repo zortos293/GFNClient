@@ -248,6 +248,18 @@
               </label>
             </div>
             <div class="setting-group">
+              <label>
+                <input type="checkbox" id="clipboard-paste-setting" checked />
+                Enable Clipboard Paste (Ctrl+V)
+              </label>
+            </div>
+            <div class="setting-group">
+              <label>
+                <input type="checkbox" id="clipboard-notification-setting" checked />
+                Show Clipboard Paste Notification
+              </label>
+            </div>
+            <div class="setting-group">
               <label>Custom Proxy (optional)</label>
               <input type="text" id="proxy-setting" placeholder="http://proxy:port" />
             </div>
@@ -348,6 +360,9 @@
           <span id="ping-info">Ping: --ms</span>
         </div>
       </footer>
+
+      <!-- Toast Notifications Container -->
+      <div id="toast-container"></div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

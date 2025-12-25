@@ -33,6 +33,10 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Auto-update games library
     pub auto_refresh_library: bool,
+    /// Enable clipboard paste to GFN session
+    pub clipboard_paste_enabled: bool,
+    /// Show notification when clipboard is pasted
+    pub clipboard_notification: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -85,6 +89,8 @@ impl Default for Settings {
             disable_telemetry: true,
             start_minimized: false,
             auto_refresh_library: true,
+            clipboard_paste_enabled: true,
+            clipboard_notification: true,
         }
     }
 }

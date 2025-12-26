@@ -3,6 +3,7 @@
 // Reference: geronimo.log analysis showing wssignaling:1, WebRTC transport
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 // Types
 interface WebRtcConfig {
@@ -83,6 +84,7 @@ interface NvstIceCandidateMessage {
 // Streaming state
 export interface StreamingState {
   connected: boolean;
+  isStreaming: boolean;
   peerConnection: RTCPeerConnection | null;
   dataChannels: Map<string, RTCDataChannel>;
   videoElement: HTMLVideoElement | null;
@@ -107,6 +109,7 @@ export interface StreamingStats {
 // Global streaming state
 let streamingState: StreamingState = {
   connected: false,
+  isStreaming: false,
   peerConnection: null,
   dataChannels: new Map(),
   videoElement: null,
@@ -136,6 +139,8 @@ let lastBytesTimestamp = 0;
 export interface StreamingOptions {
   resolution: string; // "2560x1440" format
   fps: number;
+  codec?: string; // "h264", "h265", "av1"
+  colorspace?: string; // "sdr", "hdr10", "auto"
 }
 
 export async function initializeStreaming(
@@ -154,60 +159,27 @@ export async function initializeStreaming(
   sharedMediaStream = null;
 
   streamingState.sessionId = connectionState.session_id;
-  streamingState.retryCount = 0;
+  // ===== NATIVE STREAMING MODE (HDR Support) =====
+  // Always use native streaming for HDR support and better performance
+  console.log("Using native streaming mode with HDR support");
 
-  // Create video element
-  const videoEl = createVideoElement();
-  videoContainer.appendChild(videoEl);
-  streamingState.videoElement = videoEl;
-
-  // Create audio context for advanced audio handling
-  try {
-    streamingState.audioContext = new AudioContext();
-  } catch (e) {
-    console.warn("Failed to create AudioContext:", e);
-  }
-
-  // Get WebRTC config from backend
-  const webrtcConfig = await invoke<WebRtcConfig>("get_webrtc_config", {
-    sessionId: connectionState.session_id,
-  });
-
-  console.log("WebRTC config:", webrtcConfig);
-
-  // Extract stream IP from signaling_url
-  // Supports both formats:
-  // - RTSP: rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
-  // - WebSocket: wss://66-22-147-40.cloudmatchbeta.nvidiagrid.net:443/nvst/
+  // Extract stream parameters
   let streamIp: string | null = null;
-
-  console.log("Connection state for streaming:", {
-    signaling_url: connectionState.signaling_url,
-    server_ip: connectionState.server_ip,
-    connection_info: connectionState.connection_info,
-  });
-
   if (connectionState.signaling_url) {
     try {
-      // Parse URL to get hostname - supports rtsps://, rtsp://, wss://, ws://
       const urlMatch = connectionState.signaling_url.match(/(?:rtsps?|wss?):\/\/([^:/]+)/);
       if (urlMatch && urlMatch[1]) {
         streamIp = urlMatch[1];
-        console.log("Extracted stream IP from signaling_url:", streamIp);
       }
     } catch (e) {
       console.warn("Failed to parse signaling_url:", e);
     }
   }
 
-  // Fallback to other sources if signaling_url parsing failed
   if (!streamIp) {
     streamIp = connectionState.connection_info.stream_ip ||
                connectionState.connection_info.control_ip ||
                connectionState.server_ip;
-    console.log("Using fallback stream IP:", streamIp, "from:",
-      connectionState.connection_info.stream_ip ? "stream_ip" :
-      connectionState.connection_info.control_ip ? "control_ip" : "server_ip");
   }
 
   if (!streamIp) {
@@ -216,10 +188,7 @@ export async function initializeStreaming(
 
   const sessionId = connectionState.session_id;
 
-  console.log("Stream IP:", streamIp);
-  console.log("Session ID:", sessionId);
-
-  // Parse resolution from options or use defaults
+  // Parse resolution from options
   let streamWidth = window.screen.width;
   let streamHeight = window.screen.height;
   if (options?.resolution) {
@@ -227,19 +196,84 @@ export async function initializeStreaming(
     if (w && h) {
       streamWidth = w;
       streamHeight = h;
-      console.log(`Using requested resolution: ${streamWidth}x${streamHeight}`);
     }
   }
 
-  // Parse FPS from options or use default
-  let streamFps = 60; // Default FPS
+  // Parse FPS from options
+  let streamFps = 60;
   if (options?.fps && options.fps > 0) {
     streamFps = options.fps;
-    console.log(`Using requested FPS: ${streamFps}`);
   }
 
-  // Connect using the official GFN browser protocol
-  await connectGfnBrowserSignaling(streamIp, sessionId, webrtcConfig, streamWidth, streamHeight, streamFps);
+  // Get codec and colorspace from options
+  const codec = options?.codec || "h264";
+  const colorspace = options?.colorspace || "auto";
+
+  console.log(`Starting native streaming: ${streamWidth}x${streamHeight} @ ${streamFps}fps, codec: ${codec}, colorspace: ${colorspace}`);
+
+  // Set up event listeners for native streaming status
+  listen("native-streaming:starting", () => {
+    console.log("Native streaming: Starting...");
+  });
+
+  listen("native-streaming:connected", () => {
+    console.log("Native streaming: Connected");
+    streamingState.isStreaming = true;
+  });
+
+  listen("native-streaming:streaming", (event: any) => {
+    console.log("Native streaming: Active", event.payload);
+    const { fps, codec: activeCodec, hdr_active } = event.payload;
+    console.log(`  FPS: ${fps}, Codec: ${activeCodec}, HDR: ${hdr_active}`);
+    
+    // Update streaming state
+    streamingState.isStreaming = true;
+    if (streamingState.stats) {
+      streamingState.stats.fps = fps;
+      streamingState.stats.codec = activeCodec;
+    }
+  });
+
+  listen("native-streaming:error", (event: any) => {
+    console.error("Native streaming error:", event.payload);
+    streamingState.isStreaming = false;
+    throw new Error(`Native streaming failed: ${event.payload}`);
+  });
+
+  listen("native-streaming:stopped", () => {
+    console.log("Native streaming stopped");
+    streamingState.isStreaming = false;
+    // Show Tauri window again
+    invoke("show_tauri_window").catch(e => console.error("Failed to show window:", e));
+  });
+
+  try {
+    // Hide Tauri window while streaming
+    await invoke("hide_tauri_window");
+
+    // Start native streaming
+    await invoke("start_native_streaming", {
+      server: streamIp,
+      sessionId: sessionId,
+      width: streamWidth,
+      height: streamHeight,
+      codec: codec,
+      colorspace: colorspace,
+    });
+
+    console.log("Native streaming started successfully");
+    streamingState.sessionId = sessionId;
+    streamingState.isStreaming = true;
+
+  } catch (error) {
+    console.error("Failed to start native streaming:", error);
+    // Show window again on error
+    await invoke("show_tauri_window").catch(e => console.error("Failed to show window:", e));
+    throw error;
+  }
+
+  // Native mode - no browser video element needed
+  return;
 }
 
 // GFN Browser Peer Protocol types
@@ -3109,75 +3143,27 @@ export async function getStreamingStats(): Promise<StreamingStats | null> {
  * Stop streaming and clean up resources
  */
 export function stopStreaming(): void {
-  console.log("Stopping streaming");
+  console.log("Stopping native streaming");
 
-  // Clear heartbeat interval
-  if (heartbeatInterval) {
-    clearInterval(heartbeatInterval);
-    heartbeatInterval = null;
-  }
+  streamingState.connected = false;
+  streamingState.isStreaming = false;
 
-  // Close WebSocket
-  if (streamingState.signalingSocket) {
-    // Send bye message before closing
-    if (streamingState.signalingSocket.readyState === WebSocket.OPEN) {
-      sendSignalingMessage(streamingState.signalingSocket, { type: "bye" });
-    }
-    streamingState.signalingSocket.close(1000, "User requested stop");
-    streamingState.signalingSocket = null;
-  }
-
-  // Close data channels
-  streamingState.dataChannels.forEach((channel) => {
-    channel.close();
-  });
-  streamingState.dataChannels.clear();
-
-  // Close peer connection
-  if (streamingState.peerConnection) {
-    streamingState.peerConnection.close();
-    streamingState.peerConnection = null;
-  }
-
-  // Close audio context
-  if (streamingState.audioContext) {
-    streamingState.audioContext.close();
-    streamingState.audioContext = null;
-  }
-
-  // Remove video element
-  if (streamingState.videoElement) {
-    streamingState.videoElement.srcObject = null;
-    streamingState.videoElement.remove();
-    streamingState.videoElement = null;
-  }
+  // Stop native streaming via Tauri command
+  invoke("stop_native_streaming")
+    .then(() => {
+      console.log("Native streaming stopped successfully");
+      // Show Tauri window again
+      return invoke("show_tauri_window");
+    })
+    .catch((error) => {
+      console.error("Failed to stop native streaming:", error);
+    });
 
   // Reset state
-  streamingState.connected = false;
   streamingState.sessionId = null;
   streamingState.stats = null;
   streamingState.retryCount = 0;
-  streamingState.inputDebugLogged = undefined;
-  signalingSeq = 0;
-  gfnAckId = 0;
-  sharedMediaStream = null;
-  isReconnect = false; // Reset for fresh session
-  inputHandshakeComplete = false;
-  inputHandshakeAttempts = 0;
-  inputProtocolVersion = 0;
-  streamStartTime = 0;
-  inputEventCount = 0;
-  lastInputLogTime = 0;
-  inputCaptureActive = false;
-
-  // Reset bitrate tracking
-  lastBytesReceived = 0;
-  lastBytesTimestamp = 0;
 }
-
-/**
- * Check if streaming is active
- */
 export function isStreamingActive(): boolean {
   return streamingState.connected && streamingState.peerConnection !== null;
 }

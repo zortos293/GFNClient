@@ -2,6 +2,10 @@
 #[cfg(feature = "native-client")]
 pub mod native;
 
+// Native streaming commands (bridge between Tauri and native client)
+#[cfg(feature = "tauri-app")]
+mod native_streaming;
+
 // Tauri app modules (only when tauri-app feature enabled)
 #[cfg(feature = "tauri-app")]
 mod auth;
@@ -104,7 +108,42 @@ pub fn run() {
             cursor::capture_cursor,
             cursor::release_cursor,
             cursor::is_cursor_captured,
+            // Native streaming commands
+            native_streaming::start_native_streaming,
+            native_streaming::stop_native_streaming,
+            native_streaming::is_native_streaming_active,
+            native_streaming::detect_hdr_capabilities,
+            // Window management commands
+            hide_tauri_window,
+            show_tauri_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Hide the main Tauri window
+///
+/// Used when native streaming starts to let the native window take focus
+#[cfg(feature = "tauri-app")]
+#[tauri::command]
+async fn hide_tauri_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| e.to_string())?;
+        log::info!("Tauri window hidden");
+    }
+    Ok(())
+}
+
+/// Show the main Tauri window
+///
+/// Used when native streaming ends to restore the Tauri UI
+#[cfg(feature = "tauri-app")]
+#[tauri::command]
+async fn show_tauri_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        log::info!("Tauri window shown");
+    }
+    Ok(())
 }

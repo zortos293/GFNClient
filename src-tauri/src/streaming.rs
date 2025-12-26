@@ -88,6 +88,8 @@ pub struct StartSessionRequest {
     pub max_bitrate_mbps: Option<u32>,
     /// Enable NVIDIA Reflex low-latency mode
     pub reflex: Option<bool>,
+    /// Color space mode: "sdr", "hdr10", or "auto"
+    pub colorspace: Option<String>,
 }
 
 /// CloudMatch session request - based on GFN native client protocol (from geronimo.log)
@@ -419,8 +421,51 @@ pub async fn start_session(
     // Reflex: auto-enable for 120+ FPS if not explicitly set, or use user preference
     let reflex_enabled = request.reflex.unwrap_or(fps >= 120);
 
-    log::info!("Using resolution {}x{} @ {} FPS, codec: {:?}, max bitrate: {} kbps, reflex: {}",
-               width, height, fps, codec, max_bitrate_kbps, reflex_enabled);
+    // HDR: Determine if HDR should be enabled based on colorspace setting
+    let colorspace = request.colorspace.as_deref().unwrap_or("sdr");
+    let (hdr_enabled, hdr_max_luminance) = match colorspace {
+        "hdr10" | "hdr" => {
+            log::info!("HDR explicitly enabled");
+            (true, 1000.0) // Standard HDR10 max luminance
+        }
+        "auto" => {
+            // Auto-detect HDR capability
+            #[cfg(feature = "native-client")]
+            {
+                use crate::native::hdr_detection;
+                match hdr_detection::detect_hdr_capabilities() {
+                    Ok(caps) if caps.is_supported() => {
+                        log::info!("HDR auto-detected: supported (max {} nits)", caps.max_luminance());
+                        (true, caps.max_luminance())
+                    }
+                    Ok(_) => {
+                        log::info!("HDR auto-detected: not supported");
+                        (false, 80.0)
+                    }
+                    Err(e) => {
+                        log::warn!("HDR detection failed: {}, assuming SDR", e);
+                        (false, 80.0)
+                    }
+                }
+            }
+            #[cfg(not(feature = "native-client"))]
+            {
+                log::info!("HDR detection not available (native-client feature disabled)");
+                (false, 80.0)
+            }
+        }
+        _ => {
+            log::info!("SDR mode");
+            (false, 80.0)
+        }
+    };
+
+    let sdr_hdr_mode = if hdr_enabled { 1 } else { 0 }; // 0=SDR, 1=HDR10, 2=DolbyVision
+    let bit_depth = if hdr_enabled { 10 } else { 8 };
+    let chroma_format = if hdr_enabled { 2 } else { 1 }; // 2=4:2:2, 1=4:2:0
+
+    log::info!("Using resolution {}x{} @ {} FPS, codec: {:?}, max bitrate: {} kbps, reflex: {}, HDR: {} (mode: {}, {}nits)",
+               width, height, fps, codec, max_bitrate_kbps, reflex_enabled, hdr_enabled, sdr_hdr_mode, hdr_max_luminance);
 
     // Determine zone to use (browser uses eu-netherlands-south)
     let zone = request.preferred_server.clone()
@@ -452,11 +497,11 @@ pub async fn start_session(
                 width_in_pixels: width,
                 height_in_pixels: height,
                 frames_per_second: fps,
-                sdr_hdr_mode: 0,
+                sdr_hdr_mode, // 0=SDR, 1=HDR10, 2=DolbyVision
                 display_data: DisplayDataSimple {
-                    desired_content_max_luminance: 0,
-                    desired_content_min_luminance: 0,
-                    desired_content_max_frame_average_luminance: 0,
+                    desired_content_max_luminance: if hdr_enabled { hdr_max_luminance as i32 } else { 0 },
+                    desired_content_min_luminance: if hdr_enabled { 0 } else { 0 }, // Min luminance typically 0 for both
+                    desired_content_max_frame_average_luminance: if hdr_enabled { (hdr_max_luminance * 0.8) as i32 } else { 0 },
                 },
                 dpi: 100, // Browser uses 100
             }],
@@ -471,7 +516,7 @@ pub async fn start_session(
                 MetaDataEntry { key: "clientPhysicalResolution".to_string(), value: format!("{{\"horizontalPixels\":{},\"verticalPixels\":{}}}", width, height) },
                 MetaDataEntry { key: "surroundAudioInfo".to_string(), value: "2".to_string() },
             ],
-            sdr_hdr_mode: 0,
+            sdr_hdr_mode, // 0=SDR, 1=HDR10, 2=DolbyVision
             client_display_hdr_capabilities: None,
             surround_audio_info: 0,
             remote_controllers_bitmap: 0,
@@ -485,16 +530,16 @@ pub async fn start_session(
             user_age: 26, // Use a reasonable default age
             requested_streaming_features: Some(StreamingFeatures {
                 reflex: reflex_enabled, // NVIDIA Reflex low-latency mode
-                bit_depth: 0,
+                bit_depth, // 8 for SDR, 10 for HDR
                 cloud_gsync: false,
                 enabled_l4s: false,
                 mouse_movement_flags: 0,
-                true_hdr: false,
+                true_hdr: hdr_enabled, // Enable HDR if supported
                 supported_hid_devices: 0,
                 profile: 0,
                 fallback_to_logical_resolution: false,
                 hid_devices: None,
-                chroma_format: 0,
+                chroma_format, // 1=4:2:0 (SDR), 2=4:2:2 (HDR)
                 prefilter_mode: 0,
                 prefilter_sharpness: 0,
                 prefilter_noise_reduction: 0,

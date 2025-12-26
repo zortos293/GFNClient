@@ -15,6 +15,22 @@ crate-type = ["lib", "cdylib", "staticlib"]
 name = "opennow"
 path = "src/main.rs"
 
+# Native streaming client binary with GPU renderer
+[[bin]]
+name = "opennow-native"
+path = "src/native/main.rs"
+required-features = ["native-client"]
+
+# GPU renderer test binary (no FFmpeg dependency)
+[[bin]]
+name = "test-renderer"
+path = "src/test_renderer.rs"
+
+# HDR pipeline comprehensive test
+[[bin]]
+name = "test-hdr"
+path = "src/test_hdr.rs"
+
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [], optional = true }
@@ -50,14 +66,22 @@ rand = "0.8"
 
 # Native client dependencies (winit is pure Rust - no CMake needed)
 winit = "0.30"
-softbuffer = "0.4"
 webrtc = "0.11"
 bytes = "1.5"
 anyhow = "1.0"
 
+# GPU rendering and video decoding
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Video decoding - FFmpeg with hardware acceleration
+# Windows: Requires vcpkg (see setup instructions below)
+# The build script will find FFmpeg via vcpkg automatically
+ffmpeg-next = { version = "7", default-features = false, features = ["codec", "format", "software-scaling"] }
+
 # Full native client dependencies
 clap = { version = "4.4", features = ["derive"] }
-openh264 = "0.6"
 cpal = "0.15"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
@@ -71,6 +95,10 @@ rfd = "0.15"
 # macOS specific
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"
+
+# Windows specific (for HDR detection)
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Direct3D12"] }
 
 [features]
 default = ["tauri-app"]

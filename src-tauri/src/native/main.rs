@@ -3,16 +3,29 @@
 //! A full-featured native client for GeForce NOW streaming.
 //! Handles signaling, WebRTC, video decoding, audio playback, and input.
 
-mod input;
+#[path = "input.rs"]
+pub mod input;
+#[path = "signaling.rs"]
 mod signaling;
+#[path = "webrtc_client.rs"]
 mod webrtc_client;
+#[path = "gpu_renderer.rs"]
+pub mod gpu_renderer;
+#[path = "ffmpeg_decoder.rs"]
+pub mod ffmpeg_decoder;
+#[path = "hdr_detection.rs"]
+pub mod hdr_detection;
+#[path = "hdr_signaling.rs"]
+mod hdr_signaling;
+#[path = "test_mode.rs"]
+pub mod test_mode;
+#[path = "bridge.rs"]
+pub mod bridge;
 
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use openh264::formats::YUVSource;
 use clap::Parser;
 use log::{info, warn, error, debug};
 use parking_lot::Mutex;
@@ -25,51 +38,58 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use input::{InputEncoder, InputEvent};
-use signaling::{GfnSignaling, SignalingEvent, IceCandidate};
+use signaling::{GfnSignaling, SignalingEvent};
 use webrtc_client::{WebRtcClient, WebRtcEvent};
 use webrtc::ice_transport::ice_server::RTCIceServer;
+use gpu_renderer::{GpuRenderer, RendererConfig, YuvFrame};
+use ffmpeg_decoder::{FfmpegDecoder, VideoCodec, RtpReassembler};
 
 /// GFN Native Streaming Client
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+pub struct Args {
     /// GFN streaming server IP address
     #[arg(short, long)]
-    server: String,
+    pub server: Option<String>,
 
     /// Session ID from GFN
     #[arg(short = 'i', long)]
-    session_id: String,
+    pub session_id: Option<String>,
 
     /// Window width
     #[arg(long, default_value = "1920")]
-    width: u32,
+    pub width: u32,
 
     /// Window height
     #[arg(long, default_value = "1080")]
-    height: u32,
+    pub height: u32,
 
     /// Enable debug logging
     #[arg(short, long)]
-    debug: bool,
-}
+    pub debug: bool,
 
-/// Video frame for rendering
-struct VideoFrame {
-    width: u32,
-    height: u32,
-    data: Vec<u32>, // ARGB pixels
+    /// Run in test mode (no GFN session required)
+    #[arg(short, long)]
+    pub test: bool,
+
+    /// Test duration in seconds
+    #[arg(long, default_value = "10")]
+    pub test_duration: u64,
 }
 
 /// Shared state between async tasks and window
-struct SharedState {
-    video_frame: Option<VideoFrame>,
-    connected: bool,
-    signaling_connected: bool,
-    webrtc_connected: bool,
-    input_ready: bool,
-    stats: StreamingStats,
-    status_message: String,
+pub struct SharedState {
+    pub video_frame: Option<YuvFrame>,
+    pub connected: bool,
+    pub signaling_connected: bool,
+    pub webrtc_connected: bool,
+    pub input_ready: bool,
+    pub stats: StreamingStats,
+    pub status_message: String,
+    pub negotiated_codec: Option<VideoCodec>,
+    pub last_fps_update: std::time::Instant,
+    pub frame_count: u32,
+    pub current_fps: f32,
 }
 
 impl Default for SharedState {
@@ -82,6 +102,10 @@ impl Default for SharedState {
             input_ready: false,
             stats: StreamingStats::default(),
             status_message: "Initializing...".to_string(),
+            negotiated_codec: None,
+            last_fps_update: std::time::Instant::now(),
+            frame_count: 0,
+            current_fps: 0.0,
         }
     }
 }
@@ -95,26 +119,28 @@ struct StreamingStats {
 }
 
 /// Main application state
-struct GfnApp {
+pub struct GfnApp {
     window: Option<Arc<Window>>,
-    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    renderer: Option<GpuRenderer>,
     shared_state: Arc<Mutex<SharedState>>,
     input_tx: mpsc::Sender<InputEvent>,
     mouse_captured: bool,
     start_time: Instant,
     args: Args,
+    hdr_caps: hdr_detection::HdrCapabilities,
 }
 
 impl GfnApp {
-    fn new(args: Args, input_tx: mpsc::Sender<InputEvent>, shared_state: Arc<Mutex<SharedState>>) -> Self {
+    pub fn new(args: Args, input_tx: mpsc::Sender<InputEvent>, shared_state: Arc<Mutex<SharedState>>, hdr_caps: hdr_detection::HdrCapabilities) -> Self {
         Self {
             window: None,
-            surface: None,
+            renderer: None,
             shared_state,
             input_tx,
             mouse_captured: false,
             start_time: Instant::now(),
             args,
+            hdr_caps,
         }
     }
 
@@ -144,111 +170,59 @@ impl GfnApp {
     }
 
     fn render_frame(&mut self) {
-        let Some(surface) = &mut self.surface else { return };
-        let Some(window) = &self.window else { return };
-
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-
-        // Resize surface if needed
-        let _ = surface.resize(
-            NonZeroU32::new(size.width).unwrap(),
-            NonZeroU32::new(size.height).unwrap(),
-        );
-
-        let mut buffer = match surface.buffer_mut() {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("Failed to get buffer: {}", e);
-                return;
-            }
-        };
+        let Some(renderer) = &mut self.renderer else { return };
 
         // Get video frame if available
-        let state = self.shared_state.lock();
+        let mut state = self.shared_state.lock();
 
-        if let Some(frame) = &state.video_frame {
-            // Scale and blit video frame to window
-            let scale_x = frame.width as f32 / size.width as f32;
-            let scale_y = frame.height as f32 / size.height as f32;
-
-            for y in 0..size.height {
-                for x in 0..size.width {
-                    let src_x = ((x as f32 * scale_x) as u32).min(frame.width - 1);
-                    let src_y = ((y as f32 * scale_y) as u32).min(frame.height - 1);
-                    let src_idx = (src_y * frame.width + src_x) as usize;
-                    let dst_idx = (y * size.width + x) as usize;
-
-                    if src_idx < frame.data.len() && dst_idx < buffer.len() {
-                        buffer[dst_idx] = frame.data[src_idx];
-                    }
-                }
+        if let Some(frame) = state.video_frame.take() {
+            // Render the YUV frame using GPU
+            if let Err(e) = renderer.render_frame(&frame) {
+                warn!("Failed to render frame: {}", e);
             }
-        } else {
-            // Show status screen
-            let status = state.status_message.clone();
-            let signaling = state.signaling_connected;
-            let webrtc = state.webrtc_connected;
-            let input_ready = state.input_ready;
-            let stats = &state.stats;
-            let frames = stats.frames_received;
-            drop(state);
+            // Put the frame back (we took it with take())
+            state.video_frame = Some(frame);
 
-            // Draw status screen
-            for (i, pixel) in buffer.iter_mut().enumerate() {
-                let x = i as u32 % size.width;
-                let y = i as u32 / size.width;
+            // Update FPS counter
+            state.frame_count += 1;
+            let elapsed = state.last_fps_update.elapsed().as_secs_f32();
+            if elapsed >= 1.0 {
+                state.current_fps = state.frame_count as f32 / elapsed;
+                state.frame_count = 0;
+                state.last_fps_update = std::time::Instant::now();
 
-                // Background gradient
-                let brightness = 0x1a + (y as u32 * 0x10 / size.height).min(0x10) as u8;
-                *pixel = 0xFF000000 | ((brightness as u32) << 16) | ((brightness as u32) << 8) | (brightness as u32 + 0x10);
-
-                // Status indicator box in center
-                let cx = size.width / 2;
-                let cy = size.height / 2;
-                let box_w = 400;
-                let box_h = 200;
-
-                if x >= cx - box_w/2 && x <= cx + box_w/2 && y >= cy - box_h/2 && y <= cy + box_h/2 {
-                    // Status box background
-                    *pixel = 0xFF2a2a3a;
-
-                    // Border
-                    if x == cx - box_w/2 || x == cx + box_w/2 || y == cy - box_h/2 || y == cy + box_h/2 {
-                        *pixel = if webrtc { 0xFF00AA00 } else if signaling { 0xFFAAAA00 } else { 0xFF666666 };
-                    }
-                }
-
-                // Connection status dots
-                let dot_y = cy - 50;
-                let dot_radius = 8u32;
-
-                // Signaling dot
-                let dot1_x = cx - 60;
-                let dist1 = ((x as i32 - dot1_x as i32).pow(2) + (y as i32 - dot_y as i32).pow(2)) as u32;
-                if dist1 <= dot_radius * dot_radius {
-                    *pixel = if signaling { 0xFF00FF00 } else { 0xFF444444 };
-                }
-
-                // WebRTC dot
-                let dot2_x = cx;
-                let dist2 = ((x as i32 - dot2_x as i32).pow(2) + (y as i32 - dot_y as i32).pow(2)) as u32;
-                if dist2 <= dot_radius * dot_radius {
-                    *pixel = if webrtc { 0xFF00FF00 } else { 0xFF444444 };
-                }
-
-                // Input dot
-                let dot3_x = cx + 60;
-                let dist3 = ((x as i32 - dot3_x as i32).pow(2) + (y as i32 - dot_y as i32).pow(2)) as u32;
-                if dist3 <= dot_radius * dot_radius {
-                    *pixel = if input_ready { 0xFF00FF00 } else { 0xFF444444 };
-                }
+                // Update window title with status
+                self.update_window_title();
             }
         }
+    }
 
-        let _ = buffer.present();
+    fn update_window_title(&self) {
+        let Some(window) = &self.window else { return };
+        let state = self.shared_state.lock();
+
+        let hdr_status = if self.hdr_caps.is_supported() {
+            format!("HDR ({:.0} nits)", self.hdr_caps.max_luminance())
+        } else {
+            "SDR".to_string()
+        };
+
+        let codec = match state.negotiated_codec {
+            Some(VideoCodec::H265) => "H.265",
+            Some(VideoCodec::H264) => "H.264",
+            _ => "N/A",
+        };
+
+        let title = format!(
+            "GFN Client - {} | {} | {:.1} FPS | {}x{}",
+            hdr_status,
+            codec,
+            state.current_fps,
+            self.args.width,
+            self.args.height
+        );
+
+        window.set_title(&title);
     }
 
     fn handle_keyboard(&mut self, key: PhysicalKey, state: ElementState) {
@@ -343,22 +317,70 @@ impl ApplicationHandler for GfnApp {
         }
 
         let window_attrs = Window::default_attributes()
-            .with_title(format!("GFN Native Client - {}", self.args.server))
+            .with_title(format!("GFN Native Client - {}", self.args.server.as_deref().unwrap_or("Test Mode")))
             .with_inner_size(LogicalSize::new(self.args.width, self.args.height));
 
         let window = Arc::new(event_loop.create_window(window_attrs).unwrap());
 
-        // Create software rendering surface
-        let context = softbuffer::Context::new(window.clone()).unwrap();
-        let surface = softbuffer::Surface::new(&context, window.clone()).unwrap();
+        // Create GPU renderer with HDR or SDR configuration based on display capabilities
+        let renderer_config = if self.hdr_caps.is_supported() {
+            info!("Creating HDR renderer (max_luminance={:.1} nits)", self.hdr_caps.max_luminance());
+            RendererConfig {
+                hdr_enabled: true,
+                max_luminance: self.hdr_caps.max_luminance(),
+                min_luminance: self.hdr_caps.min_luminance(),
+                content_max_luminance: 4000.0, // HDR10 content max
+                content_min_luminance: 0.0001,
+                color_space: gpu_renderer::ColorSpace::Rec2020,
+            }
+        } else {
+            info!("Creating SDR renderer (HDR not supported)");
+            RendererConfig {
+                hdr_enabled: false,
+                max_luminance: 80.0, // SDR standard
+                min_luminance: 0.0,
+                content_max_luminance: 80.0,
+                content_min_luminance: 0.0,
+                color_space: gpu_renderer::ColorSpace::Rec709,
+            }
+        };
+
+        let renderer = match GpuRenderer::new(window.clone(), renderer_config) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to create GPU renderer: {}", e);
+                panic!("Cannot continue without renderer");
+            }
+        };
 
         info!("Window created: {}x{}", self.args.width, self.args.height);
-        info!("Server: {}", self.args.server);
-        info!("Session: {}", self.args.session_id);
+        info!("GPU renderer initialized");
+
+        // Print HDR status banner
+        info!("╔════════════════════════════════════════════════╗");
+        if self.hdr_caps.is_supported() {
+            info!("║  🌟 HDR MODE ENABLED                           ║");
+            info!("║  Max Luminance: {:<6.1} nits                    ║", self.hdr_caps.max_luminance());
+            info!("║  Min Luminance: {:<8.4} nits                  ║", self.hdr_caps.min_luminance());
+            info!("║  Color Space:   Rec. 2020 (Wide Gamut)        ║");
+            info!("║  Transfer:      PQ (SMPTE ST 2084)            ║");
+        } else {
+            info!("║  📺 SDR MODE (HDR not supported)               ║");
+            info!("║  Max Luminance: 80.0 nits                      ║");
+            info!("║  Color Space:   Rec. 709 (Standard)           ║");
+            info!("║  Transfer:      sRGB gamma 2.2                ║");
+        }
+        info!("╚════════════════════════════════════════════════╝");
+
+        info!("Server: {:?}", self.args.server);
+        info!("Session: {:?}", self.args.session_id);
         info!("Press ESC to release mouse, click to capture");
 
-        self.surface = Some(surface);
+        self.renderer = Some(renderer);
         self.window = Some(window);
+
+        // Set initial window title
+        self.update_window_title();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -384,13 +406,8 @@ impl ApplicationHandler for GfnApp {
                 self.handle_mouse_wheel(y);
             }
             WindowEvent::Resized(size) => {
-                if let Some(surface) = &mut self.surface {
-                    if size.width > 0 && size.height > 0 {
-                        let _ = surface.resize(
-                            NonZeroU32::new(size.width).unwrap(),
-                            NonZeroU32::new(size.height).unwrap(),
-                        );
-                    }
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.resize(size.width, size.height);
                 }
             }
             _ => {}
@@ -421,11 +438,12 @@ impl ApplicationHandler for GfnApp {
 }
 
 /// Run the streaming connection
-async fn run_streaming(
+pub async fn run_streaming(
     server: String,
     session_id: String,
     shared_state: Arc<Mutex<SharedState>>,
     mut input_rx: mpsc::Receiver<InputEvent>,
+    hdr_caps: hdr_detection::HdrCapabilities,
 ) -> Result<()> {
     info!("Starting streaming connection to {}", server);
 
@@ -463,20 +481,9 @@ async fn run_streaming(
     // Input encoder
     let mut input_encoder = InputEncoder::new();
 
-    // H.264 decoder
-    let mut decoder = match openh264::decoder::Decoder::new() {
-        Ok(d) => {
-            info!("H.264 decoder initialized");
-            Some(d)
-        }
-        Err(e) => {
-            warn!("Failed to create H.264 decoder: {}. Video will not be displayed.", e);
-            None
-        }
-    };
-
-    // RTP packet assembler for H.264
-    let mut h264_buffer: Vec<u8> = Vec::with_capacity(1024 * 1024); // 1MB buffer
+    // Decoder and RTP reassembler will be created after codec negotiation
+    let mut decoder: Option<FfmpegDecoder> = None;
+    let mut rtp_reassembler: Option<RtpReassembler> = None;
 
     // Main event loop
     loop {
@@ -495,6 +502,25 @@ async fn run_streaming(
                             state.status_message = "Received offer, creating answer...".to_string();
                         }
 
+                        // Modify SDP to prefer HDR codec if supported
+                        let hdr_config = create_hdr_config(&hdr_caps);
+                        let modified_sdp = if hdr_caps.is_supported() {
+                            info!("HDR supported, modifying SDP to prefer H.265 Main10");
+                            match hdr_signaling::modify_sdp_for_hdr(&sdp, &hdr_config) {
+                                Ok(s) => {
+                                    info!("SDP modified for HDR");
+                                    s
+                                }
+                                Err(e) => {
+                                    warn!("Failed to modify SDP for HDR: {}, using original", e);
+                                    sdp.clone()
+                                }
+                            }
+                        } else {
+                            info!("SDR display, using original SDP (H.264)");
+                            sdp.clone()
+                        };
+
                         // Parse ICE servers - use STUN server
                         let ice_servers = vec![
                             RTCIceServer {
@@ -503,13 +529,16 @@ async fn run_streaming(
                             },
                         ];
 
-                        match webrtc_client.handle_offer(&sdp, ice_servers).await {
+                        match webrtc_client.handle_offer(&modified_sdp, ice_servers).await {
                             Ok(answer) => {
                                 info!("Created SDP answer, sending to server");
 
+                                // Detect negotiated codec from answer
+                                let negotiated_codec = detect_codec_from_sdp(&answer);
                                 {
                                     let mut state = shared_state.lock();
-                                    state.status_message = "Sending answer...".to_string();
+                                    state.negotiated_codec = Some(negotiated_codec);
+                                    state.status_message = format!("Codec negotiated: {:?}", negotiated_codec);
                                 }
 
                                 if let Err(e) = signaling.send_answer(&answer, None).await {
@@ -556,10 +585,55 @@ async fn run_streaming(
                 match event {
                     WebRtcEvent::Connected => {
                         info!("WebRTC connected!");
+
+                        // Create decoder based on negotiated codec
+                        let codec = {
+                            let state = shared_state.lock();
+                            state.negotiated_codec.unwrap_or(VideoCodec::H264)
+                        };
+
+                        info!("Creating decoder for codec: {:?}", codec);
+
+                        decoder = match FfmpegDecoder::new(codec) {
+                            Ok(d) => {
+                                info!("FFmpeg {:?} decoder initialized", codec);
+                                if d.is_hwaccel_enabled() {
+                                    info!("Hardware acceleration is enabled");
+                                } else {
+                                    warn!("Hardware acceleration not available, using software decoding");
+                                }
+                                Some(d)
+                            }
+                            Err(e) => {
+                                error!("Failed to create FFmpeg decoder: {}. Video will not be displayed.", e);
+                                None
+                            }
+                        };
+
+                        // Create RTP reassembler for the negotiated codec
+                        rtp_reassembler = Some(RtpReassembler::new(codec));
+
+                        // Print codec status banner
+                        info!("╔════════════════════════════════════════════════╗");
+                        match codec {
+                            VideoCodec::H265 => {
+                                info!("║  🎬 CODEC: H.265 Main10 (10-bit HDR)          ║");
+                                info!("║  Quality: High (HDR streaming active)         ║");
+                            }
+                            VideoCodec::H264 => {
+                                info!("║  🎬 CODEC: H.264 (8-bit SDR)                   ║");
+                                info!("║  Quality: Standard (SDR streaming)            ║");
+                            }
+                            _ => {
+                                info!("║  🎬 CODEC: {:?}                                 ║", codec);
+                            }
+                        }
+                        info!("╚════════════════════════════════════════════════╝");
+
                         let mut state = shared_state.lock();
                         state.webrtc_connected = true;
                         state.connected = true;
-                        state.status_message = "WebRTC connected, waiting for video...".to_string();
+                        state.status_message = format!("WebRTC connected, using {:?} codec", codec);
                     }
                     WebRtcEvent::Disconnected => {
                         warn!("WebRTC disconnected");
@@ -576,74 +650,40 @@ async fn run_streaming(
                             state.stats.bytes_received += rtp_payload.len() as u64;
                         }
 
-                        // Accumulate RTP payload (simplified - real impl needs NAL unit handling)
+                        // Process RTP payload
                         if !rtp_payload.is_empty() {
-                            // Check for NAL unit start code or marker
-                            let nal_type = rtp_payload[0] & 0x1F;
+                            if let (Some(ref mut dec), Some(ref mut reassembler)) = (&mut decoder, &mut rtp_reassembler) {
+                                // Reassemble RTP packet into NAL unit
+                                if let Some(nal_data) = reassembler.process_packet(&rtp_payload) {
+                                    // Decode the NAL unit
+                                    match dec.decode(&nal_data) {
+                                        Ok(Some(decoded_frame)) => {
+                                            // Convert FFmpeg frame to YuvFrame
+                                            let yuv_frame = YuvFrame {
+                                                y_plane: decoded_frame.y_plane,
+                                                u_plane: decoded_frame.u_plane,
+                                                v_plane: decoded_frame.v_plane,
+                                                width: decoded_frame.width,
+                                                height: decoded_frame.height,
+                                                y_stride: decoded_frame.y_stride,
+                                                u_stride: decoded_frame.u_stride,
+                                                v_stride: decoded_frame.v_stride,
+                                            };
 
-                            // Simple approach: try to decode each packet
-                            // Real implementation would reassemble fragmented NALUs
-                            if let Some(ref mut dec) = decoder {
-                                // Add start code if not present
-                                let data = if rtp_payload.len() >= 3 &&
-                                    rtp_payload[0] == 0 && rtp_payload[1] == 0 &&
-                                    (rtp_payload[2] == 1 || (rtp_payload[2] == 0 && rtp_payload.len() >= 4 && rtp_payload[3] == 1)) {
-                                    rtp_payload.clone()
-                                } else {
-                                    let mut with_start = vec![0, 0, 0, 1];
-                                    with_start.extend_from_slice(&rtp_payload);
-                                    with_start
-                                };
-
-                                match dec.decode(&data) {
-                                    Ok(Some(yuv)) => {
-                                        let (width, height) = yuv.dimensions();
-                                        let width = width as usize;
-                                        let height = height as usize;
-
-                                        // Get YUV data using trait methods
-                                        let y_data = yuv.y();
-                                        let u_data = yuv.u();
-                                        let v_data = yuv.v();
-                                        let (y_stride, u_stride, v_stride) = yuv.strides();
-
-                                        let mut argb_data = Vec::with_capacity(width * height);
-
-                                        for row in 0..height {
-                                            for col in 0..width {
-                                                let y_idx = row * y_stride + col;
-                                                let uv_row = row / 2;
-                                                let uv_col = col / 2;
-                                                let u_idx = uv_row * u_stride + uv_col;
-                                                let v_idx = uv_row * v_stride + uv_col;
-
-                                                let y = y_data.get(y_idx).copied().unwrap_or(0) as f32;
-                                                let u = u_data.get(u_idx).copied().unwrap_or(128) as f32 - 128.0;
-                                                let v = v_data.get(v_idx).copied().unwrap_or(128) as f32 - 128.0;
-
-                                                // YUV to RGB conversion
-                                                let r = (y + 1.402 * v).clamp(0.0, 255.0) as u32;
-                                                let g = (y - 0.344 * u - 0.714 * v).clamp(0.0, 255.0) as u32;
-                                                let b = (y + 1.772 * u).clamp(0.0, 255.0) as u32;
-
-                                                argb_data.push(0xFF000000 | (r << 16) | (g << 8) | b);
-                                            }
+                                            // Update shared state with new frame
+                                            let mut state = shared_state.lock();
+                                            state.video_frame = Some(yuv_frame);
+                                            state.stats.frames_decoded += 1;
+                                            state.status_message = format!("Streaming - {}x{}",
+                                                decoded_frame.width, decoded_frame.height);
                                         }
-
-                                        let mut state = shared_state.lock();
-                                        state.video_frame = Some(VideoFrame {
-                                            width: width as u32,
-                                            height: height as u32,
-                                            data: argb_data,
-                                        });
-                                        state.stats.frames_decoded += 1;
-                                        state.status_message = format!("Streaming - {}x{}", width, height);
-                                    }
-                                    Ok(None) => {
-                                        // Decoder needs more data
-                                    }
-                                    Err(_) => {
-                                        // Decode error - skip
+                                        Ok(None) => {
+                                            // Decoder needs more data
+                                        }
+                                        Err(e) => {
+                                            // Decode error - skip this packet
+                                            debug!("Decode error: {}", e);
+                                        }
                                     }
                                 }
                             }
@@ -896,6 +936,36 @@ fn keycode_to_scan(keycode: KeyCode) -> u16 {
     }
 }
 
+/// Create HDR streaming config from detected capabilities
+fn create_hdr_config(hdr_caps: &hdr_detection::HdrCapabilities) -> hdr_signaling::HdrStreamingConfig {
+    if hdr_caps.is_supported() {
+        hdr_signaling::HdrStreamingConfig {
+            enable_hdr: true,
+            codec: hdr_signaling::HdrCodec::H265Main10,
+            max_bitrate_mbps: 50,
+            max_luminance: hdr_caps.max_luminance(),
+            min_luminance: hdr_caps.min_luminance(),
+            max_frame_avg_luminance: hdr_caps.max_frame_average_luminance(),
+            color_space: "rec2020".to_string(),
+        }
+    } else {
+        hdr_signaling::HdrStreamingConfig::default()
+    }
+}
+
+/// Detect video codec from SDP (simple version - checks for H.265/H265 in SDP)
+fn detect_codec_from_sdp(sdp: &str) -> VideoCodec {
+    // Check if SDP contains H.265/HEVC indicators
+    let sdp_upper = sdp.to_uppercase();
+    if sdp_upper.contains("H265") || sdp_upper.contains("HEVC") {
+        info!("Detected H.265 codec in SDP");
+        VideoCodec::H265
+    } else {
+        info!("Detected H.264 codec in SDP (default)");
+        VideoCodec::H264
+    }
+}
+
 fn main() -> Result<()> {
     // Parse arguments
     let args = Args::parse();
@@ -907,9 +977,32 @@ fn main() -> Result<()> {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
 
+    // Detect HDR display capabilities
+    info!("Detecting HDR display capabilities...");
+    let hdr_caps = hdr_detection::detect_hdr_capabilities().unwrap_or_else(|e| {
+        warn!("Failed to detect HDR capabilities: {}, using defaults", e);
+        hdr_detection::HdrCapabilities::default()
+    });
+    info!("HDR capabilities: supported={}, max_luminance={:.1} nits, min_luminance={:.4} nits",
+          hdr_caps.is_supported(), hdr_caps.max_luminance(), hdr_caps.min_luminance());
+
+    // Test mode - no GFN session required
+    if args.test {
+        info!("=== GPU Renderer Test Mode ===");
+        info!("Resolution: {}x{}", args.width, args.height);
+        info!("Duration: {} seconds", args.test_duration);
+        info!("Press ESC to exit early");
+        test_mode::run_renderer_test(args.width, args.height, args.test_duration);
+        return Ok(());
+    }
+
+    // Normal mode - requires server and session ID
+    let server = args.server.as_ref().ok_or_else(|| anyhow::anyhow!("--server is required (or use --test for test mode)"))?;
+    let session_id = args.session_id.as_ref().ok_or_else(|| anyhow::anyhow!("--session-id is required (or use --test for test mode)"))?;
+
     info!("GFN Native Client v{}", env!("CARGO_PKG_VERSION"));
-    info!("Server: {}", args.server);
-    info!("Session: {}", args.session_id);
+    info!("Server: {}", server);
+    info!("Session: {}", session_id);
 
     // Create input channel
     let (input_tx, input_rx) = mpsc::channel::<InputEvent>(256);
@@ -921,12 +1014,13 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
 
     // Spawn streaming task
-    let server = args.server.clone();
-    let session_id = args.session_id.clone();
+    let server_clone = server.clone();
+    let session_id_clone = session_id.clone();
     let state_clone = shared_state.clone();
+    let hdr_caps_clone = hdr_caps.clone();
 
     runtime.spawn(async move {
-        if let Err(e) = run_streaming(server, session_id, state_clone, input_rx).await {
+        if let Err(e) = run_streaming(server_clone, session_id_clone, state_clone, input_rx, hdr_caps_clone).await {
             error!("Streaming error: {}", e);
         }
     });
@@ -936,7 +1030,7 @@ fn main() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Poll);
 
     // Create application
-    let mut app = GfnApp::new(args, input_tx, shared_state);
+    let mut app = GfnApp::new(args, input_tx, shared_state, hdr_caps);
 
     // Run event loop (blocking)
     event_loop.run_app(&mut app)?;

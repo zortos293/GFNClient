@@ -223,6 +223,21 @@
               </div>
             </div>
             <div class="setting-group">
+              <label>Color Space</label>
+              <div class="custom-dropdown" data-dropdown="colorspace-setting">
+                <div class="dropdown-trigger" tabindex="0">
+                  <span class="dropdown-text">Auto-detect</span>
+                  <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                </div>
+                <div class="dropdown-menu">
+                  <div class="dropdown-option selected" data-value="auto">Auto-detect</div>
+                  <div class="dropdown-option" data-value="sdr">SDR (Standard)</div>
+                  <div class="dropdown-option" data-value="hdr10">HDR10 (if supported)</div>
+                </div>
+              </div>
+              <div class="setting-hint">HDR requires compatible display and H.265/AV1 codec</div>
+            </div>
+            <div class="setting-group">
               <label>Audio Codec</label>
               <div class="custom-dropdown" data-dropdown="audio-codec-setting">
                 <div class="dropdown-trigger" tabindex="0">

@@ -329,6 +329,7 @@ interface Settings {
   proxy?: string;
   disable_telemetry: boolean;
   reflex?: boolean; // NVIDIA Reflex low-latency mode
+  colorspace?: string; // Color space mode: "sdr", "hdr10", or "auto"
 }
 
 interface ProxyConfig {
@@ -382,6 +383,7 @@ let currentResolution = "1920x1080"; // Current resolution (WxH format)
 let currentFps = 60; // Current FPS
 let currentCodec = "h264"; // Current video codec
 let currentAudioCodec = "opus"; // Current audio codec
+let currentColorspace = "auto"; // Color space mode: "sdr", "hdr10", or "auto"
 let currentMaxBitrate = 200; // Max bitrate in Mbps (200 = unlimited)
 let availableResolutions: string[] = []; // Available resolutions from subscription
 let availableFpsOptions: number[] = []; // Available FPS options from subscription
@@ -953,6 +955,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     currentRegion = value;
     updateStatusBarLatency();
   });
+  onDropdownChange("colorspace-setting", (value) => {
+    currentColorspace = value;
+  });
 });
 
 // Detect if we're on macOS
@@ -975,6 +980,7 @@ async function loadSettings() {
     discordRpcEnabled = settings.discord_rpc !== false; // Default to true
     discordShowStats = settings.discord_show_stats === true; // Default to false
     currentRegion = settings.region || "auto";
+    currentColorspace = settings.colorspace || "auto"; // Default to auto-detect
     reflexEnabled = settings.reflex !== false; // Default to true
 
     // Apply to UI elements (non-dropdown)
@@ -1025,6 +1031,7 @@ async function loadSettings() {
     setDropdownValue("resolution-setting", currentResolution);
     setDropdownValue("fps-setting", String(currentFps));
     setDropdownValue("region-setting", currentRegion);
+    setDropdownValue("colorspace-setting", currentColorspace);
 
     // Apply non-dropdown values
     if (bitrateEl) {
@@ -1720,6 +1727,8 @@ async function connectToExistingSession(session: ActiveSession) {
 
     // Initialize WebRTC streaming
     const streamingOptions: StreamingOptions = {
+      codec: currentCodec,
+      colorspace: currentColorspace,
       resolution: session.resolution || currentResolution,
       fps: session.fps || currentFps
     };
@@ -2712,6 +2721,7 @@ async function launchGame(game: Game) {
         codec: currentCodec,
         max_bitrate_mbps: currentMaxBitrate,
         reflex: reflexEnabled, // NVIDIA Reflex low-latency mode
+        colorspace: currentColorspace, // Color space mode
       },
       accessToken: accessToken,
     });
@@ -2786,6 +2796,8 @@ async function launchGame(game: Game) {
     try {
       // Initialize WebRTC streaming with user's selected resolution/fps
       const streamingOptions: StreamingOptions = {
+      codec: currentCodec,
+      colorspace: currentColorspace,
         resolution: currentResolution,
         fps: currentFps
       };
@@ -3735,6 +3747,7 @@ async function saveSettings() {
     proxy: proxyEl?.value || undefined,
     disable_telemetry: telemetryEl?.checked || true,
     reflex: reflexEnabled,
+    colorspace: currentColorspace,
   };
 
   try {

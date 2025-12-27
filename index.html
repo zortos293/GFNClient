@@ -22,6 +22,10 @@
               <i data-lucide="library" class="nav-icon"></i>
               My Library
             </a>
+            <a href="#" class="nav-item" data-view="queue">
+              <i data-lucide="users" class="nav-icon"></i>
+              Server Queue
+            </a>
           </nav>
         </div>
         <div class="header-center">
@@ -102,6 +106,100 @@
           <div class="content-section">
             <h2>My Games</h2>
             <div id="my-games" class="games-grid"></div>
+          </div>
+        </section>
+
+        <!-- Queue View -->
+        <section id="queue-view" class="view hidden">
+          <div class="queue-header">
+            <h1>Server Queue Status</h1>
+            <div class="queue-controls">
+              <div class="queue-filters">
+                <div class="custom-dropdown compact" data-dropdown="queue-region-filter">
+                  <div class="dropdown-trigger" tabindex="0">
+                    <span class="dropdown-text">All Regions</span>
+                    <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                  </div>
+                  <div class="dropdown-menu">
+                    <div class="dropdown-option selected" data-value="all">All Regions</div>
+                    <div class="dropdown-option" data-value="US">US</div>
+                    <div class="dropdown-option" data-value="EU">EU</div>
+                    <div class="dropdown-option" data-value="JP">Japan</div>
+                    <div class="dropdown-option" data-value="CA">Canada</div>
+                    <div class="dropdown-option" data-value="KR">Korea</div>
+                    <div class="dropdown-option" data-value="THAI">Thailand</div>
+                    <div class="dropdown-option" data-value="MY">Malaysia</div>
+                  </div>
+                </div>
+                <div class="custom-dropdown compact" data-dropdown="queue-gpu-filter">
+                  <div class="dropdown-trigger" tabindex="0">
+                    <span class="dropdown-text">All GPUs</span>
+                    <i data-lucide="chevron-down" class="dropdown-arrow"></i>
+                  </div>
+                  <div class="dropdown-menu">
+                    <div class="dropdown-option selected" data-value="all">All GPUs</div>
+                    <div class="dropdown-option" data-value="4080">RTX 4080</div>
+                    <div class="dropdown-option" data-value="5080">RTX 5080</div>
+                    <div class="dropdown-option" data-value="other">Other</div>
+                  </div>
+                </div>
+                <label class="queue-filter-checkbox">
+                  <input type="checkbox" id="hide-nuked-servers" checked />
+                  Hide Inactive Servers
+                </label>
+              </div>
+              <button id="refresh-queue-btn" class="btn btn-primary">
+                <i data-lucide="refresh-cw" class="btn-icon"></i>
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          <div class="queue-stats">
+            <div class="queue-stat-card">
+              <span class="stat-value" id="queue-total-servers">--</span>
+              <span class="stat-label">Active Servers</span>
+            </div>
+            <div class="queue-stat-card">
+              <span class="stat-value" id="queue-avg-position">--</span>
+              <span class="stat-label">Avg Queue</span>
+            </div>
+            <div class="queue-stat-card">
+              <span class="stat-value" id="queue-best-server">--</span>
+              <span class="stat-label">Shortest Queue</span>
+            </div>
+            <div class="queue-stat-card">
+              <span class="stat-value" id="queue-last-updated">--</span>
+              <span class="stat-label">Last Updated</span>
+            </div>
+          </div>
+
+          <div class="content-section">
+            <div id="queue-loading" class="queue-loading">
+              <div class="loading-spinner"></div>
+              <span>Loading queue data...</span>
+            </div>
+            <div id="queue-error" class="queue-error hidden">
+              <i data-lucide="alert-circle"></i>
+              <span id="queue-error-message">Failed to load queue data</span>
+            </div>
+            <div id="queue-table-container" class="queue-table-container hidden">
+              <table class="queue-table">
+                <thead>
+                  <tr>
+                    <th>Server</th>
+                    <th>Location</th>
+                    <th>Region</th>
+                    <th>GPU</th>
+                    <th>Queue Position</th>
+                    <th>Est. Wait Time</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="queue-table-body">
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
 

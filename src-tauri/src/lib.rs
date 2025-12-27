@@ -19,6 +19,8 @@ mod discord;
 mod proxy;
 #[cfg(feature = "tauri-app")]
 mod cursor;
+#[cfg(feature = "tauri-app")]
+mod queue;
 
 #[cfg(feature = "tauri-app")]
 use tauri::Manager;
@@ -112,6 +114,9 @@ pub fn run() {
             cursor::stop_mouse_polling,
             cursor::get_accumulated_mouse_delta,
             cursor::is_mouse_polling_active,
+            // Queue data commands
+            queue::fetch_queue_data,
+            queue::fetch_server_mapping,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

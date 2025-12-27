@@ -363,6 +363,25 @@ interface ActiveSession {
   fps: number | null;
 }
 
+// Queue data types
+interface EnrichedServerQueue {
+  server_id: string;
+  queue_position: number;
+  last_updated: number | null;
+  eta_seconds: number | null;
+  api_region: string | null;
+  title: string | null;
+  region: string | null;
+  is_4080_server: boolean;
+  is_5080_server: boolean;
+  nuked: boolean;
+}
+
+interface QueueDataResponse {
+  servers: EnrichedServerQueue[];
+  last_fetched: number;
+}
+
 // Active session state
 let detectedActiveSessions: ActiveSession[] = [];
 let pendingGameLaunch: Game | null = null;
@@ -963,6 +982,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Setup search
   setupSearch();
 
+  // Setup queue view
+  setupQueueView();
+
   // Load saved settings
   await loadSettings();
 
@@ -1122,6 +1144,8 @@ function switchView(view: string) {
     loadLibraryData();
   } else if (view === "store") {
     loadStoreData();
+  } else if (view === "queue") {
+    loadQueueData();
   }
 }
 
@@ -2313,6 +2337,258 @@ async function loadStoreData() {
   console.log("Loading store data...");
   const placeholderGames = createPlaceholderGames();
   renderGamesGrid("all-games", placeholderGames);
+}
+
+// Queue state
+let cachedQueueData: QueueDataResponse | null = null;
+let queueRegionFilter = "all";
+let queueGpuFilter = "all";
+let hideNukedServers = true;
+
+// Load queue data from API
+async function loadQueueData() {
+  console.log("Loading queue data...");
+
+  const loadingEl = document.getElementById("queue-loading");
+  const errorEl = document.getElementById("queue-error");
+  const tableContainer = document.getElementById("queue-table-container");
+
+  // Show loading state
+  if (loadingEl) loadingEl.classList.remove("hidden");
+  if (errorEl) errorEl.classList.add("hidden");
+  if (tableContainer) tableContainer.classList.add("hidden");
+
+  try {
+    const queueData = await invoke<QueueDataResponse>("fetch_queue_data");
+    cachedQueueData = queueData;
+    console.log("Queue data loaded:", queueData.servers.length, "servers");
+
+    // Hide loading, show table
+    if (loadingEl) loadingEl.classList.add("hidden");
+    if (tableContainer) tableContainer.classList.remove("hidden");
+
+    // Render the queue data
+    renderQueueData(queueData);
+    updateQueueStats(queueData);
+
+  } catch (error) {
+    console.error("Failed to load queue data:", error);
+    if (loadingEl) loadingEl.classList.add("hidden");
+    if (errorEl) {
+      errorEl.classList.remove("hidden");
+      const errorMsg = document.getElementById("queue-error-message");
+      if (errorMsg) errorMsg.textContent = `Failed to load queue data: ${error}`;
+    }
+  }
+}
+
+// Render queue data in the table
+function renderQueueData(data: QueueDataResponse) {
+  const tbody = document.getElementById("queue-table-body");
+  if (!tbody) return;
+
+  // Clear existing rows
+  tbody.replaceChildren();
+
+  // Filter servers based on current filters
+  let filteredServers = data.servers;
+
+  // Filter by region
+  if (queueRegionFilter !== "all") {
+    filteredServers = filteredServers.filter(s => 
+      s.api_region === queueRegionFilter || 
+      (s.region && s.region.toUpperCase().includes(queueRegionFilter.toUpperCase()))
+    );
+  }
+
+  // Filter by GPU
+  if (queueGpuFilter !== "all") {
+    if (queueGpuFilter === "4080") {
+      filteredServers = filteredServers.filter(s => s.is_4080_server);
+    } else if (queueGpuFilter === "5080") {
+      filteredServers = filteredServers.filter(s => s.is_5080_server);
+    } else if (queueGpuFilter === "other") {
+      filteredServers = filteredServers.filter(s => !s.is_4080_server && !s.is_5080_server);
+    }
+  }
+
+  // Hide nuked servers if enabled
+  if (hideNukedServers) {
+    filteredServers = filteredServers.filter(s => !s.nuked);
+  }
+
+  // Render each server row
+  filteredServers.forEach(server => {
+    const row = document.createElement("tr");
+    if (server.nuked) row.classList.add("nuked");
+
+    // Server ID
+    const serverIdCell = document.createElement("td");
+    const serverIdSpan = document.createElement("span");
+    serverIdSpan.className = "server-id";
+    serverIdSpan.textContent = server.server_id;
+    serverIdCell.appendChild(serverIdSpan);
+    row.appendChild(serverIdCell);
+
+    // Location (title from mapping)
+    const locationCell = document.createElement("td");
+    locationCell.textContent = server.title || "--";
+    row.appendChild(locationCell);
+
+    // Region
+    const regionCell = document.createElement("td");
+    regionCell.textContent = server.region || server.api_region || "--";
+    row.appendChild(regionCell);
+
+    // GPU Type
+    const gpuCell = document.createElement("td");
+    const gpuBadge = document.createElement("span");
+    gpuBadge.className = "gpu-badge";
+    if (server.is_5080_server) {
+      gpuBadge.classList.add("gpu-5080");
+      gpuBadge.textContent = "RTX 5080";
+    } else if (server.is_4080_server) {
+      gpuBadge.classList.add("gpu-4080");
+      gpuBadge.textContent = "RTX 4080";
+    } else {
+      gpuBadge.classList.add("gpu-other");
+      gpuBadge.textContent = "Other";
+    }
+    gpuCell.appendChild(gpuBadge);
+    row.appendChild(gpuCell);
+
+    // Queue Position
+    const queueCell = document.createElement("td");
+    const queueSpan = document.createElement("span");
+    queueSpan.className = "queue-position";
+    queueSpan.textContent = String(server.queue_position);
+    
+    // Color code based on queue length
+    if (server.queue_position <= 10) {
+      queueSpan.classList.add("low");
+    } else if (server.queue_position <= 30) {
+      queueSpan.classList.add("medium");
+    } else if (server.queue_position <= 60) {
+      queueSpan.classList.add("high");
+    } else {
+      queueSpan.classList.add("very-high");
+    }
+    queueCell.appendChild(queueSpan);
+    row.appendChild(queueCell);
+
+    // ETA
+    const etaCell = document.createElement("td");
+    etaCell.className = "eta";
+    if (server.eta_seconds !== null && server.eta_seconds > 0) {
+      etaCell.textContent = formatEta(server.eta_seconds);
+    } else {
+      etaCell.textContent = "--";
+    }
+    row.appendChild(etaCell);
+
+    // Status
+    const statusCell = document.createElement("td");
+    const statusBadge = document.createElement("span");
+    statusBadge.className = "status-badge";
+    if (server.nuked) {
+      statusBadge.classList.add("inactive");
+      statusBadge.textContent = "Inactive";
+    } else {
+      statusBadge.classList.add("active");
+      statusBadge.textContent = "Active";
+    }
+    statusCell.appendChild(statusBadge);
+    row.appendChild(statusCell);
+
+    tbody.appendChild(row);
+  });
+
+  // Re-init Lucide icons
+  if (typeof lucide !== 'undefined') {
+    lucide.createIcons();
+  }
+}
+
+// Format ETA in human-readable format
+function formatEta(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  } else if (seconds < 3600) {
+    const mins = Math.floor(seconds / 60);
+    return `${mins}m`;
+  } else {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  }
+}
+
+// Update queue statistics display
+function updateQueueStats(data: QueueDataResponse) {
+  const activeServers = data.servers.filter(s => !s.nuked);
+  
+  // Total active servers
+  const totalServersEl = document.getElementById("queue-total-servers");
+  if (totalServersEl) {
+    totalServersEl.textContent = String(activeServers.length);
+  }
+
+  // Average queue position
+  const avgPositionEl = document.getElementById("queue-avg-position");
+  if (avgPositionEl && activeServers.length > 0) {
+    const avg = Math.round(
+      activeServers.reduce((sum, s) => sum + s.queue_position, 0) / activeServers.length
+    );
+    avgPositionEl.textContent = String(avg);
+  }
+
+  // Best server (shortest queue)
+  const bestServerEl = document.getElementById("queue-best-server");
+  if (bestServerEl && activeServers.length > 0) {
+    const best = activeServers.reduce((min, s) => 
+      s.queue_position < min.queue_position ? s : min
+    );
+    bestServerEl.textContent = String(best.queue_position);
+  }
+
+  // Last updated
+  const lastUpdatedEl = document.getElementById("queue-last-updated");
+  if (lastUpdatedEl) {
+    const date = new Date(data.last_fetched * 1000);
+    lastUpdatedEl.textContent = date.toLocaleTimeString();
+  }
+}
+
+// Setup queue view event handlers
+function setupQueueView() {
+  // Refresh button
+  document.getElementById("refresh-queue-btn")?.addEventListener("click", () => {
+    loadQueueData();
+  });
+
+  // Region filter
+  onDropdownChange("queue-region-filter", (value) => {
+    queueRegionFilter = value;
+    if (cachedQueueData) {
+      renderQueueData(cachedQueueData);
+    }
+  });
+
+  // GPU filter
+  onDropdownChange("queue-gpu-filter", (value) => {
+    queueGpuFilter = value;
+    if (cachedQueueData) {
+      renderQueueData(cachedQueueData);
+    }
+  });
+
+  // Hide nuked servers checkbox
+  document.getElementById("hide-nuked-servers")?.addEventListener("change", (e) => {
+    hideNukedServers = (e.target as HTMLInputElement).checked;
+    if (cachedQueueData) {
+      renderQueueData(cachedQueueData);
+    }
+  });
 }
 
 // Generate fallback placeholder SVG

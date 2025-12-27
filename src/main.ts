@@ -2395,9 +2395,10 @@ function renderQueueData(data: QueueDataResponse) {
 
   // Filter by region
   if (queueRegionFilter !== "all") {
+    const filterUpper = queueRegionFilter.toUpperCase();
     filteredServers = filteredServers.filter(s => 
       s.api_region === queueRegionFilter || 
-      (s.region && s.region.toUpperCase().includes(queueRegionFilter.toUpperCase()))
+      (s.region && s.region.toUpperCase().includes(filterUpper))
     );
   }
 

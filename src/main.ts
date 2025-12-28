@@ -1068,7 +1068,6 @@ async function showQueueTimesPage(): Promise<void> {
             <div class="queue-times-stats">
               <span class="queue-times-ping ${getLatencyClassName(server.ping_ms)}">${server.ping_ms ? `${server.ping_ms}ms` : '--'}</span>
               <span class="queue-times-wait">~${formatQueueEta(server.etaSeconds)}</span>
-              <span class="queue-times-position">#${server.queuePosition}</span>
             </div>
           </div>
         `).join('')}
@@ -1145,12 +1144,6 @@ async function showQueueTimesPage(): Promise<void> {
       font-size: 13px;
       color: var(--text-secondary);
       min-width: 70px;
-      text-align: right;
-    }
-    .queue-times-position {
-      font-size: 12px;
-      color: var(--text-muted);
-      min-width: 40px;
       text-align: right;
     }
     .queue-attribution {

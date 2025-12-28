@@ -636,26 +636,68 @@ function formatQueueEta(etaSeconds: number | undefined): string {
   }
 }
 
-// Calculate auto-selected server based on ping and queue time
-function getAutoSelectedServer(servers: QueueServerInfo[]): QueueServerInfo | null {
+// Sort modes for queue server selection
+type QueueSortMode = 'fastest' | 'ping' | 'balanced';
+
+// Sort servers based on mode
+function sortServersByMode(servers: QueueServerInfo[], mode: QueueSortMode): QueueServerInfo[] {
+  const sorted = [...servers];
+
+  switch (mode) {
+    case 'fastest':
+      // Sort by ETA (shortest wait first)
+      sorted.sort((a, b) => {
+        const etaA = a.etaSeconds ?? Infinity;
+        const etaB = b.etaSeconds ?? Infinity;
+        return etaA - etaB;
+      });
+      break;
+    case 'ping':
+      // Sort by ping (lowest first)
+      sorted.sort((a, b) => {
+        if (a.ping_ms === undefined && b.ping_ms === undefined) return 0;
+        if (a.ping_ms === undefined) return 1;
+        if (b.ping_ms === undefined) return -1;
+        return a.ping_ms - b.ping_ms;
+      });
+      break;
+    case 'balanced':
+      // Balance between ping and wait time
+      // Only consider servers with reasonable ping (<100ms) and find shortest wait
+      sorted.sort((a, b) => {
+        const pingA = a.ping_ms ?? 500;
+        const pingB = b.ping_ms ?? 500;
+        const etaA = a.etaSeconds ?? Infinity;
+        const etaB = b.etaSeconds ?? Infinity;
+
+        // If both have acceptable ping (<100ms), prioritize wait time
+        const acceptablePingA = pingA < 100;
+        const acceptablePingB = pingB < 100;
+
+        if (acceptablePingA && acceptablePingB) {
+          // Both acceptable ping - sort by wait time primarily
+          if (etaA !== etaB) return etaA - etaB;
+          return pingA - pingB; // Tiebreaker: better ping
+        }
+        if (acceptablePingA) return -1;
+        if (acceptablePingB) return 1;
+
+        // Neither has acceptable ping - balance both factors
+        const scoreA = pingA + (etaA / 60) * 2; // 2 points per minute wait
+        const scoreB = pingB + (etaB / 60) * 2;
+        return scoreA - scoreB;
+      });
+      break;
+  }
+
+  return sorted;
+}
+
+// Get best server for a given mode
+function getBestServerForMode(servers: QueueServerInfo[], mode: QueueSortMode): QueueServerInfo | null {
   if (servers.length === 0) return null;
-
-  // Score each server: lower is better
-  // We balance ping (important for gameplay) with queue time
-  // Ping weight: 1.0, Queue ETA weight: 0.1 (per minute)
-  const scored = servers.map(server => {
-    const pingScore = server.ping_ms ?? 500; // High penalty for unknown ping
-    const etaMinutes = (server.etaSeconds ?? 0) / 60;
-    // Cap ETA penalty to prevent extremely long queues from dominating
-    const etaScore = Math.min(etaMinutes * 0.1, 50);
-    return {
-      server,
-      score: pingScore + etaScore
-    };
-  });
-
-  scored.sort((a, b) => a.score - b.score);
-  return scored[0]?.server ?? null;
+  const sorted = sortServersByMode(servers, mode);
+  return sorted[0] ?? null;
 }
 
 // Show the queue server selection modal (for free tier users)
@@ -670,7 +712,48 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
       return;
     }
 
-    const autoServer = getAutoSelectedServer(servers);
+    let currentSortMode: QueueSortMode = 'balanced';
+    let sortedServers = sortServersByMode(servers, currentSortMode);
+    let bestServer = getBestServerForMode(servers, currentSortMode);
+
+    // Helper to render server list
+    const renderServerList = () => {
+      sortedServers = sortServersByMode(servers, currentSortMode);
+      bestServer = getBestServerForMode(servers, currentSortMode);
+
+      const modeLabels: Record<QueueSortMode, string> = {
+        'fastest': 'Shortest wait time',
+        'ping': 'Best ping',
+        'balanced': 'Best balance of ping & wait'
+      };
+
+      return `
+        <!-- Auto option -->
+        <div class="queue-server-item selected" data-server-id="auto" data-eta="${bestServer?.etaSeconds || 0}">
+          <div class="queue-server-info">
+            <span class="queue-server-name">Auto (Recommended)</span>
+            <span class="queue-server-detail">${bestServer ? `${bestServer.displayName} - ${modeLabels[currentSortMode]}` : 'Best available'}</span>
+          </div>
+          <div class="queue-server-stats">
+            <span class="queue-ping ${bestServer ? getLatencyClassName(bestServer.ping_ms) : ''}">${bestServer?.ping_ms ? `${bestServer.ping_ms}ms` : '--'}</span>
+            <span class="queue-wait">~${formatQueueEta(bestServer?.etaSeconds)}</span>
+          </div>
+        </div>
+
+        ${sortedServers.map(server => `
+          <div class="queue-server-item" data-server-id="${server.serverId}" data-eta="${server.etaSeconds || 0}" data-ping="${server.ping_ms || 999}">
+            <div class="queue-server-info">
+              <span class="queue-server-name">${server.displayName}</span>
+              <span class="queue-server-detail">${server.is5080Server ? 'RTX 5080' : 'RTX 4080'}</span>
+            </div>
+            <div class="queue-server-stats">
+              <span class="queue-ping ${getLatencyClassName(server.ping_ms)}">${server.ping_ms ? `${server.ping_ms}ms` : '--'}</span>
+              <span class="queue-wait">~${formatQueueEta(server.etaSeconds)}</span>
+            </div>
+          </div>
+        `).join('')}
+      `;
+    };
 
     // Remove existing modal if any
     const existing = document.getElementById("queue-selection-modal");
@@ -685,31 +768,14 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
         <h2>Select Server</h2>
         <p class="queue-modal-subtitle">Choose a server to queue on based on your ping and current wait times.</p>
 
-        <div class="queue-server-list" id="queue-server-list">
-          <!-- Auto option -->
-          <div class="queue-server-item selected" data-server-id="auto" data-eta="${autoServer?.etaSeconds || 0}">
-            <div class="queue-server-info">
-              <span class="queue-server-name">Auto (Recommended)</span>
-              <span class="queue-server-detail">${autoServer ? `${autoServer.displayName} - Best balance of ping & wait` : 'Best available'}</span>
-            </div>
-            <div class="queue-server-stats">
-              <span class="queue-ping ${autoServer ? getLatencyClassName(autoServer.ping_ms) : ''}">${autoServer?.ping_ms ? `${autoServer.ping_ms}ms` : '--'}</span>
-              <span class="queue-wait">~${formatQueueEta(autoServer?.etaSeconds)}</span>
-            </div>
-          </div>
+        <div class="queue-sort-tabs">
+          <button class="queue-sort-tab" data-sort="fastest">Fastest Queue</button>
+          <button class="queue-sort-tab active" data-sort="balanced">Balanced</button>
+          <button class="queue-sort-tab" data-sort="ping">Best Ping</button>
+        </div>
 
-          ${servers.map(server => `
-            <div class="queue-server-item" data-server-id="${server.serverId}" data-eta="${server.etaSeconds || 0}">
-              <div class="queue-server-info">
-                <span class="queue-server-name">${server.displayName}</span>
-                <span class="queue-server-detail">${server.is5080Server ? 'RTX 5080' : 'RTX 4080'}</span>
-              </div>
-              <div class="queue-server-stats">
-                <span class="queue-ping ${getLatencyClassName(server.ping_ms)}">${server.ping_ms ? `${server.ping_ms}ms` : '--'}</span>
-                <span class="queue-wait">~${formatQueueEta(server.etaSeconds)}</span>
-              </div>
-            </div>
-          `).join('')}
+        <div class="queue-server-list" id="queue-server-list">
+          ${renderServerList()}
         </div>
 
         <div class="queue-modal-actions">
@@ -737,7 +803,32 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
       .queue-modal-subtitle {
         color: var(--text-secondary);
         font-size: 14px;
-        margin-bottom: 16px;
+        margin-bottom: 12px;
+      }
+      .queue-sort-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .queue-sort-tab {
+        flex: 1;
+        padding: 8px 12px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-tertiary);
+        color: var(--text-secondary);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font-size: 13px;
+        transition: all 0.15s;
+      }
+      .queue-sort-tab:hover {
+        background: var(--bg-hover);
+        color: var(--text-primary);
+      }
+      .queue-sort-tab.active {
+        background: rgba(118, 185, 0, 0.2);
+        border-color: var(--accent-green);
+        color: var(--accent-green);
       }
       .queue-server-list {
         flex: 1;
@@ -827,22 +918,52 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
     }
 
     let selectedServerId = "auto";
-    let selectedEta = autoServer?.etaSeconds || 0;
+    let selectedEta = bestServer?.etaSeconds || 0;
 
-    // Handle server selection
-    const serverItems = modal.querySelectorAll('.queue-server-item');
-    serverItems.forEach(item => {
-      item.addEventListener('click', () => {
-        serverItems.forEach(i => i.classList.remove('selected'));
-        item.classList.add('selected');
-        selectedServerId = (item as HTMLElement).dataset.serverId || "auto";
-        selectedEta = parseInt((item as HTMLElement).dataset.eta || "0", 10);
+    // Function to attach server item click handlers
+    const attachServerClickHandlers = () => {
+      const serverItems = modal.querySelectorAll('.queue-server-item');
+      serverItems.forEach(item => {
+        item.addEventListener('click', () => {
+          serverItems.forEach(i => i.classList.remove('selected'));
+          item.classList.add('selected');
+          selectedServerId = (item as HTMLElement).dataset.serverId || "auto";
+          selectedEta = parseInt((item as HTMLElement).dataset.eta || "0", 10);
+        });
+      });
+    };
+
+    // Initial attachment
+    attachServerClickHandlers();
+
+    // Handle sort tab clicks
+    const sortTabs = modal.querySelectorAll('.queue-sort-tab');
+    sortTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const newMode = (tab as HTMLElement).dataset.sort as QueueSortMode;
+        if (newMode === currentSortMode) return;
+
+        // Update active tab
+        sortTabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+
+        // Update sort mode and re-render list
+        currentSortMode = newMode;
+        const serverList = modal.querySelector('#queue-server-list');
+        if (serverList) {
+          serverList.innerHTML = renderServerList();
+          // Re-attach click handlers
+          attachServerClickHandlers();
+          // Reset selection to auto
+          selectedServerId = "auto";
+          selectedEta = bestServer?.etaSeconds || 0;
+        }
       });
     });
 
     // Handle start button
     modal.querySelector('#queue-start-btn')?.addEventListener('click', () => {
-      selectedQueueServer = selectedServerId === "auto" ? (autoServer?.serverId || null) : selectedServerId;
+      selectedQueueServer = selectedServerId === "auto" ? (bestServer?.serverId || null) : selectedServerId;
       queueStartEta = selectedEta;
       queueStartTime = Date.now();
       modal.remove();

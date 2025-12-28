@@ -985,6 +985,29 @@ pub async fn poll_session_until_ready(
                 let mut guard = storage.lock().await;
                 if let Some(s) = guard.as_mut() {
                     s.status = SessionStatus::Running;
+
+                    // Update server IP from connection info
+                    if let Some(conn) = connection.as_ref() {
+                        s.server.ip = Some(conn.control_ip.clone());
+                    }
+
+                    // Update signaling URL directly from API response (more reliable than StreamConnectionInfo)
+                    // This stores the raw RTSP/WebRTC signaling URL from the API, which may be malformed for some partners
+                    if let Some(sig_url) = session.connection_info.as_ref()
+                        .and_then(|conns| conns.first())
+                        .and_then(|conn| conn.resource_path.clone())
+                    {
+                        log::info!("Updating stored signaling_url to: {}", sig_url);
+                        s.signaling_url = Some(sig_url);
+                    } else if let Some(conn) = connection.as_ref() {
+                        // Fallback to StreamConnectionInfo.resource_path
+                        s.signaling_url = Some(conn.resource_path.clone());
+                    }
+
+                    // Update GPU type (stored in server name)
+                    if let Some(gpu) = session.gpu_type.clone() {
+                        s.server.name = gpu;
+                    }
                 }
             }
 
@@ -1093,32 +1116,55 @@ pub struct IceServerConfig {
 
 /// Get WebRTC configuration for streaming
 /// Returns the signaling URL and ICE servers needed for browser WebRTC connection
+/// 
+/// The `signaling_url_override` parameter allows the frontend to pass the correct
+/// signaling URL directly from the StreamingConnectionState, bypassing any stale
+/// data in the session storage.
 #[command]
-pub async fn get_webrtc_config(session_id: String) -> Result<WebRtcConfig, String> {
+pub async fn get_webrtc_config(
+    session_id: String,
+    signaling_url_override: Option<String>,
+) -> Result<WebRtcConfig, String> {
     let storage = get_session_storage();
     let guard = storage.lock().await;
 
     let session = guard.as_ref()
         .ok_or("No active session")?;
 
+    // Use the override URL if provided (from StreamingConnectionState which has the correct URL)
+    // Otherwise fall back to the stored session's signaling_url
+    let raw_signaling_url = signaling_url_override
+        .or_else(|| session.signaling_url.clone());
+
+    log::info!("get_webrtc_config: raw_signaling_url={:?}, server_ip={:?}", 
+               raw_signaling_url, session.server.ip);
+
     // Build signaling URL from session info
     // The signaling_url field may contain:
     // - A full RTSP URL (from native client): rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
     // - A path (from browser client): /nvst/
     // We need to extract the hostname and build a WebSocket URL
-    let signaling_url = if let Some(ref sig_url) = session.signaling_url {
+    let signaling_url = if let Some(ref sig_url) = raw_signaling_url {
         if sig_url.starts_with("rtsps://") || sig_url.starts_with("rtsp://") {
             // Native client format: extract hostname from RTSP URL
             // e.g., rtsps://80-84-170-155.cloudmatchbeta.nvidiagrid.net:322
-            if let Some(host) = sig_url
+            let host = sig_url
                 .strip_prefix("rtsps://")
                 .or_else(|| sig_url.strip_prefix("rtsp://"))
                 .and_then(|s| s.split(':').next())
-                .or_else(|| sig_url.split("://").nth(1).and_then(|s| s.split('/').next()))
-            {
-                format!("wss://{}/nvst/", host)
+                .or_else(|| sig_url.split("://").nth(1).and_then(|s| s.split('/').next()));
+
+            log::debug!("Extracted host from RTSP URL: {:?}", host);
+
+            // Validate the extracted host - it should not start with a dot (malformed URL)
+            // e.g., ".zai.geforcenow.nvidiagrid.net" is invalid
+            let valid_host = host.filter(|h| !h.is_empty() && !h.starts_with('.'));
+
+            if let Some(h) = valid_host {
+                format!("wss://{}/nvst/", h)
             } else {
-                // Fallback to server IP
+                // Malformed URL (e.g., rtsps://.zai...) - fallback to server IP
+                log::warn!("Malformed signaling URL '{}', falling back to server IP", sig_url);
                 session.server.ip.as_ref()
                     .map(|ip| format!("wss://{}:443/nvst/", ip))
                     .ok_or("No signaling URL available")?

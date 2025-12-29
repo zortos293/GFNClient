@@ -946,7 +946,15 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
     const sortTabs = modal.querySelectorAll('.queue-sort-tab');
     sortTabs.forEach(tab => {
       tab.addEventListener('click', () => {
-        const newMode = (tab as HTMLElement).dataset.sort as QueueSortMode;
+        const sortValue = (tab as HTMLElement).dataset.sort;
+        // Validate that sortValue is one of the allowed QueueSortMode values
+        if (
+          !sortValue ||
+          !(Object.values(QueueSortMode as any) as string[]).includes(sortValue as any)
+        ) {
+          return;
+        }
+        const newMode = sortValue as QueueSortMode;
         if (newMode === currentSortMode) return;
 
         // Update active tab

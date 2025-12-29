@@ -962,14 +962,16 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
           attachServerClickHandlers();
           // Reset selection to auto
           selectedServerId = "auto";
-          selectedEta = bestServer?.etaSeconds || 0;
+          const updatedBestServer = getBestServerForMode(servers, currentSortMode);
+          selectedEta = updatedBestServer?.etaSeconds || 0;
         }
       });
     });
 
     // Handle start button
     modal.querySelector('#queue-start-btn')?.addEventListener('click', () => {
-      selectedQueueServer = selectedServerId === "auto" ? (bestServer?.serverId || null) : selectedServerId;
+      const currentBestServer = getBestServerForMode(servers, currentSortMode);
+      selectedQueueServer = selectedServerId === "auto" ? (currentBestServer?.serverId || null) : selectedServerId;
       queueStartEta = selectedEta;
       queueStartTime = Date.now();
       modal.remove();

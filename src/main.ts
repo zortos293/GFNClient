@@ -920,7 +920,11 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
     }
 
     let selectedServerId = "auto";
-    let selectedEta = bestServer?.etaSeconds || 0;
+    let selectedEta = 0;
+    const initiallySelectedItem = modal.querySelector('.queue-server-item.selected') as HTMLElement | null;
+    if (initiallySelectedItem) {
+      selectedEta = parseInt(initiallySelectedItem.dataset.eta || "0", 10);
+    }
 
     // Function to attach server item click handlers
     const attachServerClickHandlers = () => {

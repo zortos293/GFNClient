@@ -682,9 +682,13 @@ function sortServersByMode(servers: QueueServerInfo[], mode: QueueSortMode): Que
         if (acceptablePingA) return -1;
         if (acceptablePingB) return 1;
 
-        // Neither has acceptable ping - balance both factors
-        const scoreA = pingA + (etaA / 60) * 2; // 2 points per minute wait
-        const scoreB = pingB + (etaB / 60) * 2;
+        // Neither has acceptable ping - balance both factors.
+        // Normalize non-finite ETA values (e.g. Infinity when ETA is unknown)
+        // to a large finite penalty so that score comparisons remain stable.
+        const effectiveEtaA = Number.isFinite(etaA) ? etaA : Number.MAX_SAFE_INTEGER;
+        const effectiveEtaB = Number.isFinite(etaB) ? etaB : Number.MAX_SAFE_INTEGER;
+        const scoreA = pingA + (effectiveEtaA / 60) * 2; // 2 points per minute wait
+        const scoreB = pingB + (effectiveEtaB / 60) * 2;
         return scoreA - scoreB;
       });
       break;

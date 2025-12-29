@@ -721,7 +721,7 @@ async function showQueueSelectionModal(game: Game): Promise<string | null> {
     // Helper to render server list
     const renderServerList = () => {
       const sortedServers = sortServersByMode(servers, currentSortMode);
-      const bestServer = getBestServerForMode(servers, currentSortMode);
+      const bestServer = sortedServers[0] ?? null;
 
       const modeLabels: Record<QueueSortMode, string> = {
         'fastest': 'Shortest wait time',

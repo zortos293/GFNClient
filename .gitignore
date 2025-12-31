@@ -22,14 +22,6 @@ target3/
 Thumbs.db
 nul
 
-# Tauri
-src-tauri/target/
-src-tauri/target2/
-src-tauri/target3/
-
-# Logs
-*.log
-
 # Environment
 .env
 .env.local
@@ -37,13 +29,8 @@ src-tauri/target3/
 # Sensitive data
 *.tokens.json
 gfn_tokens.json
-src-tauri/gfn_tokens.json
 
 # Test files
-test/
-
-# Generated schemas
-src-tauri/gen/
 
 package-lock.json
 

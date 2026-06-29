@@ -14,6 +14,8 @@ import {
 const GFN_STATUS_COMPONENTS_URL = "https://status.geforcenow.com/api/v2/components.json";
 const DEFAULT_PAYWALL_LOCALE = "en_US";
 const FALLBACK_FETCH_TIMEOUT_MS = 10_000;
+const STORAGE_WEB_SESSION_REQUIRED_MESSAGE =
+  "NVIDIA's storage reset API requires the NVIDIA web account session. Open NVIDIA Storage Manager in your browser to reset or move Persistent Storage.";
 
 interface ResetPersistentStorageInput {
   idToken: string;
@@ -165,8 +167,8 @@ function paywallFailureMessage(failure: PaywallFailure | null, fallback: string)
   if (!failure) {
     return fallback;
   }
-  if (/starfleet idtoken was invalid/i.test(failure.message)) {
-    return "NVIDIA rejected the saved session token for this storage API. Please log in again, then retry.";
+  if (/starfleet idtoken was invalid|idtoken is missing/i.test(failure.message)) {
+    return STORAGE_WEB_SESSION_REQUIRED_MESSAGE;
   }
   return failure.message;
 }
@@ -433,7 +435,7 @@ export async function fetchPersistentStorageLocations(
   const currentRegionName = normalizeRegionName(input.currentRegionName);
   let lastFailure: PaywallFailure | null = null;
 
-  for (const idToken of await resolvePaywallTokenCandidates(input.idToken, input.idTokenAlternates)) {
+  for (const idToken of resolvePaywallTokenCandidates(input.idToken, input.idTokenAlternates)) {
     const response = await fetch(buildProductsUrl(input), {
       headers: buildPaywallHeaders(idToken),
     });
@@ -502,7 +504,7 @@ export async function resetPersistentStorage(
   const storageRegions = getFallbackRegionCandidates(storageRegion);
   let lastFailure: PaywallFailure | null = null;
 
-  for (const idToken of await resolvePaywallTokenCandidates(input.idToken, input.idTokenAlternates)) {
+  for (const idToken of resolvePaywallTokenCandidates(input.idToken, input.idTokenAlternates)) {
     for (const candidateRegion of storageRegions) {
       const response = await fetch(buildResetStorageUrl(candidateRegion), {
         method: "POST",

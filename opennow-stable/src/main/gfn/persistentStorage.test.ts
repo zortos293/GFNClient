@@ -32,7 +32,7 @@ function headerValue(headers: HeadersInit | undefined, name: string): string | u
   return headers[name] ?? headers[name.toLowerCase()];
 }
 
-test("resetPersistentStorage exchanges the saved session token for an ETS Starfleet paywall token", async (t) => {
+test("resetPersistentStorage sends a paywall idToken directly", async (t) => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   t.after(() => {
@@ -43,21 +43,16 @@ test("resetPersistentStorage exchanges the saved session token for an ETS Starfl
     const url = String(input);
     calls.push({ url, init });
 
-    if (url === "https://api-prod.nvidia.com/services/ets/v1/generate/starfleet/token") {
-      assert.equal(headerValue(init?.headers, "idToken"), "reset-session-token");
-      return jsonResponse({ token: "reset-starfleet-token" });
-    }
-
     if (url === "https://api-prod.nvidia.com/gfn-paywall-api/api/v2/reset/storage?storageRegion=null") {
       assert.equal(init?.method, "POST");
-      assert.equal(headerValue(init?.headers, "idToken"), "reset-starfleet-token");
+      assert.equal(headerValue(init?.headers, "idToken"), "reset-web-session-token");
       return jsonResponse({ message: "Reset complete." });
     }
 
     throw new Error(`Unexpected fetch: ${url}`);
   }) as typeof fetch;
 
-  const result = await resetPersistentStorage({ idToken: "reset-session-token" });
+  const result = await resetPersistentStorage({ idToken: "reset-web-session-token" });
 
   assert.deepEqual(result, {
     ok: true,
@@ -65,9 +60,35 @@ test("resetPersistentStorage exchanges the saved session token for an ETS Starfl
     message: "Reset complete.",
   });
   assert.deepEqual(calls.map((call) => call.url), [
-    "https://api-prod.nvidia.com/services/ets/v1/generate/starfleet/token",
     "https://api-prod.nvidia.com/gfn-paywall-api/api/v2/reset/storage?storageRegion=null",
   ]);
+});
+
+test("resetPersistentStorage explains when NVIDIA requires the web storage manager session", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+
+    if (url === "https://api-prod.nvidia.com/gfn-paywall-api/api/v2/reset/storage?storageRegion=null") {
+      assert.equal(init?.method, "POST");
+      assert.equal(headerValue(init?.headers, "idToken"), "saved-gfn-session-token");
+      return jsonResponse(
+        { errors: { errorMessage: "Starfleet idToken was invalid" } },
+        { status: 403 },
+      );
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  await assert.rejects(
+    () => resetPersistentStorage({ idToken: "saved-gfn-session-token" }),
+    /NVIDIA's storage reset API requires the NVIDIA web account session/,
+  );
 });
 
 test("fetchPersistentStorageLocations falls back to the live Netherlands North server id", async (t) => {
@@ -79,12 +100,8 @@ test("fetchPersistentStorageLocations falls back to the live Netherlands North s
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
 
-    if (url === "https://api-prod.nvidia.com/services/ets/v1/generate/starfleet/token") {
-      assert.equal(headerValue(init?.headers, "idToken"), "locations-session-token");
-      return jsonResponse({ token: "locations-starfleet-token" });
-    }
-
     if (url.startsWith("https://api-prod.nvidia.com/gfn-paywall-api/api/v2/products")) {
+      assert.equal(headerValue(init?.headers, "idToken"), "locations-session-token");
       return jsonResponse(
         { errors: { errorMessage: "Starfleet idtoken was invalid" } },
         { status: 403 },
@@ -108,4 +125,3 @@ test("fetchPersistentStorageLocations falls back to the live Netherlands North s
     "NP-AMS-07",
   );
 });
-

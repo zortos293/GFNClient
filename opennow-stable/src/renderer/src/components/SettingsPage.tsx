@@ -10,7 +10,6 @@ import type {
   AspectRatio,
   EntitledResolution,
   SubscriptionInfo,
-  PersistentStorageLocation,
   VideoAccelerationPreference,
   MicrophoneMode,
   PingResult,
@@ -31,6 +30,7 @@ import {
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
   keyboardLayoutOptions,
+  resolveEntitledStreamProfile,
   USER_FACING_COLOR_QUALITY_OPTIONS,
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
@@ -222,6 +222,7 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
 const POSTER_SIZE_MIN = 75;
 const POSTER_SIZE_MAX = 135;
 const POSTER_SIZE_STEP = 5;
+const NVIDIA_STORAGE_MANAGER_URL = "https://www.nvidia.com/en-us/account/gfn/manage-storage/";
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 
@@ -562,10 +563,11 @@ function getFpsForResolution(entitled: EntitledResolution[], resolution: string)
   return [...new Set(fpsList)].sort((a, b) => a - b);
 }
 
-const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v1";
+const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v2";
 
 interface EntitledResolutionsCache {
   userId: string;
+  membershipTier: string;
   entitledResolutions: EntitledResolution[];
 }
 
@@ -579,6 +581,7 @@ function loadCachedEntitledResolutions(): EntitledResolutionsCache | null {
     }
     return {
       userId: parsed.userId,
+      membershipTier: typeof parsed.membershipTier === "string" ? parsed.membershipTier : "",
       entitledResolutions: parsed.entitledResolutions,
     };
   } catch {
@@ -795,10 +798,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
-  const [storageLocations, setStorageLocations] = useState<PersistentStorageLocation[]>([]);
-  const [storageLocationsLoading, setStorageLocationsLoading] = useState(false);
-  const [storageLocationsError, setStorageLocationsError] = useState<string | null>(null);
-  const [selectedStorageRegion, setSelectedStorageRegion] = useState<string | null>(null);
   const [storageResetState, setStorageResetState] = useState<StorageResetState>("idle");
   const [storageResetMessage, setStorageResetMessage] = useState<string | null>(null);
   const [gameAccounts, setGameAccounts] = useState<GameAccountConnection[]>([]);
@@ -908,15 +907,17 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       if (!session || isCancelled()) {
         setEntitledResolutions([]);
         setSubscriptionInfo(null);
-        setStorageLocations([]);
-        setStorageLocationsError(null);
-        setStorageLocationsLoading(false);
         return;
       }
 
       const userId = session.user.userId;
       const cached = loadCachedEntitledResolutions();
-      if (cached && cached.userId === userId && !isCancelled()) {
+      if (
+        cached &&
+        cached.userId === userId &&
+        cached.membershipTier === session.user.membershipTier &&
+        !isCancelled()
+      ) {
         setEntitledResolutions(cached.entitledResolutions);
       }
 
@@ -929,55 +930,20 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
         setEntitledResolutions(sub.entitledResolutions);
         saveCachedEntitledResolutions({
           userId,
+          membershipTier: sub.membershipTier,
           entitledResolutions: sub.entitledResolutions,
         });
       }
 
-      if (isCancelled()) {
-        return;
-      }
-
-      if (!sub.storageAddon) {
-        setStorageLocations([]);
-        setStorageLocationsError(null);
-        setStorageLocationsLoading(false);
-        return;
-      }
-
-      setStorageLocationsLoading(true);
-      setStorageLocationsError(null);
-      try {
-        const locationsResult = await window.openNow.fetchPersistentStorageLocations({
-          serverRegionId: sub.serverRegionId,
-          currentRegionCode: sub.storageAddon.regionCode,
-          currentRegionName: sub.storageAddon.regionName,
-        });
-        if (!isCancelled()) {
-          setStorageLocations(locationsResult.locations);
-        }
-      } catch (error) {
-        console.warn("[Settings] Failed to fetch persistent storage locations:", error);
-        if (!isCancelled()) {
-          setStorageLocations([]);
-          setStorageLocationsError(t("settings.persistentStorage.locationsFailed"));
-        }
-      } finally {
-        if (!isCancelled()) {
-          setStorageLocationsLoading(false);
-        }
-      }
     } catch (err) {
       console.warn("Failed to fetch subscription for settings:", err);
       if (!isCancelled()) {
         setSubscriptionInfo(null);
-        setStorageLocations([]);
-        setStorageLocationsError(null);
-        setStorageLocationsLoading(false);
       }
     } finally {
       if (!isCancelled()) setSubscriptionLoading(false);
     }
-  }, [t]);
+  }, []);
 
   // Fetch subscription data for dynamic stream presets and persistent storage state.
   useEffect(() => {
@@ -1014,6 +980,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [t]);
 
   const hasDynamic = entitledResolutions.length > 0;
+  const useEntitledStreamOptions = hasDynamic || subscriptionInfo !== null;
 
   // Grouped resolution presets (dynamic)
   const resolutionGroups = useMemo(
@@ -1025,6 +992,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const dynamicFpsOptions = useMemo(
     () => (hasDynamic ? getFpsForResolution(entitledResolutions, settings.resolution) : []),
     [entitledResolutions, settings.resolution, hasDynamic]
+  );
+  const resolvedEntitledProfile = useMemo(
+    () => resolveEntitledStreamProfile(entitledResolutions, {
+      resolution: settings.resolution,
+      fps: settings.fps,
+    }),
+    [entitledResolutions, settings.fps, settings.resolution],
   );
   const posterSizePercent = Math.round(settings.posterSizeScale * 100);
   const updaterLastCheckedLabel = useMemo(() => formatUpdaterTimestamp(updaterState.lastCheckedAt), [updaterState.lastCheckedAt]);
@@ -1075,63 +1049,30 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const currentStorageLocationOptionLabel = persistentStorageRegionLabel
     ? t("settings.persistentStorage.currentLocationOption", { region: persistentStorageRegionLabel })
     : t("settings.persistentStorage.currentLocationUnavailable");
-  const storageLocationOptions = storageLocations.filter(
-    (location) => location.code !== persistentStorage?.regionCode,
-  );
-  const selectedStorageLocation = selectedStorageRegion
-    ? storageLocations.find((location) => location.code === selectedStorageRegion)
-    : null;
-  const storageResetTargetLabel =
-    selectedStorageLocation?.name ??
-    (selectedStorageRegion && selectedStorageRegion.trim().length > 0 ? selectedStorageRegion : null) ??
-    persistentStorageRegionLabel ??
-    t("settings.persistentStorage.regionUnavailable");
-  const storageResetTargetHint = selectedStorageRegion
-    ? t("settings.persistentStorage.resetWillMoveLocation", { region: storageResetTargetLabel })
-    : t("settings.persistentStorage.resetWillKeepLocation", { region: storageResetTargetLabel });
+  const storageResetTargetLabel = persistentStorageRegionLabel ?? t("settings.persistentStorage.regionUnavailable");
+  const storageResetTargetHint = t("settings.persistentStorage.resetRequiresBrowserHint", {
+    region: storageResetTargetLabel,
+  });
 
-  useEffect(() => {
-    setSelectedStorageRegion(null);
-  }, [persistentStorage?.regionCode]);
-
-  useEffect(() => {
-    if (
-      selectedStorageRegion &&
-      storageLocations.length > 0 &&
-      !storageLocations.some((location) => location.code === selectedStorageRegion)
-    ) {
-      setSelectedStorageRegion(null);
+  const handleOpenPersistentStorageManager = useCallback(async (): Promise<void> => {
+    try {
+      await window.openNow.openExternalUrl(NVIDIA_STORAGE_MANAGER_URL);
+    } catch (error) {
+      console.error("[Settings] Failed to open NVIDIA Storage Manager:", error);
+      setStorageResetState("error");
+      setStorageResetMessage(t("settings.persistentStorage.openManagerFailed"));
     }
-  }, [selectedStorageRegion, storageLocations]);
+  }, [t]);
 
   const handleResetPersistentStorage = useCallback(async (): Promise<void> => {
-    if (!persistentStorage || storageResetState === "resetting") {
+    if (!persistentStorage) {
       return;
     }
 
-    if (!window.confirm(t("settings.persistentStorage.resetConfirm", { region: storageResetTargetLabel }))) {
-      return;
-    }
-
-    setStorageResetState("resetting");
-    setStorageResetMessage(null);
-
-    try {
-      await window.openNow.resetPersistentStorage({ storageRegion: selectedStorageRegion ?? null });
-      setStorageResetState("success");
-      setStorageResetMessage(t("settings.persistentStorage.resetSuccess"));
-      setSelectedStorageRegion(null);
-      await loadSubscriptionData();
-    } catch (error) {
-      console.error("[Settings] Failed to reset persistent storage:", error);
-      setStorageResetState("error");
-      setStorageResetMessage(
-        error instanceof Error && error.message
-          ? error.message
-          : t("settings.persistentStorage.resetFailed"),
-      );
-    }
-  }, [loadSubscriptionData, persistentStorage, selectedStorageRegion, storageResetState, storageResetTargetLabel, t]);
+    setStorageResetState("idle");
+    setStorageResetMessage(t("settings.persistentStorage.resetRequiresBrowser"));
+    await handleOpenPersistentStorageManager();
+  }, [handleOpenPersistentStorageManager, persistentStorage, t]);
 
   const handleGameAccountAction = useCallback(async (
     account: GameAccountConnection,
@@ -1185,7 +1126,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [gameAccountBusy, settings.sessionProxyEnabled, settings.sessionProxyUrl, t]);
 
   const selectedResolutionLabel = useMemo(() => {
-    if (hasDynamic) {
+    if (useEntitledStreamOptions) {
       for (const group of resolutionGroups) {
         const found = group.resolutions.find(r => r.value === settings.resolution);
         if (found) return found.label;
@@ -1194,7 +1135,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     }
     const found = STATIC_RESOLUTION_PRESETS.find(r => r.value === settings.resolution);
     return found ? found.label : settings.resolution || "Select";
-  }, [settings.resolution, hasDynamic, resolutionGroups]);
+  }, [settings.resolution, useEntitledStreamOptions, resolutionGroups]);
 
   const handleChange = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {
@@ -1212,6 +1153,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       handleChange("aspectRatio", aspectRatio);
     }
   }, [handleChange, settings.aspectRatio]);
+
+  useEffect(() => {
+    if (!useEntitledStreamOptions || !resolvedEntitledProfile) {
+      return;
+    }
+
+    if (resolvedEntitledProfile.resolution !== settings.resolution) {
+      handleResolutionChange(resolvedEntitledProfile.resolution);
+    }
+    if (resolvedEntitledProfile.fps !== settings.fps) {
+      handleChange("fps", resolvedEntitledProfile.fps);
+    }
+  }, [
+    handleChange,
+    handleResolutionChange,
+    resolvedEntitledProfile,
+    settings.fps,
+    settings.resolution,
+    useEntitledStreamOptions,
+  ]);
 
   const openNativeStreamerEnablePrompt = useCallback((): void => {
     if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
@@ -2413,30 +2374,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     <label className="settings-storage-location-copy" htmlFor="persistent-storage-reset-region">
                       <span>{t("settings.persistentStorage.locationTitle")}</span>
                       <span>{storageResetTargetHint}</span>
-                      {storageLocationsLoading ? (
-                        <span>{t("settings.persistentStorage.locationsLoading")}</span>
-                      ) : storageLocationsError ? (
-                        <span className="settings-storage-message settings-storage-message--error">{storageLocationsError}</span>
-                      ) : null}
                     </label>
                     <select
                       id="persistent-storage-reset-region"
                       className="settings-storage-select"
-                      value={selectedStorageRegion ?? ""}
-                      disabled={!persistentStorage || storageLocationsLoading || storageResetState === "resetting"}
-                      onChange={(event) => {
-                        const value = event.target.value.trim();
-                        setSelectedStorageRegion(value.length > 0 ? value : null);
-                      }}
+                      defaultValue=""
+                      disabled
                     >
                       <option value="">{currentStorageLocationOptionLabel}</option>
-                      {storageLocationOptions.map((location) => (
-                        <option key={location.code} value={location.code} disabled={!location.isAvailable}>
-                          {location.name}
-                          {location.isRecommended ? ` (${t("settings.persistentStorage.recommended")})` : ""}
-                          {!location.isAvailable ? ` (${t("settings.persistentStorage.unavailable")})` : ""}
-                        </option>
-                      ))}
                     </select>
                   </div>
 
@@ -2452,23 +2397,19 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                         </span>
                       ) : null}
                     </div>
-                    <button
-                      type="button"
-                      className="settings-delete-cache-btn settings-storage-reset-btn"
-                      disabled={!persistentStorage || subscriptionLoading || storageResetState === "resetting"}
-                      onClick={() => {
-                        void handleResetPersistentStorage();
-                      }}
-                    >
-                      {storageResetState === "resetting" ? (
-                        <Loader size={16} className="spin" />
-                      ) : (
-                        <Trash2 size={16} />
-                      )}
-                      {storageResetState === "resetting"
-                        ? t("settings.persistentStorage.resetting")
-                        : t("settings.persistentStorage.resetStorage")}
-                    </button>
+                    <div className="settings-storage-actions">
+                      <button
+                        type="button"
+                        className="settings-export-logs-btn settings-storage-manager-btn"
+                        disabled={!persistentStorage || subscriptionLoading}
+                        onClick={() => {
+                          void handleResetPersistentStorage();
+                        }}
+                      >
+                        <ExternalLink size={16} />
+                        {t("settings.persistentStorage.openManager")}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </section>
@@ -2728,7 +2669,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </button>
                     {resolutionDropdownOpen && (
                       <div className="settings-dropdown-menu settings-dropdown-menu--grouped">
-                        {(hasDynamic ? resolutionGroups : [{ category: "All", resolutions: STATIC_RESOLUTION_PRESETS.map(p => ({ ...p, width: 0, height: 0 })) }]).map(group => (
+                        {(useEntitledStreamOptions ? resolutionGroups : [{ category: "All", resolutions: STATIC_RESOLUTION_PRESETS.map(p => ({ ...p, width: 0, height: 0 })) }]).map(group => (
                           <div key={group.category} className="settings-dropdown-group">
                             <div className="settings-dropdown-group-label">{group.category}</div>
                             {group.resolutions.map(res => (
@@ -2756,7 +2697,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     {t("settings.video.fps")}
                   </label>
                   <div className="settings-chip-row">
-                    {(hasDynamic ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
+                    {(useEntitledStreamOptions ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
                       <button
                         key={preset.value}
                         className={`settings-chip ${settings.fps === preset.value ? "active" : ""}`}

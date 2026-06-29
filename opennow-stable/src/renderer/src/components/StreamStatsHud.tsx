@@ -180,7 +180,7 @@ export function StreamStatsHud({
           <p className="sv-stats-primary">{primaryText}</p>
           <div className="sv-stats-toggle-meta">
             <span className="sv-stats-kpi">
-              <span className="sv-stats-kpi-label">{t("stream.stats.network")}</span>
+              <span className="sv-stats-kpi-label">{t("stream.stats.rtt")}</span>
               <span className="sv-stats-kpi-val sv-stats-kpi-val--rtt" style={{ color: rttColor }}>
                 {rttText}
               </span>

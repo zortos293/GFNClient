@@ -382,7 +382,6 @@ function findAvailablePort(ports: readonly number[]): Promise<number> {
 
       const tester = net.createServer();
       tester.once("error", () => {
-        tester.close();
         tryNext();
       });
       tester.once("listening", () => {

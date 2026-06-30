@@ -1192,6 +1192,8 @@ export type MainToRendererSignalingEvent =
   | { type: "offer"; sdp: string }
   | { type: "remote-ice"; candidate: IceCandidatePayload }
   | { type: "native-shortcut"; action: NativeStreamerShortcutAction }
+  | { type: "native-clipboard-paste" }
+  | { type: "native-input-capture-changed"; captured: boolean }
   | { type: "native-stream-started"; message?: string }
   | { type: "native-stream-stopped"; reason?: string }
   | { type: "native-stream-stats"; stats: NativeStreamStats }
@@ -1335,8 +1337,8 @@ export interface OpenNowApi {
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
-  /** Notify main process that pointer lock state changed (active = true/false) */
-  notifyPointerLockChange(active: boolean): void;
+  /** Notify main process that pointer lock state changed (active = true/false). */
+  notifyPointerLockChange(active: boolean, suppressEscapeFullscreenGrace?: boolean): void;
   /** Read plain text from the OS clipboard through Electron main process */
   readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;

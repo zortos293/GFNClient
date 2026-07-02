@@ -1,5 +1,5 @@
 import { accessSync, constants, readFileSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 export type LinuxUpdaterPackageKind = "appimage" | "deb" | "native" | "unsupported";
 
@@ -12,14 +12,18 @@ export interface LinuxUpdaterSupport {
 interface LinuxUpdaterSupportOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
+  accessPath?: (path: string, mode: number) => void;
   commandExists?: (command: string, env: NodeJS.ProcessEnv) => boolean;
+  canReplaceAppImage?: (appImagePath: string) => boolean;
   readOsRelease?: () => string | null;
 }
 
 const UNSUPPORTED_LINUX_UPDATER_MESSAGE =
   "Automatic Linux updates are not available for this install on this system. Download the AppImage from GitHub Releases, or use a Debian/Ubuntu package on a Debian-compatible system with dpkg or apt.";
+const READ_ONLY_APPIMAGE_UPDATER_MESSAGE =
+  "Automatic Linux updates cannot replace this AppImage because its install folder is not writable by your user. Move the AppImage to a user-writable folder or update through your package manager.";
 
-function hasValue(value: string | undefined): boolean {
+function hasValue(value: string | undefined): value is string {
   return Boolean(value?.trim());
 }
 
@@ -97,6 +101,19 @@ export function linuxCommandExists(command: string, env: NodeJS.ProcessEnv = pro
   return false;
 }
 
+function canReplaceAppImage(appImagePath: string, accessPath?: (path: string, mode: number) => void): boolean {
+  const appImageDirectory = dirname(appImagePath);
+  const checkAccess = accessPath ?? ((path: string, mode: number) => accessSync(path, mode));
+  try {
+    checkAccess(appImageDirectory, constants.W_OK | constants.X_OK);
+    return true;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.debug("[AppUpdater] AppImage install directory is not writable:", appImageDirectory, reason);
+    return false;
+  }
+}
+
 export function getLinuxUpdaterSupport(options: LinuxUpdaterSupportOptions = {}): LinuxUpdaterSupport {
   const platform = options.platform ?? process.platform;
   if (platform !== "linux") {
@@ -107,7 +124,18 @@ export function getLinuxUpdaterSupport(options: LinuxUpdaterSupportOptions = {})
   }
 
   const env = options.env ?? process.env;
-  if (hasValue(env.APPIMAGE)) {
+  const appImageEnv = env.APPIMAGE;
+  if (hasValue(appImageEnv)) {
+    const appImagePath = appImageEnv.trim();
+    const canReplace = options.canReplaceAppImage ?? ((path: string) => canReplaceAppImage(path, options.accessPath));
+    if (!canReplace(appImagePath)) {
+      return {
+        packageKind: "appimage",
+        supported: false,
+        message: READ_ONLY_APPIMAGE_UPDATER_MESSAGE,
+      };
+    }
+
     return {
       packageKind: "appimage",
       supported: true,

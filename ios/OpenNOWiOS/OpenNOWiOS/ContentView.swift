@@ -101,24 +101,28 @@ struct MainTabView: View {
 
     private var tabSurface: some View {
         TabView {
-            tabContent {
-                HomeView()
-            }
+            HomeView()
                 .tabItem { Label("Home", systemImage: "house.fill") }
-            tabContent {
-                BrowseView()
-            }
+            BrowseView()
                 .tabItem { Label("Browse", systemImage: "square.grid.2x2.fill") }
-            tabContent {
-                LibraryView()
-            }
+            LibraryView()
                 .tabItem { Label("Library", systemImage: "books.vertical.fill") }
-            tabContent {
-                SettingsView()
-            }
+            SettingsView()
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(brandAccent)
+        .overlay {
+            ZStack {
+                if store.queueOverlayVisible {
+                    StreamLoadingView(coversBottomBar: true)
+                        .environmentObject(store)
+                        .ignoresSafeArea()
+                        .zIndex(1000)
+                        .transition(queueOverlayTransition)
+                }
+            }
+        }
+        .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
         .safeAreaInset(edge: .top) {
             if store.canJumpBackToSession && !store.queueOverlayVisible {
                 JumpBackStatusBanner()
@@ -131,30 +135,19 @@ struct MainTabView: View {
         }
     }
 
-    private func tabContent<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .overlay {
-                if store.queueOverlayVisible {
-                    StreamLoadingView()
-                        .environmentObject(store)
-                        .ignoresSafeArea(edges: [.top, .leading, .trailing])
-                        .zIndex(1000)
-                        .transition(queueOverlayTransition)
-                }
-            }
-            .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
-    }
-
     private func streamerSurface(session: ActiveSession) -> some View {
         StreamerView(
             session: session,
-            settings: store.settings,
+            settings: store.currentStreamerSettings,
             nativeStreamerEnabled: !nativeStreamerBypassSessionIds.contains(session.id),
             onTouchLayoutChange: { profile, layout in
                 store.updateTouchControlLayout(layout, profile: profile)
             },
             onStreamerPreferencesChange: { preferences in
                 store.updateStreamerPreferences(preferences)
+            },
+            onSafeVideoFallbackRequired: { reason in
+                store.restartStreamWithSafeVideoProfile(reason: reason)
             },
             onNativeFallbackRequiresFreshEndpoint: { _ in
                 nativeStreamerBypassSessionIds.insert(session.id)
@@ -172,6 +165,7 @@ struct MainTabView: View {
             } : nil
         )
         .ignoresSafeArea()
+        .id(session.id)
         .zIndex(3000)
     }
 

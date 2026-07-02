@@ -7,83 +7,92 @@ struct LibraryView: View {
     @State private var searchText = ""
     @State private var selectedGenre: String?
     @State private var selectedPlatform: String?
+    @State private var selectedStore: String?
     @State private var favoritesOnly = false
     @State private var sortMode: CatalogSortMode = .title
+    @State private var selectedGameForLauncher: CloudGame?
 
     var body: some View {
         NavigationStack {
-            List {
+            Group {
                 if store.user == nil {
-                    Section {
-                        OpenNOWUnavailableView("Signed Out", systemImage: "person.crop.circle.badge.exclamationmark")
-                    }
-                } else if store.libraryGames.isEmpty && store.isLoadingGames {
-                    Section {
-                        ForEach(0..<3, id: \.self) { _ in
-                            GameBannerSkeletonRowView()
-                                .gameBannerGridListRowStyle()
-                        }
-                    } header: {
-                        Text("Loading Library")
-                    }
-                } else if store.libraryGames.isEmpty && !store.isLoadingGames {
-                    Section {
-                        OpenNOWUnavailableView("Library Empty", systemImage: "books.vertical")
-                    }
-                } else if filteredGames.isEmpty {
-                    Section {
-                        OpenNOWUnavailableView("No Matches", systemImage: "magnifyingglass")
+                    OpenNOWUnavailableView("Signed Out", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    GameCatalogGridView(
+                        games: filteredGames,
+                        isLoading: store.libraryGames.isEmpty && store.isLoadingGames,
+                        emptyTitle: store.libraryGames.isEmpty && !hasActiveFilters ? "Library Empty" : "No Matches",
+                        emptySystemImage: store.libraryGames.isEmpty && !hasActiveFilters ? "books.vertical" : "magnifyingglass",
+                        subtitle: { gameCatalogSubtitle(for: $0) },
+                        badgeSystemImage: { store.isFavorite($0) ? "heart.fill" : nil },
+                        onOpenDetails: { selectedGameForDetails = $0 },
+                        onPlay: launchFromCard,
+                        onChooseLauncher: { selectedGameForLauncher = $0 }
+                    ) {
+                        libraryHeader
+                    } emptyActions: {
                         if hasActiveFilters {
                             Button("Clear Filters") {
                                 clearFilters()
                             }
+                            .buttonStyle(.borderedProminent)
+                            .tint(brandAccent)
                         }
-                    }
-                } else {
-                    if let active = store.activeSession {
-                        Section("Current Session") {
-                            GameBannerRowView(
-                                games: [active.game],
-                                subtitle: { _ in active.status == 3 ? "Streaming" : "Queued" },
-                                badgeSystemImage: { _ in active.status == 3 ? "play.circle.fill" : "hourglass" }
-                            ) { _ in
-                                store.jumpBackToSession()
-                            }
-                            .gameBannerGridListRowStyle()
-                        }
-                    }
-
-                    Section {
-                        ForEach(gameBannerRows(for: filteredGames)) { row in
-                            GameBannerRowView(
-                                games: row.games,
-                                subtitle: { gameCatalogSubtitle(for: $0) },
-                                badgeSystemImage: { store.isFavorite($0) ? "heart.fill" : nil }
-                            ) { game in
-                                selectedGameForDetails = game
-                            }
-                            .gameBannerGridListRowStyle()
-                        }
-                    } header: {
-                        Text("\(filteredGames.count) Games")
                     }
                 }
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("Library")
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search library")
             .refreshable { await store.refreshCatalog() }
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+        }
+        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
+        }
+        .sheet(item: $selectedGameForLauncher) { game in
+            GameLauncherSelectionSheet(game: game) { option in
+                selectedGameForLauncher = nil
+                DispatchQueue.main.async {
+                    pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
+                }
+            }
+            .environmentObject(store)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
+    }
+
+    private var libraryHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let active = store.activeSession {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Current Session")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    GameBannerRowView(
+                        games: [active.game],
+                        subtitle: { _ in active.status == 3 ? "Streaming" : "Queued" },
+                        badgeSystemImage: { _ in active.status == 3 ? "play.circle.fill" : "hourglass" }
+                    ) { _ in
+                        store.jumpBackToSession()
+                    }
+                }
+            }
+
+            CatalogControlsHeader(
+                title: libraryCountTitle,
+                subtitle: "Synced library",
+                chips: activeFilterChips,
+                onClear: hasActiveFilters ? clearFilters : nil
+            ) {
+                HStack(spacing: 8) {
                     filterMenu
                     sortMenu
                 }
             }
         }
-        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
-            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
-        }
-        .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
 
     private var filterMenu: some View {
@@ -101,6 +110,13 @@ struct LibraryView: View {
                 Text("Any Genre").tag("")
                 ForEach(genres, id: \.self) { genre in
                     Text(genre).tag(genre)
+                }
+            }
+
+            Picker("Launcher", selection: binding(for: $selectedStore)) {
+                Text("Any Launcher").tag("")
+                ForEach(stores, id: \.self) { storeName in
+                    Text(storeDisplayName(storeName)).tag(storeName)
                 }
             }
 
@@ -137,11 +153,13 @@ struct LibraryView: View {
                 game.genre.localizedCaseInsensitiveContains(query) ||
                 game.platform.localizedCaseInsensitiveContains(query) ||
                 (game.publisher?.localizedCaseInsensitiveContains(query) ?? false) ||
-                (game.developer?.localizedCaseInsensitiveContains(query) ?? false)
+                (game.developer?.localizedCaseInsensitiveContains(query) ?? false) ||
+                gameResolvedStores(game: game).contains { storeDisplayName($0).localizedCaseInsensitiveContains(query) }
             let matchesGenre = selectedGenre == nil || game.genre == selectedGenre
             let matchesPlatform = selectedPlatform == nil || game.platform == selectedPlatform
+            let matchesStore = selectedStore.map { gameResolvedStores(game: game).contains($0) } ?? true
             let matchesFavorite = !favoritesOnly || store.isFavorite(game)
-            return matchesQuery && matchesGenre && matchesPlatform && matchesFavorite
+            return matchesQuery && matchesGenre && matchesPlatform && matchesStore && matchesFavorite
         }
 
         switch sortMode {
@@ -170,10 +188,58 @@ struct LibraryView: View {
         Array(Set(store.libraryGames.map(\.platform).filter { !$0.isEmpty })).sorted()
     }
 
+    private var stores: [String] {
+        Array(Set(store.libraryGames.flatMap { gameResolvedStores(game: $0) })).sorted()
+    }
+
+    private var libraryCountTitle: String {
+        if filteredGames.count == store.libraryGames.count {
+            return store.libraryGames.count == 1 ? "1 Game" : "\(store.libraryGames.count) Games"
+        }
+        return "\(filteredGames.count) / \(store.libraryGames.count) Games"
+    }
+
+    private var activeFilterChips: [CatalogFilterChip] {
+        var chips: [CatalogFilterChip] = []
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            chips.append(CatalogFilterChip(label: "Search: \(query)") {
+                searchText = ""
+            })
+        }
+        if favoritesOnly {
+            chips.append(CatalogFilterChip(label: "Favorites") {
+                favoritesOnly = false
+            })
+        }
+        if let selectedStore {
+            chips.append(CatalogFilterChip(label: storeDisplayName(selectedStore)) {
+                self.selectedStore = nil
+            })
+        }
+        if let selectedPlatform {
+            chips.append(CatalogFilterChip(label: selectedPlatform) {
+                self.selectedPlatform = nil
+            })
+        }
+        if let selectedGenre {
+            chips.append(CatalogFilterChip(label: selectedGenre) {
+                self.selectedGenre = nil
+            })
+        }
+        if sortMode != .title {
+            chips.append(CatalogFilterChip(label: "Sort: \(sortMode.title)") {
+                sortMode = .title
+            })
+        }
+        return chips
+    }
+
     private var hasActiveFilters: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
             selectedGenre != nil ||
             selectedPlatform != nil ||
+            selectedStore != nil ||
             favoritesOnly ||
             sortMode != .title
     }
@@ -189,8 +255,18 @@ struct LibraryView: View {
         searchText = ""
         selectedGenre = nil
         selectedPlatform = nil
+        selectedStore = nil
         favoritesOnly = false
         sortMode = .title
+    }
+
+    private func launchFromCard(_ game: CloudGame) {
+        let options = store.launchOptions(for: game)
+        if options.count > 1, store.defaultLaunchOption(for: game) == nil {
+            selectedGameForLauncher = game
+            return
+        }
+        pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: store.defaultLaunchOption(for: game) ?? options.first)
     }
 
 }

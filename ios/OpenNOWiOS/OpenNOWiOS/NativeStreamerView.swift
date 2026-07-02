@@ -1,8 +1,8 @@
 #if canImport(UIKit)
 import SwiftUI
 import UIKit
-import AVFoundation
 import CoreHaptics
+import CoreImage
 import GameController
 import OSLog
 
@@ -128,17 +128,10 @@ private struct NativeStreamerRenderer: UIViewRepresentable {
         }
 
         private func startClient(in view: OpenNOWNativeStreamRenderView) {
-            do {
-                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-                logger.notice("AVAudioSession setup failed: \(error.localizedDescription, privacy: .public)")
-            }
-
             let client = OpenNOWNativeStreamClient(
                 session: session,
                 settings: settings,
-                renderer: view.videoRenderer,
+                renderer: view.streamRenderer,
                 onState: { [weak self] message in self?.onEvent("Status: \(message)") },
                 onError: { [weak self] message in
                     self?.onEvent("Error: \(message)")
@@ -156,10 +149,16 @@ private struct NativeStreamerRenderer: UIViewRepresentable {
 }
 
 private final class OpenNOWNativeStreamRenderView: UIView {
-    let videoRenderer = RTCMTLVideoView(frame: .zero)
+    #if targetEnvironment(simulator)
+    private let videoRenderer = OpenNOWSoftwareVideoRendererView(frame: .zero)
+    #else
+    private let videoRenderer = RTCMTLVideoView(frame: .zero)
+    #endif
     private let touchCaptureView = OpenNOWNativeTouchCaptureView(frame: .zero)
 
     override var canBecomeFirstResponder: Bool { true }
+
+    var streamRenderer: RTCVideoRenderer { videoRenderer }
 
     weak var inputSink: OpenNOWNativeInputSink? {
         didSet { touchCaptureView.inputSink = inputSink }
@@ -169,7 +168,10 @@ private final class OpenNOWNativeStreamRenderView: UIView {
         super.init(frame: frame)
         backgroundColor = .black
         isUserInteractionEnabled = true
+        videoRenderer.contentMode = .scaleAspectFit
+        #if !targetEnvironment(simulator)
         videoRenderer.videoContentMode = .scaleAspectFit
+        #endif
         videoRenderer.backgroundColor = .black
         addSubview(videoRenderer)
         touchCaptureView.backgroundColor = .clear
@@ -188,6 +190,145 @@ private final class OpenNOWNativeStreamRenderView: UIView {
         touchCaptureView.frame = bounds
     }
 }
+
+#if targetEnvironment(simulator)
+private final class OpenNOWSoftwareVideoRendererView: UIView, RTCVideoRenderer {
+    private let imageView = UIImageView(frame: .zero)
+    private let renderQueue = DispatchQueue(label: "com.opencloudgaming.opennow.native-software-renderer", qos: .userInteractive)
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let stateLock = NSLock()
+    private let colorSpace = CGColorSpaceCreateDeviceRGB()
+    private var renderInFlight = false
+    private var lastRenderAt = 0.0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        imageView.backgroundColor = .black
+        imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = true
+        addSubview(imageView)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        imageView.frame = bounds
+    }
+
+    func setSize(_ size: CGSize) {}
+
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        guard let frame else { return }
+        let now = CACurrentMediaTime()
+        stateLock.lock()
+        if renderInFlight || now - lastRenderAt < 1.0 / 30.0 {
+            stateLock.unlock()
+            return
+        }
+        renderInFlight = true
+        lastRenderAt = now
+        stateLock.unlock()
+
+        renderQueue.async { [weak self] in
+            guard let self else { return }
+            let image = autoreleasepool { self.makeImage(from: frame) }
+            self.stateLock.lock()
+            self.renderInFlight = false
+            self.stateLock.unlock()
+            guard let image else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.imageView.image = image
+            }
+        }
+    }
+
+    private func makeImage(from frame: RTCVideoFrame) -> UIImage? {
+        if let cvBuffer = frame.buffer as? RTCCVPixelBuffer,
+           let image = makeImage(from: cvBuffer) {
+            return image
+        }
+        return makeImage(fromI420: frame.buffer.toI420())
+    }
+
+    private func makeImage(from buffer: RTCCVPixelBuffer) -> UIImage? {
+        var image = CIImage(cvPixelBuffer: buffer.pixelBuffer)
+        if buffer.requiresCropping() {
+            let cropRect = CGRect(
+                x: CGFloat(buffer.cropX),
+                y: CGFloat(buffer.cropY),
+                width: CGFloat(buffer.cropWidth),
+                height: CGFloat(buffer.cropHeight)
+            )
+            image = image.cropped(to: cropRect)
+                .transformed(by: CGAffineTransform(translationX: -cropRect.minX, y: -cropRect.minY))
+        }
+        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage, scale: UIScreen.main.scale, orientation: .up)
+    }
+
+    private func makeImage(fromI420 buffer: RTCI420BufferProtocol) -> UIImage? {
+        let width = Int(buffer.width)
+        let height = Int(buffer.height)
+        guard width > 0, height > 0 else { return nil }
+        let dataY = buffer.dataY
+        let dataU = buffer.dataU
+        let dataV = buffer.dataV
+        let strideY = Int(buffer.strideY)
+        let strideU = Int(buffer.strideU)
+        let strideV = Int(buffer.strideV)
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+
+        for y in 0..<height {
+            let yRow = y * strideY
+            let uvY = (y / 2)
+            for x in 0..<width {
+                let yy = Int(dataY[yRow + x])
+                let uu = Int(dataU[uvY * strideU + (x / 2)])
+                let vv = Int(dataV[uvY * strideV + (x / 2)])
+                let c = max(0, yy - 16)
+                let d = uu - 128
+                let e = vv - 128
+                let r = clampYUV((298 * c + 409 * e + 128) >> 8)
+                let g = clampYUV((298 * c - 100 * d - 208 * e + 128) >> 8)
+                let b = clampYUV((298 * c + 516 * d + 128) >> 8)
+                let offset = (y * width + x) * 4
+                rgba[offset] = r
+                rgba[offset + 1] = g
+                rgba[offset + 2] = b
+                rgba[offset + 3] = 255
+            }
+        }
+
+        guard let provider = CGDataProvider(data: Data(rgba) as CFData),
+              let cgImage = CGImage(
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: true,
+                intent: .defaultIntent
+              ) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage, scale: UIScreen.main.scale, orientation: .up)
+    }
+
+    private func clampYUV(_ value: Int) -> UInt8 {
+        UInt8(min(255, max(0, value)))
+    }
+}
+#endif
 
 private final class OpenNOWNativeTouchCaptureView: UIView {
     weak var inputSink: OpenNOWNativeInputSink?
@@ -318,6 +459,7 @@ private final class OpenNOWNativeStreamClient: NSObject, OpenNOWNativeInputSink 
     private var lastDecodedFrames: Int64?
     private var lastBytesReceived: Int64?
     private var keyframeAttempts = 0
+    private var videoStarted = false
 
     init(
         session: ActiveSession,
@@ -337,9 +479,15 @@ private final class OpenNOWNativeStreamClient: NSObject, OpenNOWNativeInputSink 
 	        RTCInitializeSSL()
 	        let encoderFactory = RTCDefaultVideoEncoderFactory()
 	        let decoderFactory = OpenNOWVideoDecoderFactory()
+            #if targetEnvironment(simulator)
+            let audioDevice: RTCAudioDevice? = OpenNOWSilentAudioDevice()
+            #else
+            let audioDevice: RTCAudioDevice? = nil
+            #endif
 	        peerConnectionFactory = RTCPeerConnectionFactory(
 	            encoderFactory: encoderFactory,
-	            decoderFactory: decoderFactory
+	            decoderFactory: decoderFactory,
+                audioDevice: audioDevice
 	        )
     }
 
@@ -477,6 +625,12 @@ private final class OpenNOWNativeStreamClient: NSObject, OpenNOWNativeInputSink 
         partialInput = nil
         peerConnection?.close()
         peerConnection = nil
+        lastIceState = .new
+        lastProgressAt = .now()
+        lastDecodedFrames = nil
+        lastBytesReceived = nil
+        keyframeAttempts = 0
+        videoStarted = false
         if clearInputState {
             inputEncoder.resetGamepadSequences()
         }
@@ -757,8 +911,14 @@ private final class OpenNOWNativeStreamClient: NSObject, OpenNOWNativeInputSink 
             framesDecoded = Self.int64Value(values["framesDecoded"])
             break
         }
-        let progressed = (framesDecoded.map { $0 > (lastDecodedFrames ?? -1) } ?? false)
-            || (bytesReceived.map { $0 > (lastBytesReceived ?? -1) } ?? false)
+        let progressed: Bool
+        if let framesDecoded {
+            progressed = lastDecodedFrames.map { framesDecoded > $0 } ?? (framesDecoded > 0)
+        } else if let bytesReceived {
+            progressed = lastBytesReceived.map { bytesReceived > $0 } ?? (bytesReceived > 0)
+        } else {
+            progressed = false
+        }
         if let bytesReceived { lastBytesReceived = bytesReceived }
         if let framesDecoded { lastDecodedFrames = framesDecoded }
         guard lastIceState == .connected || lastIceState == .completed else {
@@ -768,11 +928,15 @@ private final class OpenNOWNativeStreamClient: NSObject, OpenNOWNativeInputSink 
         if progressed {
             lastProgressAt = .now()
             keyframeAttempts = 0
+            if let framesDecoded, framesDecoded > 0, !videoStarted {
+                videoStarted = true
+                emitState("Streamer connected")
+            }
             return
         }
         let stalledMs = Self.elapsedMilliseconds(since: lastProgressAt)
         if stalledMs >= 14_000 {
-            scheduleReconnect(reason: "Media stalled for \(stalledMs / 1000)s", delay: 0, generation: generation)
+            onFallback("Decoder stalled; restarting with safe H264 profile")
         } else if stalledMs >= 5_000 {
             keyframeAttempts += 1
             signaling?.requestKeyframe(reason: "media_stall", backlogFrames: 0, attempt: keyframeAttempts)
@@ -786,7 +950,7 @@ private final class OpenNOWNativeStreamClient: NSObject, OpenNOWNativeInputSink 
         timer.schedule(deadline: .now() + 12)
         timer.setEventHandler { [weak self] in
             guard let self, generation == self.generation, self.peerConnection == nil else { return }
-            self.onFallback("Native streamer timed out waiting for a server offer.")
+            self.onFallback("Timed out waiting for video offer; restarting with safe H264 profile")
         }
         offerTimeout = timer
         timer.resume()
@@ -834,6 +998,77 @@ private final class OpenNOWNativeStreamClient: NSObject, OpenNOWNativeInputSink 
     private static func elapsedMilliseconds(since start: DispatchTime) -> Int64 {
         let nanos = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
         return Int64(nanos / 1_000_000)
+    }
+}
+
+private final class OpenNOWSilentAudioDevice: NSObject, RTCAudioDevice {
+    private var initialized = false
+    private var playoutInitialized = false
+    private var recordingInitialized = false
+    private var playing = false
+    private var recording = false
+    private weak var delegate: RTCAudioDeviceDelegate?
+
+    var deviceInputSampleRate: Double { 48_000 }
+    var inputIOBufferDuration: TimeInterval { 0.01 }
+    var inputNumberOfChannels: Int { 1 }
+    var inputLatency: TimeInterval { 0 }
+    var deviceOutputSampleRate: Double { 48_000 }
+    var outputIOBufferDuration: TimeInterval { 0.01 }
+    var outputNumberOfChannels: Int { 2 }
+    var outputLatency: TimeInterval { 0 }
+    var isInitialized: Bool { initialized }
+    var isPlayoutInitialized: Bool { playoutInitialized }
+    var isPlaying: Bool { playing }
+    var isRecordingInitialized: Bool { recordingInitialized }
+    var isRecording: Bool { recording }
+
+    func initialize(with delegate: RTCAudioDeviceDelegate) -> Bool {
+        self.delegate = delegate
+        initialized = true
+        return true
+    }
+
+    func terminateDevice() -> Bool {
+        playing = false
+        recording = false
+        playoutInitialized = false
+        recordingInitialized = false
+        initialized = false
+        delegate = nil
+        return true
+    }
+
+    func initializePlayout() -> Bool {
+        playoutInitialized = true
+        return true
+    }
+
+    func startPlayout() -> Bool {
+        playoutInitialized = true
+        playing = true
+        return true
+    }
+
+    func stopPlayout() -> Bool {
+        playing = false
+        return true
+    }
+
+    func initializeRecording() -> Bool {
+        recordingInitialized = true
+        return true
+    }
+
+    func startRecording() -> Bool {
+        recordingInitialized = true
+        recording = true
+        return true
+    }
+
+    func stopRecording() -> Bool {
+        recording = false
+        return true
     }
 }
 
@@ -998,7 +1233,7 @@ private enum OpenNOWNativeSignalingEvent {
     case log(String)
 }
 
-private final class OpenNOWNativeSignalingClient {
+private final class OpenNOWNativeSignalingClient: NSObject, URLSessionWebSocketDelegate {
     private let session: ActiveSession
     private let profile: StreamVideoProfile
     private let onEvent: (OpenNOWNativeSignalingEvent) -> Void
@@ -1015,7 +1250,7 @@ private final class OpenNOWNativeSignalingClient {
             "Origin": "https://play.geforcenow.com",
             "User-Agent": Self.userAgent
         ]
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
     private static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36"
 
@@ -1027,6 +1262,7 @@ private final class OpenNOWNativeSignalingClient {
         self.session = session
         self.profile = profile
         self.onEvent = onEvent
+        super.init()
     }
 
     func connect() {
@@ -1035,16 +1271,18 @@ private final class OpenNOWNativeSignalingClient {
                 self.onEvent(.error("Missing native signaling URL"))
                 return
             }
-            let task = self.urlSession.webSocketTask(
-                with: url,
-                protocols: ["x-nv-sessionid.\(self.session.id)"]
-            )
+            var request = URLRequest(url: url)
+            request.setValue("x-nv-sessionid.\(self.session.id)", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+            request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue("https://play.geforcenow.com", forHTTPHeaderField: "Origin")
+            if let host = url.host {
+                let hostHeader = url.port.map { "\(host):\($0)" } ?? host
+                request.setValue(hostHeader, forHTTPHeaderField: "Host")
+            }
+            let task = self.urlSession.webSocketTask(with: request)
             self.task = task
             task.resume()
-            self.sendPeerInfo()
-            self.startHeartbeat()
             self.receiveNext()
-            self.onEvent(.connected)
         }
     }
 
@@ -1219,6 +1457,32 @@ private final class OpenNOWNativeSignalingClient {
         ackCounter += 1
         return ackCounter
     }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        queue.async {
+            guard webSocketTask === self.task else { return }
+            self.sendPeerInfo()
+            self.startHeartbeat()
+            self.onEvent(.connected)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        queue.async {
+            guard webSocketTask === self.task else { return }
+            let reasonText = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "socket closed"
+            self.onEvent(.disconnected(reasonText))
+        }
+    }
 }
 
 private final class OpenNOWVideoDecoderFactory: NSObject, RTCVideoDecoderFactory {
@@ -1353,6 +1617,14 @@ private enum OpenNOWNativeSDP {
         let replacements: Int
     }
 
+    private static func sdpLines(_ sdp: String) -> [String] {
+        sdp
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+    }
+
     static func resolvePreferredCodec(_ preferred: String, offerSdp: String) -> String {
         let normalized = normalizeCodec(preferred)
         if normalized == "AUTO" || normalized.isEmpty {
@@ -1379,7 +1651,7 @@ private enum OpenNOWNativeSDP {
     static func preferCodec(_ sdp: String, codec: String, preferTenBit: Bool = false) -> String {
         let target = normalizeCodec(codec)
         let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
-        let lines = sdp.components(separatedBy: CharacterSet.newlines)
+        let lines = sdpLines(sdp)
         var inVideo = false
         var codecByPayload: [String: String] = [:]
         var rtxAptByPayload: [String: String] = [:]
@@ -1449,7 +1721,7 @@ private enum OpenNOWNativeSDP {
         guard !payloads.isEmpty else { return RewriteResult(sdp: sdp, replacements: 0) }
         let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
         var replacements = 0
-        let output = sdp.components(separatedBy: CharacterSet.newlines).map { line -> String in
+        let output = sdpLines(sdp).map { line -> String in
             guard line.hasPrefix("a=fmtp:") else { return line }
             let payload = line.components(separatedBy: ":").dropFirst().joined(separator: ":")
                 .split(separator: " ")
@@ -1476,7 +1748,7 @@ private enum OpenNOWNativeSDP {
         }
         let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
         var replacements = 0
-        let output = sdp.components(separatedBy: CharacterSet.newlines).map { line -> String in
+        let output = sdpLines(sdp).map { line -> String in
             guard line.hasPrefix("a=fmtp:") else { return line }
             let rest = line.components(separatedBy: ":").dropFirst().joined(separator: ":")
             let pieces = rest.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
@@ -1515,7 +1787,7 @@ private enum OpenNOWNativeSDP {
     static func negotiatesCodec(_ sdp: String, codec: String) -> Bool {
         let target = normalizeCodec(codec)
         var inVideo = false
-        for line in sdp.components(separatedBy: CharacterSet.newlines) {
+        for line in sdpLines(sdp) {
             if line.hasPrefix("m=video") {
                 inVideo = true
                 continue
@@ -1536,7 +1808,7 @@ private enum OpenNOWNativeSDP {
 
     static func mungeAnswerSdp(_ sdp: String, maxBitrateKbps: Int) -> String {
         let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
-        let lines = sdp.components(separatedBy: CharacterSet.newlines)
+        let lines = sdpLines(sdp)
         var output: [String] = []
         for (index, line) in lines.enumerated() {
             if line.hasPrefix("a=fmtp:"), line.contains("minptime="), !line.contains("stereo=1") {
@@ -1698,7 +1970,7 @@ private enum OpenNOWNativeSDP {
     private static func offerHasCodec(_ sdp: String, codec: String) -> Bool {
         let target = normalizeCodec(codec)
         var inVideo = false
-        for line in sdp.components(separatedBy: CharacterSet.newlines) {
+        for line in sdpLines(sdp) {
             if line.hasPrefix("m=video") {
                 inVideo = true
                 continue
@@ -1720,7 +1992,7 @@ private enum OpenNOWNativeSDP {
     private static func h265PayloadTypes(_ sdp: String) -> Set<String> {
         var inVideo = false
         var payloads = Set<String>()
-        for line in sdp.components(separatedBy: CharacterSet.newlines) {
+        for line in sdpLines(sdp) {
             if line.hasPrefix("m=video") {
                 inVideo = true
                 continue

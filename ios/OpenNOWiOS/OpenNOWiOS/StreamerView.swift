@@ -3,7 +3,6 @@ import SwiftUI
 import UIKit
 import WebKit
 import OSLog
-import AVFoundation
 import GameController
 import CoreHaptics
 
@@ -13,6 +12,7 @@ struct StreamerView: View {
     let nativeStreamerEnabled: Bool
     let onTouchLayoutChange: (String, TouchControlLayout) -> Void
     let onStreamerPreferencesChange: (StreamerPreferences) -> Void
+    var onSafeVideoFallbackRequired: ((String) -> Void)? = nil
     var onNativeFallbackRequiresFreshEndpoint: ((String) -> Void)? = nil
     let onClose: () -> Void
     var onRetry: (() -> Void)? = nil
@@ -22,6 +22,7 @@ struct StreamerView: View {
     @State private var isPeerConnected = false
     @State private var isShowingExitConfirmation = false
     @State private var nativeFallbackReason: String?
+    @State private var safeVideoFallbackRequested = false
 
     private var isShowingConnectionOverlay: Bool {
         !isPeerConnected
@@ -124,21 +125,13 @@ struct StreamerView: View {
         .background(Color.black.ignoresSafeArea())
         .onAppear {
             Self.dismissFocusedInput()
-            do {
-                try AVAudioSession.sharedInstance().setCategory(
-                    .playback,
-                    mode: .moviePlayback,
-                    options: [.mixWithOthers]
-                )
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-            }
         }
-        .onDisappear {
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
+        .onChangeCompat(of: session.id) { _ in
+            nativeFallbackReason = nil
+            safeVideoFallbackRequested = false
+            isPeerConnected = false
+            statusText = ""
+            latestStatusLine = "Initializing streamer..."
         }
     }
 
@@ -155,6 +148,16 @@ struct StreamerView: View {
                 onFallback: { reason in
                     DispatchQueue.main.async {
                         logger.notice("Native streamer fallback: \(reason, privacy: .public)")
+                        if Self.requiresSafeVideoFallback(reason),
+                           let onSafeVideoFallbackRequired,
+                           !safeVideoFallbackRequested,
+                           settings.safeVideoFallback() != settings {
+                            safeVideoFallbackRequested = true
+                            isPeerConnected = false
+                            handleStreamerEvent("Status: Restarting cloud session with safe H264 profile")
+                            onSafeVideoFallbackRequired(reason)
+                            return
+                        }
                         if Self.nativeFallbackRequiresFreshEndpoint(reason), let onRetry {
                             onNativeFallbackRequiresFreshEndpoint?(reason)
                             nativeFallbackReason = reason
@@ -165,7 +168,7 @@ struct StreamerView: View {
                         }
                         nativeFallbackReason = reason
                         isPeerConnected = false
-                        handleStreamerEvent("Status: Falling back to WebRTC web streamer")
+                        handleStreamerEvent("Status: Falling back to WebRTC web streamer: \(reason)")
                     }
                 }
             )
@@ -190,18 +193,29 @@ struct StreamerView: View {
             || lowercased.contains("rejected server offer")
     }
 
+    private static func requiresSafeVideoFallback(_ reason: String) -> Bool {
+        let lowercased = reason.lowercased()
+        return lowercased.contains("safe h264")
+            || lowercased.contains("timed out waiting")
+            || lowercased.contains("waiting for a server offer")
+            || lowercased.contains("did not negotiate")
+            || lowercased.contains("media stalled")
+            || lowercased.contains("decoder stalled")
+            || lowercased.contains("failed to create answer")
+            || lowercased.contains("failed to apply answer")
+            || lowercased.contains("rejected server offer")
+    }
+
     private func handleStreamerEvent(_ event: String) {
         logger.info("Streamer event: \(event, privacy: .public)")
         statusText = event
         if event.hasPrefix("Status: ") {
             latestStatusLine = String(event.dropFirst("Status: ".count))
-            if latestStatusLine.localizedCaseInsensitiveContains("peer: connected")
-                || latestStatusLine.localizedCaseInsensitiveContains("streamer connected") {
+            if latestStatusLine.localizedCaseInsensitiveContains("streamer connected") {
                 isPeerConnected = true
             }
         }
-        if event.localizedCaseInsensitiveContains("peer: connected")
-            || event.localizedCaseInsensitiveContains("streamer connected") {
+        if event.localizedCaseInsensitiveContains("streamer connected") {
             isPeerConnected = true
         }
         if event.hasPrefix("Error:") {

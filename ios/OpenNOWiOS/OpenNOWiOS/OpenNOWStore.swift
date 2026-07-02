@@ -158,6 +158,8 @@ struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
     let status: Int
     let serverIp: String?
     let streamSettingsSignature: String?
+    let resolution: String?
+    let fps: Int?
 }
 
 struct StorageAddon: Codable, Equatable {
@@ -584,6 +586,79 @@ struct AppSettings: Codable, Equatable {
         }
         streamSharpeningAmount = min(max(streamSharpeningAmount, 0), 1)
         sessionProxyUrl = sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func safeVideoFallback() -> AppSettings {
+        var fallback = self
+        let capped = Self.cappedSafeVideoResolution(
+            value: preferredResolution,
+            aspectRatio: preferredAspectRatio
+        )
+        fallback.preferredResolution = capped.resolution
+        fallback.preferredAspectRatio = capped.aspectRatio
+        fallback.preferredFPS = min(preferredFPS, 60)
+        if fallback.maxBitrateMbps > 0 {
+            fallback.maxBitrateMbps = min(fallback.maxBitrateMbps, 75)
+        }
+        fallback.preferredCodec = "H264"
+        fallback.preferredColorQuality = StreamColorQuality.eightBit420.rawValue
+        fallback.hdrEnabled = false
+        fallback.enableCloudGsync = false
+        fallback.normalizeStreamDefaults()
+        return fallback
+    }
+
+    private static func cappedSafeVideoResolution(value: String, aspectRatio: String) -> (resolution: String, aspectRatio: String) {
+        let maxWidth = 1920
+        let maxHeight = 1080
+        let normalizedAspect = StreamSettingsResolver.normalizedAspectRatio(aspectRatio)
+        let normalizedResolution = StreamSettingsResolver.normalizedResolution(
+            value,
+            aspectRatio: normalizedAspect
+        )
+        if let parsed = parseResolution(normalizedResolution),
+           parsed.width <= maxWidth,
+           parsed.height <= maxHeight {
+            return (normalizedResolution, normalizedAspect)
+        }
+
+        let sameAspect = StreamSettingsResolver.resolutionChoices
+            .filter { $0.aspectRatio == normalizedAspect && resolution($0.value, fitsWithinWidth: maxWidth, height: maxHeight) }
+            .max { lhs, rhs in pixelCount(lhs.value) < pixelCount(rhs.value) }
+        let fallback = StreamSettingsResolver.resolutionChoices
+            .filter { resolution($0.value, fitsWithinWidth: maxWidth, height: maxHeight) }
+            .max { lhs, rhs in
+                let lhsPixels = pixelCount(lhs.value)
+                let rhsPixels = pixelCount(rhs.value)
+                if lhsPixels == rhsPixels {
+                    return lhs.aspectRatio != "16:9" && rhs.aspectRatio == "16:9"
+                }
+                return lhsPixels < rhsPixels
+            }
+        let capped = sameAspect ?? fallback
+        return (capped?.value ?? "1280x720", capped?.aspectRatio ?? "16:9")
+    }
+
+    private static func resolution(_ value: String, fitsWithinWidth maxWidth: Int, height maxHeight: Int) -> Bool {
+        guard let parsed = parseResolution(value) else { return false }
+        return parsed.width <= maxWidth && parsed.height <= maxHeight
+    }
+
+    private static func pixelCount(_ value: String) -> Int {
+        guard let parsed = parseResolution(value) else { return 0 }
+        return parsed.width * parsed.height
+    }
+
+    private static func parseResolution(_ value: String) -> (width: Int, height: Int)? {
+        let parts = value.split(separator: "x", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let width = Int(parts[0]),
+              let height = Int(parts[1]),
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return (width, height)
     }
 }
 
@@ -3082,12 +3157,15 @@ private actor GFNAPIClient {
                 key: GFNConstants.streamSettingsMetadataKey,
                 in: sessionRequestData?["metaData"] as? [[String: Any]]
             )
+            let negotiatedProfile = Self.extractNegotiatedStreamProfile(sessionObj: item)
             return RemoteSessionCandidate(
                 id: sessionId,
                 appId: appId,
                 status: status,
                 serverIp: serverIp,
-                streamSettingsSignature: streamSettingsSignature
+                streamSettingsSignature: streamSettingsSignature,
+                resolution: negotiatedProfile?.resolution,
+                fps: negotiatedProfile?.fps
             )
         }
     }
@@ -4453,6 +4531,7 @@ final class OpenNOWStore: ObservableObject {
     @Published var streamSession: ActiveSession?
     @Published var lastError: String?
     @Published var isBootstrapping: Bool = true
+    @Published private(set) var activeStreamSettings: AppSettings?
     #if os(tvOS)
     @Published private(set) var tvAuthLogs: [String] = []
     #endif
@@ -4482,6 +4561,7 @@ final class OpenNOWStore: ObservableObject {
     private let authStateKey = "OpenNOW.iOS.authState"
     private let authSessionKey = "OpenNOW.iOS.authSession"
     private let activeSessionSnapshotKey = "OpenNOW.iOS.activeSession"
+    private let activeStreamSettingsKey = "OpenNOW.iOS.activeStreamSettings"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
     private let setupPhaseTimeoutSeconds: TimeInterval = 90
     private let sessionRestoreMaxAgeSeconds: TimeInterval = 12 * 60 * 60
@@ -4502,6 +4582,7 @@ final class OpenNOWStore: ObservableObject {
             settings.selectedProviderIdpId = provider.idpId
         }
         activeSession = Self.loadActiveSession(from: defaults)
+        activeStreamSettings = activeSession == nil ? nil : Self.loadActiveStreamSettings(from: defaults)
         user = authSession?.user
         showStreamLoading = activeSession != nil
         syncTrackedSessionSurface()
@@ -4532,6 +4613,7 @@ final class OpenNOWStore: ObservableObject {
 
     var supportsNativeOAuth: Bool { OpenNOWPlatform.supportsNativeOAuth }
     var supportsEmbeddedStreamer: Bool { OpenNOWPlatform.supportsEmbeddedStreamer }
+    var currentStreamerSettings: AppSettings { activeStreamSettings ?? settings }
     var cloudStorageManagementURL: URL { GFNConstants.storageManagementURL }
     var cloudStorageResetURL: URL { GFNConstants.storageResetURL }
     var cloudStorageAddURL: URL { GFNConstants.storageAddURL }
@@ -4676,6 +4758,7 @@ final class OpenNOWStore: ObservableObject {
         libraryGames = []
         resumableSessions = []
         activeSession = nil
+        activeStreamSettings = nil
         setStreamSession(nil, reason: "signOut")
         subscription = nil
         sessionElapsedTask?.cancel()
@@ -4716,13 +4799,14 @@ final class OpenNOWStore: ObservableObject {
             if let connectors {
                 accountConnectors = connectors
             }
-            resumableSessions = (try? await api.fetchActiveSessions(
+            let remoteSessions = (try? await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: vpcId,
                 settings: settings,
                 deviceId: persistentDeviceId()
             )) ?? []
+            resumableSessions = compatibleRemoteSessions(remoteSessions, settings: settings, session: refreshed)
             if let sub {
                 var updatedUser = refreshed.user
                 updatedUser.membershipTier = sub.membershipTier
@@ -4854,16 +4938,13 @@ final class OpenNOWStore: ObservableObject {
                 settings: settings,
                 deviceId: deviceId
             )) ?? []
-            resumableSessions = activeCandidates
 
-            let requestedSignature = streamSettingsSignature(for: settings, session: refreshed)
-            let compatibleCandidates = activeCandidates.filter {
-                remoteSession($0, matchesStreamSettingsSignature: requestedSignature)
-            }
+            let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: settings, session: refreshed)
+            resumableSessions = compatibleCandidates
             let staleLaunchCandidate = activeCandidates.first {
                 $0.appId == launchAppId
                     && remoteSessionIsLaunchable($0)
-                    && !remoteSession($0, matchesStreamSettingsSignature: requestedSignature)
+                    && !remoteSession($0, matchesStreamSettings: settings, session: refreshed)
             }
             let readyCandidate = compatibleCandidates.first {
                 $0.appId == launchAppId && $0.serverIp != nil && ($0.status == 2 || $0.status == 3)
@@ -4943,6 +5024,7 @@ final class OpenNOWStore: ObservableObject {
                 )
             }
             activeSession = started
+            activeStreamSettings = settings
             adReportStateById = [:]
             adStartedAtById = [:]
             sessionElapsedSeconds = 0
@@ -4972,13 +5054,14 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
-            resumableSessions = try await api.fetchActiveSessions(
+            let remoteSessions = try await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: cachedVpcId,
                 settings: settings,
                 deviceId: persistentDeviceId()
             )
+            resumableSessions = compatibleRemoteSessions(remoteSessions, settings: settings, session: refreshed)
         } catch {
             lastError = "Could not fetch active sessions: \(error.localizedDescription)"
         }
@@ -5033,6 +5116,16 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
+            guard remoteSession(candidate, matchesStreamSettings: settings, session: refreshed) else {
+                resumableSessions.removeAll { $0.id == candidate.id }
+                throw NSError(
+                    domain: "OpenNOW.Session",
+                    code: 41,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "No active session matches the current stream resolution. Start the game again to recreate it."
+                    ]
+                )
+            }
             let claimed = try await api.claimSession(
                 session: refreshed,
                 candidate: candidate,
@@ -5043,6 +5136,7 @@ final class OpenNOWStore: ObservableObject {
                 deviceId: persistentDeviceId()
             )
             activeSession = claimed
+            activeStreamSettings = settings
             adReportStateById = [:]
             adStartedAtById = [:]
             sessionElapsedSeconds = 0
@@ -5106,6 +5200,7 @@ final class OpenNOWStore: ObservableObject {
         await NotificationManager.shared.cancelSessionNotifications()
         guard let session = authSession, let active = activeSession else {
             activeSession = nil
+            activeStreamSettings = nil
             setStreamSession(nil, reason: "endSession.noActiveSession")
             sessionElapsedTask?.cancel()
             sessionPollTask?.cancel()
@@ -5123,6 +5218,7 @@ final class OpenNOWStore: ObservableObject {
             lastError = "Stop session failed: \(error.localizedDescription)"
         }
         activeSession = nil
+        activeStreamSettings = nil
         setStreamSession(nil, reason: "endSession.completed")
         adReportStateById = [:]
         adStartedAtById = [:]
@@ -5131,6 +5227,118 @@ final class OpenNOWStore: ObservableObject {
         endSessionPollBackgroundTask()
         sessionElapsedSeconds = 0
         syncTrackedSessionSurface()
+    }
+
+    func restartStreamWithSafeVideoProfile(reason: String) {
+        guard supportsEmbeddedStreamer else {
+            lastError = OpenNOWPlatform.streamingUnavailableReason
+            return
+        }
+        guard let current = streamSession ?? activeSession else {
+            lastError = "\(reason). No active stream session was available to restart."
+            return
+        }
+        let currentSettings = currentStreamerSettings
+        let safeSettings = currentSettings.safeVideoFallback()
+        guard safeSettings != currentSettings else {
+            logger.notice("Safe video restart requested but current profile is already safe: \(reason, privacy: .public)")
+            scheduleStreamerReopen()
+            return
+        }
+        logger.notice(
+            "Safe video restart requested reason=\(reason, privacy: .public) currentCodec=\(currentSettings.preferredCodec, privacy: .public) safeResolution=\(safeSettings.preferredResolution, privacy: .public)"
+        )
+        launchTask?.cancel()
+        launchTask = Task {
+            await self.restartCurrentStreamWithSafeVideoProfile(
+                previous: current,
+                safeSettings: safeSettings,
+                reason: reason
+            )
+        }
+    }
+
+    private func restartCurrentStreamWithSafeVideoProfile(
+        previous: ActiveSession,
+        safeSettings: AppSettings,
+        reason: String
+    ) async {
+        guard let currentAuth = authSession else {
+            lastError = "Sign in first."
+            return
+        }
+
+        let game = previous.game
+        let effectiveLaunchOption = effectiveLaunchOption(for: game, requested: nil)
+        let launchAppId = effectiveLaunchOption?.appId ?? game.launchAppId
+        guard let launchAppId, !launchAppId.isEmpty else {
+            lastError = "Safe H264 restart failed: selected game has no launch app ID."
+            return
+        }
+
+        isLaunchingSession = true
+        showStreamLoading = true
+        queueOverlayVisible = true
+        setStreamSession(nil, reason: "safeVideoRestart.reset")
+        activeSession = nil
+        activeStreamSettings = safeSettings
+        syncTrackedSessionSurface()
+        defer { isLaunchingSession = false }
+
+        do {
+            let refreshed = try await api.refreshSession(currentAuth)
+            authSession = refreshed
+            user = refreshed.user
+            persistAuthSession(refreshed)
+
+            do {
+                try await api.stopSession(session: refreshed, activeSession: previous)
+            } catch {
+                logger.warning(
+                    "Safe video restart could not stop previous session id=\(previous.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+
+            let deviceId = persistentDeviceId()
+            let baseUrl = refreshed.provider.streamingServiceUrl
+            let started = try await api.startSession(
+                session: refreshed,
+                game: game,
+                vpcId: cachedVpcId,
+                settings: safeSettings,
+                streamProfile: StreamSettingsResolver.profile(
+                    for: safeSettings,
+                    membershipTier: subscription?.membershipTier ?? refreshed.user.membershipTier
+                ),
+                streamingBaseUrl: baseUrl,
+                launchAppIdOverride: launchAppId,
+                launcherName: effectiveLaunchOption?.storefront ?? "Auto",
+                deviceId: deviceId,
+                accountLinked: shouldSendAccountLinked(game: game, launchOption: effectiveLaunchOption)
+            )
+            let handoff = await prepareSessionForStreamer(started)
+            activeSession = handoff
+            activeStreamSettings = safeSettings
+            adReportStateById = [:]
+            adStartedAtById = [:]
+            sessionElapsedSeconds = 0
+            startSessionTasks()
+            setStreamSession(handoff, reason: "safeVideoRestart.handoff")
+            syncTrackedSessionSurface()
+            logger.notice(
+                "Safe video session started id=\(handoff.id, privacy: .public) reason=\(reason, privacy: .public) resolution=\(safeSettings.preferredResolution, privacy: .public)"
+            )
+            lastError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            logger.error("Safe video restart failed error=\(error.localizedDescription, privacy: .public)")
+            showStreamLoading = false
+            queueOverlayVisible = false
+            activeStreamSettings = nil
+            syncTrackedSessionSurface()
+            lastError = "Safe H264 restart failed: \(error.localizedDescription)"
+        }
     }
 
     func minimizeQueueOverlay() {
@@ -5447,23 +5655,32 @@ final class OpenNOWStore: ObservableObject {
         return true
     }
 
-    private func streamSettingsSignature(for settings: AppSettings, session: AuthSession) -> String {
-        let profile = StreamSettingsResolver.profile(
-            for: settings,
-            membershipTier: subscription?.membershipTier ?? session.user.membershipTier
-        )
-        return StreamSettingsResolver.sessionSignature(for: settings, profile: profile)
+    private func compatibleRemoteSessions(
+        _ candidates: [RemoteSessionCandidate],
+        settings: AppSettings,
+        session: AuthSession
+    ) -> [RemoteSessionCandidate] {
+        candidates.filter { remoteSession($0, matchesStreamSettings: settings, session: session) }
     }
 
     private func remoteSession(
         _ candidate: RemoteSessionCandidate,
-        matchesStreamSettingsSignature signature: String
+        matchesStreamSettings settings: AppSettings,
+        session: AuthSession
     ) -> Bool {
-        guard let existing = candidate.streamSettingsSignature?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !existing.isEmpty else {
-            return true
+        let profile = StreamSettingsResolver.profile(
+            for: settings,
+            membershipTier: subscription?.membershipTier ?? session.user.membershipTier
+        )
+        let expectedSignature = StreamSettingsResolver.sessionSignature(for: settings, profile: profile)
+        let expectedResolution = "\(profile.width)x\(profile.height)"
+        guard candidate.streamSettingsSignature?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedSignature else {
+            return false
         }
-        return existing == signature
+        guard candidate.resolution?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedResolution else {
+            return false
+        }
+        return candidate.fps == settings.preferredFPS
     }
 
     private func remoteSessionIsLaunchable(_ candidate: RemoteSessionCandidate) -> Bool {
@@ -5472,6 +5689,9 @@ final class OpenNOWStore: ObservableObject {
 
     private func startSessionTasks() {
         setStreamSession(nil, reason: "startSessionTasks.reset")
+        if activeSession != nil, activeStreamSettings == nil {
+            activeStreamSettings = settings
+        }
         reopenToken = UUID()
         sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
@@ -5511,7 +5731,7 @@ final class OpenNOWStore: ObservableObject {
                     let polled = try await self.api.pollSession(
                         session: refreshed,
                         activeSession: active,
-                        settings: self.settings
+                        settings: self.currentStreamerSettings
                     )
                     consecutivePollFailures = 0
                     self.activeSession = polled
@@ -5704,26 +5924,107 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(currentAuth)
             authSession = refreshed
             persistAuthSession(refreshed)
-            var latest = try await api.pollSession(session: refreshed, activeSession: session, settings: settings)
-            for attempt in 0..<6 {
-                if isReadyForStreamer(latest) {
-                    let handoff = await prepareSessionForStreamer(latest)
-                    guard activeSession?.id == session.id else { return }
-                    activeSession = handoff
-                    setStreamSession(handoff, reason: "reopenStreamer.refreshed")
-                    lastError = nil
-                    return
-                }
-                logger.info(
-                    "Reopen waiting for ready endpoint id=\(latest.id, privacy: .public) status=\(latest.status) attempt=\(attempt + 1) signalingServer=\(latest.signalingServer ?? "nil", privacy: .public) signalingUrl=\(latest.signalingUrl ?? "nil", privacy: .public) mediaIp=\(latest.mediaIp ?? "nil", privacy: .public) mediaPort=\(latest.mediaPort)"
-                )
-                try await Task.sleep(for: .milliseconds(900))
-                latest = try await api.pollSession(session: refreshed, activeSession: latest, settings: settings)
+            let streamSettings = currentStreamerSettings
+            let deviceId = persistentDeviceId()
+            let baseUrl = refreshed.provider.streamingServiceUrl
+            let activeCandidates = try await api.fetchActiveSessions(
+                session: refreshed,
+                streamingBaseUrl: baseUrl,
+                vpcId: cachedVpcId,
+                settings: streamSettings,
+                deviceId: deviceId
+            )
+            let compatibleCandidates = activeCandidates.filter {
+                remoteSession($0, matchesStreamSettings: streamSettings, session: refreshed)
+            }
+            let gameAppIds = Set(
+                ([session.game.launchAppId] + session.game.launchOptions.map(\.appId))
+                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+            let readyCandidate = compatibleCandidates.first {
+                $0.id == session.id && ($0.status == 2 || $0.status == 3) && $0.serverIp?.isEmpty == false
+            } ?? compatibleCandidates.first {
+                guard let appId = $0.appId else { return false }
+                return gameAppIds.contains(appId) && ($0.status == 2 || $0.status == 3) && $0.serverIp?.isEmpty == false
+            }
+            let launchingCandidate = compatibleCandidates.first {
+                $0.id == session.id && remoteSessionIsLaunchable($0)
+            } ?? compatibleCandidates.first {
+                guard let appId = $0.appId else { return false }
+                return gameAppIds.contains(appId) && remoteSessionIsLaunchable($0)
             }
 
-            guard activeSession?.id == session.id else { return }
-            activeSession = latest
-            lastError = "Session is still preparing its stream endpoint. Try reopening again in a moment."
+            let candidate: RemoteSessionCandidate
+            if let readyCandidate {
+                candidate = readyCandidate
+            } else if let launchingCandidate {
+                var latest = ActiveSession(
+                    id: launchingCandidate.id,
+                    game: session.game,
+                    startedAt: .now,
+                    status: launchingCandidate.status,
+                    queuePosition: nil,
+                    seatSetupStep: nil,
+                    serverIp: launchingCandidate.serverIp,
+                    mediaIp: nil,
+                    mediaPort: 0,
+                    signalingServer: nil,
+                    signalingUrl: nil,
+                    iceServers: [],
+                    zone: cachedVpcId,
+                    streamingBaseUrl: baseUrl,
+                    clientId: UUID().uuidString,
+                    deviceId: deviceId,
+                    adState: nil
+                )
+                activeSession = latest
+                for attempt in 0..<45 {
+                    if isReadyForStreamer(latest) {
+                        break
+                    }
+                    logger.info(
+                        "Reopen polling active candidate id=\(latest.id, privacy: .public) status=\(latest.status) attempt=\(attempt + 1) signalingServer=\(latest.signalingServer ?? "nil", privacy: .public) signalingUrl=\(latest.signalingUrl ?? "nil", privacy: .public) mediaIp=\(latest.mediaIp ?? "nil", privacy: .public) mediaPort=\(latest.mediaPort)"
+                    )
+                    try await Task.sleep(for: .seconds(1))
+                    latest = try await api.pollSession(session: refreshed, activeSession: latest, settings: streamSettings)
+                    activeSession = mergeQueueSessionState(previous: activeSession ?? latest, next: latest)
+                }
+                guard isReadyForStreamer(latest), let serverIp = latest.serverIp, !serverIp.isEmpty else {
+                    activeSession = latest
+                    lastError = "Session is still preparing its stream endpoint. Try reopening again in a moment."
+                    return
+                }
+                candidate = RemoteSessionCandidate(
+                    id: latest.id,
+                    appId: launchingCandidate.appId,
+                    status: latest.status,
+                    serverIp: serverIp,
+                    streamSettingsSignature: launchingCandidate.streamSettingsSignature,
+                    resolution: launchingCandidate.resolution ?? latest.negotiatedStreamProfile?.resolution,
+                    fps: launchingCandidate.fps ?? latest.negotiatedStreamProfile?.fps
+                )
+            } else {
+                activeSession = nil
+                activeStreamSettings = nil
+                syncTrackedSessionSurface()
+                lastError = "No active session matches the current stream profile. Start the game again to recreate it."
+                return
+            }
+
+            let claimed = try await api.claimSession(
+                session: refreshed,
+                candidate: candidate,
+                game: session.game,
+                streamingBaseUrl: baseUrl,
+                vpcId: cachedVpcId,
+                settings: streamSettings,
+                deviceId: deviceId
+            )
+            activeSession = claimed
+            activeStreamSettings = streamSettings
+            setStreamSession(claimed, reason: "reopenStreamer.claimed")
+            lastError = nil
         } catch is CancellationError {
             return
         } catch {
@@ -5844,8 +6145,9 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func syncTrackedSessionSurface() {
-        persistActiveSession(activeSession)
         let active = activeSession
+        persistActiveSession(active)
+        persistActiveStreamSettings(active == nil ? nil : activeStreamSettings)
         let state = settings.queueLiveActivitiesEnabled ? active.flatMap(queueActivityState(for:)) : nil
         Task {
             await QueueLiveActivityManager.shared.sync(
@@ -5997,6 +6299,11 @@ final class OpenNOWStore: ObservableObject {
         return try? JSONDecoder().decode(ActiveSession.self, from: data)
     }
 
+    private static func loadActiveStreamSettings(from defaults: UserDefaults) -> AppSettings? {
+        guard let data = defaults.data(forKey: "OpenNOW.iOS.activeStreamSettings") else { return nil }
+        return try? JSONDecoder().decode(AppSettings.self, from: data)
+    }
+
     private func persistAuthSession(_ session: AuthSession) {
         var state = Self.loadAuthState(from: defaults)
         state.sessions.removeAll { $0.user.userId == session.user.userId }
@@ -6030,6 +6337,16 @@ final class OpenNOWStore: ObservableObject {
         }
         if let encoded = try? JSONEncoder().encode(session) {
             defaults.set(encoded, forKey: activeSessionSnapshotKey)
+        }
+    }
+
+    private func persistActiveStreamSettings(_ settings: AppSettings?) {
+        guard let settings else {
+            defaults.removeObject(forKey: activeStreamSettingsKey)
+            return
+        }
+        if let encoded = try? JSONEncoder().encode(settings) {
+            defaults.set(encoded, forKey: activeStreamSettingsKey)
         }
     }
 

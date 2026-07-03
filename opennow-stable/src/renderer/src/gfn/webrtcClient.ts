@@ -1071,7 +1071,12 @@ export class GfnWebRtcClient {
       return false;
     }
 
-    await this.refreshClipboardAvailability();
+    const available = await this.refreshClipboardAvailability();
+    if (!available) {
+      // Official GFN treats empty/oversized/unreadable clipboard data as a handled no-op.
+      // Do not synthesize Ctrl+V here, or the server can paste stale remote clipboard data.
+      return true;
+    }
     return this.sendPasteShortcut(false);
   }
 

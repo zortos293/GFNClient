@@ -19,8 +19,8 @@
   <a href="https://testflight.apple.com/join/u1XPJKH2">
     <img src="https://img.shields.io/badge/iOS-TestFlight-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="Download OpenNOW on TestFlight">
   </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW-Android/releases">
-    <img src="https://img.shields.io/badge/Android-Download%20Build-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Download Android build">
+  <a href="https://discord.gg/8EJYaJcNfD">
+    <img src="https://img.shields.io/badge/Android-Discord%20Builds-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Download Android builds from Discord">
   </a>
   <a href="https://github.com/OpenCloudGaming/Opennow-homebrew">
     <img src="https://img.shields.io/badge/Switch-Port%20Coming%20Soon-E60012?style=for-the-badge&logo=nintendoswitch&logoColor=white" alt="Switch port coming soon">
@@ -69,7 +69,7 @@ OpenNOW is a community-built Electron app for playing GeForce NOW from an open-s
 Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
 
 - iOS beta: [join TestFlight](https://testflight.apple.com/join/u1XPJKH2). The SwiftUI prototype currently lives on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS) under `ios/OpenNOWiOS/`; that folder is not present on this branch.
-- Android build: [download from OpenNOW-Android](https://github.com/OpenCloudGaming/OpenNOW-Android/releases). iOS and Android are being migrated into their own repositories soon so this desktop repo can stay focused.
+- Android builds: download current test builds from [Discord](https://discord.gg/8EJYaJcNfD). iOS and Android are being migrated into their own repositories soon so this desktop repo can stay focused.
 - Nintendo Switch: a homebrew port is coming soon in [OpenCloudGaming/Opennow-homebrew](https://github.com/OpenCloudGaming/Opennow-homebrew), built on top of Moonlight.
 
 For macOS users looking for a more performant OpenNOW version, Jayian1890 maintains the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) repository.

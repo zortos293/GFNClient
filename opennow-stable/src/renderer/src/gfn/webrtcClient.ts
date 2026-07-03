@@ -36,6 +36,16 @@ import {
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import { GfnCursorOverlayController } from "./cursorChannel";
 import {
+  buildClipboardControlMessage,
+  clampClipboardText,
+  CLIPBOARD_CLIENT_ADDED_DATA,
+  CLIPBOARD_CLIENT_DATA_RESPONSE,
+  CLIPBOARD_CLIENT_REMOVED_DATA,
+  isClipboardServerDataRequest,
+  parseClipboardControlMessage,
+  type ClipboardTracingData,
+} from "./clipboardProtocol";
+import {
   buildNvstSdp,
   extractIceCredentials,
   fixServerIp,
@@ -93,6 +103,8 @@ interface ConnectedRumbleGamepad {
   gamepad: Gamepad;
   api: GamepadRumbleApi | null;
 }
+
+const DEFAULT_CLIPBOARD_MAX_BYTES = 1024 * 1024;
 
 function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   // 10-bit modes should prefer HEVC Main10 profile-id=2.
@@ -230,6 +242,12 @@ interface ClientOptions {
   mouseAcceleration?: number;
   /** Selected GFN keyboard layout for remote physical OEM key mapping. */
   keyboardLayout?: KeyboardLayout;
+  /** Enable official GFN clipboard custom-message paste support. */
+  clipboardPaste?: boolean;
+  /** Host clipboard reader used for server paste requests. */
+  readClipboardText?: () => Promise<string>;
+  /** Maximum UTF-8 clipboard bytes to advertise/send. */
+  clipboardMaxBytes?: number;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
@@ -833,6 +851,9 @@ export class GfnWebRtcClient {
   private mouseAccelerationPercent = 1;
   private keyboardLayout?: KeyboardLayout;
   private autoFullScreenEnabled = true;
+  private clipboardPasteEnabled = false;
+  private clipboardMaxBytes = DEFAULT_CLIPBOARD_MAX_BYTES;
+  private lastAdvertisedClipboardAvailable: boolean | null = null;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private riInputCapabilities: RiInputCapabilities = {
@@ -940,6 +961,8 @@ export class GfnWebRtcClient {
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
     this.keyboardLayout = options.keyboardLayout;
     this.autoFullScreenEnabled = options.autoFullScreen !== false;
+    this.clipboardPasteEnabled = Boolean(options.clipboardPaste);
+    this.clipboardMaxBytes = Math.max(0, Math.trunc(options.clipboardMaxBytes ?? DEFAULT_CLIPBOARD_MAX_BYTES));
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -1015,6 +1038,83 @@ export class GfnWebRtcClient {
   public setAutoFullScreen(value: boolean): void {
     this.autoFullScreenEnabled = Boolean(value);
     this.log(`Auto fullscreen ${this.autoFullScreenEnabled ? "enabled" : "disabled"}`);
+  }
+
+  public setClipboardPasteEnabled(value: boolean): void {
+    const enabled = Boolean(value);
+    if (this.clipboardPasteEnabled === enabled) {
+      return;
+    }
+    this.clipboardPasteEnabled = enabled;
+    this.lastAdvertisedClipboardAvailable = null;
+    void this.refreshClipboardAvailability();
+  }
+
+  public async refreshClipboardAvailability(): Promise<boolean> {
+    if (this.controlChannel?.readyState !== "open") {
+      return false;
+    }
+
+    const text = this.clipboardPasteEnabled ? await this.readClipboardTextForPaste() : null;
+    const available = Boolean(text);
+    if (this.lastAdvertisedClipboardAvailable === available) {
+      return available;
+    }
+
+    this.sendClipboardControlMessage(available ? CLIPBOARD_CLIENT_ADDED_DATA : CLIPBOARD_CLIENT_REMOVED_DATA);
+    this.lastAdvertisedClipboardAvailable = available;
+    return available;
+  }
+
+  public async pasteClipboardText(): Promise<boolean> {
+    if (!this.inputReady || this.controlChannel?.readyState !== "open") {
+      return false;
+    }
+
+    const available = await this.refreshClipboardAvailability();
+    if (!available) {
+      // Official GFN treats empty/oversized/unreadable clipboard data as a handled no-op.
+      // Do not synthesize Ctrl+V here, or the server can paste stale remote clipboard data.
+      return true;
+    }
+    return this.sendPasteShortcut(false);
+  }
+
+  private async readClipboardTextForPaste(): Promise<string | null> {
+    if (!this.clipboardPasteEnabled || !this.options.readClipboardText) {
+      return null;
+    }
+
+    try {
+      const text = await this.options.readClipboardText();
+      return clampClipboardText(text, this.clipboardMaxBytes);
+    } catch (error) {
+      this.log(`Clipboard read failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  private sendClipboardControlMessage(
+    pasteType: typeof CLIPBOARD_CLIENT_ADDED_DATA | typeof CLIPBOARD_CLIENT_REMOVED_DATA | typeof CLIPBOARD_CLIENT_DATA_RESPONSE,
+    text?: string | null,
+    tracingData?: ClipboardTracingData,
+  ): boolean {
+    if (this.controlChannel?.readyState !== "open") {
+      return false;
+    }
+
+    this.controlChannel.send(JSON.stringify(buildClipboardControlMessage(pasteType, { text, tracingData })));
+    return true;
+  }
+
+  private async handleClipboardServerRequest(tracingData?: ClipboardTracingData): Promise<void> {
+    const text = await this.readClipboardTextForPaste();
+    this.sendClipboardControlMessage(
+      text ? CLIPBOARD_CLIENT_DATA_RESPONSE : CLIPBOARD_CLIENT_REMOVED_DATA,
+      text,
+      tracingData,
+    );
+    this.lastAdvertisedClipboardAvailable = Boolean(text);
   }
 
   public suppressNextSyntheticEscapeOnPointerLockLoss(durationMs = 1000): void {
@@ -2886,6 +2986,12 @@ export class GfnWebRtcClient {
       return;
     }
 
+    const clipboardPayload = parseClipboardControlMessage(parsed);
+    if (isClipboardServerDataRequest(clipboardPayload)) {
+      void this.handleClipboardServerRequest(clipboardPayload?.tracingData);
+      return;
+    }
+
     if (!parsed || typeof parsed !== "object" || !("timerNotification" in parsed)) {
       return;
     }
@@ -3950,6 +4056,7 @@ export class GfnWebRtcClient {
       lastAbsX = null;
       lastAbsY = null;
       focusPointerLockTarget();
+      void this.refreshClipboardAvailability();
       // Auto-lock: acquire pointer lock when the user switches back to the app.
       tryAutoLock();
     };
@@ -4464,6 +4571,11 @@ export class GfnWebRtcClient {
 
       this.controlChannel = channel;
       this.controlChannel.binaryType = "arraybuffer";
+      this.controlChannel.onopen = () => {
+        this.log("Control channel open");
+        this.lastAdvertisedClipboardAvailable = null;
+        void this.refreshClipboardAvailability();
+      };
       this.controlChannel.onmessage = (msgEvent) => {
         void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
       };
@@ -4471,11 +4583,15 @@ export class GfnWebRtcClient {
         this.log("Control channel closed");
         if (this.controlChannel === channel) {
           this.controlChannel = null;
+          this.lastAdvertisedClipboardAvailable = null;
         }
       };
       this.controlChannel.onerror = () => {
         this.log("Control channel error");
       };
+      if (channel.readyState === "open") {
+        this.controlChannel.onopen?.call(channel, new Event("open"));
+      }
     };
 
     pc.onicecandidateerror = (event: Event) => {

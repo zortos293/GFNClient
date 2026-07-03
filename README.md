@@ -17,7 +17,13 @@
     <img src="https://img.shields.io/github/v/tag/OpenCloudGaming/OpenNOW?style=for-the-badge&label=Download&color=brightgreen" alt="Download">
   </a>
   <a href="https://testflight.apple.com/join/u1XPJKH2">
-    <img src="https://img.shields.io/badge/TestFlight-Beta-blue.svg?style=for-the-badge&logo=apple" alt="TestFlight">
+    <img src="https://img.shields.io/badge/iOS-TestFlight-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="Download OpenNOW on TestFlight">
+  </a>
+  <a href="https://discord.gg/8EJYaJcNfD">
+    <img src="https://img.shields.io/badge/Android-Discord%20Builds-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Download Android builds from Discord">
+  </a>
+  <a href="https://github.com/OpenCloudGaming/Opennow-homebrew">
+    <img src="https://img.shields.io/badge/Switch-Port%20Coming%20Soon-E60012?style=for-the-badge&logo=nintendoswitch&logoColor=white" alt="Switch port coming soon">
   </a>
   <a href="https://opennow.zortos.me">
     <img src="https://img.shields.io/badge/Docs-opennow.zortos.me-blue?style=for-the-badge" alt="Documentation">
@@ -56,11 +62,15 @@
 
 ## Overview
 
-OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active implementation lives in [`opennow-stable/`](opennow-stable), and an iOS SwiftUI prototype lives under [`ios/OpenNOWiOS/`](ios/OpenNOWiOS/).
+OpenNOW is a community-built Electron app for playing GeForce NOW from an open-source desktop client. The active desktop implementation lives in [`opennow-stable/`](opennow-stable).
 
 ## Downloads
 
-Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases). The iOS prototype is available through [TestFlight](https://testflight.apple.com/join/u1XPJKH2).
+Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
+
+- iOS beta: [join TestFlight](https://testflight.apple.com/join/u1XPJKH2). The SwiftUI prototype currently lives on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS) under `ios/OpenNOWiOS/`; that folder is not present on this branch.
+- Android builds: download current test builds from [Discord](https://discord.gg/8EJYaJcNfD). iOS and Android are being migrated into their own repositories soon so this desktop repo can stay focused.
+- Nintendo Switch: a homebrew port is coming soon in [OpenCloudGaming/Opennow-homebrew](https://github.com/OpenCloudGaming/Opennow-homebrew), built on top of Moonlight.
 
 For macOS users looking for a more performant OpenNOW version, Jayian1890 maintains the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) repository.
 
@@ -83,7 +93,6 @@ This repository intentionally does not carry duplicate long-form product, setup,
 .
 ├── opennow-stable/          Active Electron desktop client
 ├── native/opennow-streamer/ Native Rust streaming infrastructure
-├── ios/OpenNOWiOS/          Native iOS SwiftUI app prototype
 ├── locales/                 Crowdin-managed localization files
 ├── .github/                 Workflows, templates, and contributor metadata
 ├── AGENTS.md                Repository instructions for AI agents and contributors

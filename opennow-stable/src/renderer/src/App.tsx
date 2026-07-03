@@ -342,9 +342,13 @@ async function readStreamClipboardText(): Promise<string> {
 
 async function sendStreamClipboardPaste(
   client: GfnWebRtcClient | null,
-  isMac: boolean,
 ): Promise<void> {
   if (!client) {
+    return;
+  }
+
+  const sentOfficialPaste = await client.pasteClipboardText();
+  if (sentOfficialPaste) {
     return;
   }
 
@@ -358,7 +362,7 @@ async function sendStreamClipboardPaste(
     console.warn("Clipboard read failed, falling back to paste shortcut:", error);
   }
 
-  client.sendPasteShortcut(isMac);
+  client.sendPasteShortcut(false);
 }
 
 export function App(): JSX.Element {
@@ -1556,6 +1560,13 @@ export function App(): JSX.Element {
         // ignore
       }
     }
+    if (key === "clipboardPaste") {
+      try {
+        (clientRef.current as any)?.setClipboardPasteEnabled?.(value as boolean);
+      } catch {
+        // ignore
+      }
+    }
     if (key === "maxBitrateMbps") {
       try {
         void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
@@ -2693,6 +2704,8 @@ export function App(): JSX.Element {
         mouseSensitivity: settings.mouseSensitivity,
         mouseAcceleration: settings.mouseAcceleration,
         keyboardLayout: settings.keyboardLayout,
+        clipboardPaste: settings.clipboardPaste,
+        readClipboardText: readStreamClipboardText,
         onLog: (line: string) => console.log(`[WebRTC] ${line}`),
         onStats: (stats) => diagnosticsStore.set(stats),
         onTimeWarning: (warning) => {
@@ -2865,7 +2878,7 @@ export function App(): JSX.Element {
           handleStreamShortcutActionRef.current?.(event.action);
         } else if (event.type === "native-clipboard-paste") {
           if (settings.clipboardPaste && (!nativeStreamingRef.current || nativeInputBridgeReady)) {
-            void sendStreamClipboardPaste(clientRef.current, isMac);
+            void sendStreamClipboardPaste(clientRef.current);
           }
         } else if (event.type === "native-input-capture-changed") {
           setNativeInputCaptureActive(event.captured);
@@ -3983,7 +3996,7 @@ export function App(): JSX.Element {
         return;
       }
 
-      const isPasteShortcut = e.key.toLowerCase() === "v" && !e.altKey && (isMac ? e.metaKey : e.ctrlKey);
+      const isPasteShortcut = e.key.toLowerCase() === "v" && !e.altKey && !e.shiftKey && (e.ctrlKey || (isMac && e.metaKey));
       if (streamStatus === "streaming" && isPasteShortcut) {
         // Always stop local/browser paste behavior while streaming.
         // If clipboard paste is enabled, send clipboard text into the stream.
@@ -3993,7 +4006,7 @@ export function App(): JSX.Element {
 
         if (settings.clipboardPaste) {
           void (async () => {
-            await sendStreamClipboardPaste(clientRef.current, isMac);
+            await sendStreamClipboardPaste(clientRef.current);
           })();
         }
         return;

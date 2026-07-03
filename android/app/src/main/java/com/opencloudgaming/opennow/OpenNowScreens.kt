@@ -37,6 +37,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -167,6 +169,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -3104,6 +3107,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     val streamReady = session?.isReadyForStream() == true
+    val sessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
+    var timerNowMs by remember(session?.sessionId) { mutableStateOf(System.currentTimeMillis()) }
+    val smartSessionLimit = smartSessionLimitFor(state.subscriptionInfo, state.authSession?.user?.membershipTier)
     val nerdMode = state.settings.nerdMode
     val buttonToneEnabled = nerdMode && state.settings.controllerUiSounds
     val stretchToFill = state.settings.stretchStreamToFill
@@ -3213,6 +3219,27 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         streamGuideOpen = streamReady && !state.settings.androidStreamGuideDismissed
     }
 
+    LaunchedEffect(streamReady, state.settings.sessionCounterEnabled, session?.sessionId, sessionStartedAtMs, smartSessionLimit) {
+        var previousRemainingSeconds: Int? = null
+        val sentSessionWarnings = mutableSetOf<Int>()
+        while (streamReady && state.settings.sessionCounterEnabled) {
+            val nowMs = System.currentTimeMillis()
+            timerNowMs = nowMs
+            val remainingSeconds = sessionRemainingSeconds(smartSessionLimit, sessionStartedAtMs, nowMs)
+            sessionWarningThresholdCrossed(previousRemainingSeconds, remainingSeconds)?.let { thresholdSeconds ->
+                if (sentSessionWarnings.add(thresholdSeconds)) {
+                    Toast.makeText(
+                        context,
+                        "${formatSessionWarningThreshold(thresholdSeconds)} left in this session",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+            previousRemainingSeconds = remainingSeconds
+            delay(1000L)
+        }
+    }
+
     LaunchedEffect(streamReady, state.settings.androidTouch.mousePad) {
         NativeStreamInputRouter.setTouchMouseEnabled(streamReady && state.settings.androidTouch.mousePad)
     }
@@ -3240,19 +3267,18 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
     LaunchedEffect(session?.sessionId, streamReady, streamStats, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) {
-        val decodedPixels = parseResolutionPixelsOrNull(streamStats.resolution)
-        val expectedPixels = streamResolutionPixels(launchStreamSettings)
+        val mismatch = streamRuntimeResolutionMismatch(launchStreamSettings, streamStats.resolution)
         when {
-            !streamReady || decodedPixels == null -> Unit
-            decodedPixels == expectedPixels -> resolutionMismatchStats = 0
+            !streamReady || streamStats.resolution == null -> Unit
+            mismatch == null -> resolutionMismatchStats = 0
             else -> {
                 resolutionMismatchStats += 1
                 if (resolutionMismatchStats >= 3 && !resolutionMismatchRestartRequested) {
                     resolutionMismatchRestartRequested = true
                     client.stop()
                     viewModel.restartStreamForResolutionMismatch(
-                        actualResolution = "${decodedPixels.first}x${decodedPixels.second}",
-                        expectedResolution = "${expectedPixels.first}x${expectedPixels.second}",
+                        actualResolution = mismatch.actualResolution,
+                        expectedResolution = mismatch.expectedResolution,
                     )
                 }
             }
@@ -3276,6 +3302,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             StreamVideoSurface(
                 client = client,
                 settings = streamSettings,
+                decodedResolution = streamStats.resolution,
                 hideExternalMousePointer = externalMousePassthroughActive,
                 touchMouseEnabled = state.settings.androidTouch.mousePad,
                 externalMouseRoot = activity?.window?.decorView,
@@ -3349,10 +3376,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     gameTitle = game?.title ?: "Stream",
                     status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
                     settings = state.settings,
+                    showSessionTimer = state.settings.sessionCounterEnabled,
+                    sessionTimerLimit = smartSessionLimit,
+                    sessionStartedAtMs = sessionStartedAtMs,
+                    sessionNowMs = timerNowMs,
                     audioMuted = audioMuted,
                     statsVisible = statsVisible,
                     touchLayoutEditing = touchLayoutEditing,
-                    keyboardOpen = keyboardOpen,
                     onAudioToggle = {
                         audioMuted = !audioMuted
                         client.setAudioMuted(audioMuted)
@@ -3370,7 +3400,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onTouchLayoutEditingToggle = {
                         touchLayoutEditing = !touchLayoutEditing
                     },
-                    onKeyboardToggle = { keyboardOpen = !keyboardOpen },
+                    onKeyboardOpen = {
+                        controlsOpen = false
+                        keyboardOpen = true
+                    },
                     onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
                     onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
                     onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
@@ -3439,8 +3472,12 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         text = keyboardText,
                         onTextChange = { keyboardText = it },
                         onSend = {
-                            client.sendText(keyboardText)
-                            keyboardText = ""
+                            val text = keyboardText
+                            if (text.isNotBlank()) {
+                                client.sendText(text)
+                                keyboardText = ""
+                                keyboardOpen = false
+                            }
                         },
                         onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
                         onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
@@ -3506,10 +3543,112 @@ private fun NerdStreamStatusOverlay(
     }
 }
 
+private data class SessionTimerDisplay(
+    val label: String,
+    val value: String,
+    val detail: String,
+    val progress: Float,
+    val warning: Boolean,
+)
+
+private fun sessionTimerDisplay(limit: SmartSessionLimit, startedAtMs: Long, nowMs: Long): SessionTimerDisplay {
+    val elapsedSeconds = sessionElapsedSeconds(startedAtMs, nowMs)
+    val limitSeconds = limit.limitHours * 60 * 60
+    val remainingSeconds = sessionRemainingSeconds(limit, startedAtMs, nowMs)
+    val warning = remainingSeconds <= 10 * 60
+    val progress = if (limitSeconds > 0) (elapsedSeconds.toFloat() / limitSeconds).coerceIn(0f, 1f) else 0f
+    return when (limit.mode) {
+        SessionTimerMode.Countdown -> SessionTimerDisplay(
+            label = "${limit.tierLabel} countdown",
+            value = formatSessionTimerDuration(remainingSeconds),
+            detail = "${limit.limitHours}h session limit",
+            progress = progress,
+            warning = warning,
+        )
+        SessionTimerMode.Stopwatch -> SessionTimerDisplay(
+            label = "${limit.tierLabel} session",
+            value = "${formatSessionTimerDuration(elapsedSeconds)} / ${limit.limitHours}h",
+            detail = "Session stopwatch",
+            progress = progress,
+            warning = warning,
+        )
+    }
+}
+
+@Composable
+private fun StreamSessionTimerMenuRow(
+    limit: SmartSessionLimit,
+    startedAtMs: Long,
+    nowMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val display = sessionTimerDisplay(limit, startedAtMs, nowMs)
+    val progressColor = when {
+        display.warning -> Color(0xffffc266)
+        else -> MaterialTheme.colorScheme.primary
+    }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text("Session timer", fontWeight = FontWeight.SemiBold)
+                Text(display.label, color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            }
+            Text(
+                display.value,
+                color = if (display.warning) Color(0xffffc266) else TextPrimary,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(Color.White.copy(alpha = 0.12f)),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(display.progress)
+                    .height(4.dp)
+                    .background(progressColor),
+            )
+        }
+        Text(display.detail, color = TextMuted, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun formatSessionTimerDuration(totalSeconds: Int): String {
+    val seconds = totalSeconds.coerceAtLeast(0)
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    val remainingSeconds = seconds % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(Locale.US, hours, minutes, remainingSeconds)
+    } else {
+        "%d:%02d".format(Locale.US, minutes, remainingSeconds)
+    }
+}
+
+private fun formatSessionWarningThreshold(thresholdSeconds: Int): String {
+    val minutes = thresholdSeconds / 60
+    return if (minutes == 1) "1 minute" else "$minutes minutes"
+}
+
 @Composable
 private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
+    decodedResolution: String?,
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
     externalMouseRoot: android.view.View?,
@@ -3524,10 +3663,32 @@ private fun StreamVideoSurface(
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var zoomOffset by remember { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    val streamAspectRatio = remember(decodedResolution, settings.resolution, settings.aspectRatio) {
+        streamRendererAspectRatio(settings, decodedResolution)
+    }
+    val viewportAspectRatio = remember(viewportSize) {
+        if (viewportSize.width > 0 && viewportSize.height > 0) {
+            viewportSize.width.toFloat() / viewportSize.height.toFloat()
+        } else {
+            0f
+        }
+    }
+    val rendererModifier = if (stretchToFill || viewportAspectRatio <= 0f) {
+        Modifier.fillMaxSize()
+    } else if (viewportAspectRatio > streamAspectRatio) {
+        Modifier
+            .fillMaxHeight()
+            .aspectRatio(streamAspectRatio)
+    } else {
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(streamAspectRatio)
+    }
     LaunchedEffect(
         settings.resolution,
         settings.aspectRatio,
         stretchToFill,
+        streamAspectRatio,
         configuration.orientation,
         configuration.screenWidthDp,
         configuration.screenHeightDp,
@@ -3574,10 +3735,11 @@ private fun StreamVideoSurface(
                     translationX = zoomOffset.x
                     translationY = zoomOffset.y
                 },
+            contentAlignment = Alignment.Center,
         ) {
             key(settings.streamSharpeningEnabled, viewportSize.width, viewportSize.height, stretchToFill) {
                 AndroidView(
-                    modifier = Modifier.matchParentSize(),
+                    modifier = rendererModifier,
                     factory = { ctx ->
                         client.createRenderer(ctx, settings, stretchToFill).apply {
                             isFocusable = false
@@ -3625,6 +3787,13 @@ private fun StreamVideoSurface(
             modifier = Modifier.matchParentSize(),
         )
     }
+}
+
+private fun streamRendererAspectRatio(settings: StreamSettings, decodedResolution: String?): Float {
+    val (width, height) = parseResolutionPixelsOrNull(decodedResolution)
+        ?: streamResolutionPixels(settings)
+    if (width <= 0 || height <= 0) return 16f / 9f
+    return width.toFloat() / height.toFloat()
 }
 
 private fun clampStreamZoomOffset(offset: Offset, zoomScale: Float, viewportSize: IntSize): Offset {
@@ -3973,16 +4142,19 @@ private fun StreamControlsPanel(
     gameTitle: String,
     status: String?,
     settings: AppSettings,
+    showSessionTimer: Boolean,
+    sessionTimerLimit: SmartSessionLimit,
+    sessionStartedAtMs: Long,
+    sessionNowMs: Long,
     audioMuted: Boolean,
     statsVisible: Boolean,
     touchLayoutEditing: Boolean,
-    keyboardOpen: Boolean,
     onAudioToggle: () -> Unit,
     onStatsToggle: () -> Unit,
     onStatsStyleCycle: () -> Unit,
     onPhoneRumbleFallbackToggle: () -> Unit,
     onTouchLayoutEditingToggle: () -> Unit,
-    onKeyboardToggle: () -> Unit,
+    onKeyboardOpen: () -> Unit,
     onEsc: () -> Unit,
     onEnter: () -> Unit,
     onBackspace: () -> Unit,
@@ -4044,6 +4216,20 @@ private fun StreamControlsPanel(
                     OutlinedButton(
                         onClick = {
                             onButtonTone()
+                            onKeyboardOpen()
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_keyboard),
+                            contentDescription = "Open keyboard sender",
+                            tint = TextPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            onButtonTone()
                             onExit()
                         },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -4060,6 +4246,15 @@ private fun StreamControlsPanel(
                     ) {
                         Text("Done")
                     }
+                }
+            }
+            if (showSessionTimer) {
+                item {
+                    StreamSessionTimerMenuRow(
+                        limit = sessionTimerLimit,
+                        startedAtMs = sessionStartedAtMs,
+                        nowMs = sessionNowMs,
+                    )
                 }
             }
             item {
@@ -4091,10 +4286,6 @@ private fun StreamControlsPanel(
             }
             item {
                 StreamPanelSection("Input") {
-                    StreamControlSwitch("Keyboard bar", if (keyboardOpen) "Visible" else "Hidden", keyboardOpen) {
-                        onButtonTone()
-                        onKeyboardToggle()
-                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(
                             onClick = {
@@ -4256,6 +4447,18 @@ private fun StreamKeyboardBar(
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val inputFocusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val sendIfReady = {
+        if (text.isNotBlank()) {
+            onSend()
+        }
+    }
+    LaunchedEffect(Unit) {
+        delay(80)
+        runCatching { inputFocusRequester.requestFocus() }
+        keyboardController?.show()
+    }
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = Panel.copy(alpha = 0.95f),
@@ -4265,16 +4468,25 @@ private fun StreamKeyboardBar(
             OutlinedTextField(
                 value = text,
                 onValueChange = onTextChange,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(inputFocusRequester),
                 singleLine = true,
                 placeholder = { Text("Type into stream", color = TextMuted) },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { sendIfReady() }),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = onSend, enabled = text.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Send") }
+                Button(onClick = sendIfReady, enabled = text.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Send") }
                 OutlinedButton(onClick = onBackspace, modifier = Modifier.weight(1f)) { Text("⌫") }
                 OutlinedButton(onClick = onEnter, modifier = Modifier.weight(1f)) { Text("Enter") }
                 OutlinedButton(onClick = onEsc, modifier = Modifier.weight(1f)) { Text("Esc") }
-                TextButton(onClick = onDone) { Text("Done") }
+                TextButton(
+                    onClick = {
+                        keyboardController?.hide()
+                        onDone()
+                    },
+                ) { Text("Done") }
             }
         }
     }

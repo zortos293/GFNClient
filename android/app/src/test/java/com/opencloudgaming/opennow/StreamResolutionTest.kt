@@ -5,10 +5,66 @@ import org.junit.Test
 
 class StreamResolutionTest {
     @Test
+    fun smartSessionLimitsMatchMembershipTier() {
+        val free = smartSessionLimitFor(SubscriptionInfo(membershipTier = "FREE"), null)
+        val performance = smartSessionLimitFor(SubscriptionInfo(membershipTier = "PERFORMANCE"), null)
+        val ultimate = smartSessionLimitFor(SubscriptionInfo(membershipTier = "ULTIMATE"), null)
+
+        assertEquals(1, free.limitHours)
+        assertEquals(SessionTimerMode.Countdown, free.mode)
+        assertEquals(6, performance.limitHours)
+        assertEquals(SessionTimerMode.Stopwatch, performance.mode)
+        assertEquals(8, ultimate.limitHours)
+        assertEquals(SessionTimerMode.Stopwatch, ultimate.mode)
+    }
+
+    @Test
+    fun paidMonthlyUsageFallsBackToHundredHourLimit() {
+        val subscription = SubscriptionInfo(membershipTier = "ULTIMATE", usedHours = 37.25)
+
+        assertEquals(100.0, monthlyHourLimitFor(subscription, null) ?: 0.0, 0.001)
+        assertEquals(62.75, monthlyHoursRemainingFor(subscription, null) ?: 0.0, 0.001)
+    }
+
+    @Test
+    fun sessionWarningsFireAtMostRelevantCrossedThreshold() {
+        assertEquals(null, sessionWarningThresholdCrossed(null, 30 * 60))
+        assertEquals(30 * 60, sessionWarningThresholdCrossed(30 * 60 + 1, 30 * 60))
+        assertEquals(5 * 60, sessionWarningThresholdCrossed(10 * 60 + 1, 5 * 60 - 1))
+        assertEquals(null, sessionWarningThresholdCrossed(5 * 60, 5 * 60 - 1))
+    }
+
+    @Test
     fun streamResolutionPixelsKeepsSelected1080pFor16By9() {
         val settings = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9")
 
         assertEquals(1920 to 1080, streamResolutionPixels(settings))
+    }
+
+    @Test
+    fun runtimeResolutionMismatchIsDiagnosticForServerFallbackModes() {
+        assertEquals(
+            StreamResolutionMismatch(actualResolution = "1152x720", expectedResolution = "1280x720"),
+            streamRuntimeResolutionMismatch(
+                StreamSettings(resolution = "1280x720", aspectRatio = "16:9"),
+                "1152x720",
+            ),
+        )
+        assertEquals(
+            StreamResolutionMismatch(actualResolution = "1366x768", expectedResolution = "1680x720"),
+            streamRuntimeResolutionMismatch(
+                StreamSettings(resolution = "1680x720", aspectRatio = "21:9"),
+                "1366x768",
+            ),
+        )
+    }
+
+    @Test
+    fun runtimeResolutionMismatchIgnoresExactAndMissingStats() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9")
+
+        assertEquals(null, streamRuntimeResolutionMismatch(settings, null))
+        assertEquals(null, streamRuntimeResolutionMismatch(settings, "1680x720"))
     }
 
     @Test
@@ -153,7 +209,7 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun activeSessionMustMatchRequestedUltrawideResolutionBeforeReuse() {
+    fun activeSessionRejectsUnexpectedResolutionBeforeReuse() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
         val stale = activeSession(
             resolution = "1680x1050",
@@ -162,6 +218,37 @@ class StreamResolutionTest {
         )
 
         assertEquals(false, stale.matchesStreamSettings(settings))
+    }
+
+    @Test
+    fun activeSessionRejectsServerFallbackResolutionBeforeReuse() {
+        val ultrawide = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val hd = StreamSettings(resolution = "1280x720", aspectRatio = "16:9", fps = 60)
+
+        assertEquals(
+            false,
+            activeSession(
+                resolution = "1366x768",
+                fps = 60,
+                settingsSignature = streamSettingsSessionSignature(ultrawide),
+            ).matchesStreamSettings(ultrawide),
+        )
+        assertEquals(
+            false,
+            activeSession(
+                resolution = "1280x720",
+                fps = 60,
+                settingsSignature = streamSettingsSessionSignature(ultrawide),
+            ).matchesStreamSettings(ultrawide),
+        )
+        assertEquals(
+            false,
+            activeSession(
+                resolution = "1152x720",
+                fps = 60,
+                settingsSignature = streamSettingsSessionSignature(hd),
+            ).matchesStreamSettings(hd),
+        )
     }
 
     @Test

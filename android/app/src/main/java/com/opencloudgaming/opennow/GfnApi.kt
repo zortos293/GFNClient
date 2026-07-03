@@ -120,6 +120,12 @@ private const val CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000L
 private val READY_SESSION_STATUSES = setOf(2, 3)
 private const val INVALID_SESSION_PROXY_MESSAGE =
     "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port."
+private const val DEFAULT_REMOTE_CONTROLLERS_BITMAP = 1
+private const val DEFAULT_SUPPORTED_CONTROLLER_TYPE = 2
+
+internal class SessionClaimNotReadyException(
+    val latestSession: SessionInfo?,
+) : IllegalStateException("Session did not become ready after claiming.")
 
 val OpenNowJson: Json = Json {
     ignoreUnknownKeys = true
@@ -275,10 +281,12 @@ internal fun buildMinimalClaimRequestBody(appId: String, deviceId: String, setti
         put("data", "RESUME")
         putJsonObject("sessionRequestData") {
             put("audioMode", 2)
-            put("remoteControllersBitmap", 0)
+            put("remoteControllersBitmap", DEFAULT_REMOTE_CONTROLLERS_BITMAP)
             put("sdrHdrMode", if (profile?.hdrEnabled == true) 1 else 0)
             put("networkTestSessionId", JsonNull)
-            putJsonArray("availableSupportedControllers") {}
+            putJsonArray("availableSupportedControllers") {
+                add(JsonPrimitive(DEFAULT_SUPPORTED_CONTROLLER_TYPE))
+            }
             put("clientVersion", "30.0")
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
@@ -2153,6 +2161,7 @@ class GfnSessionRepository(
                 .build()
             http.awaitText(claimRequest)
         }
+        var latestSession: SessionInfo? = null
         repeat(60) { attempt ->
             if (attempt > 0) delay(1000)
             val poll = Request.Builder()
@@ -2163,12 +2172,12 @@ class GfnSessionRepository(
             if (code in 200..299) {
                 val payload = OpenNowJson.parseToJsonElement(text).jsonObject
                 val pollStatus = payload.obj("session")?.int("status")
-                if (pollStatus in READY_SESSION_STATUSES) {
-                    return toSessionInfo("", sessionBase, payload, clientId, deviceId)
-                }
+                val polledSession = toSessionInfo("", sessionBase, payload, clientId, deviceId)
+                latestSession = polledSession
+                if (pollStatus in READY_SESSION_STATUSES) return polledSession
             }
         }
-        error("Session did not become ready after claiming.")
+        throw SessionClaimNotReadyException(latestSession)
     }
 
     suspend fun stopActiveSession(token: String, active: ActiveSessionInfo, settings: StreamSettings) {
@@ -2252,7 +2261,9 @@ class GfnSessionRepository(
             putJsonObject("sessionRequestData") {
                 put("appId", appId)
                 if (internalTitle.isBlank()) put("internalTitle", JsonNull) else put("internalTitle", internalTitle)
-                putJsonArray("availableSupportedControllers") {}
+                putJsonArray("availableSupportedControllers") {
+                    add(JsonPrimitive(DEFAULT_SUPPORTED_CONTROLLER_TYPE))
+                }
                 put("networkTestSessionId", JsonNull)
                 put("parentSessionId", JsonNull)
                 put("clientIdentification", "GFN-PC")
@@ -2270,7 +2281,7 @@ class GfnSessionRepository(
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)
-                put("remoteControllersBitmap", 0)
+                put("remoteControllersBitmap", DEFAULT_REMOTE_CONTROLLERS_BITMAP)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
                 put("enhancedStreamMode", 1)
                 put("appLaunchMode", 1)

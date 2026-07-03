@@ -949,7 +949,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     readyCandidate != null -> {
                         recordDebugEvent("queue", "Claiming ready active session ${readyCandidate.debugSummary()}")
                         _state.update { it.copy(launchPhase = "Resuming session", activeSession = readyCandidate) }
-                        sessionRepository.claimSession(token, readyCandidate, settings)
+                        claimActiveSessionOrContinuePolling(token, readyCandidate, settings)
                     }
                     launchingCandidate != null -> {
                         val pending = launchingCandidate.toPendingSession(zone = "prod")
@@ -1713,7 +1713,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )?.takeIf { it.matchesStreamSettings(currentSettings) }
                     ?: error("The running session could not be found anymore, so recovery was not possible.")
                 recordDebugEvent("recovery", "Claiming recovery candidate ${fallbackCandidate.debugSummary()}")
-                sessionRepository.claimSession(token, fallbackCandidate, currentSettings)
+                claimActiveSessionOrContinuePolling(token, fallbackCandidate, currentSettings)
             }.onSuccess { readySession ->
                 recordDebugEvent("recovery", "Recovery claim ready ${readySession.debugSummary()}")
                 _state.update {
@@ -2060,7 +2060,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         if (active.isReadyForClaim()) {
             recordDebugEvent("queue", "Active session already ready for claim ${active.debugSummary()}")
             _state.update { it.copy(launchPhase = "Resuming session") }
-            return sessionRepository.claimSession(token, active, settings)
+            return claimActiveSessionOrContinuePolling(token, active, settings)
         }
 
         val pending = active.toPendingSession(zone = "prod")
@@ -2101,9 +2101,33 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             )
             recordDebugEvent("queue", "Resume session became ready ${latest.debugSummary()}")
             _state.update { it.copy(launchPhase = "Resuming session") }
-            return sessionRepository.claimSession(token, hydratedActive, settings)
+            return claimActiveSessionOrContinuePolling(token, hydratedActive, settings)
         }
         return pollUntilReady(token, latest, settings)
+    }
+
+    private suspend fun claimActiveSessionOrContinuePolling(
+        token: String,
+        active: ActiveSessionInfo,
+        settings: StreamSettings,
+    ): SessionInfo {
+        return try {
+            sessionRepository.claimSession(token, active, settings)
+        } catch (error: SessionClaimNotReadyException) {
+            val fallback = active.toPendingSession(zone = "prod")
+            val latest = error.latestSession?.let { mergeQueueSessionState(fallback, it) } ?: fallback
+            recordDebugEvent("queue", "Claim stayed pending; continuing queue polling ${latest.debugSummary()}")
+            _state.update {
+                it.copy(
+                    streamSession = latest,
+                    activeStreamSettings = settings,
+                    launchPhase = loadingPhaseFor(latest),
+                    queuePosition = latest.queuePosition?.takeIf { position -> position > 0 },
+                    queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
+                )
+            }
+            pollUntilReady(token, latest, settings)
+        }
     }
 
     private suspend fun pollUntilReady(token: String, created: SessionInfo, settings: StreamSettings): SessionInfo {

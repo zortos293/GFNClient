@@ -432,6 +432,10 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
             onOpenUpdates = viewModel::openAndroidUpdateSettings,
             onDismiss = viewModel::dismissAndroidUpdateNotice,
         )
+        AccountPlayTimeStatsPanel(
+            subscriptionInfo = state.subscriptionInfo,
+            fallbackMembershipTier = state.authSession?.user?.membershipTier,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(onClick = { viewModel.login() }, modifier = Modifier.weight(1f)) { Text("Add account") }
             OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
@@ -466,6 +470,112 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun AccountPlayTimeStatsPanel(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?) {
+    val sessionLimit = smartSessionLimitFor(subscriptionInfo, fallbackMembershipTier)
+    val monthlyLimit = monthlyHourLimitFor(subscriptionInfo, fallbackMembershipTier)
+    val monthlyRemaining = monthlyHoursRemainingFor(subscriptionInfo, fallbackMembershipTier)
+    val usedHours = subscriptionInfo?.usedHours?.takeIf { it > 0.0 }
+    val progressFraction = if (monthlyLimit != null && monthlyLimit > 0.0) {
+        ((usedHours ?: 0.0) / monthlyLimit).toFloat().coerceIn(0f, 1f)
+    } else {
+        null
+    }
+    val freePlan = sessionLimit.mode == SessionTimerMode.Countdown
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Play time stats", color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                UsageMetricTile(
+                    label = "Session",
+                    value = "${sessionLimit.limitHours}h",
+                    detail = when (sessionLimit.mode) {
+                        SessionTimerMode.Countdown -> "countdown"
+                        SessionTimerMode.Stopwatch -> "stopwatch"
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+                UsageMetricTile(
+                    label = "Monthly left",
+                    value = monthlyRemaining?.let(::formatPlayTimeHours) ?: "--",
+                    detail = monthlyLimit?.let { "of ${formatPlayTimeHours(it)}" } ?: if (freePlan) "paid plans" else "refresh account",
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (progressFraction != null && monthlyLimit != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "${formatPlayTimeHours(usedHours ?: 0.0)} used",
+                            color = SettingsTextMuted,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "${formatPlayTimePercent(progressFraction)} of ${formatPlayTimeHours(monthlyLimit)}",
+                            color = SettingsTextMuted,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                            .semantics {
+                                contentDescription = "Monthly play time ${formatPlayTimePercent(progressFraction)} used"
+                                progressBarRangeInfo = ProgressBarRangeInfo(progressFraction, 0f..1f)
+                            },
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth(progressFraction)
+                                .height(4.dp)
+                                .background(
+                                    when {
+                                        progressFraction >= 0.9f -> Color(0xffff8a65)
+                                        progressFraction >= 0.75f -> Color(0xffffc266)
+                                        else -> MaterialTheme.colorScheme.primary
+                                    },
+                                ),
+                        )
+                    }
+                }
+            } else {
+                Text(
+                    if (freePlan) {
+                        "Paid plans show monthly play-time usage here when NVIDIA reports it."
+                    } else {
+                        "Refresh Account settings after sign-in to load monthly play-time usage."
+                    },
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsageMetricTile(label: String, value: String, detail: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.52f),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(value, color = SettingsText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(detail, color = SettingsTextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -773,6 +883,16 @@ private fun storageUsageFraction(usedGb: Double?, totalGb: Double?): Float? {
 }
 
 private fun formatStoragePercent(fraction: Float): String =
+    "${(fraction * 100).roundToInt().coerceIn(0, 100)}%"
+
+private fun formatPlayTimeHours(value: Double): String =
+    if (value >= 10.0 || value % 1.0 == 0.0) {
+        "${value.roundToInt()}h"
+    } else {
+        "%.1fh".format(Locale.US, value)
+    }
+
+private fun formatPlayTimePercent(fraction: Float): String =
     "${(fraction * 100).roundToInt().coerceIn(0, 100)}%"
 
 private fun connectorStatusText(connector: AccountConnector): String {

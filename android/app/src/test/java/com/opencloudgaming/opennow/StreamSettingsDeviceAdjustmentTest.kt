@@ -203,6 +203,67 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun stabilizesExtremeH264CloudMatchProfileBeforeLaunch() {
+        val adjusted = StreamSettings(
+            resolution = "5120x1440",
+            aspectRatio = "32:9",
+            fps = 240,
+            maxBitrateMbps = 150,
+            codec = VideoCodec.H264,
+            colorQuality = ColorQuality.TenBit444,
+            hdrEnabled = true,
+            enableL4S = true,
+            enableCloudGsync = true,
+            streamSharpeningEnabled = true,
+        ).adjustedForDevice(codecReport(VideoCodec.H264, hardwareDecoder = true, realtimeSafe = true))
+
+        assertEquals("5120x1440", adjusted.resolution)
+        assertEquals("32:9", adjusted.aspectRatio)
+        assertEquals(120, adjusted.fps)
+        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals(false, adjusted.hdrEnabled)
+        assertEquals(false, adjusted.enableCloudGsync)
+        assertEquals(true, adjusted.enableL4S)
+    }
+
+    @Test
+    fun stabilizesExtremeH265CloudMatchProfileWithoutDroppingAdvancedFeatures() {
+        val adjusted = StreamSettings(
+            resolution = "5120x2160",
+            aspectRatio = "21:9",
+            fps = 240,
+            maxBitrateMbps = 150,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+            enableL4S = true,
+            enableCloudGsync = true,
+            streamSharpeningEnabled = true,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                nativeDecoderAvailable = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+            ),
+        )
+
+        assertEquals("5120x2160", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
+        assertEquals(120, adjusted.fps)
+        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(VideoCodec.H265, adjusted.codec)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(true, adjusted.hdrEnabled)
+        assertEquals(true, adjusted.enableCloudGsync)
+        assertEquals(true, adjusted.enableL4S)
+    }
+
+    @Test
     fun safeVideoFallbackUsesBasicWorkingAndroidProfile() {
         val fallback = StreamSettings(
             resolution = "3840x2160",

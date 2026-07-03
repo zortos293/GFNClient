@@ -55,6 +55,40 @@ enum class StreamStatsStyle {
     Detailed,
 }
 
+enum class SessionTimerMode {
+    Countdown,
+    Stopwatch,
+}
+
+data class SmartSessionLimit(
+    val tierLabel: String,
+    val limitHours: Int,
+    val mode: SessionTimerMode,
+)
+
+internal val SESSION_WARNING_THRESHOLDS_SECONDS = listOf(
+    30 * 60,
+    10 * 60,
+    5 * 60,
+    3 * 60,
+    60,
+)
+
+internal fun sessionElapsedSeconds(startedAtMs: Long, nowMs: Long): Int =
+    ((nowMs - startedAtMs).coerceAtLeast(0L) / 1000L).toInt()
+
+internal fun sessionRemainingSeconds(limit: SmartSessionLimit, startedAtMs: Long, nowMs: Long): Int {
+    val limitSeconds = limit.limitHours * 60 * 60
+    return (limitSeconds - sessionElapsedSeconds(startedAtMs, nowMs)).coerceAtLeast(0)
+}
+
+internal fun sessionWarningThresholdCrossed(previousRemainingSeconds: Int?, remainingSeconds: Int): Int? {
+    val previous = previousRemainingSeconds ?: return null
+    return SESSION_WARNING_THRESHOLDS_SECONDS
+        .filter { threshold -> previous > threshold && remainingSeconds <= threshold }
+        .minOrNull()
+}
+
 @Serializable
 data class StreamSettings(
     val resolution: String = "1920x1080",
@@ -124,7 +158,7 @@ data class AppSettings(
     val stretchStreamToFill: Boolean = false,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
-    val sessionCounterEnabled: Boolean = false,
+    val sessionCounterEnabled: Boolean = true,
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
@@ -141,6 +175,21 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
         parseResolutionPixelsOrNull(settings.resolution)?.let { return it }
     }
     return parseResolutionPixels(normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio))
+}
+
+internal data class StreamResolutionMismatch(
+    val actualResolution: String,
+    val expectedResolution: String,
+)
+
+internal fun streamRuntimeResolutionMismatch(settings: StreamSettings, actualResolution: String?): StreamResolutionMismatch? {
+    val actualPixels = parseResolutionPixelsOrNull(actualResolution) ?: return null
+    val expectedPixels = streamResolutionPixels(settings)
+    if (actualPixels == expectedPixels) return null
+    return StreamResolutionMismatch(
+        actualResolution = "${actualPixels.first}x${actualPixels.second}",
+        expectedResolution = "${expectedPixels.first}x${expectedPixels.second}",
+    )
 }
 
 internal fun streamResolutionOptionsForAspect(aspectRatio: String): List<String> =
@@ -282,6 +331,33 @@ internal data class StreamResolutionChoice(
 internal fun hasUltimateStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Boolean =
     streamResolutionPlanRank(planForMembershipTier(subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier)) >=
         streamResolutionPlanRank(StreamResolutionPlan.Ultimate)
+
+internal fun smartSessionLimitFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): SmartSessionLimit {
+    val tier = subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier
+    return when (planForMembershipTier(tier)) {
+        StreamResolutionPlan.Ultimate -> SmartSessionLimit("Ultimate", 8, SessionTimerMode.Stopwatch)
+        StreamResolutionPlan.Priority -> SmartSessionLimit("Performance", 6, SessionTimerMode.Stopwatch)
+        StreamResolutionPlan.Free -> SmartSessionLimit("Free", 1, SessionTimerMode.Countdown)
+    }
+}
+
+internal fun monthlyHourLimitFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Double? {
+    val reported = subscriptionInfo?.totalHours?.takeIf { it > 0.0 }
+    if (reported != null) return reported
+    return when (planForMembershipTier(subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier)) {
+        StreamResolutionPlan.Free -> null
+        StreamResolutionPlan.Priority,
+        StreamResolutionPlan.Ultimate,
+        -> 100.0
+    }
+}
+
+internal fun monthlyHoursRemainingFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Double? {
+    val reported = subscriptionInfo?.remainingHours?.takeIf { it > 0.0 }
+    if (reported != null) return reported
+    val limit = monthlyHourLimitFor(subscriptionInfo, fallbackMembershipTier) ?: return null
+    return (limit - (subscriptionInfo?.usedHours ?: 0.0)).coerceAtLeast(0.0)
+}
 
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
     if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false) else this
@@ -989,11 +1065,12 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
             maxBitrateMbps = minOf(maxBitrateMbps, LOW_POWER_TV_BITRATE_CAP_MBPS),
             fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
         ).cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT)
+            .withStableAndroidCloudMatchProfile()
     }
 
     val capability = report?.capabilities?.firstOrNull { it.codec == codec }
     val codecSupported = capability?.streamingDecoderUsableForLaunch() ?: true
-    val effectiveCodec = if (codecSupported) codec else report?.bestStreamingFallbackCodec() ?: VideoCodec.H264
+    val effectiveCodec = if (codecSupported) codec else report.bestStreamingFallbackCodec()
 
     val profileBitrateCap = when {
         !codecSupported -> 35
@@ -1011,7 +1088,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
             colorQuality = adjusted.androidWebRtcColorQuality(),
             maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap),
         )
-    }
+    }.withStableAndroidCloudMatchProfile()
 }
 
 internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
@@ -1037,6 +1114,17 @@ private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
         -> colorQuality
         else -> ColorQuality.EightBit420
     }
+}
+
+private fun StreamSettings.withStableAndroidCloudMatchProfile(): StreamSettings {
+    val (width, height) = streamResolutionPixels(this)
+    val pixels = width * height
+    val maxFps = if (pixels > ANDROID_1440P_PIXEL_BUDGET) 120 else 240
+    return copy(
+        fps = minOf(fps, maxFps),
+        hdrEnabled = hdrEnabled && codec != VideoCodec.H264,
+        enableCloudGsync = enableCloudGsync && codec != VideoCodec.H264,
+    )
 }
 
 private fun StreamSettings.cappedResolution(maxWidth: Int, maxHeight: Int): StreamSettings {
@@ -1070,3 +1158,4 @@ private const val LOW_POWER_TV_BITRATE_CAP_MBPS = 25
 private const val LOW_POWER_TV_FPS_CAP = 60
 private const val SAFE_VIDEO_FALLBACK_MAX_WIDTH = 1920
 private const val SAFE_VIDEO_FALLBACK_MAX_HEIGHT = 1080
+private const val ANDROID_1440P_PIXEL_BUDGET = 2560 * 1440

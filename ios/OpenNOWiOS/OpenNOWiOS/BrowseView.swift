@@ -19,10 +19,9 @@ struct BrowseView: View {
                 emptyTitle: hasActiveFilters ? "No Matches" : "No Games",
                 emptySystemImage: hasActiveFilters ? "line.3.horizontal.decrease.circle" : "square.grid.2x2",
                 subtitle: { gameCatalogSubtitle(for: $0) },
-                badgeSystemImage: { store.isFavorite($0) ? "heart.fill" : nil },
+                badgeSystemImage: { _ in nil },
                 onOpenDetails: { selectedGameForDetails = $0 },
-                onPlay: launchFromCard,
-                onChooseLauncher: { selectedGameForLauncher = $0 }
+                onPlay: launchFromCard
             ) {
                 browseHeader
             } emptyActions: {
@@ -41,7 +40,7 @@ struct BrowseView: View {
         .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
-        .sheet(item: $selectedGameForLauncher) { game in
+        .opennowBottomSheet(item: $selectedGameForLauncher, heightFraction: 0.58, maxHeight: 560) { game in
             GameLauncherSelectionSheet(game: game) { option in
                 selectedGameForLauncher = nil
                 DispatchQueue.main.async {
@@ -49,8 +48,6 @@ struct BrowseView: View {
                 }
             }
             .environmentObject(store)
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
         }
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }

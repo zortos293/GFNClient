@@ -1,4 +1,5 @@
 import ActivityKit
+import Foundation
 import SwiftUI
 import WidgetKit
 
@@ -11,29 +12,33 @@ struct QueueLiveActivityWidget: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(context.attributes.gameTitle)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.72)
-                        Text(context.state.headline)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.8))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
+                    HStack(alignment: .center, spacing: 8) {
+                        LiveActivityAppIcon(size: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(context.attributes.gameTitle)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                            Text(storeQueueLabel(for: context))
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.78))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    QueueBadge(
-                        label: expandedBadgeLabel(for: context.state),
-                        phase: context.state.phase,
-                        size: .expanded
-                    )
+                    if let queueLabel = queueNumberLabel(for: context.state) {
+                        QueueValueText(
+                            label: queueLabel,
+                            phase: context.state.phase,
+                            size: .expanded
+                        )
+                    }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack(spacing: 10) {
-                        CompactQueueIcon(phase: context.state.phase, size: 20)
+                    HStack(spacing: 8) {
                         Text(context.state.detail)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.white.opacity(0.92))
@@ -43,16 +48,22 @@ struct QueueLiveActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                CompactQueueIcon(phase: context.state.phase, size: 22)
+                LiveActivityAppIcon(size: 21)
             } compactTrailing: {
-                QueueBadge(
-                    label: compactBadgeLabel(for: context.state),
-                    phase: context.state.phase,
-                    size: .compact
-                )
+                if let queueLabel = queueNumberLabel(for: context.state) {
+                    QueueValueText(
+                        label: queueLabel,
+                        phase: context.state.phase,
+                        size: .compact
+                    )
+                }
             } minimal: {
-                CompactQueueIcon(phase: context.state.phase, size: 22)
+                LiveActivityAppIcon(size: 19)
             }
+            .contentMargins(.all, 10, for: .expanded)
+            .contentMargins([.leading, .top, .bottom], 6, for: .compactLeading)
+            .contentMargins([.trailing, .top, .bottom], 6, for: .compactTrailing)
+            .contentMargins(.all, 6, for: .minimal)
             .keylineTint(color(for: context.state.phase))
         }
     }
@@ -79,32 +90,14 @@ struct QueueLiveActivityWidget: Widget {
         }
     }
 
-    private func expandedBadgeLabel(for state: QueueActivityAttributes.ContentState) -> String {
-        switch state.phase {
-        case .queued:
-            if let queue = state.queuePosition {
-                return "#\(queue)"
-            }
-            return "QUEUE"
-        case .waiting:
-            return "WAIT"
-        case .ready:
-            return "READY"
-        }
+    private func storeQueueLabel(for context: ActivityViewContext<QueueActivityAttributes>) -> String {
+        let store = context.attributes.storeName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let displayStore = store.isEmpty ? "Store" : store
+        return context.state.phase == .ready ? "\(displayStore) ready" : "\(displayStore) queue"
     }
 
-    private func compactBadgeLabel(for state: QueueActivityAttributes.ContentState) -> String {
-        switch state.phase {
-        case .queued:
-            if let queue = state.queuePosition {
-                return "\(queue)"
-            }
-            return "Q"
-        case .waiting:
-            return "..."
-        case .ready:
-            return "GO"
-        }
+    private func queueNumberLabel(for state: QueueActivityAttributes.ContentState) -> String? {
+        state.queuePosition.map(String.init)
     }
 }
 
@@ -131,17 +124,17 @@ private struct LockScreenQueueLiveActivityView: View {
                     .minimumScaleFactor(0.8)
             }
             Spacer(minLength: 12)
-            QueueBadge(
-                label: lockScreenBadgeLabel(for: context.state),
+            QueueValueText(
+                label: lockScreenValueLabel(for: context.state),
                 phase: context.state.phase,
                 size: .lockScreen
             )
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 18)
     }
 
-    private func lockScreenBadgeLabel(for state: QueueActivityAttributes.ContentState) -> String {
+    private func lockScreenValueLabel(for state: QueueActivityAttributes.ContentState) -> String {
         switch state.phase {
         case .queued:
             if let queue = state.queuePosition {
@@ -156,7 +149,19 @@ private struct LockScreenQueueLiveActivityView: View {
     }
 }
 
-private struct QueueBadge: View {
+private struct LiveActivityAppIcon: View {
+    let size: CGFloat
+
+    var body: some View {
+        Image("LiveActivityAppIcon")
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+    }
+}
+
+private struct QueueValueText: View {
     enum Size {
         case compact
         case expanded
@@ -171,122 +176,42 @@ private struct QueueBadge: View {
         Text(label)
             .font(font)
             .monospacedDigit()
-            .foregroundStyle(.white)
+            .foregroundStyle(color)
             .lineLimit(1)
-            .minimumScaleFactor(0.65)
-            .frame(minWidth: minWidth, minHeight: height)
-            .padding(.horizontal, horizontalPadding)
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(color.opacity(0.92))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-            )
+            .minimumScaleFactor(0.72)
+            .frame(minWidth: minWidth, alignment: .trailing)
     }
 
     private var color: Color {
         switch phase {
         case .queued:
-            return Color(red: 0.26, green: 0.5, blue: 0.95)
+            return Color(red: 0.55, green: 0.82, blue: 1.0)
         case .waiting:
-            return Color(red: 0.85, green: 0.58, blue: 0.14)
+            return Color(red: 1.0, green: 0.83, blue: 0.4)
         case .ready:
-            return Color(red: 0.14, green: 0.65, blue: 0.34)
+            return Color(red: 0.55, green: 0.95, blue: 0.68)
         }
     }
 
     private var font: Font {
         switch size {
         case .compact:
-            return .caption2.weight(.bold)
-        case .expanded:
             return .caption.weight(.bold)
+        case .expanded:
+            return .title3.weight(.bold)
         case .lockScreen:
-            return .headline.weight(.bold)
+            return .title3.weight(.bold)
         }
     }
 
     private var minWidth: CGFloat {
         switch size {
         case .compact:
-            return 26
+            return 16
         case .expanded:
-            return 50
-        case .lockScreen:
-            return 68
-        }
-    }
-
-    private var height: CGFloat {
-        switch size {
-        case .compact:
             return 24
-        case .expanded:
-            return 30
         case .lockScreen:
-            return 40
-        }
-    }
-
-    private var horizontalPadding: CGFloat {
-        switch size {
-        case .compact:
-            return 6
-        case .expanded:
-            return 8
-        case .lockScreen:
-            return 10
-        }
-    }
-
-    private var cornerRadius: CGFloat {
-        switch size {
-        case .compact:
-            return 8
-        case .expanded:
-            return 10
-        case .lockScreen:
-            return 12
-        }
-    }
-}
-
-private struct CompactQueueIcon: View {
-    let phase: QueueActivityAttributes.ContentState.Phase
-    let size: CGFloat
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
-                .fill(iconColor.opacity(0.9))
-                .frame(width: size, height: size)
-            Image(systemName: iconName)
-                .font(.system(size: size * 0.46, weight: .bold))
-                .foregroundStyle(.white)
-        }
-    }
-
-    private var iconName: String {
-        switch phase {
-        case .queued:
-            return "hourglass"
-        case .waiting:
-            return "clock"
-        case .ready:
-            return "play.fill"
-        }
-    }
-
-    private var iconColor: Color {
-        switch phase {
-        case .queued:
-            return Color(red: 0.26, green: 0.5, blue: 0.95)
-        case .waiting:
-            return Color(red: 0.85, green: 0.58, blue: 0.14)
-        case .ready:
-            return Color(red: 0.14, green: 0.65, blue: 0.34)
+            return 56
         }
     }
 }

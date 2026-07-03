@@ -666,6 +666,7 @@ struct StreamerPreferences: Codable, Equatable {
     var audioMuted: Bool
     var showStatsClock: Bool
     var showStatsBattery: Bool
+    var showStatsCellular: Bool
     var touchControllerVisible: Bool
     var touchscreenModeEnabled: Bool
     var physicalControllerPassthrough: Bool
@@ -674,6 +675,7 @@ struct StreamerPreferences: Codable, Equatable {
         case audioMuted
         case showStatsClock
         case showStatsBattery
+        case showStatsCellular
         case touchControllerVisible
         case touchscreenModeEnabled
         case physicalControllerPassthrough
@@ -683,6 +685,7 @@ struct StreamerPreferences: Codable, Equatable {
         audioMuted: Bool,
         showStatsClock: Bool,
         showStatsBattery: Bool,
+        showStatsCellular: Bool,
         touchControllerVisible: Bool,
         touchscreenModeEnabled: Bool,
         physicalControllerPassthrough: Bool
@@ -690,6 +693,7 @@ struct StreamerPreferences: Codable, Equatable {
         self.audioMuted = audioMuted
         self.showStatsClock = showStatsClock
         self.showStatsBattery = showStatsBattery
+        self.showStatsCellular = showStatsCellular
         self.touchControllerVisible = touchControllerVisible
         self.touchscreenModeEnabled = touchscreenModeEnabled
         self.physicalControllerPassthrough = physicalControllerPassthrough
@@ -700,6 +704,7 @@ struct StreamerPreferences: Codable, Equatable {
         audioMuted = try container.decodeIfPresent(Bool.self, forKey: .audioMuted) ?? Self.default.audioMuted
         showStatsClock = try container.decodeIfPresent(Bool.self, forKey: .showStatsClock) ?? Self.default.showStatsClock
         showStatsBattery = try container.decodeIfPresent(Bool.self, forKey: .showStatsBattery) ?? Self.default.showStatsBattery
+        showStatsCellular = try container.decodeIfPresent(Bool.self, forKey: .showStatsCellular) ?? Self.default.showStatsCellular
         touchControllerVisible = try container.decodeIfPresent(Bool.self, forKey: .touchControllerVisible) ?? Self.default.touchControllerVisible
         touchscreenModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .touchscreenModeEnabled) ?? Self.default.touchscreenModeEnabled
         physicalControllerPassthrough = try container.decodeIfPresent(Bool.self, forKey: .physicalControllerPassthrough) ?? Self.default.physicalControllerPassthrough
@@ -709,6 +714,7 @@ struct StreamerPreferences: Codable, Equatable {
         audioMuted: true,
         showStatsClock: false,
         showStatsBattery: false,
+        showStatsCellular: false,
         touchControllerVisible: false,
         touchscreenModeEnabled: false,
         physicalControllerPassthrough: true
@@ -3402,7 +3408,6 @@ private actor GFNAPIClient {
 
     private static func extractMediaConnectionInfo(sessionObj: [String: Any]) -> (ip: String?, port: Int) {
         let connections = sessionObj["connectionInfo"] as? [[String: Any]] ?? []
-        let fallbackServerIp = extractServerIp(sessionObj: sessionObj)
 
         func extractIp(from connection: [String: Any]) -> String? {
             if let ip = normalizedEndpointHost(from: connection["ip"]) {
@@ -3426,27 +3431,15 @@ private actor GFNAPIClient {
             return 0
         }
 
-        // Mirror CloudMatch media priority order used by desktop:
-        // usage=2 -> usage=17 -> usage=1 -> usage=14 (highest port, server fallback).
-        for usage in [2, 17, 1] {
+        // Desktop only treats usage=2/17 as WebRTC media endpoints. Other
+        // usages can be RTSPS/signaling fallbacks and must not drive WebRTC ICE.
+        for usage in [2, 17] {
             if let candidate = connections.first(where: { ($0["usage"] as? Int) == usage }) {
                 let ip = extractIp(from: candidate)
                 let port = extractPort(from: candidate)
                 if ip != nil, port > 0 {
                     return (ip, port)
                 }
-            }
-        }
-
-        let usage14Connections = connections
-            .filter { ($0["usage"] as? Int) == 14 }
-            .sorted { extractPort(from: $0) > extractPort(from: $1) }
-
-        for candidate in usage14Connections {
-            let ip = extractIp(from: candidate) ?? fallbackServerIp
-            let port = extractPort(from: candidate)
-            if ip != nil, port > 0 {
-                return (ip, port)
             }
         }
 
@@ -4563,6 +4556,7 @@ final class OpenNOWStore: ObservableObject {
     private let activeSessionSnapshotKey = "OpenNOW.iOS.activeSession"
     private let activeStreamSettingsKey = "OpenNOW.iOS.activeStreamSettings"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
+    private let libraryGamesCacheKeyPrefix = "OpenNOW.iOS.libraryGames"
     private let setupPhaseTimeoutSeconds: TimeInterval = 90
     private let sessionRestoreMaxAgeSeconds: TimeInterval = 12 * 60 * 60
 
@@ -4584,6 +4578,9 @@ final class OpenNOWStore: ObservableObject {
         activeSession = Self.loadActiveSession(from: defaults)
         activeStreamSettings = activeSession == nil ? nil : Self.loadActiveStreamSettings(from: defaults)
         user = authSession?.user
+        if let authSession {
+            hydrateCachedLibraryGames(for: authSession)
+        }
         showStreamLoading = activeSession != nil
         syncTrackedSessionSurface()
         #if os(tvOS)
@@ -4709,8 +4706,10 @@ final class OpenNOWStore: ObservableObject {
         var state = Self.loadAuthState(from: defaults)
         if let currentUserId {
             state.sessions.removeAll { $0.user.userId == currentUserId }
+            removeCachedLibraryGames(forUserId: currentUserId)
         } else {
             state.sessions.removeAll()
+            removeAllCachedLibraryGames()
         }
         state.activeUserId = state.sessions.first?.user.userId
         state.selectedProvider = state.sessions.first?.provider ?? state.selectedProvider
@@ -4721,6 +4720,7 @@ final class OpenNOWStore: ObservableObject {
             user = nextSession.user
             settings.selectedProviderIdpId = nextSession.provider.idpId
             persistSettings()
+            hydrateCachedLibraryGames(for: nextSession)
             Task { await refreshCatalog() }
         } else {
             user = nil
@@ -4733,6 +4733,7 @@ final class OpenNOWStore: ObservableObject {
         persistAuthState(PersistedAuthState())
         defaults.removeObject(forKey: authStateKey)
         defaults.removeObject(forKey: authSessionKey)
+        removeAllCachedLibraryGames()
         clearAccountScopedState()
         user = nil
         authSession = nil
@@ -4749,6 +4750,7 @@ final class OpenNOWStore: ObservableObject {
         user = nextSession.user
         settings.selectedProviderIdpId = nextSession.provider.idpId
         persistSettings()
+        hydrateCachedLibraryGames(for: nextSession)
         await refreshCatalog()
     }
 
@@ -4785,6 +4787,9 @@ final class OpenNOWStore: ObservableObject {
             authSession = refreshed
             user = refreshed.user
             persistAuthSession(refreshed)
+            if libraryGames.isEmpty {
+                hydrateCachedLibraryGames(for: refreshed)
+            }
 
             let (mainGames, vpcId) = try await api.fetchMainGames(session: refreshed)
             cachedVpcId = vpcId
@@ -4795,6 +4800,7 @@ final class OpenNOWStore: ObservableObject {
             allGames = mainGames
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = library
+            persistCachedLibraryGames(library, for: refreshed)
             subscription = sub
             if let connectors {
                 accountConnectors = connectors
@@ -4823,6 +4829,9 @@ final class OpenNOWStore: ObservableObject {
             where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return
         } catch {
+            if libraryGames.isEmpty {
+                hydrateCachedLibraryGames(for: session)
+            }
             lastError = "Failed to load games: \(error.localizedDescription)"
         }
     }
@@ -4895,11 +4904,18 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    func launch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) async {
+    func launch(
+        game: CloudGame,
+        zoneUrl: String? = nil,
+        launchOption: GameLaunchOption? = nil,
+        settingsOverride: AppSettings? = nil
+    ) async {
         guard supportsEmbeddedStreamer else {
             lastError = OpenNOWPlatform.streamingUnavailableReason
             return
         }
+        var launchSettings = settingsOverride ?? settings
+        launchSettings.normalizeStreamDefaults()
         guard let session = authSession else {
             lastError = "Sign in first."
             return
@@ -4935,16 +4951,16 @@ final class OpenNOWStore: ObservableObject {
                 session: refreshed,
                 streamingBaseUrl: baseUrl,
                 vpcId: cachedVpcId,
-                settings: settings,
+                settings: launchSettings,
                 deviceId: deviceId
             )) ?? []
 
-            let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: settings, session: refreshed)
+            let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: launchSettings, session: refreshed)
             resumableSessions = compatibleCandidates
             let staleLaunchCandidate = activeCandidates.first {
                 $0.appId == launchAppId
                     && remoteSessionIsLaunchable($0)
-                    && !remoteSession($0, matchesStreamSettings: settings, session: refreshed)
+                    && !remoteSession($0, matchesStreamSettings: launchSettings, session: refreshed)
             }
             let readyCandidate = compatibleCandidates.first {
                 $0.appId == launchAppId && $0.serverIp != nil && ($0.status == 2 || $0.status == 3)
@@ -4963,7 +4979,7 @@ final class OpenNOWStore: ObservableObject {
                     game: game,
                     streamingBaseUrl: baseUrl,
                     vpcId: cachedVpcId,
-                    settings: settings,
+                    settings: launchSettings,
                     deviceId: deviceId
                 )
             } else if let launchingCandidate {
@@ -4989,7 +5005,7 @@ final class OpenNOWStore: ObservableObject {
                 let hydrated = (try? await api.pollSession(
                     session: refreshed,
                     activeSession: pending,
-                    settings: settings
+                    settings: launchSettings
                 )) ?? pending
                 started = mergeQueueSessionState(previous: pending, next: hydrated)
             } else {
@@ -5011,9 +5027,9 @@ final class OpenNOWStore: ObservableObject {
                     session: refreshed,
                     game: game,
                     vpcId: cachedVpcId,
-                    settings: settings,
+                    settings: launchSettings,
                     streamProfile: StreamSettingsResolver.profile(
-                        for: settings,
+                        for: launchSettings,
                         membershipTier: subscription?.membershipTier ?? user?.membershipTier
                     ),
                     streamingBaseUrl: baseUrl,
@@ -5024,7 +5040,7 @@ final class OpenNOWStore: ObservableObject {
                 )
             }
             activeSession = started
-            activeStreamSettings = settings
+            activeStreamSettings = launchSettings
             adReportStateById = [:]
             adStartedAtById = [:]
             sessionElapsedSeconds = 0
@@ -5046,6 +5062,121 @@ final class OpenNOWStore: ObservableObject {
     func scheduleLaunch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) {
         launchTask?.cancel()
         launchTask = Task { await self.launch(game: game, zoneUrl: zoneUrl, launchOption: launchOption) }
+    }
+
+    func handleIncomingURL(_ url: URL) {
+        guard Self.isOpenNOWDeepLink(url) else { return }
+        let parts = Self.deepLinkParts(from: url)
+        let action = parts.first?.lowercased() ?? ""
+        let query = Self.deepLinkQueryItems(from: url)
+
+        switch action {
+        case "launch", "play":
+            guard let appId = parts.dropFirst().first ?? query["appid"] ?? query["appId"] ?? query["id"],
+                  !appId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                lastError = "Deep link launch needs an app ID."
+                return
+            }
+            scheduleDeepLinkLaunch(
+                appId: appId,
+                storefront: query["store"] ?? query["launcher"],
+                settingsOverride: deepLinkSettingsOverride(from: query)
+            )
+        case "resume", "continue", "jumpback":
+            jumpBackToSession()
+        case "refresh":
+            launchTask?.cancel()
+            launchTask = Task { await self.refreshCatalog() }
+        case "stop", "terminate", "end":
+            launchTask?.cancel()
+            launchTask = Task { await self.terminateAllSessions(reason: "deepLink.stop") }
+        default:
+            if let appId = parts.first, appId.rangeOfCharacter(from: CharacterSet.alphanumerics.inverted) == nil {
+                scheduleDeepLinkLaunch(
+                    appId: appId,
+                    storefront: query["store"] ?? query["launcher"],
+                    settingsOverride: deepLinkSettingsOverride(from: query)
+                )
+            }
+        }
+    }
+
+    private func scheduleDeepLinkLaunch(appId: String, storefront: String?, settingsOverride: AppSettings?) {
+        launchTask?.cancel()
+        launchTask = Task { [weak self] in
+            guard let self else { return }
+            if self.authSession == nil {
+                self.lastError = "Sign in before launching from a link."
+                return
+            }
+            if self.allGames.isEmpty {
+                await self.refreshCatalog()
+            }
+            guard let target = self.deepLinkLaunchTarget(appId: appId, storefront: storefront) else {
+                self.lastError = "No catalog entry matches app ID \(appId)."
+                return
+            }
+            await self.launch(
+                game: target.game,
+                zoneUrl: nil,
+                launchOption: target.launchOption,
+                settingsOverride: settingsOverride
+            )
+        }
+    }
+
+    private func deepLinkSettingsOverride(from query: [String: String]) -> AppSettings? {
+        guard let rawCodec = query["codec"] ?? query["videoCodec"],
+              let codec = NativeStreamVideoCodec.normalized(rawCodec) else {
+            return nil
+        }
+        var override = settings
+        override.preferredCodec = codec.rawValue
+        override.normalizeStreamDefaults()
+        return override
+    }
+
+    private func deepLinkLaunchTarget(appId: String, storefront: String?) -> (game: CloudGame, launchOption: GameLaunchOption?)? {
+        let normalizedAppId = appId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedStore = storefront.map(normalizeGameStore)
+        var seenGameIds = Set<String>()
+        for game in allGames + libraryGames + featuredGames {
+            guard seenGameIds.insert(game.id).inserted else { continue }
+            let matchingOption = game.launchOptions.first {
+                $0.appId.caseInsensitiveCompare(normalizedAppId) == .orderedSame
+                    && (normalizedStore == nil || normalizeGameStore($0.storefront) == normalizedStore)
+            }
+            if let matchingOption {
+                return (game, matchingOption)
+            }
+            if game.launchAppId?.caseInsensitiveCompare(normalizedAppId) == .orderedSame || game.id.caseInsensitiveCompare(normalizedAppId) == .orderedSame {
+                return (game, nil)
+            }
+        }
+        return nil
+    }
+
+    private static func isOpenNOWDeepLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "opennow" || scheme == "opennowios"
+    }
+
+    private static func deepLinkParts(from url: URL) -> [String] {
+        var parts: [String] = []
+        if let host = url.host(percentEncoded: false), !host.isEmpty {
+            parts.append(host)
+        }
+        parts.append(contentsOf: url.pathComponents.filter { $0 != "/" })
+        return parts.map { $0.removingPercentEncoding ?? $0 }
+    }
+
+    private static func deepLinkQueryItems(from url: URL) -> [String: String] {
+        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return [:] }
+        var result: [String: String] = [:]
+        for item in items {
+            result[item.name] = item.value
+        }
+        return result
     }
 
     func refreshRemoteSessions() async {
@@ -5199,14 +5330,7 @@ final class OpenNOWStore: ObservableObject {
         queueOverlayVisible = false
         await NotificationManager.shared.cancelSessionNotifications()
         guard let session = authSession, let active = activeSession else {
-            activeSession = nil
-            activeStreamSettings = nil
-            setStreamSession(nil, reason: "endSession.noActiveSession")
-            sessionElapsedTask?.cancel()
-            sessionPollTask?.cancel()
-            endSessionPollBackgroundTask()
-            sessionElapsedSeconds = 0
-            syncTrackedSessionSurface()
+            clearLocalSessionState(reason: "endSession.noActiveSession")
             return
         }
         do {
@@ -5217,9 +5341,65 @@ final class OpenNOWStore: ObservableObject {
         } catch {
             lastError = "Stop session failed: \(error.localizedDescription)"
         }
+        clearLocalSessionState(reason: "endSession.completed")
+    }
+
+    private func terminateAllSessions(reason: String) async {
+        showStreamLoading = false
+        queueOverlayVisible = false
+        await NotificationManager.shared.cancelSessionNotifications()
+
+        guard let session = authSession else {
+            clearLocalSessionState(reason: reason)
+            return
+        }
+
+        var failures: [String] = []
+        do {
+            let refreshed = try await api.refreshSession(session)
+            authSession = refreshed
+            persistAuthSession(refreshed)
+            let activeToStop = activeSession
+            if let activeToStop {
+                do {
+                    try await api.stopSession(session: refreshed, activeSession: activeToStop)
+                } catch {
+                    failures.append(activeToStop.id)
+                }
+            }
+
+            let remoteSessions = (try? await api.fetchActiveSessions(
+                session: refreshed,
+                streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                vpcId: cachedVpcId,
+                settings: settings,
+                deviceId: persistentDeviceId()
+            )) ?? []
+            for candidate in remoteSessions where candidate.id != activeToStop?.id {
+                do {
+                    try await api.stopRemoteSession(
+                        session: refreshed,
+                        candidate: candidate,
+                        streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                        vpcId: cachedVpcId
+                    )
+                } catch {
+                    failures.append(candidate.id)
+                }
+            }
+        } catch {
+            failures.append("refresh")
+        }
+
+        clearLocalSessionState(reason: reason)
+        resumableSessions = []
+        lastError = failures.isEmpty ? nil : "Could not stop every remote session: \(failures.joined(separator: ", "))"
+    }
+
+    private func clearLocalSessionState(reason: String) {
         activeSession = nil
         activeStreamSettings = nil
-        setStreamSession(nil, reason: "endSession.completed")
+        setStreamSession(nil, reason: reason)
         adReportStateById = [:]
         adStartedAtById = [:]
         sessionElapsedTask?.cancel()
@@ -5566,6 +5746,41 @@ final class OpenNOWStore: ObservableObject {
         refreshTrackedSessionSurface()
     }
 
+    func resetApp() {
+        Task { await NotificationManager.shared.cancelSessionNotifications() }
+        launchTask?.cancel()
+        launchTask = nil
+        sessionElapsedTask?.cancel()
+        sessionPollTask?.cancel()
+        endSessionPollBackgroundTask()
+        clearImageCache()
+
+        persistAuthState(PersistedAuthState())
+        defaults.removeObject(forKey: authStateKey)
+        defaults.removeObject(forKey: authSessionKey)
+        defaults.removeObject(forKey: activeSessionSnapshotKey)
+        defaults.removeObject(forKey: activeStreamSettingsKey)
+        defaults.removeObject(forKey: deviceIdKey)
+        removeAllCachedLibraryGames()
+
+        authSession = nil
+        user = nil
+        savedAccounts = []
+        searchText = ""
+        micEnabled = false
+        recordingEnabled = false
+        isAuthenticating = false
+        isLoadingGames = false
+        isLaunchingSession = false
+        telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
+        lastError = nil
+        cachedVpcId = "GFN-PC"
+        settings = .default
+        settings.normalizeStreamDefaults()
+        persistSettings()
+        clearAccountScopedState()
+    }
+
     func clearImageCache() {
         OpenNOWImageCache.shared.removeAll()
         URLCache.shared.removeAllCachedResponses()
@@ -5578,6 +5793,19 @@ final class OpenNOWStore: ObservableObject {
 
     func updateStreamerPreferences(_ preferences: StreamerPreferences) {
         settings.streamerPreferences = preferences
+        if activeStreamSettings != nil {
+            activeStreamSettings?.streamerPreferences = preferences
+            syncTrackedSessionSurface()
+        }
+        persistSettings()
+    }
+
+    func updateStreamStatsOverlayVisible(_ visible: Bool) {
+        settings.showStatsOverlay = visible
+        if activeStreamSettings != nil {
+            activeStreamSettings?.showStatsOverlay = visible
+            syncTrackedSessionSurface()
+        }
         persistSettings()
     }
 
@@ -5877,14 +6105,8 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func hasUsableMediaEndpoint(_ session: ActiveSession) -> Bool {
-        guard session.mediaPort > 0 else { return false }
+        guard session.mediaPort > 0 else { return true }
         if normalizedEndpointHost(from: session.mediaIp) != nil {
-            return true
-        }
-        if normalizedEndpointHost(from: session.serverIp) != nil {
-            return true
-        }
-        if normalizedEndpointHost(from: session.signalingServer) != nil {
             return true
         }
         return false
@@ -6153,9 +6375,21 @@ final class OpenNOWStore: ObservableObject {
             await QueueLiveActivityManager.shared.sync(
                 sessionId: active?.id,
                 gameTitle: active?.game.title,
+                storeName: active.map { queueActivityStoreName(for: $0) },
                 state: state
             )
         }
+    }
+
+    private func queueActivityStoreName(for session: ActiveSession) -> String {
+        let store = session.game.platform.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !store.isEmpty {
+            return gameStoreDisplayName(store)
+        }
+        if let firstStore = session.game.stores?.first?.trimmingCharacters(in: .whitespacesAndNewlines), !firstStore.isEmpty {
+            return gameStoreDisplayName(firstStore)
+        }
+        return "Store"
     }
 
     private func queueActivityState(for session: ActiveSession) -> QueueActivityAttributes.ContentState? {
@@ -6302,6 +6536,37 @@ final class OpenNOWStore: ObservableObject {
     private static func loadActiveStreamSettings(from defaults: UserDefaults) -> AppSettings? {
         guard let data = defaults.data(forKey: "OpenNOW.iOS.activeStreamSettings") else { return nil }
         return try? JSONDecoder().decode(AppSettings.self, from: data)
+    }
+
+    private func hydrateCachedLibraryGames(for session: AuthSession) {
+        libraryGames = loadCachedLibraryGames(for: session)
+    }
+
+    private func loadCachedLibraryGames(for session: AuthSession) -> [CloudGame] {
+        guard let data = defaults.data(forKey: libraryGamesCacheKey(for: session.user.userId)) else {
+            return []
+        }
+        return (try? JSONDecoder().decode([CloudGame].self, from: data)) ?? []
+    }
+
+    private func persistCachedLibraryGames(_ games: [CloudGame], for session: AuthSession) {
+        guard let encoded = try? JSONEncoder().encode(games) else { return }
+        defaults.set(encoded, forKey: libraryGamesCacheKey(for: session.user.userId))
+    }
+
+    private func removeCachedLibraryGames(forUserId userId: String) {
+        defaults.removeObject(forKey: libraryGamesCacheKey(for: userId))
+    }
+
+    private func removeAllCachedLibraryGames() {
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("\(libraryGamesCacheKeyPrefix).") {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    private func libraryGamesCacheKey(for userId: String) -> String {
+        let digest = SHA256.hash(data: Data(userId.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "\(libraryGamesCacheKeyPrefix).\(digest)"
     }
 
     private func persistAuthSession(_ session: AuthSession) {

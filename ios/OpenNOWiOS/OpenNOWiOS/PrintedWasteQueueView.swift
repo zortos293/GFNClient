@@ -171,17 +171,6 @@ struct PrintedWasteQueueView: View {
                         dismiss()
                     }
                 }
-                if !isLoading {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            Task { await loadZones() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .accessibilityLabel("Reload Servers")
-                        .disabled(isTestingPings)
-                    }
-                }
             }
         }
         .interactiveDismissDisabled(isLoading)
@@ -279,10 +268,11 @@ struct PrintedWasteQueueView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
         .refreshable {
             await loadZones()
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             launchFooter
         }
     }
@@ -314,6 +304,8 @@ struct PrintedWasteQueueView: View {
 
     private var launchFooter: some View {
         VStack(spacing: 10) {
+            Divider()
+
             if isTestingPings {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -340,7 +332,8 @@ struct PrintedWasteQueueView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
-        .background(.regularMaterial)
+        .frame(maxWidth: .infinity)
+        .bottomSheetFooterBackground()
     }
 
     private var launchButtonTitle: String {
@@ -690,7 +683,8 @@ private struct PrintedWasteArtwork: View {
                     CachedRemoteImage(url: url, targetPixelSize: imageTargetPixelSize(for: proxy.size)) { image in
                         image
                             .resizable()
-                            .scaledToFill()
+                            .scaledToFit()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
                     } placeholder: {
                         GameArtworkLoadingPlaceholder(game: game, iconSize: 26, isFailure: false)
                     } failure: {
@@ -737,13 +731,11 @@ private struct PrintedWasteLaunchSheetModifier: ViewModifier {
                 store.scheduleLaunch(game: request.game, zoneUrl: nil, launchOption: request.launchOption)
                 pendingLaunchRequest = nil
             }
-            .sheet(item: sheetBinding) { request in
+            .opennowBottomSheet(item: sheetBinding, heightFraction: 0.86, maxHeight: 720) { request in
                 PrintedWasteQueueView(game: request.game) { selectedZoneUrl in
                     store.scheduleLaunch(game: request.game, zoneUrl: selectedZoneUrl, launchOption: request.launchOption)
                 }
                 .environmentObject(store)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
             }
     }
 }

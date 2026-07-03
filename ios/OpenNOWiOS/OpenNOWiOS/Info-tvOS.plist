@@ -18,14 +18,15 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.opencloudgaming.opennow.auth</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>opennowios</string>
-			</array>
-		</dict>
+			<dict>
+				<key>CFBundleURLName</key>
+				<string>com.opencloudgaming.opennow.auth</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>opennowios</string>
+					<string>opennow</string>
+				</array>
+			</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>

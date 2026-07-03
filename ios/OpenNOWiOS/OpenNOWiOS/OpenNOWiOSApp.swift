@@ -7,6 +7,9 @@ final class OpenNOWAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         OpenNOWImageCache.configureURLCache()
+        if ProcessInfo.processInfo.arguments.contains("--opennow-streamer-self-test") {
+            NativeStreamSelfTest.run()
+        }
         Task { @MainActor in
             await QueueLiveActivityManager.shared.endAll()
         }
@@ -39,6 +42,9 @@ struct OpenNOWiOSApp: App {
                 }
                 .onChangeCompat(of: scenePhase) { newPhase in
                     store.handleScenePhase(newPhase)
+                }
+                .onOpenURL { url in
+                    store.handleIncomingURL(url)
                 }
         }
     }

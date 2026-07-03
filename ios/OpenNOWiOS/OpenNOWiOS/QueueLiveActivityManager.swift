@@ -14,6 +14,7 @@ final class QueueLiveActivityManager {
     func sync(
         sessionId: String?,
         gameTitle: String?,
+        storeName: String?,
         state: QueueActivityAttributes.ContentState?
     ) async {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
@@ -41,7 +42,7 @@ final class QueueLiveActivityManager {
 
         do {
             _ = try Activity.request(
-                attributes: QueueActivityAttributes(sessionId: sessionId, gameTitle: gameTitle),
+                attributes: QueueActivityAttributes(sessionId: sessionId, gameTitle: gameTitle, storeName: storeName),
                 content: content
             )
         } catch {
@@ -71,6 +72,7 @@ final class QueueLiveActivityManager {
     func sync(
         sessionId: String?,
         gameTitle: String?,
+        storeName: String?,
         state: QueueActivityAttributes.ContentState?
     ) async {
     }

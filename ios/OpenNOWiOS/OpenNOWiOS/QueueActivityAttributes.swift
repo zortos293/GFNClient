@@ -19,6 +19,7 @@ struct QueueActivityAttributes: ActivityAttributes {
 
     let sessionId: String
     let gameTitle: String
+    let storeName: String?
 }
 #else
 import Foundation
@@ -40,5 +41,6 @@ struct QueueActivityAttributes {
 
     let sessionId: String
     let gameTitle: String
+    let storeName: String?
 }
 #endif

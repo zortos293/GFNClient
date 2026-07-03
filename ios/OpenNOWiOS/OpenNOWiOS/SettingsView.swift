@@ -77,6 +77,7 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @State private var searchText = ""
     @State private var showingResetConfirmation = false
+    @State private var showingResetAppConfirmation = false
     @State private var showingSignOutAllConfirmation = false
     @State private var connectorPendingDisconnect: AccountConnector?
 
@@ -122,6 +123,14 @@ struct SettingsView: View {
                     store.resetSettings()
                 }
                 Button("Cancel", role: .cancel) {}
+            }
+            .confirmationDialog("Reset app?", isPresented: $showingResetAppConfirmation, titleVisibility: .visible) {
+                Button("Reset App", role: .destructive) {
+                    store.resetApp()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This clears local settings, saved accounts, launch choices, favorites, session state, and cached images on this device.")
             }
             .confirmationDialog("Sign out all accounts?", isPresented: $showingSignOutAllConfirmation, titleVisibility: .visible) {
                 Button("Sign Out All Accounts", role: .destructive) {
@@ -456,8 +465,6 @@ struct SettingsView: View {
 
             Toggle("L4S Low Latency", isOn: $store.settings.enableL4S)
 
-            Toggle("Native Streamer", isOn: $store.settings.nativeStreamerEnabled)
-
             Toggle("Stream Sharpening", isOn: $store.settings.streamSharpeningEnabled)
 
             if store.settings.streamSharpeningEnabled {
@@ -484,8 +491,6 @@ struct SettingsView: View {
                 Text("Resolutions above your current plan are shown but unavailable.")
                 if !hdrAvailable {
                     Text("HDR requires an Ultimate-capable account.")
-                } else if store.settings.nativeStreamerEnabled {
-                    Text("Native streaming is experimental. Turn it off if stream setup fails.")
                 }
             }
         }
@@ -541,7 +546,6 @@ struct SettingsView: View {
 
     private var appUpdatesSection: some View {
         Section("App Updates") {
-            LabeledContent("Updates", value: "Managed by iOS")
             LabeledContent("Version", value: appVersion)
             LabeledContent("Build", value: buildNumber)
         }
@@ -559,7 +563,6 @@ struct SettingsView: View {
             LabeledContent("Stream Profile", value: headerSummary)
             LabeledContent("Color", value: selectedColorQualityLabel)
             LabeledContent("HDR", value: hdrAvailable ? (store.settings.hdrEnabled ? "On" : "Off") : "Unavailable")
-            LabeledContent("Native Streamer", value: store.settings.nativeStreamerEnabled ? "On" : "Off")
         }
     }
 
@@ -598,6 +601,12 @@ struct SettingsView: View {
                 showingResetConfirmation = true
             } label: {
                 Label("Reset Settings", systemImage: "arrow.counterclockwise")
+            }
+
+            Button(role: .destructive) {
+                showingResetAppConfirmation = true
+            } label: {
+                Label("Reset App", systemImage: "arrow.triangle.2.circlepath")
             }
         }
     }

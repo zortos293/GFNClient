@@ -1,4692 +1,3088 @@
-#if canImport(WebKit)
+import Foundation
 import SwiftUI
+
+#if os(iOS)
 import UIKit
-import WebKit
-import OSLog
-import GameController
-import CoreHaptics
+#endif
+
+#if os(iOS) && canImport(WebRTC)
+import AVFoundation
+import AVKit
+import MetalKit
+@preconcurrency import WebRTC
+import os
+#endif
 
 struct StreamerView: View {
-    let session: ActiveSession
-    let settings: AppSettings
-    let nativeStreamerEnabled: Bool
-    let onTouchLayoutChange: (String, TouchControlLayout) -> Void
-    let onStreamerPreferencesChange: (StreamerPreferences) -> Void
-    var onSafeVideoFallbackRequired: ((String) -> Void)? = nil
-    var onNativeFallbackRequiresFreshEndpoint: ((String) -> Void)? = nil
-    let onClose: () -> Void
-    var onRetry: (() -> Void)? = nil
-    private let logger = Logger(subsystem: "OpenNOWiOS", category: "StreamerView")
-    @State private var statusText = ""
-    @State private var latestStatusLine = "Initializing streamer..."
-    @State private var isPeerConnected = false
-    @State private var isShowingExitConfirmation = false
-    @State private var nativeFallbackReason: String?
-    @State private var safeVideoFallbackRequested = false
+    #if os(iOS) && canImport(WebRTC)
+    @StateObject private var coordinator: NativeStreamCoordinator
 
-    private var isShowingConnectionOverlay: Bool {
-        !isPeerConnected
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .topTrailing) {
-                streamerContent
-                    .ignoresSafeArea()
-
-                if isShowingConnectionOverlay {
-                    ZStack {
-                        Color.black.opacity(0.72)
-                            .ignoresSafeArea()
-
-                        VStack(spacing: 14) {
-                            if statusText.hasPrefix("Error:") {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.system(size: 26, weight: .semibold))
-                                    .foregroundStyle(.orange)
-                            } else {
-                                ProgressView()
-                                    .progressViewStyle(.circular)
-                                    .scaleEffect(1.25)
-                                    .tint(.white)
-                            }
-
-                            Text(statusText.hasPrefix("Error:") ? "Connection issue" : "Connecting to stream...")
-                                .font(.headline.weight(.semibold))
-                                .foregroundStyle(.white)
-
-                            Text(statusText.hasPrefix("Error:") ? statusText.replacingOccurrences(of: "Error: ", with: "") : latestStatusLine)
-                                .font(.subheadline)
-                                .foregroundStyle(.white.opacity(0.85))
-                                .multilineTextAlignment(.center)
-                                .lineLimit(3)
-                                .padding(.horizontal, 12)
-
-                            if statusText.hasPrefix("Error:"), let retry = onRetry {
-                                Button("Retry") {
-                                    retry()
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.white.opacity(0.22))
-                                .foregroundStyle(.white)
-                                .padding(.top, 4)
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 18)
-                        .frame(maxWidth: 340)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(.ultraThinMaterial)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                                )
-                        )
-                        .padding(.horizontal, 20)
-                    }
-                    .transition(.opacity)
-                }
-
-                StreamExitControl {
-                    isShowingExitConfirmation = true
-                }
-                .frame(width: 44, height: 44)
-                .padding(.top, topControlPadding(in: proxy))
-                .padding(.trailing, trailingControlPadding(in: proxy))
-                .zIndex(20)
-                .accessibilityLabel("Exit stream")
-
-                if statusText.hasPrefix("Error:") {
-                    VStack {
-                        Spacer()
-                        Text(statusText)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.red.opacity(0.2), in: Capsule())
-                            .overlay(
-                                Capsule()
-                                    .stroke(Color.red.opacity(0.45), lineWidth: 1)
-                            )
-                            .foregroundStyle(.white)
-                            .padding(.bottom, 22)
-                    }
-                }
-
-                if isShowingExitConfirmation {
-                    exitConfirmationOverlay
-                        .ignoresSafeArea()
-                        .transition(.opacity)
-                }
-            }
-            .animation(.easeInOut(duration: 0.18), value: isShowingExitConfirmation)
-        }
-        .background(Color.black.ignoresSafeArea())
-        .onAppear {
-            Self.dismissFocusedInput()
-        }
-        .onChangeCompat(of: session.id) { _ in
-            nativeFallbackReason = nil
-            safeVideoFallbackRequested = false
-            isPeerConnected = false
-            statusText = ""
-            latestStatusLine = "Initializing streamer..."
-        }
-    }
-
-    @ViewBuilder
-    private var streamerContent: some View {
-        if NativeStreamerCapability.isAvailable,
-           settings.nativeStreamerEnabled,
-           nativeStreamerEnabled,
-           nativeFallbackReason == nil {
-            NativeStreamerView(
-                session: session,
-                settings: settings,
-                onEvent: handleStreamerEvent,
-                onFallback: { reason in
-                    DispatchQueue.main.async {
-                        logger.notice("Native streamer fallback: \(reason, privacy: .public)")
-                        if Self.requiresSafeVideoFallback(reason),
-                           let onSafeVideoFallbackRequired,
-                           !safeVideoFallbackRequested,
-                           settings.safeVideoFallback() != settings {
-                            safeVideoFallbackRequested = true
-                            isPeerConnected = false
-                            handleStreamerEvent("Status: Restarting cloud session with safe H264 profile")
-                            onSafeVideoFallbackRequired(reason)
-                            return
-                        }
-                        if Self.nativeFallbackRequiresFreshEndpoint(reason), let onRetry {
-                            onNativeFallbackRequiresFreshEndpoint?(reason)
-                            nativeFallbackReason = reason
-                            isPeerConnected = false
-                            handleStreamerEvent("Status: Refreshing session after native streamer fallback")
-                            onRetry()
-                            return
-                        }
-                        nativeFallbackReason = reason
-                        isPeerConnected = false
-                        handleStreamerEvent("Status: Falling back to WebRTC web streamer: \(reason)")
-                    }
-                }
-            )
-        } else {
-            StreamerWebView(
+    init(
+        session: ActiveSession,
+        settings: AppSettings,
+        nativeStreamerEnabled: Bool = true,
+        onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
+        onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
+        onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
+        onSafeVideoFallbackRequired: @escaping (String) -> Void,
+        onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
+        onClose: @escaping () -> Void,
+        onRetry: (() -> Void)? = nil
+    ) {
+        _coordinator = StateObject(
+            wrappedValue: NativeStreamCoordinator(
                 session: session,
                 settings: settings,
                 onTouchLayoutChange: onTouchLayoutChange,
                 onStreamerPreferencesChange: onStreamerPreferencesChange,
-                onEvent: handleStreamerEvent
+                onStatsOverlayChange: onStatsOverlayChange,
+                onSafeVideoFallbackRequired: onSafeVideoFallbackRequired,
+                onClose: onClose,
+                onRetry: onRetry
             )
-        }
+        )
+        _ = nativeStreamerEnabled
+        _ = onNativeFallbackRequiresFreshEndpoint
     }
 
-    private static func nativeFallbackRequiresFreshEndpoint(_ reason: String) -> Bool {
-        let lowercased = reason.lowercased()
-        return lowercased.contains("ice failed")
-            || lowercased.contains("media stalled")
-            || lowercased.contains("native stream reconnect failed")
-            || lowercased.contains("failed to apply answer")
-            || lowercased.contains("failed to create answer")
-            || lowercased.contains("rejected server offer")
-    }
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black
+                    .ignoresSafeArea()
 
-    private static func requiresSafeVideoFallback(_ reason: String) -> Bool {
-        let lowercased = reason.lowercased()
-        return lowercased.contains("safe h264")
-            || lowercased.contains("timed out waiting")
-            || lowercased.contains("waiting for a server offer")
-            || lowercased.contains("did not negotiate")
-            || lowercased.contains("media stalled")
-            || lowercased.contains("decoder stalled")
-            || lowercased.contains("failed to create answer")
-            || lowercased.contains("failed to apply answer")
-            || lowercased.contains("rejected server offer")
-    }
+                NativeStreamVideoView(coordinator: coordinator)
+                    .ignoresSafeArea()
 
-    private func handleStreamerEvent(_ event: String) {
-        logger.info("Streamer event: \(event, privacy: .public)")
-        statusText = event
-        if event.hasPrefix("Status: ") {
-            latestStatusLine = String(event.dropFirst("Status: ".count))
-            if latestStatusLine.localizedCaseInsensitiveContains("streamer connected") {
-                isPeerConnected = true
-            }
-        }
-        if event.localizedCaseInsensitiveContains("streamer connected") {
-            isPeerConnected = true
-        }
-        if event.hasPrefix("Error:") {
-            isPeerConnected = false
-        }
-    }
+                NativeStreamTouchCaptureView(inputBridge: coordinator.inputBridge)
+                    .ignoresSafeArea()
 
-    private var exitConfirmationOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.5)
-                .onTapGesture {
-                    isShowingExitConfirmation = false
-                }
+                VStack {
+                    HStack(alignment: .top, spacing: 10) {
+                        if coordinator.showStatsOverlay {
+                            NativeStreamStatsPill(
+                                gameTitle: coordinator.gameTitle,
+                                status: coordinator.statusText,
+                                snapshot: coordinator.statsSnapshot,
+                                preferences: coordinator.streamerPreferences,
+                                deviceStatus: coordinator.deviceStatus,
+                                style: coordinator.statsDisplayStyle
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Session Control")
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.white.opacity(0.55))
+                        Spacer(minLength: 10)
 
-                Text("Exit Stream?")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.white)
+                        if coordinator.pictureInPictureAvailable {
+                            NativeStreamOverlayButton(
+                                systemImage: coordinator.isPictureInPictureActive ? "pip.exit" : "pip.enter",
+                                label: coordinator.isPictureInPictureActive ? "Stop Picture in Picture" : "Start Picture in Picture"
+                            ) {
+                                coordinator.togglePictureInPicture()
+                            }
+                        }
 
-                Text("Exit the stream for \(session.game.title)?")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.86))
-
-                Text("The cloud session stays ready so you can resume from Continue.")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.62))
-
-                HStack(spacing: 10) {
-                    Button {
-                        isShowingExitConfirmation = false
-                    } label: {
-                        Text("Keep Playing")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
+                        NativeStreamOverlayButton(systemImage: "slider.horizontal.3", label: "Stream controls") {
+                            coordinator.toggleControlsPanel()
+                        }
                     }
-                    .buttonStyle(StreamExitButtonStyle(kind: .cancel))
+                    .padding(.top, max(22, proxy.safeAreaInsets.top + 8))
+                    .padding(.horizontal, max(12, proxy.safeAreaInsets.leading + 12))
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
 
-                    Button(role: .destructive) {
-                        isShowingExitConfirmation = false
-                        onClose()
-                    } label: {
-                        Text("Exit Stream")
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
+                if coordinator.showStatusOverlay {
+                    NativeStreamStatusOverlay(
+                        status: coordinator.statusText,
+                        detail: coordinator.detailText
+                    )
+                    .frame(maxWidth: min(proxy.size.width - 48, 420))
+                    .allowsHitTesting(false)
+                }
+
+                if coordinator.controlsPanelVisible {
+                    Color.black.opacity(0.24)
+                        .ignoresSafeArea()
+                        .onTapGesture { coordinator.setControlsPanelVisible(false) }
+
+                    VStack {
+                        Spacer()
+                        NativeStreamControlsPanel(coordinator: coordinator)
+                            .frame(maxWidth: min(proxy.size.width - 28, 390))
+                            .frame(maxHeight: min(proxy.size.height * 0.72, 560))
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, max(14, proxy.safeAreaInsets.bottom + 10))
                     }
-                    .buttonStyle(StreamExitButtonStyle(kind: .confirm))
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                .padding(.top, 6)
             }
-            .padding(18)
-            .frame(maxWidth: 340)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.34), radius: 28, x: 0, y: 18)
-            )
-            .padding(.horizontal, 24)
-        }
-    }
-
-    private func topControlPadding(in proxy: GeometryProxy) -> CGFloat {
-        max(proxy.safeAreaInsets.top + 10, 28)
-    }
-
-    private func trailingControlPadding(in proxy: GeometryProxy) -> CGFloat {
-        max(proxy.safeAreaInsets.trailing + 40, 40)
-    }
-
-    private static func dismissFocusedInput() {
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil,
-            from: nil,
-            for: nil
-        )
-    }
-}
-
-private struct StreamExitButtonStyle: ButtonStyle {
-    enum Kind {
-        case cancel
-        case confirm
-    }
-
-    let kind: Kind
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(kind == .confirm ? Color.white : Color.white.opacity(0.92))
-            .padding(.vertical, 11)
-            .background(
-                Capsule()
-                    .fill(kind == .confirm ? Color.red.opacity(0.88) : Color.white.opacity(0.14))
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.white.opacity(kind == .confirm ? 0.12 : 0.18), lineWidth: 1)
-                    )
-            )
-            .opacity(configuration.isPressed ? 0.72 : 1)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-    }
-}
-
-private struct StreamExitControl: UIViewRepresentable {
-    let action: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(action: action)
-    }
-
-    func makeUIView(context: Context) -> StreamExitUIButton {
-        let button = StreamExitUIButton(type: .system)
-        button.onActivate = { context.coordinator.action() }
-        button.tintColor = .white
-        button.backgroundColor = UIColor.black.withAlphaComponent(0.42)
-        button.layer.cornerRadius = 22
-        button.layer.borderWidth = 1
-        button.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
-        button.clipsToBounds = true
-        button.accessibilityLabel = "Exit stream"
-        button.setImage(UIImage(systemName: "xmark"), for: .normal)
-        button.addTarget(context.coordinator, action: #selector(Coordinator.activate), for: .touchUpInside)
-        return button
-    }
-
-    func updateUIView(_ uiView: StreamExitUIButton, context: Context) {
-        context.coordinator.action = action
-        uiView.onActivate = { context.coordinator.action() }
-    }
-
-    final class Coordinator: NSObject {
-        var action: () -> Void
-
-        init(action: @escaping () -> Void) {
-            self.action = action
-        }
-
-        @objc func activate() {
-            action()
-        }
-    }
-}
-
-private final class StreamExitUIButton: UIButton {
-    var onActivate: (() -> Void)?
-
-    override func accessibilityActivate() -> Bool {
-        onActivate?()
-        return true
-    }
-}
-
-private final class StreamerWKWebView: WKWebView {
-    override var canBecomeFirstResponder: Bool { true }
-}
-
-private struct StreamerWebView: UIViewRepresentable {
-    let session: ActiveSession
-    let settings: AppSettings
-    let onTouchLayoutChange: (String, TouchControlLayout) -> Void
-    let onStreamerPreferencesChange: (StreamerPreferences) -> Void
-    let onEvent: (String) -> Void
-    private static let desktopLikeUserAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(
-            onEvent: onEvent,
-            onTouchLayoutChange: onTouchLayoutChange,
-            onStreamerPreferencesChange: onStreamerPreferencesChange
-        )
-    }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
-        config.defaultWebpagePreferences.allowsContentJavaScript = true
-        config.userContentController.add(context.coordinator, name: "opennow")
-        let webView = StreamerWKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.customUserAgent = Self.desktopLikeUserAgent
-        webView.isOpaque = false
-        webView.backgroundColor = .black
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.keyboardDismissMode = .none
-        let html = buildHTML(for: session, settings: settings)
-        let baseURL = URL(string: "https://play.geforcenow.com")
-        context.coordinator.cachedHTML = html
-        context.coordinator.cachedBaseURL = baseURL
-        context.coordinator.attach(webView: webView)
-        webView.loadHTMLString(html, baseURL: baseURL)
-        DispatchQueue.main.async {
-            webView.becomeFirstResponder()
-        }
-        return webView
-    }
-
-    func updateUIView(_ uiView: WKWebView, context: Context) {
-        DispatchQueue.main.async {
-            uiView.becomeFirstResponder()
-        }
-    }
-
-    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
-        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "opennow")
-        coordinator.detach()
-    }
-
-    private func buildHTML(for session: ActiveSession, settings: AppSettings) -> String {
-        struct Bridge: Encodable {
-            let sessionId: String
-            let signalingServer: String
-            let signalingUrl: String
-            let iceServers: [IceServerConfig]
-            let serverIp: String
-            let mediaIp: String?
-            let mediaPort: Int
-            let preferredCodec: String
-            let fps: Int
-            let maxBitrateKbps: Int
-            let width: Int
-            let height: Int
-            let showStatsOverlay: Bool
-            let gameTitle: String
-            let touchProfile: String
-            let touchLayout: TouchControlLayout
-            let streamerPreferences: StreamerPreferences
-            let prefersTouchControllerOverlay: Bool
-            let isTVOS: Bool
-        }
-
-        let signalingServer = session.signalingServer ?? session.serverIp ?? URL(string: session.streamingBaseUrl)?.host ?? ""
-        let signalingUrl = session.signalingUrl ?? "wss://\(signalingServer):443/nvst/"
-        let serverIp = session.serverIp ?? signalingServer
-        let profile = Self.streamProfile(for: settings)
-        let touchProfile = Self.touchProfile(for: session.game.title)
-        #if os(tvOS)
-        let isTVOS = true
-        let streamerPreferences = StreamerPreferences(
-            audioMuted: false,
-            showStatsClock: settings.streamerPreferences.showStatsClock,
-            showStatsBattery: false,
-            touchControllerVisible: false,
-            touchscreenModeEnabled: false,
-            physicalControllerPassthrough: true
-        )
-        #else
-        let isTVOS = false
-        let streamerPreferences = settings.streamerPreferences
-        #endif
-        let bridge = Bridge(
-            sessionId: session.id,
-            signalingServer: signalingServer,
-            signalingUrl: signalingUrl,
-            iceServers: session.iceServers,
-            serverIp: serverIp,
-            mediaIp: session.mediaIp,
-            mediaPort: session.mediaPort,
-            preferredCodec: Self.normalizePreferredCodec(settings.preferredCodec),
-            fps: profile.fps,
-            maxBitrateKbps: profile.maxBitrateKbps,
-            width: profile.width,
-            height: profile.height,
-            showStatsOverlay: settings.showStatsOverlay,
-            gameTitle: session.game.title,
-            touchProfile: touchProfile,
-            touchLayout: settings.touchLayout(for: touchProfile),
-            streamerPreferences: streamerPreferences,
-            prefersTouchControllerOverlay: !isTVOS && touchProfile == "fortnite-mobile" && settings.fortnitePrefersNativeTouch,
-            isTVOS: isTVOS
-        )
-        let data = (try? JSONEncoder().encode(bridge)) ?? Data("{}".utf8)
-        let payload = String(data: data, encoding: .utf8) ?? "{}"
-        return #"""
-<!doctype html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-  <style>
-    html,body{margin:0;padding:0;background:#000;width:100%;height:100%;min-height:100%;overflow:hidden;overscroll-behavior:none;
-      -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-    #video{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;object-fit:contain;background:#000}
-    #hudToggle{position:fixed;right:max(6px,calc(env(safe-area-inset-right) + 6px));
-      bottom:max(8px,calc(env(safe-area-inset-bottom) + 8px));z-index:36;display:inline-flex;
-      align-items:center;justify-content:center;width:40px;height:40px;padding:0;border-radius:999px;
-      border:1px solid rgba(255,255,255,0.18);background:rgba(16,16,20,0.72);color:#fff;cursor:pointer;
-      font:600 18px -apple-system;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
-      box-shadow:0 10px 28px rgba(0,0,0,0.34);}
-    #hudToggle:hover,#hudToggle:active{background:rgba(22,22,28,0.84);}
-    #hudToggleGlyph{display:inline-flex;align-items:center;justify-content:center;width:100%;height:100%;
-      font-size:20px;line-height:1;}
-    #hudPanel{position:fixed;right:max(8px,calc(env(safe-area-inset-right) + 8px));
-      bottom:max(54px,calc(env(safe-area-inset-bottom) + 54px));z-index:35;width:min(300px,calc(100vw - 20px));
-      max-width:calc(100vw - 20px);box-sizing:border-box;max-height:min(58vh,360px);overflow-y:auto;overflow-x:hidden;
-      overscroll-behavior:contain;padding:10px;border-radius:18px;
-      color:#fff;background:rgba(18,18,22,0.74);border:1px solid rgba(255,255,255,0.14);
-      font:11px -apple-system;transition:transform .22s ease,opacity .22s ease;opacity:0;
-      transform:translateY(20px) scale(0.98);pointer-events:none;
-      backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);}
-    #hudPanel.open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto;}
-    .hudHeader{display:flex;gap:8px;align-items:flex-start;justify-content:space-between;margin-bottom:8px;}
-    .hudHeaderTitle{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%;}
-    .hudHeaderTitle strong{font-size:13px;}
-    .hudHeaderTitle span{display:none;}
-    .hudSection{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);}
-    .hudSectionTitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;min-width:0;}
-    .hudSectionTitle strong{font-size:12px;}
-    .hudSectionTitle span{color:rgba(255,255,255,0.55);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-    .toggleList{display:flex;flex-direction:column;gap:6px;min-width:0;}
-    .toggleRow{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:8px 9px;
-      border-radius:12px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.06);color:#fff;
-      font:11px -apple-system;cursor:pointer;text-align:left;box-sizing:border-box;min-width:0;max-width:100%;}
-    .toggleRow div{min-width:0;overflow:hidden;}
-    .toggleRow strong{display:block;font-size:11px;font-weight:600;}
-    .toggleRow div span{display:none;}
-    .toggleRow .toggleValue{flex:0 0 auto;margin-top:0;color:rgba(255,255,255,0.92);font-weight:600;}
-    .toggleRow.is-active{background:rgba(110,186,255,0.14);border-color:rgba(110,186,255,0.26);}
-    .toggleRow.is-disabled{opacity:0.45;}
-    .infoAction{width:100%;padding:7px 9px;border-radius:10px;border:1px solid rgba(255,255,255,0.24);
-      background:rgba(255,255,255,0.08);color:#fff;font:11px -apple-system;font-weight:600;cursor:pointer;}
-    .hudSummary{display:flex;gap:6px;flex-wrap:wrap;}
-    .hudBadge{padding:4px 7px;border-radius:999px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.72);
-      border:1px solid rgba(255,255,255,0.1);font-size:10px;line-height:1;}
-    .layoutPanel{margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);}
-    .layoutPanel label{display:block;margin-top:6px;color:rgba(255,255,255,0.82);font-size:11px;}
-    .layoutPanel input[type=range]{width:100%;max-width:100%;box-sizing:border-box;margin-top:3px;}
-    .layoutHint{display:none;}
-    body.tvos #touchpad,body.tvos #touchHint,body.tvos #gpPad,body.tvos #kbBar,body.tvos .layoutPanel{display:none!important;}
-    body.tvos #hudPanel{width:min(360px,calc(100vw - 40px));font-size:13px;}
-    body.tvos .toggleRow{font-size:13px;padding:12px 13px;}
-    body.tvos .toggleRow strong{font-size:13px;}
-    body.tvos .hudBadge{font-size:11px;padding:5px 9px;}
-    #gpPad.layoutEditing .layoutGroup{outline:1px dashed rgba(120,210,255,0.9);background:rgba(120,210,255,0.1);border-radius:18px;}
-    #gpPad.layoutEditing .layoutGroup::after{content:'Drag';position:absolute;left:50%;top:-18px;transform:translateX(-50%);
-      padding:2px 7px;border-radius:999px;background:rgba(10,10,12,0.84);border:1px solid rgba(120,210,255,0.55);
-      color:#c8f2ff;font:600 10px -apple-system;letter-spacing:0.02em;pointer-events:none;}
-    .layoutGroup{position:absolute;pointer-events:auto;touch-action:none;transform:translate(-50%,-50%);}
-  </style>
-</head>
-<body>
-  <video id="video" playsinline autoplay muted></video>
-  <div id="stats" style="position:fixed;left:max(8px,calc(env(safe-area-inset-left) + 8px));
-    top:max(8px,calc(env(safe-area-inset-top) + 8px));z-index:30;display:flex;flex-direction:column;gap:3px;
-    min-width:188px;padding:7px 8px;color:#eef7ee;background:rgba(0,0,0,0.54);border:1px solid rgba(255,255,255,0.13);
-    border-radius:11px;font:10.5px -apple-system;line-height:1.25;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);">
-    <div id="statsPrimary">FPS -- | Ping -- ms | Loss -- | Rate -- Mbps</div>
-    <div id="statsMeta" style="display:none;color:rgba(255,255,255,0.7);font-size:9.5px;"></div>
-  </div>
-  <div id="touchpad" style="position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;z-index:10;touch-action:none;"></div>
-  <div id="touchHint" style="position:fixed;left:50%;bottom:max(50px,calc(env(safe-area-inset-bottom) + 50px));transform:translateX(-50%);
-    color:rgba(255,255,255,0.45);font:11px -apple-system;pointer-events:none;user-select:none;
-    text-align:center;transition:opacity 1s;">Drag to move · Tap to click · 2-finger tap for right click</div>
-  <button id="hudToggle" onclick="toggleHudPanel()" aria-label="Toggle stream controls">
-    <span id="hudToggleGlyph">&#9881;</span>
-  </button>
-  <aside id="hudPanel">
-    <div class="hudHeader">
-      <div class="hudHeaderTitle">
-        <strong>Stream Controls</strong>
-        <span>One compact panel for display, input, and overlay tuning.</span>
-      </div>
-      <button onclick="toggleHudPanel(false)" style="border:none;background:transparent;color:#fff;font-size:16px;line-height:1;cursor:pointer;">×</button>
-    </div>
-    <div class="hudSummary" id="hudSummary">
-      <span class="hudBadge" id="hudStatsBadge">Stats Off</span>
-      <span class="hudBadge" id="hudInputBadge">Touchpad</span>
-      <span class="hudBadge" id="hudAudioBadge">Audio Muted</span>
-    </div>
-    <div class="hudSection">
-      <div class="hudSectionTitle">
-        <strong>Display</strong>
-        <span>Overlay and playback</span>
-      </div>
-      <div class="toggleList">
-        <button id="audioBtn" class="toggleRow" onclick="toggleAudio()">
-          <div><strong>Audio</strong><span>Mute or unmute the stream audio.</span></div>
-          <span class="toggleValue" id="audioValue">Muted</span>
-        </button>
-        <button id="statsBtn" class="toggleRow" onclick="toggleStatsOverlay()">
-          <div><strong>Stream Stats</strong><span>Show FPS, ping, packet loss, bitrate, and optional extras.</span></div>
-          <span class="toggleValue" id="statsValue">Off</span>
-        </button>
-        <button id="clockBtn" class="toggleRow" onclick="toggleStatsClock()">
-          <div><strong>Clock</strong><span>Include the current local time in the stats card.</span></div>
-          <span class="toggleValue" id="clockValue">Off</span>
-        </button>
-        <button id="batteryBtn" class="toggleRow" onclick="toggleStatsBattery()">
-          <div><strong>iPhone Battery</strong><span>Show current battery level and charging state in the stats card.</span></div>
-          <span class="toggleValue" id="batteryValue">Off</span>
-        </button>
-      </div>
-    </div>
-    <div class="hudSection">
-      <div class="hudSectionTitle">
-        <strong>Input</strong>
-        <span id="controllerState">Controller: waiting...</span>
-      </div>
-      <div class="toggleList">
-        <button id="kbBtn" class="toggleRow" onclick="toggleKeyboard()">
-          <div><strong>Keyboard</strong><span>Open or hide the on-screen keyboard bar.</span></div>
-          <span class="toggleValue" id="kbValue">Hidden</span>
-        </button>
-        <button id="touchscreenBtn" class="toggleRow" onclick="toggleTouchscreenMode()">
-          <div><strong>Touchscreen Mode</strong><span id="touchscreenDescription">Touch anywhere to left-click there. Drag to hold and move.</span></div>
-          <span class="toggleValue" id="touchscreenValue">Off</span>
-        </button>
-        <button id="gpBtn" class="toggleRow" onclick="toggleGamepad()">
-          <div><strong>Touch Controller</strong><span id="touchModeDescription">Touchpad is active. Optional touch controls stay hidden until needed.</span></div>
-          <span class="toggleValue" id="gpValue">Hidden</span>
-        </button>
-        <div class="toggleRow is-active" role="status">
-          <div><strong>Bluetooth Controller</strong><span>Connected controllers are detected automatically.</span></div>
-          <span class="toggleValue">Auto</span>
-        </div>
-      </div>
-    </div>
-    <div class="layoutPanel">
-      <div class="hudSectionTitle">
-        <strong>Touch Layout</strong>
-        <button id="gpEditBtn" class="infoAction" style="width:auto;padding:8px 12px;">Edit Layout</button>
-      </div>
-      <label for="gpScaleRange">Control Size <span id="gpScaleValue">100%</span></label>
-      <input id="gpScaleRange" type="range" min="35" max="160" step="1" value="100">
-      <label for="gpButtonRange">Button Size <span id="gpButtonValue">100%</span></label>
-      <input id="gpButtonRange" type="range" min="40" max="150" step="1" value="100">
-      <label for="gpStickRange">Stick Size <span id="gpStickValue">100%</span></label>
-      <input id="gpStickRange" type="range" min="40" max="150" step="1" value="100">
-      <label for="gpOpacityRange">Control Opacity <span id="gpOpacityValue">58%</span></label>
-      <input id="gpOpacityRange" type="range" min="15" max="100" step="1" value="58">
-      <div style="display:flex;gap:8px;margin-top:10px;">
-        <button id="gpResetBtn" class="infoAction">Reset Layout</button>
-      </div>
-      <div class="layoutHint" id="layoutHint">Turn on edit mode to drag each touch-control cluster and resize the whole layout.</div>
-    </div>
-  </aside>
-  <div id="kbBar" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:30;
-    background:rgba(20,20,20,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-    padding:8px 12px;border-top:1px solid rgba(255,255,255,0.1);">
-    <div style="display:flex;gap:8px;align-items:center;">
-      <input id="kbInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none"
-        spellcheck="false" placeholder="Type here…"
-        style="flex:1;background:#2a2a2a;color:#fff;border:1px solid rgba(255,255,255,0.2);
-          border-radius:8px;padding:8px 12px;font-size:16px;outline:none;">
-      <button onclick="hideKeyboard()" style="padding:8px 14px;background:#333;color:#fff;
-        border:none;border-radius:8px;font-size:14px;cursor:pointer;">Done</button>
-    </div>
-  </div>
-  <div id="gpPad" style="display:none;position:fixed;left:0;right:0;top:0;bottom:0;width:100vw;height:100vh;height:100dvh;z-index:25;pointer-events:none;">
-    <div id="gpTopLeft" class="layoutGroup">
-      <div style="display:flex;gap:8px;pointer-events:auto;">
-        <button data-mask="256" class="gpAux gpShoulder">LB</button>
-        <button data-trigger="left" class="gpAux gpTrigger">LT</button>
-      </div>
-    </div>
-    <div id="gpTopCenter" class="layoutGroup">
-      <div style="display:flex;gap:8px;pointer-events:auto;">
-        <button data-mask="32" class="gpAux gpSmall">View</button>
-        <button data-mask="16" class="gpAux gpSmall">Menu</button>
-      </div>
-    </div>
-    <div id="gpTopRight" class="layoutGroup">
-      <div style="display:flex;gap:8px;pointer-events:auto;">
-        <button data-trigger="right" class="gpAux gpTrigger">RT</button>
-        <button data-mask="512" class="gpAux gpShoulder">RB</button>
-      </div>
-    </div>
-    <div id="gpLeftStick" class="layoutGroup">
-      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:auto;">
-      <div id="joyBase" style="position:relative;width:146px;height:146px;border-radius:50%;
-        touch-action:none;background:rgba(20,20,20,0.72);
-        border:1px solid rgba(255,255,255,0.2);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-        box-shadow:inset 0 0 0 1px rgba(255,255,255,0.08);">
-        <div id="joyStick" style="position:absolute;left:50%;top:50%;width:62px;height:62px;border-radius:50%;
-          transform:translate(-50%,-50%);background:rgba(255,255,255,0.18);
-          border:1px solid rgba(255,255,255,0.35);box-shadow:0 6px 18px rgba(0,0,0,0.3);"></div>
-      </div>
-      <button data-mask="64" class="gpAux gpSmall">L3</button>
-      </div>
-    </div>
-    <div id="gpRightCluster" class="layoutGroup">
-      <div style="display:flex;align-items:flex-end;gap:18px;pointer-events:auto;">
-      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
-        <button data-mask="1024" class="gpAux gpSmall">Home</button>
-        <div id="lookBase" style="position:relative;width:124px;height:124px;border-radius:50%;pointer-events:auto;
-          touch-action:none;background:rgba(18,18,20,0.46);border:1px solid rgba(255,255,255,0.16);
-          backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);">
-          <div id="lookStick" style="position:absolute;left:50%;top:50%;width:48px;height:48px;border-radius:50%;
-            transform:translate(-50%,-50%);background:rgba(255,255,255,0.14);
-            border:1px solid rgba(255,255,255,0.22);"></div>
-        </div>
-        <button data-mask="128" class="gpAux gpSmall">R3</button>
-      </div>
-      <div style="display:grid;grid-template-columns:56px 56px;grid-template-rows:56px 56px;gap:8px;pointer-events:auto;">
-        <button data-mask="16384" class="gpKey">X</button>
-        <button data-mask="32768" class="gpKey">Y</button>
-        <button data-mask="4096" class="gpKey">A</button>
-        <button data-mask="8192" class="gpKey">B</button>
-      </div>
-      </div>
-    </div>
-    <div id="gpBottomCenter" class="layoutGroup">
-      <div style="display:flex;justify-content:center;pointer-events:auto;">
-      <button id="gpHide" style="padding:8px 12px;border-radius:999px;background:rgba(20,20,20,0.82);
-        color:#fff;border:1px solid rgba(255,255,255,0.25);font-size:12px;">Hide touch controls</button>
-      </div>
-    </div>
-  </div>
-  <script>
-  const cfg = \#(payload);
-  const IS_TVOS = !!cfg.isTVOS;
-  document.body.classList.toggle('tvos', IS_TVOS);
-  const FORTNITE_TOUCH_PROFILE = cfg.touchProfile === 'fortnite-mobile';
-  const PREFERS_TOUCH_CONTROLLER_OVERLAY = !IS_TVOS && !!cfg.prefersTouchControllerOverlay;
-  function sanitizeStreamerPreferences(raw) {
-    return {
-      audioMuted: IS_TVOS ? false : raw?.audioMuted !== false,
-      showStatsClock: raw?.showStatsClock === true,
-      showStatsBattery: IS_TVOS ? false : raw?.showStatsBattery === true,
-      touchControllerVisible: IS_TVOS ? false : raw?.touchControllerVisible === true,
-      touchscreenModeEnabled: IS_TVOS ? false : raw?.touchscreenModeEnabled === true,
-      physicalControllerPassthrough: true
-    };
-  }
-  let streamerPreferences = sanitizeStreamerPreferences(cfg.streamerPreferences);
-  const video = document.getElementById("video");
-  let ws = null;
-  let pc = null;
-  let ack = 0;
-  let hb = null;
-  let hbInput = null;
-  let reliableCh = null;
-  let partialCh = null;
-  let inputReady = false;
-  let reconnectTimer = null;
-  let reconnectAttempts = 0;
-  let peerEverConnected = false;
-  const maxReconnectAttempts = 10;
-  let offerTimeoutTimer = null;
-  let signalingOpenTimeout = null;
-  let statsTimer = null;
-  let statsPollInFlight = false;
-  let lastBytesReceived = 0;
-  let lastBytesTimestamp = 0;
-  let lastPacketsReceived = 0;
-  let lastPacketsLost = 0;
-  let stopGpuKeepAlive = null;
-  let pendingMoveDx = 0;
-  let pendingMoveDy = 0;
-  let moveFrame = null;
-  const INPUT_PROTOCOL_FALLBACK_DELAY_MS = 1500;
-  const DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 100;
-  const DEFAULT_HID_DEVICE_MASK = 0xFFFFFFFF;
-  const DEFAULT_PR_GAMEPAD_MASK = 0xF;
-  const DEFAULT_PR_HID_MASK = 0xFFFFFFFF;
-  const RI_INPUT_MOUSE_REL_MASK = 1 << 7;
-  const peerId = 2;
-  const peerName = "peer-" + Math.floor(Math.random() * 1e10);
-  const statsEl = document.getElementById('stats');
-  const statsPrimary = document.getElementById('statsPrimary');
-  const statsMeta = document.getElementById('statsMeta');
-  const hudPanel = document.getElementById('hudPanel');
-  const hudToggle = document.getElementById('hudToggle');
-  const hudToggleGlyph = document.getElementById('hudToggleGlyph');
-  const hudStatsBadge = document.getElementById('hudStatsBadge');
-  const hudInputBadge = document.getElementById('hudInputBadge');
-  const hudAudioBadge = document.getElementById('hudAudioBadge');
-  const audioBtn = document.getElementById('audioBtn');
-  const audioValue = document.getElementById('audioValue');
-  const statsBtn = document.getElementById('statsBtn');
-  const statsValue = document.getElementById('statsValue');
-  const clockBtn = document.getElementById('clockBtn');
-  const clockValue = document.getElementById('clockValue');
-  const batteryBtn = document.getElementById('batteryBtn');
-  const batteryValue = document.getElementById('batteryValue');
-  const kbBtn = document.getElementById('kbBtn');
-  const kbValue = document.getElementById('kbValue');
-  const touchscreenBtn = document.getElementById('touchscreenBtn');
-  const touchscreenValue = document.getElementById('touchscreenValue');
-  const touchscreenDescription = document.getElementById('touchscreenDescription');
-  const gpValue = document.getElementById('gpValue');
-  const physicalControllerBtn = document.getElementById('physicalControllerBtn');
-  const physicalControllerValue = document.getElementById('physicalControllerValue');
-  const controllerState = document.getElementById('controllerState');
-  const touchModeDescription = document.getElementById('touchModeDescription');
-  const gpEditBtn = document.getElementById('gpEditBtn');
-  const gpResetBtn = document.getElementById('gpResetBtn');
-  const gpScaleRange = document.getElementById('gpScaleRange');
-  const gpScaleValue = document.getElementById('gpScaleValue');
-  const gpButtonRange = document.getElementById('gpButtonRange');
-  const gpButtonValue = document.getElementById('gpButtonValue');
-  const gpStickRange = document.getElementById('gpStickRange');
-  const gpStickValue = document.getElementById('gpStickValue');
-  const gpOpacityRange = document.getElementById('gpOpacityRange');
-  const gpOpacityValue = document.getElementById('gpOpacityValue');
-  const layoutHint = document.getElementById('layoutHint');
-  const remoteMediaStream = new MediaStream();
-  let inputProtocolVersion = 2;
-  let inputHandshakeComplete = false;
-  let inputFallbackTimer = null;
-  let nativeHapticsAvailable = false;
-  let hapticsAdvertised = null;
-  let lastHapticsAdvertisementMs = 0;
-  let partialReliableThresholdMs = DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
-  let riInputCapabilities = {
-    hidDeviceMask: DEFAULT_HID_DEVICE_MASK,
-    enablePartiallyReliableTransferGamepad: DEFAULT_PR_GAMEPAD_MASK,
-    enablePartiallyReliableTransferHid: DEFAULT_PR_HID_MASK
-  };
-  let offerAccepted = false;
-  let hudPanelOpen = false;
-  let audioUnlocked = false;
-  let userMuted = streamerPreferences.audioMuted;
-  let audioRetryTimer = null;
-  let statsVisible = !!cfg.showStatsOverlay;
-  let showStatsClock = streamerPreferences.showStatsClock;
-  let showStatsBattery = streamerPreferences.showStatsBattery;
-  let deviceBatteryPercent = null;
-  let deviceBatteryCharging = false;
-  let latestStats = { fps: 0, pingMs: 0, packetLossPct: 0, bitrateMbps: 0, hasPacketLoss: false };
-  let nativeGamepadState = null;
-  let lastControllerStatusText = '';
-  let lastStatsMarkup = '';
-  const GAMEPAD_PACKET_SIZE = 38;
-  const HAPTICS_ADVERTISEMENT_REFRESH_MS = 5000;
-  const GAMEPAD_DEADZONE = 0.15;
-  const GAMEPAD_KEEPALIVE_MS = 1000;
-  const GAMEPAD_DPAD_UP = 0x0001;
-  const GAMEPAD_DPAD_DOWN = 0x0002;
-  const GAMEPAD_DPAD_LEFT = 0x0004;
-  const GAMEPAD_DPAD_RIGHT = 0x0008;
-  const GAMEPAD_START = 0x0010;
-  const GAMEPAD_BACK = 0x0020;
-  const GAMEPAD_LS = 0x0040;
-  const GAMEPAD_RS = 0x0080;
-  const GAMEPAD_LB = 0x0100;
-  const GAMEPAD_RB = 0x0200;
-  const GAMEPAD_GUIDE = 0x0400;
-  const GAMEPAD_A = 0x1000;
-  const GAMEPAD_B = 0x2000;
-  const GAMEPAD_X = 0x4000;
-  const GAMEPAD_Y = 0x8000;
-  const TOUCH_LAYOUT_SCALE_MIN = 0.35;
-  const TOUCH_LAYOUT_SCALE_MAX = 1.6;
-  const TOUCH_LAYOUT_BUTTON_SCALE_MIN = 0.4;
-  const TOUCH_LAYOUT_BUTTON_SCALE_MAX = 1.5;
-  const TOUCH_LAYOUT_STICK_SCALE_MIN = 0.4;
-  const TOUCH_LAYOUT_STICK_SCALE_MAX = 1.5;
-  const TOUCH_LAYOUT_OPACITY_MIN = 0.15;
-  const TOUCH_LAYOUT_OPACITY_MAX = 1.0;
-  const TOUCH_LAYOUT_VISUAL_BASE_SCALE = 0.56;
-
-  function post(type, message) {
-    try { window.webkit.messageHandlers.opennow.postMessage({ type, message }); } catch (_) {}
-  }
-  function postPayload(type, payload) {
-    try { window.webkit.messageHandlers.opennow.postMessage({ type, payload }); } catch (_) {}
-  }
-  function log(message) { post("log", message); }
-  function fail(message) { post("error", message); }
-  function defaultTouchLayoutForProfile(profile) {
-    if (profile === 'fortnite-mobile') {
-      return {
-        scale: 1,
-        opacity: 0.52,
-        buttonScale: 1,
-        stickScale: 1,
-        topLeft: { x: 0.16, y: 0.11 },
-        topCenter: { x: 0.50, y: 0.11 },
-        topRight: { x: 0.84, y: 0.11 },
-        leftStick: { x: 0.17, y: 0.77 },
-        rightCluster: { x: 0.84, y: 0.75 },
-        bottomCenter: { x: 0.50, y: 0.86 }
-      };
-    }
-    return {
-      scale: 1,
-      opacity: 0.58,
-      buttonScale: 1,
-      stickScale: 1,
-      topLeft: { x: 0.14, y: 0.12 },
-      topCenter: { x: 0.50, y: 0.12 },
-      topRight: { x: 0.86, y: 0.12 },
-      leftStick: { x: 0.18, y: 0.77 },
-      rightCluster: { x: 0.83, y: 0.76 },
-      bottomCenter: { x: 0.50, y: 0.88 }
-    };
-  }
-  function clamp01(value, min = 0.08, max = 0.92) {
-    return Math.max(min, Math.min(max, Number.isFinite(value) ? value : 0.5));
-  }
-  function sanitizePoint(raw, fallback, minX = 0.08, maxX = 0.92, minY = 0.08, maxY = 0.94) {
-    return {
-      x: clamp01(raw?.x ?? fallback.x, minX, maxX),
-      y: clamp01(raw?.y ?? fallback.y, minY, maxY)
-    };
-  }
-  function sanitizeTouchLayout(raw) {
-    const fallback = defaultTouchLayoutForProfile(cfg.touchProfile);
-    return {
-      scale: Math.max(TOUCH_LAYOUT_SCALE_MIN, Math.min(TOUCH_LAYOUT_SCALE_MAX, Number(raw?.scale ?? fallback.scale) || fallback.scale)),
-      opacity: Math.max(TOUCH_LAYOUT_OPACITY_MIN, Math.min(TOUCH_LAYOUT_OPACITY_MAX, Number(raw?.opacity ?? fallback.opacity) || fallback.opacity)),
-      buttonScale: Math.max(TOUCH_LAYOUT_BUTTON_SCALE_MIN, Math.min(TOUCH_LAYOUT_BUTTON_SCALE_MAX, Number(raw?.buttonScale ?? fallback.buttonScale) || fallback.buttonScale)),
-      stickScale: Math.max(TOUCH_LAYOUT_STICK_SCALE_MIN, Math.min(TOUCH_LAYOUT_STICK_SCALE_MAX, Number(raw?.stickScale ?? fallback.stickScale) || fallback.stickScale)),
-      topLeft: sanitizePoint(raw?.topLeft, fallback.topLeft),
-      topCenter: sanitizePoint(raw?.topCenter, fallback.topCenter),
-      topRight: sanitizePoint(raw?.topRight, fallback.topRight),
-      leftStick: sanitizePoint(raw?.leftStick, fallback.leftStick, 0.10, 0.40, 0.45, 0.88),
-      rightCluster: sanitizePoint(raw?.rightCluster, fallback.rightCluster, 0.60, 0.92, 0.42, 0.88),
-      bottomCenter: sanitizePoint(raw?.bottomCenter, fallback.bottomCenter, 0.20, 0.80, 0.70, 0.91)
-    };
-  }
-  let touchLayout = sanitizeTouchLayout(cfg.touchLayout);
-  let layoutEditing = false;
-  let touchLayoutPersistTimer = null;
-  let streamerPreferencesPersistTimer = null;
-  const touchGroupElements = {
-    topLeft: document.getElementById('gpTopLeft'),
-    topCenter: document.getElementById('gpTopCenter'),
-    topRight: document.getElementById('gpTopRight'),
-    leftStick: document.getElementById('gpLeftStick'),
-    rightCluster: document.getElementById('gpRightCluster'),
-    bottomCenter: document.getElementById('gpBottomCenter')
-  };
-  const layoutDragState = { key: null, pointerId: null, offsetX: 0, offsetY: 0 };
-  function toggleHudPanel(forceOpen) {
-    hudPanelOpen = typeof forceOpen === 'boolean' ? forceOpen : !hudPanelOpen;
-    if (hudPanel) {
-      hudPanel.classList.toggle('open', hudPanelOpen);
-    }
-    if (hudToggle) {
-      hudToggle.setAttribute('aria-expanded', hudPanelOpen ? 'true' : 'false');
-      hudToggle.setAttribute('aria-label', hudPanelOpen ? 'Close stream controls' : 'Open stream controls');
-    }
-    if (hudToggleGlyph) {
-      hudToggleGlyph.innerHTML = hudPanelOpen ? '&times;' : '&#9881;';
-    }
-  }
-  function configurePlatformControls() {
-    if (!IS_TVOS) return;
-    [kbBtn, touchscreenBtn, gpBtn, batteryBtn].forEach((element) => {
-      if (!element) return;
-      element.style.display = 'none';
-    });
-    const layoutPanel = document.querySelector('.layoutPanel');
-    if (layoutPanel) {
-      layoutPanel.style.display = 'none';
-    }
-    if (hudToggle) {
-      hudToggle.title = 'Stream controls';
-    }
-  }
-  function setToggleRowState(element, isActive, isDisabled = false) {
-    if (!element) return;
-    element.classList.toggle('is-active', !!isActive);
-    element.classList.toggle('is-disabled', !!isDisabled);
-    if (isDisabled) {
-      element.setAttribute('aria-disabled', 'true');
-    } else {
-      element.removeAttribute('aria-disabled');
-    }
-  }
-  function updateHudSummary() {
-    if (hudStatsBadge) {
-      hudStatsBadge.textContent = statsVisible ? 'Stats On' : 'Stats Off';
-    }
-    if (hudInputBadge) {
-      hudInputBadge.textContent = IS_TVOS
-        ? 'Controller'
-        : (streamerPreferences.touchscreenModeEnabled
-          ? 'Touchscreen'
-          : (gpPad && gpPad.style.display !== 'none' ? 'Touch Controls' : 'Touchpad'));
-    }
-    if (hudAudioBadge) {
-      hudAudioBadge.textContent = userMuted || video.muted ? 'Audio Muted' : 'Audio On';
-    }
-  }
-  function updateAudioButton() {
-    if (audioValue) {
-      audioValue.textContent = userMuted || video.muted ? 'Muted' : 'On';
-    }
-    setToggleRowState(audioBtn, !(userMuted || video.muted));
-    updateHudSummary();
-  }
-  function updateStatsButton() {
-    if (statsValue) {
-      statsValue.textContent = statsVisible ? 'On' : 'Off';
-    }
-    setToggleRowState(statsBtn, statsVisible);
-    const extrasDisabled = !statsVisible;
-    if (clockValue) {
-      clockValue.textContent = showStatsClock ? 'On' : 'Off';
-    }
-    if (batteryValue) {
-      batteryValue.textContent = showStatsBattery ? 'On' : 'Off';
-    }
-    setToggleRowState(clockBtn, showStatsClock, extrasDisabled);
-    setToggleRowState(batteryBtn, showStatsBattery, extrasDisabled);
-    updateHudSummary();
-  }
-  function updateTouchControllerButton() {
-    if (IS_TVOS) {
-      if (gpValue) {
-        gpValue.textContent = 'Off';
-      }
-      setToggleRowState(gpBtn, false, true);
-      updateHudSummary();
-      return;
-    }
-    const visible = gpPad && gpPad.style.display !== 'none';
-    const profileLabel = cfg.touchProfile === 'fortnite-mobile' ? 'Touch Controller Overlay' : 'Touch Controller';
-    if (gpValue) {
-      gpValue.textContent = visible ? 'Visible' : 'Hidden';
-    }
-    setToggleRowState(gpBtn, visible);
-    updateHudSummary();
-  }
-  function updatePhysicalControllerButton() {
-    if (physicalControllerValue) {
-      physicalControllerValue.textContent = 'Auto';
-    }
-    setToggleRowState(physicalControllerBtn, true);
-  }
-  function updateTouchModeCopy() {
-    if (touchscreenDescription) {
-      touchscreenDescription.textContent = streamerPreferences.touchscreenModeEnabled
-        ? 'Tap to left-click at the touched location. Drag to hold and move.'
-        : 'Off keeps normal touchpad cursor movement active.';
-    }
-    if (!touchModeDescription) return;
-    if (IS_TVOS) {
-      touchModeDescription.textContent = 'Apple TV uses connected controllers on the native gamepad path.';
-      if (touchHint) {
-        touchHint.textContent = 'Connect a controller to play.';
-      }
-      return;
-    }
-    if (PREFERS_TOUCH_CONTROLLER_OVERLAY) {
-      touchModeDescription.textContent = 'Fortnite uses the touch-controller overlay because GFN does not expose raw iOS touch.';
-      if (touchHint) {
-        touchHint.textContent = 'Fortnite touch controls are ready.';
-      }
-      return;
-    }
-    touchModeDescription.textContent = streamerPreferences.touchscreenModeEnabled
-      ? 'Touch controller can still be shown above touchscreen input.'
-      : 'Touchpad mode uses drag to move, tap to click, and two-finger tap for right click.';
-    if (touchHint) {
-      touchHint.textContent = streamerPreferences.touchscreenModeEnabled
-        ? 'Tap where you want to click · Drag to hold left click'
-        : 'Drag to move · Tap to click · 2-finger tap for right click';
-    }
-  }
-  function applyTouchpadMode() {
-    updateTouchModeCopy();
-    if (!touchpad) return;
-    if (IS_TVOS) {
-      touchpad.style.pointerEvents = 'none';
-      touchpad.style.display = 'none';
-      if (touchHint) {
-        touchHint.style.display = 'none';
-      }
-      return;
-    }
-    const touchControllerActive = gpPad && gpPad.style.display !== 'none';
-    if (touchControllerActive) {
-      touchpad.style.pointerEvents = 'auto';
-      touchpad.style.display = 'block';
-    } else {
-      touchpad.style.pointerEvents = 'auto';
-      touchpad.style.display = 'block';
-    }
-  }
-  function scheduleTouchLayoutPersist() {
-    if (touchLayoutPersistTimer) {
-      clearTimeout(touchLayoutPersistTimer);
-    }
-    touchLayoutPersistTimer = setTimeout(() => {
-      touchLayoutPersistTimer = null;
-      postPayload('touch-layout', { profile: cfg.touchProfile, layout: touchLayout });
-    }, 140);
-  }
-  function scheduleStreamerPreferencesPersist() {
-    if (streamerPreferencesPersistTimer) {
-      clearTimeout(streamerPreferencesPersistTimer);
-    }
-    streamerPreferencesPersistTimer = setTimeout(() => {
-      streamerPreferencesPersistTimer = null;
-      postPayload('streamer-preferences', streamerPreferences);
-    }, 140);
-  }
-  function updateStreamerPreference(key, value) {
-    streamerPreferences = sanitizeStreamerPreferences({
-      ...streamerPreferences,
-      [key]: value
-    });
-    scheduleStreamerPreferencesPersist();
-  }
-  function updateTouchscreenButton() {
-    if (touchscreenValue) {
-      touchscreenValue.textContent = streamerPreferences.touchscreenModeEnabled ? 'On' : 'Off';
-    }
-    setToggleRowState(touchscreenBtn, streamerPreferences.touchscreenModeEnabled, IS_TVOS);
-    updateTouchModeCopy();
-    updateHudSummary();
-  }
-  function applyTouchLayout() {
-    const scale = touchLayout.scale;
-    const buttonScale = touchLayout.buttonScale;
-    const stickScale = touchLayout.stickScale;
-    const overlayOpacity = layoutEditing ? Math.max(touchLayout.opacity, 0.55) : touchLayout.opacity;
-    Object.entries(touchGroupElements).forEach(([key, element]) => {
-      if (!element || !touchLayout[key]) return;
-      const point = touchLayout[key];
-      element.style.left = `${(point.x * 100).toFixed(2)}%`;
-      element.style.top = `${(point.y * 100).toFixed(2)}%`;
-      element.style.transform = `translate(-50%, -50%) scale(${scale * TOUCH_LAYOUT_VISUAL_BASE_SCALE})`;
-      element.style.opacity = `${overlayOpacity}`;
-    });
-    if (gpPad) {
-      gpPad.classList.toggle('layoutEditing', layoutEditing);
-    }
-    if (gpScaleRange) {
-      gpScaleRange.value = String(Math.round(scale * 100));
-    }
-    if (gpScaleValue) {
-      gpScaleValue.textContent = `${Math.round(scale * 100)}%`;
-    }
-    if (gpButtonRange) {
-      gpButtonRange.value = String(Math.round(buttonScale * 100));
-    }
-    if (gpButtonValue) {
-      gpButtonValue.textContent = `${Math.round(buttonScale * 100)}%`;
-    }
-    if (gpStickRange) {
-      gpStickRange.value = String(Math.round(stickScale * 100));
-    }
-    if (gpStickValue) {
-      gpStickValue.textContent = `${Math.round(stickScale * 100)}%`;
-    }
-    if (gpOpacityRange) {
-      gpOpacityRange.value = String(Math.round(touchLayout.opacity * 100));
-    }
-    if (gpOpacityValue) {
-      gpOpacityValue.textContent = `${Math.round(touchLayout.opacity * 100)}%`;
-    }
-    if (gpEditBtn) {
-      gpEditBtn.textContent = layoutEditing ? 'Done Editing' : 'Edit Layout';
-    }
-    if (layoutHint) {
-      layoutHint.textContent = layoutEditing
-        ? 'Drag any highlighted touch-control cluster, then use the size slider if needed.'
-        : 'Turn on edit mode to drag each touch-control cluster and resize the whole layout.';
-    }
-    applyTouchControlSizing();
-  }
-  function applyTouchControlSizing() {
-    const buttonScale = touchLayout.buttonScale;
-    const stickScale = touchLayout.stickScale;
-    const keySize = Math.round(56 * buttonScale);
-    const auxHeight = Math.round(42 * buttonScale);
-    const auxMinWidth = Math.round(58 * buttonScale);
-    document.querySelectorAll('.gpKey').forEach((btn) => {
-      btn.style.width = `${keySize}px`;
-      btn.style.height = `${keySize}px`;
-      btn.style.fontSize = `${Math.max(14, Math.round(18 * buttonScale))}px`;
-    });
-    document.querySelectorAll('.gpAux').forEach((btn) => {
-      const small = btn.classList.contains('gpSmall');
-      btn.style.minWidth = `${small ? Math.round(48 * buttonScale) : auxMinWidth}px`;
-      btn.style.height = `${small ? Math.round(34 * buttonScale) : auxHeight}px`;
-      btn.style.padding = `0 ${Math.round((small ? 10 : 14) * buttonScale)}px`;
-      btn.style.fontSize = `${Math.max(10, Math.round((small ? 12 : 15) * buttonScale))}px`;
-    });
-    if (joyBase) {
-      joyBase.style.width = `${Math.round(146 * stickScale)}px`;
-      joyBase.style.height = `${Math.round(146 * stickScale)}px`;
-    }
-    if (joyStick) {
-      joyStick.style.width = `${Math.round(62 * stickScale)}px`;
-      joyStick.style.height = `${Math.round(62 * stickScale)}px`;
-    }
-    if (lookBase) {
-      lookBase.style.width = `${Math.round(124 * stickScale)}px`;
-      lookBase.style.height = `${Math.round(124 * stickScale)}px`;
-    }
-    if (lookStick) {
-      lookStick.style.width = `${Math.round(48 * stickScale)}px`;
-      lookStick.style.height = `${Math.round(48 * stickScale)}px`;
-    }
-  }
-  function resetTouchLayout() {
-    touchLayout = sanitizeTouchLayout(defaultTouchLayoutForProfile(cfg.touchProfile));
-    applyTouchLayout();
-    scheduleTouchLayoutPersist();
-  }
-  function setLayoutEditing(nextEditing) {
-    layoutEditing = !!nextEditing;
-    if (layoutEditing) {
-      setGamepadVisible(true);
-      unlockAudio();
-    }
-    applyTouchLayout();
-  }
-  function applyStatsVisibility() {
-    if (statsEl) {
-      statsEl.style.display = statsVisible ? 'flex' : 'none';
-    }
-    updateStatsButton();
-    renderStatsOverlay();
-    if (statsVisible) {
-      ensureStatsTicker();
-      samplePeerStats();
-    } else {
-      stopStatsTicker();
-    }
-  }
-  function toggleStatsOverlay() {
-    statsVisible = !statsVisible;
-    applyStatsVisibility();
-  }
-  function toggleStatsClock() {
-    if (!statsVisible) return;
-    showStatsClock = !showStatsClock;
-    updateStreamerPreference('showStatsClock', showStatsClock);
-    updateStatsButton();
-    renderStatsOverlay();
-  }
-  function toggleStatsBattery() {
-    if (!statsVisible) return;
-    showStatsBattery = !showStatsBattery;
-    updateStreamerPreference('showStatsBattery', showStatsBattery);
-    updateStatsButton();
-    renderStatsOverlay();
-  }
-  async function toggleAudio() {
-    userMuted = !userMuted;
-    updateStreamerPreference('audioMuted', userMuted);
-    if (userMuted) {
-      if (audioRetryTimer) {
-        clearTimeout(audioRetryTimer);
-        audioRetryTimer = null;
-      }
-      video.muted = true;
-      audioUnlocked = false;
-      updateAudioButton();
-      return;
-    }
-    await unlockAudio();
-  }
-  async function unlockAudio() {
-    if (userMuted) {
-      updateAudioButton();
-      return;
-    }
-    if (!video.muted) {
-      updateAudioButton();
-      return;
-    }
-    video.muted = false;
-    video.volume = 1;
-    try { await video.play(); } catch (_) {}
-    audioUnlocked = !video.muted;
-    updateAudioButton();
-  }
-  function scheduleAudioRetry() {
-    if (userMuted) return;
-    if (audioRetryTimer) return;
-    audioRetryTimer = setTimeout(async () => {
-      audioRetryTimer = null;
-      if (userMuted) {
-        updateAudioButton();
-        return;
-      }
-      await unlockAudio();
-      if (video.muted && !userMuted) {
-        scheduleAudioRetry();
-      }
-    }, 750);
-  }
-  async function ensureAudioActive() {
-    if (userMuted) {
-      updateAudioButton();
-      return;
-    }
-    await unlockAudio();
-    if (video.muted) {
-      scheduleAudioRetry();
-    }
-  }
-  window.addEventListener('error', (event) => {
-    const message = event && event.message ? event.message : 'unknown';
-    const source = event && event.filename ? event.filename : 'inline';
-    const line = event && event.lineno ? event.lineno : 0;
-    fail(`JS runtime error: ${message} @ ${source}:${line}`);
-  });
-  window.addEventListener('unhandledrejection', (event) => {
-    const reason = event && event.reason ? String(event.reason) : 'unknown';
-    fail('Unhandled promise rejection: ' + reason);
-  });
-  window.addEventListener('contextmenu', (event) => {
-    event.preventDefault();
-  }, { passive: false });
-  document.addEventListener('selectionchange', () => {
-    const selection = window.getSelection && window.getSelection();
-    if (selection && !selection.isCollapsed) {
-      selection.removeAllRanges();
-    }
-  });
-  function nextAck() { ack += 1; return ack; }
-  function scheduleReconnect(reason) {
-    if (reconnectAttempts >= maxReconnectAttempts) {
-      fail('Reconnect exhausted: ' + reason);
-      return;
-    }
-    if (reconnectTimer) return;
-    reconnectAttempts += 1;
-    const waitMs = Math.min(1500 * reconnectAttempts, 5000);
-    post('status', `Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      connect();
-    }, waitMs);
-  }
-  function resetTransport(closeSocket = false) {
-    inputReady = false;
-    inputProtocolVersion = 2;
-    inputHandshakeComplete = false;
-    hapticsAdvertised = null;
-    lastHapticsAdvertisementMs = 0;
-    partialReliableThresholdMs = DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
-    riInputCapabilities = {
-      hidDeviceMask: DEFAULT_HID_DEVICE_MASK,
-      enablePartiallyReliableTransferGamepad: DEFAULT_PR_GAMEPAD_MASK,
-      enablePartiallyReliableTransferHid: DEFAULT_PR_HID_MASK
-    };
-    offerAccepted = false;
-    peerEverConnected = false;
-    clearOfferTimeout();
-    if (inputFallbackTimer) {
-      clearTimeout(inputFallbackTimer);
-      inputFallbackTimer = null;
-    }
-    if (signalingOpenTimeout) {
-      clearTimeout(signalingOpenTimeout);
-      signalingOpenTimeout = null;
-    }
-    if (hb) { clearInterval(hb); hb = null; }
-    if (hbInput) { clearInterval(hbInput); hbInput = null; }
-    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
-    if (audioRetryTimer) { clearTimeout(audioRetryTimer); audioRetryTimer = null; }
-    stopKeyframeTimer();
-    lastBytesReceived = 0;
-    lastBytesTimestamp = 0;
-    lastPacketsReceived = 0;
-    lastPacketsLost = 0;
-    statsPollInFlight = false;
-    for (const track of remoteMediaStream.getTracks()) {
-      try { remoteMediaStream.removeTrack(track); } catch (_) {}
-    }
-    if (reliableCh) { try { reliableCh.close(); } catch (_) {} }
-    if (partialCh) { try { partialCh.close(); } catch (_) {} }
-    reliableCh = null;
-    partialCh = null;
-    if (pc) { try { pc.close(); } catch (_) {} }
-    pc = null;
-    if (closeSocket && ws) {
-      try { ws.onclose = null; ws.close(); } catch (_) {}
-      ws = null;
-    }
-  }
-  function clearOfferTimeout() {
-    if (offerTimeoutTimer) {
-      clearTimeout(offerTimeoutTimer);
-      offerTimeoutTimer = null;
-    }
-  }
-  function startOfferTimeout() {
-    clearOfferTimeout();
-    offerTimeoutTimer = setTimeout(() => {
-      post('status', 'Offer timeout, retrying signaling');
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try { ws.close(); } catch (_) {}
-      }
-      scheduleReconnect('offer timeout');
-    }, 15000);
-  }
-  function isChannelOpen(channel) {
-    return !!channel && channel.readyState === 'open';
-  }
-  function updateInputReady() {
-    inputReady = isChannelOpen(reliableCh) && inputHandshakeComplete;
-    if (inputReady) {
-      post('status', 'Input ready');
-      advertiseNativeHaptics();
-    }
-  }
-  function shouldKeepPeerAliveOnSignalingClose() {
-    if (!offerAccepted || !pc) return false;
-    const state = pc.connectionState;
-    return state === 'new' || state === 'connecting' || state === 'connected';
-  }
-  function canUsePartiallyReliableForMouse() {
-    if (!isChannelOpen(partialCh)) return false;
-    if ((riInputCapabilities.hidDeviceMask & RI_INPUT_MOUSE_REL_MASK) === 0) return false;
-    return (riInputCapabilities.enablePartiallyReliableTransferHid & RI_INPUT_MOUSE_REL_MASK) !== 0;
-  }
-  function send(obj) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify(obj));
-  }
-  function sendInput(buf) {
-    if (isChannelOpen(reliableCh)) {
-      reliableCh.send(buf);
-      return;
-    }
-    if (isChannelOpen(partialCh)) {
-      partialCh.send(buf);
-    }
-  }
-  function sendPartialInput(buf) {
-    if (canUsePartiallyReliableForMouse()) {
-      partialCh.send(buf);
-      return;
-    }
-    sendInput(buf);
-  }
-  async function toBytes(data) {
-    if (data instanceof ArrayBuffer) return new Uint8Array(data);
-    if (typeof Blob !== 'undefined' && data instanceof Blob) {
-      const buffer = await data.arrayBuffer();
-      return new Uint8Array(buffer);
-    }
-    if (typeof data === 'string') {
-      return new TextEncoder().encode(data);
-    }
-    return new Uint8Array(0);
-  }
-  function setupInputHeartbeat() {
-    if (hbInput) clearInterval(hbInput);
-    hbInput = setInterval(() => {
-      if (inputReady) sendInput(encodeHeartbeat());
-    }, 2000);
-  }
-  function handleInputHandshakeMessage(bytes) {
-    if (!bytes || bytes.length < 2) return false;
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const firstWord = view.getUint16(0, true);
-    let version = 2;
-    if (firstWord === 526) {
-      version = bytes.length >= 4 ? view.getUint16(2, true) : 2;
-    } else if (bytes[0] === 0x0e) {
-      version = firstWord;
-    } else {
-      return false;
-    }
-    if (inputFallbackTimer) {
-      clearTimeout(inputFallbackTimer);
-      inputFallbackTimer = null;
-    }
-    inputProtocolVersion = Math.max(2, Math.floor(version || 2));
-    if (!inputHandshakeComplete) {
-      inputHandshakeComplete = true;
-      updateInputReady();
-      setupInputHeartbeat();
-      log('Input handshake complete (protocol v' + inputProtocolVersion + ')');
-    }
-    return true;
-  }
-  function encodeHapticsEnabled(enabled) {
-    const buf = new ArrayBuffer(6);
-    const v = new DataView(buf);
-    v.setUint32(0, 13, true);
-    v.setUint16(4, enabled ? 1 : 0, false);
-    return wrapSingleEvent(buf);
-  }
-  function advertiseNativeHaptics(force = false) {
-    if (!inputReady) return;
-    const enabled = !!nativeHapticsAvailable;
-    const now = performance.now();
-    if (!force && hapticsAdvertised === enabled && now - lastHapticsAdvertisementMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) {
-      return;
-    }
-    sendInput(encodeHapticsEnabled(enabled));
-    hapticsAdvertised = enabled;
-    lastHapticsAdvertisementMs = now;
-  }
-  function readUint16LE(bytes, offset) {
-    if (offset < 0 || offset + 2 > bytes.length) return null;
-    return new DataView(bytes.buffer, bytes.byteOffset + offset, 2).getUint16(0, true);
-  }
-  function readInt32LE(bytes, offset) {
-    if (offset < 0 || offset + 4 > bytes.length) return null;
-    return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getInt32(0, true);
-  }
-  function parseLegacyHaptics(bytes, offset) {
-    if (offset < 0 || offset + 10 > bytes.length) return null;
-    const kind = readUint16LE(bytes, offset);
-    if (kind !== 1) return null;
-    const length = readUint16LE(bytes, offset + 2);
-    if (length == null || length < 6) return null;
-    return {
-      controllerId: readUint16LE(bytes, offset + 4) ?? 0,
-      weakMagnitude: readUint16LE(bytes, offset + 6) ?? 0,
-      strongMagnitude: readUint16LE(bytes, offset + 8) ?? 0
-    };
-  }
-  function parseOcHaptics(bytes, offset) {
-    if (offset < 0 || offset + 9 > bytes.length) return null;
-    const controllerByte = bytes[offset] & 0xff;
-    if (controllerByte < 6 || controllerByte >= 10) return null;
-    const reportKind = bytes[offset + 3] & 0xff;
-    const flags = bytes[offset + 4] & 0xff;
-    if (reportKind !== 5 || (flags & 0xfe) !== 0) return null;
-    return {
-      controllerId: controllerByte - 6,
-      weakMagnitude: (bytes[offset + 7] & 0xff) << 8,
-      strongMagnitude: (bytes[offset + 8] & 0xff) << 8
-    };
-  }
-  function parseHapticsSubMessage(bytes, offset) {
-    const type = readInt32LE(bytes, offset);
-    if (type == null) return null;
-    if (type === 267) return parseLegacyHaptics(bytes, offset + 4);
-    if (type === 17) return parseOcHaptics(bytes, offset + 4);
-    return null;
-  }
-  function parseGamepadRumble(bytes) {
-    if (!bytes || bytes.length < 2) return null;
-    const firstWord = readUint16LE(bytes, 0);
-    if (firstWord === 267) return parseLegacyHaptics(bytes, 2);
-    switch (firstWord & 0xff) {
-      case 34:
-        return parseHapticsSubMessage(bytes, 1);
-      case 32:
-      case 33:
-      case 35:
-      case 36:
-      case 37:
-        return null;
-      default:
-        return parseLegacyHaptics(bytes, 0);
-    }
-  }
-  function handleInputHapticsMessage(bytes) {
-    const command = parseGamepadRumble(bytes);
-    if (!command) return;
-    postPayload('gamepad-rumble', command);
-  }
-  function renderStatsOverlay() {
-    if (!statsEl || !statsPrimary || !statsMeta) return;
-    const lossText = latestStats.hasPacketLoss ? latestStats.packetLossPct.toFixed(1) : '--';
-    const primaryParts = [
-      `FPS ${latestStats.fps > 0 ? Math.round(latestStats.fps) : '--'}`,
-      `Ping ${latestStats.pingMs > 0 ? Math.round(latestStats.pingMs) : '--'} ms`,
-      `Loss ${lossText}%`,
-      `${latestStats.bitrateMbps > 0 ? latestStats.bitrateMbps.toFixed(1) : '--'} Mbps`
-    ];
-    const metaParts = [];
-    if (showStatsClock) {
-      metaParts.push(new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
-    }
-    if (showStatsBattery) {
-      if (Number.isFinite(deviceBatteryPercent)) {
-        metaParts.push(deviceBatteryCharging ? `Battery ${deviceBatteryPercent}% charging` : `Battery ${deviceBatteryPercent}%`);
-      } else {
-        metaParts.push('Battery unavailable');
-      }
-    }
-    const nextPrimary = primaryParts.join(' · ');
-    const nextMeta = metaParts.join(' · ');
-    const combined = `${nextPrimary}\n${nextMeta}`;
-    if (combined === lastStatsMarkup) return;
-    lastStatsMarkup = combined;
-    statsPrimary.textContent = nextPrimary;
-    if (nextMeta) {
-      statsMeta.style.display = 'block';
-      statsMeta.textContent = nextMeta;
-    } else {
-      statsMeta.style.display = 'none';
-      statsMeta.textContent = '';
-    }
-  }
-  async function samplePeerStats() {
-    if (!statsVisible) return;
-    if (!pc || !statsEl) {
-      renderStatsOverlay();
-      return;
-    }
-    if (statsPollInFlight) return;
-    statsPollInFlight = true;
-    try {
-      const report = await pc.getStats();
-      let fps = 0;
-      let pingMs = 0;
-      let bitrateMbps = 0;
-      let packetLossPct = 0;
-      let hasPacketLoss = false;
-      for (const stat of report.values()) {
-        if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
-          if (typeof stat.framesPerSecond === 'number' && stat.framesPerSecond > 0) {
-            fps = stat.framesPerSecond;
-          }
-          if (typeof stat.packetsLost === 'number' && typeof stat.packetsReceived === 'number') {
-            if (lastPacketsReceived > 0 || lastPacketsLost > 0) {
-              const packetsDelta = stat.packetsReceived - lastPacketsReceived;
-              const lostDelta = stat.packetsLost - lastPacketsLost;
-              const totalDelta = packetsDelta + lostDelta;
-              if (packetsDelta >= 0 && lostDelta >= 0 && totalDelta > 0) {
-                packetLossPct = (lostDelta / totalDelta) * 100;
-                hasPacketLoss = true;
-              }
+            .animation(.easeInOut(duration: 0.18), value: coordinator.controlsPanelVisible)
+            .animation(.easeInOut(duration: 0.18), value: coordinator.showStatsOverlay)
+            .task(id: coordinator.sessionID) {
+                coordinator.start(viewportSize: proxy.size)
             }
-            if (!hasPacketLoss) {
-              const totalPackets = stat.packetsReceived + stat.packetsLost;
-              if (totalPackets > 0) {
-                packetLossPct = (stat.packetsLost / totalPackets) * 100;
-                hasPacketLoss = true;
-              }
+            .onChangeCompat(of: proxy.size) { newSize in
+                coordinator.updateViewportSize(newSize)
             }
-            lastPacketsReceived = stat.packetsReceived;
-            lastPacketsLost = stat.packetsLost;
-          }
-          if (typeof stat.bytesReceived === 'number') {
-            if (lastBytesTimestamp > 0 && stat.timestamp > lastBytesTimestamp && stat.bytesReceived >= lastBytesReceived) {
-              const bytesDiff = stat.bytesReceived - lastBytesReceived;
-              const seconds = (stat.timestamp - lastBytesTimestamp) / 1000;
-              if (seconds > 0) {
-                bitrateMbps = (bytesDiff * 8) / seconds / 1000000;
-              }
+            .onDisappear {
+                coordinator.stop()
             }
-            lastBytesReceived = stat.bytesReceived;
-            lastBytesTimestamp = stat.timestamp;
-          }
-        }
-        if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video' && typeof stat.roundTripTime === 'number') {
-          pingMs = stat.roundTripTime * 1000;
-        }
-        if (stat.type === 'candidate-pair' && stat.nominated && typeof stat.currentRoundTripTime === 'number') {
-          pingMs = Math.max(pingMs, stat.currentRoundTripTime * 1000);
-        }
-      }
-      latestStats = { fps, pingMs, packetLossPct, bitrateMbps, hasPacketLoss };
-      renderStatsOverlay();
-    } catch (_) {
-    } finally {
-      statsPollInFlight = false;
-    }
-  }
-  function ensureStatsTicker() {
-    if (!statsVisible || statsTimer) return;
-    statsTimer = setInterval(samplePeerStats, 1250);
-  }
-  function stopStatsTicker() {
-    if (!statsTimer) return;
-    clearInterval(statsTimer);
-    statsTimer = null;
-  }
-  function buildSignInUrl() {
-    const signalingServer = (cfg.signalingServer || "").trim();
-    const fallbackHost = signalingServer.includes(":") ? signalingServer : (signalingServer ? signalingServer + ":443" : "");
-    const base = (cfg.signalingUrl || "").trim() || ("wss://" + fallbackHost + "/nvst/");
-    const url = new URL(base);
-    url.protocol = "wss:";
-    // Append sign_in to existing path (e.g. /nvst/abc/ -> /nvst/abc/sign_in).
-    // Do NOT wipe the full path — the session signalingUrl may include a unique subpath.
-    url.pathname = url.pathname.replace(/\/?$/, '/') + 'sign_in';
-    url.search = "";
-    url.searchParams.set("peer_id", peerName);
-    url.searchParams.set("version", "2");
-    return url.toString();
-  }
-  function sendPeerInfo() {
-    send({
-      ackid: nextAck(),
-      peer_info: {
-        browser: "Chrome",
-        browserVersion: "131",
-        connected: true,
-        id: peerId,
-        name: peerName,
-        peerRole: 0,
-        resolution: `${cfg.width}x${cfg.height}`,
-        version: 2
-      }
-    });
-  }
-  function extractPublicIp(hostOrIp) {
-    if (!hostOrIp) return null;
-    let value = String(hostOrIp).trim();
-    try {
-      if (value.includes('://')) value = new URL(value).hostname;
-    } catch (_) {}
-    if (value.startsWith('[')) {
-      const end = value.indexOf(']');
-      if (end > 0) value = value.slice(1, end);
-    } else if (/:\d+$/.test(value) && value.indexOf(':') === value.lastIndexOf(':')) {
-      value = value.replace(/:\d+$/, '');
-    }
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return value;
-    const first = value.split('.')[0] ?? '';
-    const parts = first.split('-');
-    if (parts.length === 4 && parts.every(p => /^\d{1,3}$/.test(p))) return parts.join('.');
-    return null;
-  }
-  function fixServerIp(sdp, serverIp) {
-    const ip = extractPublicIp(serverIp);
-    if (!ip) return sdp;
-    let fixed = sdp.replace(/c=IN IP4 0\.0\.0\.0/g, `c=IN IP4 ${ip}`);
-    fixed = fixed.replace(/(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)0\.0\.0\.0(\s+)/g, `$1${ip}$2`);
-    return fixed;
-  }
-  function extractIceUfragFromOffer(sdp) {
-    const match = sdp.match(/a=ice-ufrag:([^\r\n]+)/);
-    return match?.[1]?.trim() ?? "";
-  }
-  function extractIceCredentials(sdp) {
-    const lines = sdp.split(/\r?\n/);
-    const ufrag = lines.find((line) => line.startsWith('a=ice-ufrag:'))?.slice('a=ice-ufrag:'.length).trim() ?? '';
-    const pwd = lines.find((line) => line.startsWith('a=ice-pwd:'))?.slice('a=ice-pwd:'.length).trim() ?? '';
-    const fingerprint = lines.find((line) => line.startsWith('a=fingerprint:sha-256 '))?.slice('a=fingerprint:sha-256 '.length).trim() ?? '';
-    return { ufrag, pwd, fingerprint };
-  }
-  function parseRiIntegerAttribute(sdp, attribute, fallback) {
-    const escapedAttribute = attribute.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = sdp.match(new RegExp(`a=${escapedAttribute}:([^\\r\\n]+)`, 'i'));
-    const raw = match?.[1]?.trim();
-    if (!raw) return fallback;
-    const normalized = raw.toLowerCase();
-    const parsed = normalized.startsWith('0x') ? parseInt(normalized.slice(2), 16) : parseInt(normalized, 10);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  }
-  function parsePartialReliableThresholdMs(sdp) {
-    const match = sdp.match(/a=ri\.partialReliableThresholdMs:(\d+)/i);
-    if (!match?.[1]) return DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
-    const parsed = Number.parseInt(match[1], 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
-    return Math.max(1, Math.min(5000, parsed));
-  }
-  function parseRiInputCapabilities(sdp) {
-    return {
-      partialReliableThresholdMs: parsePartialReliableThresholdMs(sdp),
-      hidDeviceMask: parseRiIntegerAttribute(sdp, 'ri.hidDeviceMask', DEFAULT_HID_DEVICE_MASK),
-      enablePartiallyReliableTransferGamepad: parseRiIntegerAttribute(
-        sdp,
-        'ri.enablePartiallyReliableTransferGamepad',
-        DEFAULT_PR_GAMEPAD_MASK
-      ),
-      enablePartiallyReliableTransferHid: parseRiIntegerAttribute(
-        sdp,
-        'ri.enablePartiallyReliableTransferHid',
-        DEFAULT_PR_HID_MASK
-      )
-    };
-  }
-  function nowBigUs() { return BigInt(Math.round(performance.now() * 1000)); }
-  function writeTimestampBE(view, offset) {
-    const ts = nowBigUs();
-    view.setUint32(offset, Number(ts >> 32n), false);
-    view.setUint32(offset + 4, Number(ts & 0xFFFFFFFFn), false);
-  }
-  function encodeHeartbeat() {
-    const buf = new ArrayBuffer(4);
-    new DataView(buf).setUint32(0, 2, true);
-    return buf;
-  }
-  function encodeKey(type, keycode, scancode, modifiers) {
-    const buf = new ArrayBuffer(18);
-    const v = new DataView(buf);
-    v.setUint32(0, type, true);
-    v.setUint16(4, keycode, false);
-    v.setUint16(6, modifiers, false);
-    v.setUint16(8, scancode, false);
-    writeTimestampBE(v, 10);
-    return wrapSingleEvent(buf);
-  }
-  function encodeMouseMove(dx, dy) {
-    const buf = new ArrayBuffer(22);
-    const v = new DataView(buf);
-    v.setUint32(0, 7, true);
-    v.setInt16(4, Math.max(-32768, Math.min(32767, dx)), false);
-    v.setInt16(6, Math.max(-32768, Math.min(32767, dy)), false);
-    writeTimestampBE(v, 14);
-    return wrapMouseMoveEvent(buf);
-  }
-  function encodeMouseButton(type, button) {
-    const buf = new ArrayBuffer(18);
-    const v = new DataView(buf);
-    v.setUint32(0, type, true);
-    v.setUint8(4, button);
-    writeTimestampBE(v, 10);
-    return wrapSingleEvent(buf);
-  }
-  function encodeMouseWheel(delta) {
-    const buf = new ArrayBuffer(22);
-    const v = new DataView(buf);
-    v.setUint32(0, 10, true);
-    v.setInt16(4, 0, false);
-    v.setInt16(6, Math.max(-32768, Math.min(32767, delta)), false);
-    v.setInt16(8, 0, false);
-    v.setUint32(10, 0, false);
-    writeTimestampBE(v, 14);
-    return wrapSingleEvent(buf);
-  }
-  function wrapSingleEvent(buf) {
-    if (inputProtocolVersion <= 2) return buf;
-    const wrapped = new ArrayBuffer(10 + buf.byteLength);
-    const view = new DataView(wrapped);
-    view.setUint8(0, 0x23);
-    writeTimestampBE(view, 1);
-    view.setUint8(9, 0x22);
-    new Uint8Array(wrapped, 10).set(new Uint8Array(buf));
-    return wrapped;
-  }
-  function wrapMouseMoveEvent(buf) {
-    if (inputProtocolVersion <= 2) return buf;
-    const wrapped = new ArrayBuffer(12 + buf.byteLength);
-    const view = new DataView(wrapped);
-    view.setUint8(0, 0x23);
-    writeTimestampBE(view, 1);
-    view.setUint8(9, 0x21);
-    view.setUint16(10, buf.byteLength, false);
-    new Uint8Array(wrapped, 12).set(new Uint8Array(buf));
-    return wrapped;
-  }
-  function wrapGamepadReliable(payload) {
-    if (inputProtocolVersion <= 2) return payload;
-    const wrapped = new Uint8Array(12 + payload.byteLength);
-    const view = new DataView(wrapped.buffer);
-    wrapped[0] = 0x23;
-    writeTimestampBE(view, 1);
-    wrapped[9] = 0x21;
-    view.setUint16(10, payload.byteLength, false);
-    wrapped.set(new Uint8Array(payload), 12);
-    return wrapped;
-  }
-  function wrapGamepadPartiallyReliable(payload, gamepadIndex, sequenceNumber) {
-    if (inputProtocolVersion <= 2) return payload;
-    const wrapped = new Uint8Array(16 + payload.byteLength);
-    const view = new DataView(wrapped.buffer);
-    wrapped[0] = 0x23;
-    writeTimestampBE(view, 1);
-    wrapped[9] = 0x26;
-    wrapped[10] = gamepadIndex & 0xFF;
-    view.setUint16(11, sequenceNumber & 0xFFFF, false);
-    wrapped[13] = 0x21;
-    view.setUint16(14, payload.byteLength, false);
-    wrapped.set(new Uint8Array(payload), 16);
-    return wrapped;
-  }
-  function nextGamepadSequence(index) {
-    if (!window.__opennowGamepadSequence) {
-      window.__opennowGamepadSequence = new Map();
-    }
-    const current = window.__opennowGamepadSequence.get(index) ?? 1;
-    window.__opennowGamepadSequence.set(index, (current + 1) % 65536);
-    return current;
-  }
-  function encodeGamepadState(payload, bitmap, usePartiallyReliable) {
-    const bytes = new ArrayBuffer(GAMEPAD_PACKET_SIZE);
-    const view = new DataView(bytes);
-    view.setUint32(0, 12, true);
-    view.setUint16(4, 26, true);
-    view.setUint16(6, payload.controllerId & 0x03, true);
-    view.setUint16(8, bitmap & 0xFFFF, true);
-    view.setUint16(10, 20, true);
-    view.setUint16(12, payload.buttons & 0xFFFF, true);
-    const packedTriggers = (payload.leftTrigger & 0xFF) | ((payload.rightTrigger & 0xFF) << 8);
-    view.setUint16(14, packedTriggers, true);
-    view.setInt16(16, payload.leftStickX, true);
-    view.setInt16(18, payload.leftStickY, true);
-    view.setInt16(20, payload.rightStickX, true);
-    view.setInt16(22, payload.rightStickY, true);
-    view.setUint16(24, 0, true);
-    view.setUint16(26, 85, true);
-    view.setUint16(28, 0, true);
-    const ts = nowBigUs();
-    view.setUint32(30, Number(ts & 0xFFFFFFFFn), true);
-    view.setUint32(34, Number(ts >> 32n), true);
-    if (usePartiallyReliable) {
-      return wrapGamepadPartiallyReliable(bytes, payload.controllerId, nextGamepadSequence(payload.controllerId));
-    }
-    return wrapGamepadReliable(bytes);
-  }
-  function normalizeCodec(name) {
-    const upper = String(name || '').toUpperCase();
-    return upper === 'HEVC' ? 'H265' : upper;
-  }
-  function offerHasCodec(sdp, codec) {
-    const target = normalizeCodec(codec);
-    let inVideo = false;
-    for (const line of sdp.split(/\r?\n/)) {
-      if (line.startsWith('m=video')) {
-        inVideo = true;
-        continue;
-      }
-      if (line.startsWith('m=') && inVideo) {
-        break;
-      }
-      if (!inVideo || !line.startsWith('a=rtpmap:')) continue;
-      const rest = line.slice('a=rtpmap:'.length);
-      const [pt, codecPart] = rest.split(/\s+/, 2);
-      const codecName = normalizeCodec((codecPart || '').split('/')[0] || '');
-      if (pt && codecName === target) return true;
-    }
-    return false;
-  }
-  function resolvePreferredCodec(offerSdp) {
-    const preferred = normalizeCodec(cfg.preferredCodec || 'Auto');
-    if (preferred === 'AUTO') {
-      // iOS WKWebView can report a connected peer while hardware decode fails
-      // on some HEVC paths (AppleAVD init errors). Prefer H264 for reliability.
-      return offerHasCodec(offerSdp, 'H264') ? 'H264' : 'H265';
-    }
-    return preferred;
-  }
-  function preferCodec(sdp, codec) {
-    const target = normalizeCodec(codec);
-    const lineEnding = sdp.includes('\r\n') ? '\r\n' : '\n';
-    const lines = sdp.split(/\r?\n/);
-    let inVideoSection = false;
-    const payloadTypesByCodec = new Map();
-    const codecByPayloadType = new Map();
-    const rtxAptByPayloadType = new Map();
-
-    for (const line of lines) {
-      if (line.startsWith('m=video')) {
-        inVideoSection = true;
-        continue;
-      }
-      if (line.startsWith('m=') && inVideoSection) {
-        inVideoSection = false;
-      }
-      if (!inVideoSection || !line.startsWith('a=rtpmap:')) continue;
-      const rest = line.slice('a=rtpmap:'.length);
-      const [pt, codecPart] = rest.split(/\s+/, 2);
-      const codecName = normalizeCodec((codecPart || '').split('/')[0] || '');
-      if (!pt || !codecName) continue;
-      const list = payloadTypesByCodec.get(codecName) ?? [];
-      list.push(pt);
-      payloadTypesByCodec.set(codecName, list);
-      codecByPayloadType.set(pt, codecName);
-    }
-
-    inVideoSection = false;
-    for (const line of lines) {
-      if (line.startsWith('m=video')) {
-        inVideoSection = true;
-        continue;
-      }
-      if (line.startsWith('m=') && inVideoSection) {
-        inVideoSection = false;
-      }
-      if (!inVideoSection || !line.startsWith('a=fmtp:')) continue;
-      const rest = line.split(':', 2)[1] ?? '';
-      const [pt = '', params = ''] = rest.split(/\s+/, 2);
-      if (!pt || !params) continue;
-      const aptMatch = params.match(/(?:^|;)\s*apt=(\d+)/i);
-      if (aptMatch?.[1]) {
-        rtxAptByPayloadType.set(pt, aptMatch[1]);
-      }
-    }
-
-    const preferredPayloads = payloadTypesByCodec.get(target) ?? [];
-    if (preferredPayloads.length === 0) {
-      return sdp;
-    }
-
-    const preferred = new Set(preferredPayloads);
-    const allowed = new Set(preferredPayloads);
-    for (const [rtxPt, apt] of rtxAptByPayloadType.entries()) {
-      if (preferred.has(apt) && codecByPayloadType.get(rtxPt) === 'RTX') {
-        allowed.add(rtxPt);
-      }
-    }
-
-    const filtered = [];
-    inVideoSection = false;
-    for (const line of lines) {
-      if (line.startsWith('m=video')) {
-        inVideoSection = true;
-        const parts = line.split(/\s+/);
-        const header = parts.slice(0, 3);
-        const available = parts.slice(3).filter((pt) => allowed.has(pt));
-        const ordered = [];
-        for (const pt of preferredPayloads) {
-          if (available.includes(pt)) ordered.push(pt);
-        }
-        for (const pt of available) {
-          if (!preferred.has(pt)) ordered.push(pt);
-        }
-        filtered.push(ordered.length > 0 ? [...header, ...ordered].join(' ') : line);
-        continue;
-      }
-      if (line.startsWith('m=') && inVideoSection) {
-        inVideoSection = false;
-      }
-      if (inVideoSection && (line.startsWith('a=rtpmap:') || line.startsWith('a=fmtp:') || line.startsWith('a=rtcp-fb:'))) {
-        const rest = line.split(':', 2)[1] ?? '';
-        const [pt = ''] = rest.split(/\s+/, 1);
-        if (pt && !allowed.has(pt)) continue;
-      }
-      filtered.push(line);
-    }
-
-    return filtered.join(lineEnding);
-  }
-  function mungeAnswerSdp(sdp, maxBitrateKbps) {
-    const lines = sdp.split(/\r?\n/);
-    const out = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      out.push(line);
-      if (line.startsWith('m=video') || line.startsWith('m=audio')) {
-        const bw = line.startsWith('m=video') ? maxBitrateKbps : 128;
-        if (!(lines[i + 1] ?? '').startsWith('b=')) out.push(`b=AS:${bw}`);
-      }
-      if (line.startsWith('a=fmtp:') && line.includes('minptime=') && !line.includes('stereo=1')) {
-        out[out.length - 1] = line + ';stereo=1';
-      }
-    }
-    return out.join(sdp.includes('\r\n') ? '\r\n' : '\n');
-  }
-  function detectNegotiatedCodec(sdp) {
-    const lines = sdp.split(/\r?\n/);
-    let inVideo = false;
-    let orderedPayloads = [];
-    const codecByPayload = new Map();
-    for (const line of lines) {
-      if (line.startsWith('m=video')) {
-        inVideo = true;
-        orderedPayloads = line.split(/\s+/).slice(3);
-        continue;
-      }
-      if (line.startsWith('m=') && inVideo) {
-        break;
-      }
-      if (!inVideo || !line.startsWith('a=rtpmap:')) continue;
-      const rest = line.slice('a=rtpmap:'.length);
-      const [pt, codecPart] = rest.split(/\s+/, 2);
-      if (!pt) continue;
-      codecByPayload.set(pt, normalizeCodec((codecPart || '').split('/')[0] || ''));
-    }
-    for (const pt of orderedPayloads) {
-      const codec = codecByPayload.get(pt);
-      if (codec && codec !== 'RTX') return codec;
-    }
-    return '';
-  }
-  function buildNvstSdp(params) {
-    const minBitrate = Math.max(5000, Math.floor(params.maxBitrateKbps * 0.35));
-    const initialBitrate = Math.max(minBitrate, Math.floor(params.maxBitrateKbps * 0.7));
-    const isHighFps = params.fps >= 90;
-    const is120Fps = params.fps === 120;
-    const is240Fps = params.fps >= 240;
-    const isAv1 = params.codec === 'AV1';
-    const bitDepth = params.colorQuality.startsWith('10bit') ? 10 : 8;
-    const hidDeviceMask = params.hidDeviceMask ?? 0xFFFFFFFF;
-    const enablePartiallyReliableTransferGamepad = params.enablePartiallyReliableTransferGamepad ?? 0xF;
-    const enablePartiallyReliableTransferHid = params.enablePartiallyReliableTransferHid ?? hidDeviceMask;
-    const lines = [
-      'v=0',
-      'o=SdpTest test_id_13 14 IN IPv4 127.0.0.1',
-      's=-',
-      't=0 0',
-      `a=general.icePassword:${params.credentials.pwd}`,
-      `a=general.iceUserNameFragment:${params.credentials.ufrag}`,
-      `a=general.dtlsFingerprint:${params.credentials.fingerprint}`,
-      'm=video 0 RTP/AVP',
-      'a=msid:fbc-video-0',
-      'a=vqos.fec.rateDropWindow:10',
-      'a=vqos.fec.minRequiredFecPackets:2',
-      'a=vqos.fec.repairMinPercent:5',
-      'a=vqos.fec.repairPercent:5',
-      'a=vqos.fec.repairMaxPercent:35',
-      'a=vqos.drc.enable:0',
-      'a=vqos.dfc.enable:0',
-      'a=video.dx9EnableNv12:1',
-      'a=video.dx9EnableHdr:1',
-      'a=vqos.qpg.enable:1',
-      'a=vqos.resControl.qp.qpg.featureSetting:7',
-      'a=bwe.useOwdCongestionControl:1',
-      'a=video.enableRtpNack:1',
-      'a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200',
-      'a=vqos.drc.bitrateIirFilterFactor:18',
-      'a=video.packetSize:1140',
-      'a=packetPacing.minNumPacketsPerGroup:15'
-    ];
-    if (isHighFps) {
-      lines.push(
-        'a=bwe.iirFilterFactor:8',
-        'a=video.encoderFeatureSetting:47',
-        'a=video.encoderPreset:6',
-        'a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600',
-        'a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9',
-        `a=video.fbcDynamicFpsGrabTimeoutMs:${is120Fps ? 6 : 18}`,
-        `a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:${is120Fps ? 6000 : 12000}`
-      );
-    }
-    if (is240Fps) {
-      lines.push(
-        'a=video.enableNextCaptureMode:1',
-        'a=vqos.maxStreamFpsEstimate:240',
-        'a=video.videoSplitEncodeStripsPerFrame:3',
-        'a=video.updateSplitEncodeStateDynamically:1'
-      );
-    }
-    lines.push(
-      'a=vqos.adjustStreamingFpsDuringOutOfFocus:1',
-      'a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1',
-      'a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1',
-      'a=vqos.resControl.cpmRtc.featureMask:0',
-      'a=vqos.resControl.cpmRtc.enable:0',
-      'a=vqos.resControl.cpmRtc.minResolutionPercent:100',
-      'a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999',
-      `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
-      'a=packetPacing.maxDelayUs:1000',
-      'a=packetPacing.minNumPacketsFrame:10',
-      'a=video.rtpNackQueueLength:1024',
-      'a=video.rtpNackQueueMaxPackets:512',
-      'a=video.rtpNackMaxPacketCount:25',
-      'a=vqos.drc.qpMaxResThresholdAdj:4',
-      'a=vqos.grc.qpMaxResThresholdAdj:4',
-      'a=vqos.drc.iirFilterFactor:100'
-    );
-    if (isAv1) {
-      lines.push(
-        'a=vqos.drc.minQpHeadroom:20',
-        'a=vqos.drc.lowerQpThreshold:100',
-        'a=vqos.drc.upperQpThreshold:200',
-        'a=vqos.drc.minAdaptiveQpThreshold:180',
-        'a=vqos.drc.qpCodecThresholdAdj:0',
-        'a=vqos.drc.qpMaxResThresholdAdj:20',
-        'a=vqos.dfc.minQpHeadroom:20',
-        'a=vqos.dfc.qpLowerLimit:100',
-        'a=vqos.dfc.qpMaxUpperLimit:200',
-        'a=vqos.dfc.qpMinUpperLimit:180',
-        'a=vqos.dfc.qpMaxResThresholdAdj:20',
-        'a=vqos.dfc.qpCodecThresholdAdj:0',
-        'a=vqos.grc.minQpHeadroom:20',
-        'a=vqos.grc.lowerQpThreshold:100',
-        'a=vqos.grc.upperQpThreshold:200',
-        'a=vqos.grc.minAdaptiveQpThreshold:180',
-        'a=vqos.grc.qpMaxResThresholdAdj:20',
-        'a=vqos.grc.qpCodecThresholdAdj:0',
-        'a=video.minQp:25',
-        'a=video.enableAv1RcPrecisionFactor:1'
-      );
-    }
-    lines.push(
-      `a=video.clientViewportWd:${params.width}`,
-      `a=video.clientViewportHt:${params.height}`,
-      `a=video.maxFPS:${params.fps}`,
-      `a=video.initialBitrateKbps:${initialBitrate}`,
-      `a=video.initialPeakBitrateKbps:${params.maxBitrateKbps}`,
-      `a=vqos.bw.maximumBitrateKbps:${params.maxBitrateKbps}`,
-      `a=vqos.bw.minimumBitrateKbps:${minBitrate}`,
-      `a=vqos.bw.peakBitrateKbps:${params.maxBitrateKbps}`,
-      `a=vqos.bw.serverPeakBitrateKbps:${params.maxBitrateKbps}`,
-      'a=vqos.bw.enableBandwidthEstimation:1',
-      'a=vqos.bw.disableBitrateLimit:0',
-      `a=vqos.grc.maximumBitrateKbps:${params.maxBitrateKbps}`,
-      'a=vqos.grc.enable:0',
-      'a=video.maxNumReferenceFrames:4',
-      'a=video.mapRtpTimestampsToFrames:1',
-      'a=video.encoderCscMode:3',
-      'a=video.dynamicRangeMode:0',
-      `a=video.bitDepth:${bitDepth}`,
-      `a=video.scalingFeature1:${isAv1 ? 1 : 0}`,
-      'a=video.prefilterParams.prefilterModel:0',
-      'm=audio 0 RTP/AVP',
-      'a=msid:audio',
-      'm=mic 0 RTP/AVP',
-      'a=msid:mic',
-      'a=rtpmap:0 PCMU/8000',
-      'm=application 0 RTP/AVP',
-      'a=msid:input_1',
-      `a=ri.partialReliableThresholdMs:${params.partialReliableThresholdMs}`,
-      `a=ri.hidDeviceMask:${hidDeviceMask}`,
-      `a=ri.enablePartiallyReliableTransferGamepad:${enablePartiallyReliableTransferGamepad}`,
-      `a=ri.enablePartiallyReliableTransferHid:${enablePartiallyReliableTransferHid}`,
-      ''
-    );
-    return lines.join('\n');
-  }
-  async function waitForIceGathering(rtc, timeoutMs) {
-    if (!rtc.localDescription) return '';
-    if (rtc.iceGatheringState === 'complete') {
-      return rtc.localDescription?.sdp || '';
-    }
-    return await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        rtc.removeEventListener('icegatheringstatechange', onChange);
-        resolve(rtc.localDescription?.sdp || '');
-      }, timeoutMs);
-      function onChange() {
-        if (rtc.iceGatheringState === 'complete') {
-          clearTimeout(timeout);
-          rtc.removeEventListener('icegatheringstatechange', onChange);
-          resolve(rtc.localDescription?.sdp || '');
-        }
-      }
-      rtc.addEventListener('icegatheringstatechange', onChange);
-    });
-  }
-  async function injectManualIce(rtc, ip, port, ufrag) {
-    const rawIp = extractPublicIp(ip);
-    if (!rawIp || !port) return;
-    const candidateStr = `candidate:1 1 udp 2130706431 ${rawIp} ${port} typ host`;
-    for (const mid of ['0', '1', '2', '3']) {
-      try {
-        await rtc.addIceCandidate({ candidate: candidateStr, sdpMid: mid, sdpMLineIndex: parseInt(mid, 10), usernameFragment: ufrag || undefined });
-        break;
-      } catch (_) {}
-    }
-  }
-  let kfAttempt = 0;
-  let kfTimer = null;
-  function sendKeyframeRequest() {
-    kfAttempt += 1;
-    send({
-      peer_msg: { from: peerId, to: 1, msg: JSON.stringify({ type: 'request_keyframe', reason: 'decoder-recovery', backlogFrames: 0, attempt: kfAttempt }) },
-      ackid: nextAck()
-    });
-  }
-  function startKeyframeTimer() {
-    if (kfTimer) return;
-    kfAttempt = 0;
-    kfTimer = setInterval(sendKeyframeRequest, 5000);
-  }
-  function stopKeyframeTimer() {
-    if (kfTimer) { clearInterval(kfTimer); kfTimer = null; }
-    kfAttempt = 0;
-  }
-  function configureReceiverLowLatency(receiver, kind) {
-    try {
-      if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0;
-      if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0;
-      if (kind === 'video' && receiver.track && 'contentHint' in receiver.track) receiver.track.contentHint = 'motion';
-    } catch (_) {}
-  }
-  function ensurePeerConnection() {
-    if (pc) return pc;
-    const ice = (cfg.iceServers || []).map((server) => ({
-      urls: Array.isArray(server.urls) ? server.urls : [server.urls],
-      username: server.username || undefined,
-      credential: server.credential || undefined
-    }));
-    pc = new RTCPeerConnection({ iceServers: ice, bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
-    const thisPc = pc;
-    reliableCh = thisPc.createDataChannel('input_channel_v1', { ordered: true });
-    reliableCh.binaryType = 'arraybuffer';
-    reliableCh.onopen = () => {
-      updateInputReady();
-      if (inputFallbackTimer) clearTimeout(inputFallbackTimer);
-      inputFallbackTimer = setTimeout(() => {
-        if (!inputHandshakeComplete && isChannelOpen(reliableCh)) {
-          inputProtocolVersion = 2;
-          inputHandshakeComplete = true;
-          updateInputReady();
-          setupInputHeartbeat();
-          log('Input handshake timeout; falling back to protocol v2');
-        }
-      }, INPUT_PROTOCOL_FALLBACK_DELAY_MS);
-    };
-    reliableCh.onclose = () => {
-      inputHandshakeComplete = false;
-      inputProtocolVersion = 2;
-      updateInputReady();
-      if (inputFallbackTimer) {
-        clearTimeout(inputFallbackTimer);
-        inputFallbackTimer = null;
-      }
-      if (hbInput) { clearInterval(hbInput); hbInput = null; }
-    };
-    reliableCh.onmessage = async (event) => {
-      try {
-        const bytes = await toBytes(event.data);
-        if (handleInputHandshakeMessage(bytes)) return;
-        handleInputHapticsMessage(bytes);
-      } catch (_) {}
-    };
-    partialCh = thisPc.createDataChannel('input_channel_partially_reliable', {
-      ordered: false,
-      maxPacketLifeTime: partialReliableThresholdMs
-    });
-    partialCh.binaryType = 'arraybuffer';
-    partialCh.onopen = () => updateInputReady();
-    partialCh.onclose = () => updateInputReady();
-    thisPc.ondatachannel = (event) => {
-      const ch = event.channel;
-      if (ch.label !== 'control_channel') return;
-      ch.binaryType = 'arraybuffer';
-      ch.onmessage = (e) => {
-        try {
-          const msg = typeof e.data === 'string' ? JSON.parse(e.data) : null;
-          if (msg && msg.type === 'time_warning') {
-            post('status', 'Time warning: ' + (msg.secondsLeft || '?') + 's left');
-          }
-        } catch (_) {}
-      };
-    };
-    thisPc.ontrack = (event) => {
-      const kind = event.track.kind;
-      configureReceiverLowLatency(event.receiver, kind);
-      if (!remoteMediaStream.getTracks().some((track) => track.id === event.track.id)) {
-        remoteMediaStream.addTrack(event.track);
-      }
-      if (kind === 'video') {
-        video.srcObject = remoteMediaStream;
-        video.play().catch(() => {});
-        ensureAudioActive();
-        post('status', 'Streamer connected');
-        if (stopGpuKeepAlive) stopGpuKeepAlive();
-        ensureStatsTicker();
-        startKeyframeTimer();
-      } else if (kind === 'audio') {
-        video.srcObject = remoteMediaStream;
-        ensureAudioActive();
-      }
-    };
-    thisPc.onicecandidate = (event) => {
-      if (!event.candidate) return;
-      send({
-        peer_msg: {
-          from: peerId,
-          to: 1,
-          msg: JSON.stringify({
-            candidate: event.candidate.candidate,
-            sdpMid: event.candidate.sdpMid,
-            sdpMLineIndex: event.candidate.sdpMLineIndex
-          })
-        },
-        ackid: nextAck()
-      });
-    };
-    thisPc.onconnectionstatechange = () => {
-      post('status', 'Peer: ' + thisPc.connectionState);
-      if (thisPc.connectionState === 'connected') {
-        peerEverConnected = true;
-        reconnectAttempts = 0;
-      }
-      if (thisPc.connectionState === 'failed' || thisPc.connectionState === 'disconnected') {
-        const hadAcceptedOffer = offerAccepted;
-        const hadConnectedPeer = peerEverConnected;
-        stopKeyframeTimer();
-        resetTransport(true);
-        if (hadAcceptedOffer) {
-          const message = hadConnectedPeer
-            ? 'Peer connection lost. Retry will refresh the session endpoint.'
-            : 'Peer connection failed after the session offer. Retry will refresh the session endpoint.';
-          fail(message);
-          return;
-        }
-        scheduleReconnect('peer ' + thisPc.connectionState);
-      }
-    };
-    return pc;
-  }
-  async function onOffer(sdp) {
-    try {
-      clearOfferTimeout();
-      const mediaHostForSdp = cfg.mediaIp || cfg.serverIp || cfg.signalingServer || '';
-      const fixedOffer = fixServerIp(sdp, mediaHostForSdp);
-      const parsedRi = parseRiInputCapabilities(fixedOffer);
-      partialReliableThresholdMs = parsedRi.partialReliableThresholdMs;
-      riInputCapabilities = {
-        hidDeviceMask: parsedRi.hidDeviceMask,
-        enablePartiallyReliableTransferGamepad: parsedRi.enablePartiallyReliableTransferGamepad,
-        enablePartiallyReliableTransferHid: parsedRi.enablePartiallyReliableTransferHid
-      };
-      const rtc = ensurePeerConnection();
-      const serverIceUfrag = extractIceUfragFromOffer(fixedOffer);
-      const selectedCodec = resolvePreferredCodec(fixedOffer);
-      const filteredOffer = preferCodec(fixedOffer, selectedCodec);
-      await rtc.setRemoteDescription({ type: 'offer', sdp: filteredOffer });
-      const answer = await rtc.createAnswer();
-      answer.sdp = mungeAnswerSdp(answer.sdp || '', cfg.maxBitrateKbps);
-      await rtc.setLocalDescription(answer);
-      const finalSdp = (await waitForIceGathering(rtc, 5000)) || rtc.localDescription?.sdp || answer.sdp || '';
-      const effectiveCodec = detectNegotiatedCodec(finalSdp) || selectedCodec;
-      const credentials = extractIceCredentials(finalSdp);
-      const nvstSdp = buildNvstSdp({
-        width: cfg.width,
-        height: cfg.height,
-        fps: cfg.fps,
-        maxBitrateKbps: cfg.maxBitrateKbps,
-        codec: effectiveCodec,
-        colorQuality: '8bit',
-        partialReliableThresholdMs,
-        hidDeviceMask: riInputCapabilities.hidDeviceMask,
-        enablePartiallyReliableTransferGamepad: riInputCapabilities.enablePartiallyReliableTransferGamepad,
-        enablePartiallyReliableTransferHid: riInputCapabilities.enablePartiallyReliableTransferHid,
-        credentials
-      });
-      send({
-        peer_msg: {
-          from: peerId,
-          to: 1,
-          msg: JSON.stringify({ type: 'answer', sdp: finalSdp, nvstSdp })
-        },
-        ackid: nextAck()
-      });
-      offerAccepted = true;
-      await injectManualIce(rtc, cfg.mediaIp || cfg.serverIp || cfg.signalingServer, cfg.mediaPort, serverIceUfrag);
-      post('status', 'Offer accepted');
-    } catch (error) {
-      fail('Offer handling failed: ' + String(error));
-    }
-  }
-  async function onRemoteIce(payload) {
-    try {
-      const rtc = ensurePeerConnection();
-      await rtc.addIceCandidate({
-        candidate: payload.candidate,
-        sdpMid: payload.sdpMid ?? undefined,
-        sdpMLineIndex: payload.sdpMLineIndex ?? undefined,
-        usernameFragment: payload.usernameFragment ?? undefined
-      });
-    } catch (error) {
-      log('Remote ICE add failed: ' + String(error));
-    }
-  }
-  function handle(text) {
-    let parsed;
-    try { parsed = JSON.parse(text); } catch (_) { return; }
-    if (parsed.hb) { send({ hb: 1 }); return; }
-    if (typeof parsed.ackid === 'number') {
-      const src = parsed.peer_info && parsed.peer_info.id;
-      if (src !== peerId) send({ ack: parsed.ackid });
-    }
-    if (!parsed.peer_msg || !parsed.peer_msg.msg) return;
-    let msg;
-    try { msg = JSON.parse(parsed.peer_msg.msg); } catch (_) { return; }
-    if (msg.type === 'offer' && typeof msg.sdp === 'string') {
-      onOffer(msg.sdp);
-      return;
-    }
-    if (typeof msg.candidate === 'string') {
-      onRemoteIce(msg);
-    }
-  }
-  const kbBar = document.getElementById('kbBar');
-  const kbInput = document.getElementById('kbInput');
-  const gpPad = document.getElementById('gpPad');
-  const gpBtn = document.getElementById('gpBtn');
-  const gpHide = document.getElementById('gpHide');
-  const joyBase = document.getElementById('joyBase');
-  const joyStick = document.getElementById('joyStick');
-  const lookBase = document.getElementById('lookBase');
-  const lookStick = document.getElementById('lookStick');
-  let kbPrevLen = 0;
-  let lastTX = 0, lastTY = 0;
-  let tapStartX = 0, tapStartY = 0;
-  let tStartTime = 0, tMoved = false, activeTouchId = null;
-  let mouseGestureActive = false;
-  let touchscreenLeftDown = false;
-  let touchscreenPressTimer = null;
-  let simulatedPointerX = Math.round((Number(cfg.width) || window.innerWidth) / 2);
-  let simulatedPointerY = Math.round((Number(cfg.height) || window.innerHeight) / 2);
-  let pendingTouchscreenPoint = null;
-  let touchscreenMoveFrame = null;
-  let twoFingerStart = 0;
-  let twoFingerTapPending = false;
-  const MOVE_CLICK_CANCEL_PX = 8;
-  const TOUCHSCREEN_PRESS_DELAY_MS = 45;
-  const pointerSpeed = 1.05;
-  let zoomScale = 1;
-  let zoomTx = 0;
-  let zoomTy = 0;
-  let pinchStartDistance = 0;
-  let pinchStartScale = 1;
-  let pinchCenterStartX = 0;
-  let pinchCenterStartY = 0;
-  let pinchTranslateStartX = 0;
-  let pinchTranslateStartY = 0;
-  let pinchGestureMoved = false;
-  const ZOOM_MIN = 1;
-  const ZOOM_MAX = 3;
-  const ZOOM_DEFAULT_STEP = 0.3;
-  const MAX_MOUSE_DELTA_PER_FRAME = 64;
-  const touchpad = document.getElementById('touchpad');
-  const touchHint = document.getElementById('touchHint');
-  let joystickTouchId = null;
-  let joystickWindowCleanup = null;
-  const joystickMaxOffset = 42;
-  let lookTouchId = null;
-  let lookWindowCleanup = null;
-  const lookMaxOffset = 34;
-  let virtualGamepadButtons = 0;
-  let virtualLeftStickX = 0;
-  let virtualLeftStickY = 0;
-  let virtualRightStickX = 0;
-  let virtualRightStickY = 0;
-  let virtualLeftTrigger = 0;
-  let virtualRightTrigger = 0;
-  let gamepadBitmap = 0;
-  let lastGamepadSendMs = 0;
-  let lastSentGamepadState = null;
-  function setGamepadVisible(visible, persist = true) {
-    if (!gpPad) return;
-    if (IS_TVOS) {
-      gpPad.style.display = 'none';
-      releaseAllPadKeys();
-      updateTouchControllerButton();
-      applyTouchpadMode();
-      return;
-    }
-    const wasVisible = gpPad.style.display !== 'none';
-    gpPad.style.display = visible ? 'block' : 'none';
-    if (!visible && wasVisible) {
-      releaseAllPadKeys();
-    }
-    if (persist) {
-      updateStreamerPreference('touchControllerVisible', !!visible);
-    }
-    updateTouchControllerButton();
-    applyTouchpadMode();
-  }
-
-  function toggleKeyboard() {
-    if (IS_TVOS) return;
-    if (kbBar.style.display === 'none') showKeyboard();
-    else hideKeyboard();
-  }
-  function updateKeyboardButton() {
-    const keyboardVisible = kbBar && kbBar.style.display !== 'none';
-    if (kbValue) {
-      kbValue.textContent = keyboardVisible ? 'Visible' : 'Hidden';
-    }
-    setToggleRowState(kbBtn, keyboardVisible);
-  }
-  function showKeyboard() {
-    unlockAudio();
-    kbBar.style.display = 'block';
-    kbInput.value = '';
-    kbPrevLen = 0;
-    setTimeout(() => kbInput.focus(), 80);
-    updateKeyboardButton();
-  }
-  function hideKeyboard() {
-    kbBar.style.display = 'none';
-    kbInput.blur();
-    updateKeyboardButton();
-  }
-  function toggleTouchscreenMode() {
-    if (IS_TVOS) return;
-    unlockAudio();
-    const enabled = !streamerPreferences.touchscreenModeEnabled;
-    if (!enabled) {
-      releaseTouchscreenLeftButton();
-    }
-    updateStreamerPreference('touchscreenModeEnabled', enabled);
-    applyTouchpadMode();
-    updateTouchscreenButton();
-  }
-  function toggleGamepad() {
-    if (!gpPad) return;
-    if (IS_TVOS) return;
-    unlockAudio();
-    setGamepadVisible(gpPad.style.display === 'none');
-  }
-  function hookLayoutDrag(key, element) {
-    if (!element) return;
-    const stopDrag = () => {
-      layoutDragState.key = null;
-      layoutDragState.pointerId = null;
-    };
-    const updateFromTouch = (touch) => {
-      if (!touch || layoutDragState.key !== key) return;
-      const x = (touch.clientX - layoutDragState.offsetX) / window.innerWidth;
-      const y = (touch.clientY - layoutDragState.offsetY) / window.innerHeight;
-      const nextLayout = { ...touchLayout };
-      const fallback = touchLayout[key];
-      nextLayout[key] = sanitizePoint({ x, y }, fallback);
-      touchLayout = sanitizeTouchLayout(nextLayout);
-      applyTouchLayout();
-      scheduleTouchLayoutPersist();
-    };
-    element.addEventListener('touchstart', (e) => {
-      if (!layoutEditing) return;
-      const touch = e.changedTouches[0];
-      if (!touch) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = element.getBoundingClientRect();
-      layoutDragState.key = key;
-      layoutDragState.pointerId = touch.identifier;
-      layoutDragState.offsetX = touch.clientX - (rect.left + (rect.width / 2));
-      layoutDragState.offsetY = touch.clientY - (rect.top + (rect.height / 2));
-    }, { passive: false });
-    element.addEventListener('touchmove', (e) => {
-      if (!layoutEditing || layoutDragState.key !== key) return;
-      const touch = Array.from(e.touches).find((item) => item.identifier === layoutDragState.pointerId);
-      if (!touch) return;
-      e.preventDefault();
-      updateFromTouch(touch);
-    }, { passive: false });
-    element.addEventListener('touchend', (e) => {
-      if (!layoutEditing || layoutDragState.key !== key) return;
-      const ended = Array.from(e.changedTouches).some((item) => item.identifier === layoutDragState.pointerId);
-      if (!ended) return;
-      e.preventDefault();
-      stopDrag();
-    }, { passive: false });
-    element.addEventListener('touchcancel', () => {
-      if (layoutDragState.key === key) {
-        stopDrag();
-      }
-    }, { passive: false });
-  }
-  window.__opennowNativeGamepadState = function(state) {
-    if (!state) {
-      nativeGamepadState = null;
-      return;
-    }
-    if (Array.isArray(state.controllers)) {
-      const nextControllers = state.controllers.filter((controller) => controller && controller.connected);
-      if (nextControllers.length === 0) {
-        nativeGamepadState = null;
-        return;
-      }
-      const preferredIndex = Number.isFinite(state.activeControllerIndex) ? state.activeControllerIndex : nextControllers[0].index;
-      const activeController = nextControllers.find((controller) => controller.index === preferredIndex) ?? nextControllers[0];
-      nativeGamepadState = {
-        connected: true,
-        id: activeController.id,
-        index: activeController.index,
-        buttons: activeController.buttons,
-        axes: activeController.axes
-      };
-      return;
-    }
-    nativeGamepadState = state && state.connected ? state : null;
-  };
-  window.__opennowNativeHapticsState = function(state) {
-    const nextAvailable = !!state?.enabled;
-    if (nativeHapticsAvailable === nextAvailable) return;
-    nativeHapticsAvailable = nextAvailable;
-    hapticsAdvertised = null;
-    advertiseNativeHaptics(true);
-  };
-  window.__opennowNativeKeyboardEvent = function(event) {
-    if (!event || !inputReady) return;
-    const keycode = Number(event.keycode);
-    const scancode = Number(event.scancode);
-    if (!Number.isFinite(keycode) || !Number.isFinite(scancode)) return;
-    const modifiers = Number.isFinite(Number(event.modifiers)) ? Number(event.modifiers) : 0;
-    sendInput(encodeKey(event.pressed ? 3 : 4, keycode, scancode, modifiers));
-  };
-  window.__opennowNativeMouseMove = function(event) {
-    if (!event) return;
-    const dx = Number(event.dx);
-    const dy = Number(event.dy);
-    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-    sendMouseMoveDelta(dx, dy);
-  };
-  window.__opennowNativeMouseButton = function(event) {
-    if (!event || !inputReady) return;
-    const button = Math.max(1, Math.min(5, Math.round(Number(event.button) || 1)));
-    sendInput(encodeMouseButton(event.pressed ? 8 : 9, button));
-  };
-  window.__opennowNativeMouseWheel = function(event) {
-    if (!event || !inputReady) return;
-    const delta = Math.round(Number(event.delta) || 0);
-    if (delta === 0) return;
-    sendInput(encodeMouseWheel(delta));
-  };
-  window.__opennowDeviceStatus = function(state) {
-    deviceBatteryPercent = Number.isFinite(state?.batteryPercent) ? state.batteryPercent : null;
-    deviceBatteryCharging = !!state?.charging;
-    renderStatsOverlay();
-  };
-  function setControllerStatus(text) {
-    if (!controllerState || text === lastControllerStatusText) return;
-    lastControllerStatusText = text;
-    controllerState.textContent = text;
-  }
-  function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
-  function pinchDistance(t1, t2) {
-    const dx = t2.clientX - t1.clientX;
-    const dy = t2.clientY - t1.clientY;
-    return Math.hypot(dx, dy);
-  }
-  function pinchCenter(t1, t2) {
-    return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
-  }
-  function clampZoomTranslation() {
-    if (zoomScale <= 1) {
-      zoomTx = 0;
-      zoomTy = 0;
-      return;
-    }
-    const maxX = ((window.innerWidth * zoomScale) - window.innerWidth) * 0.5;
-    const maxY = ((window.innerHeight * zoomScale) - window.innerHeight) * 0.5;
-    zoomTx = clamp(zoomTx, -maxX, maxX);
-    zoomTy = clamp(zoomTy, -maxY, maxY);
-  }
-  function applyVideoTransform() {
-    clampZoomTranslation();
-    if (Math.abs(zoomScale - 1) < 0.01) {
-      zoomScale = 1;
-      zoomTx = 0;
-      zoomTy = 0;
-      video.style.transform = 'none';
-      return;
-    }
-    video.style.transformOrigin = 'center center';
-    video.style.transform = `translate(${zoomTx}px, ${zoomTy}px) scale(${zoomScale})`;
-  }
-  function adjustZoom(step) {
-    const prev = zoomScale;
-    zoomScale = clamp(zoomScale + step, ZOOM_MIN, ZOOM_MAX);
-    if (Math.abs(zoomScale - prev) > 0.001) {
-      if (zoomScale <= 1.01) {
-        zoomScale = 1;
-        zoomTx = 0;
-        zoomTy = 0;
-      }
-      applyVideoTransform();
-    }
-  }
-  function flushPendingMouseMove() {
-    moveFrame = null;
-    if (!inputReady) {
-      pendingMoveDx = 0;
-      pendingMoveDy = 0;
-      return;
-    }
-    const dx = Math.round(clamp(pendingMoveDx, -MAX_MOUSE_DELTA_PER_FRAME, MAX_MOUSE_DELTA_PER_FRAME));
-    const dy = Math.round(clamp(pendingMoveDy, -MAX_MOUSE_DELTA_PER_FRAME, MAX_MOUSE_DELTA_PER_FRAME));
-    pendingMoveDx = 0;
-    pendingMoveDy = 0;
-    sendMouseMoveDelta(dx, dy);
-  }
-
-  function streamPixelSize() {
-    const width = Math.max(1, Math.round(Number(cfg.width) || video.videoWidth || window.innerWidth || 1));
-    const height = Math.max(1, Math.round(Number(cfg.height) || video.videoHeight || window.innerHeight || 1));
-    return { width, height };
-  }
-  function videoContentRect() {
-    const rect = video.getBoundingClientRect();
-    const { width: streamWidth, height: streamHeight } = streamPixelSize();
-    const streamAspect = streamWidth / streamHeight;
-    const rectAspect = rect.width > 0 && rect.height > 0 ? rect.width / rect.height : streamAspect;
-    let width = rect.width;
-    let height = rect.height;
-    let left = rect.left;
-    let top = rect.top;
-    if (rectAspect > streamAspect) {
-      width = rect.height * streamAspect;
-      left = rect.left + ((rect.width - width) / 2);
-    } else if (rectAspect < streamAspect) {
-      height = rect.width / streamAspect;
-      top = rect.top + ((rect.height - height) / 2);
-    }
-    return { left, top, width: Math.max(1, width), height: Math.max(1, height) };
-  }
-  function clientPointToStreamPoint(clientX, clientY) {
-    const rect = videoContentRect();
-    const { width: streamWidth, height: streamHeight } = streamPixelSize();
-    const x = clamp((clientX - rect.left) / rect.width, 0, 1);
-    const y = clamp((clientY - rect.top) / rect.height, 0, 1);
-    return {
-      x: Math.round(x * streamWidth),
-      y: Math.round(y * streamHeight)
-    };
-  }
-  function clientDeltaToStreamDelta(dx, dy) {
-    const rect = videoContentRect();
-    const { width: streamWidth, height: streamHeight } = streamPixelSize();
-    const scaleX = streamWidth / Math.max(1, rect.width);
-    const scaleY = streamHeight / Math.max(1, rect.height);
-    return {
-      dx: dx * scaleX,
-      dy: dy * scaleY
-    };
-  }
-  function sendMouseMoveDelta(dx, dy, reliable = false) {
-    if (!inputReady) return;
-    const boundedDx = Math.round(clamp(dx, -32768, 32767));
-    const boundedDy = Math.round(clamp(dy, -32768, 32767));
-    if (boundedDx === 0 && boundedDy === 0) return;
-    const payload = encodeMouseMove(boundedDx, boundedDy);
-    if (reliable) sendInput(payload);
-    else sendPartialInput(payload);
-    const size = streamPixelSize();
-    simulatedPointerX = clamp(simulatedPointerX + boundedDx, 0, size.width);
-    simulatedPointerY = clamp(simulatedPointerY + boundedDy, 0, size.height);
-  }
-  function movePointerToStreamPoint(point, reliable = false) {
-    if (!point) return;
-    const size = streamPixelSize();
-    const x = clamp(Math.round(point.x), 0, size.width);
-    const y = clamp(Math.round(point.y), 0, size.height);
-    sendMouseMoveDelta(x - simulatedPointerX, y - simulatedPointerY, reliable);
-  }
-  function movePointerToTouch(touch, reliable = false) {
-    if (!touch) return;
-    movePointerToStreamPoint(clientPointToStreamPoint(touch.clientX, touch.clientY), reliable);
-  }
-  function flushTouchscreenMove() {
-    touchscreenMoveFrame = null;
-    const point = pendingTouchscreenPoint;
-    pendingTouchscreenPoint = null;
-    movePointerToStreamPoint(point, false);
-  }
-  function scheduleTouchscreenMove(touch) {
-    if (!touch) return;
-    pendingTouchscreenPoint = clientPointToStreamPoint(touch.clientX, touch.clientY);
-    if (!touchscreenMoveFrame) {
-      touchscreenMoveFrame = requestAnimationFrame(flushTouchscreenMove);
-    }
-  }
-  function flushScheduledTouchscreenMove() {
-    if (touchscreenMoveFrame) {
-      cancelAnimationFrame(touchscreenMoveFrame);
-      touchscreenMoveFrame = null;
-    }
-    if (pendingTouchscreenPoint) {
-      const point = pendingTouchscreenPoint;
-      pendingTouchscreenPoint = null;
-      movePointerToStreamPoint(point, true);
-    }
-  }
-  function clearTouchscreenPressTimer() {
-    if (touchscreenPressTimer) {
-      clearTimeout(touchscreenPressTimer);
-      touchscreenPressTimer = null;
-    }
-  }
-  function pressTouchscreenLeftButton() {
-    clearTouchscreenPressTimer();
-    if (touchscreenLeftDown || !inputReady || !mouseGestureActive) return false;
-    flushScheduledTouchscreenMove();
-    sendInput(encodeMouseButton(8, 1));
-    touchscreenLeftDown = true;
-    return true;
-  }
-  function scheduleTouchscreenLeftButton() {
-    clearTouchscreenPressTimer();
-    touchscreenPressTimer = setTimeout(() => {
-      touchscreenPressTimer = null;
-      pressTouchscreenLeftButton();
-    }, TOUCHSCREEN_PRESS_DELAY_MS);
-  }
-  function releaseTouchscreenLeftButton() {
-    flushScheduledTouchscreenMove();
-    clearTouchscreenPressTimer();
-    if (touchscreenLeftDown && inputReady) {
-      sendInput(encodeMouseButton(9, 1));
-    }
-    touchscreenLeftDown = false;
-  }
-
-  const charKeyMap = {
-    'a':{vk:0x41,sc:0x04},'b':{vk:0x42,sc:0x05},'c':{vk:0x43,sc:0x06},'d':{vk:0x44,sc:0x07},
-    'e':{vk:0x45,sc:0x08},'f':{vk:0x46,sc:0x09},'g':{vk:0x47,sc:0x0a},'h':{vk:0x48,sc:0x0b},
-    'i':{vk:0x49,sc:0x0c},'j':{vk:0x4a,sc:0x0d},'k':{vk:0x4b,sc:0x0e},'l':{vk:0x4c,sc:0x0f},
-    'm':{vk:0x4d,sc:0x10},'n':{vk:0x4e,sc:0x11},'o':{vk:0x4f,sc:0x12},'p':{vk:0x50,sc:0x13},
-    'q':{vk:0x51,sc:0x14},'r':{vk:0x52,sc:0x15},'s':{vk:0x53,sc:0x16},'t':{vk:0x54,sc:0x17},
-    'u':{vk:0x55,sc:0x18},'v':{vk:0x56,sc:0x19},'w':{vk:0x57,sc:0x1a},'x':{vk:0x58,sc:0x1b},
-    'y':{vk:0x59,sc:0x1c},'z':{vk:0x5a,sc:0x1d},
-    '0':{vk:0x30,sc:0x27},'1':{vk:0x31,sc:0x1e},'2':{vk:0x32,sc:0x1f},'3':{vk:0x33,sc:0x20},
-    '4':{vk:0x34,sc:0x21},'5':{vk:0x35,sc:0x22},'6':{vk:0x36,sc:0x23},'7':{vk:0x37,sc:0x24},
-    '8':{vk:0x38,sc:0x25},'9':{vk:0x39,sc:0x26},
-    ' ':{vk:0x20,sc:0x2c},'\n':{vk:0x0d,sc:0x28},'\r':{vk:0x0d,sc:0x28},'\t':{vk:0x09,sc:0x2b},
-    '-':{vk:0xbd,sc:0x2d},'=':{vk:0xbb,sc:0x2e},'[':{vk:0xdb,sc:0x2f},']':{vk:0xdd,sc:0x30},
-    '\\':{vk:0xdc,sc:0x31},';':{vk:0xba,sc:0x33},"'":{vk:0xde,sc:0x34},'`':{vk:0xc0,sc:0x35},
-    ',':{vk:0xbc,sc:0x36},'.':{vk:0xbe,sc:0x37},'/':{vk:0xbf,sc:0x38},
-    '!':{vk:0x31,sc:0x1e,sh:true},'@':{vk:0x32,sc:0x1f,sh:true},'#':{vk:0x33,sc:0x20,sh:true},
-    '$':{vk:0x34,sc:0x21,sh:true},'%':{vk:0x35,sc:0x22,sh:true},'^':{vk:0x36,sc:0x23,sh:true},
-    '&':{vk:0x37,sc:0x24,sh:true},'*':{vk:0x38,sc:0x25,sh:true},'(':{vk:0x39,sc:0x26,sh:true},
-    ')':{vk:0x30,sc:0x27,sh:true},'_':{vk:0xbd,sc:0x2d,sh:true},'+':{vk:0xbb,sc:0x2e,sh:true},
-    '{':{vk:0xdb,sc:0x2f,sh:true},'}':{vk:0xdd,sc:0x30,sh:true},'|':{vk:0xdc,sc:0x31,sh:true},
-    ':':{vk:0xba,sc:0x33,sh:true},'"':{vk:0xde,sc:0x34,sh:true},'~':{vk:0xc0,sc:0x35,sh:true},
-    '<':{vk:0xbc,sc:0x36,sh:true},'>':{vk:0xbe,sc:0x37,sh:true},'?':{vk:0xbf,sc:0x38,sh:true},
-  };
-
-  function lookupChar(ch) {
-    const lower = ch.toLowerCase();
-    if (charKeyMap[ch]) return charKeyMap[ch];
-    if (charKeyMap[lower]) return { ...charKeyMap[lower], sh: ch !== lower };
-    return null;
-  }
-
-  function sendChar(ch) {
-    if (!inputReady) return;
-    const spec = lookupChar(ch);
-    if (!spec) return;
-    const mods = spec.sh ? 0x01 : 0x00;
-    if (spec.sh) sendInput(encodeKey(3, 0xA0, 0x2A, 0));
-    sendInput(encodeKey(3, spec.vk, spec.sc, mods));
-    sendInput(encodeKey(4, spec.vk, spec.sc, mods));
-    if (spec.sh) sendInput(encodeKey(4, 0xA0, 0x2A, 0));
-  }
-  function sendVirtualKey(key, isDown) {
-    const mapped = lookupChar(key);
-    if (!mapped || !inputReady) return;
-    const mods = mapped.sh ? 0x01 : 0x00;
-    if (mapped.sh && isDown) sendInput(encodeKey(3, 0xA0, 0x2A, 0));
-    sendInput(encodeKey(isDown ? 3 : 4, mapped.vk, mapped.sc, mods));
-    if (mapped.sh && !isDown) sendInput(encodeKey(4, 0xA0, 0x2A, 0));
-  }
-  function hookVirtualGamepadButtons() {
-    const btns = document.querySelectorAll('.gpKey');
-    btns.forEach((btn) => {
-      const mask = Number(btn.getAttribute('data-mask') || '0');
-      const down = (e) => {
-        if (layoutEditing) return;
-        e.preventDefault();
-        unlockAudio();
-        btn.style.transform = 'scale(0.95)';
-        if (mask) virtualGamepadButtons |= mask;
-      };
-      const up = (e) => {
-        if (layoutEditing) return;
-        e.preventDefault();
-        btn.style.transform = 'scale(1)';
-        if (mask) virtualGamepadButtons &= ~mask;
-      };
-      btn.addEventListener('touchstart', down, { passive: false });
-      btn.addEventListener('touchend', up, { passive: false });
-      btn.addEventListener('touchcancel', up, { passive: false });
-      btn.style.background = 'rgba(30,30,30,0.72)';
-      btn.style.color = '#fff';
-      btn.style.border = '1px solid rgba(255,255,255,0.25)';
-      btn.style.borderRadius = '14px';
-      btn.style.backdropFilter = 'blur(8px)';
-      btn.style.webkitBackdropFilter = 'blur(8px)';
-      btn.style.fontSize = '18px';
-    });
-    const auxBtns = document.querySelectorAll('.gpAux');
-    auxBtns.forEach((btn) => {
-      const mask = Number(btn.getAttribute('data-mask') || '0');
-      const trigger = btn.getAttribute('data-trigger');
-      const down = (e) => {
-        if (layoutEditing) return;
-        e.preventDefault();
-        unlockAudio();
-        btn.style.transform = 'scale(0.95)';
-        if (mask) virtualGamepadButtons |= mask;
-        if (trigger === 'left') virtualLeftTrigger = 1;
-        if (trigger === 'right') virtualRightTrigger = 1;
-      };
-      const up = (e) => {
-        if (layoutEditing) return;
-        e.preventDefault();
-        btn.style.transform = 'scale(1)';
-        if (mask) virtualGamepadButtons &= ~mask;
-        if (trigger === 'left') virtualLeftTrigger = 0;
-        if (trigger === 'right') virtualRightTrigger = 0;
-      };
-      btn.addEventListener('touchstart', down, { passive: false });
-      btn.addEventListener('touchend', up, { passive: false });
-      btn.addEventListener('touchcancel', up, { passive: false });
-      btn.style.background = 'rgba(30,30,30,0.72)';
-      btn.style.color = '#fff';
-      btn.style.border = '1px solid rgba(255,255,255,0.25)';
-      btn.style.borderRadius = btn.classList.contains('gpSmall') ? '12px' : '16px';
-      btn.style.backdropFilter = 'blur(8px)';
-      btn.style.webkitBackdropFilter = 'blur(8px)';
-      btn.style.fontSize = btn.classList.contains('gpSmall') ? '12px' : '15px';
-    });
-  }
-  function resetVirtualJoystick() {
-    if (joyStick) {
-      joyStick.style.transform = 'translate(-50%,-50%)';
-    }
-    virtualLeftStickX = 0;
-    virtualLeftStickY = 0;
-  }
-  function resetLookStick() {
-    if (lookStick) {
-      lookStick.style.transform = 'translate(-50%,-50%)';
-    }
-    virtualRightStickX = 0;
-    virtualRightStickY = 0;
-  }
-  function updateVirtualJoystickFromTouch(touch) {
-    if (!joyBase || !touch) return;
-    const rect = joyBase.getBoundingClientRect();
-    const centerX = rect.left + (rect.width / 2);
-    const centerY = rect.top + (rect.height / 2);
-    let dx = touch.clientX - centerX;
-    let dy = touch.clientY - centerY;
-    const distance = Math.hypot(dx, dy);
-    if (distance > joystickMaxOffset && distance > 0) {
-      const scale = joystickMaxOffset / distance;
-      dx *= scale;
-      dy *= scale;
-    }
-    if (joyStick) {
-      joyStick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-    }
-    virtualLeftStickX = clamp(dx / joystickMaxOffset, -1, 1);
-    virtualLeftStickY = clamp(dy / joystickMaxOffset, -1, 1);
-  }
-  function updateLookStickFromTouch(touch) {
-    if (!lookBase || !touch) return;
-    const rect = lookBase.getBoundingClientRect();
-    const centerX = rect.left + (rect.width / 2);
-    const centerY = rect.top + (rect.height / 2);
-    let dx = touch.clientX - centerX;
-    let dy = touch.clientY - centerY;
-    const distance = Math.hypot(dx, dy);
-    if (distance > lookMaxOffset && distance > 0) {
-      const scale = lookMaxOffset / distance;
-      dx *= scale;
-      dy *= scale;
-    }
-    if (lookStick) {
-      lookStick.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-    }
-    virtualRightStickX = clamp(dx / lookMaxOffset, -1, 1);
-    virtualRightStickY = clamp(dy / lookMaxOffset, -1, 1);
-  }
-  function hookVirtualJoystick() {
-    if (!joyBase) return;
-    const detachWindowListeners = () => {
-      if (typeof joystickWindowCleanup === 'function') {
-        joystickWindowCleanup();
-        joystickWindowCleanup = null;
-      }
-    };
-    const onWindowMove = (e) => {
-      if (joystickTouchId == null) return;
-      const t = Array.from(e.touches).find((item) => item.identifier === joystickTouchId);
-      if (!t) return;
-      e.preventDefault();
-      updateVirtualJoystickFromTouch(t);
-    };
-    const onWindowEnd = (e) => {
-      if (joystickTouchId == null) return;
-      const endedHere = Array.from(e.changedTouches).some((item) => item.identifier === joystickTouchId);
-      if (!endedHere) return;
-      e.preventDefault();
-      joystickTouchId = null;
-      detachWindowListeners();
-      resetVirtualJoystick();
-    };
-    const onStart = (e) => {
-      if (layoutEditing) return;
-      if (joystickTouchId != null) return;
-      e.preventDefault();
-      e.stopPropagation();
-      unlockAudio();
-      detachWindowListeners();
-      const t = e.changedTouches[0];
-      if (!t) return;
-      joystickTouchId = t.identifier;
-      const opts = { passive: false, capture: true };
-      window.addEventListener('touchmove', onWindowMove, opts);
-      window.addEventListener('touchend', onWindowEnd, opts);
-      window.addEventListener('touchcancel', onWindowEnd, opts);
-      joystickWindowCleanup = () => {
-        window.removeEventListener('touchmove', onWindowMove, opts);
-        window.removeEventListener('touchend', onWindowEnd, opts);
-        window.removeEventListener('touchcancel', onWindowEnd, opts);
-      };
-      updateVirtualJoystickFromTouch(t);
-    };
-    joyBase.addEventListener('touchstart', onStart, { passive: false, capture: true });
-  }
-  function hookLookStick() {
-    if (!lookBase) return;
-    const detachWindowListeners = () => {
-      if (typeof lookWindowCleanup === 'function') {
-        lookWindowCleanup();
-        lookWindowCleanup = null;
-      }
-    };
-    const onWindowMove = (e) => {
-      if (lookTouchId == null) return;
-      const t = Array.from(e.touches).find((item) => item.identifier === lookTouchId);
-      if (!t) return;
-      e.preventDefault();
-      updateLookStickFromTouch(t);
-    };
-    const onWindowEnd = (e) => {
-      if (lookTouchId == null) return;
-      const endedHere = Array.from(e.changedTouches).some((item) => item.identifier === lookTouchId);
-      if (!endedHere) return;
-      e.preventDefault();
-      lookTouchId = null;
-      detachWindowListeners();
-      resetLookStick();
-    };
-    const onStart = (e) => {
-      if (layoutEditing) return;
-      if (lookTouchId != null) return;
-      e.preventDefault();
-      e.stopPropagation();
-      unlockAudio();
-      detachWindowListeners();
-      const t = e.changedTouches[0];
-      if (!t) return;
-      lookTouchId = t.identifier;
-      const opts = { passive: false, capture: true };
-      window.addEventListener('touchmove', onWindowMove, opts);
-      window.addEventListener('touchend', onWindowEnd, opts);
-      window.addEventListener('touchcancel', onWindowEnd, opts);
-      lookWindowCleanup = () => {
-        window.removeEventListener('touchmove', onWindowMove, opts);
-        window.removeEventListener('touchend', onWindowEnd, opts);
-        window.removeEventListener('touchcancel', onWindowEnd, opts);
-      };
-      updateLookStickFromTouch(t);
-    };
-    lookBase.addEventListener('touchstart', onStart, { passive: false, capture: true });
-  }
-  function clearVirtualGamepadState() {
-    virtualGamepadButtons = 0;
-    virtualLeftStickX = 0;
-    virtualLeftStickY = 0;
-    virtualRightStickX = 0;
-    virtualRightStickY = 0;
-    virtualLeftTrigger = 0;
-    virtualRightTrigger = 0;
-    if (joyStick) {
-      joyStick.style.transform = 'translate(-50%,-50%)';
-    }
-    if (lookStick) {
-      lookStick.style.transform = 'translate(-50%,-50%)';
-    }
-  }
-  function normalizeGamepadAxis(value) {
-    const clamped = clamp(value || 0, -1, 1);
-    if (Math.abs(clamped) < GAMEPAD_DEADZONE) return 0;
-    return clamp(clamped < 0 ? Math.round(clamped * 32768) : Math.round(clamped * 32767), -32768, 32767);
-  }
-  function normalizeTriggerValue(value) {
-    return clamp(Math.round(clamp(value || 0, 0, 1) * 255), 0, 255);
-  }
-  function buttonValue(buttons, index) {
-    const raw = buttons?.[index];
-    if (raw == null) return 0;
-    if (typeof raw === 'number') return raw;
-    if (typeof raw.value === 'number') return raw.value;
-    return raw.pressed ? 1 : 0;
-  }
-  function mapGamepadButtons(buttons) {
-    let mapped = 0;
-    if (buttonValue(buttons, 0) > 0) mapped |= GAMEPAD_A;
-    if (buttonValue(buttons, 1) > 0) mapped |= GAMEPAD_B;
-    if (buttonValue(buttons, 2) > 0) mapped |= GAMEPAD_X;
-    if (buttonValue(buttons, 3) > 0) mapped |= GAMEPAD_Y;
-    if (buttonValue(buttons, 4) > 0) mapped |= GAMEPAD_LB;
-    if (buttonValue(buttons, 5) > 0) mapped |= GAMEPAD_RB;
-    if (buttonValue(buttons, 8) > 0) mapped |= GAMEPAD_BACK;
-    if (buttonValue(buttons, 9) > 0) mapped |= GAMEPAD_START;
-    if (buttonValue(buttons, 10) > 0) mapped |= GAMEPAD_LS;
-    if (buttonValue(buttons, 11) > 0) mapped |= GAMEPAD_RS;
-    if (buttonValue(buttons, 12) > 0) mapped |= GAMEPAD_DPAD_UP;
-    if (buttonValue(buttons, 13) > 0) mapped |= GAMEPAD_DPAD_DOWN;
-    if (buttonValue(buttons, 14) > 0) mapped |= GAMEPAD_DPAD_LEFT;
-    if (buttonValue(buttons, 15) > 0) mapped |= GAMEPAD_DPAD_RIGHT;
-    if (buttonValue(buttons, 16) > 0) mapped |= GAMEPAD_GUIDE;
-    return mapped;
-  }
-  function buildGamepadInputFromState(state, controllerId = 0) {
-    const axes = state?.axes || [0, 0, 0, 0];
-    const buttons = state?.buttons || [];
-    return {
-      controllerId,
-      connected: !!state?.connected,
-      buttons: mapGamepadButtons(buttons),
-      leftTrigger: normalizeTriggerValue(buttonValue(buttons, 6) || state?.leftTrigger),
-      rightTrigger: normalizeTriggerValue(buttonValue(buttons, 7) || state?.rightTrigger),
-      leftStickX: normalizeGamepadAxis(axes[0] || 0),
-      leftStickY: normalizeGamepadAxis(-(axes[1] || 0)),
-      rightStickX: normalizeGamepadAxis(axes[2] || 0),
-      rightStickY: normalizeGamepadAxis(-(axes[3] || 0))
-    };
-  }
-  function currentVirtualGamepadState() {
-    return {
-      id: 'OpenNOW Virtual Controller',
-      connected: gpPad && gpPad.style.display !== 'none',
-      buttons: [
-        (virtualGamepadButtons & GAMEPAD_A) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_B) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_X) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_Y) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_LB) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_RB) ? 1 : 0,
-        virtualLeftTrigger, virtualRightTrigger,
-        (virtualGamepadButtons & GAMEPAD_BACK) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_START) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_LS) ? 1 : 0,
-        (virtualGamepadButtons & GAMEPAD_RS) ? 1 : 0,
-        0, 0, 0, 0,
-        (virtualGamepadButtons & GAMEPAD_GUIDE) ? 1 : 0
-      ],
-      axes: [virtualLeftStickX, virtualLeftStickY, virtualRightStickX, virtualRightStickY],
-      leftTrigger: virtualLeftTrigger,
-      rightTrigger: virtualRightTrigger
-    };
-  }
-  function selectActiveGamepadSource() {
-    if (nativeGamepadState?.connected) {
-      const nativeIndex = Number.isFinite(nativeGamepadState.index) ? nativeGamepadState.index : 0;
-      return { label: nativeGamepadState.id || 'iOS Controller', input: buildGamepadInputFromState(nativeGamepadState, nativeIndex) };
-    }
-    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
-    const browserPad = pads.find((pad) => pad && pad.connected);
-    if (browserPad) {
-      return { label: browserPad.id || 'connected', input: buildGamepadInputFromState(browserPad, browserPad.index & 0x03) };
-    }
-    const virtualState = currentVirtualGamepadState();
-    if (virtualState.connected) {
-      return { label: virtualState.id, input: buildGamepadInputFromState(virtualState, 0) };
-    }
-    return null;
-  }
-  function gamepadStatesEqual(a, b) {
-    return !!a && !!b
-      && a.buttons === b.buttons
-      && a.leftTrigger === b.leftTrigger
-      && a.rightTrigger === b.rightTrigger
-      && a.leftStickX === b.leftStickX
-      && a.leftStickY === b.leftStickY
-      && a.rightStickX === b.rightStickX
-      && a.rightStickY === b.rightStickY
-      && a.controllerId === b.controllerId
-      && a.connected === b.connected;
-  }
-  function sendCurrentGamepadState(state) {
-    const controllerId = connectedControllerId(state);
-    const connected = !!state?.connected;
-    const bitmap = connected ? (1 << controllerId) : 0x0000;
-    const usePR = isChannelOpen(partialCh)
-      && (riInputCapabilities.enablePartiallyReliableTransferGamepad & bitmap) !== 0;
-    const payload = encodeGamepadState({
-      controllerId,
-      buttons: state?.buttons ?? 0,
-      leftTrigger: state?.leftTrigger ?? 0,
-      rightTrigger: state?.rightTrigger ?? 0,
-      leftStickX: state?.leftStickX ?? 0,
-      leftStickY: state?.leftStickY ?? 0,
-      rightStickX: state?.rightStickX ?? 0,
-      rightStickY: state?.rightStickY ?? 0
-    }, bitmap, usePR);
-    if (usePR) partialCh.send(payload);
-    else sendInput(payload);
-    gamepadBitmap = bitmap;
-    lastSentGamepadState = connected ? { ...state } : null;
-    lastGamepadSendMs = performance.now();
-  }
-  function connectedControllerId(state) {
-    if (state?.connected && Number.isFinite(state.controllerId)) {
-      return state.controllerId & 0x03;
-    }
-    if (lastSentGamepadState && Number.isFinite(lastSentGamepadState.controllerId)) {
-      return lastSentGamepadState.controllerId & 0x03;
-    }
-    return 0;
-  }
-  function releaseAllPadKeys() {
-    releaseTouchscreenLeftButton();
-    joystickTouchId = null;
-    lookTouchId = null;
-    if (typeof joystickWindowCleanup === 'function') {
-      joystickWindowCleanup();
-      joystickWindowCleanup = null;
-    }
-    if (typeof lookWindowCleanup === 'function') {
-      lookWindowCleanup();
-      lookWindowCleanup = null;
-    }
-    clearVirtualGamepadState();
-  }
-  function pollGamepadState() {
-    const activeSource = selectActiveGamepadSource();
-    if (!activeSource) {
-      clearVirtualGamepadState();
-      if (lastSentGamepadState || gamepadBitmap !== 0) {
-        sendCurrentGamepadState(null);
-      }
-      setControllerStatus('Controller: waiting…');
-      requestAnimationFrame(pollGamepadState);
-      return;
-    }
-    const nextControllerStatus = `Controller: ${activeSource.label}`;
-    const controllerChanged = nextControllerStatus !== lastControllerStatusText;
-    setControllerStatus(nextControllerStatus);
-    if (controllerChanged && !userMuted) {
-      unlockAudio();
-    }
-    const nextState = activeSource.input;
-    const nowMs = performance.now();
-    const changed = !gamepadStatesEqual(nextState, lastSentGamepadState);
-    const keepalive = !changed && (nowMs - lastGamepadSendMs) >= GAMEPAD_KEEPALIVE_MS;
-    if (changed || keepalive) {
-      sendCurrentGamepadState(nextState);
-    }
-    requestAnimationFrame(pollGamepadState);
-  }
-  window.addEventListener('blur', releaseAllPadKeys);
-
-  setTimeout(() => { if (touchHint) touchHint.style.opacity = '0'; }, 4000);
-
-  touchpad.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    unlockAudio();
-    const touches = e.targetTouches;
-    if (streamerPreferences.touchscreenModeEnabled && touches.length === 1) {
-      const t = touches[0];
-      if (!t) return;
-      releaseTouchscreenLeftButton();
-      mouseGestureActive = true;
-      activeTouchId = t.identifier;
-      lastTX = t.clientX;
-      lastTY = t.clientY;
-      tapStartX = t.clientX;
-      tapStartY = t.clientY;
-      tStartTime = Date.now();
-      tMoved = false;
-      twoFingerTapPending = false;
-      movePointerToTouch(t, true);
-      scheduleTouchscreenLeftButton();
-      return;
-    }
-    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive) {
-      releaseTouchscreenLeftButton();
-      activeTouchId = null;
-      mouseGestureActive = false;
-      tMoved = false;
-    }
-    if (touches.length === 2) {
-      const t1 = touches[0];
-      const t2 = touches[1];
-      const center = pinchCenter(t1, t2);
-      pinchStartDistance = pinchDistance(t1, t2);
-      pinchStartScale = zoomScale;
-      pinchCenterStartX = center.x;
-      pinchCenterStartY = center.y;
-      pinchTranslateStartX = zoomTx;
-      pinchTranslateStartY = zoomTy;
-      pinchGestureMoved = false;
-      twoFingerStart = Date.now();
-      twoFingerTapPending = !mouseGestureActive;
-      activeTouchId = null;
-      return;
-    }
-    const t = touches[0];
-    if (!t) return;
-    mouseGestureActive = true;
-    activeTouchId = t.identifier;
-    lastTX = t.clientX;
-    lastTY = t.clientY;
-    tapStartX = t.clientX;
-    tapStartY = t.clientY;
-    tStartTime = Date.now();
-    tMoved = false;
-    twoFingerTapPending = false;
-  }, { passive: false });
-
-  touchpad.addEventListener('touchmove', (e) => {
-    e.preventDefault();
-    const touches = e.targetTouches;
-    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive && activeTouchId != null) {
-      const t = Array.from(touches).find((item) => item.identifier === activeTouchId);
-      if (!t) return;
-      if (Math.abs(t.clientX - tapStartX) > MOVE_CLICK_CANCEL_PX || Math.abs(t.clientY - tapStartY) > MOVE_CLICK_CANCEL_PX) {
-        tMoved = true;
-      }
-      const dxRaw = t.clientX - lastTX;
-      const dyRaw = t.clientY - lastTY;
-      lastTX = t.clientX;
-      lastTY = t.clientY;
-      if (tMoved) {
-        pressTouchscreenLeftButton();
-      }
-      if (touchscreenLeftDown) {
-        const delta = clientDeltaToStreamDelta(dxRaw, dyRaw);
-        sendMouseMoveDelta(delta.dx, delta.dy);
-      } else {
-        scheduleTouchscreenMove(t);
-      }
-      return;
-    }
-    if (touches.length === 2) {
-      if (mouseGestureActive && zoomScale <= 1.01) {
-        twoFingerTapPending = false;
-        return;
-      }
-      const t1 = touches[0];
-      const t2 = touches[1];
-      const distance = pinchDistance(t1, t2);
-      const center = pinchCenter(t1, t2);
-      if (pinchStartDistance > 0) {
-        const nextScale = clamp((distance / pinchStartDistance) * pinchStartScale, ZOOM_MIN, ZOOM_MAX);
-        if (Math.abs(nextScale - zoomScale) > 0.04 || Math.abs(distance - pinchStartDistance) > 10) {
-          pinchGestureMoved = true;
-        }
-        zoomScale = nextScale;
-      }
-      if (zoomScale > 1.01) {
-        zoomTx = pinchTranslateStartX + (center.x - pinchCenterStartX);
-        zoomTy = pinchTranslateStartY + (center.y - pinchCenterStartY);
-        if (Math.abs(center.x - pinchCenterStartX) > 8 || Math.abs(center.y - pinchCenterStartY) > 8) {
-          pinchGestureMoved = true;
-        }
-      }
-      if (pinchGestureMoved) {
-        twoFingerTapPending = false;
-      }
-      applyVideoTransform();
-      return;
-    }
-    const t = Array.from(touches).find((item) => item.identifier === activeTouchId) || touches[0];
-    if (!t) return;
-    const dxRaw = t.clientX - lastTX;
-    const dyRaw = t.clientY - lastTY;
-    const dx = dxRaw * pointerSpeed;
-    const dy = dyRaw * pointerSpeed;
-    lastTX = t.clientX;
-    lastTY = t.clientY;
-    if (Math.abs(t.clientX - tapStartX) > MOVE_CLICK_CANCEL_PX || Math.abs(t.clientY - tapStartY) > MOVE_CLICK_CANCEL_PX) {
-      tMoved = true;
-    }
-    if ((Math.abs(dxRaw) > 0 || Math.abs(dyRaw) > 0) && inputReady) {
-      tMoved = true;
-      pendingMoveDx += dx;
-      pendingMoveDy += dy;
-      if (!moveFrame) {
-        moveFrame = requestAnimationFrame(flushPendingMouseMove);
-      }
-    }
-  }, { passive: false });
-
-  touchpad.addEventListener('touchend', (e) => {
-    e.preventDefault();
-    const remainingTouches = e.targetTouches;
-    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive) {
-      const endedActiveTouch = Array.from(e.changedTouches).some((item) => item.identifier === activeTouchId);
-      if (endedActiveTouch || remainingTouches.length === 0) {
-        const shouldTapClick = !tMoved && Date.now() - tStartTime < 500;
-        if (touchscreenLeftDown) {
-          releaseTouchscreenLeftButton();
-        } else {
-          clearTouchscreenPressTimer();
-          flushScheduledTouchscreenMove();
-          if (shouldTapClick && inputReady) {
-            sendInput(encodeMouseButton(8, 1));
-            setTimeout(() => sendInput(encodeMouseButton(9, 1)), 35);
-          }
-        }
-        activeTouchId = null;
-        mouseGestureActive = false;
-        twoFingerTapPending = false;
-      }
-      return;
-    }
-    if (remainingTouches.length === 0 && zoomScale > 1.01 && pinchGestureMoved) {
-      pinchGestureMoved = false;
-      activeTouchId = null;
-      mouseGestureActive = false;
-      twoFingerTapPending = false;
-      return;
-    }
-    if (!inputReady) return;
-    if (moveFrame) {
-      cancelAnimationFrame(moveFrame);
-      moveFrame = null;
-    }
-    flushPendingMouseMove();
-    const holdMs = Date.now() - tStartTime;
-    if (!tMoved && holdMs < 500) {
-      if (e.changedTouches.length === 1 && remainingTouches.length === 0) {
-        sendInput(encodeMouseButton(8, 1));
-        setTimeout(() => sendInput(encodeMouseButton(9, 1)), 35);
-      }
-    }
-    if (twoFingerTapPending && zoomScale <= 1.01 && remainingTouches.length === 0 && Date.now() - twoFingerStart < 400) {
-      sendInput(encodeMouseButton(8, 3));
-      setTimeout(() => sendInput(encodeMouseButton(9, 3)), 35);
-    }
-    activeTouchId = null;
-    mouseGestureActive = false;
-    twoFingerTapPending = false;
-  }, { passive: false });
-
-  touchpad.addEventListener('touchcancel', (e) => {
-    e.preventDefault();
-    if (streamerPreferences.touchscreenModeEnabled && mouseGestureActive) {
-      releaseTouchscreenLeftButton();
-      activeTouchId = null;
-      mouseGestureActive = false;
-      twoFingerTapPending = false;
-      tMoved = false;
-      return;
-    }
-    if (moveFrame) {
-      cancelAnimationFrame(moveFrame);
-      moveFrame = null;
-    }
-    pendingMoveDx = 0;
-    pendingMoveDy = 0;
-    activeTouchId = null;
-    mouseGestureActive = false;
-    twoFingerTapPending = false;
-  }, { passive: false });
-
-  touchpad.addEventListener('dblclick', (e) => {
-    e.preventDefault();
-    if (zoomScale > 1.01) {
-      zoomScale = 1;
-      zoomTx = 0;
-      zoomTy = 0;
-      applyVideoTransform();
-    } else {
-      adjustZoom(ZOOM_DEFAULT_STEP);
-    }
-  }, { passive: false });
-
-  kbInput.addEventListener('input', (e) => {
-    const val = kbInput.value;
-    if (val.length > kbPrevLen) {
-      const added = val.slice(kbPrevLen);
-      for (const ch of added) sendChar(ch);
-    } else if (val.length < kbPrevLen) {
-      if (inputReady) {
-        sendInput(encodeKey(3, 0x08, 0x0E, 0));
-        sendInput(encodeKey(4, 0x08, 0x0E, 0));
-      }
-    }
-    kbPrevLen = val.length;
-  });
-
-  kbInput.addEventListener('keydown', (e) => {
-    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
-      e.preventDefault();
-      sendChar(e.key);
-      return;
-    }
-    if (e.key === 'Backspace') {
-      e.preventDefault();
-      if (inputReady) {
-        sendInput(encodeKey(3, 0x08, 0x0E, 0));
-        sendInput(encodeKey(4, 0x08, 0x0E, 0));
-      }
-      return;
-    }
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (inputReady) {
-        sendInput(encodeKey(3, 0x0d, 0x28, 0));
-        sendInput(encodeKey(4, 0x0d, 0x28, 0));
-      }
-      return;
-    }
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      if (inputReady) {
-        sendInput(encodeKey(3, 0x09, 0x2B, 0));
-        sendInput(encodeKey(4, 0x09, 0x2B, 0));
-      }
-      return;
-    }
-    if (e.key === 'Escape') hideKeyboard();
-  });
-
-  touchpad.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    adjustZoom(e.deltaY < 0 ? ZOOM_DEFAULT_STEP : -ZOOM_DEFAULT_STEP);
-  }, { passive: false });
-
-  function connect() {
-    try {
-      resetTransport(true);
-      const signIn = buildSignInUrl();
-      post('status', 'Connecting signaling');
-      ws = new WebSocket(signIn, 'x-nv-sessionid.' + cfg.sessionId);
-      signalingOpenTimeout = setTimeout(() => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          post('status', 'Signaling connect timeout');
-          try { if (ws) ws.close(); } catch (_) {}
-          scheduleReconnect('socket timeout');
-        }
-      }, 8000);
-      ws.onopen = () => {
-        if (signalingOpenTimeout) {
-          clearTimeout(signalingOpenTimeout);
-          signalingOpenTimeout = null;
-        }
-        reconnectAttempts = 0;
-        sendPeerInfo();
-        if (hb) clearInterval(hb);
-        hb = setInterval(() => send({ hb: 1 }), 5000);
-        post('status', 'Signaling connected');
-        startOfferTimeout();
-      };
-      ws.onmessage = (event) => handle(event.data);
-      ws.onerror = () => {
-        if (shouldKeepPeerAliveOnSignalingClose()) {
-          post('status', 'Signaling error (ignored after offer)');
-          return;
-        }
-        post('status', 'Signaling error, retrying');
-        clearOfferTimeout();
-        scheduleReconnect('socket error');
-      };
-      ws.onclose = (event) => {
-        clearOfferTimeout();
-        const reason = event && event.reason ? event.reason : 'no reason';
-        post('status', 'Signaling closed (' + event.code + '): ' + reason);
-        if (shouldKeepPeerAliveOnSignalingClose()) {
-          if (hb) { clearInterval(hb); hb = null; }
-          ws = null;
-          post('status', 'Continuing stream without signaling');
-          return;
-        }
-        resetTransport();
-        scheduleReconnect('socket closed');
-      };
-    } catch (error) {
-      fail('Signaling setup failed: ' + String(error));
-      scheduleReconnect('setup failed');
-    }
-  }
-  hookVirtualGamepadButtons();
-  hookVirtualJoystick();
-  hookLookStick();
-  Object.entries(touchGroupElements).forEach(([key, element]) => hookLayoutDrag(key, element));
-  if (gpHide) {
-    gpHide.onclick = () => {
-      if (layoutEditing) return;
-      clearVirtualGamepadState();
-      setGamepadVisible(false);
-    };
-  }
-  if (gpEditBtn) {
-    gpEditBtn.onclick = () => {
-      setLayoutEditing(!layoutEditing);
-    };
-  }
-  if (gpResetBtn) {
-    gpResetBtn.onclick = () => {
-      resetTouchLayout();
-      setLayoutEditing(true);
-    };
-  }
-  if (gpScaleRange) {
-    gpScaleRange.addEventListener('input', (e) => {
-      const value = Number(e.target && e.target.value);
-      touchLayout = sanitizeTouchLayout({
-        ...touchLayout,
-        scale: (Number.isFinite(value) ? value : 100) / 100
-      });
-      applyTouchLayout();
-      scheduleTouchLayoutPersist();
-    });
-  }
-  if (gpButtonRange) {
-    gpButtonRange.addEventListener('input', (e) => {
-      const value = Number(e.target && e.target.value);
-      touchLayout = sanitizeTouchLayout({
-        ...touchLayout,
-        buttonScale: (Number.isFinite(value) ? value : 100) / 100
-      });
-      applyTouchLayout();
-      scheduleTouchLayoutPersist();
-    });
-  }
-  if (gpStickRange) {
-    gpStickRange.addEventListener('input', (e) => {
-      const value = Number(e.target && e.target.value);
-      touchLayout = sanitizeTouchLayout({
-        ...touchLayout,
-        stickScale: (Number.isFinite(value) ? value : 100) / 100
-      });
-      applyTouchLayout();
-      scheduleTouchLayoutPersist();
-    });
-  }
-  if (gpOpacityRange) {
-    gpOpacityRange.addEventListener('input', (e) => {
-      const value = Number(e.target && e.target.value);
-      touchLayout = sanitizeTouchLayout({
-        ...touchLayout,
-        opacity: (Number.isFinite(value) ? value : 58) / 100
-      });
-      applyTouchLayout();
-      scheduleTouchLayoutPersist();
-    });
-  }
-  if (hudPanel) {
-    hudPanel.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-  }
-  if (!IS_TVOS) {
-    document.addEventListener('touchstart', (e) => {
-      if (!hudPanelOpen) return;
-      const target = e.target;
-      if (hudPanel && !hudPanel.contains(target) && hudToggle && !hudToggle.contains(target)) {
-        toggleHudPanel(false);
-      }
-    }, { passive: true });
-  }
-  configurePlatformControls();
-  setGamepadVisible(streamerPreferences.touchControllerVisible || PREFERS_TOUCH_CONTROLLER_OVERLAY, false);
-  applyTouchpadMode();
-  applyTouchLayout();
-  applyStatsVisibility();
-  video.addEventListener('volumechange', updateAudioButton);
-  updateAudioButton();
-  updateStatsButton();
-  updateKeyboardButton();
-  updateTouchscreenButton();
-  updateTouchControllerButton();
-  updatePhysicalControllerButton();
-  updateHudSummary();
-  pollGamepadState();
-  // GPU keep-alive: minimal WebGL rAF loop prevents GPUProcess idle-exit during
-  // WebRTC negotiation. Stop it once video is attached so normal streaming does
-  // not keep an extra animation frame loop alive.
-  stopGpuKeepAlive = (function() {
-    var c = document.createElement('canvas');
-    var running = true;
-    var frame = 0;
-    c.width = c.height = 1;
-    c.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
-    document.body.appendChild(c);
-    var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-    if (!gl) { c.remove(); return null; }
-    (function loop() {
-      if (!running) return;
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      frame = requestAnimationFrame(loop);
-    })();
-    return function() {
-      if (!running) return;
-      running = false;
-      if (frame) cancelAnimationFrame(frame);
-      try {
-        const ext = gl.getExtension('WEBGL_lose_context');
-        if (ext) ext.loseContext();
-      } catch (_) {}
-      c.remove();
-    };
-  })();
-  // WebContent keep-alive: active media playback prevents iOS from suspending the
-  // WebContent process during WebRTC negotiation (no browser-engine entitlements).
-  try { video.srcObject = new MediaStream(); video.play().catch(function(){}); } catch(e) {}
-  connect();
-  </script>
-</body>
-</html>
-"""#
-    }
-
-    private static func normalizePreferredCodec(_ codec: String) -> String {
-        // iOS WKWebView is currently most reliable with H264 decode path.
-        // Force non-H264 selections to H264 to avoid connected-but-black video.
-        switch codec.uppercased() {
-        case "H264":
-            return "H264"
-        default:
-            return "H264"
-        }
-    }
-
-    private static func touchProfile(for gameTitle: String) -> String {
-        let normalized = gameTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.contains("fortnite") {
-            return "fortnite-mobile"
-        }
-        return "default"
-    }
-
-    private static func streamProfile(for settings: AppSettings) -> StreamVideoProfile {
-        StreamSettingsResolver.profile(for: settings)
-    }
-
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
-        private let onEvent: (String) -> Void
-        private let onTouchLayoutChange: (String, TouchControlLayout) -> Void
-        private let onStreamerPreferencesChange: (StreamerPreferences) -> Void
-        var cachedHTML: String = ""
-        var cachedBaseURL: URL?
-        private var contentProcessRestartCount = 0
-        private static let maxContentProcessRestarts = 5
-        private let controllerBridge = NativeControllerBridge()
-        private let hardwareInputBridge = NativeHardwareInputBridge()
-        private let deviceStatusBridge = NativeDeviceStatusBridge()
-
-        init(
-            onEvent: @escaping (String) -> Void,
-            onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
-            onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void
-        ) {
-            self.onEvent = onEvent
-            self.onTouchLayoutChange = onTouchLayoutChange
-            self.onStreamerPreferencesChange = onStreamerPreferencesChange
-        }
-
-        func attach(webView: WKWebView) {
-            controllerBridge.attach(webView: webView)
-            hardwareInputBridge.attach(webView: webView)
-            deviceStatusBridge.attach(webView: webView)
-        }
-
-        func detach() {
-            controllerBridge.detach()
-            hardwareInputBridge.detach()
-            deviceStatusBridge.detach()
-        }
-
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any] else { return }
-            let type = (body["type"] as? String) ?? "log"
-            let msg = (body["message"] as? String) ?? ""
-            if msg.localizedCaseInsensitiveContains("input handshake complete") || msg == "Input ready" {
-                return
-            }
-            switch type {
-            case "status":
-                onEvent("Status: \(msg)")
-            case "error":
-                onEvent("Error: \(msg)")
-            case "log":
-                onEvent("Log: \(msg)")
-            case "touch-layout":
-                guard let payload = body["payload"] as? [String: Any],
-                      let profile = payload["profile"] as? String,
-                      let layoutObject = payload["layout"],
-                      JSONSerialization.isValidJSONObject(layoutObject),
-                      let layoutData = try? JSONSerialization.data(withJSONObject: layoutObject),
-                      let layout = try? JSONDecoder().decode(TouchControlLayout.self, from: layoutData) else {
-                    return
-                }
-                onTouchLayoutChange(profile, layout)
-            case "streamer-preferences":
-                guard let payload = body["payload"],
-                      JSONSerialization.isValidJSONObject(payload),
-                      let preferencesData = try? JSONSerialization.data(withJSONObject: payload),
-                      let preferences = try? JSONDecoder().decode(StreamerPreferences.self, from: preferencesData) else {
-                    return
-                }
-                onStreamerPreferencesChange(preferences)
-            case "gamepad-rumble":
-                guard let payload = body["payload"] as? [String: Any],
-                      let controllerId = Self.intValue(payload["controllerId"]),
-                      let weakMagnitude = Self.intValue(payload["weakMagnitude"]),
-                      let strongMagnitude = Self.intValue(payload["strongMagnitude"]) else {
-                    return
-                }
-                controllerBridge.applyRumble(
-                    controllerId: controllerId,
-                    weakMagnitude: weakMagnitude,
-                    strongMagnitude: strongMagnitude
-                )
-            default:
-                break
-            }
-        }
-
-        private static func intValue(_ value: Any?) -> Int? {
-            if let number = value as? NSNumber {
-                return number.intValue
-            }
-            return value as? Int
-        }
-
-        func webView(
-            _ webView: WKWebView,
-            didFail navigation: WKNavigation!,
-            withError error: Error
-        ) {
-            onEvent("Error: WebView navigation failed: \(error.localizedDescription)")
-        }
-
-        func webView(
-            _ webView: WKWebView,
-            didFailProvisionalNavigation navigation: WKNavigation!,
-            withError error: Error
-        ) {
-            onEvent("Error: WebView provisional load failed: \(error.localizedDescription)")
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            controllerBridge.attach(webView: webView)
-            hardwareInputBridge.attach(webView: webView)
-            deviceStatusBridge.attach(webView: webView)
-        }
-
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            contentProcessRestartCount += 1
-            if contentProcessRestartCount <= Self.maxContentProcessRestarts, !cachedHTML.isEmpty {
-                onEvent("Status: Reconnecting after process crash (\(contentProcessRestartCount)/\(Self.maxContentProcessRestarts))...")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak webView] in
-                    guard let webView else { return }
-                    webView.loadHTMLString(self.cachedHTML, baseURL: self.cachedBaseURL)
-                }
-            } else {
-                onEvent("Error: Stream WebContent process terminated (restart limit reached)")
-            }
-        }
-    }
-}
-
-private enum NativeStreamJavaScriptBridge {
-    static func call(_ functionName: String, payload: [String: Any], in webView: WKWebView?) {
-        guard let webView,
-              JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8) else {
-            return
-        }
-        webView.evaluateJavaScript(
-            "window.\(functionName) && window.\(functionName)(\(json))",
-            completionHandler: nil
-        )
-    }
-}
-
-private final class NativeHardwareInputBridge {
-    private typealias KeyMapping = (keycode: Int, scancode: Int)
-
-    private weak var webView: WKWebView?
-    private var observers: [NSObjectProtocol] = []
-    private var keyboard: GCKeyboard?
-    private var mice: [GCMouse] = []
-    private var pendingMouseDX = 0.0
-    private var pendingMouseDY = 0.0
-    private var mouseMoveScheduled = false
-
-    func attach(webView: WKWebView) {
-        self.webView = webView
-        if observers.isEmpty {
-            startMonitoring()
-        }
-        attachCurrentKeyboard()
-        attachCurrentMice()
-    }
-
-    func detach() {
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers.removeAll()
-        clearKeyboardHandler()
-        clearMouseHandlers()
-        webView = nil
-        pendingMouseDX = 0
-        pendingMouseDY = 0
-        mouseMoveScheduled = false
-    }
-
-    private func startMonitoring() {
-        let center = NotificationCenter.default
-        observers.append(center.addObserver(
-            forName: .GCKeyboardDidConnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.attachCurrentKeyboard()
-        })
-        observers.append(center.addObserver(
-            forName: .GCKeyboardDidDisconnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.attachCurrentKeyboard()
-        })
-        observers.append(center.addObserver(
-            forName: .GCMouseDidConnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.attachCurrentMice()
-        })
-        observers.append(center.addObserver(
-            forName: .GCMouseDidDisconnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.attachCurrentMice()
-        })
-    }
-
-    private func attachCurrentKeyboard() {
-        let nextKeyboard = GCKeyboard.coalesced
-        guard nextKeyboard !== keyboard else { return }
-        clearKeyboardHandler()
-        keyboard = nextKeyboard
-        keyboard?.keyboardInput?.keyChangedHandler = { [weak self] keyboardInput, _, keyCode, pressed in
-            self?.sendKey(keyCode, pressed: pressed, keyboardInput: keyboardInput)
-        }
-    }
-
-    private func clearKeyboardHandler() {
-        keyboard?.keyboardInput?.keyChangedHandler = nil
-        keyboard = nil
-    }
-
-    private func attachCurrentMice() {
-        let nextMice = GCMouse.mice()
-        let identityChanged = nextMice.count != mice.count
-            || zip(nextMice, mice).contains(where: { lhs, rhs in lhs !== rhs })
-        guard identityChanged else { return }
-
-        clearMouseHandlers()
-        mice = nextMice
-        for mouse in mice {
-            guard let input = mouse.mouseInput else { continue }
-            input.mouseMovedHandler = { [weak self] _, deltaX, deltaY in
-                self?.queueMouseMove(dx: Double(deltaX), dy: -Double(deltaY))
-            }
-            wireMouseButton(input.leftButton, button: 1)
-            wireMouseButton(input.middleButton, button: 2)
-            wireMouseButton(input.rightButton, button: 3)
-            input.auxiliaryButtons?.enumerated().forEach { index, button in
-                wireMouseButton(button, button: min(5, index + 4))
-            }
-            input.scroll.valueChangedHandler = { [weak self] _, _, yValue in
-                self?.sendMouseWheel(delta: Int((yValue * 120).rounded()))
-            }
-        }
-    }
-
-    private func clearMouseHandlers() {
-        for mouse in mice {
-            guard let input = mouse.mouseInput else { continue }
-            input.mouseMovedHandler = nil
-            input.leftButton.pressedChangedHandler = nil
-            input.middleButton?.pressedChangedHandler = nil
-            input.rightButton?.pressedChangedHandler = nil
-            input.auxiliaryButtons?.forEach { $0.pressedChangedHandler = nil }
-            input.scroll.valueChangedHandler = nil
-        }
-        mice = []
-    }
-
-    private func wireMouseButton(_ buttonInput: GCControllerButtonInput?, button: Int) {
-        buttonInput?.pressedChangedHandler = { [weak self] _, _, pressed in
-            self?.sendMouseButton(button: button, pressed: pressed)
-        }
-    }
-
-    private func queueMouseMove(dx: Double, dy: Double) {
-        guard dx.isFinite, dy.isFinite else { return }
-        pendingMouseDX += dx
-        pendingMouseDY += dy
-        guard !mouseMoveScheduled else { return }
-        mouseMoveScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            self?.flushMouseMove()
-        }
-    }
-
-    private func flushMouseMove() {
-        mouseMoveScheduled = false
-        let dx = Int(pendingMouseDX.rounded()).clamped(to: -32768...32767)
-        let dy = Int(pendingMouseDY.rounded()).clamped(to: -32768...32767)
-        pendingMouseDX = 0
-        pendingMouseDY = 0
-        guard dx != 0 || dy != 0 else { return }
-        NativeStreamJavaScriptBridge.call(
-            "__opennowNativeMouseMove",
-            payload: ["dx": dx, "dy": dy],
-            in: webView
-        )
-    }
-
-    private func sendMouseButton(button: Int, pressed: Bool) {
-        NativeStreamJavaScriptBridge.call(
-            "__opennowNativeMouseButton",
-            payload: ["button": button.clamped(to: 1...5), "pressed": pressed],
-            in: webView
-        )
-    }
-
-    private func sendMouseWheel(delta: Int) {
-        guard delta != 0 else { return }
-        NativeStreamJavaScriptBridge.call(
-            "__opennowNativeMouseWheel",
-            payload: ["delta": delta.clamped(to: -32768...32767)],
-            in: webView
-        )
-    }
-
-    private func sendKey(_ keyCode: GCKeyCode, pressed: Bool, keyboardInput: GCKeyboardInput) {
-        guard let mapping = Self.keyMap[keyCode] else { return }
-        NativeStreamJavaScriptBridge.call(
-            "__opennowNativeKeyboardEvent",
-            payload: [
-                "keycode": mapping.keycode,
-                "scancode": mapping.scancode,
-                "modifiers": modifiers(for: keyboardInput, changedKey: keyCode, pressed: pressed),
-                "pressed": pressed
-            ],
-            in: webView
-        )
-    }
-
-    private func modifiers(
-        for keyboardInput: GCKeyboardInput,
-        changedKey: GCKeyCode,
-        pressed: Bool
-    ) -> Int {
-        var value = 0
-        if isPressed(.leftShift, or: .rightShift, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
-            value |= 0x01
-        }
-        if isPressed(.leftControl, or: .rightControl, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
-            value |= 0x02
-        }
-        if isPressed(.leftAlt, or: .rightAlt, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
-            value |= 0x04
-        }
-        if isPressed(.leftGUI, or: .rightGUI, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
-            value |= 0x08
-        }
-        if isKeyPressed(.capsLock, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
-            value |= 0x10
-        }
-        if isKeyPressed(.keypadNumLock, in: keyboardInput, changedKey: changedKey, pressed: pressed) {
-            value |= 0x20
-        }
-        return value
-    }
-
-    private func isPressed(
-        _ lhs: GCKeyCode,
-        or rhs: GCKeyCode,
-        in keyboardInput: GCKeyboardInput,
-        changedKey: GCKeyCode,
-        pressed: Bool
-    ) -> Bool {
-        isKeyPressed(lhs, in: keyboardInput, changedKey: changedKey, pressed: pressed)
-            || isKeyPressed(rhs, in: keyboardInput, changedKey: changedKey, pressed: pressed)
-    }
-
-    private func isKeyPressed(
-        _ keyCode: GCKeyCode,
-        in keyboardInput: GCKeyboardInput,
-        changedKey: GCKeyCode,
-        pressed: Bool
-    ) -> Bool {
-        if keyCode == changedKey {
-            return pressed
-        }
-        return keyboardInput.button(forKeyCode: keyCode)?.isPressed == true
-    }
-
-    private static let keyMap: [GCKeyCode: KeyMapping] = [
-        .keyA: (0x41, 0x001e), .keyB: (0x42, 0x0030), .keyC: (0x43, 0x002e),
-        .keyD: (0x44, 0x0020), .keyE: (0x45, 0x0012), .keyF: (0x46, 0x0021),
-        .keyG: (0x47, 0x0022), .keyH: (0x48, 0x0023), .keyI: (0x49, 0x0017),
-        .keyJ: (0x4a, 0x0024), .keyK: (0x4b, 0x0025), .keyL: (0x4c, 0x0026),
-        .keyM: (0x4d, 0x0032), .keyN: (0x4e, 0x0031), .keyO: (0x4f, 0x0018),
-        .keyP: (0x50, 0x0019), .keyQ: (0x51, 0x0010), .keyR: (0x52, 0x0013),
-        .keyS: (0x53, 0x001f), .keyT: (0x54, 0x0014), .keyU: (0x55, 0x0016),
-        .keyV: (0x56, 0x002f), .keyW: (0x57, 0x0011), .keyX: (0x58, 0x002d),
-        .keyY: (0x59, 0x0015), .keyZ: (0x5a, 0x002c),
-        .one: (0x31, 0x0002), .two: (0x32, 0x0003), .three: (0x33, 0x0004),
-        .four: (0x34, 0x0005), .five: (0x35, 0x0006), .six: (0x36, 0x0007),
-        .seven: (0x37, 0x0008), .eight: (0x38, 0x0009), .nine: (0x39, 0x000a),
-        .zero: (0x30, 0x000b),
-        .returnOrEnter: (0x0d, 0x001c), .escape: (0x1b, 0x0001),
-        .deleteOrBackspace: (0x08, 0x000e), .tab: (0x09, 0x000f),
-        .spacebar: (0x20, 0x0039), .hyphen: (0xbd, 0x000c),
-        .equalSign: (0xbb, 0x000d), .openBracket: (0xdb, 0x001a),
-        .closeBracket: (0xdd, 0x001b), .backslash: (0xdc, 0x002b),
-        .semicolon: (0xba, 0x0027), .quote: (0xde, 0x0028),
-        .graveAccentAndTilde: (0xc0, 0x0029), .comma: (0xbc, 0x0033),
-        .period: (0xbe, 0x0034), .slash: (0xbf, 0x0035),
-        .capsLock: (0x14, 0x003a),
-        .F1: (0x70, 0x003b), .F2: (0x71, 0x003c), .F3: (0x72, 0x003d),
-        .F4: (0x73, 0x003e), .F5: (0x74, 0x003f), .F6: (0x75, 0x0040),
-        .F7: (0x76, 0x0041), .F8: (0x77, 0x0042), .F9: (0x78, 0x0043),
-        .F10: (0x79, 0x0044), .F11: (0x7a, 0x0057), .F12: (0x7b, 0x0058),
-        .insert: (0x2d, 0x0152), .home: (0x24, 0x0147), .pageUp: (0x21, 0x0149),
-        .deleteForward: (0x2e, 0x0153), .end: (0x23, 0x014f), .pageDown: (0x22, 0x0151),
-        .rightArrow: (0x27, 0x014d), .leftArrow: (0x25, 0x014b),
-        .downArrow: (0x28, 0x0150), .upArrow: (0x26, 0x0148),
-        .keypadNumLock: (0x90, 0x0145), .keypadSlash: (0x6f, 0x0135),
-        .keypadAsterisk: (0x6a, 0x0037), .keypadHyphen: (0x6d, 0x004a),
-        .keypadPlus: (0x6b, 0x004e), .keypadEnter: (0x0d, 0x011c),
-        .keypad1: (0x61, 0x004f), .keypad2: (0x62, 0x0050),
-        .keypad3: (0x63, 0x0051), .keypad4: (0x64, 0x004b),
-        .keypad5: (0x65, 0x004c), .keypad6: (0x66, 0x004d),
-        .keypad7: (0x67, 0x0047), .keypad8: (0x68, 0x0048),
-        .keypad9: (0x69, 0x0049), .keypad0: (0x60, 0x0052),
-        .keypadPeriod: (0x6e, 0x0053),
-        .leftShift: (0x10, 0x002a), .rightShift: (0x10, 0x0036),
-        .leftControl: (0x11, 0x001d), .rightControl: (0x11, 0x011d),
-        .leftAlt: (0x12, 0x0038), .rightAlt: (0x12, 0x0138),
-        .leftGUI: (0x5b, 0x015b), .rightGUI: (0x5c, 0x015c)
-    ]
-}
-
-private final class NativeDeviceStatusBridge {
-    private weak var webView: WKWebView?
-    private var observers: [NSObjectProtocol] = []
-    private var refreshTimer: Timer?
-    private var wasBatteryMonitoringEnabled = false
-    private var lastJSON = ""
-
-    func attach(webView: WKWebView) {
-        self.webView = webView
-        #if os(tvOS)
-        publishState()
-        return
-        #endif
-        if observers.isEmpty {
-            startMonitoring()
-        }
-        startRefreshTimer()
-        publishState()
-    }
-
-    func detach() {
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers.removeAll()
-        refreshTimer?.invalidate()
-        refreshTimer = nil
-        webView = nil
-        lastJSON = ""
-        #if os(tvOS)
-        return
-        #else
-        if !wasBatteryMonitoringEnabled {
-            UIDevice.current.isBatteryMonitoringEnabled = false
-        }
-        #endif
-    }
-
-    private func startMonitoring() {
-        #if os(tvOS)
-        return
-        #else
-        let device = UIDevice.current
-        wasBatteryMonitoringEnabled = device.isBatteryMonitoringEnabled
-        device.isBatteryMonitoringEnabled = true
-
-        let center = NotificationCenter.default
-        observers.append(center.addObserver(
-            forName: UIDevice.batteryLevelDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.publishState()
-        })
-        observers.append(center.addObserver(
-            forName: UIDevice.batteryStateDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.publishState()
-        })
-        observers.append(center.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.publishState()
-        })
-        #endif
-    }
-
-    private func startRefreshTimer() {
-        guard refreshTimer == nil else { return }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.publishState()
-        }
-    }
-
-    private func publishState() {
-        guard let webView else { return }
-        #if os(tvOS)
-        let payload: [String: Any] = [
-            "batteryPercent": NSNull(),
-            "charging": false
-        ]
-        #else
-        let level = UIDevice.current.batteryLevel
-        let percent = level >= 0 ? Int((level * 100).rounded()) : nil
-        let charging = {
-            switch UIDevice.current.batteryState {
-            case .charging, .full:
-                return true
-            default:
-                return false
-            }
-        }()
-        let payload: [String: Any] = [
-            "batteryPercent": percent ?? NSNull(),
-            "charging": charging
-        ]
-        #endif
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8)
-        else { return }
-        guard json != lastJSON else { return }
-        lastJSON = json
-        webView.evaluateJavaScript("window.__opennowDeviceStatus(\(json))", completionHandler: nil)
-    }
-}
-
-private final class NativeControllerBridge {
-    private weak var webView: WKWebView?
-    private var observers: [NSObjectProtocol] = []
-    private var controllers: [GCController] = []
-    private var activeControllerIndex = 0
-    private var publishScheduled = false
-    private var hapticEngines: [ObjectIdentifier: CHHapticEngine] = [:]
-    private var lastRumbleEffectAt: [TimeInterval] = Array(repeating: 0, count: 4)
-    private var lastPublishedHapticsAvailable: Bool?
-    private static let maxControllers = 4
-    private static let rumbleEffectDuration: TimeInterval = 0.09
-    private static let rumbleThrottleDuration: TimeInterval = 0.035
-
-    func attach(webView: WKWebView) {
-        self.webView = webView
-        lastPublishedHapticsAvailable = nil
-        if observers.isEmpty {
-            startMonitoring()
-        }
-        attachCurrentControllers()
-        publishState()
-    }
-
-    func detach() {
-        observers.forEach(NotificationCenter.default.removeObserver)
-        observers.removeAll()
-        clearControllerHandlers()
-        stopAllControllerRumble()
-        controllers = []
-        activeControllerIndex = 0
-        webView = nil
-        publishScheduled = false
-        lastPublishedHapticsAvailable = nil
-    }
-
-    func applyRumble(controllerId: Int, weakMagnitude: Int, strongMagnitude: Int) {
-        let slot = controllerId.clamped(to: 0...(Self.maxControllers - 1))
-        let profile = buildRumbleProfile(weakMagnitude: weakMagnitude, strongMagnitude: strongMagnitude)
-
-        guard let controller = findHapticController(for: slot) else {
-            return
-        }
-
-        let now = ProcessInfo.processInfo.systemUptime
-        if !profile.isStop,
-           lastRumbleEffectAt[slot] > 0,
-           now - lastRumbleEffectAt[slot] <= Self.rumbleThrottleDuration {
-            return
-        }
-        lastRumbleEffectAt[slot] = profile.isStop ? 0 : now
-
-        if profile.isStop {
-            stopRumble(for: controller)
-            return
-        }
-        playRumble(on: controller, profile: profile)
-    }
-
-    private func startMonitoring() {
-        let center = NotificationCenter.default
-        observers.append(center.addObserver(
-            forName: .GCControllerDidConnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.attachCurrentControllers()
-            self?.publishState()
-        })
-        observers.append(center.addObserver(
-            forName: .GCControllerDidDisconnect,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.attachCurrentControllers()
-            self?.publishState()
-        })
-    }
-
-    private func attachCurrentControllers() {
-        let nextControllers = GCController.controllers().filter { $0.extendedGamepad != nil }
-        let identityChanged = nextControllers.count != controllers.count
-            || zip(nextControllers, controllers).contains(where: { lhs, rhs in lhs !== rhs })
-        guard identityChanged else { return }
-
-        clearControllerHandlers()
-        controllers = nextControllers
-        if controllers.isEmpty {
-            activeControllerIndex = 0
-            publishHapticsState()
-            return
-        }
-        activeControllerIndex = min(activeControllerIndex, controllers.count - 1)
-        for (index, controller) in controllers.enumerated() {
-            controller.extendedGamepad?.valueChangedHandler = { [weak self] _, _ in
-                self?.activeControllerIndex = index
-                self?.schedulePublish()
-            }
-        }
-        publishHapticsState()
-    }
-
-    private func clearControllerHandlers() {
-        for controller in controllers {
-            controller.extendedGamepad?.valueChangedHandler = nil
-        }
-    }
-
-    private func schedulePublish() {
-        guard !publishScheduled else { return }
-        publishScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
-            guard let self else { return }
-            self.publishScheduled = false
-            self.publishState()
-        }
-    }
-
-    private func publishState() {
-        guard let webView else { return }
-        let payload = controllerPayload()
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8)
-        else { return }
-        webView.evaluateJavaScript("window.__opennowNativeGamepadState(\(json))", completionHandler: nil)
-        publishHapticsState()
-    }
-
-    private func publishHapticsState() {
-        let available = controllers.contains { $0.haptics != nil }
-        guard available != lastPublishedHapticsAvailable else { return }
-        lastPublishedHapticsAvailable = available
-        NativeStreamJavaScriptBridge.call(
-            "__opennowNativeHapticsState",
-            payload: ["enabled": available],
-            in: webView
-        )
-    }
-
-    private func controllerPayload() -> [String: Any] {
-        let payloads = controllers.enumerated().compactMap { payload(for: $0.element, index: $0.offset) }
-        guard !payloads.isEmpty else {
-            return ["connected": false]
-        }
-        let safeActiveIndex = min(activeControllerIndex, payloads.count - 1)
-        let active = payloads[safeActiveIndex]
-        return [
-            "connected": true,
-            "activeControllerIndex": active["index"] as? Int ?? 0,
-            "controllers": payloads,
-            "id": active["id"] as? String ?? "iOS Controller",
-            "index": active["index"] as? Int ?? 0,
-            "buttons": active["buttons"] as? [Double] ?? [],
-            "axes": active["axes"] as? [Double] ?? []
-        ]
-    }
-
-    private func payload(for controller: GCController, index: Int) -> [String: Any]? {
-        guard let gamepad = controller.extendedGamepad else { return nil }
-
-        var buttons = Array(repeating: 0.0, count: 17)
-        buttons[0] = value(for: gamepad.buttonA)
-        buttons[1] = value(for: gamepad.buttonB)
-        buttons[2] = value(for: gamepad.buttonX)
-        buttons[3] = value(for: gamepad.buttonY)
-        buttons[4] = value(for: gamepad.leftShoulder)
-        buttons[5] = value(for: gamepad.rightShoulder)
-        buttons[6] = value(for: gamepad.leftTrigger)
-        buttons[7] = value(for: gamepad.rightTrigger)
-        buttons[8] = value(for: gamepad.buttonOptions)
-        buttons[9] = value(for: gamepad.buttonMenu)
-        buttons[10] = value(for: gamepad.leftThumbstickButton)
-        buttons[11] = value(for: gamepad.rightThumbstickButton)
-        buttons[12] = value(for: gamepad.dpad.up)
-        buttons[13] = value(for: gamepad.dpad.down)
-        buttons[14] = value(for: gamepad.dpad.left)
-        buttons[15] = value(for: gamepad.dpad.right)
-        if #available(iOS 14.0, *) {
-            buttons[16] = value(for: gamepad.buttonHome)
-        }
-
-        let axes: [Double] = [
-            clampAxis(gamepad.leftThumbstick.xAxis.value),
-            clampAxis(gamepad.leftThumbstick.yAxis.value),
-            clampAxis(gamepad.rightThumbstick.xAxis.value),
-            clampAxis(gamepad.rightThumbstick.yAxis.value)
-        ]
-
-        return [
-            "connected": true,
-            "id": controller.vendorName ?? "iOS Controller",
-            "index": index & 0x03,
-            "buttons": buttons,
-            "axes": axes
-        ]
-    }
-
-    private func value(for button: GCControllerButtonInput?) -> Double {
-        guard let button else { return 0 }
-        return Double(button.value)
-    }
-
-    private func clampAxis(_ value: Float) -> Double {
-        Double(max(-1, min(1, value)))
-    }
-
-    private func findHapticController(for controllerId: Int) -> GCController? {
-        let hapticControllers = controllers.filter { $0.haptics != nil }
-        guard !hapticControllers.isEmpty else { return nil }
-        if controllerId >= 0, controllerId < controllers.count, controllers[controllerId].haptics != nil {
-            return controllers[controllerId]
-        }
-        if controllerId >= 0, controllerId < hapticControllers.count {
-            return hapticControllers[controllerId]
-        }
-        return hapticControllers.count == 1 ? hapticControllers[0] : nil
-    }
-
-    private func buildRumbleProfile(weakMagnitude: Int, strongMagnitude: Int) -> RumbleProfile {
-        let weak = Double(weakMagnitude.clamped(to: 0...65535)) / 65535.0
-        let strong = Double(strongMagnitude.clamped(to: 0...65535)) / 65535.0
-        let combined = min(1, max(0, strong * 0.78 + weak * 0.48))
-        return RumbleProfile(
-            intensity: Float(combined),
-            sharpness: Float(strong >= weak ? 0.62 : 0.35)
-        )
-    }
-
-    private func playRumble(on controller: GCController, profile: RumbleProfile) {
-        guard !profile.isStop else {
-            stopRumble(for: controller)
-            return
-        }
-        do {
-            let engine = try hapticEngine(for: controller)
-            try engine.start()
-            let event = CHHapticEvent(
-                eventType: .hapticContinuous,
-                parameters: [
-                    CHHapticEventParameter(parameterID: .hapticIntensity, value: profile.intensity),
-                    CHHapticEventParameter(parameterID: .hapticSharpness, value: profile.sharpness)
-                ],
-                relativeTime: 0,
-                duration: Self.rumbleEffectDuration
-            )
-            let pattern = try CHHapticPattern(events: [event], parameters: [])
-            let player = try engine.makePlayer(with: pattern)
-            try player.start(atTime: CHHapticTimeImmediate)
-        } catch {
-            stopRumble(for: controller)
-        }
-    }
-
-    private func hapticEngine(for controller: GCController) throws -> CHHapticEngine {
-        let key = ObjectIdentifier(controller)
-        if let engine = hapticEngines[key] {
-            return engine
-        }
-        guard let haptics = controller.haptics else {
-            throw CocoaError(.featureUnsupported)
-        }
-        let locality: GCHapticsLocality = haptics.supportedLocalities.contains(.all) ? .all : .default
-        guard let engine = haptics.createEngine(withLocality: locality) else {
-            throw CocoaError(.featureUnsupported)
-        }
-        engine.isAutoShutdownEnabled = true
-        engine.stoppedHandler = { [weak self, weak controller] _ in
-            guard let controller else { return }
-            self?.hapticEngines.removeValue(forKey: ObjectIdentifier(controller))
-        }
-        engine.resetHandler = { [weak engine] in
-            try? engine?.start()
-        }
-        hapticEngines[key] = engine
-        return engine
-    }
-
-    private func stopRumble(for controller: GCController) {
-        let key = ObjectIdentifier(controller)
-        hapticEngines[key]?.stop(completionHandler: nil)
-        hapticEngines.removeValue(forKey: key)
-    }
-
-    private func stopAllControllerRumble() {
-        hapticEngines.values.forEach { engine in
-            engine.stop(completionHandler: nil)
-        }
-        hapticEngines.removeAll()
-        lastRumbleEffectAt = Array(repeating: 0, count: Self.maxControllers)
-    }
-
-    private struct RumbleProfile {
-        let intensity: Float
-        let sharpness: Float
-
-        var isStop: Bool {
-            intensity <= 0
-        }
+            .statusBarHidden(true)
+        }
+    }
+    #else
+    private let session: ActiveSession
+    private let onClose: () -> Void
+
+    init(
+        session: ActiveSession,
+        settings: AppSettings,
+        nativeStreamerEnabled: Bool = true,
+        onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
+        onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
+        onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
+        onSafeVideoFallbackRequired: @escaping (String) -> Void,
+        onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
+        onClose: @escaping () -> Void,
+        onRetry: (() -> Void)? = nil
+    ) {
+        self.session = session
+        self.onClose = onClose
+        _ = settings
+        _ = nativeStreamerEnabled
+        _ = onTouchLayoutChange
+        _ = onStreamerPreferencesChange
+        _ = onStatsOverlayChange
+        _ = onSafeVideoFallbackRequired
+        _ = onNativeFallbackRequiresFreshEndpoint
+        _ = onRetry
     }
-}
-
-private extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        min(max(self, range.lowerBound), range.upperBound)
-    }
-}
-#else
-import SwiftUI
-
-struct StreamerView: View {
-    let session: ActiveSession
-    let settings: AppSettings
-    let onTouchLayoutChange: (String, TouchControlLayout) -> Void
-    let onStreamerPreferencesChange: (StreamerPreferences) -> Void
-    let onClose: () -> Void
-    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-
-            VStack(spacing: 18) {
-                Image(systemName: "tv.slash")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(.orange)
-
+            VStack(spacing: 16) {
+                Image(systemName: "display.trianglebadge.exclamationmark")
+                    .font(.largeTitle)
                 Text("Streaming Unavailable")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.white)
-
-                Text("\(session.game.title) is ready, but Apple TV still needs a native streaming client. The current streamer depends on WebKit and in-page WebRTC, which this target does not ship.")
+                    .font(.headline)
+                Text("\(session.game.title) is ready, but this platform build does not include the iOS WebRTC runtime.")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-
-                if let retry = onRetry {
-                    Button("Retry") {
-                        retry()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
+                    .foregroundStyle(.secondary)
                 Button("Close") {
                     onClose()
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.borderedProminent)
             }
-            .padding(28)
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                    )
-            )
-            .padding(.horizontal, 24)
+            .padding()
+            .foregroundStyle(.white)
         }
+    }
+    #endif
+}
+
+#if os(iOS) && canImport(WebRTC)
+private enum NativeStreamStatsDisplayStyle: String {
+    case compact
+    case detail
+
+    var label: String {
+        switch self {
+        case .compact: return "Compact"
+        case .detail: return "Detail"
+        }
+    }
+
+    var next: NativeStreamStatsDisplayStyle {
+        self == .compact ? .detail : .compact
+    }
+}
+
+private struct NativeStreamStatsSnapshot: Equatable {
+    var codec = "--"
+    var resolution = "--"
+    var fps: Int?
+    var bitrateKbps: Int?
+    var pingMs: Int?
+    var decoded = 0
+    var rendered = 0
+    var dropped = 0
+    var lossPercent = 0.0
+    var jitterMs: Int?
+    var inputSummary = "r0/p0"
+    var detail = ""
+
+    static let empty = NativeStreamStatsSnapshot()
+
+    var fpsText: String {
+        fps.map(String.init) ?? "--"
+    }
+
+    var bitrateText: String {
+        guard let bitrateKbps else { return "--" }
+        if bitrateKbps >= 1000 {
+            return String(format: "%.1f Mbps", Double(bitrateKbps) / 1000.0)
+        }
+        return "\(bitrateKbps) Kbps"
+    }
+
+    var compactBitrateText: String {
+        guard let bitrateKbps else { return "--" }
+        if bitrateKbps >= 1000 {
+            return String(format: "%.1fM", Double(bitrateKbps) / 1000.0)
+        }
+        return "\(bitrateKbps)K"
+    }
+
+    var pingText: String {
+        pingMs.map { "\($0)ms" } ?? "--"
+    }
+}
+
+private struct NativeStreamDeviceStatus: Equatable {
+    var timeText: String = "--:--"
+    var batteryPercent: Int?
+    var batteryState: UIDevice.BatteryState = .unknown
+
+    static func current() -> NativeStreamDeviceStatus {
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        let level = UIDevice.current.batteryLevel
+        let percent = level >= 0 ? Int((level * 100).rounded()) : nil
+        return NativeStreamDeviceStatus(
+            timeText: timeFormatter.string(from: Date()),
+            batteryPercent: percent,
+            batteryState: UIDevice.current.batteryState
+        )
+    }
+
+    var batterySymbol: String {
+        if batteryState == .charging || batteryState == .full {
+            return "battery.100.bolt"
+        }
+        guard let batteryPercent else { return "battery.100" }
+        switch batteryPercent {
+        case 76...100: return "battery.100"
+        case 51...75: return "battery.75"
+        case 26...50: return "battery.50"
+        case 1...25: return "battery.25"
+        default: return "battery.0"
+        }
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+}
+
+private struct NativeStreamStatusOverlay: View {
+    let status: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .tint(.white)
+            Text(status)
+                .font(.headline)
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(16)
+        .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct NativeStreamOverlayButton: View {
+    let systemImage: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .background(.black.opacity(0.52), in: Circle())
+        .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .accessibilityLabel(label)
+    }
+}
+
+private struct NativeStreamStatsPill: View {
+    let gameTitle: String
+    let status: String
+    let snapshot: NativeStreamStatsSnapshot
+    let preferences: StreamerPreferences
+    let deviceStatus: NativeStreamDeviceStatus
+    let style: NativeStreamStatsDisplayStyle
+
+    var body: some View {
+        if style == .compact {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    statusIndicators(showBatteryPercent: false)
+                    Text("FPS \(snapshot.fpsText)")
+                    Text(snapshot.pingText)
+                    Text(snapshot.compactBitrateText)
+                }
+                HStack(spacing: 7) {
+                    statusIndicators(showBatteryPercent: false)
+                    Text("\(snapshot.fpsText) fps")
+                    Text(snapshot.pingText)
+                }
+                HStack(spacing: 6) {
+                    statusIndicators(showBatteryPercent: false)
+                    Text("\(snapshot.fpsText) fps")
+                }
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.50), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 1))
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(gameTitle)
+                    .font(.caption.weight(.bold))
+                    .lineLimit(1)
+                Text("FPS \(snapshot.fpsText)  Bitrate \(snapshot.bitrateText)  Ping \(snapshot.pingText)  Codec \(snapshot.codec)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.white.opacity(0.76))
+                    .lineLimit(1)
+                Text("\(snapshot.resolution)  decoded \(snapshot.decoded) rendered \(snapshot.rendered) drop \(snapshot.dropped) loss \(String(format: "%.1f%%", snapshot.lossPercent))")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.white.opacity(0.76))
+                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    statusIndicators(showBatteryPercent: true)
+                    Text([status == "Streaming" ? nil : status, preferences.audioMuted ? "audio muted" : "audio on"].compactMap { $0 }.joined(separator: "  "))
+                        .lineLimit(1)
+                }
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.66))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: 460, alignment: .leading)
+            .background(.black.opacity(0.70), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder
+    private func statusIndicators(showBatteryPercent: Bool) -> some View {
+        if preferences.showStatsClock {
+            Text(deviceStatus.timeText)
+        }
+        if preferences.showStatsCellular {
+            Image(systemName: "cellularbars")
+                .accessibilityLabel("Cellular bars")
+        }
+        if preferences.showStatsBattery {
+            HStack(spacing: 3) {
+                Image(systemName: deviceStatus.batterySymbol)
+                if showBatteryPercent, let batteryPercent = deviceStatus.batteryPercent {
+                    Text("\(batteryPercent)%")
+                }
+            }
+        }
+    }
+}
+
+private struct NativeStreamControlsPanel: View {
+    @ObservedObject var coordinator: NativeStreamCoordinator
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Stream Controls")
+                            .font(.subheadline.weight(.bold))
+                        Text(coordinator.gameTitle)
+                            .font(.caption)
+                            .foregroundStyle(Color.primary.opacity(0.72))
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    NativeStreamPanelIconButton(systemImage: "rectangle.portrait.and.arrow.right", label: "Exit stream") {
+                        coordinator.close()
+                    }
+
+                    NativeStreamPanelIconButton(systemImage: "checkmark", label: "Done") {
+                        coordinator.setControlsPanelVisible(false)
+                    }
+                }
+
+                NativeStreamPanelSection(title: "Display") {
+                    NativeStreamToggleRow(
+                        title: "Audio",
+                        value: coordinator.streamerPreferences.audioMuted ? "Muted" : "On",
+                        isOn: Binding(
+                            get: { !coordinator.streamerPreferences.audioMuted },
+                            set: { coordinator.setAudioEnabled($0) }
+                        )
+                    )
+                    NativeStreamToggleRow(
+                        title: "Stream stats",
+                        value: coordinator.showStatsOverlay ? "On" : "Off",
+                        isOn: Binding(
+                            get: { coordinator.showStatsOverlay },
+                            set: { coordinator.setStatsOverlayVisible($0) }
+                        )
+                    )
+                    NativeStreamActionRow(title: "Stats style", value: coordinator.statsDisplayStyle.label) {
+                        coordinator.cycleStatsStyle()
+                    }
+                    if coordinator.pictureInPictureAvailable {
+                        NativeStreamActionRow(
+                            title: "Picture in Picture",
+                            value: coordinator.isPictureInPictureActive ? "Active" : "Ready",
+                            actionLabel: coordinator.isPictureInPictureActive ? "Stop" : "Start"
+                        ) {
+                            coordinator.togglePictureInPicture()
+                        }
+                    }
+                    NativeStreamInfoRow(title: "Codec", value: coordinator.selectedCodecLabel)
+                    NativeStreamInfoRow(title: "Resolution", value: coordinator.profileLabel)
+                }
+
+                NativeStreamPanelSection(title: "Status") {
+                    NativeStreamToggleRow(
+                        title: "Time",
+                        value: coordinator.streamerPreferences.showStatsClock ? "Shown" : "Hidden",
+                        isOn: Binding(
+                            get: { coordinator.streamerPreferences.showStatsClock },
+                            set: { coordinator.setStatsClockVisible($0) }
+                        )
+                    )
+                    NativeStreamToggleRow(
+                        title: "Battery",
+                        value: coordinator.streamerPreferences.showStatsBattery ? "Shown" : "Hidden",
+                        isOn: Binding(
+                            get: { coordinator.streamerPreferences.showStatsBattery },
+                            set: { coordinator.setStatsBatteryVisible($0) }
+                        )
+                    )
+                    NativeStreamToggleRow(
+                        title: "Cellular",
+                        value: coordinator.streamerPreferences.showStatsCellular ? "Shown" : "Hidden",
+                        isOn: Binding(
+                            get: { coordinator.streamerPreferences.showStatsCellular },
+                            set: { coordinator.setStatsCellularVisible($0) }
+                        )
+                    )
+                }
+
+                NativeStreamPanelSection(title: "Input") {
+                    NativeStreamToggleRow(
+                        title: "Touch controller",
+                        value: coordinator.streamerPreferences.touchControllerVisible ? "Shown" : "Hidden",
+                        isOn: Binding(
+                            get: { coordinator.streamerPreferences.touchControllerVisible },
+                            set: { coordinator.setTouchControllerVisible($0) }
+                        )
+                    )
+                    NativeStreamToggleRow(
+                        title: "Touchscreen mode",
+                        value: coordinator.streamerPreferences.touchscreenModeEnabled ? "Direct touch" : "Mouse",
+                        isOn: Binding(
+                            get: { coordinator.streamerPreferences.touchscreenModeEnabled },
+                            set: { coordinator.setTouchscreenModeEnabled($0) }
+                        )
+                    )
+                    NativeStreamToggleRow(
+                        title: "Controller passthrough",
+                        value: coordinator.streamerPreferences.physicalControllerPassthrough ? "On" : "Off",
+                        isOn: Binding(
+                            get: { coordinator.streamerPreferences.physicalControllerPassthrough },
+                            set: { coordinator.setPhysicalControllerPassthrough($0) }
+                        )
+                    )
+                    HStack(spacing: 8) {
+                        NativeStreamKeyButton(title: "Esc") {
+                            coordinator.sendVirtualKey(.escape)
+                        }
+                        NativeStreamKeyButton(title: "Enter") {
+                            coordinator.sendVirtualKey(.enter)
+                        }
+                        NativeStreamKeyButton(title: "Delete") {
+                            coordinator.sendVirtualKey(.backspace)
+                        }
+                    }
+                }
+
+                NativeStreamPanelSection(title: "Touch Layout") {
+                    NativeStreamSliderRow(
+                        title: "Layout scale",
+                        value: Binding(
+                            get: { coordinator.touchLayout.scale },
+                            set: { coordinator.setTouchLayoutScale($0) }
+                        ),
+                        range: 0.6...1.4
+                    )
+                    NativeStreamSliderRow(
+                        title: "Button size",
+                        value: Binding(
+                            get: { coordinator.touchLayout.buttonScale },
+                            set: { coordinator.setTouchButtonScale($0) }
+                        ),
+                        range: 0.65...1.5
+                    )
+                    NativeStreamSliderRow(
+                        title: "Stick size",
+                        value: Binding(
+                            get: { coordinator.touchLayout.stickScale },
+                            set: { coordinator.setTouchStickScale($0) }
+                        ),
+                        range: 0.65...1.5
+                    )
+                    NativeStreamSliderRow(
+                        title: "Opacity",
+                        value: Binding(
+                            get: { coordinator.touchLayout.opacity },
+                            set: { coordinator.setTouchOpacity($0) }
+                        ),
+                        range: 0.15...1.0
+                    )
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 14)
+        }
+        .foregroundStyle(.primary)
+        .background(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.98), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        .scrollIndicators(.visible)
+        .shadow(color: .black.opacity(0.24), radius: 16, y: 8)
+    }
+}
+
+private struct NativeStreamPanelSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.primary.opacity(0.62))
+            content()
+        }
+    }
+}
+
+private struct NativeStreamPanelIconButton: View {
+    let systemImage: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .background(Color.primary.opacity(0.10), in: Circle())
+        .accessibilityLabel(label)
+    }
+}
+
+private struct NativeStreamToggleRow: View {
+    let title: String
+    let value: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(value)
+                    .font(.caption)
+                    .foregroundStyle(Color.primary.opacity(0.72))
+            }
+            Spacer(minLength: 10)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .fixedSize()
+        }
+        .font(.subheadline)
+        .frame(minHeight: 44)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct NativeStreamSliderRow: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+
+    init(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double = 0.05
+    ) {
+        self.title = title
+        self._value = value
+        self.range = range
+        self.step = step
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 10)
+                Text(percentText)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Color.primary.opacity(0.72))
+            }
+            Slider(value: $value, in: range, step: step)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var percentText: String {
+        "\(Int((value * 100).rounded()))%"
+    }
+}
+
+private struct NativeStreamActionRow: View {
+    let title: String
+    let value: String
+    let actionLabel: String
+    let action: () -> Void
+
+    init(
+        title: String,
+        value: String,
+        actionLabel: String = "Change",
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.value = value
+        self.actionLabel = actionLabel
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(value)
+                        .font(.caption)
+                        .foregroundStyle(Color.primary.opacity(0.72))
+                }
+                Spacer()
+                Text(actionLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct NativeStreamInfoRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(Color.primary.opacity(0.72))
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct NativeStreamKeyButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+        }
+        .buttonStyle(.bordered)
+    }
+}
+
+private enum NativeStreamVirtualKey {
+    case escape
+    case enter
+    case backspace
+
+    var mapping: NativeStreamKeyboardMapping {
+        switch self {
+        case .escape:
+            return .init(virtualKey: 0x1b, scanCode: 0x0001)
+        case .enter:
+            return .init(virtualKey: 0x0d, scanCode: 0x001c)
+        case .backspace:
+            return .init(virtualKey: 0x08, scanCode: 0x000e)
+        }
+    }
+}
+
+@MainActor
+final class NativeStreamCoordinator: NSObject, ObservableObject {
+    @Published var statusText = "Preparing stream"
+    @Published var detailText = ""
+    @Published var statsText = ""
+    @Published fileprivate var statsSnapshot = NativeStreamStatsSnapshot.empty
+    @Published var showStatusOverlay = true
+    @Published var retryAvailable = false
+    @Published var showStatsOverlay = false
+    @Published var controlsPanelVisible = false
+    @Published fileprivate var statsDisplayStyle: NativeStreamStatsDisplayStyle = .compact
+    @Published var streamerPreferences: StreamerPreferences
+    @Published fileprivate var deviceStatus = NativeStreamDeviceStatus.current()
+    @Published var touchLayout: TouchControlLayout
+    @Published fileprivate var pictureInPictureAvailable = false
+    @Published fileprivate var isPictureInPictureActive = false
+
+    let sessionID: String
+    let inputBridge = NativeStreamInputBridge()
+
+    private let session: ActiveSession
+    private let settings: AppSettings
+    private let onTouchLayoutChange: (String, TouchControlLayout) -> Void
+    private let onStreamerPreferencesChange: (StreamerPreferences) -> Void
+    private let onStatsOverlayChange: (Bool) -> Void
+    private let onSafeVideoFallbackRequired: (String) -> Void
+    private let onClose: () -> Void
+    private let onRetry: (() -> Void)?
+    private let logger = Logger(subsystem: "OpenNOWiOS", category: "NativeStreamer")
+    private let workQueue = DispatchQueue(label: "OpenNOW.NativeStreamer")
+    private let peerName = "peer-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
+    private var peerId = 0
+    private var remotePeerId = 1
+    private var ackCounter = 0
+    private var started = false
+    private var stopped = false
+    private var selectedCodec: NativeStreamVideoCodec = .h264
+    private var streamProfile: StreamVideoProfile
+    private var viewportSize: CGSize = .zero
+    private var signalingSession: URLSession?
+    private var webSocket: URLSessionWebSocketTask?
+    private var signalingHeartbeat: DispatchSourceTimer?
+    private var offerTimeoutWorkItem: DispatchWorkItem?
+    private var statsTimer: DispatchSourceTimer?
+    private var factory: RTCPeerConnectionFactory?
+    private var peerConnection: RTCPeerConnection?
+    private var reliableInputChannel: RTCDataChannel?
+    private var partiallyReliableInputChannel: RTCDataChannel?
+    private var controlChannel: RTCDataChannel?
+    private let pictureInPictureBridge = NativeStreamPictureInPictureBridge()
+    private weak var renderer: NativeStreamRenderView?
+    private let videoSink = NativeStreamVideoSink()
+    private var videoTrack: RTCVideoTrack?
+    private var videoSinkAttached = false
+    private var renderedFrameCount = 0
+    private var renderedVideoSize: CGSize = .zero
+    private var sampledLuma: Int?
+    private var decodedWithoutRenderStartedAt: TimeInterval?
+    private var lastRenderKeyframeRequestAt: TimeInterval?
+    private var renderKeyframeAttempts = 0
+    private var codecReport = NativeStreamCodecProbe.report()
+    private var reliableInputPackets = 0
+    private var partiallyReliableInputPackets = 0
+    private var negotiationDebugText = ""
+    private var localCodecDebugText = ""
+    private var answerSent = false
+    private var queuedLocalIceCandidates: [[String: Any]] = []
+    private var lastStatsSampleAt: TimeInterval?
+    private var lastStatsFramesDecoded: Int?
+    private var lastStatsBytesReceived: Int?
+    private var autoRetryScheduled = false
+
+    init(
+        session: ActiveSession,
+        settings: AppSettings,
+        onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
+        onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
+        onStatsOverlayChange: @escaping (Bool) -> Void,
+        onSafeVideoFallbackRequired: @escaping (String) -> Void,
+        onClose: @escaping () -> Void,
+        onRetry: (() -> Void)?
+    ) {
+        self.session = session
+        self.settings = settings
+        self.sessionID = session.id
+        self.streamerPreferences = settings.streamerPreferences
+        self.touchLayout = settings.touchLayout(for: "default")
+        self.onTouchLayoutChange = onTouchLayoutChange
+        self.onStreamerPreferencesChange = onStreamerPreferencesChange
+        self.onStatsOverlayChange = onStatsOverlayChange
+        self.onSafeVideoFallbackRequired = onSafeVideoFallbackRequired
+        self.onClose = onClose
+        self.onRetry = onRetry
+        self.streamProfile = Self.effectiveProfile(for: session, settings: settings)
+        self.showStatsOverlay = settings.showStatsOverlay
+        super.init()
+        inputBridge.sink = self
+        videoSink.onFrame = { [weak self] count, size, luma in
+            Task { @MainActor in
+                self?.noteRenderedFrame(count: count, size: size, luma: luma)
+            }
+        }
+        videoSink.onPictureInPictureFrame = { [weak pictureInPictureBridge] frame in
+            pictureInPictureBridge?.enqueue(frame: frame)
+        }
+        pictureInPictureBridge.onAvailabilityChanged = { [weak self] available in
+            Task { @MainActor in
+                self?.pictureInPictureAvailable = available
+            }
+        }
+        pictureInPictureBridge.onActiveChanged = { [weak self] active in
+            Task { @MainActor in
+                self?.isPictureInPictureActive = active
+            }
+        }
+        pictureInPictureBridge.onLog = { [weak self] message in
+            Task { @MainActor in
+                self?.log(message)
+            }
+        }
+    }
+
+    func start(viewportSize: CGSize) {
+        guard !started else { return }
+        started = true
+        stopped = false
+        self.viewportSize = viewportSize
+        refreshDeviceStatus()
+        retryAvailable = onRetry != nil
+        updateStatus("Checking codecs", detail: codecReport.summary)
+
+        let requested = NativeStreamVideoCodec.normalized(settings.preferredCodec)
+        let resolved = codecReport.launchSafeCodec(preferred: settings.preferredCodec)
+        if let requested, requested != resolved {
+            if allowsUnsafeCodecDiagnostics,
+               codecReport.capability(for: requested)?.webRTCSupported == true {
+                selectedCodec = requested
+                updateStatus("Checking codecs", detail: "Diagnostic unsafe codec override: \(requested.rawValue)")
+            } else {
+                updateStatus("Switching to safe video", detail: "\(requested.rawValue) is not available through iOS hardware WebRTC on this runtime.")
+                onSafeVideoFallbackRequired("\(requested.rawValue) is not hardware-safe on this iOS runtime")
+                return
+            }
+        } else {
+            selectedCodec = resolved
+        }
+
+        configureWebRTCAudioSession()
+        inputBridge.attach()
+        setIdleTimerDisabled(true)
+        connectSignaling()
+    }
+
+    func updateViewportSize(_ size: CGSize) {
+        viewportSize = size
+    }
+
+    var gameTitle: String {
+        session.game.title
+    }
+
+    var selectedCodecLabel: String {
+        selectedCodec.rawValue.uppercased()
+    }
+
+    var profileLabel: String {
+        "\(streamProfile.resolutionString) @ \(streamProfile.fps) fps"
+    }
+
+    func toggleControlsPanel() {
+        setControlsPanelVisible(!controlsPanelVisible)
+    }
+
+    func setControlsPanelVisible(_ visible: Bool) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            controlsPanelVisible = visible
+        }
+    }
+
+    func setStatsOverlayVisible(_ visible: Bool) {
+        showStatsOverlay = visible
+        onStatsOverlayChange(visible)
+    }
+
+    func cycleStatsStyle() {
+        statsDisplayStyle = statsDisplayStyle.next
+    }
+
+    func togglePictureInPicture() {
+        if pictureInPictureBridge.isPictureInPictureActive {
+            pictureInPictureBridge.stop()
+        } else if !pictureInPictureBridge.start() {
+            updateStatus("Picture in Picture unavailable", detail: "Waiting for a hardware-decoded video frame")
+        }
+    }
+
+    func setAudioEnabled(_ enabled: Bool) {
+        var preferences = streamerPreferences
+        preferences.audioMuted = !enabled
+        setStreamerPreferences(preferences)
+        applyLiveAudioPreference()
+    }
+
+    func setStatsClockVisible(_ visible: Bool) {
+        var preferences = streamerPreferences
+        preferences.showStatsClock = visible
+        setStreamerPreferences(preferences)
+        refreshDeviceStatus()
+    }
+
+    func setStatsBatteryVisible(_ visible: Bool) {
+        var preferences = streamerPreferences
+        preferences.showStatsBattery = visible
+        setStreamerPreferences(preferences)
+        refreshDeviceStatus()
+    }
+
+    func setStatsCellularVisible(_ visible: Bool) {
+        var preferences = streamerPreferences
+        preferences.showStatsCellular = visible
+        setStreamerPreferences(preferences)
+    }
+
+    func setTouchControllerVisible(_ visible: Bool) {
+        var preferences = streamerPreferences
+        preferences.touchControllerVisible = visible
+        setStreamerPreferences(preferences)
+    }
+
+    func setTouchscreenModeEnabled(_ enabled: Bool) {
+        var preferences = streamerPreferences
+        preferences.touchscreenModeEnabled = enabled
+        setStreamerPreferences(preferences)
+    }
+
+    func setPhysicalControllerPassthrough(_ enabled: Bool) {
+        var preferences = streamerPreferences
+        preferences.physicalControllerPassthrough = enabled
+        setStreamerPreferences(preferences)
+    }
+
+    func setTouchLayoutScale(_ value: Double) {
+        updateTouchLayout { $0.scale = min(max(value, 0.6), 1.4) }
+    }
+
+    func setTouchButtonScale(_ value: Double) {
+        updateTouchLayout { $0.buttonScale = min(max(value, 0.65), 1.5) }
+    }
+
+    func setTouchStickScale(_ value: Double) {
+        updateTouchLayout { $0.stickScale = min(max(value, 0.65), 1.5) }
+    }
+
+    func setTouchOpacity(_ value: Double) {
+        updateTouchLayout { $0.opacity = min(max(value, 0.15), 1.0) }
+    }
+
+    fileprivate func sendVirtualKey(_ key: NativeStreamVirtualKey) {
+        let mapping = key.mapping
+        inputBridge.sendKey(mapping: mapping, pressed: true, modifiers: 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { [weak self] in
+            self?.inputBridge.sendKey(mapping: mapping, pressed: false, modifiers: 0)
+        }
+    }
+
+    private func setStreamerPreferences(_ preferences: StreamerPreferences) {
+        streamerPreferences = preferences
+        onStreamerPreferencesChange(preferences)
+    }
+
+    private func refreshDeviceStatus() {
+        deviceStatus = NativeStreamDeviceStatus.current()
+    }
+
+    private func updateTouchLayout(_ update: (inout TouchControlLayout) -> Void) {
+        var next = touchLayout
+        update(&next)
+        touchLayout = next
+        onTouchLayoutChange("default", next)
+    }
+
+    fileprivate func attachRenderer(_ renderer: NativeStreamRenderView) {
+        if self.renderer !== renderer {
+            self.renderer?.metalDelegate = nil
+            renderer.metalDelegate = self
+            videoSink.attach(renderView: renderer)
+            pictureInPictureBridge.attach(displayLayer: renderer.pictureInPictureDisplayLayer)
+        }
+        self.renderer = renderer
+        attachCurrentVideoSinkIfNeeded()
+    }
+
+    func close() {
+        stop()
+        onClose()
+    }
+
+    func retry() {
+        stop()
+        onRetry?()
+    }
+
+    func stop() {
+        guard !stopped else { return }
+        stopped = true
+        inputBridge.detach()
+        setIdleTimerDisabled(false)
+        teardownWebRTCAudioSession()
+        offerTimeoutWorkItem?.cancel()
+        offerTimeoutWorkItem = nil
+        signalingHeartbeat?.cancel()
+        signalingHeartbeat = nil
+        statsTimer?.cancel()
+        statsTimer = nil
+        pictureInPictureBridge.detach()
+        pictureInPictureAvailable = false
+        isPictureInPictureActive = false
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
+        signalingSession?.invalidateAndCancel()
+        signalingSession = nil
+        reliableInputChannel?.delegate = nil
+        partiallyReliableInputChannel?.delegate = nil
+        controlChannel?.delegate = nil
+        reliableInputChannel?.close()
+        partiallyReliableInputChannel?.close()
+        controlChannel?.close()
+        reliableInputChannel = nil
+        partiallyReliableInputChannel = nil
+        controlChannel = nil
+        if let videoTrack, videoSinkAttached {
+            videoTrack.remove(videoSink)
+        }
+        videoSink.detach()
+        renderer?.metalDelegate = nil
+        videoTrack = nil
+        videoSinkAttached = false
+        peerConnection?.delegate = nil
+        peerConnection?.close()
+        peerConnection = nil
+        factory = nil
+        answerSent = false
+        queuedLocalIceCandidates.removeAll(keepingCapacity: true)
+    }
+
+    private func setVideoTrack(_ track: RTCVideoTrack) {
+        if let existingTrack = videoTrack, existingTrack !== track, videoSinkAttached {
+            existingTrack.remove(videoSink)
+            videoSinkAttached = false
+        }
+        videoTrack = track
+        attachCurrentVideoSinkIfNeeded()
+        updateStatus("Video track attached", detail: "Waiting for rendered frames")
+    }
+
+    private func attachCurrentVideoSinkIfNeeded() {
+        guard !videoSinkAttached, let videoTrack, renderer != nil else { return }
+        videoTrack.add(videoSink)
+        videoSinkAttached = true
+        log("Attached native Metal video sink")
+    }
+
+    private func connectSignaling() {
+        guard let url = signalingURL() else {
+            fail("Missing signaling endpoint")
+            return
+        }
+        updateStatus("Connecting", detail: url.host ?? "signaling")
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 60
+        let urlSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        signalingSession = urlSession
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue("x-nv-sessionid.\(session.id)", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        request.setValue("https://play.geforcenow.com", forHTTPHeaderField: "Origin")
+        request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        if let host = url.host {
+            let hostHeader = url.port.map { "\(host):\($0)" } ?? host
+            request.setValue(hostHeader, forHTTPHeaderField: "Host")
+        }
+        let task = urlSession.webSocketTask(with: request)
+        webSocket = task
+        scheduleOfferTimeout()
+        task.resume()
+        receiveSignaling()
+    }
+
+    private func signalingURL() -> URL? {
+        let rawBase = session.signalingUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackHost = session.signalingServer?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? session.serverIp?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
+        let base: String
+        if let rawBase, !rawBase.isEmpty {
+            base = rawBase
+        } else if !fallbackHost.isEmpty {
+            let host = fallbackHost.contains(":") ? fallbackHost : "\(fallbackHost):443"
+            base = "wss://\(host)/nvst/"
+        } else {
+            return nil
+        }
+        let withoutScheme = base
+            .replacingOccurrences(of: "wss://", with: "", options: [.caseInsensitive])
+            .replacingOccurrences(of: "ws://", with: "", options: [.caseInsensitive])
+            .replacingOccurrences(of: "https://", with: "", options: [.caseInsensitive])
+            .replacingOccurrences(of: "http://", with: "", options: [.caseInsensitive])
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return URL(string: "wss://\(withoutScheme)/sign_in?peer_id=\(peerName)&version=2&peer_role=1&pairing_id=\(session.id)")
+    }
+
+    private func receiveSignaling() {
+        webSocket?.receive { [weak self] result in
+            guard let self else { return }
+            Task { @MainActor in
+                guard !self.stopped else { return }
+                switch result {
+                case .success(.string(let text)):
+                    self.handleSignalingText(text)
+                    self.receiveSignaling()
+                case .success(.data(let data)):
+                    if let text = String(data: data, encoding: .utf8) {
+                        self.handleSignalingText(text)
+                    }
+                    self.receiveSignaling()
+                case .failure(let error):
+                    self.fail("Signaling failed: \(error.localizedDescription)")
+                @unknown default:
+                    self.receiveSignaling()
+                }
+            }
+        }
+    }
+
+    private func handleSignalingText(_ text: String) {
+        guard let data = text.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            log("Ignoring non-JSON signaling packet")
+            return
+        }
+
+        if let info = object["peer_info"] as? [String: Any],
+           let name = info["name"] as? String,
+           name == peerName {
+            peerId = info["id"] as? Int ?? peerId
+        }
+
+        if let ack = object["ackid"] as? Int {
+            let sourceId = (object["peer_info"] as? [String: Any])?["id"] as? Int
+            if sourceId != peerId {
+                sendJSON(["ack": ack])
+            }
+        }
+
+        if object["hb"] != nil {
+            sendJSON(["hb": 1])
+            return
+        }
+
+        guard let peerMessage = object["peer_msg"] as? [String: Any] else { return }
+        remotePeerId = peerMessage["from"] as? Int ?? remotePeerId
+        guard let message = peerMessage["msg"] as? String,
+              let messageData = message.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] else {
+            return
+        }
+
+        if payload["type"] as? String == "offer", let sdp = payload["sdp"] as? String {
+            handleOffer(sdp)
+        } else if let candidate = payload["candidate"] as? String {
+            addRemoteCandidate(
+                candidate,
+                sdpMid: payload["sdpMid"] as? String,
+                sdpMLineIndex: payload["sdpMLineIndex"] as? Int
+            )
+        }
+    }
+
+    private func sendPeerInfo() {
+        sendJSON([
+            "ackid": nextAckId(),
+            "peer_info": [
+                "browser": "Chrome",
+                "browserVersion": "131",
+                "connected": true,
+                "id": peerId,
+                "name": peerName,
+                "peerRole": 0,
+                "resolution": "1920x1080",
+                "version": 2
+            ]
+        ])
+    }
+
+    private func handleOffer(_ offerSDP: String) {
+        offerTimeoutWorkItem?.cancel()
+        updateStatus("Negotiating video", detail: "\(selectedCodec.rawValue) \(streamProfile.resolutionString) @ \(streamProfile.fps) fps")
+        inputBridge.configure(
+            protocolVersion: NativeStreamSDP.parseInputProtocolVersion(from: offerSDP),
+            partiallyReliableGamepadMask: NativeStreamSDP.parsePartiallyReliableGamepadMask(from: offerSDP)
+        )
+
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                self.createPeerConnection(with: offerSDP)
+            }
+        }
+    }
+
+    private func createPeerConnection(with offerSDP: String) {
+        if factory == nil {
+            _ = RTCInitializeSSL()
+            factory = RTCPeerConnectionFactory(
+                encoderFactory: RTCDefaultVideoEncoderFactory(),
+                decoderFactory: RTCDefaultVideoDecoderFactory()
+            )
+        }
+        guard let factory else {
+            fail("Could not create WebRTC factory")
+            return
+        }
+        answerSent = false
+        queuedLocalIceCandidates.removeAll(keepingCapacity: true)
+
+        let configuration = RTCConfiguration()
+        configuration.iceServers = session.iceServers.map {
+            RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential)
+        }
+        configuration.sdpSemantics = .unifiedPlan
+        configuration.bundlePolicy = .maxBundle
+        configuration.rtcpMuxPolicy = .require
+        configuration.tcpCandidatePolicy = .disabled
+        configuration.continualGatheringPolicy = .gatherContinually
+
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        guard let peerConnection = factory.peerConnection(
+            with: configuration,
+            constraints: constraints,
+            delegate: self
+        ) else {
+            fail("Could not create WebRTC peer connection")
+            return
+        }
+        self.peerConnection = peerConnection
+
+        let reliableConfig = RTCDataChannelConfiguration()
+        reliableConfig.isOrdered = true
+        reliableInputChannel = peerConnection.dataChannel(forLabel: "input_channel_v1", configuration: reliableConfig)
+        reliableInputChannel?.delegate = self
+
+        let partialConfig = RTCDataChannelConfiguration()
+        partialConfig.isOrdered = false
+        partialConfig.maxPacketLifeTime = Int32(NativeStreamSDP.parsePartialReliableThresholdMs(from: offerSDP))
+        partiallyReliableInputChannel = peerConnection.dataChannel(
+            forLabel: "input_channel_partially_reliable",
+            configuration: partialConfig
+        )
+        partiallyReliableInputChannel?.delegate = self
+
+        var processedOffer = NativeStreamSDP.fixServerIP(in: offerSDP, serverIP: session.mediaIp)
+        let didRewriteCandidate = processedOffer != offerSDP
+        negotiationDebugText = [
+            "media \(session.mediaIp ?? "nil"):\(session.mediaPort)",
+            "sdpFix \(didRewriteCandidate ? "yes" : "no")"
+        ].joined(separator: " ")
+        let preferTenBit = settings.hdrEnabled || settings.preferredColorQuality.hasPrefix("10bit")
+        processedOffer = NativeStreamSDP.preferCodec(in: processedOffer, codec: selectedCodec, preferTenBit: preferTenBit)
+        negotiationDebugText = [
+            negotiationDebugText,
+            NativeStreamSDP.describeOfferedVideoCodecs(from: processedOffer)
+        ].filter { !$0.isEmpty }.joined(separator: " ")
+        let remoteDescription = RTCSessionDescription(type: .offer, sdp: processedOffer)
+        peerConnection.setRemoteDescription(remoteDescription) { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.fail("Remote SDP failed: \(error.localizedDescription)")
+                    return
+                }
+                self.applyCodecPreferences()
+                self.createAnswer(for: processedOffer)
+            }
+        }
+    }
+
+    private func applyCodecPreferences() {
+        guard let peerConnection, let factory else { return }
+        guard let videoTransceiver = peerConnection.transceivers.first(where: { $0.mediaType == .video }) else {
+            log("Codec preferences skipped: no video transceiver")
+            return
+        }
+
+        let receiverCapabilities = factory.rtpReceiverCapabilities(forKind: kRTCMediaStreamTrackKindVideo)
+        var preferred = receiverCapabilities.codecs.filter { capabilityMatches($0, codec: selectedCodec) }
+        let auxiliary = receiverCapabilities.codecs.filter { capability in
+            let name = capability.name.uppercased()
+            let mime = capability.mimeType.uppercased()
+            return name.contains("RTX") || name.contains("FLEXFEC") || mime.contains("RTX") || mime.contains("FLEXFEC")
+        }
+
+        guard !preferred.isEmpty else {
+            log("Codec preferences skipped: \(selectedCodec.rawValue) not in receiver capabilities")
+            return
+        }
+
+        if selectedCodec == .h265 {
+            preferred.sort { hevcCapabilityPriority($0) < hevcCapabilityPriority($1) }
+        }
+
+        let codecList = preferred + auxiliary
+        do {
+            try videoTransceiver.setCodecPreferences(codecList, error: ())
+            log("Codec preferences set: \(selectedCodec.rawValue) preferred=\(preferred.count) auxiliary=\(auxiliary.count)")
+        } catch {
+            log("Codec preferences failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func capabilityMatches(_ capability: RTCRtpCodecCapability, codec: NativeStreamVideoCodec) -> Bool {
+        let name = capability.name.uppercased()
+        let mime = capability.mimeType.uppercased()
+        switch codec {
+        case .h264:
+            return name == "H264" || name == "AVC" || mime == "VIDEO/H264" || mime == "VIDEO/AVC"
+        case .h265:
+            return name == "H265" || name == "HEVC" || mime == "VIDEO/H265" || mime == "VIDEO/HEVC"
+        case .av1:
+            return name == "AV1" || name == "AV01" || mime == "VIDEO/AV1" || mime == "VIDEO/AV01"
+        }
+    }
+
+    private func hevcCapabilityPriority(_ capability: RTCRtpCodecCapability) -> Int {
+        let profileID = capability.parameters["profile-id"] ?? capability.parameters["profile_id"]
+        if profileID == "1" { return 0 }
+        if profileID == nil { return 1 }
+        return 2
+    }
+
+    private func createAnswer(for processedOffer: String) {
+        guard let peerConnection else { return }
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        peerConnection.answer(for: constraints) { [weak self] answer, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.fail("Answer creation failed: \(error.localizedDescription)")
+                    return
+                }
+                guard let answer else {
+                    self.fail("Answer creation returned no SDP")
+                    return
+                }
+                let mungedSDP = NativeStreamSDP.mungeAnswerSDP(answer.sdp, maxBitrateKbps: self.streamProfile.maxBitrateKbps)
+                self.localCodecDebugText = NativeStreamSDP.describeNegotiatedVideo(from: mungedSDP)
+                self.log("Local video SDP \(self.localCodecDebugText)")
+                let localDescription = RTCSessionDescription(type: .answer, sdp: mungedSDP)
+                guard let connection = self.peerConnection else {
+                    self.fail("Peer connection closed before local SDP")
+                    return
+                }
+                do {
+                    try await connection.setLocalDescription(localDescription)
+                } catch {
+                    self.fail("Local SDP failed: \(error.localizedDescription)")
+                    return
+                }
+                self.sendAnswer(offerSDP: processedOffer)
+                self.startStatsTimer()
+            }
+        }
+    }
+
+    private func sendAnswer(offerSDP: String) {
+        guard let localSDP = peerConnection?.localDescription?.sdp else {
+            fail("Local answer SDP was unavailable")
+            return
+        }
+        let nvst = NativeStreamSDP.buildNvstSDP(
+            offerSDP: offerSDP,
+            localAnswerSDP: localSDP,
+            profile: streamProfile,
+            settings: settings,
+            codec: selectedCodec
+        )
+        sendPeerMessage([
+            "type": "answer",
+            "sdp": localSDP,
+            "nvstSdp": nvst
+        ])
+        answerSent = true
+        flushQueuedLocalIceCandidates()
+        updateStatus("Connecting media", detail: "Waiting for first frame")
+    }
+
+    private func sendLocalIceCandidate(_ candidate: RTCIceCandidate) {
+        guard candidate.sdp.range(of: " tcp ", options: .caseInsensitive) == nil else { return }
+        let payload: [String: Any] = [
+            "candidate": candidate.sdp,
+            "sdpMid": candidate.sdpMid ?? "",
+            "sdpMLineIndex": Int(candidate.sdpMLineIndex)
+        ]
+        if answerSent {
+            sendPeerMessage(payload)
+        } else {
+            queuedLocalIceCandidates.append(payload)
+        }
+    }
+
+    private func flushQueuedLocalIceCandidates() {
+        guard answerSent, !queuedLocalIceCandidates.isEmpty else { return }
+        let queued = queuedLocalIceCandidates
+        queuedLocalIceCandidates.removeAll(keepingCapacity: true)
+        for candidate in queued {
+            sendPeerMessage(candidate)
+        }
+    }
+
+    private func addRemoteCandidate(_ candidate: String, sdpMid: String?, sdpMLineIndex: Int?) {
+        guard let peerConnection else { return }
+        let ice = RTCIceCandidate(
+            sdp: candidate,
+            sdpMLineIndex: Int32(sdpMLineIndex ?? 0),
+            sdpMid: sdpMid
+        )
+        peerConnection.add(ice) { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.log("Remote ICE rejected: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func sendPeerMessage(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let message = String(data: data, encoding: .utf8) else {
+            return
+        }
+        sendJSON([
+            "peer_msg": [
+                "from": peerId,
+                "to": remotePeerId,
+                "msg": message
+            ],
+            "ackid": nextAckId()
+        ])
+    }
+
+    private func sendJSON(_ object: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
+              let text = String(data: data, encoding: .utf8) else {
+            return
+        }
+        webSocket?.send(.string(text)) { [weak self] error in
+            if let error {
+                Task { @MainActor in
+                    self?.log("Signaling send failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func nextAckId() -> Int {
+        ackCounter += 1
+        return ackCounter
+    }
+
+    private func scheduleOfferTimeout() {
+        offerTimeoutWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.stopped, self.peerConnection == nil else { return }
+                if self.selectedCodec != .h264 {
+                    self.onSafeVideoFallbackRequired("Waiting for offer timed out while using \(self.selectedCodec.rawValue)")
+                } else {
+                    self.fail("Timed out waiting for WebRTC offer")
+                }
+            }
+        }
+        offerTimeoutWorkItem = item
+        workQueue.asyncAfter(deadline: .now() + 24, execute: item)
+    }
+
+    private func startSignalingHeartbeat() {
+        signalingHeartbeat?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: workQueue)
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.sendJSON(["hb": 1])
+            }
+        }
+        signalingHeartbeat = timer
+        timer.resume()
+    }
+
+    private func startStatsTimer() {
+        statsTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: workQueue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in
+            Task { @MainActor in
+                self?.collectStats()
+            }
+        }
+        statsTimer = timer
+        timer.resume()
+    }
+
+    private func collectStats() {
+        guard let peerConnection else { return }
+        peerConnection.statistics { [weak self] report in
+            Task { @MainActor in
+                self?.updateStats(from: report)
+            }
+        }
+    }
+
+    private func updateStats(from report: RTCStatisticsReport) {
+        refreshDeviceStatus()
+        var framesDecoded: Int?
+        var framesPerSecond: Int?
+        var framesDropped: Int?
+        var width: Int?
+        var height: Int?
+        var bytesReceived: Int?
+        var packetsLost: Int?
+        var packetsReceived: Int?
+        var jitterMs: Double?
+        var rttMs: Double?
+        var selectedPairValues: [String: NSObject]?
+        var candidateStats: [String: [String: NSObject]] = [:]
+
+        for stat in report.statistics.values {
+            guard stat.type == "inbound-rtp"
+                    || stat.type == "local-candidate"
+                    || stat.type == "remote-candidate"
+                    || stat.type == "candidate-pair" else { continue }
+            if stat.type == "inbound-rtp" {
+                if let kind = stat.values["kind"] as? String, kind != "video" { continue }
+                framesDecoded = (stat.values["framesDecoded"] as? NSNumber)?.intValue ?? framesDecoded
+                framesPerSecond = (stat.values["framesPerSecond"] as? NSNumber)?.intValue ?? framesPerSecond
+                framesDropped = (stat.values["framesDropped"] as? NSNumber)?.intValue ?? framesDropped
+                width = (stat.values["frameWidth"] as? NSNumber)?.intValue ?? width
+                height = (stat.values["frameHeight"] as? NSNumber)?.intValue ?? height
+                bytesReceived = (stat.values["bytesReceived"] as? NSNumber)?.intValue ?? bytesReceived
+                packetsLost = (stat.values["packetsLost"] as? NSNumber)?.intValue ?? packetsLost
+                packetsReceived = (stat.values["packetsReceived"] as? NSNumber)?.intValue ?? packetsReceived
+                if let jitter = stat.values["jitter"] as? NSNumber {
+                    jitterMs = jitter.doubleValue * 1000
+                }
+            } else if stat.type == "local-candidate" || stat.type == "remote-candidate" {
+                candidateStats[stat.id] = stat.values
+            } else if stat.type == "candidate-pair",
+                      (stat.values["state"] as? String) == "succeeded" {
+                let nominated = (stat.values["nominated"] as? NSNumber)?.boolValue ?? false
+                let selected = (stat.values["selected"] as? NSNumber)?.boolValue ?? false
+                if selectedPairValues == nil || nominated || selected {
+                    selectedPairValues = stat.values
+                }
+                if let rtt = stat.values["currentRoundTripTime"] as? NSNumber {
+                    rttMs = rtt.doubleValue * 1000
+                }
+            }
+        }
+
+        let packetLossPercent: Double = {
+            let lost = packetsLost ?? 0
+            let received = packetsReceived ?? 0
+            let total = lost + received
+            guard total > 0 else { return 0 }
+            return (Double(lost) / Double(total)) * 100
+        }()
+        let icePath = selectedIcePath(pair: selectedPairValues, candidates: candidateStats)
+        let resolution = width.flatMap { w in height.map { "\(w)x\($0)" } } ?? "\(streamProfile.width)x\(streamProfile.height)"
+        if (framesDecoded ?? 0) > 0 {
+            handleDecodedVideoProgress(framesDecoded: framesDecoded ?? 0)
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let derivedFPS = framesPerSecond ?? estimatedFramesPerSecond(framesDecoded: framesDecoded, now: now)
+        let derivedBitrate = estimatedBitrateKbps(bytesReceived: bytesReceived, now: now)
+        statsText = [
+            selectedCodec.rawValue,
+            resolution,
+            "decoded \(framesDecoded ?? 0)",
+            "rendered \(renderedFrameCount)",
+            sampledLuma.map { "luma \($0)" },
+            localCodecDebugText.isEmpty ? nil : localCodecDebugText,
+            "drop \(framesDropped ?? 0)",
+            String(format: "loss %.1f%%", packetLossPercent),
+            jitterMs.map { String(format: "jitter %.0fms", $0) },
+            rttMs.map { String(format: "rtt %.0fms", $0) },
+            "input r\(reliableInputPackets)/p\(partiallyReliableInputPackets)",
+            negotiationDebugText,
+            icePath
+        ].compactMap { $0 }.joined(separator: "  ")
+        statsSnapshot = NativeStreamStatsSnapshot(
+            codec: selectedCodec.rawValue.uppercased(),
+            resolution: resolution,
+            fps: derivedFPS,
+            bitrateKbps: derivedBitrate,
+            pingMs: rttMs.map { Int($0.rounded()) },
+            decoded: framesDecoded ?? 0,
+            rendered: renderedFrameCount,
+            dropped: framesDropped ?? 0,
+            lossPercent: packetLossPercent,
+            jitterMs: jitterMs.map { Int($0.rounded()) },
+            inputSummary: "r\(reliableInputPackets)/p\(partiallyReliableInputPackets)",
+            detail: statsText
+        )
+        lastStatsSampleAt = now
+        lastStatsFramesDecoded = framesDecoded
+        lastStatsBytesReceived = bytesReceived
+    }
+
+    private func estimatedFramesPerSecond(framesDecoded: Int?, now: TimeInterval) -> Int? {
+        guard let framesDecoded,
+              let lastFramesDecoded = lastStatsFramesDecoded,
+              let lastStatsSampleAt,
+              now > lastStatsSampleAt else {
+            return nil
+        }
+        let delta = framesDecoded - lastFramesDecoded
+        guard delta >= 0 else { return nil }
+        return Int((Double(delta) / (now - lastStatsSampleAt)).rounded())
+    }
+
+    private func estimatedBitrateKbps(bytesReceived: Int?, now: TimeInterval) -> Int? {
+        guard let bytesReceived,
+              let lastStatsBytesReceived,
+              let lastStatsSampleAt,
+              now > lastStatsSampleAt else {
+            return nil
+        }
+        let delta = bytesReceived - lastStatsBytesReceived
+        guard delta >= 0 else { return nil }
+        return Int((Double(delta) * 8.0 / (now - lastStatsSampleAt) / 1000.0).rounded())
+    }
+
+    private func selectedIcePath(pair: [String: NSObject]?, candidates: [String: [String: NSObject]]) -> String? {
+        guard let pair else { return nil }
+        let localID = pair["localCandidateId"] as? String
+        let remoteID = pair["remoteCandidateId"] as? String
+        let local = localID.flatMap { candidates[$0] }.flatMap(candidateEndpoint)
+        let remote = remoteID.flatMap { candidates[$0] }.flatMap(candidateEndpoint)
+        guard local != nil || remote != nil else { return nil }
+        return "ice \(local ?? "?")->\(remote ?? "?")"
+    }
+
+    private func candidateEndpoint(_ values: [String: NSObject]) -> String {
+        let address = (values["address"] as? String)
+            ?? (values["ip"] as? String)
+            ?? (values["networkAdapterType"] as? String)
+            ?? "?"
+        let port = (values["port"] as? NSNumber)?.intValue
+            ?? Int(values["port"] as? String ?? "")
+        let proto = (values["protocol"] as? String)?.lowercased()
+        let type = (values["candidateType"] as? String)?.lowercased()
+        return [
+            port.map { "\(address):\($0)" } ?? address,
+            proto,
+            type
+        ].compactMap { $0 }.joined(separator: "/")
+    }
+
+    private func updateStatus(_ status: String, detail: String = "") {
+        statusText = status
+        detailText = detail
+        showStatusOverlay = true
+        logger.info("\(status, privacy: .public) \(detail, privacy: .public)")
+    }
+
+    private func markVideoActive() {
+        statusText = "Streaming"
+        detailText = ""
+        withAnimation(.easeOut(duration: 0.25)) {
+            showStatusOverlay = false
+        }
+    }
+
+    private func noteRenderedFrame(count: Int, size: CGSize, luma: Int?) {
+        renderedFrameCount = count
+        renderedVideoSize = size
+        sampledLuma = luma ?? sampledLuma
+        decodedWithoutRenderStartedAt = nil
+        lastRenderKeyframeRequestAt = nil
+        renderKeyframeAttempts = 0
+        if !showStatusOverlay || count == 0 { return }
+        markVideoActive()
+    }
+
+    private func handleDecodedVideoProgress(framesDecoded: Int) {
+        guard renderedFrameCount == 0 else {
+            markVideoActive()
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if decodedWithoutRenderStartedAt == nil {
+            decodedWithoutRenderStartedAt = now
+            updateStatus("Recovering video", detail: "Decoded \(framesDecoded) frames; waiting for iOS renderer")
+            return
+        }
+
+        let stalledFor = now - (decodedWithoutRenderStartedAt ?? now)
+        if stalledFor >= 14 {
+            if selectedCodec != .h264 {
+                onSafeVideoFallbackRequired("Decoded video did not render with \(selectedCodec.rawValue); restarting with safe H264 profile")
+            } else {
+                fail("Video decoded but iOS renderer did not paint frames")
+            }
+            return
+        }
+
+        let keyframeDue = lastRenderKeyframeRequestAt.map { now - $0 >= 3 } ?? true
+        if stalledFor >= 2, keyframeDue {
+            renderKeyframeAttempts += 1
+            lastRenderKeyframeRequestAt = now
+            requestKeyframe(reason: "ios_renderer_startup", attempt: renderKeyframeAttempts)
+        }
+
+        updateStatus(
+            "Recovering video",
+            detail: "Decoded \(framesDecoded) frames; waiting for rendered frame \(renderKeyframeAttempts > 0 ? "(keyframe \(renderKeyframeAttempts))" : "")"
+        )
+    }
+
+    private func requestKeyframe(reason: String, attempt: Int) {
+        sendPeerMessage([
+            "type": "request_keyframe",
+            "reason": reason,
+            "backlogFrames": 0,
+            "attempt": attempt
+        ])
+        log("Requested keyframe reason=\(reason) attempt=\(attempt)")
+    }
+
+    private func fail(_ message: String) {
+        if scheduleAutoRetryIfNeeded(for: message) {
+            return
+        }
+        statusText = "Stream failed"
+        detailText = message
+        showStatusOverlay = true
+        retryAvailable = false
+        logger.error("\(message, privacy: .public)")
+    }
+
+    private func scheduleAutoRetryIfNeeded(for message: String) -> Bool {
+        guard let onRetry,
+              !autoRetryScheduled,
+              isTransientStartupFailure(message) else {
+            return false
+        }
+
+        autoRetryScheduled = true
+        retryAvailable = false
+        updateStatus("Reconnecting", detail: message)
+        logger.warning("Auto-retrying stream startup: \(message, privacy: .public)")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.stop()
+            onRetry()
+        }
+        return true
+    }
+
+    private func isTransientStartupFailure(_ message: String) -> Bool {
+        let value = message.lowercased()
+        return value.contains("bad response")
+            || value.contains("timed out waiting for webrtc offer")
+            || value.contains("waiting for offer timed out")
+            || value.contains("signaling failed")
+            || value.contains("signaling closed")
+            || value.contains("ice connection failed")
+            || value.contains("peer connection failed")
+    }
+
+    private func log(_ message: String) {
+        logger.info("\(message, privacy: .public)")
+    }
+
+    private var allowsUnsafeCodecDiagnostics: Bool {
+        ProcessInfo.processInfo.arguments.contains("--opennow-allow-unsafe-codecs")
+            || ProcessInfo.processInfo.environment["OPENNOW_ALLOW_UNSAFE_CODECS"] == "1"
+    }
+
+    private static func effectiveProfile(for session: ActiveSession, settings: AppSettings) -> StreamVideoProfile {
+        var profile = StreamSettingsResolver.profile(for: settings)
+        if let resolution = session.negotiatedStreamProfile?.resolution,
+           let parsed = parseResolution(resolution) {
+            profile = StreamVideoProfile(
+                width: parsed.width,
+                height: parsed.height,
+                fps: session.negotiatedStreamProfile?.fps ?? profile.fps,
+                maxBitrateKbps: profile.maxBitrateKbps
+            )
+        }
+        return profile
+    }
+
+    private static func parseResolution(_ value: String) -> (width: Int, height: Int)? {
+        let parts = value.split(separator: "x", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let width = Int(parts[0]),
+              let height = Int(parts[1]),
+              width > 0,
+              height > 0 else {
+            return nil
+        }
+        return (width, height)
+    }
+
+    private func setIdleTimerDisabled(_ disabled: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = disabled
+    }
+
+    private func parseHapticsMessage(_ data: Data) {
+        guard let command = NativeStreamHapticsParser.parse(data) else { return }
+        inputBridge.applyRumble(
+            controllerId: command.controllerId,
+            weakMagnitude: command.weakMagnitude,
+            strongMagnitude: command.strongMagnitude
+        )
+    }
+
+    private func configureWebRTCAudioSession() {
+        let audioSession = RTCAudioSession.sharedInstance()
+        let enableAudio: Bool
+        #if targetEnvironment(simulator)
+        enableAudio = false
+        #else
+        enableAudio = !streamerPreferences.audioMuted
+        #endif
+
+        audioSession.useManualAudio = true
+        audioSession.isAudioEnabled = enableAudio
+        audioSession.ignoresPreferredAttributeConfigurationErrors = true
+        audioSession.lockForConfiguration()
+        defer { audioSession.unlockForConfiguration() }
+
+        let options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
+        do {
+            try audioSession.setCategory(.playback, mode: .moviePlayback, options: options)
+        } catch {
+            log("Audio session category failed: \(error.localizedDescription)")
+        }
+        do {
+            try audioSession.setPreferredSampleRate(48_000)
+        } catch {
+            log("Audio session sample rate failed: \(error.localizedDescription)")
+        }
+        do {
+            try audioSession.setPreferredIOBufferDuration(0.01)
+        } catch {
+            log("Audio session buffer duration failed: \(error.localizedDescription)")
+        }
+        #if !targetEnvironment(simulator)
+        if enableAudio {
+            activateWebRTCAudioSession(audioSession)
+        }
+        log(enableAudio ? "WebRTC audio enabled" : "WebRTC audio held disabled")
+        #else
+        log("WebRTC audio held disabled")
+        #endif
+    }
+
+    private func applyLiveAudioPreference() {
+        let audioSession = RTCAudioSession.sharedInstance()
+        audioSession.useManualAudio = true
+        #if targetEnvironment(simulator)
+        audioSession.isAudioEnabled = false
+        log("WebRTC audio held disabled")
+        #else
+        let enableAudio = !streamerPreferences.audioMuted
+        audioSession.isAudioEnabled = enableAudio
+        if enableAudio {
+            activateWebRTCAudioSession(audioSession)
+        }
+        log(enableAudio ? "WebRTC audio enabled" : "WebRTC audio held disabled")
+        #endif
+    }
+
+    #if !targetEnvironment(simulator)
+    private func activateWebRTCAudioSession(_ audioSession: RTCAudioSession) {
+        do {
+            try audioSession.setActive(true)
+        } catch {
+            log("Audio session activation failed: \(error.localizedDescription)")
+        }
+    }
+    #endif
+
+    private func teardownWebRTCAudioSession() {
+        let audioSession = RTCAudioSession.sharedInstance()
+        audioSession.useManualAudio = true
+        audioSession.isAudioEnabled = false
+    }
+}
+
+extension NativeStreamCoordinator: NativeStreamInputSink {
+    nonisolated func sendReliableInput(_ data: Data) {
+        Task { @MainActor in
+            guard self.reliableInputChannel?.readyState == .open else { return }
+            if self.reliableInputChannel?.sendData(RTCDataBuffer(data: data, isBinary: true)) == true {
+                self.reliableInputPackets += 1
+            }
+        }
+    }
+
+    nonisolated func sendPartiallyReliableInput(_ data: Data) {
+        Task { @MainActor in
+            if self.partiallyReliableInputChannel?.readyState == .open {
+                if self.partiallyReliableInputChannel?.sendData(RTCDataBuffer(data: data, isBinary: true)) == true {
+                    self.partiallyReliableInputPackets += 1
+                }
+            } else if self.reliableInputChannel?.readyState == .open {
+                if self.reliableInputChannel?.sendData(RTCDataBuffer(data: data, isBinary: true)) == true {
+                    self.reliableInputPackets += 1
+                }
+            }
+        }
+    }
+
+    nonisolated func logInputEvent(_ message: String) {
+        Task { @MainActor in
+            self.log(message)
+        }
+    }
+}
+
+extension NativeStreamCoordinator: URLSessionWebSocketDelegate {
+    nonisolated func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        Task { @MainActor in
+            self.updateStatus("Signaling connected", detail: "Waiting for offer")
+            self.sendPeerInfo()
+            self.startSignalingHeartbeat()
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        Task { @MainActor in
+            guard !self.stopped else { return }
+            self.fail("Signaling closed: \(closeCode.rawValue)")
+        }
+    }
+}
+
+extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
+        Task { @MainActor in
+            if let track = stream.videoTracks.first {
+                self.setVideoTrack(track)
+            }
+        }
+    }
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
+    nonisolated func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
+        Task { @MainActor in
+            switch newState {
+            case .connected, .completed:
+                self.updateStatus("Media connected", detail: "Waiting for video")
+            case .failed:
+                if self.selectedCodec != .h264 {
+                    self.onSafeVideoFallbackRequired("ICE failed while using \(self.selectedCodec.rawValue)")
+                } else {
+                    self.fail("ICE connection failed")
+                }
+            case .disconnected:
+                self.updateStatus("Reconnecting", detail: "ICE disconnected")
+            default:
+                break
+            }
+        }
+    }
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {}
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        Task { @MainActor in
+            self.sendLocalIceCandidate(candidate)
+        }
+    }
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
+        Task { @MainActor in
+            dataChannel.delegate = self
+            if dataChannel.label == "control_channel" {
+                self.controlChannel = dataChannel
+            }
+        }
+    }
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCPeerConnectionState) {
+        Task { @MainActor in
+            switch stateChanged {
+            case .connected:
+                self.updateStatus("Peer connected", detail: "Waiting for video")
+            case .failed:
+                if self.selectedCodec != .h264 {
+                    self.onSafeVideoFallbackRequired("Peer connection failed while using \(self.selectedCodec.rawValue)")
+                } else {
+                    self.fail("Peer connection failed")
+                }
+            case .disconnected:
+                self.updateStatus("Reconnecting", detail: "Peer connection disconnected")
+            case .closed:
+                break
+            default:
+                break
+            }
+        }
+    }
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didAdd receiver: RTCRtpReceiver, streams mediaStreams: [RTCMediaStream]) {
+        Task { @MainActor in
+            if let track = receiver.track as? RTCVideoTrack {
+                self.setVideoTrack(track)
+            }
+        }
+    }
+}
+
+extension NativeStreamCoordinator: RTCVideoViewDelegate {
+    nonisolated func videoView(_ videoView: any RTCVideoRenderer, didChangeVideoSize size: CGSize) {
+        Task { @MainActor in
+            self.renderedVideoSize = size
+            self.log("Native video size changed \(Int(size.width))x\(Int(size.height))")
+        }
+    }
+}
+
+extension NativeStreamCoordinator: RTCDataChannelDelegate {
+    nonisolated func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
+        Task { @MainActor in
+            if dataChannel.readyState == .open {
+                if dataChannel === self.reliableInputChannel {
+                    self.inputBridge.advertiseHaptics()
+                    self.log("Reliable input channel open")
+                } else if dataChannel === self.partiallyReliableInputChannel {
+                    self.log("Partially reliable input channel open")
+                } else if dataChannel.label == "control_channel" {
+                    self.log("Control channel open")
+                }
+            }
+        }
+    }
+
+    nonisolated func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
+        Task { @MainActor in
+            if buffer.isBinary {
+                self.parseHapticsMessage(buffer.data)
+            } else if let text = String(data: buffer.data, encoding: .utf8),
+                      text.contains("request_keyframe") {
+                self.log("Control channel requested keyframe")
+            }
+        }
+    }
+}
+
+private final class NativeStreamPictureInPictureBridge: NSObject {
+    var onAvailabilityChanged: ((Bool) -> Void)?
+    var onActiveChanged: ((Bool) -> Void)?
+    var onLog: ((String) -> Void)?
+
+    private let frameQueue = DispatchQueue(label: "OpenNOW.NativeStreamer.PiPFrames")
+    private weak var displayLayer: AVSampleBufferDisplayLayer?
+    private var contentSource: AVPictureInPictureController.ContentSource?
+    private var pictureInPictureController: AVPictureInPictureController?
+    private var availabilityPublished = false
+    private var playbackPaused = false
+
+    private var frameSequence: Int64 = 0
+    private var hasFrameForPlayback = false
+    private var activeForFrameQueue = false
+    private var lastAcceptedFrameAt: TimeInterval = 0
+    private var cachedFormatDescription: CMVideoFormatDescription?
+    private var cachedPixelFormat: OSType = 0
+    private var cachedWidth = 0
+    private var cachedHeight = 0
+
+    private static let activeFrameInterval: TimeInterval = 1.0 / 30.0
+    private static let inactiveFrameInterval: TimeInterval = 0.5
+    private static let sampleTimescale: CMTimeScale = 60
+
+    var isPictureInPictureActive: Bool {
+        pictureInPictureController?.isPictureInPictureActive == true
+    }
+
+    func attach(displayLayer: AVSampleBufferDisplayLayer) {
+        self.displayLayer = displayLayer
+        hasFrameForPlayback = false
+        playbackPaused = false
+        displayLayer.videoGravity = .resizeAspect
+        displayLayer.backgroundColor = UIColor.black.cgColor
+        displayLayer.flush()
+
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            publishAvailability(false)
+            onLog?("Picture in Picture is not supported on this device")
+            return
+        }
+
+        let contentSource = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: displayLayer,
+            playbackDelegate: self
+        )
+        let controller = AVPictureInPictureController(contentSource: contentSource)
+        controller.delegate = self
+        controller.requiresLinearPlayback = true
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
+        self.contentSource = contentSource
+        self.pictureInPictureController = controller
+        publishAvailability(false)
+    }
+
+    @discardableResult
+    func start() -> Bool {
+        guard let controller = pictureInPictureController,
+              AVPictureInPictureController.isPictureInPictureSupported() else {
+            return false
+        }
+        if controller.isPictureInPictureActive {
+            return true
+        }
+        guard controller.isPictureInPicturePossible else {
+            return false
+        }
+        controller.startPictureInPicture()
+        return true
+    }
+
+    func stop() {
+        guard pictureInPictureController?.isPictureInPictureActive == true else { return }
+        pictureInPictureController?.stopPictureInPicture()
+    }
+
+    func detach() {
+        stop()
+        publishActive(false)
+        publishAvailability(false)
+        hasFrameForPlayback = false
+        playbackPaused = false
+        pictureInPictureController?.delegate = nil
+        pictureInPictureController = nil
+        contentSource = nil
+        displayLayer?.flush()
+        displayLayer = nil
+        frameQueue.async { [weak self] in
+            self?.resetFrameState()
+        }
+    }
+
+    func enqueue(frame: RTCVideoFrame) {
+        guard let cvBuffer = frame.buffer as? RTCCVPixelBuffer else { return }
+        let pixelBuffer = cvBuffer.pixelBuffer
+        frameQueue.async { [weak self] in
+            self?.enqueue(pixelBuffer: pixelBuffer)
+        }
+    }
+
+    private func enqueue(pixelBuffer: CVPixelBuffer) {
+        guard shouldAcceptFrame() else { return }
+        guard let sampleBuffer = makeSampleBuffer(pixelBuffer: pixelBuffer) else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let displayLayer = self.displayLayer else { return }
+            if displayLayer.status == .failed || displayLayer.requiresFlushToResumeDecoding {
+                displayLayer.flush()
+            }
+            guard displayLayer.isReadyForMoreMediaData else { return }
+            displayLayer.enqueue(sampleBuffer)
+            self.hasFrameForPlayback = true
+            self.updateAvailabilityFromController()
+            self.pictureInPictureController?.invalidatePlaybackState()
+        }
+    }
+
+    private func shouldAcceptFrame() -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        let interval = activeForFrameQueue ? Self.activeFrameInterval : Self.inactiveFrameInterval
+        guard lastAcceptedFrameAt == 0 || now - lastAcceptedFrameAt >= interval else {
+            return false
+        }
+        lastAcceptedFrameAt = now
+        return true
+    }
+
+    private func makeSampleBuffer(pixelBuffer: CVPixelBuffer) -> CMSampleBuffer? {
+        guard let formatDescription = formatDescription(for: pixelBuffer) else { return nil }
+        frameSequence += 1
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: Self.sampleTimescale),
+            presentationTimeStamp: CMTime(value: frameSequence, timescale: Self.sampleTimescale),
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let status = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard status == noErr, let sampleBuffer else { return nil }
+        markDisplayImmediately(sampleBuffer)
+        return sampleBuffer
+    }
+
+    private func formatDescription(for pixelBuffer: CVPixelBuffer) -> CMVideoFormatDescription? {
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        if let cachedFormatDescription,
+           cachedWidth == width,
+           cachedHeight == height,
+           cachedPixelFormat == pixelFormat {
+            return cachedFormatDescription
+        }
+
+        var formatDescription: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescriptionOut: &formatDescription
+        )
+        guard status == noErr, let formatDescription else { return nil }
+        cachedFormatDescription = formatDescription
+        cachedWidth = width
+        cachedHeight = height
+        cachedPixelFormat = pixelFormat
+        return formatDescription
+    }
+
+    private func markDisplayImmediately(_ sampleBuffer: CMSampleBuffer) {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: true
+        ), CFArrayGetCount(attachments) > 0 else {
+            return
+        }
+        let rawDictionary = CFArrayGetValueAtIndex(attachments, 0)
+        let attachmentsDictionary = unsafeBitCast(rawDictionary, to: CFMutableDictionary.self)
+        CFDictionarySetValue(
+            attachmentsDictionary,
+            Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+            Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+        )
+    }
+
+    private func updateAvailabilityFromController() {
+        publishAvailability(pictureInPictureController?.isPictureInPicturePossible == true)
+    }
+
+    private func publishAvailability(_ available: Bool) {
+        guard availabilityPublished != available else { return }
+        availabilityPublished = available
+        onAvailabilityChanged?(available)
+    }
+
+    private func publishActive(_ active: Bool) {
+        playbackPaused = false
+        frameQueue.async { [weak self] in
+            self?.activeForFrameQueue = active
+            if active {
+                self?.lastAcceptedFrameAt = 0
+            }
+        }
+        onActiveChanged?(active)
+        pictureInPictureController?.invalidatePlaybackState()
+    }
+
+    private func resetFrameState() {
+        frameSequence = 0
+        activeForFrameQueue = false
+        lastAcceptedFrameAt = 0
+        cachedFormatDescription = nil
+        cachedPixelFormat = 0
+        cachedWidth = 0
+        cachedHeight = 0
+    }
+}
+
+extension NativeStreamPictureInPictureBridge: AVPictureInPictureControllerDelegate {
+    func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        publishActive(true)
+        onLog?("Picture in Picture started")
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        publishActive(false)
+        onLog?("Picture in Picture stopped")
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        publishActive(false)
+        onLog?("Picture in Picture failed: \(error.localizedDescription)")
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        completionHandler(true)
+    }
+}
+
+extension NativeStreamPictureInPictureBridge: AVPictureInPictureSampleBufferPlaybackDelegate {
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        setPlaying playing: Bool
+    ) {
+        playbackPaused = false
+        pictureInPictureController.invalidatePlaybackState()
+    }
+
+    func pictureInPictureControllerTimeRangeForPlayback(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> CMTimeRange {
+        hasFrameForPlayback
+            ? CMTimeRange(start: .zero, duration: .positiveInfinity)
+            : .invalid
+    }
+
+    func pictureInPictureControllerIsPlaybackPaused(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> Bool {
+        playbackPaused
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        didTransitionToRenderSize newRenderSize: CMVideoDimensions
+    ) {
+        onLog?("Picture in Picture render size \(newRenderSize.width)x\(newRenderSize.height)")
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        skipByInterval skipInterval: CMTime,
+        completion completionHandler: @escaping () -> Void
+    ) {
+        completionHandler()
+    }
+
+    func pictureInPictureControllerShouldProhibitBackgroundAudioPlayback(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> Bool {
+        false
+    }
+}
+
+private final class NativeStreamVideoSink: NSObject, RTCVideoRenderer {
+    var onFrame: ((Int, CGSize, Int?) -> Void)?
+    var onPictureInPictureFrame: ((RTCVideoFrame) -> Void)?
+
+    private weak var renderView: NativeStreamRenderView?
+    private let lock = NSLock()
+    private var frameCount = 0
+    private var lastSize: CGSize = .zero
+
+    func attach(renderView: NativeStreamRenderView) {
+        lock.lock()
+        self.renderView = renderView
+        frameCount = 0
+        lastSize = .zero
+        lock.unlock()
+    }
+
+    func detach() {
+        lock.lock()
+        renderView = nil
+        frameCount = 0
+        lastSize = .zero
+        lock.unlock()
+    }
+
+    func setSize(_ size: CGSize) {
+        lock.lock()
+        lastSize = size
+        let target = renderView
+        lock.unlock()
+        target?.setSize(size)
+    }
+
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        lock.lock()
+        frameCount += 1
+        let count = frameCount
+        let size = CGSize(
+            width: frame.map { CGFloat($0.width) } ?? lastSize.width,
+            height: frame.map { CGFloat($0.height) } ?? lastSize.height
+        )
+        let target = renderView
+        lock.unlock()
+
+        target?.renderFrame(frame)
+        if let frame {
+            onPictureInPictureFrame?(frame)
+        }
+        if count <= 3 || count.isMultiple(of: 60) {
+            onFrame?(count, size, Self.sampleLuma(from: frame))
+        }
+    }
+
+    private static func sampleLuma(from frame: RTCVideoFrame?) -> Int? {
+        if let cvBuffer = frame?.buffer as? RTCCVPixelBuffer,
+           let luma = sampleNativeLuma(from: cvBuffer.pixelBuffer) {
+            return luma
+        }
+        guard let i420 = frame?.newI420().buffer.toI420() else { return nil }
+        let width = max(1, Int(i420.width))
+        let height = max(1, Int(i420.height))
+        let stride = max(1, Int(i420.strideY))
+        let dataY = i420.dataY
+        let samplesX = min(8, width)
+        let samplesY = min(8, height)
+        var total = 0
+        var count = 0
+        for yIndex in 0..<samplesY {
+            let y = min(height - 1, yIndex * height / samplesY)
+            for xIndex in 0..<samplesX {
+                let x = min(width - 1, xIndex * width / samplesX)
+                total += Int(dataY[y * stride + x])
+                count += 1
+            }
+        }
+        return count == 0 ? nil : total / count
+    }
+
+    private static func sampleNativeLuma(from pixelBuffer: CVPixelBuffer) -> Int? {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        if CVPixelBufferIsPlanar(pixelBuffer), CVPixelBufferGetPlaneCount(pixelBuffer) > 0 {
+            guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else { return nil }
+            let width = max(1, CVPixelBufferGetWidthOfPlane(pixelBuffer, 0))
+            let height = max(1, CVPixelBufferGetHeightOfPlane(pixelBuffer, 0))
+            let stride = max(1, CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0))
+            return averagePlane(base: base, width: width, height: height, stride: stride)
+        }
+
+        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+        let width = max(1, CVPixelBufferGetWidth(pixelBuffer))
+        let height = max(1, CVPixelBufferGetHeight(pixelBuffer))
+        let stride = max(1, CVPixelBufferGetBytesPerRow(pixelBuffer))
+        return averageBGRA(base: base, width: width, height: height, stride: stride)
+    }
+
+    private static func averagePlane(base: UnsafeMutableRawPointer, width: Int, height: Int, stride: Int) -> Int? {
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        let samplesX = min(8, width)
+        let samplesY = min(8, height)
+        var total = 0
+        var count = 0
+        for yIndex in 0..<samplesY {
+            let y = min(height - 1, yIndex * height / samplesY)
+            for xIndex in 0..<samplesX {
+                let x = min(width - 1, xIndex * width / samplesX)
+                total += Int(bytes[y * stride + x])
+                count += 1
+            }
+        }
+        return count == 0 ? nil : total / count
+    }
+
+    private static func averageBGRA(base: UnsafeMutableRawPointer, width: Int, height: Int, stride: Int) -> Int? {
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        let samplesX = min(8, width)
+        let samplesY = min(8, height)
+        var total = 0
+        var count = 0
+        for yIndex in 0..<samplesY {
+            let y = min(height - 1, yIndex * height / samplesY)
+            for xIndex in 0..<samplesX {
+                let x = min(width - 1, xIndex * width / samplesX)
+                let offset = y * stride + x * 4
+                let b = Int(bytes[offset])
+                let g = Int(bytes[offset + 1])
+                let r = Int(bytes[offset + 2])
+                total += (r * 54 + g * 183 + b * 19) >> 8
+                count += 1
+            }
+        }
+        return count == 0 ? nil : total / count
+    }
+}
+
+private struct NativeStreamVideoView: UIViewRepresentable {
+    @ObservedObject var coordinator: NativeStreamCoordinator
+
+    func makeUIView(context: Context) -> NativeStreamRenderView {
+        let view = NativeStreamRenderView(frame: .zero)
+        coordinator.attachRenderer(view)
+        return view
+    }
+
+    func updateUIView(_ uiView: NativeStreamRenderView, context: Context) {
+        coordinator.attachRenderer(uiView)
+    }
+}
+
+private final class NativeStreamRenderView: UIView {
+    let pictureInPictureDisplayLayer = AVSampleBufferDisplayLayer()
+
+    private let metalVideoView = RTCMTLVideoView(frame: .zero)
+    private let frameMetalView = NativeStreamFrameMetalView.make()
+
+    var metalDelegate: RTCVideoViewDelegate? {
+        get { metalVideoView.delegate }
+        set { metalVideoView.delegate = newValue }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        isOpaque = true
+        pictureInPictureDisplayLayer.videoGravity = .resizeAspect
+        pictureInPictureDisplayLayer.backgroundColor = UIColor.black.cgColor
+        layer.addSublayer(pictureInPictureDisplayLayer)
+        metalVideoView.videoContentMode = .scaleAspectFit
+        metalVideoView.backgroundColor = .black
+        metalVideoView.isEnabled = true
+        addSubview(metalVideoView)
+        if let frameMetalView {
+            addSubview(frameMetalView)
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        pictureInPictureDisplayLayer.frame = bounds
+        metalVideoView.frame = bounds
+        frameMetalView?.frame = bounds
+    }
+
+    func setSize(_ size: CGSize) {
+        metalVideoView.setSize(size)
+        frameMetalView?.videoSize = size
+    }
+
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        metalVideoView.renderFrame(frame)
+        frameMetalView?.display(frame: frame)
+    }
+}
+
+private final class NativeStreamFrameMetalView: UIView, MTKViewDelegate {
+    var videoSize: CGSize = .zero
+
+    private let device: MTLDevice
+    private let commandQueue: MTLCommandQueue
+    private let ciContext: CIContext
+    private let colorSpace = CGColorSpaceCreateDeviceRGB()
+    private let mtkView: MTKView
+    private let lock = NSLock()
+    private var latestPixelBuffer: CVPixelBuffer?
+    private var latestFrameSize: CGSize = .zero
+    private var renderScheduled = false
+
+    static func make() -> NativeStreamFrameMetalView? {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            return nil
+        }
+        return NativeStreamFrameMetalView(device: device, commandQueue: queue)
+    }
+
+    private init(device: MTLDevice, commandQueue: MTLCommandQueue) {
+        self.device = device
+        self.commandQueue = commandQueue
+        self.ciContext = CIContext(mtlDevice: device)
+        self.mtkView = MTKView(frame: .zero, device: device)
+        super.init(frame: .zero)
+        isOpaque = true
+        backgroundColor = .black
+        mtkView.framebufferOnly = false
+        mtkView.isPaused = true
+        mtkView.enableSetNeedsDisplay = false
+        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        mtkView.backgroundColor = .black
+        mtkView.delegate = self
+        addSubview(mtkView)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        mtkView.frame = bounds
+    }
+
+    func display(frame: RTCVideoFrame?) {
+        guard let cvBuffer = frame?.buffer as? RTCCVPixelBuffer else { return }
+        let pixelBuffer = cvBuffer.pixelBuffer
+        let frameSize = CGSize(
+            width: frame.map { CGFloat($0.width) } ?? CGFloat(CVPixelBufferGetWidth(pixelBuffer)),
+            height: frame.map { CGFloat($0.height) } ?? CGFloat(CVPixelBufferGetHeight(pixelBuffer))
+        )
+
+        lock.lock()
+        latestPixelBuffer = pixelBuffer
+        latestFrameSize = frameSize
+        guard !renderScheduled else {
+            lock.unlock()
+            return
+        }
+        renderScheduled = true
+        lock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.renderScheduled = false
+            self.lock.unlock()
+            self.mtkView.draw()
+        }
+    }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    func draw(in view: MTKView) {
+        lock.lock()
+        let pixelBuffer = latestPixelBuffer
+        let frameSize = latestFrameSize
+        lock.unlock()
+
+        guard let pixelBuffer,
+              let drawable = view.currentDrawable,
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            return
+        }
+
+        if let descriptor = view.currentRenderPassDescriptor,
+           let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) {
+            encoder.endEncoding()
+        }
+
+        let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let sourceExtent = sourceImage.extent
+        let targetBounds = CGRect(origin: .zero, size: view.drawableSize)
+        let fitted = Self.aspectFitRect(
+            source: frameSize == .zero ? sourceExtent.size : frameSize,
+            target: targetBounds.size
+        )
+        let scaleX = fitted.width / max(sourceExtent.width, 1)
+        let scaleY = fitted.height / max(sourceExtent.height, 1)
+        let transform = CGAffineTransform(translationX: fitted.minX, y: fitted.minY)
+            .scaledBy(x: scaleX, y: scaleY)
+        let outputImage = sourceImage.transformed(by: transform)
+
+        ciContext.render(
+            outputImage,
+            to: drawable.texture,
+            commandBuffer: commandBuffer,
+            bounds: targetBounds,
+            colorSpace: colorSpace
+        )
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+    }
+
+    private static func aspectFitRect(source: CGSize, target: CGSize) -> CGRect {
+        guard source.width > 0, source.height > 0, target.width > 0, target.height > 0 else {
+            return CGRect(origin: .zero, size: target)
+        }
+        let scale = min(target.width / source.width, target.height / source.height)
+        let width = source.width * scale
+        let height = source.height * scale
+        return CGRect(
+            x: (target.width - width) / 2,
+            y: (target.height - height) / 2,
+            width: width,
+            height: height
+        )
+    }
+}
+
+private struct NativeStreamTouchCaptureView: UIViewRepresentable {
+    let inputBridge: NativeStreamInputBridge
+
+    func makeUIView(context: Context) -> NativeStreamTouchView {
+        let view = NativeStreamTouchView()
+        view.inputBridge = inputBridge
+        return view
+    }
+
+    func updateUIView(_ uiView: NativeStreamTouchView, context: Context) {
+        uiView.inputBridge = inputBridge
+    }
+}
+
+private extension CGPoint {
+    func distance(to other: CGPoint) -> CGFloat {
+        hypot(x - other.x, y - other.y)
+    }
+}
+
+private final class NativeStreamTouchView: UIView {
+    weak var inputBridge: NativeStreamInputBridge?
+    private static let tapMovementThreshold: CGFloat = 8
+    private static let clickReleaseDelay: TimeInterval = 0.045
+
+    private var activeTouch: UITouch?
+    private var touchStartPoint: CGPoint?
+    private var lastPoint: CGPoint?
+    private var movedBeyondTapThreshold = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isMultipleTouchEnabled = true
+        backgroundColor = .clear
+        isAccessibilityElement = true
+        accessibilityLabel = "Stream input surface"
+        accessibilityTraits = [.button, .allowsDirectInteraction]
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            becomeFirstResponder()
+        }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard activeTouch == nil, let touch = touches.first else { return }
+        becomeFirstResponder()
+        activeTouch = touch
+        let point = touch.location(in: self)
+        touchStartPoint = point
+        lastPoint = point
+        movedBeyondTapThreshold = false
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let activeTouch, touches.contains(activeTouch), let lastPoint else { return }
+        let point = activeTouch.location(in: self)
+        if let touchStartPoint, point.distance(to: touchStartPoint) > Self.tapMovementThreshold {
+            movedBeyondTapThreshold = true
+        }
+        inputBridge?.sendTouchMouseMove(dx: point.x - lastPoint.x, dy: point.y - lastPoint.y)
+        self.lastPoint = point
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let activeTouch, touches.contains(activeTouch) else { return }
+        let shouldClick = !movedBeyondTapThreshold
+        resetActiveTouch()
+        if shouldClick {
+            sendPrimaryClick()
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let activeTouch, touches.contains(activeTouch) else { return }
+        resetActiveTouch()
+    }
+
+    private func resetActiveTouch() {
+        activeTouch = nil
+        touchStartPoint = nil
+        lastPoint = nil
+        movedBeyondTapThreshold = false
+    }
+
+    override func accessibilityActivate() -> Bool {
+        sendPrimaryClick()
+        return true
+    }
+
+    private func sendPrimaryClick() {
+        inputBridge?.sendMouseButton(1, pressed: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clickReleaseDelay) { [weak self] in
+            self?.inputBridge?.sendMouseButton(1, pressed: false)
+        }
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard forwardPresses(presses, pressed: true) else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        guard forwardPresses(presses, pressed: false) else {
+            super.pressesEnded(presses, with: event)
+            return
+        }
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        _ = forwardPresses(presses, pressed: false)
+        super.pressesCancelled(presses, with: event)
+    }
+
+    private func forwardPresses(_ presses: Set<UIPress>, pressed: Bool) -> Bool {
+        var handled = false
+        for press in presses {
+            guard let key = press.key,
+                  let mapping = NativeStreamUIKitKeyboardMapper.mapping(for: key.keyCode) else { continue }
+            inputBridge?.sendKey(
+                mapping: mapping,
+                pressed: pressed,
+                modifiers: NativeStreamUIKitKeyboardMapper.modifiers(for: key.modifierFlags)
+            )
+            handled = true
+        }
+        return handled
+    }
+}
+
+private enum NativeStreamUIKitKeyboardMapper {
+    private static let mappingByHID: [Int: NativeStreamKeyboardMapping] = [
+        0x04: .init(virtualKey: 0x41, scanCode: 0x001e),
+        0x05: .init(virtualKey: 0x42, scanCode: 0x0030),
+        0x06: .init(virtualKey: 0x43, scanCode: 0x002e),
+        0x07: .init(virtualKey: 0x44, scanCode: 0x0020),
+        0x08: .init(virtualKey: 0x45, scanCode: 0x0012),
+        0x09: .init(virtualKey: 0x46, scanCode: 0x0021),
+        0x0a: .init(virtualKey: 0x47, scanCode: 0x0022),
+        0x0b: .init(virtualKey: 0x48, scanCode: 0x0023),
+        0x0c: .init(virtualKey: 0x49, scanCode: 0x0017),
+        0x0d: .init(virtualKey: 0x4a, scanCode: 0x0024),
+        0x0e: .init(virtualKey: 0x4b, scanCode: 0x0025),
+        0x0f: .init(virtualKey: 0x4c, scanCode: 0x0026),
+        0x10: .init(virtualKey: 0x4d, scanCode: 0x0032),
+        0x11: .init(virtualKey: 0x4e, scanCode: 0x0031),
+        0x12: .init(virtualKey: 0x4f, scanCode: 0x0018),
+        0x13: .init(virtualKey: 0x50, scanCode: 0x0019),
+        0x14: .init(virtualKey: 0x51, scanCode: 0x0010),
+        0x15: .init(virtualKey: 0x52, scanCode: 0x0013),
+        0x16: .init(virtualKey: 0x53, scanCode: 0x001f),
+        0x17: .init(virtualKey: 0x54, scanCode: 0x0014),
+        0x18: .init(virtualKey: 0x55, scanCode: 0x0016),
+        0x19: .init(virtualKey: 0x56, scanCode: 0x002f),
+        0x1a: .init(virtualKey: 0x57, scanCode: 0x0011),
+        0x1b: .init(virtualKey: 0x58, scanCode: 0x002d),
+        0x1c: .init(virtualKey: 0x59, scanCode: 0x0015),
+        0x1d: .init(virtualKey: 0x5a, scanCode: 0x002c),
+        0x1e: .init(virtualKey: 0x31, scanCode: 0x0002),
+        0x1f: .init(virtualKey: 0x32, scanCode: 0x0003),
+        0x20: .init(virtualKey: 0x33, scanCode: 0x0004),
+        0x21: .init(virtualKey: 0x34, scanCode: 0x0005),
+        0x22: .init(virtualKey: 0x35, scanCode: 0x0006),
+        0x23: .init(virtualKey: 0x36, scanCode: 0x0007),
+        0x24: .init(virtualKey: 0x37, scanCode: 0x0008),
+        0x25: .init(virtualKey: 0x38, scanCode: 0x0009),
+        0x26: .init(virtualKey: 0x39, scanCode: 0x000a),
+        0x27: .init(virtualKey: 0x30, scanCode: 0x000b),
+        0x28: .init(virtualKey: 0x0d, scanCode: 0x001c),
+        0x29: .init(virtualKey: 0x1b, scanCode: 0x0001),
+        0x2a: .init(virtualKey: 0x08, scanCode: 0x000e),
+        0x2b: .init(virtualKey: 0x09, scanCode: 0x000f),
+        0x2c: .init(virtualKey: 0x20, scanCode: 0x0039),
+        0x2d: .init(virtualKey: 0xbd, scanCode: 0x000c),
+        0x2e: .init(virtualKey: 0xbb, scanCode: 0x000d),
+        0x2f: .init(virtualKey: 0xdb, scanCode: 0x001a),
+        0x30: .init(virtualKey: 0xdd, scanCode: 0x001b),
+        0x31: .init(virtualKey: 0xdc, scanCode: 0x002b),
+        0x33: .init(virtualKey: 0xba, scanCode: 0x0027),
+        0x34: .init(virtualKey: 0xde, scanCode: 0x0028),
+        0x35: .init(virtualKey: 0xc0, scanCode: 0x0029),
+        0x36: .init(virtualKey: 0xbc, scanCode: 0x0033),
+        0x37: .init(virtualKey: 0xbe, scanCode: 0x0034),
+        0x38: .init(virtualKey: 0xbf, scanCode: 0x0035),
+        0x39: .init(virtualKey: 0x14, scanCode: 0x003a),
+        0x3a: .init(virtualKey: 0x70, scanCode: 0x003b),
+        0x3b: .init(virtualKey: 0x71, scanCode: 0x003c),
+        0x3c: .init(virtualKey: 0x72, scanCode: 0x003d),
+        0x3d: .init(virtualKey: 0x73, scanCode: 0x003e),
+        0x3e: .init(virtualKey: 0x74, scanCode: 0x003f),
+        0x3f: .init(virtualKey: 0x75, scanCode: 0x0040),
+        0x40: .init(virtualKey: 0x76, scanCode: 0x0041),
+        0x41: .init(virtualKey: 0x77, scanCode: 0x0042),
+        0x42: .init(virtualKey: 0x78, scanCode: 0x0043),
+        0x43: .init(virtualKey: 0x79, scanCode: 0x0044),
+        0x44: .init(virtualKey: 0x7a, scanCode: 0x0057),
+        0x45: .init(virtualKey: 0x7b, scanCode: 0x0058),
+        0x46: .init(virtualKey: 0x2c, scanCode: 0xe037),
+        0x47: .init(virtualKey: 0x91, scanCode: 0x0046),
+        0x48: .init(virtualKey: 0x13, scanCode: 0x0045),
+        0x49: .init(virtualKey: 0x2d, scanCode: 0xe052),
+        0x4a: .init(virtualKey: 0x24, scanCode: 0xe047),
+        0x4b: .init(virtualKey: 0x21, scanCode: 0xe049),
+        0x4c: .init(virtualKey: 0x2e, scanCode: 0xe053),
+        0x4d: .init(virtualKey: 0x23, scanCode: 0xe04f),
+        0x4e: .init(virtualKey: 0x22, scanCode: 0xe051),
+        0x4f: .init(virtualKey: 0x27, scanCode: 0xe04d),
+        0x50: .init(virtualKey: 0x25, scanCode: 0xe04b),
+        0x51: .init(virtualKey: 0x28, scanCode: 0xe050),
+        0x52: .init(virtualKey: 0x26, scanCode: 0xe048),
+        0x58: .init(virtualKey: 0x0d, scanCode: 0xe01c),
+        0x65: .init(virtualKey: 0x5d, scanCode: 0xe05d),
+        0xe0: .init(virtualKey: 0xa2, scanCode: 0x001d),
+        0xe1: .init(virtualKey: 0xa0, scanCode: 0x002a),
+        0xe2: .init(virtualKey: 0xa4, scanCode: 0x0038),
+        0xe3: .init(virtualKey: 0x5b, scanCode: 0xe05b),
+        0xe4: .init(virtualKey: 0xa3, scanCode: 0xe01d),
+        0xe5: .init(virtualKey: 0xa1, scanCode: 0x0036),
+        0xe6: .init(virtualKey: 0xa5, scanCode: 0xe038),
+        0xe7: .init(virtualKey: 0x5c, scanCode: 0xe05c)
+    ]
+
+    static func mapping(for keyCode: UIKeyboardHIDUsage) -> NativeStreamKeyboardMapping? {
+        mappingByHID[Int(keyCode.rawValue)]
+    }
+
+    static func modifiers(for flags: UIKeyModifierFlags) -> UInt16 {
+        var value: UInt16 = 0
+        if flags.contains(.shift) { value |= 0x01 }
+        if flags.contains(.control) { value |= 0x02 }
+        if flags.contains(.alternate) { value |= 0x04 }
+        if flags.contains(.command) { value |= 0x08 }
+        if flags.contains(.alphaShift) { value |= 0x10 }
+        return value
+    }
+}
+
+private struct NativeStreamRumbleCommand {
+    let controllerId: Int
+    let weakMagnitude: Int
+    let strongMagnitude: Int
+}
+
+private enum NativeStreamHapticsParser {
+    static func parse(_ data: Data) -> NativeStreamRumbleCommand? {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 2 else { return nil }
+        let firstWord = uint16LE(bytes, 0)
+        if firstWord == 267 {
+            return parseLegacy(bytes, offset: 2)
+        }
+        switch firstWord & 0xff {
+        case 34:
+            return parseSubMessage(bytes, offset: 1)
+        case 32, 33, 35, 36, 255:
+            return nil
+        default:
+            return parseLegacy(bytes, offset: 0)
+        }
+    }
+
+    private static func parseSubMessage(_ bytes: [UInt8], offset: Int) -> NativeStreamRumbleCommand? {
+        guard offset >= 0, offset + 4 <= bytes.count else { return nil }
+        let type = uint32LE(bytes, offset)
+        if type == 267 {
+            return parseLegacy(bytes, offset: offset + 4)
+        }
+        if type == 17 {
+            return parseOc(bytes, offset: offset + 4)
+        }
+        return nil
+    }
+
+    private static func parseLegacy(_ bytes: [UInt8], offset: Int) -> NativeStreamRumbleCommand? {
+        guard offset >= 0, offset + 10 <= bytes.count else { return nil }
+        guard uint16LE(bytes, offset) == 1 else { return nil }
+        guard uint16LE(bytes, offset + 2) >= 6 else { return nil }
+        return NativeStreamRumbleCommand(
+            controllerId: Int(uint16LE(bytes, offset + 4)),
+            weakMagnitude: Int(uint16LE(bytes, offset + 6)),
+            strongMagnitude: Int(uint16LE(bytes, offset + 8))
+        )
+    }
+
+    private static func parseOc(_ bytes: [UInt8], offset: Int) -> NativeStreamRumbleCommand? {
+        guard offset >= 0, offset + 9 <= bytes.count else { return nil }
+        let controllerByte = Int(bytes[offset])
+        guard controllerByte >= 6, controllerByte < 10 else { return nil }
+        let reportKind = bytes[offset + 3]
+        let flags = bytes[offset + 4]
+        guard reportKind == 5, (flags & 0xfe) == 0 else { return nil }
+        return NativeStreamRumbleCommand(
+            controllerId: controllerByte - 6,
+            weakMagnitude: Int(bytes[offset + 7]) << 8,
+            strongMagnitude: Int(bytes[offset + 8]) << 8
+        )
+    }
+
+    private static func uint16LE(_ bytes: [UInt8], _ offset: Int) -> UInt16 {
+        UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
+    }
+
+    private static func uint32LE(_ bytes: [UInt8], _ offset: Int) -> UInt32 {
+        UInt32(bytes[offset])
+            | (UInt32(bytes[offset + 1]) << 8)
+            | (UInt32(bytes[offset + 2]) << 16)
+            | (UInt32(bytes[offset + 3]) << 24)
     }
 }
 #endif

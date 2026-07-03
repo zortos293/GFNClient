@@ -25,10 +25,9 @@ struct LibraryView: View {
                         emptyTitle: store.libraryGames.isEmpty && !hasActiveFilters ? "Library Empty" : "No Matches",
                         emptySystemImage: store.libraryGames.isEmpty && !hasActiveFilters ? "books.vertical" : "magnifyingglass",
                         subtitle: { gameCatalogSubtitle(for: $0) },
-                        badgeSystemImage: { store.isFavorite($0) ? "heart.fill" : nil },
+                        badgeSystemImage: { _ in nil },
                         onOpenDetails: { selectedGameForDetails = $0 },
-                        onPlay: launchFromCard,
-                        onChooseLauncher: { selectedGameForLauncher = $0 }
+                        onPlay: launchFromCard
                     ) {
                         libraryHeader
                     } emptyActions: {
@@ -49,7 +48,7 @@ struct LibraryView: View {
         .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
-        .sheet(item: $selectedGameForLauncher) { game in
+        .opennowBottomSheet(item: $selectedGameForLauncher, heightFraction: 0.58, maxHeight: 560) { game in
             GameLauncherSelectionSheet(game: game) { option in
                 selectedGameForLauncher = nil
                 DispatchQueue.main.async {
@@ -57,8 +56,6 @@ struct LibraryView: View {
                 }
             }
             .environmentObject(store)
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
         }
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }

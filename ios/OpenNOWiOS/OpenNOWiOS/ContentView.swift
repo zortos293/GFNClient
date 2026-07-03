@@ -45,7 +45,6 @@ struct MainTabView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
-    @State private var nativeStreamerBypassSessionIds = Set<String>()
     private static let maxStreamerAutoRetries = 3
 
     private var queueSurfaceAnimation: Animation {
@@ -85,10 +84,7 @@ struct MainTabView: View {
         }
         .onChangeCompat(of: store.activeSession?.id) { newId in
             streamerAutoRetryCount = 0
-            if let newId {
-                nativeStreamerBypassSessionIds = Set(nativeStreamerBypassSessionIds.filter { $0 == newId })
-            } else {
-                nativeStreamerBypassSessionIds.removeAll()
+            if newId == nil {
                 presentedStreamerSession = nil
             }
         }
@@ -139,19 +135,20 @@ struct MainTabView: View {
         StreamerView(
             session: session,
             settings: store.currentStreamerSettings,
-            nativeStreamerEnabled: !nativeStreamerBypassSessionIds.contains(session.id),
+            nativeStreamerEnabled: true,
             onTouchLayoutChange: { profile, layout in
                 store.updateTouchControlLayout(layout, profile: profile)
             },
             onStreamerPreferencesChange: { preferences in
                 store.updateStreamerPreferences(preferences)
             },
+            onStatsOverlayChange: { visible in
+                store.updateStreamStatsOverlayVisible(visible)
+            },
             onSafeVideoFallbackRequired: { reason in
                 store.restartStreamWithSafeVideoProfile(reason: reason)
             },
-            onNativeFallbackRequiresFreshEndpoint: { _ in
-                nativeStreamerBypassSessionIds.insert(session.id)
-            },
+            onNativeFallbackRequiresFreshEndpoint: { _ in },
             onClose: {
                 presentedStreamerSession = nil
                 streamerAutoRetryCount = 0

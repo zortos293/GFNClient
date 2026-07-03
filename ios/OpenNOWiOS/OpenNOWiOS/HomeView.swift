@@ -241,10 +241,9 @@ struct HomeView: View {
                 emptyTitle: isHomeSearchActive ? "No Matches" : "No Games",
                 emptySystemImage: isHomeSearchActive ? "magnifyingglass" : "square.grid.2x2",
                 subtitle: { gameCatalogSubtitle(for: $0) },
-                badgeSystemImage: { store.isFavorite($0) ? "heart.fill" : nil },
+                badgeSystemImage: { _ in nil },
                 onOpenDetails: { selectedGameForDetails = $0 },
-                onPlay: launchFromCard,
-                onChooseLauncher: { selectedGameForLauncher = $0 }
+                onPlay: launchFromCard
             ) {
                 homeHeader
             } emptyActions: {
@@ -265,32 +264,11 @@ struct HomeView: View {
             )
             .refreshable { await store.refreshCatalog() }
             .navigationTitle("OpenNOW")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        isSearchPresented = true
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                    }
-                    .accessibilityLabel("Search Games")
-
-                    Button {
-                        Task { await store.refreshCatalog() }
-                    } label: {
-                        if store.isLoadingGames {
-                            ProgressView()
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                    }
-                    .disabled(store.isLoadingGames)
-                }
-            }
         }
         .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
-        .sheet(item: $selectedGameForLauncher) { game in
+        .opennowBottomSheet(item: $selectedGameForLauncher, heightFraction: 0.58, maxHeight: 560) { game in
             GameLauncherSelectionSheet(game: game) { option in
                 selectedGameForLauncher = nil
                 DispatchQueue.main.async {
@@ -298,8 +276,6 @@ struct HomeView: View {
                 }
             }
             .environmentObject(store)
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
         }
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
@@ -594,7 +570,6 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
     let badgeSystemImage: (CloudGame) -> String?
     let onOpenDetails: (CloudGame) -> Void
     let onPlay: (CloudGame) -> Void
-    let onChooseLauncher: (CloudGame) -> Void
     @ViewBuilder let header: () -> Header
     @ViewBuilder let emptyActions: () -> EmptyActions
 
@@ -634,8 +609,7 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                                 subtitle: subtitle(game),
                                 badgeSystemImage: badgeSystemImage(game),
                                 onOpenDetails: { onOpenDetails(game) },
-                                onPlay: { onPlay(game) },
-                                onChooseLauncher: { onChooseLauncher(game) }
+                                onPlay: { onPlay(game) }
                             )
                         }
                     }
@@ -655,7 +629,6 @@ private struct GameCatalogGridCard: View {
     let badgeSystemImage: String?
     let onOpenDetails: () -> Void
     let onPlay: () -> Void
-    let onChooseLauncher: () -> Void
 
     private var canLaunch: Bool {
         OpenNOWPlatform.supportsEmbeddedStreamer && !store.launchOptions(for: game).isEmpty
@@ -663,33 +636,33 @@ private struct GameCatalogGridCard: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            Button {
+            GameCatalogPosterContent(
+                game: game,
+                subtitle: subtitle,
+                badgeSystemImage: badgeSystemImage
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .onTapGesture {
                 Haptics.light()
                 onOpenDetails()
-            } label: {
-                GameCatalogPosterContent(
-                    game: game,
-                    subtitle: subtitle,
-                    badgeSystemImage: badgeSystemImage
-                )
             }
-            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isButton)
 
             HStack(alignment: .bottom) {
                 Button {
                     Haptics.light()
-                    onChooseLauncher()
+                    store.toggleFavorite(game)
                 } label: {
-                    StoreGlyph(store: primaryLauncherStore)
-                        .frame(width: 24, height: 24)
+                    Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(store.isFavorite(game) ? Color.red : Color.white)
                         .frame(width: 42, height: 42)
-                        .background(launcherBadgeColor(for: primaryLauncherStore).opacity(0.94), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .background(.ultraThinMaterial, in: Circle())
                         .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Choose launcher for \(game.title)")
-                .disabled(!canLaunch)
-                .opacity(canLaunch ? 1 : 0.55)
+                .contentShape(Circle())
+                .accessibilityLabel(store.isFavorite(game) ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
 
                 Spacer(minLength: 8)
 
@@ -705,18 +678,13 @@ private struct GameCatalogGridCard: View {
                         .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Circle())
                 .accessibilityLabel("Launch \(game.title)")
                 .disabled(!canLaunch)
             }
             .padding(8)
+            .zIndex(1)
         }
-    }
-
-    private var primaryLauncherStore: String {
-        if let defaultOption = store.defaultLaunchOption(for: game) {
-            return defaultOption.storefront
-        }
-        return gameResolvedStores(game: game).first ?? "GeForce NOW"
     }
 }
 
@@ -962,10 +930,11 @@ struct GameVerticalBannerCard: View {
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
+    var fitArtwork = false
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            GameArtworkView(game: game, iconSize: 42)
+            GameArtworkView(game: game, iconSize: 42, fit: fitArtwork)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             LinearGradient(
@@ -1247,7 +1216,8 @@ struct GameLaunchDetailsSheet: View {
                     GameVerticalBannerCard(
                         game: game,
                         subtitle: gameSubtitle,
-                        badgeSystemImage: store.isFavorite(game) ? "heart.fill" : nil
+                        badgeSystemImage: store.isFavorite(game) ? "heart.fill" : nil,
+                        fitArtwork: true
                     )
                     .frame(maxWidth: 220)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -1334,6 +1304,7 @@ struct GameLaunchDetailsSheet: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
             .navigationTitle(game.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1349,29 +1320,33 @@ struct GameLaunchDetailsSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                Button {
-                    if let launchRestriction = store.launchRestrictionMessage(for: game) {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    Button {
+                        if let launchRestriction = store.launchRestrictionMessage(for: game) {
+                            Haptics.medium()
+                            launchAlertMessage = launchRestriction
+                            return
+                        }
                         Haptics.medium()
-                        launchAlertMessage = launchRestriction
-                        return
+                        onLaunch(selectedOption ?? launcherOptions.first)
+                        dismiss()
+                    } label: {
+                        Text(launchUnavailableMessage == nil ? "Launch" : "Launch Unavailable")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
                     }
-                    Haptics.medium()
-                    onLaunch(selectedOption ?? launcherOptions.first)
-                    dismiss()
-                } label: {
-                    Text(launchUnavailableMessage == nil ? "Launch" : "Launch Unavailable")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                    .buttonStyle(.borderedProminent)
+                    .tint(brandAccent)
+                    .disabled(launchUnavailableMessage != nil)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(brandAccent)
-                .disabled(launchUnavailableMessage != nil)
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-                .background(.regularMaterial)
+                .frame(maxWidth: .infinity)
+                .bottomSheetFooterBackground()
             }
             .alert("Launch Unavailable", isPresented: launchAlertPresented) {
                 Button("OK", role: .cancel) {
@@ -1480,7 +1455,7 @@ struct GameLauncherSelectionSheet: View {
             List {
                 Section {
                     HStack(spacing: 12) {
-                        GameArtworkView(game: game, iconSize: 26)
+                        GameArtworkView(game: game, iconSize: 26, fit: true)
                             .frame(width: 58, height: 76)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
@@ -1521,6 +1496,7 @@ struct GameLauncherSelectionSheet: View {
             }
             .navigationTitle("Launch")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollContentBackground(.hidden)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") {
@@ -1528,28 +1504,32 @@ struct GameLauncherSelectionSheet: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                Button {
-                    guard let selectedOption else { return }
-                    if rememberDefault || defaultOption != nil {
-                        store.setDefaultGameVariant(game: game, option: rememberDefault ? selectedOption : nil)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    Button {
+                        guard let selectedOption else { return }
+                        if rememberDefault || defaultOption != nil {
+                            store.setDefaultGameVariant(game: game, option: rememberDefault ? selectedOption : nil)
+                        }
+                        Haptics.medium()
+                        onLaunch(selectedOption)
+                        dismiss()
+                    } label: {
+                        Text("Continue")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
                     }
-                    Haptics.medium()
-                    onLaunch(selectedOption)
-                    dismiss()
-                } label: {
-                    Text("Continue")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                    .buttonStyle(.borderedProminent)
+                    .tint(brandAccent)
+                    .disabled(selectedOption == nil)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(brandAccent)
-                .disabled(selectedOption == nil)
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-                .background(.regularMaterial)
+                .frame(maxWidth: .infinity)
+                .bottomSheetFooterBackground()
             }
         }
         .onAppear {
@@ -1862,6 +1842,7 @@ struct GameCardSkeletonView: View {
 struct GameArtworkView: View {
     let game: CloudGame
     let iconSize: CGFloat
+    var fit = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -1870,10 +1851,7 @@ struct GameArtworkView: View {
                 gameColor(for: game.title).opacity(0.2)
                 if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
                     CachedRemoteImage(url: url, targetPixelSize: targetPixelSize) { image in
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: proxy.size.width, height: proxy.size.height)
+                        fittedImage(image, size: proxy.size)
                     } placeholder: {
                         GameArtworkLoadingPlaceholder(game: game, iconSize: iconSize, isFailure: false)
                             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -1888,6 +1866,21 @@ struct GameArtworkView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
+        }
+    }
+
+    @ViewBuilder
+    private func fittedImage(_ image: Image, size: CGSize) -> some View {
+        if fit {
+            image
+                .resizable()
+                .scaledToFit()
+                .frame(width: size.width, height: size.height)
+        } else {
+            image
+                .resizable()
+                .scaledToFill()
+                .frame(width: size.width, height: size.height)
         }
     }
 
@@ -2031,16 +2024,122 @@ extension View {
         modifier(SkeletonShimmerModifier())
     }
 
+    func bottomSheetFooterBackground() -> some View {
+        background {
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
     func presentGameDetailsUIKit(
         selectedGame: Binding<CloudGame?>,
         onLaunch: @escaping (CloudGame, GameLaunchOption?) -> Void
     ) -> some View {
-        sheet(item: selectedGame) { game in
+        opennowBottomSheet(item: selectedGame, heightFraction: 0.92, maxHeight: 760) { game in
             GameLaunchDetailsSheet(game: game) { option in
                 onLaunch(game, option)
                 selectedGame.wrappedValue = nil
             }
         }
+    }
+}
+
+extension View {
+    func opennowBottomSheet<Item: Identifiable, Sheet: View>(
+        item: Binding<Item?>,
+        heightFraction: CGFloat,
+        maxHeight: CGFloat,
+        @ViewBuilder content: @escaping (Item) -> Sheet
+    ) -> some View {
+        fullScreenCover(item: item) { value in
+            OpenNOWBottomSheetHost(heightFraction: heightFraction, maxHeight: maxHeight) {
+                content(value)
+            }
+            .presentationBackground(.clear)
+        }
+    }
+
+}
+
+private struct OpenNOWBottomSheetHost<Content: View>: View {
+    @Environment(\.dismiss) private var dismiss
+    let heightFraction: CGFloat
+    let maxHeight: CGFloat
+    let content: Content
+
+    init(heightFraction: CGFloat, maxHeight: CGFloat, @ViewBuilder content: () -> Content) {
+        self.heightFraction = heightFraction
+        self.maxHeight = maxHeight
+        self.content = content()
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .onTapGesture { dismiss() }
+
+                content
+                    .frame(maxWidth: .infinity)
+                    .frame(height: sheetFrameHeight(in: proxy))
+                    .modifier(OpenNOWBottomSheetSurfaceModifier(cornerRadius: 28))
+                    .shadow(color: .black.opacity(0.22), radius: 18, y: -4)
+                    .ignoresSafeArea(edges: .bottom)
+            }
+        }
+        .ignoresSafeArea()
+        .background(Color.clear)
+    }
+
+    private func sheetFrameHeight(in proxy: GeometryProxy) -> CGFloat {
+        min(proxy.size.height, sheetHeight(in: proxy) + proxy.safeAreaInsets.bottom)
+    }
+
+    private func sheetHeight(in proxy: GeometryProxy) -> CGFloat {
+        min(maxHeight, max(360, proxy.size.height * heightFraction))
+    }
+}
+
+private struct OpenNOWBottomSheetSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = OpenNOWBottomSheetShape(cornerRadius: cornerRadius)
+        if #available(iOS 26, *) {
+            content
+                .background(.regularMaterial, in: shape)
+                .glassEffect(in: shape)
+                .clipShape(shape)
+        } else {
+            content
+                .background(.regularMaterial, in: shape)
+                .clipShape(shape)
+        }
+    }
+}
+
+private struct OpenNOWBottomSheetShape: Shape {
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + radius),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 

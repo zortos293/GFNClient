@@ -27,10 +27,12 @@ import type {
   StreamSettings,
   StreamRegion,
   PrintedWasteQueueData,
+  VideoShaderSettings,
 } from "@shared/gfn";
 import {
   buildNativeStreamerSessionContext,
   DEFAULT_KEYBOARD_LAYOUT,
+  DEFAULT_VIDEO_SHADER_SETTINGS,
   getDefaultStreamPreferences,
   isGameInLibrary,
   isSessionAdsRequired,
@@ -469,6 +471,7 @@ export function App(): JSX.Element {
     discordRichPresence: false,
     autoCheckForUpdates: true,
     lastSeenReleaseHighlightsVersion: "",
+    videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [releaseHighlightsPayload, setReleaseHighlightsPayload] = useState<ReleaseHighlightsPayload | null>(null);
@@ -1621,6 +1624,10 @@ export function App(): JSX.Element {
 
   const handleMouseAccelerationChange = useCallback((value: number) => {
     void updateSetting("mouseAcceleration", value);
+  }, [updateSetting]);
+
+  const handleVideoShaderChange = useCallback((value: VideoShaderSettings) => {
+    void updateSetting("videoShader", value);
   }, [updateSetting]);
 
   const handleExitApp = useCallback(() => {
@@ -4284,6 +4291,8 @@ export function App(): JSX.Element {
               void releasePointerLockIfNeeded();
             }}
             allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
+            videoShader={settings.videoShader}
+            onVideoShaderChange={handleVideoShaderChange}
           />
         )}
         {showDesktopLaunchLoading && (

@@ -11,7 +11,9 @@ import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
+import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
+import { VideoShaderPipeline } from "../gfn/videoShaderPipeline";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { addStreamShortcutActionListener } from "../streamShortcutActions";
 import { useMicMeter } from "../hooks/useMicMeter";
@@ -85,6 +87,8 @@ interface StreamViewProps {
   micTrack?: MediaStreamTrack | null;
   className?: string;
   allowEscapeToExitFullscreen?: boolean;
+  videoShader: VideoShaderSettings;
+  onVideoShaderChange: (value: VideoShaderSettings) => void;
 }
 
 
@@ -440,6 +444,8 @@ export function StreamView({
   hideStreamButtons = false,
   allowEscapeToExitFullscreen,
   className,
+  videoShader,
+  onVideoShaderChange,
 }: StreamViewProps): JSX.Element {
   const { t } = useTranslation();
   const [showHints, setShowHints] = useState(true);
@@ -466,6 +472,7 @@ export function StreamView({
     (stats) => stats.nativeRendererActive,
   );
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const shaderPipelineRef = useRef<VideoShaderPipeline | null>(null);
   const streamHasVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => hasVisibleStreamVideo(stats),
@@ -1162,6 +1169,27 @@ export function StreamView({
     };
   }, []);
 
+  // Video shader post-processing pipeline (embedded WebRTC path only; the
+  // native streamer renders outside Chromium so shaders cannot apply there).
+  useEffect(() => {
+    const video = localVideoRef.current;
+    if (!video) return;
+    const effective = gstreamerEnabled || nativeRendererActive
+      ? { ...videoShader, enabled: false }
+      : videoShader;
+    if (!shaderPipelineRef.current) {
+      if (!effective.enabled) return;
+      shaderPipelineRef.current = new VideoShaderPipeline(video, effective);
+    } else {
+      shaderPipelineRef.current.updateSettings(effective);
+    }
+  }, [videoShader, gstreamerEnabled, nativeRendererActive]);
+
+  useEffect(() => () => {
+    shaderPipelineRef.current?.dispose();
+    shaderPipelineRef.current = null;
+  }, []);
+
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
     localVideoRef.current = element;
     if (typeof videoRef === "function") {
@@ -1594,6 +1622,79 @@ export function StreamView({
                     />
                     <span className="sidebar-hint">Dynamic turn boost strength (1% = off-like, 150% = strongest).</span>
                   </div>
+                </section>
+                <div className="sidebar-separator" aria-hidden="true" />
+                <section className="sidebar-section">
+                  <div className="sidebar-section-header">
+                    <span>Video Filters</span>
+                    <span className="sidebar-section-sub">GPU shaders applied to the stream</span>
+                  </div>
+                  {gstreamerEnabled ? (
+                    <span className="sidebar-hint">Video filters are unavailable while the native streamer renders the video.</span>
+                  ) : (
+                    <>
+                      <div className="sidebar-row sidebar-row--aligned">
+                        <span className="sidebar-label">Enable Filters</span>
+                        <label className="sidebar-mini-toggle" title="Enable GPU post-processing filters">
+                          <input
+                            type="checkbox"
+                            checked={videoShader.enabled}
+                            aria-label="Enable video filters"
+                            onChange={(event) => onVideoShaderChange({ ...videoShader, enabled: event.target.checked })}
+                          />
+                          <span className="sidebar-mini-toggle-track" />
+                        </label>
+                      </div>
+                      {videoShader.enabled && (
+                        <>
+                          {([
+                            { key: "sharpen", label: "Sharpen", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%`, hint: "Contrast-adaptive sharpening. Counters stream compression blur." },
+                            { key: "saturation", label: "Saturation", min: 0, max: 200, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "contrast", label: "Contrast", min: 50, max: 150, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "brightness", label: "Brightness", min: 50, max: 150, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "vibrance", label: "Vibrance", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%`, hint: "Boosts muted colors without oversaturating." },
+                            { key: "filmGrain", label: "Film Grain", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%` },
+                          ] as const).map((control) => (
+                            <div key={control.key} className="sidebar-row sidebar-row--column">
+                              <div className="sidebar-row-top">
+                                <span className="sidebar-label">{control.label}</span>
+                                <span className="settings-value-badge">{control.format(videoShader[control.key])}</span>
+                              </div>
+                              <input
+                                type="range"
+                                className="settings-slider"
+                                min={control.min}
+                                max={control.max}
+                                step={1}
+                                value={videoShader[control.key]}
+                                onChange={(event) => {
+                                  const next = Number(event.target.value);
+                                  if (Number.isFinite(next)) {
+                                    onVideoShaderChange({
+                                      ...videoShader,
+                                      [control.key]: Math.max(control.min, Math.min(control.max, Math.round(next))),
+                                    });
+                                  }
+                                }}
+                                onDoubleClick={() => onVideoShaderChange({ ...videoShader, [control.key]: control.neutral })}
+                              />
+                              {"hint" in control && control.hint && <span className="sidebar-hint">{control.hint}</span>}
+                            </div>
+                          ))}
+                          <div className="sidebar-row sidebar-row--aligned">
+                            <span className="sidebar-label">Reset Filters</span>
+                            <button
+                              type="button"
+                              className="sidebar-button"
+                              onClick={() => onVideoShaderChange({ ...DEFAULT_VIDEO_SHADER_SETTINGS, enabled: true })}
+                            >
+                              <span>Reset</span>
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
                 </section>
                 <div className="sidebar-separator" aria-hidden="true" />
                 <section className="sidebar-section">

@@ -15,12 +15,15 @@ import type {
   NativeStreamerFeatureMode,
   NativeTransitionDiagnostics,
   AppAccentColor,
+  VideoShaderSettings,
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
+  DEFAULT_VIDEO_SHADER_SETTINGS,
   getDefaultStreamPreferences,
   normalizeStreamClientModeForPlatform,
   normalizeStreamPreferences,
+  normalizeVideoShaderSettings,
 } from "@shared/gfn";
 
 export interface Settings {
@@ -143,6 +146,8 @@ export interface Settings {
   allowEscapeToExitFullscreen?: boolean;
   /** Last version for which the release highlights modal was acknowledged (empty = never) */
   lastSeenReleaseHighlightsVersion: string;
+  /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
+  videoShader: VideoShaderSettings;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -237,6 +242,7 @@ const DEFAULT_SETTINGS: Settings = {
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,
   lastSeenReleaseHighlightsVersion: "",
+  videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
 };
 
 export class SettingsManager {
@@ -360,6 +366,12 @@ export class SettingsManager {
 
     if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
       settings.steamControllerCompatibilityMode = false;
+      migrated = true;
+    }
+
+    const videoShader = normalizeVideoShaderSettings(settings.videoShader);
+    if (JSON.stringify(settings.videoShader) !== JSON.stringify(videoShader)) {
+      settings.videoShader = videoShader;
       migrated = true;
     }
 

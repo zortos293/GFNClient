@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive, Sparkles } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -26,6 +26,7 @@ import type {
 } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
+  DEFAULT_VIDEO_SHADER_SETTINGS,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
@@ -143,6 +144,17 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "l4s",
     "cloud gsync",
     "video acceleration",
+    "filters",
+    "shader",
+    "shaders",
+    "sharpen",
+    "sharpening",
+    "saturation",
+    "contrast",
+    "brightness",
+    "vibrance",
+    "film grain",
+    "post processing",
   ],
   "stream-codec-diagnostics": [
     "stream",
@@ -2904,6 +2916,74 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <span className="settings-subtle-hint">
                     {t("settings.video.experimentalL4SRequestHint")}
                   </span>
+                </div>
+
+                {/* Video filters (client-side GPU shaders) */}
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        <Sparkles size={15} className="settings-label-icon" />
+                        {t("settings.videoFilters.title")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.videoShader.enabled}
+                        onChange={(e) => handleChange("videoShader", { ...settings.videoShader, enabled: e.target.checked })}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    {settings.streamClientMode === "native"
+                      ? t("settings.videoFilters.nativeUnavailable")
+                      : t("settings.videoFilters.hint")}
+                  </span>
+                  {settings.videoShader.enabled && (
+                    <>
+                      {([
+                        { key: "sharpen", labelKey: "settings.videoFilters.sharpen", min: 0, max: 100 },
+                        { key: "saturation", labelKey: "settings.videoFilters.saturation", min: 0, max: 200 },
+                        { key: "contrast", labelKey: "settings.videoFilters.contrast", min: 50, max: 150 },
+                        { key: "brightness", labelKey: "settings.videoFilters.brightness", min: 50, max: 150 },
+                        { key: "vibrance", labelKey: "settings.videoFilters.vibrance", min: 0, max: 100 },
+                        { key: "filmGrain", labelKey: "settings.videoFilters.filmGrain", min: 0, max: 100 },
+                      ] as const).map((control) => (
+                        <div key={control.key} className="settings-row settings-row--column">
+                          <div className="settings-row-top">
+                            <label className="settings-label">{t(control.labelKey)}</label>
+                            <span className="settings-value-badge">{settings.videoShader[control.key]}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            className="settings-slider"
+                            min={control.min}
+                            max={control.max}
+                            step={1}
+                            value={settings.videoShader[control.key]}
+                            onChange={(e) => {
+                              const next = parseInt(e.target.value, 10);
+                              if (Number.isFinite(next)) {
+                                handleChange("videoShader", { ...settings.videoShader, [control.key]: next });
+                              }
+                            }}
+                          />
+                        </div>
+                      ))}
+                      <div className="settings-chip-row">
+                        <button
+                          type="button"
+                          className="settings-chip"
+                          onClick={() => handleChange("videoShader", { ...DEFAULT_VIDEO_SHADER_SETTINGS, enabled: true })}
+                        >
+                          <span>{t("settings.videoFilters.reset")}</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             </section>

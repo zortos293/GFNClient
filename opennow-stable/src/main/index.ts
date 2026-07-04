@@ -131,7 +131,11 @@ app.commandLine.appendSwitch(
   videoAccelerationCommandLine.enableFeatures.join(","),
 );
 
-app.commandLine.appendSwitch("disable-features", videoAccelerationCommandLine.disableFeatures.join(","));
+const disableFeatures = [
+  ...videoAccelerationCommandLine.disableFeatures,
+  "XboxUseGameControllerDataFetcherMac",
+];
+app.commandLine.appendSwitch("disable-features", disableFeatures.join(","));
 
 app.commandLine.appendSwitch(
   "force-fieldtrials",

@@ -2,6 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { constants } from "node:fs";
 
 import { getLinuxUpdaterSupport } from "./linuxUpdaterSupport";
 
@@ -12,10 +13,45 @@ test("uses the AppImage updater path when running from an AppImage", () => {
     platform: "linux",
     env: { APPIMAGE: "/home/user/OpenNOW.AppImage" },
     commandExists: noCommands,
+    canReplaceAppImage: () => true,
   });
 
   assert.equal(support.supported, true);
   assert.equal(support.packageKind, "appimage");
+});
+
+test("disables AppImage updates when the install folder is not writable", () => {
+  const support = getLinuxUpdaterSupport({
+    platform: "linux",
+    env: { APPIMAGE: "/opt/opennow-appimage/opennow-appimage.AppImage" },
+    commandExists: noCommands,
+    canReplaceAppImage: () => false,
+  });
+
+  assert.equal(support.supported, false);
+  assert.equal(support.packageKind, "appimage");
+  assert.match(support.message ?? "", /not writable/);
+});
+
+test("checks the AppImage install directory before enabling updates", () => {
+  let checkedPath: string | undefined;
+  let checkedMode: number | undefined;
+  const support = getLinuxUpdaterSupport({
+    platform: "linux",
+    env: { APPIMAGE: "/opt/opennow-appimage/opennow-appimage.AppImage" },
+    commandExists: noCommands,
+    accessPath: (path, mode) => {
+      checkedPath = path;
+      checkedMode = mode;
+      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    },
+  });
+
+  assert.equal(checkedPath, "/opt/opennow-appimage");
+  assert.equal(checkedMode, constants.W_OK | constants.X_OK);
+  assert.equal(support.supported, false);
+  assert.equal(support.packageKind, "appimage");
+  assert.match(support.message ?? "", /not writable/);
 });
 
 test("uses the deb updater path only when Debian package tools are available", () => {

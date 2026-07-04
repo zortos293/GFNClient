@@ -17,6 +17,7 @@ import type {
   LoginProvider,
   MainToRendererSignalingEvent,
   NativeStreamerShortcutAction,
+  ReleaseHighlightsPayload,
   SessionInfo,
   SessionStopRequest,
   SavedAccount,
@@ -106,6 +107,7 @@ import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
 import { pageTransition } from "./components/MotionProvider";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
@@ -338,6 +340,31 @@ async function readStreamClipboardText(): Promise<string> {
   return window.openNow.readClipboardText();
 }
 
+async function sendStreamClipboardPaste(
+  client: GfnWebRtcClient | null,
+): Promise<void> {
+  if (!client) {
+    return;
+  }
+
+  const sentOfficialPaste = await client.pasteClipboardText();
+  if (sentOfficialPaste) {
+    return;
+  }
+
+  try {
+    const text = await readStreamClipboardText();
+    if (text) {
+      client.sendText(text);
+    }
+    return;
+  } catch (error) {
+    console.warn("Clipboard read failed, falling back to paste shortcut:", error);
+  }
+
+  client.sendPasteShortcut(false);
+}
+
 export function App(): JSX.Element {
   const { locale, t } = useTranslation();
 
@@ -407,6 +434,8 @@ export function App(): JSX.Element {
     sessionProxyUrl: "",
     clipboardPaste: false,
     enableGyroscopeControls: false,
+    steamControllerCompatibilityMode: false,
+    nativeCursorOverlay: true,
     mouseSensitivity: 1,
     mouseAcceleration: 1,
     shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
@@ -439,8 +468,11 @@ export function App(): JSX.Element {
     enableCloudGsync: false,
     discordRichPresence: false,
     autoCheckForUpdates: true,
+    lastSeenReleaseHighlightsVersion: "",
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [releaseHighlightsPayload, setReleaseHighlightsPayload] = useState<ReleaseHighlightsPayload | null>(null);
+  const [releaseHighlightsIsAuto, setReleaseHighlightsIsAuto] = useState(false);
   const activeSessionProxyUrl = useMemo(
     () => getEnabledSessionProxyUrl(settings),
     [settings.sessionProxyEnabled, settings.sessionProxyUrl],
@@ -459,6 +491,8 @@ export function App(): JSX.Element {
   const [showStatsOverlay, setShowStatsOverlay] = useState(false);
   const [antiAfkEnabled, setAntiAfkEnabled] = useState(false);
   const [antiAfkAckNonce, setAntiAfkAckNonce] = useState(0);
+  const [nativeInputCaptureActive, setNativeInputCaptureActive] = useState(false);
+  const [nativeInputBridgeReady, setNativeInputBridgeReady] = useState(false);
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: t("app.labels.game") });
   const [streamingGame, setStreamingGame] = useState<GameInfo | null>(null);
   const [streamingStore, setStreamingStore] = useState<string | null>(null);
@@ -624,6 +658,15 @@ export function App(): JSX.Element {
       });
     return unsubscribe;
   }, [queueDirectLaunchRequest]);
+
+  // Subscribe to automatic release-highlights events pushed from main process
+  useEffect(() => {
+    const unsubscribe = window.openNow.onReleaseHighlightsShow((payload) => {
+      setReleaseHighlightsPayload(payload);
+      setReleaseHighlightsIsAuto(true);
+    });
+    return unsubscribe;
+  }, []);
 
   const resetStorePanels = useCallback((): void => {
     storePanelsLoadIdRef.current += 1;
@@ -1373,13 +1416,14 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     if (!antiAfkEnabled || streamStatus !== "streaming") return;
+    if (nativeStreamingRef.current && !nativeInputBridgeReady) return;
 
     const interval = window.setInterval(() => {
       clientRef.current?.sendAntiAfkPulse();
     }, 240000); // 4 minutes
 
     return () => clearInterval(interval);
-  }, [antiAfkEnabled, streamStatus]);
+  }, [antiAfkEnabled, nativeInputBridgeReady, streamStatus]);
 
   // Periodically re-sync subscription playtime from backend while streaming.
   useEffect(() => {
@@ -1513,6 +1557,20 @@ export function App(): JSX.Element {
     if (key === "autoFullScreen") {
       try {
         (clientRef.current as any)?.setAutoFullScreen?.(value as boolean);
+      } catch {
+        // ignore
+      }
+    }
+    if (key === "clipboardPaste") {
+      try {
+        (clientRef.current as any)?.setClipboardPasteEnabled?.(value as boolean);
+      } catch {
+        // ignore
+      }
+    }
+    if (key === "nativeCursorOverlay") {
+      try {
+        clientRef.current?.setNativeCursorOverlayEnabled(value as boolean);
       } catch {
         // ignore
       }
@@ -2361,6 +2419,8 @@ export function App(): JSX.Element {
     setSession(claimed);
     sessionRef.current = claimed;
     nativeInputProtocolVersionRef.current = null;
+    setNativeInputBridgeReady(false);
+    setNativeInputCaptureActive(false);
     setQueuePosition(undefined);
     setLaunchError(null);
     setStreamStatus("connecting");
@@ -2648,9 +2708,12 @@ export function App(): JSX.Element {
         autoFullScreen: settings.autoFullScreen,
         microphoneMode: settings.microphoneMode,
         microphoneDeviceId: settings.microphoneDeviceId || undefined,
+        nativeCursorOverlay: settings.nativeCursorOverlay,
         mouseSensitivity: settings.mouseSensitivity,
         mouseAcceleration: settings.mouseAcceleration,
         keyboardLayout: settings.keyboardLayout,
+        clipboardPaste: settings.clipboardPaste,
+        readClipboardText: readStreamClipboardText,
         onLog: (line: string) => console.log(`[WebRTC] ${line}`),
         onStats: (stats) => diagnosticsStore.set(stats),
         onTimeWarning: (warning) => {
@@ -2814,12 +2877,19 @@ export function App(): JSX.Element {
         } else if (event.type === "native-input-ready") {
           console.log("[App] Native input protocol ready:", event.protocolVersion);
           nativeInputProtocolVersionRef.current = event.protocolVersion;
+          setNativeInputBridgeReady(true);
           clientRef.current?.setNativeInputProtocolVersion(event.protocolVersion);
           if (nativeStreamingRef.current || sessionRef.current) {
             activateNativeInputForCurrentSession(event.protocolVersion);
           }
         } else if (event.type === "native-shortcut") {
           handleStreamShortcutActionRef.current?.(event.action);
+        } else if (event.type === "native-clipboard-paste") {
+          if (settings.clipboardPaste && (!nativeStreamingRef.current || nativeInputBridgeReady)) {
+            void sendStreamClipboardPaste(clientRef.current);
+          }
+        } else if (event.type === "native-input-capture-changed") {
+          setNativeInputCaptureActive(event.captured);
         } else if (event.type === "native-stream-stats") {
           diagnosticsStore.set(mergeNativeStreamStats(
             diagnosticsStore.getSnapshot(),
@@ -2840,6 +2910,8 @@ export function App(): JSX.Element {
           console.warn("[App] Native streamer stopped:", reason);
           nativeStreamingRef.current = false;
           nativeInputProtocolVersionRef.current = null;
+          setNativeInputBridgeReady(false);
+          setNativeInputCaptureActive(false);
           clientRef.current?.dispose();
           clientRef.current = null;
           launchInFlightRef.current = false;
@@ -2999,7 +3071,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
@@ -3856,6 +3928,10 @@ export function App(): JSX.Element {
         setShowStatsOverlay((prev) => !prev);
         return;
       case "togglePointerLock":
+        if (nativeStreamingRef.current) {
+          // Native streamer toggles OS input capture locally in the renderer window.
+          return;
+        }
         {
           const targetVideo = videoRef.current;
           if (streamStatus === "streaming" && targetVideo) {
@@ -3928,7 +4004,7 @@ export function App(): JSX.Element {
         return;
       }
 
-      const isPasteShortcut = e.key.toLowerCase() === "v" && !e.altKey && (isMac ? e.metaKey : e.ctrlKey);
+      const isPasteShortcut = e.key.toLowerCase() === "v" && !e.altKey && !e.shiftKey && (e.ctrlKey || (isMac && e.metaKey));
       if (streamStatus === "streaming" && isPasteShortcut) {
         // Always stop local/browser paste behavior while streaming.
         // If clipboard paste is enabled, send clipboard text into the stream.
@@ -3938,20 +4014,7 @@ export function App(): JSX.Element {
 
         if (settings.clipboardPaste) {
           void (async () => {
-            const client = clientRef.current;
-            if (!client) return;
-
-            try {
-              const text = await readStreamClipboardText();
-              if (text) {
-                client.sendText(text);
-              }
-              return;
-            } catch (error) {
-              console.warn("Clipboard read failed, falling back to paste shortcut:", error);
-            }
-
-            client.sendPasteShortcut(isMac);
+            await sendStreamClipboardPaste(clientRef.current);
           })();
         }
         return;
@@ -4078,6 +4141,28 @@ export function App(): JSX.Element {
     setCurrentPage(pageBeforeSettings);
   }, [pageBeforeSettings]);
 
+  const handleOpenWhatsNew = useCallback((): void => {
+    // Fetch current-version highlights and open modal in manual mode (no auto-ack)
+    void window.openNow.getReleaseHighlights()
+      .then((payload) => {
+        setReleaseHighlightsPayload(payload);
+        setReleaseHighlightsIsAuto(false);
+      })
+      .catch((error) => {
+        console.warn("[App] Failed to fetch release highlights:", error);
+      });
+  }, []);
+
+  const handleDismissReleaseHighlights = useCallback((): void => {
+    if (releaseHighlightsIsAuto) {
+      void window.openNow.ackReleaseHighlights().catch((err) => {
+        console.warn("[App] Failed to ack release highlights:", err);
+      });
+    }
+    setReleaseHighlightsPayload(null);
+    setReleaseHighlightsIsAuto(false);
+  }, [releaseHighlightsIsAuto]);
+
   const handleSettingsExitComplete = useCallback((): void => {
     setSettingsMounted(false);
   }, []);
@@ -4108,6 +4193,13 @@ export function App(): JSX.Element {
           qrLoginChallenge={qrLoginChallenge}
           isQrLoginPending={activeLoginMode === "qr" && !qrLoginChallenge}
         />
+        {releaseHighlightsPayload && (
+          <ReleaseHighlightsModal
+            payload={releaseHighlightsPayload}
+            version={releaseHighlightsPayload.version}
+            onDismiss={handleDismissReleaseHighlights}
+          />
+        )}
       </>
     );
   }
@@ -4128,6 +4220,7 @@ export function App(): JSX.Element {
             diagnosticsStore={diagnosticsStore}
             showStats={showStatsOverlay}
             showNativeStats={settings.showNativeStreamerStats}
+            nativeInputCaptureActive={nativeInputCaptureActive}
             gstreamerEnabled={settings.streamClientMode === "native"}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
@@ -4339,6 +4432,7 @@ export function App(): JSX.Element {
             onRunCodecTest={runCodecTest}
             onSettingChange={updateSetting}
             onClose={handleCloseSettings}
+            onOpenWhatsNew={handleOpenWhatsNew}
           />
         )}
       </SettingsModalHost>
@@ -4350,6 +4444,13 @@ export function App(): JSX.Element {
           initialQueueData={queueModalData}
           onConfirm={handleQueueModalConfirm}
           onCancel={handleQueueModalCancel}
+        />
+      )}
+      {releaseHighlightsPayload && (
+        <ReleaseHighlightsModal
+          payload={releaseHighlightsPayload}
+          version={releaseHighlightsPayload.version}
+          onDismiss={handleDismissReleaseHighlights}
         />
       )}
     </div>

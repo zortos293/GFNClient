@@ -194,7 +194,9 @@ const api: OpenNowApi = {
   selectNativeStreamerExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE),
   getNativeStreamerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_STREAMER_STATUS),
   getNativeCloudGsyncCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_CLOUD_GSYNC_CAPABILITIES),
-  notifyPointerLockChange: (active: boolean) => ipcRenderer.send(IPC_CHANNELS.POINTER_LOCK_CHANGE, active),
+  notifyPointerLockChange: (active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
+    ipcRenderer.send(IPC_CHANNELS.POINTER_LOCK_CHANGE, active, suppressEscapeFullscreenGrace);
+  },
   onExternalEscape: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
@@ -249,6 +251,18 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH),
   getThanksData: (): Promise<ThankYouDataResult> => ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_GET_THANKS),
   clearDiscordActivity: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY),
+  getReleaseHighlights: (version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET, version),
+  ackReleaseHighlights: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RELEASE_HIGHLIGHTS_ACK),
+  onReleaseHighlightsShow: (listener: (payload: import("@shared/gfn").ReleaseHighlightsPayload) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: import("@shared/gfn").ReleaseHighlightsPayload) => {
+      listener(payload);
+    };
+    ipcRenderer.on(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, wrapped);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

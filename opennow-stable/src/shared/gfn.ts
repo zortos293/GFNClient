@@ -271,6 +271,10 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Enable experimental gyroscope controller input mapping */
   enableGyroscopeControls: boolean;
+  /** macOS-only workaround that restores Chromium's older HID path for Steam Controller compatibility */
+  steamControllerCompatibilityMode: boolean;
+  /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream. */
+  nativeCursorOverlay: boolean;
   mouseSensitivity: number;
   mouseAcceleration: number;
   shortcutToggleStats: string;
@@ -317,6 +321,8 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /** Last version for which the release highlights modal was acknowledged (empty = never) */
+  lastSeenReleaseHighlightsVersion: string;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -1192,6 +1198,8 @@ export type MainToRendererSignalingEvent =
   | { type: "offer"; sdp: string }
   | { type: "remote-ice"; candidate: IceCandidatePayload }
   | { type: "native-shortcut"; action: NativeStreamerShortcutAction }
+  | { type: "native-clipboard-paste" }
+  | { type: "native-input-capture-changed"; captured: boolean }
   | { type: "native-stream-started"; message?: string }
   | { type: "native-stream-stopped"; reason?: string }
   | { type: "native-stream-stats"; stats: NativeStreamStats }
@@ -1246,6 +1254,18 @@ export type AppUpdaterStatus =
   | "downloading"
   | "downloaded"
   | "error";
+
+/** Payload sent to the renderer for the What's New modal */
+export interface ReleaseHighlightsPayload {
+  /** App version these notes are for (e.g. "0.4.2") */
+  version: string;
+  /** Display title — defaults to "OpenNOW v{version}" */
+  title: string;
+  /** Release notes in markdown format */
+  bodyMarkdown: string;
+  /** Where the body came from */
+  source: "github" | "updater-cache" | "fallback";
+}
 
 export interface AppUpdaterProgress {
   percent: number;
@@ -1335,8 +1355,8 @@ export interface OpenNowApi {
   setFullscreen(v: boolean): Promise<void>;
   toggleFullscreen(): Promise<void>;
   togglePointerLock(): Promise<void>;
-  /** Notify main process that pointer lock state changed (active = true/false) */
-  notifyPointerLockChange(active: boolean): void;
+  /** Notify main process that pointer lock state changed (active = true/false). */
+  notifyPointerLockChange(active: boolean, suppressEscapeFullscreenGrace?: boolean): void;
   /** Read plain text from the OS clipboard through Electron main process */
   readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;
@@ -1418,6 +1438,15 @@ export interface OpenNowApi {
   getThanksData(): Promise<ThankYouDataResult>;
   /** Clear Discord rich presence activity */
   clearDiscordActivity(): Promise<void>;
+
+  /** Fetch release highlights payload for a given version (defaults to current) */
+  getReleaseHighlights(version?: string): Promise<ReleaseHighlightsPayload>;
+
+  /** Mark the current version's highlights as acknowledged */
+  ackReleaseHighlights(): Promise<void>;
+
+  /** Subscribe to automatic release-highlights show events from main process */
+  onReleaseHighlightsShow(listener: (payload: ReleaseHighlightsPayload) => void): () => void;
 }
 
 export interface ScreenshotSaveRequest {

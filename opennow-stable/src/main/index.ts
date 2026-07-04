@@ -78,60 +78,56 @@ import {
 } from "./services/printedWaste";
 import { pingRegions } from "./services/regionPing";
 import {
-  buildVideoAccelerationCommandLine,
-  isAccelerationPreference,
-  type BootstrapVideoPreferences,
-} from "./videoAcceleration";
+  buildChromiumCommandLine,
+  normalizeBootstrapChromiumPreferences,
+  type BootstrapChromiumPreferences,
+} from "./chromiumCommandLine";
+import {
+  nextPointerLockEscapeCaptureUntilMs,
+  shouldCaptureEscapeFullscreenInput,
+} from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
+import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowReleaseHighlights } from "./releaseHighlights";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Configure Chromium video and WebRTC behavior before app.whenReady().
+// Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
-function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
-  const defaults: BootstrapVideoPreferences = {
-    decoderPreference: "auto",
-    encoderPreference: "auto",
-  };
+function loadBootstrapChromiumPreferences(): BootstrapChromiumPreferences {
   try {
     const settingsPath = join(app.getPath("userData"), "settings.json");
     if (!existsSync(settingsPath)) {
-      return defaults;
+      return normalizeBootstrapChromiumPreferences(null);
     }
-    const parsed = JSON.parse(
-      readFileSync(settingsPath, "utf-8"),
-    ) as Partial<BootstrapVideoPreferences>;
-    return {
-      decoderPreference: isAccelerationPreference(parsed.decoderPreference)
-        ? parsed.decoderPreference
-        : defaults.decoderPreference,
-      encoderPreference: isAccelerationPreference(parsed.encoderPreference)
-        ? parsed.encoderPreference
-        : defaults.encoderPreference,
-    };
+    return normalizeBootstrapChromiumPreferences(
+      JSON.parse(readFileSync(settingsPath, "utf-8")),
+    );
   } catch {
-    return defaults;
+    return normalizeBootstrapChromiumPreferences(null);
   }
 }
 
-const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
+const bootstrapChromiumPrefs = loadBootstrapChromiumPreferences();
 console.log(
-  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
+  `[Main] Video acceleration preference: decode=${bootstrapChromiumPrefs.decoderPreference}, encode=${bootstrapChromiumPrefs.encoderPreference}`,
 );
 
-const videoAccelerationCommandLine = buildVideoAccelerationCommandLine(
-  bootstrapVideoPrefs,
+const chromiumCommandLine = buildChromiumCommandLine(
+  bootstrapChromiumPrefs,
   process.platform,
   process.arch,
 );
 
 app.commandLine.appendSwitch(
   "enable-features",
-  videoAccelerationCommandLine.enableFeatures.join(","),
+  chromiumCommandLine.enableFeatures.join(","),
 );
 
-app.commandLine.appendSwitch("disable-features", videoAccelerationCommandLine.disableFeatures.join(","));
+app.commandLine.appendSwitch(
+  "disable-features",
+  chromiumCommandLine.disableFeatures.join(","),
+);
 
 app.commandLine.appendSwitch(
   "force-fieldtrials",
@@ -141,7 +137,7 @@ app.commandLine.appendSwitch(
   ].join("/"),
 );
 
-for (const [name, value] of Object.entries(videoAccelerationCommandLine.switches)) {
+for (const [name, value] of Object.entries(chromiumCommandLine.switches)) {
   if (value === true) {
     app.commandLine.appendSwitch(name);
   } else {
@@ -188,6 +184,7 @@ let pendingDirectLaunchRequest: DirectLaunchRequest | null = createDirectLaunchR
 
 // Runtime pointer-lock state (updated by renderer)
 let isPointerLockActiveRuntime = false;
+let pointerLockEscapeCaptureUntilMs = 0;
 
 function createDirectLaunchRequest(args: DirectLaunchArgs): DirectLaunchRequest {
   return {
@@ -464,22 +461,31 @@ async function createMainWindow(): Promise<void> {
 
   // Track pointer-lock state from renderer; used to decide whether to swallow
   // Escape at the native level (before Chromium handles it).
-  ipcMain.on(IPC_CHANNELS.POINTER_LOCK_CHANGE, (_ev, active: boolean) => {
-    isPointerLockActiveRuntime = Boolean(active);
-  });
+  ipcMain.on(
+    IPC_CHANNELS.POINTER_LOCK_CHANGE,
+    (_ev, active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
+      isPointerLockActiveRuntime = Boolean(active);
+      pointerLockEscapeCaptureUntilMs = nextPointerLockEscapeCaptureUntilMs(
+        isPointerLockActiveRuntime,
+        Boolean(suppressEscapeFullscreenGrace),
+        Date.now(),
+      );
+    },
+  );
 
   // Intercept Escape early to avoid Chromium exiting fullscreen before the
-  // renderer can forward the key to the remote session. This is a best-effort
-  // interception and is gated by the user's `allowEscapeToExitFullscreen` setting.
+  // renderer can forward the key to the remote session. Keep a short fullscreen
+  // grace window after pointer lock drops so rapid repeated Escape presses cannot
+  // win the race before the renderer re-locks the pointer.
   mainWindow.webContents.on("before-input-event", (event, input) => {
     try {
-      if (
-        input.type === "keyDown" &&
-        input.key === "Escape" &&
-        isPointerLockActiveRuntime &&
-        settingsManager &&
-        !settingsManager.get("allowEscapeToExitFullscreen")
-      ) {
+      if (shouldCaptureEscapeFullscreenInput(input, {
+        allowEscapeToExitFullscreen: Boolean(settingsManager?.get("allowEscapeToExitFullscreen")),
+        pointerLockActive: isPointerLockActiveRuntime,
+        windowFullscreen: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()),
+        pointerLockEscapeCaptureUntilMs,
+        nowMs: Date.now(),
+      })) {
         event.preventDefault();
         if (mainWindow && mainWindow.webContents) {
           mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
@@ -502,6 +508,8 @@ async function createMainWindow(): Promise<void> {
   mainWindow.on("closed", () => {
     mainWindow = null;
     rendererControlledFullscreen = false;
+    isPointerLockActiveRuntime = false;
+    pointerLockEscapeCaptureUntilMs = 0;
   });
 }
 
@@ -1133,6 +1141,20 @@ function registerIpcHandlers(): void {
     return fetchPrintedWasteServerMapping(app.getVersion());
   });
 
+  // Release highlights IPC handlers
+  ipcMain.handle(
+    IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET,
+    async (_event, version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> => {
+      const appVersion = normalizeReleaseVersion(app.getVersion()) ?? "0.0.0";
+      const targetVersion = normalizeReleaseVersion(version ?? appVersion) ?? appVersion;
+      return getReleaseHighlightsPayload(targetVersion);
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.RELEASE_HIGHLIGHTS_ACK, async (): Promise<void> => {
+    settingsManager.set("lastSeenReleaseHighlightsVersion", app.getVersion().replace(/^v/, ""));
+  });
+
   // Save window size when it changes
   mainWindow?.on("resize", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1267,6 +1289,33 @@ app.whenReady().then(async () => {
 
   await createMainWindow();
   appUpdater.initialize();
+
+  // Fire-and-forget: check if we should show release highlights after the window loads
+  void (async () => {
+    try {
+      if (!app.isPackaged) return;
+      const current = app.getVersion().replace(/^v/, "");
+      const lastSeen = settingsManager.get("lastSeenReleaseHighlightsVersion") ?? "";
+      if (!shouldShowReleaseHighlights(current, lastSeen)) return;
+
+      // Fetch payload (may take up to 8s for GitHub, graceful fallback if offline)
+      const payload = await getReleaseHighlightsPayload(current);
+
+      // Wait for the renderer to finish loading before sending
+      const win = mainWindow;
+      if (!win || win.isDestroyed()) return;
+
+      if (win.webContents.isLoading()) {
+        await new Promise<void>((resolve) => win.webContents.once("did-finish-load", resolve));
+      }
+
+      if (!win.isDestroyed()) {
+        win.webContents.send(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, payload);
+      }
+    } catch (error) {
+      console.warn("[ReleaseHighlights] Startup check failed:", error);
+    }
+  })();
 
   app.on("activate", async () => {
     if (isShutdownRequested) {

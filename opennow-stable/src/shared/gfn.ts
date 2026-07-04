@@ -271,6 +271,8 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Enable experimental gyroscope controller input mapping */
   enableGyroscopeControls: boolean;
+  /** macOS-only workaround that restores Chromium's older HID path for Steam Controller compatibility */
+  steamControllerCompatibilityMode: boolean;
   /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream. */
   nativeCursorOverlay: boolean;
   mouseSensitivity: number;

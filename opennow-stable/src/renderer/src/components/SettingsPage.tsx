@@ -191,6 +191,13 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "gamepad",
     "gyro",
     "gyroscope",
+    "steam",
+    "steam controller",
+    "xbox",
+    "compatibility",
+    "gamecontroller",
+    "hid",
+    "macos",
     "motion controls",
     "anti afk",
     "pointer lock",
@@ -3474,6 +3481,28 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                   <span className="settings-subtle-hint">{t("settings.input.gyroscopeControlsHint")}</span>
                 </div>
+
+                {isMac && (
+                  <div className="settings-row settings-row--column">
+                    <div className="settings-row-top settings-row-top--compact">
+                      <label className="settings-label settings-label--wrap">
+                        <span className="settings-label-title">
+                          {t("settings.input.steamControllerCompatibilityMode")}
+                          <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+                        </span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.steamControllerCompatibilityMode}
+                          onChange={(e) => handleChange("steamControllerCompatibilityMode", e.target.checked)}
+                        />
+                        <span className="settings-toggle-track" />
+                      </label>
+                    </div>
+                    <span className="settings-subtle-hint">{t("settings.input.steamControllerCompatibilityModeHint")}</span>
+                  </div>
+                )}
 
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top settings-row-top--compact">

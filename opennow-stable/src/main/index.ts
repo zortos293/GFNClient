@@ -78,10 +78,10 @@ import {
 } from "./services/printedWaste";
 import { pingRegions } from "./services/regionPing";
 import {
-  buildVideoAccelerationCommandLine,
-  isAccelerationPreference,
-  type BootstrapVideoPreferences,
-} from "./videoAcceleration";
+  buildChromiumCommandLine,
+  normalizeBootstrapChromiumPreferences,
+  type BootstrapChromiumPreferences,
+} from "./chromiumCommandLine";
 import {
   nextPointerLockEscapeCaptureUntilMs,
   shouldCaptureEscapeFullscreenInput,
@@ -92,51 +92,42 @@ import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowRelease
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Configure Chromium video and WebRTC behavior before app.whenReady().
+// Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
-function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
-  const defaults: BootstrapVideoPreferences = {
-    decoderPreference: "auto",
-    encoderPreference: "auto",
-  };
+function loadBootstrapChromiumPreferences(): BootstrapChromiumPreferences {
   try {
     const settingsPath = join(app.getPath("userData"), "settings.json");
     if (!existsSync(settingsPath)) {
-      return defaults;
+      return normalizeBootstrapChromiumPreferences(null);
     }
-    const parsed = JSON.parse(
-      readFileSync(settingsPath, "utf-8"),
-    ) as Partial<BootstrapVideoPreferences>;
-    return {
-      decoderPreference: isAccelerationPreference(parsed.decoderPreference)
-        ? parsed.decoderPreference
-        : defaults.decoderPreference,
-      encoderPreference: isAccelerationPreference(parsed.encoderPreference)
-        ? parsed.encoderPreference
-        : defaults.encoderPreference,
-    };
+    return normalizeBootstrapChromiumPreferences(
+      JSON.parse(readFileSync(settingsPath, "utf-8")),
+    );
   } catch {
-    return defaults;
+    return normalizeBootstrapChromiumPreferences(null);
   }
 }
 
-const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
+const bootstrapChromiumPrefs = loadBootstrapChromiumPreferences();
 console.log(
-  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
+  `[Main] Video acceleration preference: decode=${bootstrapChromiumPrefs.decoderPreference}, encode=${bootstrapChromiumPrefs.encoderPreference}`,
 );
 
-const videoAccelerationCommandLine = buildVideoAccelerationCommandLine(
-  bootstrapVideoPrefs,
+const chromiumCommandLine = buildChromiumCommandLine(
+  bootstrapChromiumPrefs,
   process.platform,
   process.arch,
 );
 
 app.commandLine.appendSwitch(
   "enable-features",
-  videoAccelerationCommandLine.enableFeatures.join(","),
+  chromiumCommandLine.enableFeatures.join(","),
 );
 
-app.commandLine.appendSwitch("disable-features", videoAccelerationCommandLine.disableFeatures.join(","));
+app.commandLine.appendSwitch(
+  "disable-features",
+  chromiumCommandLine.disableFeatures.join(","),
+);
 
 app.commandLine.appendSwitch(
   "force-fieldtrials",
@@ -146,7 +137,7 @@ app.commandLine.appendSwitch(
   ].join("/"),
 );
 
-for (const [name, value] of Object.entries(videoAccelerationCommandLine.switches)) {
+for (const [name, value] of Object.entries(chromiumCommandLine.switches)) {
   if (value === true) {
     app.commandLine.appendSwitch(name);
   } else {

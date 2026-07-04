@@ -346,6 +346,7 @@ export class GfnCursorOverlayController {
 
   private applyCursor(cursor: GfnCursorShape, normalizedPosition?: GfnCursorPosition): void {
     const wasCursorVisible = this.cursorVisible;
+    const cursorChanged = this.currentCursor !== cursor;
     this.currentCursor = cursor;
     this.cursorVisible = cursor.style !== "none";
     if (shouldApplyCursorChannelPosition(wasCursorVisible, this.cursorVisible, normalizedPosition)) {
@@ -355,7 +356,8 @@ export class GfnCursorOverlayController {
       this.positionInitialized = true;
     }
 
-    if (cursor.imageBase64 && !cursor.image) {
+    const needsImageLoad = Boolean(cursor.imageBase64 && !cursor.image);
+    if (needsImageLoad) {
       const generation = ++this.imageLoadGeneration;
       const image = new Image();
       cursor.image = image;
@@ -389,7 +391,13 @@ export class GfnCursorOverlayController {
       }
     }
 
-    this.refresh();
+    if (cursorChanged || needsImageLoad) {
+      this.refresh();
+    } else {
+      const viewport = this.getViewport();
+      this.positionCanvas(viewport);
+      this.applyCursorVisibility();
+    }
   }
 
   private getViewport(): StreamViewport {

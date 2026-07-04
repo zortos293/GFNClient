@@ -1,5 +1,6 @@
 import { accessSync, constants, readFileSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { getLogCapture } from "@shared/logger";
 
 export type LinuxUpdaterPackageKind = "appimage" | "deb" | "native" | "unsupported";
 
@@ -109,7 +110,17 @@ function canReplaceAppImage(appImagePath: string, accessPath?: (path: string, mo
     return true;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    console.debug("[AppUpdater] AppImage install directory is not writable:", appImageDirectory, reason);
+    const logCapture = getLogCapture();
+    if (logCapture) {
+      logCapture.addEntry(
+        "debug",
+        "AppUpdater",
+        "AppImage install directory is not writable:",
+        [appImageDirectory, reason],
+      );
+    } else {
+      console.debug("[AppUpdater] AppImage install directory is not writable:", appImageDirectory, reason);
+    }
     return false;
   }
 }

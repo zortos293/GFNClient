@@ -136,6 +136,12 @@ pub(crate) enum NativeWindowInputEvent {
 }
 
 #[cfg(target_os = "windows")]
+enum EncodedNativeInputBatch {
+    ReliableSingles(Vec<Vec<u8>>),
+    MousePacket(Vec<u8>),
+}
+
+#[cfg(target_os = "windows")]
 mod win32_xinput {
     use std::ffi::{c_char, c_void};
 
@@ -438,8 +444,7 @@ fn send_native_window_input_events(
 
     let mut pending_mouse_move: Option<(i32, i32, u64)> = None;
     let mut current_reliable_singles: Vec<Vec<u8>> = Vec::new();
-    let mut reliable_single_batches: Vec<Vec<Vec<u8>>> = Vec::new();
-    let mut pending_mouse_packets: Vec<Vec<u8>> = Vec::new();
+    let mut input_batches: Vec<EncodedNativeInputBatch> = Vec::new();
 
     {
         let Ok(encoder) = input_state.encoder.lock() else {
@@ -447,11 +452,13 @@ fn send_native_window_input_events(
         };
 
         let mut flush_current_reliable_singles = |singles: &mut Vec<Vec<u8>>,
-                                                   batches: &mut Vec<Vec<Vec<u8>>>| {
+                                                   batches: &mut Vec<EncodedNativeInputBatch>| {
             if singles.is_empty() {
                 return;
             }
-            batches.push(std::mem::take(singles));
+            batches.push(EncodedNativeInputBatch::ReliableSingles(std::mem::take(
+                singles,
+            )));
         };
 
         for event in other_events.iter().copied() {
@@ -469,15 +476,17 @@ fn send_native_window_input_events(
                 continue;
             }
 
-            flush_current_reliable_singles(
-                &mut current_reliable_singles,
-                &mut reliable_single_batches,
-            );
-            collect_pending_mouse_move_packets(
-                &encoder,
-                &mut pending_mouse_move,
-                &mut pending_mouse_packets,
-            );
+            if pending_mouse_move.is_some() {
+                flush_current_reliable_singles(
+                    &mut current_reliable_singles,
+                    &mut input_batches,
+                );
+                collect_pending_mouse_move_packets(
+                    &encoder,
+                    &mut pending_mouse_move,
+                    &mut input_batches,
+                );
+            }
             if let Some(payload) =
                 encode_native_window_input_payload(&encoder, event_sender, event)
             {
@@ -487,25 +496,28 @@ fn send_native_window_input_events(
 
         flush_current_reliable_singles(
             &mut current_reliable_singles,
-            &mut reliable_single_batches,
+            &mut input_batches,
         );
         collect_pending_mouse_move_packets(
             &encoder,
             &mut pending_mouse_move,
-            &mut pending_mouse_packets,
+            &mut input_batches,
         );
     }
 
     let send_timestamp_us = native_input_timestamp_us();
-    for batch in reliable_single_batches {
-        for payload in finalize_reliable_single_input_packets(&batch, send_timestamp_us) {
-            let _ = input_channels.send_packet(&payload, false);
+    for batch in input_batches {
+        match batch {
+            EncodedNativeInputBatch::ReliableSingles(reliable_singles) => {
+                for payload in finalize_reliable_single_input_packets(&reliable_singles, send_timestamp_us) {
+                    let _ = input_channels.send_packet(&payload, false);
+                }
+            }
+            EncodedNativeInputBatch::MousePacket(mut payload) => {
+                restamp_protocol_v3_outer_timestamp(&mut payload, send_timestamp_us);
+                let _ = input_channels.send_packet(&payload, true);
+            }
         }
-    }
-
-    for mut payload in pending_mouse_packets {
-        restamp_protocol_v3_outer_timestamp(&mut payload, send_timestamp_us);
-        let _ = input_channels.send_packet(&payload, true);
     }
 }
 
@@ -513,7 +525,7 @@ fn send_native_window_input_events(
 fn collect_pending_mouse_move_packets(
     encoder: &InputEncoder,
     pending_mouse_move: &mut Option<(i32, i32, u64)>,
-    pending_mouse_packets: &mut Vec<Vec<u8>>,
+    input_batches: &mut Vec<EncodedNativeInputBatch>,
 ) {
     let Some((mut dx, mut dy, timestamp_us)) = pending_mouse_move.take() else {
         return;
@@ -522,11 +534,13 @@ fn collect_pending_mouse_move_packets(
     while dx != 0 || dy != 0 {
         let chunk_dx = dx.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         let chunk_dy = dy.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-        pending_mouse_packets.push(encoder.encode_mouse_move(MouseMovePayload {
-            dx: chunk_dx,
-            dy: chunk_dy,
-            timestamp_us,
-        }));
+        input_batches.push(EncodedNativeInputBatch::MousePacket(encoder.encode_mouse_move(
+            MouseMovePayload {
+                dx: chunk_dx,
+                dy: chunk_dy,
+                timestamp_us,
+            },
+        )));
         dx = dx.saturating_sub(i32::from(chunk_dx));
         dy = dy.saturating_sub(i32::from(chunk_dy));
     }

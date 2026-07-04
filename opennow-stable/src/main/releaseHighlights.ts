@@ -1,12 +1,13 @@
 import { app } from "electron";
 import { join } from "node:path";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import type { ReleaseHighlightsPayload } from "@shared/gfn";
+import { pickRuntimeGitHubToken } from "./githubRuntimeToken";
 
 const GITHUB_API_BASE = "https://api.github.com/repos/OpenCloudGaming/OpenNOW";
 const FETCH_TIMEOUT_MS = 8000;
 const CACHE_FILE = "release-notes-cache.json";
-const UPDATER_TOKEN_ENV_KEYS = ["OPENNOW_GH_TOKEN", "GH_TOKEN"] as const;
+const RELEASE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 // ---------------------------------------------------------------------------
 // Version comparison
@@ -16,15 +17,23 @@ interface SemverParts {
   major: number;
   minor: number;
   patch: number;
-  /** Prerelease tag, e.g. "beta.1" or "rc.2". Empty string = stable release. */
-  prerelease: string;
+  /** Prerelease identifiers, e.g. ["beta", "1"]. Empty = stable release. */
+  prerelease: string[];
+}
+
+export function normalizeReleaseVersion(version: unknown): string | null {
+  if (typeof version !== "string") {
+    return null;
+  }
+  const clean = version.trim().replace(/^v/i, "");
+  return RELEASE_VERSION_PATTERN.test(clean) ? clean : null;
 }
 
 function parseSemver(v: string): SemverParts {
-  const clean = v.replace(/^v/, "");
+  const clean = v.replace(/^v/i, "").split("+", 1)[0] ?? "";
   const dashIdx = clean.indexOf("-");
   const numericPart = dashIdx === -1 ? clean : clean.slice(0, dashIdx);
-  const prerelease = dashIdx === -1 ? "" : clean.slice(dashIdx + 1);
+  const prerelease = dashIdx === -1 ? [] : clean.slice(dashIdx + 1).split(".");
   const [rawMajor = "0", rawMinor = "0", rawPatch = "0"] = numericPart.split(".");
   return {
     major: Math.max(0, parseInt(rawMajor, 10) || 0),
@@ -37,23 +46,33 @@ function parseSemver(v: string): SemverParts {
 /**
  * Compare two prerelease strings.
  * Stable (empty string) is GREATER than any prerelease per semver spec.
- * When both have a prerelease, the numeric suffix is compared if present;
- * otherwise a lexicographic comparison is used.
+ * When both have prerelease identifiers, compare component-by-component.
  * Returns: positive if a > b, negative if a < b, 0 if equal.
  */
-function comparePrerelease(a: string, b: string): number {
-  if (a === b) return 0;
-  // Stable release beats any prerelease
-  if (a === "") return 1;
-  if (b === "") return -1;
-  // Both have prerelease tags: try comparing trailing numeric identifiers
-  const numA = parseInt(a.replace(/^.*?(\d+)$/, "$1"), 10);
-  const numB = parseInt(b.replace(/^.*?(\d+)$/, "$1"), 10);
-  if (!Number.isNaN(numA) && !Number.isNaN(numB)) {
-    return numA - numB;
+function comparePrerelease(a: string[], b: string[]): number {
+  if (a.length === 0 && b.length === 0) return 0;
+  if (a.length === 0) return 1;
+  if (b.length === 0) return -1;
+
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const left = a[index];
+    const right = b[index];
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    if (left === right) continue;
+
+    const leftNumeric = /^[0-9]+$/.test(left);
+    const rightNumeric = /^[0-9]+$/.test(right);
+    if (leftNumeric && rightNumeric) {
+      return Number(left) - Number(right);
+    }
+    if (leftNumeric) return -1;
+    if (rightNumeric) return 1;
+    return left < right ? -1 : 1;
   }
-  // Fall back to lexicographic order
-  return a < b ? -1 : 1;
+
+  return 0;
 }
 
 /**
@@ -72,18 +91,6 @@ export function shouldShowReleaseHighlights(current: string, lastSeen: string): 
 }
 
 // ---------------------------------------------------------------------------
-// GitHub token
-// ---------------------------------------------------------------------------
-
-function pickRuntimeToken(): string | null {
-  for (const key of UPDATER_TOKEN_ENV_KEYS) {
-    const value = process.env[key]?.trim();
-    if (value) return value;
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Release-notes cache (for offline fallback)
 // ---------------------------------------------------------------------------
 
@@ -93,28 +100,26 @@ function getCachePath(): string {
   return join(app.getPath("userData"), CACHE_FILE);
 }
 
-function readCache(): ReleaseNotesCache {
+async function readCache(): Promise<ReleaseNotesCache> {
   try {
-    const path = getCachePath();
-    if (!existsSync(path)) return {};
-    return JSON.parse(readFileSync(path, "utf-8")) as ReleaseNotesCache;
+    return JSON.parse(await readFile(getCachePath(), "utf-8")) as ReleaseNotesCache;
   } catch {
     return {};
   }
 }
 
-export function writeCacheEntry(version: string, body: string): void {
+export async function writeCacheEntry(version: string, body: string): Promise<void> {
   try {
-    const cache = readCache();
+    const cache = await readCache();
     cache[version] = body;
-    writeFileSync(getCachePath(), JSON.stringify(cache, null, 2), "utf-8");
+    await writeFile(getCachePath(), JSON.stringify(cache, null, 2), "utf-8");
   } catch (error) {
     console.warn("[ReleaseHighlights] Failed to write cache:", error);
   }
 }
 
-function readCacheEntry(version: string): string | null {
-  const cache = readCache();
+async function readCacheEntry(version: string): Promise<string | null> {
+  const cache = await readCache();
   return cache[version] ?? null;
 }
 
@@ -130,14 +135,14 @@ interface GitHubRelease {
 
 async function fetchFromGitHub(version: string): Promise<string | null> {
   const tag = version.startsWith("v") ? version : `v${version}`;
-  const url = `${GITHUB_API_BASE}/releases/tags/${tag}`;
+  const url = `${GITHUB_API_BASE}/releases/tags/${encodeURIComponent(tag)}`;
 
   const headers: HeadersInit = {
     Accept: "application/vnd.github+json",
     "User-Agent": `OpenNOW/${version} (electron)`,
   };
 
-  const token = pickRuntimeToken();
+  const token = pickRuntimeGitHubToken();
   if (token) {
     (headers as Record<string, string>)["Authorization"] = `token ${token}`;
   }
@@ -178,14 +183,16 @@ const FALLBACK_BODY_TEMPLATE = (version: string): string =>
  * Never throws — always returns a payload.
  */
 export async function getReleaseHighlightsPayload(version: string): Promise<ReleaseHighlightsPayload> {
-  const cleanVersion = version.replace(/^v/, "");
+  const cleanVersion = normalizeReleaseVersion(version)
+    ?? normalizeReleaseVersion(app.getVersion())
+    ?? "0.0.0";
   const displayTitle = `OpenNOW v${cleanVersion}`;
 
   // 1. Try GitHub
   const githubBody = await fetchFromGitHub(cleanVersion);
   if (githubBody) {
     // Cache successful GitHub fetch for offline fallback next time
-    writeCacheEntry(cleanVersion, githubBody);
+    await writeCacheEntry(cleanVersion, githubBody);
     return {
       version: cleanVersion,
       title: displayTitle,
@@ -195,7 +202,7 @@ export async function getReleaseHighlightsPayload(version: string): Promise<Rele
   }
 
   // 2. Try local updater cache
-  const cachedBody = readCacheEntry(cleanVersion);
+  const cachedBody = await readCacheEntry(cleanVersion);
   if (cachedBody) {
     return {
       version: cleanVersion,

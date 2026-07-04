@@ -1567,6 +1567,13 @@ export function App(): JSX.Element {
         // ignore
       }
     }
+    if (key === "nativeCursorOverlay") {
+      try {
+        clientRef.current?.setNativeCursorOverlayEnabled(value as boolean);
+      } catch {
+        // ignore
+      }
+    }
     if (key === "maxBitrateMbps") {
       try {
         void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
@@ -4145,6 +4152,16 @@ export function App(): JSX.Element {
       });
   }, []);
 
+  const handleDismissReleaseHighlights = useCallback((): void => {
+    if (releaseHighlightsIsAuto) {
+      void window.openNow.ackReleaseHighlights().catch((err) => {
+        console.warn("[App] Failed to ack release highlights:", err);
+      });
+    }
+    setReleaseHighlightsPayload(null);
+    setReleaseHighlightsIsAuto(false);
+  }, [releaseHighlightsIsAuto]);
+
   const handleSettingsExitComplete = useCallback((): void => {
     setSettingsMounted(false);
   }, []);
@@ -4179,15 +4196,7 @@ export function App(): JSX.Element {
           <ReleaseHighlightsModal
             payload={releaseHighlightsPayload}
             version={releaseHighlightsPayload.version}
-            onDismiss={() => {
-              if (releaseHighlightsIsAuto) {
-                void window.openNow.ackReleaseHighlights().catch((err) => {
-                  console.warn("[App] Failed to ack release highlights:", err);
-                });
-              }
-              setReleaseHighlightsPayload(null);
-              setReleaseHighlightsIsAuto(false);
-            }}
+            onDismiss={handleDismissReleaseHighlights}
           />
         )}
       </>
@@ -4440,15 +4449,7 @@ export function App(): JSX.Element {
         <ReleaseHighlightsModal
           payload={releaseHighlightsPayload}
           version={releaseHighlightsPayload.version}
-          onDismiss={() => {
-            if (releaseHighlightsIsAuto) {
-              void window.openNow.ackReleaseHighlights().catch((err) => {
-                console.warn("[App] Failed to ack release highlights:", err);
-              });
-            }
-            setReleaseHighlightsPayload(null);
-            setReleaseHighlightsIsAuto(false);
-          }}
+          onDismiss={handleDismissReleaseHighlights}
         />
       )}
     </div>

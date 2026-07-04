@@ -60,7 +60,7 @@ function normalizeFunctionKeyToken(upper: string): string | null {
   }
 
   const index = Number.parseInt(match[1], 10);
-  return index >= 1 && index <= 24 ? upper : null;
+  return index >= 1 && index <= 24 ? `F${index}` : null;
 }
 
 function normalizeNumpadDigitToken(upper: string): string | null {

@@ -3,6 +3,7 @@ import electronUpdater from "electron-updater";
 import type { AppUpdater, ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 
 import { getAppBuildInfo } from "./appBuildInfo";
+import { pickRuntimeGitHubToken } from "./githubRuntimeToken";
 import { getLinuxUpdaterSupport } from "./linuxUpdaterSupport";
 import { writeCacheEntry } from "./releaseHighlights";
 import type { AppUpdaterState } from "@shared/gfn";
@@ -11,7 +12,6 @@ const { autoUpdater } = electronUpdater;
 
 const STARTUP_CHECK_DELAY_MS = 12_000;
 const PERIODIC_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const UPDATER_TOKEN_ENV_KEYS = ["OPENNOW_GH_TOKEN", "GH_TOKEN"] as const;
 
 export interface AppUpdaterController {
   initialize(): void;
@@ -32,17 +32,6 @@ interface AppUpdaterControllerOptions {
 
 function isPrereleaseVersion(version: string): boolean {
   return version.includes("-");
-}
-
-function pickRuntimeToken(): string | null {
-  for (const key of UPDATER_TOKEN_ENV_KEYS) {
-    const value = process.env[key]?.trim();
-    if (value) {
-      return value;
-    }
-  }
-
-  return null;
 }
 
 function normalizeErrorMessage(error: unknown): string {
@@ -147,7 +136,7 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   }
 
   const updater: AppUpdater = autoUpdater;
-  const token = pickRuntimeToken();
+  const token = pickRuntimeGitHubToken();
   if (token) {
     updater.requestHeaders = {
       ...updater.requestHeaders,
@@ -300,7 +289,7 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
           .join("\n\n");
       }
       if (body) {
-        writeCacheEntry(downloadedVersion.replace(/^v/, ""), body);
+        void writeCacheEntry(downloadedVersion.replace(/^v/, ""), body);
       }
     }
     updateState({

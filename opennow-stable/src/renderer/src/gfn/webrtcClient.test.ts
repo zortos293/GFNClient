@@ -78,15 +78,22 @@ test("adaptive flush tightens under low pressure and relaxes under pressure on r
   assert.equal(highPressure, 9);
 });
 
-test("subsampleCoalescedPointerEvents thins large coalesced bursts", () => {
+test("subsampleCoalescedPointerEvents limits large coalesced bursts without dropping movement", () => {
   const samples = Array.from({ length: 12 }, (_, index) => ({
     movementX: index,
-    movementY: index,
+    movementY: index * 2,
   }));
   const { events, stride } = subsampleCoalescedPointerEvents(samples, 0, 4);
   assert.ok(stride > 1);
   assert.ok(events.length < samples.length);
-  assert.equal(events[0]?.movementX, 0);
+  assert.equal(
+    events.reduce((total, event) => total + event.movementX, 0),
+    samples.reduce((total, event) => total + event.movementX, 0),
+  );
+  assert.equal(
+    events.reduce((total, event) => total + event.movementY, 0),
+    samples.reduce((total, event) => total + event.movementY, 0),
+  );
 });
 
 const stableLagParams = {

@@ -87,7 +87,7 @@ import {
   shouldCaptureEscapeFullscreenInput,
 } from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
-import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./releaseHighlights";
+import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowReleaseHighlights } from "./releaseHighlights";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1154,7 +1154,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET,
     async (_event, version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> => {
-      const targetVersion = (version ?? app.getVersion()).replace(/^v/, "");
+      const appVersion = normalizeReleaseVersion(app.getVersion()) ?? "0.0.0";
+      const targetVersion = normalizeReleaseVersion(version ?? appVersion) ?? appVersion;
       return getReleaseHighlightsPayload(targetVersion);
     },
   );

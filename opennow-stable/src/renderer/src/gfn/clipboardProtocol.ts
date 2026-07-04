@@ -49,7 +49,7 @@ export function clipboardUtf8Size(text: string): number {
   return new Blob([text]).size;
 }
 
-export function clampClipboardText(text: string, maxBytes: number): string | null {
+export function validateClipboardText(text: string, maxBytes: number): string | null {
   if (!text || maxBytes <= 0 || clipboardUtf8Size(text) > maxBytes) {
     return null;
   }

@@ -15,7 +15,13 @@ const electronPathFile = path.join(electronDir, "path.txt");
 const platform = process.env.ELECTRON_INSTALL_PLATFORM ?? process.env.npm_config_platform ?? process.platform;
 const arch = process.env.ELECTRON_INSTALL_ARCH ?? process.env.npm_config_arch ?? process.arch;
 
-if (process.env.ELECTRON_SKIP_BINARY_DOWNLOAD || process.env.npm_config_electron_skip_binary_download) {
+const electronSkipFlag = process.env.ELECTRON_SKIP_BINARY_DOWNLOAD
+  ? "ELECTRON_SKIP_BINARY_DOWNLOAD"
+  : process.env.npm_config_electron_skip_binary_download
+    ? "npm_config_electron_skip_binary_download"
+    : null;
+if (electronSkipFlag) {
+  console.log(`[ensure-electron-installed] Skipping Electron binary download (${electronSkipFlag} is set).`);
   process.exit(0);
 }
 

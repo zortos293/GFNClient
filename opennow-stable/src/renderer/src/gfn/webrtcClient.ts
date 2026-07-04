@@ -37,12 +37,12 @@ import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import { GfnCursorOverlayController } from "./cursorChannel";
 import {
   buildClipboardControlMessage,
-  clampClipboardText,
   CLIPBOARD_CLIENT_ADDED_DATA,
   CLIPBOARD_CLIENT_DATA_RESPONSE,
   CLIPBOARD_CLIENT_REMOVED_DATA,
   isClipboardServerDataRequest,
   parseClipboardControlMessage,
+  validateClipboardText,
   type ClipboardTracingData,
 } from "./clipboardProtocol";
 import {
@@ -372,7 +372,7 @@ export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecis
   return boundedCurrent;
 }
 
-/** Subsample coalesced pointer samples like official GFN wm() when bursts are large. */
+/** Coalesce pointer samples like official GFN wm() when bursts are large. */
 export function subsampleCoalescedPointerEvents<T extends { movementX: number; movementY: number }>(
   samples: readonly T[],
   pendingBatchEntries: number,
@@ -392,7 +392,18 @@ export function subsampleCoalescedPointerEvents<T extends { movementX: number; m
   const stride = Math.ceil(samples.length / budget);
   const events: T[] = [];
   for (let index = 0; index < samples.length; index += stride) {
-    events.push(samples[index]!);
+    const end = Math.min(index + stride, samples.length);
+    let movementX = 0;
+    let movementY = 0;
+    for (let sampleIndex = index; sampleIndex < end; sampleIndex += 1) {
+      movementX += samples[sampleIndex]!.movementX;
+      movementY += samples[sampleIndex]!.movementY;
+    }
+    events.push({
+      ...samples[end - 1]!,
+      movementX,
+      movementY,
+    } as T);
   }
   return { events, stride };
 }
@@ -993,6 +1004,40 @@ export class GfnWebRtcClient {
     return this.options.nativeCursorOverlay !== false;
   }
 
+  public setNativeCursorOverlayEnabled(value: boolean): void {
+    const enabled = Boolean(value);
+    if (this.isNativeCursorOverlayEnabled() === enabled) {
+      return;
+    }
+
+    this.options.nativeCursorOverlay = enabled;
+    if (!enabled) {
+      this.cursorOverlay?.dispose();
+      this.cursorOverlay = null;
+      this.closeCursorChannel();
+      this.log("Native cursor overlay disabled");
+      return;
+    }
+
+    if (!this.cursorOverlay) {
+      this.cursorOverlay = new GfnCursorOverlayController(this.options.videoElement);
+      this.cursorOverlay.setFallbackResolution(parseResolution(this.currentResolution));
+      const lockElement = document.pointerLockElement;
+      const pointerLockTarget = this.options.videoElement.parentElement;
+      this.cursorOverlay.setPointerLocked(
+        lockElement === this.options.videoElement || lockElement === pointerLockTarget,
+      );
+    }
+    if (this.pc && !this.cursorChannel) {
+      try {
+        this.createCursorChannel(this.pc);
+      } catch (error) {
+        this.log(`Failed to open cursor channel: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    this.log("Native cursor overlay enabled");
+  }
+
   private shouldAutoFullscreen(): boolean {
     return this.autoFullScreenEnabled;
   }
@@ -1087,7 +1132,7 @@ export class GfnWebRtcClient {
 
     try {
       const text = await this.options.readClipboardText();
-      return clampClipboardText(text, this.clipboardMaxBytes);
+      return validateClipboardText(text, this.clipboardMaxBytes);
     } catch (error) {
       this.log(`Clipboard read failed: ${error instanceof Error ? error.message : String(error)}`);
       return null;
@@ -1431,19 +1476,24 @@ export class GfnWebRtcClient {
       this.controlChannel.onclose = null;
       this.controlChannel.onerror = null;
     }
-    if (this.cursorChannel) {
-      this.cursorChannel.onmessage = null;
-      this.cursorChannel.onclose = null;
-      this.cursorChannel.onerror = null;
-    }
     this.reliableInputChannel?.close();
     this.partiallyReliableInputChannel?.close();
-    this.cursorChannel?.close();
+    this.closeCursorChannel();
     this.controlChannel?.close();
     this.reliableInputChannel = null;
     this.partiallyReliableInputChannel = null;
-    this.cursorChannel = null;
     this.controlChannel = null;
+  }
+
+  private closeCursorChannel(): void {
+    if (!this.cursorChannel) {
+      return;
+    }
+    this.cursorChannel.onmessage = null;
+    this.cursorChannel.onclose = null;
+    this.cursorChannel.onerror = null;
+    this.cursorChannel.close();
+    this.cursorChannel = null;
   }
 
   private clearTimers(): void {
@@ -2932,6 +2982,14 @@ export class GfnWebRtcClient {
       return;
     }
 
+    this.createCursorChannel(pc);
+  }
+
+  private createCursorChannel(pc: RTCPeerConnection): void {
+    if (this.cursorChannel) {
+      return;
+    }
+
     this.cursorChannel = pc.createDataChannel("cursor_channel", {
       ordered: true,
     });
@@ -3792,6 +3850,16 @@ export class GfnWebRtcClient {
 
       if (isCapsLockToggle) {
         // Official GFN gg(): CapsLock keyup sends synthetic keydown then keyup (vk 160).
+        if (mapped && this.pressedKeys.has(mapped.vk)) {
+          this.pressedKeys.delete(mapped.vk);
+          this.sendReliableSingleInput(this.inputEncoder.encodeKeyUp({
+            keycode: mapped.vk,
+            scancode: mapped.scancode,
+            modifiers,
+            timestampUs: eventTimestampUs,
+          }));
+        }
+
         const capsVk = 0xa0;
         this.sendReliableSingleInput(this.inputEncoder.encodeKeyDown({
           keycode: capsVk,

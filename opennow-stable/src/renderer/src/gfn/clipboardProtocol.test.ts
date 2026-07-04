@@ -5,13 +5,13 @@ import assert from "node:assert/strict";
 
 import {
   buildClipboardControlMessage,
-  clampClipboardText,
   CLIPBOARD_CLIENT_DATA_RESPONSE,
   CLIPBOARD_SERVER_DATA_REQUEST,
   GFN_CLIPBOARD_MESSAGE_TYPE,
   GFN_CLIPBOARD_SERVER_RECIPIENT,
   isClipboardServerDataRequest,
   parseClipboardControlMessage,
+  validateClipboardText,
 } from "./clipboardProtocol";
 
 test("buildClipboardControlMessage matches official PASTE custom-message envelope", () => {
@@ -56,8 +56,8 @@ test("parseClipboardControlMessage detects official server data requests", () =>
   assert.equal(payload?.tracingData?.requestId, "req-2");
 });
 
-test("clampClipboardText enforces UTF-8 byte limit", () => {
-  assert.equal(clampClipboardText("abc", 3), "abc");
-  assert.equal(clampClipboardText("é", 1), null);
-  assert.equal(clampClipboardText("", 10), null);
+test("validateClipboardText enforces UTF-8 byte limit", () => {
+  assert.equal(validateClipboardText("abc", 3), "abc");
+  assert.equal(validateClipboardText("é", 1), null);
+  assert.equal(validateClipboardText("", 10), null);
 });

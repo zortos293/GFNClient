@@ -4542,6 +4542,7 @@ final class OpenNOWStore: ObservableObject {
     private var sessionPollBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     #endif
     private var cachedVpcId: String = "GFN-PC"
+    private var remoteSessionsSnapshotLoaded = false
     private var adReportStateById: [String: SessionAdAction] = [:]
     private var adStartedAtById: [String: Date] = [:]
     private var reopenToken: UUID = UUID()
@@ -4611,6 +4612,16 @@ final class OpenNOWStore: ObservableObject {
     var supportsNativeOAuth: Bool { OpenNOWPlatform.supportsNativeOAuth }
     var supportsEmbeddedStreamer: Bool { OpenNOWPlatform.supportsEmbeddedStreamer }
     var currentStreamerSettings: AppSettings { activeStreamSettings ?? settings }
+
+    private func nativeLaunchSettings(for requestedSettings: AppSettings, context: String) -> AppSettings {
+        let resolved = NativeStreamLaunchSettingsResolver.resolve(requestedSettings)
+        if let reason = resolved.reason {
+            logger.notice(
+                "Adjusted native stream settings context=\(context, privacy: .public) reason=\(reason, privacy: .public) requestedCodec=\(requestedSettings.preferredCodec, privacy: .public) resolvedCodec=\(resolved.settings.preferredCodec, privacy: .public)"
+            )
+        }
+        return resolved.settings
+    }
     var cloudStorageManagementURL: URL { GFNConstants.storageManagementURL }
     var cloudStorageResetURL: URL { GFNConstants.storageResetURL }
     var cloudStorageAddURL: URL { GFNConstants.storageAddURL }
@@ -4630,9 +4641,6 @@ final class OpenNOWStore: ObservableObject {
         syncTrackedSessionSurface()
         isBootstrapping = false
 
-        Task {
-            await NotificationManager.shared.requestPermission()
-        }
         Task {
             let fetchedProviders = await api.fetchProviders()
             providers = fetchedProviders.isEmpty ? [GFNConstants.defaultProvider] : fetchedProviders
@@ -4761,6 +4769,7 @@ final class OpenNOWStore: ObservableObject {
         resumableSessions = []
         activeSession = nil
         activeStreamSettings = nil
+        remoteSessionsSnapshotLoaded = false
         setStreamSession(nil, reason: "signOut")
         subscription = nil
         sessionElapsedTask?.cancel()
@@ -4805,14 +4814,21 @@ final class OpenNOWStore: ObservableObject {
             if let connectors {
                 accountConnectors = connectors
             }
-            let remoteSessions = (try? await api.fetchActiveSessions(
-                session: refreshed,
-                streamingBaseUrl: refreshed.provider.streamingServiceUrl,
-                vpcId: vpcId,
-                settings: settings,
-                deviceId: persistentDeviceId()
-            )) ?? []
-            resumableSessions = compatibleRemoteSessions(remoteSessions, settings: settings, session: refreshed)
+            let streamSettings = nativeLaunchSettings(for: activeStreamSettings ?? settings, context: "refreshCatalog")
+            do {
+                let remoteSessions = try await api.fetchActiveSessions(
+                    session: refreshed,
+                    streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                    vpcId: vpcId,
+                    settings: streamSettings,
+                    deviceId: persistentDeviceId()
+                )
+                resumableSessions = compatibleRemoteSessions(remoteSessions, settings: streamSettings, session: refreshed)
+                remoteSessionsSnapshotLoaded = true
+            } catch {
+                remoteSessionsSnapshotLoaded = false
+                logger.warning("Could not refresh remote sessions during catalog refresh error=\(error.localizedDescription, privacy: .public)")
+            }
             if let sub {
                 var updatedUser = refreshed.user
                 updatedUser.membershipTier = sub.membershipTier
@@ -4916,6 +4932,7 @@ final class OpenNOWStore: ObservableObject {
         }
         var launchSettings = settingsOverride ?? settings
         launchSettings.normalizeStreamDefaults()
+        launchSettings = nativeLaunchSettings(for: launchSettings, context: "launch")
         guard let session = authSession else {
             lastError = "Sign in first."
             return
@@ -4947,13 +4964,21 @@ final class OpenNOWStore: ObservableObject {
 
             let deviceId = persistentDeviceId()
             let baseUrl = zoneUrl ?? refreshed.provider.streamingServiceUrl
-            let activeCandidates = (try? await api.fetchActiveSessions(
-                session: refreshed,
-                streamingBaseUrl: baseUrl,
-                vpcId: cachedVpcId,
-                settings: launchSettings,
-                deviceId: deviceId
-            )) ?? []
+            let activeCandidates: [RemoteSessionCandidate]
+            do {
+                activeCandidates = try await api.fetchActiveSessions(
+                    session: refreshed,
+                    streamingBaseUrl: baseUrl,
+                    vpcId: cachedVpcId,
+                    settings: launchSettings,
+                    deviceId: deviceId
+                )
+                remoteSessionsSnapshotLoaded = true
+            } catch {
+                activeCandidates = []
+                remoteSessionsSnapshotLoaded = false
+                logger.warning("Could not refresh active sessions before launch error=\(error.localizedDescription, privacy: .public)")
+            }
 
             let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: launchSettings, session: refreshed)
             resumableSessions = compatibleCandidates
@@ -5185,15 +5210,18 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
+            let streamSettings = nativeLaunchSettings(for: activeStreamSettings ?? settings, context: "refreshRemoteSessions")
             let remoteSessions = try await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: cachedVpcId,
-                settings: settings,
+                settings: streamSettings,
                 deviceId: persistentDeviceId()
             )
-            resumableSessions = compatibleRemoteSessions(remoteSessions, settings: settings, session: refreshed)
+            resumableSessions = compatibleRemoteSessions(remoteSessions, settings: streamSettings, session: refreshed)
+            remoteSessionsSnapshotLoaded = true
         } catch {
+            remoteSessionsSnapshotLoaded = false
             lastError = "Could not fetch active sessions: \(error.localizedDescription)"
         }
     }
@@ -5247,7 +5275,8 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
-            guard remoteSession(candidate, matchesStreamSettings: settings, session: refreshed) else {
+            let streamSettings = nativeLaunchSettings(for: settings, context: "resumeSession")
+            guard remoteSession(candidate, matchesStreamSettings: streamSettings, session: refreshed) else {
                 resumableSessions.removeAll { $0.id == candidate.id }
                 throw NSError(
                     domain: "OpenNOW.Session",
@@ -5263,11 +5292,11 @@ final class OpenNOWStore: ObservableObject {
                 game: game,
                 streamingBaseUrl: refreshed.provider.streamingServiceUrl,
                 vpcId: cachedVpcId,
-                settings: settings,
+                settings: streamSettings,
                 deviceId: persistentDeviceId()
             )
             activeSession = claimed
-            activeStreamSettings = settings
+            activeStreamSettings = streamSettings
             adReportStateById = [:]
             adStartedAtById = [:]
             sessionElapsedSeconds = 0
@@ -6352,6 +6381,13 @@ final class OpenNOWStore: ObservableObject {
             return
         }
         if !resumableSessions.contains(where: { $0.id == persisted.id }) {
+            if remoteSessionsSnapshotLoaded {
+                logger.notice(
+                    "Discarding persisted session id=\(persisted.id, privacy: .public) because it is absent from refreshed active-session list."
+                )
+                clearLocalSessionState(reason: "restoreTrackedSessionIfNeeded.missingRemote")
+                return
+            }
             logger.notice(
                 "Persisted session id=\(persisted.id, privacy: .public) not present in active-session list; keeping it pollable for jump back."
             )

@@ -840,6 +840,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var lastStatsFramesDecoded: Int?
     private var lastStatsBytesReceived: Int?
     private var autoRetryScheduled = false
+    private var webRTCAudioSessionConfigured = false
+    private var mutedAudioDevice: NativeStreamMutedAudioDevice?
 
     init(
         session: ActiveSession,
@@ -1110,6 +1112,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         peerConnection?.close()
         peerConnection = nil
         factory = nil
+        mutedAudioDevice = nil
         answerSent = false
         queuedLocalIceCandidates.removeAll(keepingCapacity: true)
     }
@@ -1283,10 +1286,16 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func createPeerConnection(with offerSDP: String) {
         if factory == nil {
             _ = RTCInitializeSSL()
+            let audioDevice = shouldNegotiateAudio ? nil : NativeStreamMutedAudioDevice()
+            mutedAudioDevice = audioDevice
             factory = RTCPeerConnectionFactory(
                 encoderFactory: RTCDefaultVideoEncoderFactory(),
-                decoderFactory: RTCDefaultVideoDecoderFactory()
+                decoderFactory: NativeStreamVideoDecoderFactory(),
+                audioDevice: audioDevice
             )
+            if audioDevice != nil {
+                log("Using muted WebRTC audio device")
+            }
         }
         guard let factory else {
             fail("Could not create WebRTC factory")
@@ -1330,7 +1339,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         )
         partiallyReliableInputChannel?.delegate = self
 
-        var processedOffer = NativeStreamSDP.fixServerIP(in: offerSDP, serverIP: session.mediaIp)
+        var processedOffer = prepareRemoteOffer(offerSDP)
         let didRewriteCandidate = processedOffer != offerSDP
         negotiationDebugText = [
             "media \(session.mediaIp ?? "nil"):\(session.mediaPort)",
@@ -1354,6 +1363,30 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 self.createAnswer(for: processedOffer)
             }
         }
+    }
+
+    private func prepareRemoteOffer(_ offerSDP: String) -> String {
+        var prepared = NativeStreamSDP.fixServerIP(in: offerSDP, serverIP: session.mediaIp)
+        guard selectedCodec == .h265 else { return prepared }
+
+        let maxLevels = h265ReceiverMaxLevelsByProfile()
+        if !maxLevels.isEmpty {
+            let rewritten = NativeStreamSDP.rewriteH265LevelIdByProfile(in: prepared, maxLevelByProfile: maxLevels)
+            if rewritten.replacements > 0 {
+                log("H265 level-id clamped replacements=\(rewritten.replacements) maxLevels=\(maxLevels)")
+                prepared = rewritten.sdp
+            }
+        }
+
+        if !supportsH265TierFlagOne() {
+            let rewritten = NativeStreamSDP.rewriteH265TierFlag(in: prepared, tierFlag: 0)
+            if rewritten.replacements > 0 {
+                log("H265 tier-flag rewritten replacements=\(rewritten.replacements)")
+                prepared = rewritten.sdp
+            }
+        }
+
+        return prepared
     }
 
     private func applyCodecPreferences() {
@@ -1409,6 +1442,32 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         return 2
     }
 
+    private func h265ReceiverMaxLevelsByProfile() -> [Int: Int] {
+        receiverH265Capabilities()
+            .compactMap { capability -> (Int, Int)? in
+                guard let profile = capability.codecParameterInt("profile-id"),
+                      let level = capability.codecParameterInt("level-id") else {
+                    return nil
+                }
+                return (profile, level)
+            }
+            .reduce(into: [Int: Int]()) { partial, pair in
+                partial[pair.0] = max(partial[pair.0] ?? 0, pair.1)
+            }
+            .filter { $0.value > 0 }
+    }
+
+    private func supportsH265TierFlagOne() -> Bool {
+        receiverH265Capabilities().contains { $0.codecParameterInt("tier-flag") == 1 }
+    }
+
+    private func receiverH265Capabilities() -> [RTCRtpCodecCapability] {
+        guard let factory else { return [] }
+        return factory.rtpReceiverCapabilities(forKind: kRTCMediaStreamTrackKindVideo).codecs.filter {
+            capabilityMatches($0, codec: .h265)
+        }
+    }
+
     private func createAnswer(for processedOffer: String) {
         guard let peerConnection else { return }
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -1426,6 +1485,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 let mungedSDP = NativeStreamSDP.mungeAnswerSDP(answer.sdp, maxBitrateKbps: self.streamProfile.maxBitrateKbps)
                 self.localCodecDebugText = NativeStreamSDP.describeNegotiatedVideo(from: mungedSDP)
                 self.log("Local video SDP \(self.localCodecDebugText)")
+                if self.selectedCodec != .h264,
+                   !NativeStreamSDP.negotiatesCodec(mungedSDP, codec: self.selectedCodec) {
+                    self.log("Local answer did not negotiate requested codec \(self.selectedCodec.rawValue); requesting safe fallback")
+                    self.onSafeVideoFallbackRequired("\(self.selectedCodec.rawValue) was requested but WebRTC did not negotiate it; restarting with safe H264 profile")
+                    return
+                }
                 let localDescription = RTCSessionDescription(type: .answer, sdp: mungedSDP)
                 guard let connection = self.peerConnection else {
                     self.fail("Peer connection closed before local SDP")
@@ -1899,27 +1964,30 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         )
     }
 
-    private func configureWebRTCAudioSession() {
-        let audioSession = RTCAudioSession.sharedInstance()
-        let enableAudio: Bool
+    private var shouldNegotiateAudio: Bool {
         #if targetEnvironment(simulator)
-        enableAudio = false
+        false
         #else
-        enableAudio = !streamerPreferences.audioMuted
+        !streamerPreferences.audioMuted
         #endif
+    }
+
+    private func configureWebRTCAudioSession() {
+        guard shouldNegotiateAudio else {
+            log("WebRTC audio held disabled")
+            return
+        }
+
+        let audioSession = RTCAudioSession.sharedInstance()
+        let enableMic = settings.keepMicEnabled
 
         audioSession.useManualAudio = true
-        audioSession.isAudioEnabled = enableAudio
         audioSession.ignoresPreferredAttributeConfigurationErrors = true
         audioSession.lockForConfiguration()
         defer { audioSession.unlockForConfiguration() }
 
-        let options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
-        do {
-            try audioSession.setCategory(.playback, mode: .moviePlayback, options: options)
-        } catch {
-            log("Audio session category failed: \(error.localizedDescription)")
-        }
+        configureAudioCategory(audioSession, enableMic: enableMic)
+        audioSession.isAudioEnabled = true
         do {
             try audioSession.setPreferredSampleRate(48_000)
         } catch {
@@ -1930,46 +1998,63 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         } catch {
             log("Audio session buffer duration failed: \(error.localizedDescription)")
         }
-        #if !targetEnvironment(simulator)
-        if enableAudio {
-            activateWebRTCAudioSession(audioSession)
-        }
-        log(enableAudio ? "WebRTC audio enabled" : "WebRTC audio held disabled")
-        #else
-        log("WebRTC audio held disabled")
-        #endif
+        activateWebRTCAudioSession(audioSession)
+        webRTCAudioSessionConfigured = true
+        log("WebRTC audio playback enabled mic=\(enableMic)")
     }
 
     private func applyLiveAudioPreference() {
-        let audioSession = RTCAudioSession.sharedInstance()
-        audioSession.useManualAudio = true
-        #if targetEnvironment(simulator)
-        audioSession.isAudioEnabled = false
-        log("WebRTC audio held disabled")
-        #else
-        let enableAudio = !streamerPreferences.audioMuted
-        audioSession.isAudioEnabled = enableAudio
-        if enableAudio {
-            activateWebRTCAudioSession(audioSession)
+        if mutedAudioDevice != nil {
+            log("WebRTC audio held disabled until stream restart")
+            return
         }
-        log(enableAudio ? "WebRTC audio enabled" : "WebRTC audio held disabled")
-        #endif
+
+        guard shouldNegotiateAudio else {
+            teardownWebRTCAudioSession()
+            log("WebRTC audio held disabled")
+            return
+        }
+
+        configureWebRTCAudioSession()
     }
 
-    #if !targetEnvironment(simulator)
+    private func configureAudioCategory(_ audioSession: RTCAudioSession, enableMic: Bool) {
+        let category: AVAudioSession.Category = enableMic ? .playAndRecord : .playback
+        let mode: AVAudioSession.Mode = enableMic ? .voiceChat : .moviePlayback
+        let options: AVAudioSession.CategoryOptions = enableMic
+            ? [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
+            : [.allowBluetoothA2DP]
+
+        do {
+            try audioSession.setCategory(category, mode: mode, options: options)
+        } catch {
+            log("Audio session category failed: \(error.localizedDescription)")
+        }
+    }
+
     private func activateWebRTCAudioSession(_ audioSession: RTCAudioSession) {
+        #if !targetEnvironment(simulator)
         do {
             try audioSession.setActive(true)
         } catch {
             log("Audio session activation failed: \(error.localizedDescription)")
         }
+        #endif
     }
-    #endif
 
     private func teardownWebRTCAudioSession() {
+        guard webRTCAudioSessionConfigured else { return }
         let audioSession = RTCAudioSession.sharedInstance()
         audioSession.useManualAudio = true
         audioSession.isAudioEnabled = false
+        #if !targetEnvironment(simulator)
+        do {
+            try audioSession.setActive(false)
+        } catch {
+            log("Audio session deactivation failed: \(error.localizedDescription)")
+        }
+        #endif
+        webRTCAudioSessionConfigured = false
     }
 }
 
@@ -3083,6 +3168,12 @@ private enum NativeStreamHapticsParser {
             | (UInt32(bytes[offset + 1]) << 8)
             | (UInt32(bytes[offset + 2]) << 16)
             | (UInt32(bytes[offset + 3]) << 24)
+    }
+}
+
+private extension RTCRtpCodecCapability {
+    func codecParameterInt(_ name: String) -> Int? {
+        parameters[name].flatMap(Int.init)
     }
 }
 #endif

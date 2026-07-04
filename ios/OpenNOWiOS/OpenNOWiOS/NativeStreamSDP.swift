@@ -209,6 +209,83 @@ enum NativeStreamSDP {
         return output.joined(separator: lineEnding)
     }
 
+    static func rewriteH265TierFlag(in sdp: String, tierFlag: Int) -> (sdp: String, replacements: Int) {
+        let payloads = h265PayloadTypes(in: sdp)
+        guard !payloads.isEmpty else { return (sdp, 0) }
+        let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
+        var replacements = 0
+        let output = normalizedLines(sdp).map { line -> String in
+            guard line.hasPrefix("a=fmtp:"),
+                  let payload = payloadID(from: line),
+                  payloads.contains(payload) else {
+                return line
+            }
+            let next = line.replacingOccurrences(
+                of: "tier-flag=1",
+                with: "tier-flag=\(tierFlag)",
+                options: [.caseInsensitive]
+            )
+            if next != line { replacements += 1 }
+            return next
+        }
+        return (output.joined(separator: lineEnding), replacements)
+    }
+
+    static func rewriteH265LevelIdByProfile(in sdp: String, maxLevelByProfile: [Int: Int]) -> (sdp: String, replacements: Int) {
+        let payloads = h265PayloadTypes(in: sdp)
+        guard !payloads.isEmpty, !maxLevelByProfile.isEmpty else { return (sdp, 0) }
+        let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
+        var replacements = 0
+        let output = normalizedLines(sdp).map { line -> String in
+            guard line.hasPrefix("a=fmtp:"),
+                  let payload = payloadID(from: line),
+                  payloads.contains(payload) else {
+                return line
+            }
+            let rest = String(line.dropFirst("a=fmtp:".count))
+            let params = rest.split(separator: " ", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
+            guard let profile = firstCapture(in: params, pattern: #"(?:^|;)\s*profile-id=(\d+)"#).flatMap(Int.init),
+                  let level = firstCapture(in: params, pattern: #"(?:^|;)\s*level-id=(\d+)"#).flatMap(Int.init),
+                  let maxLevel = maxLevelByProfile[profile],
+                  level > maxLevel else {
+                return line
+            }
+            let next = line.replacingOccurrences(
+                of: #"(level-id=)(\d+)"#,
+                with: "$1\(maxLevel)",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            if next != line { replacements += 1 }
+            return next
+        }
+        return (output.joined(separator: lineEnding), replacements)
+    }
+
+    static func negotiatesCodec(_ sdp: String, codec: NativeStreamVideoCodec) -> Bool {
+        var inVideo = false
+        for line in normalizedLines(sdp) {
+            if line.hasPrefix("m=video") {
+                inVideo = true
+                continue
+            }
+            if line.hasPrefix("m="), inVideo {
+                inVideo = false
+            }
+            guard inVideo, line.hasPrefix("a=rtpmap:") else { continue }
+            let codecName = String(line.dropFirst("a=rtpmap:".count))
+                .split(separator: " ", maxSplits: 1)
+                .dropFirst()
+                .first?
+                .split(separator: "/", maxSplits: 1)
+                .first
+                .map(String.init)
+            if normalizedCodecName(codecName) == codec.rawValue {
+                return true
+            }
+        }
+        return false
+    }
+
     static func describeNegotiatedVideo(from sdp: String) -> String {
         var inVideo = false
         var firstPayload: String?
@@ -519,6 +596,29 @@ enum NativeStreamSDP {
         guard let colon = line.firstIndex(of: ":") else { return nil }
         let rest = line[line.index(after: colon)...]
         return rest.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init)
+    }
+
+    private static func h265PayloadTypes(in sdp: String) -> Set<String> {
+        var inVideo = false
+        var payloads = Set<String>()
+        for line in normalizedLines(sdp) {
+            if line.hasPrefix("m=video") {
+                inVideo = true
+                continue
+            }
+            if line.hasPrefix("m="), inVideo {
+                inVideo = false
+            }
+            guard inVideo, line.hasPrefix("a=rtpmap:") else { continue }
+            let rest = String(line.dropFirst("a=rtpmap:".count))
+            let parts = rest.split(separator: " ", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let codecName = parts[1].split(separator: "/", maxSplits: 1).first.map(String.init)
+            if normalizedCodecName(codecName) == "H265" {
+                payloads.insert(parts[0])
+            }
+        }
+        return payloads
     }
 
     private static func h265ProfilePriority(_ fmtp: String?, preferTenBit: Bool) -> Int {

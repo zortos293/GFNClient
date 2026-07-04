@@ -60,6 +60,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>OpenNOW uses the camera only when you choose a streaming feature that shares your device camera.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>OpenNOW uses the microphone for stream voice chat and in-game audio input when you enable audio.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

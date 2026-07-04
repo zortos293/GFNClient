@@ -26,6 +26,7 @@
 		BB000000000000000000000C /* NativeStreamSDP.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001C /* NativeStreamSDP.swift */; };
 		BB000000000000000000000D /* NativeStreamInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001D /* NativeStreamInput.swift */; };
 		BB000000000000000000000E /* NativeStreamCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001E /* NativeStreamCodec.swift */; };
+		BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB000000000000000000001F /* NativeStreamAudioDevice.swift */; };
 		CC0000000000000000000001 /* QueueActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000011 /* QueueActivityAttributes.swift */; };
 		CC0000000000000000000002 /* QueueLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000012 /* QueueLiveActivityManager.swift */; };
 		CC0000000000000000000003 /* OpenNOWWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000013 /* OpenNOWWidgetBundle.swift */; };
@@ -93,6 +94,7 @@
 		BB000000000000000000001C /* NativeStreamSDP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamSDP.swift; sourceTree = "<group>"; };
 		BB000000000000000000001D /* NativeStreamInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamInput.swift; sourceTree = "<group>"; };
 		BB000000000000000000001E /* NativeStreamCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamCodec.swift; sourceTree = "<group>"; };
+		BB000000000000000000001F /* NativeStreamAudioDevice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeStreamAudioDevice.swift; sourceTree = "<group>"; };
 		CC0000000000000000000011 /* QueueActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueActivityAttributes.swift; sourceTree = "<group>"; };
 		CC0000000000000000000012 /* QueueLiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueLiveActivityManager.swift; sourceTree = "<group>"; };
 		CC0000000000000000000013 /* OpenNOWWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWWidgetBundle.swift; sourceTree = "<group>"; };
@@ -153,6 +155,7 @@
 				BB000000000000000000001C /* NativeStreamSDP.swift */,
 				BB000000000000000000001D /* NativeStreamInput.swift */,
 				BB000000000000000000001E /* NativeStreamCodec.swift */,
+				BB000000000000000000001F /* NativeStreamAudioDevice.swift */,
 				CC0000000000000000000011 /* QueueActivityAttributes.swift */,
 				CC0000000000000000000012 /* QueueLiveActivityManager.swift */,
 				0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */,
@@ -306,6 +309,7 @@
 				BB000000000000000000000C /* NativeStreamSDP.swift in Sources */,
 				BB000000000000000000000D /* NativeStreamInput.swift in Sources */,
 				BB000000000000000000000E /* NativeStreamCodec.swift in Sources */,
+				BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */,
 				CC0000000000000000000001 /* QueueActivityAttributes.swift in Sources */,
 				CC0000000000000000000002 /* QueueLiveActivityManager.swift in Sources */,
 			);

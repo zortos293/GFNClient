@@ -60,10 +60,10 @@ struct QueueLiveActivityWidget: Widget {
             } minimal: {
                 LiveActivityAppIcon(size: 19)
             }
-            .contentMargins(.all, 10, for: .expanded)
-            .contentMargins([.leading, .top, .bottom], 6, for: .compactLeading)
-            .contentMargins([.trailing, .top, .bottom], 6, for: .compactTrailing)
-            .contentMargins(.all, 6, for: .minimal)
+            .contentMargins(.all, 14, for: .expanded)
+            .contentMargins([.leading, .top, .bottom], 8, for: .compactLeading)
+            .contentMargins([.trailing, .top, .bottom], 8, for: .compactTrailing)
+            .contentMargins(.all, 8, for: .minimal)
             .keylineTint(color(for: context.state.phase))
         }
     }
@@ -130,8 +130,8 @@ private struct LockScreenQueueLiveActivityView: View {
                 size: .lockScreen
             )
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
     }
 
     private func lockScreenValueLabel(for state: QueueActivityAttributes.ContentState) -> String {
@@ -155,9 +155,10 @@ private struct LiveActivityAppIcon: View {
     var body: some View {
         Image("LiveActivityAppIcon")
             .resizable()
-            .scaledToFit()
+            .scaledToFill()
             .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+            .clipShape(Circle())
+            .contentShape(Circle())
     }
 }
 

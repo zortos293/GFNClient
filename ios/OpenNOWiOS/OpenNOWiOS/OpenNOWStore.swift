@@ -86,6 +86,15 @@ struct PersistedAuthState: Codable, Equatable {
     }
 }
 
+private struct CachedCatalogSnapshot: Codable {
+    let schemaVersion: Int
+    let cachedAt: TimeInterval
+    let vpcId: String
+    let allGames: [CloudGame]
+    let featuredGames: [CloudGame]
+    let libraryGames: [CloudGame]
+}
+
 struct CloudGame: Identifiable, Codable, Equatable {
     let id: String
     let title: String
@@ -4557,7 +4566,8 @@ final class OpenNOWStore: ObservableObject {
     private let activeSessionSnapshotKey = "OpenNOW.iOS.activeSession"
     private let activeStreamSettingsKey = "OpenNOW.iOS.activeStreamSettings"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
-    private let libraryGamesCacheKeyPrefix = "OpenNOW.iOS.libraryGames"
+    private let catalogCacheKeyPrefix = "OpenNOW.iOS.catalog"
+    private let legacyLibraryGamesCacheKeyPrefix = "OpenNOW.iOS.libraryGames"
     private let setupPhaseTimeoutSeconds: TimeInterval = 90
     private let sessionRestoreMaxAgeSeconds: TimeInterval = 12 * 60 * 60
 
@@ -4580,7 +4590,7 @@ final class OpenNOWStore: ObservableObject {
         activeStreamSettings = activeSession == nil ? nil : Self.loadActiveStreamSettings(from: defaults)
         user = authSession?.user
         if let authSession {
-            hydrateCachedLibraryGames(for: authSession)
+            hydrateCachedCatalog(for: authSession)
         }
         showStreamLoading = activeSession != nil
         syncTrackedSessionSurface()
@@ -4714,10 +4724,10 @@ final class OpenNOWStore: ObservableObject {
         var state = Self.loadAuthState(from: defaults)
         if let currentUserId {
             state.sessions.removeAll { $0.user.userId == currentUserId }
-            removeCachedLibraryGames(forUserId: currentUserId)
+            removeCachedCatalog(forUserId: currentUserId)
         } else {
             state.sessions.removeAll()
-            removeAllCachedLibraryGames()
+            removeAllCachedCatalog()
         }
         state.activeUserId = state.sessions.first?.user.userId
         state.selectedProvider = state.sessions.first?.provider ?? state.selectedProvider
@@ -4728,7 +4738,7 @@ final class OpenNOWStore: ObservableObject {
             user = nextSession.user
             settings.selectedProviderIdpId = nextSession.provider.idpId
             persistSettings()
-            hydrateCachedLibraryGames(for: nextSession)
+            hydrateCachedCatalog(for: nextSession)
             Task { await refreshCatalog() }
         } else {
             user = nil
@@ -4741,7 +4751,7 @@ final class OpenNOWStore: ObservableObject {
         persistAuthState(PersistedAuthState())
         defaults.removeObject(forKey: authStateKey)
         defaults.removeObject(forKey: authSessionKey)
-        removeAllCachedLibraryGames()
+        removeAllCachedCatalog()
         clearAccountScopedState()
         user = nil
         authSession = nil
@@ -4758,7 +4768,7 @@ final class OpenNOWStore: ObservableObject {
         user = nextSession.user
         settings.selectedProviderIdpId = nextSession.provider.idpId
         persistSettings()
-        hydrateCachedLibraryGames(for: nextSession)
+        hydrateCachedCatalog(for: nextSession)
         await refreshCatalog()
     }
 
@@ -4796,8 +4806,8 @@ final class OpenNOWStore: ObservableObject {
             authSession = refreshed
             user = refreshed.user
             persistAuthSession(refreshed)
-            if libraryGames.isEmpty {
-                hydrateCachedLibraryGames(for: refreshed)
+            if allGames.isEmpty || libraryGames.isEmpty {
+                hydrateCachedCatalog(for: refreshed, onlyMissing: true)
             }
 
             let (mainGames, vpcId) = try await api.fetchMainGames(session: refreshed)
@@ -4809,7 +4819,13 @@ final class OpenNOWStore: ObservableObject {
             allGames = mainGames
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = library
-            persistCachedLibraryGames(library, for: refreshed)
+            persistCachedCatalog(
+                allGames: mainGames,
+                featuredGames: featuredGames,
+                libraryGames: library,
+                vpcId: vpcId,
+                for: refreshed
+            )
             subscription = sub
             if let connectors {
                 accountConnectors = connectors
@@ -4845,8 +4861,8 @@ final class OpenNOWStore: ObservableObject {
             where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return
         } catch {
-            if libraryGames.isEmpty {
-                hydrateCachedLibraryGames(for: session)
+            if allGames.isEmpty || libraryGames.isEmpty {
+                hydrateCachedCatalog(for: session, onlyMissing: true)
             }
             lastError = "Failed to load games: \(error.localizedDescription)"
         }
@@ -5790,7 +5806,7 @@ final class OpenNOWStore: ObservableObject {
         defaults.removeObject(forKey: activeSessionSnapshotKey)
         defaults.removeObject(forKey: activeStreamSettingsKey)
         defaults.removeObject(forKey: deviceIdKey)
-        removeAllCachedLibraryGames()
+        removeAllCachedCatalog()
 
         authSession = nil
         user = nil
@@ -5850,7 +5866,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     var shouldUsePrintedWasteQueue: Bool {
-        authProviderCode == "NVIDIA"
+        authProviderCode == "NVIDIA" && isFreeTierUser
     }
 
     var shouldPresentPrintedWasteQueue: Bool {
@@ -6574,35 +6590,86 @@ final class OpenNOWStore: ObservableObject {
         return try? JSONDecoder().decode(AppSettings.self, from: data)
     }
 
-    private func hydrateCachedLibraryGames(for session: AuthSession) {
-        libraryGames = loadCachedLibraryGames(for: session)
+    private func hydrateCachedCatalog(for session: AuthSession, onlyMissing: Bool = false) {
+        if let snapshot = loadCachedCatalog(for: session) {
+            if !onlyMissing || allGames.isEmpty {
+                allGames = snapshot.allGames
+                featuredGames = snapshot.featuredGames.isEmpty ? Array(snapshot.allGames.prefix(8)) : snapshot.featuredGames
+            }
+            if !onlyMissing || libraryGames.isEmpty {
+                libraryGames = snapshot.libraryGames
+            }
+            if !snapshot.vpcId.isEmpty {
+                cachedVpcId = snapshot.vpcId
+            }
+            return
+        }
+
+        let legacyLibraryGames = loadLegacyCachedLibraryGames(for: session)
+        if !legacyLibraryGames.isEmpty && (!onlyMissing || libraryGames.isEmpty) {
+            libraryGames = legacyLibraryGames
+        }
     }
 
-    private func loadCachedLibraryGames(for session: AuthSession) -> [CloudGame] {
-        guard let data = defaults.data(forKey: libraryGamesCacheKey(for: session.user.userId)) else {
+    private func loadCachedCatalog(for session: AuthSession) -> CachedCatalogSnapshot? {
+        guard let data = defaults.data(forKey: catalogCacheKey(for: session.user.userId)) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(CachedCatalogSnapshot.self, from: data)
+    }
+
+    private func persistCachedCatalog(
+        allGames: [CloudGame],
+        featuredGames: [CloudGame],
+        libraryGames: [CloudGame],
+        vpcId: String,
+        for session: AuthSession
+    ) {
+        let snapshot = CachedCatalogSnapshot(
+            schemaVersion: 1,
+            cachedAt: Date().timeIntervalSince1970,
+            vpcId: vpcId,
+            allGames: allGames,
+            featuredGames: featuredGames,
+            libraryGames: libraryGames
+        )
+        guard let encoded = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(encoded, forKey: catalogCacheKey(for: session.user.userId))
+        defaults.removeObject(forKey: legacyLibraryGamesCacheKey(for: session.user.userId))
+    }
+
+    private func loadLegacyCachedLibraryGames(for session: AuthSession) -> [CloudGame] {
+        guard let data = defaults.data(forKey: legacyLibraryGamesCacheKey(for: session.user.userId)) else {
             return []
         }
         return (try? JSONDecoder().decode([CloudGame].self, from: data)) ?? []
     }
 
-    private func persistCachedLibraryGames(_ games: [CloudGame], for session: AuthSession) {
-        guard let encoded = try? JSONEncoder().encode(games) else { return }
-        defaults.set(encoded, forKey: libraryGamesCacheKey(for: session.user.userId))
+    private func removeCachedCatalog(forUserId userId: String) {
+        defaults.removeObject(forKey: catalogCacheKey(for: userId))
+        defaults.removeObject(forKey: legacyLibraryGamesCacheKey(for: userId))
     }
 
-    private func removeCachedLibraryGames(forUserId userId: String) {
-        defaults.removeObject(forKey: libraryGamesCacheKey(for: userId))
-    }
-
-    private func removeAllCachedLibraryGames() {
-        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("\(libraryGamesCacheKeyPrefix).") {
+    private func removeAllCachedCatalog() {
+        let prefixes = [
+            "\(catalogCacheKeyPrefix).",
+            "\(legacyLibraryGamesCacheKeyPrefix)."
+        ]
+        for key in defaults.dictionaryRepresentation().keys where prefixes.contains(where: { key.hasPrefix($0) }) {
             defaults.removeObject(forKey: key)
         }
     }
 
-    private func libraryGamesCacheKey(for userId: String) -> String {
-        let digest = SHA256.hash(data: Data(userId.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "\(libraryGamesCacheKeyPrefix).\(digest)"
+    private func catalogCacheKey(for userId: String) -> String {
+        "\(catalogCacheKeyPrefix).\(cacheDigest(for: userId))"
+    }
+
+    private func legacyLibraryGamesCacheKey(for userId: String) -> String {
+        "\(legacyLibraryGamesCacheKeyPrefix).\(cacheDigest(for: userId))"
+    }
+
+    private func cacheDigest(for value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private func persistAuthSession(_ session: AuthSession) {

@@ -15,6 +15,7 @@ import os
 
 struct StreamerView: View {
     #if os(iOS) && canImport(WebRTC)
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var coordinator: NativeStreamCoordinator
 
     init(
@@ -120,13 +121,17 @@ struct StreamerView: View {
             .animation(.easeInOut(duration: 0.18), value: coordinator.controlsPanelVisible)
             .animation(.easeInOut(duration: 0.18), value: coordinator.showStatsOverlay)
             .task(id: coordinator.sessionID) {
+                coordinator.handleScenePhase(scenePhase)
                 coordinator.start(viewportSize: proxy.size)
+            }
+            .onChangeCompat(of: scenePhase) { newPhase in
+                coordinator.handleScenePhase(newPhase)
             }
             .onChangeCompat(of: proxy.size) { newSize in
                 coordinator.updateViewportSize(newSize)
             }
             .onDisappear {
-                coordinator.stop()
+                coordinator.handleViewDisappear(scenePhase: scenePhase)
             }
             .statusBarHidden(true)
         }
@@ -842,6 +847,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var autoRetryScheduled = false
     private var webRTCAudioSessionConfigured = false
     private var mutedAudioDevice: NativeStreamMutedAudioDevice?
+    private var latestScenePhase: ScenePhase = .active
+    private var backgroundPictureInPictureStartPending = false
+    private var needsForegroundReconnect = false
 
     init(
         session: ActiveSession,
@@ -883,7 +891,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
         pictureInPictureBridge.onActiveChanged = { [weak self] active in
             Task { @MainActor in
-                self?.isPictureInPictureActive = active
+                self?.handlePictureInPictureActiveChanged(active)
             }
         }
         pictureInPictureBridge.onLog = { [weak self] message in
@@ -926,6 +934,31 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     func updateViewportSize(_ size: CGSize) {
         viewportSize = size
+    }
+
+    func handleScenePhase(_ phase: ScenePhase) {
+        latestScenePhase = phase
+        switch phase {
+        case .active:
+            backgroundPictureInPictureStartPending = false
+            reconnectAfterBackgroundIfNeeded()
+        case .inactive:
+            startPictureInPictureForBackground(reason: "scene inactive")
+        case .background:
+            startPictureInPictureForBackground(reason: "scene background")
+        @unknown default:
+            break
+        }
+    }
+
+    func handleViewDisappear(scenePhase: ScenePhase) {
+        latestScenePhase = scenePhase
+        guard scenePhase == .active else {
+            log("Preserving native stream during \(String(describing: scenePhase)) scene transition")
+            startPictureInPictureForBackground(reason: "view disappeared while app was not active")
+            return
+        }
+        stop()
     }
 
     var gameTitle: String {
@@ -1875,6 +1908,14 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func fail(_ message: String) {
+        if latestScenePhase != .active, isTransientStartupFailure(message) {
+            needsForegroundReconnect = true
+            statusText = "Reconnecting"
+            detailText = "Connection paused while OpenNOW was in the background"
+            showStatusOverlay = true
+            logger.warning("Deferring transient stream failure until foreground: \(message, privacy: .public)")
+            return
+        }
         if scheduleAutoRetryIfNeeded(for: message) {
             return
         }
@@ -1918,6 +1959,38 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     private func log(_ message: String) {
         logger.info("\(message, privacy: .public)")
+    }
+
+    private func handlePictureInPictureActiveChanged(_ active: Bool) {
+        isPictureInPictureActive = active
+        if active || latestScenePhase == .active {
+            backgroundPictureInPictureStartPending = false
+        }
+    }
+
+    private func startPictureInPictureForBackground(reason: String) {
+        guard !stopped else { return }
+        guard !pictureInPictureBridge.isPictureInPictureActive else { return }
+        guard !backgroundPictureInPictureStartPending else { return }
+        guard pictureInPictureBridge.start() else {
+            log("Picture in Picture background start skipped for \(reason); waiting for PiP availability")
+            return
+        }
+        backgroundPictureInPictureStartPending = true
+        log("Requested Picture in Picture for \(reason)")
+    }
+
+    private func reconnectAfterBackgroundIfNeeded() {
+        guard needsForegroundReconnect else { return }
+        needsForegroundReconnect = false
+        guard let onRetry else { return }
+        updateStatus("Reconnecting", detail: "App returned from background")
+        logger.warning("Restarting native streamer after background interruption")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.stop()
+            onRetry()
+        }
     }
 
     private var allowsUnsafeCodecDiagnostics: Bool {

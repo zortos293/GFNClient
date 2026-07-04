@@ -678,9 +678,9 @@ final class NativeStreamInputBridge {
             leftTrigger: uint8(gamepad.leftTrigger.value),
             rightTrigger: uint8(gamepad.rightTrigger.value),
             leftStickX: int16Axis(gamepad.leftThumbstick.xAxis.value),
-            leftStickY: int16Axis(-gamepad.leftThumbstick.yAxis.value),
+            leftStickY: int16Axis(gamepad.leftThumbstick.yAxis.value),
             rightStickX: int16Axis(gamepad.rightThumbstick.xAxis.value),
-            rightStickY: int16Axis(-gamepad.rightThumbstick.yAxis.value),
+            rightStickY: int16Axis(gamepad.rightThumbstick.yAxis.value),
             connected: true
         )
         sendGamepadState(state, force: force)

@@ -265,17 +265,11 @@ struct HomeView: View {
             .refreshable { await store.refreshCatalog() }
             .navigationTitle("OpenNOW")
         }
-        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
+        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails, store: store) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
-        .opennowBottomSheet(item: $selectedGameForLauncher, heightFraction: 0.58, maxHeight: 560) { game in
-            GameLauncherSelectionSheet(game: game) { option in
-                selectedGameForLauncher = nil
-                DispatchQueue.main.async {
-                    pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
-                }
-            }
-            .environmentObject(store)
+        .launcherSelectionModalSheet(selectedGame: $selectedGameForLauncher, store: store) { game, option in
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
@@ -374,7 +368,7 @@ struct HomeView: View {
 
     private func launchFromCard(_ game: CloudGame) {
         let options = store.launchOptions(for: game)
-        if options.count > 1, store.defaultLaunchOption(for: game) == nil {
+        if options.count > 1 {
             selectedGameForLauncher = game
             return
         }
@@ -991,6 +985,99 @@ struct GameVerticalBannerCard: View {
     }
 }
 
+private struct GameLaunchDetailsArtworkCard: View {
+    let game: CloudGame
+    let subtitle: String?
+    let badgeSystemImage: String?
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            GameLaunchDetailsArtwork(game: game)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.20), .black.opacity(0.82)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(game.title)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .lineLimit(1)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            if let badgeSystemImage {
+                Image(systemName: badgeSystemImage)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(badgeBackgroundColor.opacity(0.92), in: Circle())
+                    .padding(8)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private var badgeBackgroundColor: Color {
+        badgeSystemImage == "heart.fill" ? .red : brandAccent
+    }
+}
+
+private struct GameLaunchDetailsArtwork: View {
+    let game: CloudGame
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(gameColor(for: game.title).opacity(0.18))
+                if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
+                    CachedRemoteImage(url: url, targetPixelSize: imageTargetPixelSize(for: proxy.size)) { image in
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                    } placeholder: {
+                        GameArtworkLoadingPlaceholder(game: game, iconSize: 42, isFailure: false)
+                    } failure: {
+                        fallbackIcon
+                    }
+                } else {
+                    fallbackIcon
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+    }
+
+    private var fallbackIcon: some View {
+        Image(systemName: game.icon)
+            .font(.system(size: 42, weight: .semibold))
+            .foregroundStyle(gameColor(for: game.title))
+    }
+}
+
 struct GameListRowView: View {
     let game: CloudGame
     var subtitle: String?
@@ -1213,15 +1300,13 @@ struct GameLaunchDetailsSheet: View {
         NavigationStack {
             List {
                 Section {
-                    GameVerticalBannerCard(
+                    GameLaunchDetailsArtworkCard(
                         game: game,
                         subtitle: gameSubtitle,
-                        badgeSystemImage: store.isFavorite(game) ? "heart.fill" : nil,
-                        fitArtwork: true
+                        badgeSystemImage: store.isFavorite(game) ? "heart.fill" : nil
                     )
-                    .frame(maxWidth: 220)
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 6)
+                    .listRowInsets(EdgeInsets())
 
                     if let summary = summaryText {
                         Text(summary)
@@ -1322,7 +1407,6 @@ struct GameLaunchDetailsSheet: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
-                    Divider()
                     Button {
                         if let launchRestriction = store.launchRestrictionMessage(for: game) {
                             Haptics.medium()
@@ -1506,7 +1590,6 @@ struct GameLauncherSelectionSheet: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
-                    Divider()
                     Button {
                         guard let selectedOption else { return }
                         if rememberDefault || defaultOption != nil {
@@ -2034,13 +2117,161 @@ extension View {
 
     func presentGameDetailsUIKit(
         selectedGame: Binding<CloudGame?>,
+        store: OpenNOWStore,
         onLaunch: @escaping (CloudGame, GameLaunchOption?) -> Void
     ) -> some View {
-        opennowBottomSheet(item: selectedGame, heightFraction: 0.92, maxHeight: 760) { game in
+        pageSheet(item: selectedGame) { game in
             GameLaunchDetailsSheet(game: game) { option in
-                onLaunch(game, option)
                 selectedGame.wrappedValue = nil
+                DispatchQueue.main.async {
+                    onLaunch(game, option)
+                }
             }
+            .environmentObject(store)
+        }
+    }
+
+    func launcherSelectionModalSheet(
+        selectedGame: Binding<CloudGame?>,
+        store: OpenNOWStore,
+        onLaunch: @escaping (CloudGame, GameLaunchOption) -> Void
+    ) -> some View {
+        pageSheet(item: selectedGame) { game in
+            GameLauncherSelectionSheet(game: game) { option in
+                selectedGame.wrappedValue = nil
+                DispatchQueue.main.async {
+                    onLaunch(game, option)
+                }
+            }
+            .environmentObject(store)
+        }
+    }
+
+    private func pageSheet<Item: Identifiable, SheetContent: View>(
+        item: Binding<Item?>,
+        @ViewBuilder content: @escaping (Item) -> SheetContent
+    ) -> some View {
+        background {
+            PageSheetPresenter(item: item, content: content)
+                .frame(width: 0, height: 0)
+        }
+    }
+}
+
+private struct PageSheetPresenter<Item: Identifiable, SheetContent: View>: UIViewControllerRepresentable {
+    @Binding var item: Item?
+    let content: (Item) -> SheetContent
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(item: $item)
+    }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        let controller = UIViewController()
+        controller.view.backgroundColor = .clear
+        controller.view.isUserInteractionEnabled = false
+        return controller
+    }
+
+    func updateUIViewController(_ presenter: UIViewController, context: Context) {
+        guard presenter.view.window != nil else { return }
+        context.coordinator.clearDismissedSheet(from: presenter)
+
+        guard let item else {
+            context.coordinator.dismissPresentedSheet(animated: true, from: presenter)
+            return
+        }
+
+        if let hostingController = context.coordinator.hostingController {
+            if context.coordinator.presentedItemID == item.id,
+               context.coordinator.isPresented(hostingController, from: presenter) {
+                hostingController.rootView = AnyView(content(item))
+                return
+            }
+
+            context.coordinator.dismissPresentedSheet(animated: false, from: presenter)
+        }
+
+        guard presenter.presentedViewController == nil else { return }
+
+        let hostingController = PageSheetHostingController(rootView: AnyView(content(item)))
+        hostingController.modalPresentationStyle = .pageSheet
+        hostingController.presentationController?.delegate = context.coordinator
+        hostingController.onDidDisappear = { [weak coordinator = context.coordinator, weak hostingController] in
+            guard let hostingController else { return }
+            coordinator?.presentedSheetDidDisappear(hostingController)
+        }
+
+        if let sheetController = hostingController.sheetPresentationController {
+            sheetController.prefersGrabberVisible = true
+            sheetController.prefersScrollingExpandsWhenScrolledToEdge = true
+        }
+
+        context.coordinator.hostingController = hostingController
+        context.coordinator.presentedItemID = item.id
+        presenter.present(hostingController, animated: true)
+    }
+
+    final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
+        private var item: Binding<Item?>
+        var hostingController: UIHostingController<AnyView>?
+        var presentedItemID: Item.ID?
+
+        init(item: Binding<Item?>) {
+            self.item = item
+        }
+
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            item.wrappedValue = nil
+            clearPresentedSheet()
+        }
+
+        func dismissPresentedSheet(animated: Bool, from presenter: UIViewController) {
+            guard let hostingController else { return }
+            guard isPresented(hostingController, from: presenter) else {
+                clearPresentedSheet()
+                return
+            }
+            hostingController.dismiss(animated: animated) { [weak self, weak hostingController] in
+                guard let self, let hostingController else { return }
+                self.presentedSheetDidDisappear(hostingController)
+            }
+        }
+
+        func presentedSheetDidDisappear(_ controller: UIHostingController<AnyView>) {
+            guard hostingController === controller else { return }
+            item.wrappedValue = nil
+            clearPresentedSheet()
+        }
+
+        func clearDismissedSheet(from presenter: UIViewController) {
+            guard let hostingController,
+                  !isPresented(hostingController, from: presenter) else {
+                return
+            }
+            clearPresentedSheet()
+        }
+
+        func isPresented(_ controller: UIHostingController<AnyView>, from presenter: UIViewController) -> Bool {
+            presenter.presentedViewController === controller ||
+                controller.presentingViewController != nil ||
+                controller.isBeingPresented
+        }
+
+        func clearPresentedSheet() {
+            hostingController = nil
+            presentedItemID = nil
+        }
+    }
+}
+
+private final class PageSheetHostingController: UIHostingController<AnyView> {
+    var onDidDisappear: (() -> Void)?
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if isBeingDismissed || navigationController?.isBeingDismissed == true || presentingViewController == nil {
+            onDidDisappear?()
         }
     }
 }

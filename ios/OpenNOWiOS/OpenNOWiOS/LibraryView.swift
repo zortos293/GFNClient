@@ -45,17 +45,11 @@ struct LibraryView: View {
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search library")
             .refreshable { await store.refreshCatalog() }
         }
-        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails) { game, option in
+        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails, store: store) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
-        .opennowBottomSheet(item: $selectedGameForLauncher, heightFraction: 0.58, maxHeight: 560) { game in
-            GameLauncherSelectionSheet(game: game) { option in
-                selectedGameForLauncher = nil
-                DispatchQueue.main.async {
-                    pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
-                }
-            }
-            .environmentObject(store)
+        .launcherSelectionModalSheet(selectedGame: $selectedGameForLauncher, store: store) { game, option in
+            pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
     }
@@ -259,7 +253,7 @@ struct LibraryView: View {
 
     private func launchFromCard(_ game: CloudGame) {
         let options = store.launchOptions(for: game)
-        if options.count > 1, store.defaultLaunchOption(for: game) == nil {
+        if options.count > 1 {
             selectedGameForLauncher = game
             return
         }

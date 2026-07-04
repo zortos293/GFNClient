@@ -70,6 +70,8 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Enable experimental gyroscope controller input mapping */
   enableGyroscopeControls: boolean;
+  /** macOS-only workaround that restores Chromium's older HID path for Steam Controller compatibility */
+  steamControllerCompatibilityMode: boolean;
   /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream */
   nativeCursorOverlay: boolean;
   /** Mouse sensitivity multiplier */
@@ -198,6 +200,7 @@ const DEFAULT_SETTINGS: Settings = {
   sessionProxyUrl: "",
   clipboardPaste: false,
   enableGyroscopeControls: false,
+  steamControllerCompatibilityMode: false,
   nativeCursorOverlay: true,
   mouseSensitivity: 1,
   mouseAcceleration: 1,
@@ -352,6 +355,11 @@ export class SettingsManager {
     const recordingBitrate = normalizeRecordingBitrateMbps(settings.recordingBitrateMbps);
     if (settings.recordingBitrateMbps !== recordingBitrate) {
       settings.recordingBitrateMbps = recordingBitrate;
+      migrated = true;
+    }
+
+    if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
+      settings.steamControllerCompatibilityMode = false;
       migrated = true;
     }
 

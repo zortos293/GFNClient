@@ -434,6 +434,7 @@ export function App(): JSX.Element {
     sessionProxyUrl: "",
     clipboardPaste: false,
     enableGyroscopeControls: false,
+    steamControllerCompatibilityMode: false,
     nativeCursorOverlay: true,
     mouseSensitivity: 1,
     mouseAcceleration: 1,

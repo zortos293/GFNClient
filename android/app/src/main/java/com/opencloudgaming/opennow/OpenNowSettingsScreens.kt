@@ -331,8 +331,10 @@ private fun SettingsContent(
     val settings = state.settings
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
-                SettingSwitch(stringResource(R.string.settings_disable_update_checking), !settings.autoCheckForUpdates) { disabled ->
-                    viewModel.updateSettings(settings.copy(autoCheckForUpdates = !disabled))
+                if (state.androidUpdate.apkUpdatesAllowed) {
+                    SettingSwitch(stringResource(R.string.settings_disable_update_checking), !settings.autoCheckForUpdates) { disabled ->
+                        viewModel.updateSettings(settings.copy(autoCheckForUpdates = !disabled))
+                    }
                 }
                 AndroidUpdatePanel(state = state, viewModel = viewModel)
             }

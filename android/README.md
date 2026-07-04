@@ -7,11 +7,12 @@ Open it from Android Studio with **File > Open > `OpenNOW/android`**. Android St
 ## Build Targets
 
 - `:app:assembleDebug` builds a debug APK.
-- `:app:assembleRelease` builds a release APK after signing config is added locally.
+- `:app:assembleRelease` builds the direct-distribution release APK with APK update support.
+- `:app:bundleRelease` builds the Google Play Android App Bundle. This task removes `REQUEST_INSTALL_PACKAGES` and disables APK self-updates so Play installs use Google Play's update mechanism.
 
 ## APK Update Manifest
 
-The Android settings screen checks `https://api.printedwaste.com/releases/opennow/latest` and can download the returned APK. The manifest should look like this:
+APK and debug builds check `https://api.printedwaste.com/releases/opennow/latest` and can download the returned APK. App Bundle builds installed from Google Play detect `com.android.vending` as the install source and do not check, download, or install APK updates. The manifest should look like this:
 
 ```json
 {

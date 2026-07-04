@@ -125,6 +125,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val _state = MutableStateFlow(
         OpenNowUiState(
             settings = settingsStore.settings.value,
+            androidUpdate = appUpdater.state.value,
             dismissedAndroidUpdateNoticeKey = androidUpdateNoticeStore.dismissedKey(),
         ),
     )
@@ -159,7 +160,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
         }
-        startAndroidUpdateAutoChecks()
+        if (appUpdater.state.value.apkUpdatesAllowed) {
+            startAndroidUpdateAutoChecks()
+        }
         initialize()
     }
 
@@ -583,7 +586,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun downloadAndroidUpdate() {
-        if (androidUpdateJob?.isActive == true) return
+        if (androidUpdateJob?.isActive == true || !state.value.androidUpdate.canDownload) return
         OpenNowAnalytics.capture(event = "app_update_downloaded")
         androidUpdateJob = viewModelScope.launch {
             appUpdater.downloadUpdate()
@@ -591,11 +594,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun installAndroidUpdate() {
+        if (!state.value.androidUpdate.canInstall) return
         appUpdater.installDownloadedUpdate()
     }
 
     private fun startAndroidUpdateAutoChecks() {
         if (androidUpdateAutoJob?.isActive == true) return
+        if (!state.value.androidUpdate.apkUpdatesAllowed) return
         androidUpdateAutoJob = viewModelScope.launch {
             delay(ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS)
             while (true) {
@@ -606,6 +611,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun runAutomaticAndroidUpdateCheck() {
+        if (!state.value.androidUpdate.apkUpdatesAllowed) return
         if (!state.value.settings.autoCheckForUpdates) return
         waitForAndroidUpdateCheckWindow()
         val snapshot = state.value
@@ -621,6 +627,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun startAndroidUpdateCheck(automatic: Boolean): Job? {
         if (androidUpdateJob?.isActive == true) return null
+        if (!state.value.androidUpdate.apkUpdatesAllowed) return null
         if (state.value.isAndroidUpdateCheckBlockedByStream()) {
             if (!automatic) {
                 appUpdater.markCheckDeferredForStreaming()

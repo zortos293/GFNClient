@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -30,6 +31,7 @@ import java.util.Locale
 
 private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
 internal const val ANDROID_UPDATE_SOURCE_URL = "https://api.printedwaste.com/releases/opennow/latest"
+internal const val GOOGLE_PLAY_STORE_PACKAGE = "com.android.vending"
 private const val UPDATE_FILE_PROVIDER_AUTHORITY_SUFFIX = ".updates"
 private val UPDATE_USER_AGENT = "OpenNOW-AndroidUpdater/${BuildConfig.VERSION_NAME}"
 private val KNOWN_PACKAGE_INSTALLER_GRANT_TARGETS = setOf(
@@ -48,6 +50,24 @@ enum class AndroidUpdateStatus {
     Error,
 }
 
+data class AndroidAppInstallSource(
+    val installerPackageNames: Set<String> = emptySet(),
+    val apkUpdatesSupportedByBuild: Boolean = BuildConfig.APK_UPDATES_SUPPORTED,
+) {
+    val isGooglePlay: Boolean
+        get() = installerPackageNames.any(::isGooglePlayInstallerPackage)
+
+    val allowsApkUpdates: Boolean
+        get() = apkUpdatesSupportedByBuild && !isGooglePlay
+
+    val displayName: String
+        get() = when {
+            isGooglePlay -> "Google Play"
+            installerPackageNames.isEmpty() -> "Sideloaded"
+            else -> installerPackageNames.sorted().joinToString(", ")
+        }
+}
+
 data class AndroidUpdateProgress(
     val percent: Int?,
     val transferredBytes: Long,
@@ -59,6 +79,7 @@ data class AndroidUpdateState(
     val currentVersionName: String = BuildConfig.VERSION_NAME,
     val currentVersionCode: Long = BuildConfig.VERSION_CODE.toLong(),
     val sourceUrl: String = ANDROID_UPDATE_SOURCE_URL,
+    val installSource: AndroidAppInstallSource = AndroidAppInstallSource(),
     val availableVersionName: String? = null,
     val availableVersionCode: Long? = null,
     val releaseNotes: String? = null,
@@ -67,27 +88,34 @@ data class AndroidUpdateState(
     val message: String = "Ready to check for updates.",
     val lastCheckedAt: Long? = null,
 ) {
+    val apkUpdatesAllowed: Boolean
+        get() = installSource.allowsApkUpdates
+
     val canCheck: Boolean
-        get() = status != AndroidUpdateStatus.Checking && status != AndroidUpdateStatus.Downloading
+        get() = apkUpdatesAllowed && status != AndroidUpdateStatus.Checking && status != AndroidUpdateStatus.Downloading
 
     val canDownload: Boolean
-        get() = status == AndroidUpdateStatus.Available
+        get() = apkUpdatesAllowed && status == AndroidUpdateStatus.Available
 
     val canInstall: Boolean
-        get() = status == AndroidUpdateStatus.Downloaded
+        get() = apkUpdatesAllowed && status == AndroidUpdateStatus.Downloaded
 }
 
-internal fun AndroidUpdateState.shouldRunAutomaticCheck(): Boolean =
-    when (status) {
+internal fun AndroidUpdateState.shouldRunAutomaticCheck(): Boolean {
+    if (!apkUpdatesAllowed) return false
+    return when (status) {
         AndroidUpdateStatus.Checking,
         AndroidUpdateStatus.Available,
         AndroidUpdateStatus.Downloading,
         AndroidUpdateStatus.Downloaded -> false
         else -> true
     }
+}
 
 internal fun androidUpdateNoticeKey(update: AndroidUpdateState): String? =
-    when (update.status) {
+    if (!update.apkUpdatesAllowed) {
+        null
+    } else when (update.status) {
         AndroidUpdateStatus.Available,
         AndroidUpdateStatus.Downloading,
         AndroidUpdateStatus.Downloaded,
@@ -97,6 +125,13 @@ internal fun androidUpdateNoticeKey(update: AndroidUpdateState): String? =
         ).takeIf { it.isNotEmpty() }?.joinToString("|")
             ?: update.sourceUrl.takeIf { it.isNotBlank() }?.let { "source:$it" }
         else -> null
+    }
+
+internal fun androidUpdateUnavailableMessage(installSource: AndroidAppInstallSource): String =
+    when {
+        installSource.isGooglePlay -> "Installed from Google Play. Updates are handled by Google Play."
+        !installSource.apkUpdatesSupportedByBuild -> "APK self-updates are disabled in this Play release."
+        else -> "Ready to check for sideload APK updates."
     }
 
 internal fun AndroidUpdateState.visibleNoticeKey(dismissedKey: String?): String? =
@@ -120,13 +155,23 @@ class AndroidAppUpdater(
     private val http: OkHttpClient,
 ) {
     private val appContext = context.applicationContext
-    private val _state = MutableStateFlow(AndroidUpdateState())
+    private val installSource = detectAndroidAppInstallSource(appContext)
+    private val _state = MutableStateFlow(
+        AndroidUpdateState(
+            installSource = installSource,
+            message = androidUpdateUnavailableMessage(installSource),
+        ),
+    )
     val state: StateFlow<AndroidUpdateState> = _state
 
     private var latestCandidate: AndroidUpdateCandidate? = null
     private var downloadedApk: File? = null
 
     suspend fun checkForUpdate(sourceUrl: String = ANDROID_UPDATE_SOURCE_URL) {
+        if (!_state.value.apkUpdatesAllowed) {
+            publishApkUpdatesUnavailable()
+            return
+        }
         val normalizedSourceUrl = runCatching { normalizeAndroidUpdateSourceUrl(sourceUrl) }.getOrElse { error ->
             publishError(sourceUrl, error.message ?: "Update source URL is invalid.")
             return
@@ -180,6 +225,10 @@ class AndroidAppUpdater(
     }
 
     fun markCheckDeferredForStreaming() {
+        if (!_state.value.apkUpdatesAllowed) {
+            publishApkUpdatesUnavailable()
+            return
+        }
         val current = _state.value
         when (current.status) {
             AndroidUpdateStatus.Available,
@@ -195,6 +244,10 @@ class AndroidAppUpdater(
     }
 
     suspend fun downloadUpdate(sourceUrl: String = ANDROID_UPDATE_SOURCE_URL) {
+        if (!_state.value.apkUpdatesAllowed) {
+            publishApkUpdatesUnavailable()
+            return
+        }
         val normalizedSourceUrl = runCatching { normalizeAndroidUpdateSourceUrl(sourceUrl) }.getOrElse { error ->
             publishError(sourceUrl, error.message ?: "Update source URL is invalid.")
             return
@@ -239,6 +292,10 @@ class AndroidAppUpdater(
 
     @Suppress("DEPRECATION")
     fun installDownloadedUpdate() {
+        if (!_state.value.apkUpdatesAllowed) {
+            publishApkUpdatesUnavailable()
+            return
+        }
         val apk = downloadedApk?.takeIf { it.exists() && it.isFile } ?: run {
             publishError(_state.value.sourceUrl, "Downloaded APK is no longer available.")
             return
@@ -371,6 +428,7 @@ class AndroidAppUpdater(
         _state.value = AndroidUpdateState(
             status = status,
             sourceUrl = sourceUrl,
+            installSource = _state.value.installSource,
             availableVersionName = availableVersionName,
             availableVersionCode = availableVersionCode,
             releaseNotes = releaseNotes,
@@ -378,6 +436,21 @@ class AndroidAppUpdater(
             progress = progress,
             message = message,
             lastCheckedAt = lastCheckedAt,
+        )
+    }
+
+    private fun publishApkUpdatesUnavailable() {
+        latestCandidate = null
+        downloadedApk = null
+        val current = _state.value
+        _state.value = current.copy(
+            status = AndroidUpdateStatus.Idle,
+            availableVersionName = null,
+            availableVersionCode = null,
+            releaseNotes = null,
+            downloadedFileName = null,
+            progress = null,
+            message = androidUpdateUnavailableMessage(current.installSource),
         )
     }
 
@@ -409,6 +482,33 @@ class AndroidAppUpdater(
 
 internal fun androidUpdateStorageDir(context: Context): File =
     File(context.applicationContext.filesDir, "updates")
+
+@Suppress("DEPRECATION")
+internal fun detectAndroidAppInstallSource(context: Context): AndroidAppInstallSource {
+    val appContext = context.applicationContext
+    val packageManager = appContext.packageManager
+    val packageNames = linkedSetOf<String>()
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val sourceInfo = packageManager.getInstallSourceInfo(appContext.packageName)
+            packageNames.addIfNotBlank(sourceInfo.initiatingPackageName)
+            packageNames.addIfNotBlank(sourceInfo.installingPackageName)
+            packageNames.addIfNotBlank(sourceInfo.originatingPackageName)
+        } else {
+            packageNames.addIfNotBlank(packageManager.getInstallerPackageName(appContext.packageName))
+        }
+    } catch (_: PackageManager.NameNotFoundException) {
+        // PackageManager should know this app, but treat lookup failure like a sideload/unknown source.
+    }
+    return AndroidAppInstallSource(packageNames)
+}
+
+internal fun isGooglePlayInstallerPackage(packageName: String?): Boolean =
+    packageName?.trim()?.equals(GOOGLE_PLAY_STORE_PACKAGE, ignoreCase = true) == true
+
+private fun MutableSet<String>.addIfNotBlank(value: String?) {
+    value?.trim()?.takeIf { it.isNotBlank() }?.let(::add)
+}
 
 internal fun normalizeAndroidUpdateSourceUrl(raw: String): String {
     val trimmed = raw.trim()

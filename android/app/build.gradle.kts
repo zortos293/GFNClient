@@ -9,6 +9,9 @@ plugins {
 val localProperties = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
+val buildingPlayReleaseBundle = gradle.startParameter.taskNames.any { taskName ->
+    taskName.substringAfterLast(":").equals("bundleRelease", ignoreCase = true)
+}
 
 android {
     namespace = "com.opencloudgaming.opennow"
@@ -23,6 +26,7 @@ android {
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", "\"${localProperties.getProperty("posthog.apiKey", "")}\"")
         buildConfigField("String", "POSTHOG_HOST", "\"${localProperties.getProperty("posthog.host", "https://us.i.posthog.com")}\"")
+        buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -37,10 +41,17 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            buildConfigField("boolean", "APK_UPDATES_SUPPORTED", (!buildingPlayReleaseBundle).toString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+        }
+    }
+
+    sourceSets {
+        if (buildingPlayReleaseBundle) {
+            getByName("release").manifest.srcFile("src/playBundle/AndroidManifest.xml")
         }
     }
 

@@ -122,6 +122,10 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
 @Composable
 internal fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val update = state.androidUpdate
+    if (!update.apkUpdatesAllowed) {
+        AndroidUpdateUnavailablePanel(update)
+        return
+    }
     val updateCheckingDisabled = !state.settings.autoCheckForUpdates
     val checkBlockedByStream = state.isAndroidUpdateCheckBlockedByStream()
     val showCheckPauseMessage = checkBlockedByStream && when (update.status) {
@@ -209,6 +213,63 @@ internal fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewMod
                             Text("Install", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AndroidUpdateUnavailablePanel(update: AndroidUpdateState) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        if (update.installSource.isGooglePlay) "Updates managed by Google Play" else "APK updates unavailable",
+                        color = SettingsText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        update.message,
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
+                ) {
+                    Text(
+                        if (update.installSource.isGooglePlay) "PLAY" else "LOCKED",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = MaterialTheme.colorScheme.secondary,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.52f),
+            ) {
+                Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    UpdateInfoValue("Current", update.currentVersionName.ifBlank { "Installed" }, Modifier.weight(1f))
+                    UpdateInfoValue("Source", update.installSource.displayName, Modifier.weight(1f))
                 }
             }
         }

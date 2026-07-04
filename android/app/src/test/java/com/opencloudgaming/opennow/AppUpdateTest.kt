@@ -160,4 +160,63 @@ class AppUpdateTest {
         assertEquals(null, available.visibleNoticeKey(androidUpdateNoticeKey(downloaded)))
         assertEquals(androidUpdateNoticeKey(available), available.visibleNoticeKey(null))
     }
+
+    @Test
+    fun googlePlayInstallSourceDisablesApkUpdater() {
+        val update = AndroidUpdateState(
+            status = AndroidUpdateStatus.Available,
+            installSource = AndroidAppInstallSource(setOf(GOOGLE_PLAY_STORE_PACKAGE)),
+            availableVersionName = "0.6.7",
+            availableVersionCode = 22,
+        )
+
+        assertTrue(update.installSource.isGooglePlay)
+        assertFalse(update.apkUpdatesAllowed)
+        assertFalse(update.canCheck)
+        assertFalse(update.canDownload)
+        assertFalse(update.canInstall)
+        assertFalse(update.shouldRunAutomaticCheck())
+        assertNull(androidUpdateNoticeKey(update))
+    }
+
+    @Test
+    fun sideloadInstallSourceAllowsApkUpdaterWhenBuildSupportsIt() {
+        val update = AndroidUpdateState(
+            status = AndroidUpdateStatus.Available,
+            installSource = AndroidAppInstallSource(installerPackageNames = emptySet(), apkUpdatesSupportedByBuild = true),
+            availableVersionName = "0.6.7",
+            availableVersionCode = 22,
+        )
+
+        assertFalse(update.installSource.isGooglePlay)
+        assertTrue(update.apkUpdatesAllowed)
+        assertTrue(update.canCheck)
+        assertTrue(update.canDownload)
+        assertEquals("Sideloaded", update.installSource.displayName)
+        assertEquals("code:22|name:0.6.7", androidUpdateNoticeKey(update))
+    }
+
+    @Test
+    fun playReleaseBuildDisablesApkUpdaterEvenWhenSideloaded() {
+        val update = AndroidUpdateState(
+            status = AndroidUpdateStatus.Available,
+            installSource = AndroidAppInstallSource(installerPackageNames = emptySet(), apkUpdatesSupportedByBuild = false),
+            availableVersionName = "0.6.7",
+            availableVersionCode = 22,
+        )
+
+        assertFalse(update.installSource.isGooglePlay)
+        assertFalse(update.apkUpdatesAllowed)
+        assertFalse(update.canDownload)
+        assertFalse(update.shouldRunAutomaticCheck())
+        assertEquals("APK self-updates are disabled in this Play release.", androidUpdateUnavailableMessage(update.installSource))
+    }
+
+    @Test
+    fun googlePlayInstallerPackageMatchingIsStable() {
+        assertTrue(isGooglePlayInstallerPackage(" com.android.vending "))
+        assertTrue(isGooglePlayInstallerPackage("COM.ANDROID.VENDING"))
+        assertFalse(isGooglePlayInstallerPackage("com.android.packageinstaller"))
+        assertFalse(isGooglePlayInstallerPackage(null))
+    }
 }

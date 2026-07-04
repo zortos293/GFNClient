@@ -1,5 +1,5 @@
 name: Question
-description: Ask a question about GFNClient
+description: Ask a question about OpenNOW
 labels: ["question"]
 body:
   - type: textarea

@@ -232,7 +232,7 @@ jobs:
       npm_config_audit: "false"
       npm_config_fund: "false"
       GSTREAMER_VERSION: "1.28.2"
-      GSTREAMER_WINDOWS_VERSION: "1.26.1"
+      GSTREAMER_WINDOWS_VERSION: "1.26.8"
       CARGO_NET_RETRY: "10"
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
@@ -648,7 +648,7 @@ jobs:
           if [[ "$REF_TYPE" == "branch" ]]; then
             branch="$REF_NAME"
           else
-            branch="dev"
+            branch="main"
           fi
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 

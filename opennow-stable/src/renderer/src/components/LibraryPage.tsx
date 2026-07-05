@@ -5,6 +5,7 @@ import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent, normalizeStoreKey } from "./GameCard";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
+import type { PlaytimeData } from "../lib/gameCatalog";
 import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
@@ -43,6 +44,7 @@ interface LibraryFilterGroup {
 export interface LibraryPageProps {
   games: GameInfo[];
   allGames: GameInfo[];
+  playtimeData: PlaytimeData;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onPlayGame: (game: GameInfo) => void;
@@ -190,6 +192,15 @@ function gameRequiresInstallToPlay(game: GameInfo): boolean {
   return haystack.includes("install");
 }
 
+function getGamePlayTypeFilter(game: GameInfo, installToPlayLabel: string): LibraryFilterOption | null {
+  if (gameRequiresInstallToPlay(game)) {
+    return { id: "play:install-to-play", label: installToPlayLabel, count: 0 };
+  }
+  if (!game.playType?.trim()) return null;
+  const key = normalizeLibraryFilterValue(game.playType);
+  return key ? { id: `play:${key}`, label: formatLibraryPlayTypeLabel(game.playType), count: 0 } : null;
+}
+
 function getGameStoreFilters(game: GameInfo): Array<{ id: string; label: string }> {
   const stores = game.availableStores?.length ? game.availableStores : game.variants.map((variant) => variant.store);
   const seen = new Set<string>();
@@ -233,19 +244,23 @@ function mapLibraryFilterOptions(options: Map<string, LibraryFilterOption>): Lib
   return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
 
-function getLibraryFilterGroups(games: GameInfo[], t: (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string): LibraryFilterGroup[] {
+function gameHasLibraryActivity(game: GameInfo, playtimeData: PlaytimeData): boolean {
+  if (game.lastPlayed) return true;
+  const record = playtimeData[game.id];
+  if (!record) return false;
+  return Boolean(record.lastPlayedAt) || (record.totalSeconds ?? 0) > 0 || (record.sessionCount ?? 0) > 0;
+}
+
+function getLibraryFilterGroups(games: GameInfo[], playtimeData: PlaytimeData, t: (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string): LibraryFilterGroup[] {
   const playTypeOptions = new Map<string, LibraryFilterOption>();
   const platformOptions = new Map<string, LibraryFilterOption>();
   const controlOptions = new Map<string, LibraryFilterOption>();
   const activityOptions = new Map<string, LibraryFilterOption>();
+  const installToPlayLabel = t("library.filterOptions.installToPlay");
 
   for (const game of games) {
-    if (gameRequiresInstallToPlay(game)) {
-      upsertLibraryFilterOption(playTypeOptions, "play:install-to-play", t("library.filterOptions.installToPlay"));
-    } else if (game.playType?.trim()) {
-      const key = normalizeLibraryFilterValue(game.playType);
-      if (key) upsertLibraryFilterOption(playTypeOptions, `play:${key}`, formatLibraryPlayTypeLabel(game.playType));
-    }
+    const playTypeOption = getGamePlayTypeFilter(game, installToPlayLabel);
+    if (playTypeOption) upsertLibraryFilterOption(playTypeOptions, playTypeOption.id, playTypeOption.label);
 
     for (const option of getGameStoreFilters(game)) {
       upsertLibraryFilterOption(platformOptions, option.id, option.label);
@@ -255,10 +270,11 @@ function getLibraryFilterGroups(games: GameInfo[], t: (key: string, values?: Rec
       upsertLibraryFilterOption(controlOptions, option.id, option.label);
     }
 
+    const hasActivity = gameHasLibraryActivity(game, playtimeData);
     upsertLibraryFilterOption(
       activityOptions,
-      game.lastPlayed ? "activity:played" : "activity:never-played",
-      game.lastPlayed ? t("library.filterOptions.played") : t("library.filterOptions.neverPlayed"),
+      hasActivity ? "activity:played" : "activity:never-played",
+      hasActivity ? t("library.filterOptions.played") : t("library.filterOptions.neverPlayed"),
     );
   }
 
@@ -275,13 +291,12 @@ function getLibraryFilterGroupId(filterId: string): string {
   return separatorIndex >= 0 ? filterId.slice(0, separatorIndex) : filterId;
 }
 
-function gameMatchesLibraryFilter(game: GameInfo, filterId: string): boolean {
+function gameMatchesLibraryFilter(game: GameInfo, filterId: string, playtimeData: PlaytimeData, installToPlayLabel: string): boolean {
   const [groupId, value] = filterId.split(":");
   if (!value) return true;
 
   if (groupId === "play") {
-    if (value === "install-to-play") return gameRequiresInstallToPlay(game);
-    return normalizeLibraryFilterValue(game.playType) === value;
+    return getGamePlayTypeFilter(game, installToPlayLabel)?.id === filterId;
   }
 
   if (groupId === "platform") {
@@ -293,13 +308,14 @@ function gameMatchesLibraryFilter(game: GameInfo, filterId: string): boolean {
   }
 
   if (groupId === "activity") {
-    return value === "played" ? Boolean(game.lastPlayed) : !game.lastPlayed;
+    const hasActivity = gameHasLibraryActivity(game, playtimeData);
+    return value === "played" ? hasActivity : !hasActivity;
   }
 
   return true;
 }
 
-function gameMatchesLibraryFilters(game: GameInfo, selectedFilterIds: string[]): boolean {
+function gameMatchesLibraryFilters(game: GameInfo, selectedFilterIds: string[], playtimeData: PlaytimeData, installToPlayLabel: string): boolean {
   if (selectedFilterIds.length === 0) return true;
   const selectedByGroup = new Map<string, string[]>();
   for (const filterId of selectedFilterIds) {
@@ -307,7 +323,7 @@ function gameMatchesLibraryFilters(game: GameInfo, selectedFilterIds: string[]):
     selectedByGroup.set(groupId, [...(selectedByGroup.get(groupId) ?? []), filterId]);
   }
   for (const groupFilterIds of selectedByGroup.values()) {
-    if (!groupFilterIds.some((filterId) => gameMatchesLibraryFilter(game, filterId))) return false;
+    if (!groupFilterIds.some((filterId) => gameMatchesLibraryFilter(game, filterId, playtimeData, installToPlayLabel))) return false;
   }
   return true;
 }
@@ -385,6 +401,7 @@ function ControllerGameCard({
 export const LibraryPage = memo(function LibraryPage({
   games,
   allGames,
+  playtimeData,
   searchQuery,
   onSearchChange,
   onPlayGame,
@@ -445,13 +462,15 @@ export const LibraryPage = memo(function LibraryPage({
     controllerSearchInputRef.current?.focus();
   }, [controllerMode, controllerSearchOpen]);
 
+  const installToPlayFilterLabel = t("library.filterOptions.installToPlay");
+  const librarySearchHasQuery = searchQuery.trim().length > 0;
   const libraryFilterGroups = useMemo(
-    () => getLibraryFilterGroups(allGames, t),
-    [allGames, t],
+    () => getLibraryFilterGroups(allGames, playtimeData, t),
+    [allGames, playtimeData, t],
   );
   const visibleLibraryGames = useMemo(
-    () => games.filter((game) => gameMatchesLibraryFilters(game, selectedLibraryFilterIds)),
-    [games, selectedLibraryFilterIds],
+    () => games.filter((game) => gameMatchesLibraryFilters(game, selectedLibraryFilterIds, playtimeData, installToPlayFilterLabel)),
+    [games, installToPlayFilterLabel, playtimeData, selectedLibraryFilterIds],
   );
   const activeLibraryFilterOptions = useMemo(
     () => selectedLibraryFilterIds
@@ -460,7 +479,7 @@ export const LibraryPage = memo(function LibraryPage({
     [libraryFilterGroups, selectedLibraryFilterIds],
   );
   const hasActiveLibraryFilters = activeLibraryFilterOptions.length > 0;
-  const libraryCountLabel = hasActiveLibraryFilters || searchQuery.trim()
+  const libraryCountLabel = hasActiveLibraryFilters || librarySearchHasQuery
     ? t("library.filteredGameCount", { shown: visibleLibraryGames.length, total: libraryCount, count: libraryCount })
     : t("library.gameCount", { count: libraryCount });
 
@@ -1170,10 +1189,12 @@ export const LibraryPage = memo(function LibraryPage({
         ) : visibleLibraryGames.length === 0 ? (
           <div className="library-empty-state">
             <Search className="library-empty-icon" size={44} />
-            <h3>{hasActiveLibraryFilters ? t("library.empty.noFilteredGames") : t("library.empty.noGamesFound")}</h3>
+            <h3>{hasActiveLibraryFilters && !librarySearchHasQuery ? t("library.empty.noFilteredGames") : t("library.empty.noGamesFound")}</h3>
             <p>
-              {hasActiveLibraryFilters
-                ? t("library.empty.tryAdjustingFilters")
+              {librarySearchHasQuery
+                ? t("library.empty.noGamesMatch", { query: searchQuery })
+                : hasActiveLibraryFilters
+                  ? t("library.empty.tryAdjustingFilters")
                 : t("library.empty.noGamesMatch", { query: searchQuery })}
             </p>
           </div>

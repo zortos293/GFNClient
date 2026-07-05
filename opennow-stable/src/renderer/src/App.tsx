@@ -4443,6 +4443,7 @@ export function App(): JSX.Element {
               <LibraryPage
                 games={filteredLibraryGames}
                 allGames={libraryGames}
+                playtimeData={playtime}
                 searchQuery={searchQuery}
                 onSearchChange={setSearchQuery}
                 onPlayGame={handleInitiatePlay}

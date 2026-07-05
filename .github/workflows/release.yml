@@ -551,6 +551,43 @@ jobs:
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
 
+  build-webos:
+    name: webos-ipk
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs:
+      - preflight
+      - prepare-source
+
+    defaults:
+      run:
+        working-directory: opennow-stable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-source.outputs.release_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: opennow-stable/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --progress=false
+
+      - name: Build webOS IPK package
+        run: npm run dist:webos
+
+      - name: Upload webOS IPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-stable-webos
+          path: opennow-stable/dist-release/*.ipk
+          if-no-files-found: error
+
   release:
     name: publish-release
     runs-on: blacksmith-2vcpu-ubuntu-2404
@@ -558,6 +595,7 @@ jobs:
       - preflight
       - prepare-source
       - build
+      - build-webos
     permissions:
       contents: write
 

@@ -1,0 +1,14 @@
+{
+  "id": "com.zortos.opennow.stable",
+  "version": "0.5.0",
+  "type": "web",
+  "main": "index.html",
+  "title": "OpenNOW",
+  "icon": "icon.png",
+  "iconColor": "#0f172a",
+  "splashBackground": "#0f172a",
+  "vendor": "OpenCloudGaming",
+  "description": "An open-source desktop client for GeForce NOW.",
+  "requiredMemory": 50,
+  "requiredPermissions": ["all.network"]
+}

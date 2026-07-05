@@ -149,6 +149,7 @@ export type RuntimePlatform =
   | "netbsd"
   | "openbsd"
   | "sunos"
+  | "webos"
   | "win32"
   | "unknown";
 

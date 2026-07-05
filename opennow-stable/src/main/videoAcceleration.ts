@@ -43,12 +43,7 @@ export function buildVideoAccelerationCommandLine(
   } else if (platform === "linux") {
     if (isLinuxArm) {
       if (preferences.decoderPreference !== "software") {
-        enableFeatures.push(
-          "AcceleratedVideoDecoder",
-          "AcceleratedVideoDecodeLinuxGL",
-          "AcceleratedVideoDecodeLinuxZeroCopyGL",
-          "UseChromeOSDirectVideoDecoder",
-        );
+        enableFeatures.push("UseChromeOSDirectVideoDecoder");
       }
     } else {
       if (preferences.decoderPreference !== "software") {

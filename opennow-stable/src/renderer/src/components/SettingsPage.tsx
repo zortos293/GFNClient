@@ -28,7 +28,7 @@ import {
   createUnsupportedNativeStreamerStatus,
   DEFAULT_VIDEO_SHADER_SETTINGS,
   isNativeStreamerSupportedPlatform,
-  NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
+  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
   expandEntitledStreamResolutions,
   getSafeFallbackEntitledResolutions,
@@ -277,6 +277,12 @@ const allColorQualityOptions: { value: ColorQuality; label: string; description:
 
 const colorQualityOptions: { value: ColorQuality; label: string; description: string }[] = [...allColorQualityOptions];
 
+const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: string; description: string }[] = [
+  { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
+  { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
+  { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
+];
+
 const APP_LANGUAGE_LABELS: Record<string, string> = {
   en: "English",
   es: "Español",
@@ -410,23 +416,8 @@ const STATIC_FPS_PRESETS: FpsPreset[] = [
   { value: 360 },
 ];
 
-const platformDescriptor = `${navigator.platform} ${navigator.userAgent}`;
 const isMac = navigator.platform.toLowerCase().includes("mac");
-const isLinux = platformDescriptor.toLowerCase().includes("linux");
-const isNativeStreamerSupported = isNativeStreamerSupportedPlatform(platformDescriptor);
-const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; label: string; description: string }[] = isLinux
-  ? [
-    { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
-    { value: "v4l2", label: "V4L2", description: "Use Linux V4L2 decoders for ARM and SBC hardware" },
-    { value: "vaapi", label: "VAAPI", description: "Use VA-API decoders for Intel/AMD Linux systems" },
-    { value: "vulkan", label: "Vulkan", description: "Use the Vulkan decode and render path when available" },
-    { value: "software", label: "Software", description: "Force GStreamer software decode" },
-  ]
-  : [
-    { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
-    { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
-    { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
-  ];
+const isWindows = isNativeStreamerSupportedPlatform(`${navigator.platform} ${navigator.userAgent}`);
 const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
 const shortcutDefaults = {
   shortcutToggleStats: "F3",
@@ -910,7 +901,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, []);
 
   const refreshNativeStreamerStatus = useCallback(async () => {
-    if (!isNativeStreamerSupported) {
+    if (!isWindows) {
       setNativeStreamerStatus(createUnsupportedNativeStreamerStatus());
       setNativeStreamerStatusLoading(false);
       return;
@@ -3187,7 +3178,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               <h2>{t("settings.nativeStreamer.title")}</h2>
             </div>
             <div className="settings-rows">
-              {!isNativeStreamerSupported ? (
+              {!isWindows ? (
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
@@ -3198,7 +3189,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </label>
                   </div>
                   <span className="settings-input-hint">
-                    {NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE}
+                    {NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE}
                   </span>
                 </div>
               ) : (

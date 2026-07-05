@@ -13,9 +13,8 @@ import {
   isNativeStreamerSupportedPlatform,
   isOwnedLibraryStatus,
   isOwnedVariant,
-  NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
+  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   getDefaultStreamPreferences,
-  normalizeNativeVideoBackendPreferenceForPlatform,
   normalizeStreamPreferences,
   normalizeStreamClientModeForPlatform,
 } from "./gfn";
@@ -174,19 +173,11 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
   assert.equal(context.shortcuts.toggleRecording, "F12");
 });
 
-test("allows native stream client mode on Windows and Linux platforms", () => {
-  assert.equal(normalizeStreamClientModeForPlatform("native", "linux"), "native");
+test("normalizes native stream client mode to web on non-Windows platforms", () => {
+  assert.equal(normalizeStreamClientModeForPlatform("native", "linux"), "web");
   assert.equal(normalizeStreamClientModeForPlatform("native", "darwin"), "web");
   assert.equal(normalizeStreamClientModeForPlatform("web", "linux"), "web");
   assert.equal(normalizeStreamClientModeForPlatform("native", "win32"), "native");
-});
-
-test("normalizes native video backend preferences for the current platform", () => {
-  assert.equal(normalizeNativeVideoBackendPreferenceForPlatform("v4l2", "linux"), "v4l2");
-  assert.equal(normalizeNativeVideoBackendPreferenceForPlatform("vaapi", "linux"), "vaapi");
-  assert.equal(normalizeNativeVideoBackendPreferenceForPlatform("d3d12", "linux"), "auto");
-  assert.equal(normalizeNativeVideoBackendPreferenceForPlatform("d3d12", "win32"), "d3d12");
-  assert.equal(normalizeNativeVideoBackendPreferenceForPlatform("v4l2", "win32"), "auto");
 });
 
 test("defaults H264 streaming to 8-bit SDR-compatible color quality", () => {
@@ -209,15 +200,14 @@ test("normalizes H264 stream preferences away from high bit-depth modes", () => 
   });
 });
 
-test("uses the unsupported native streamer status message on unsupported platforms", () => {
+test("uses the exact Windows-only unsupported native streamer status message", () => {
   assert.equal(isNativeStreamerSupportedPlatform("win32"), true);
-  assert.equal(isNativeStreamerSupportedPlatform("linux"), true);
-  assert.equal(isNativeStreamerSupportedPlatform("darwin"), false);
+  assert.equal(isNativeStreamerSupportedPlatform("linux"), false);
 
   const status = createUnsupportedNativeStreamerStatus();
   assert.equal(status.detected, false);
   assert.equal(status.gstreamerAvailable, false);
   assert.equal(status.supportsOfferAnswer, false);
-  assert.equal(status.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
-  assert.equal(status.gstreamerRuntime.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
+  assert.equal(status.message, NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE);
+  assert.equal(status.gstreamerRuntime.message, NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE);
 });

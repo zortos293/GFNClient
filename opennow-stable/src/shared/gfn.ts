@@ -801,6 +801,16 @@ export interface ResolveStoreUrlRequest {
   store?: string;
 }
 
+export interface MarkGameOwnedRequest extends GamesFetchRequest {
+  variantId: string;
+}
+
+export interface MarkGameOwnedResult {
+  ok: true;
+  variantId: string;
+  libraryStatus: "MANUAL";
+}
+
 export interface SubscriptionFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
@@ -1490,6 +1500,7 @@ export interface OpenNowApi {
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   resolveStoreUrl(input: ResolveStoreUrlRequest): Promise<string | null>;
+  markGameOwned(input: MarkGameOwnedRequest): Promise<MarkGameOwnedResult>;
   getPendingDirectLaunchRequest(): Promise<DirectLaunchRequest | null>;
   onDirectLaunchRequest(listener: (request: DirectLaunchRequest) => void): () => void;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;

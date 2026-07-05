@@ -16,6 +16,7 @@
       "open": "Open",
       "play": "Play",
       "buy": "Buy",
+      "markAsOwned": "Mark as Owned",
       "refresh": "Refresh",
       "remove": "Remove",
       "reset": "Reset",
@@ -38,6 +39,7 @@
       "failed": "Failed",
       "idle": "Idle",
       "loading": "Loading...",
+      "markingOwned": "Marking as owned...",
       "ready": "Ready",
       "saved": "Saved",
       "testing": "Testing...",
@@ -807,6 +809,11 @@
       "notAvailable": "N/A"
     }
   },
+  "games": {
+    "markOwned": {
+      "success": "Marked {{title}} as owned."
+    }
+  },
   "errors": {
     "launchUnknown": "The game could not start. Please try again.",
     "launchFailedTitle": "Launch Failed",
@@ -818,6 +825,10 @@
     "insufficientPlayabilityDescription": "Your current GeForce NOW membership is not high enough to play this game. Upgrade to a higher tier and try again.",
     "insufficientPlayabilityTierDescription": "This game requires {{tier}} on GeForce NOW. Upgrade your membership to play it.",
     "loginFailed": "Login failed",
+    "markOwnedFailed": "Failed to mark game as owned.",
+    "markOwnedFailedWithReason": "Failed to mark game as owned: {{reason}}",
+    "markOwnedMissingVariant": "Select a store variant before marking it owned.",
+    "markOwnedSignInRequired": "Sign in before marking games as owned.",
     "switchAccountFailed": "Failed to switch account",
     "nativeStreamerStoppedTitle": "Native Streamer Stopped",
     "nativeStreamerStoppedDescription": "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",

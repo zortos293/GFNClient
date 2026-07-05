@@ -7,6 +7,7 @@ import type {
   GameInfo,
   GamePanelResult,
   GameVariant,
+  MarkGameOwnedResult,
 } from "@shared/gfn";
 import { createHash } from "node:crypto";
 import { isOwnedLibraryStatus, normalizeGameStore } from "@shared/gfn";
@@ -19,6 +20,7 @@ import {
 import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
 import { fetchWithOptionalProxy } from "./proxyFetch";
 import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
+import { postLcarsGraphQl } from "./lcarsGraphql";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
@@ -36,6 +38,13 @@ const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
 const CATALOG_GAMES_CACHE_SCOPE = "catalog";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
 const DEFAULT_CLOUDMATCH_BASE_URL = "https://prod.cloudmatchbeta.nvidiagrid.net/";
+const ADD_OWNED_VARIANT_MUTATION = `mutation AddOwnedVariant($cmsId: String!, $locale: String!) {
+  addOwnedVariant(language: $locale, variantId: $cmsId) {
+    app {
+      id
+    }
+  }
+}`;
 const LIBRARY_APPS_FILTER = {
   variants: {
     gfn: {
@@ -145,12 +154,16 @@ export function getAccountCatalogGamesCachePrefix(
 
 export function getAccountGamesCacheKeys(accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
   main: string;
+  featured: string;
+  storePanels: string;
   library: string;
   catalogPrefix: string;
   public: string;
 } {
   return {
     main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl, proxyUrl),
+    featured: accountScopedGamesCacheKey("featured", accountId, providerStreamingBaseUrl, proxyUrl),
+    storePanels: accountScopedGamesCacheKey("store-panels", accountId, providerStreamingBaseUrl, proxyUrl),
     library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl),
     catalogPrefix: getAccountCatalogGamesCachePrefix(accountId, providerStreamingBaseUrl, proxyUrl),
     public: publicGamesCacheKey(proxyUrl),
@@ -159,14 +172,66 @@ export function getAccountGamesCacheKeys(accountId: string, providerStreamingBas
 
 export function getLegacyTokenScopedAccountGamesCacheKeys(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
   main: string;
+  featured: string;
+  storePanels: string;
   library: string;
   catalogPrefix: string;
 } {
   return {
     main: legacyTokenScopedGamesCacheKey("main", token, providerStreamingBaseUrl, proxyUrl),
+    featured: legacyTokenScopedGamesCacheKey("featured", token, providerStreamingBaseUrl, proxyUrl),
+    storePanels: legacyTokenScopedGamesCacheKey("store-panels", token, providerStreamingBaseUrl, proxyUrl),
     library: legacyTokenScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
     catalogPrefix: legacyTokenScopedGamesCacheKey(CATALOG_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
   };
+}
+
+export interface AccountGameCacheInvalidationInput {
+  userId: string;
+  providerStreamingBaseUrl?: string;
+  tokens?: Array<string | undefined>;
+  proxyUrl?: string;
+  logPrefix?: string;
+}
+
+export async function invalidateAccountGameCaches(input: AccountGameCacheInvalidationInput): Promise<void> {
+  const cacheKeySets: Array<{ main: string; featured: string; storePanels: string; library: string; catalogPrefix: string }> = [
+    getAccountGamesCacheKeys(input.userId, input.providerStreamingBaseUrl),
+  ];
+  const legacyTokens = [...new Set((input.tokens ?? []).filter((token): token is string => Boolean(token)))];
+  cacheKeySets.push(
+    ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, input.providerStreamingBaseUrl)),
+  );
+
+  if (input.proxyUrl?.trim()) {
+    try {
+      cacheKeySets.push(getAccountGamesCacheKeys(input.userId, input.providerStreamingBaseUrl, input.proxyUrl));
+      cacheKeySets.push(
+        ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, input.providerStreamingBaseUrl, input.proxyUrl)),
+      );
+    } catch (error) {
+      console.warn(`${input.logPrefix ?? "[Games]"} Skipping proxy-scoped game cache invalidation:`, error);
+    }
+  }
+
+  const invalidations = new Map<string, Promise<void>>();
+  for (const keys of cacheKeySets) {
+    invalidations.set(keys.main, cacheManager.invalidateCache(keys.main));
+    invalidations.set(keys.featured, cacheManager.invalidateCache(keys.featured));
+    invalidations.set(keys.storePanels, cacheManager.invalidateCache(keys.storePanels));
+    invalidations.set(keys.library, cacheManager.invalidateCache(keys.library));
+    invalidations.set(keys.catalogPrefix, cacheManager.invalidateCachesByPrefix(keys.catalogPrefix));
+  }
+  await Promise.allSettled(invalidations.values());
+}
+
+export interface MarkGameOwnedInput {
+  token: string;
+  userId: string;
+  variantId: string;
+  providerStreamingBaseUrl?: string;
+  proxyUrl?: string;
+  tokens?: Array<string | undefined>;
 }
 
 interface GraphQlResponse {
@@ -219,6 +284,17 @@ interface AppsSearchResponse {
         totalCount?: number;
       };
       items?: AppData[];
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
+
+interface AddOwnedVariantResponse {
+  data?: {
+    addOwnedVariant?: {
+      app?: {
+        id?: string;
+      };
     };
   };
   errors?: Array<{ message: string }>;
@@ -1437,6 +1513,40 @@ export async function resolveStoreUrl(
   if (matchingStoreVariant?.storeUrl) return matchingStoreVariant.storeUrl;
 
   return variants.find((variant) => variant.storeUrl)?.storeUrl ?? null;
+}
+
+export async function markGameOwned(input: MarkGameOwnedInput): Promise<MarkGameOwnedResult> {
+  const variantId = input.variantId.trim();
+  if (!variantId) {
+    throw new Error("Cannot mark game as owned without a variant ID");
+  }
+
+  const payload = await postLcarsGraphQl<AddOwnedVariantResponse>(
+    ADD_OWNED_VARIANT_MUTATION,
+    {
+      cmsId: variantId,
+      locale: DEFAULT_LOCALE,
+    },
+    input.token,
+    input.proxyUrl,
+  );
+
+  if (!payload.data?.addOwnedVariant?.app?.id) {
+    throw new Error("GFN library mutation failed: missing AddOwnedVariant response");
+  }
+
+  await invalidateAccountGameCaches({
+    userId: input.userId,
+    providerStreamingBaseUrl: input.providerStreamingBaseUrl,
+    tokens: [input.token, ...(input.tokens ?? [])],
+    proxyUrl: input.proxyUrl,
+  });
+
+  return {
+    ok: true,
+    variantId,
+    libraryStatus: "MANUAL",
+  };
 }
 
 export {

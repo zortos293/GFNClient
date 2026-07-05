@@ -3076,6 +3076,13 @@ body,
   border-color: rgba(255, 255, 255, 0.24);
 }
 
+.controller-primary-action:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.75);
+  opacity: 0.58;
+  transform: none;
+}
+
 .controller-hero-dots {
   display: flex;
   justify-content: center;

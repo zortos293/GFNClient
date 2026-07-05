@@ -143,6 +143,10 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "aspect ratio",
     "l4s",
     "cloud gsync",
+    "console mode",
+    "tv mode",
+    "big picture",
+    "gamepad friendly",
     "video acceleration",
     "filters",
     "shader",
@@ -2915,6 +2919,27 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                   <span className="settings-subtle-hint">
                     {t("settings.video.experimentalL4SRequestHint")}
+                  </span>
+                </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        {t("settings.video.launchInConsoleMode")}
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.launchInConsoleMode}
+                        onChange={(e) => handleChange("launchInConsoleMode", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    {t("settings.video.launchInConsoleModeHint")}
                   </span>
                 </div>
 

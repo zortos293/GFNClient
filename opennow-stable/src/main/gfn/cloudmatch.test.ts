@@ -11,6 +11,7 @@ import {
   resolveGfnKeyboardLayout,
 } from "@shared/gfn";
 import {
+  appLaunchModeWireValue,
   buildRequestedStreamingFeatures,
   createSession,
   extractServerInfoRegionBases,
@@ -143,6 +144,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
   const calls: string[] = [];
   type CapturedSessionRequestBody = {
     sessionRequestData: {
+      appLaunchMode?: number;
       requestedStreamingFeatures: {
         bitDepth?: number;
         chromaFormat?: number;
@@ -208,7 +210,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
       internalTitle: "Test Game",
       accountLinked: true,
       zone: "prod",
-      settings: makeSettings({ colorQuality: "10bit_444", enableL4S: true }),
+      settings: makeSettings({ colorQuality: "10bit_444", enableL4S: true, appLaunchMode: "gamepadFriendly" }),
     });
 
     assert.equal(session.streamingBaseUrl, "https://np-lax-01.cloudmatchbeta.nvidiagrid.net");
@@ -220,6 +222,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     assert.ok(capturedRequestBody);
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 1);
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 1);
+    assert.equal(capturedRequestBody.sessionRequestData.appLaunchMode, 2);
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
@@ -286,4 +289,11 @@ test("CloudMatch falls back to serverInfo local region when active-session HTTP 
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
   }
+});
+
+test("CloudMatch appLaunchMode maps to official wire values", () => {
+  assert.equal(appLaunchModeWireValue(undefined), 1);
+  assert.equal(appLaunchModeWireValue("default"), 1);
+  assert.equal(appLaunchModeWireValue("gamepadFriendly"), 2);
+  assert.equal(appLaunchModeWireValue("touchFriendly"), 3);
 });

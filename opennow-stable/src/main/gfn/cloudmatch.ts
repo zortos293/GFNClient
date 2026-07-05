@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 
 import type {
   ActiveSessionInfo,
+  AppLaunchMode,
   ColorQuality,
   NegotiatedStreamProfile,
   IceServer,
@@ -158,6 +159,18 @@ const GFN_AD_MEDIA_PROFILE_ORDER = new Map<string, number>([
   ["webm", 1],
   ["hlsadaptive", 2],
 ]);
+
+// Wire values used by cloudmatch session requests. Matches the official
+// client's mapping: Default -> 1, GamepadFriendly -> 2, TouchFriendly -> 3.
+const APP_LAUNCH_MODE_WIRE_VALUES: Record<AppLaunchMode, number> = {
+  default: 1,
+  gamepadFriendly: 2,
+  touchFriendly: 3,
+};
+
+export function appLaunchModeWireValue(mode: AppLaunchMode | undefined): number {
+  return APP_LAUNCH_MODE_WIRE_VALUES[mode ?? "default"];
+}
 
 export function buildRequestedStreamingFeatures(
   settings: StreamSettings,
@@ -672,7 +685,7 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
       remoteControllersBitmap: 0,
       clientTimezoneOffset: timezoneOffsetMs(),
       enhancedStreamMode: 1,
-      appLaunchMode: 1,
+      appLaunchMode: appLaunchModeWireValue(input.settings.appLaunchMode),
       secureRTSPSupported: false,
       partnerCustomData: "",
       accountLinked,
@@ -1478,7 +1491,7 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       parentSessionId: null,
       appId: parseInt(appId, 10),
       streamerVersion: 1,
-      appLaunchMode: 1,
+      appLaunchMode: appLaunchModeWireValue(settings.appLaunchMode),
       sdkVersion: "1.0",
       enhancedStreamMode: 1,
       useOps: true,

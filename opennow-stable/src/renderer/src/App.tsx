@@ -456,6 +456,7 @@ export function App(): JSX.Element {
     hideServerSelector: false,
     appAccentColor: "green",
     controllerMode: false,
+    launchInConsoleMode: false,
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,
@@ -508,6 +509,9 @@ export function App(): JSX.Element {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
   const [pendingDirectLaunchRequest, setPendingDirectLaunchRequest] = useState<DirectLaunchRequest | null>(null);
+  // Argument-driven launches always use the console (big picture) experience for this run,
+  // without persisting the user's Controller Mode setting.
+  const [directLaunchConsoleMode, setDirectLaunchConsoleMode] = useState(false);
   const [queueModalGame, setQueueModalGame] = useState<GameInfo | null>(null);
   const [queueModalData, setQueueModalData] = useState<PrintedWasteQueueData | null>(null);
   const [sessionStartedAtMs, setSessionStartedAtMs] = useState<number | null>(null);
@@ -649,6 +653,7 @@ export function App(): JSX.Element {
 
   const queueDirectLaunchRequest = useCallback((request: DirectLaunchRequest | null): void => {
     if (!request || handledDirectLaunchIdsRef.current.has(request.id)) return;
+    setDirectLaunchConsoleMode(true);
     setPendingDirectLaunchRequest((previous) => previous?.id === request.id ? previous : request);
   }, []);
 
@@ -735,6 +740,10 @@ export function App(): JSX.Element {
     clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
 
+  // Console shell is active when the user enabled Controller Mode or the app was
+  // launched with a direct-launch argument (frontend / big picture usage).
+  const effectiveControllerMode = settings.controllerMode || directLaunchConsoleMode;
+
   const buildCurrentStreamSettings = useCallback((subscriptionOverride?: SubscriptionInfo | null): StreamSettings => {
     const currentSubscription = subscriptionOverride === undefined ? subscriptionInfo : subscriptionOverride;
     const entitledProfile = resolveEntitledStreamProfile(currentSubscription?.entitledResolutions ?? [], {
@@ -757,15 +766,22 @@ export function App(): JSX.Element {
       nativeStreamerBackend: "gstreamer",
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
+      appLaunchMode:
+        settings.controllerMode || settings.launchInConsoleMode || directLaunchConsoleMode
+          ? "gamepadFriendly"
+          : "default",
     };
   }, [
     settings.codec,
     settings.colorQuality,
+    settings.controllerMode,
+    directLaunchConsoleMode,
     settings.enableCloudGsync,
     settings.enableL4S,
     settings.fps,
     settings.gameLanguage,
     settings.keyboardLayout,
+    settings.launchInConsoleMode,
     settings.maxBitrateMbps,
     settings.nativeCloudGsyncMode,
     settings.nativeTransitionDiagnostics,
@@ -1638,6 +1654,21 @@ export function App(): JSX.Element {
     });
   }, [persistRuntimeSnapshotNow]);
 
+  // Argument-driven (direct) launches behave like a console frontend session:
+  // when the streamed session ends cleanly, close OpenNOW and return to the caller.
+  const directLaunchSessionSeenRef = useRef(false);
+  useEffect(() => {
+    if (!directLaunchConsoleMode) return;
+    if (streamStatus !== "idle") {
+      directLaunchSessionSeenRef.current = true;
+      return;
+    }
+    if (!directLaunchSessionSeenRef.current) return;
+    if (launchError) return; // Keep the app open so the failure stays visible.
+    console.log("[DirectLaunch] Session ended; quitting OpenNOW");
+    handleExitApp();
+  }, [directLaunchConsoleMode, streamStatus, launchError, handleExitApp]);
+
   const handleMicrophoneModeChange = useCallback((value: import("@shared/gfn").MicrophoneMode) => {
     // Keep UI responsive while still surfacing persistence failures.
     void updateSetting("microphoneMode", value).catch((error) => {
@@ -2270,7 +2301,7 @@ export function App(): JSX.Element {
   }, [libraryGames, storePanelGames]);
 
   useEffect(() => {
-    if (!authSession || currentPage !== "home" || settings.controllerMode || isInitializing) {
+    if (!authSession || currentPage !== "home" || effectiveControllerMode || isInitializing) {
       return;
     }
     const queryKey = buildProxyAwareCatalogQueryKey(searchQuery, catalogSelectedFilterIds, catalogSelectedSortId, activeSessionProxyUrl);
@@ -2298,15 +2329,15 @@ export function App(): JSX.Element {
     activeSessionProxyUrl,
     catalogFilterKey,
     catalogSelectedSortId,
-    settings.controllerMode,
+    effectiveControllerMode,
   ]);
 
   useEffect(() => {
-    if (!authSession || currentPage !== "home" || !settings.controllerMode) {
+    if (!authSession || currentPage !== "home" || !effectiveControllerMode) {
       return;
     }
     void loadStorePanels();
-  }, [authSession, currentPage, loadStorePanels, settings.controllerMode]);
+  }, [authSession, currentPage, loadStorePanels, effectiveControllerMode]);
 
   const handleSelectGameVariant = useCallback((gameId: string, variantId: string): void => {
     setVariantByGameId((prev) => {
@@ -4331,7 +4362,7 @@ export function App(): JSX.Element {
 
   // Main app layout
   return (
-    <div className={`app-container${settings.controllerMode ? " app-container--controller" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
+    <div className={`app-container${effectiveControllerMode ? " app-container--controller" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
       {startupRefreshNotice && (
         <div className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}>
           {startupRefreshNotice.text}
@@ -4359,7 +4390,7 @@ export function App(): JSX.Element {
         }}
         onAddAccount={handleAddAccount}
         onLogoutAll={handleLogout}
-        controllerMode={settings.controllerMode}
+        controllerMode={effectiveControllerMode}
       />
 
       <main className="main-content">
@@ -4378,7 +4409,7 @@ export function App(): JSX.Element {
                 searchQuery={searchQuery}
                 onSearchChange={setSearchQuery}
                 onPlayGame={handleInitiatePlay}
-                isLoading={settings.controllerMode ? isLoadingStorePanels : isLoadingCatalog}
+                isLoading={effectiveControllerMode ? isLoadingStorePanels : isLoadingCatalog}
                 selectedGameId={selectedGameId}
                 onSelectGame={setSelectedGameId}
                 selectedVariantByGameId={variantByGameId}
@@ -4391,7 +4422,7 @@ export function App(): JSX.Element {
                 onSortChange={setCatalogSelectedSortId}
                 totalCount={catalogTotalCount}
                 supportedCount={catalogSupportedCount}
-                controllerMode={settings.controllerMode}
+                controllerMode={effectiveControllerMode}
                 storePanels={storePanels}
                 storeHeroGames={featuredGames}
                 activeSessionAppIds={activeSessionAppIds}
@@ -4416,7 +4447,7 @@ export function App(): JSX.Element {
                 sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
                 selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
                 onSortChange={setCatalogSelectedSortId}
-                controllerMode={settings.controllerMode}
+                controllerMode={effectiveControllerMode}
                 featuredGames={featuredGames.length > 0 ? featuredGames : games}
                 activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}

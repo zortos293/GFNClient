@@ -117,6 +117,8 @@ export interface Settings {
   appAccentColor: AppAccentColor;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
+  /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
+  launchInConsoleMode: boolean;
   /** Automatically enter fullscreen when launching a stream */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
@@ -225,6 +227,7 @@ const DEFAULT_SETTINGS: Settings = {
   hideServerSelector: false,
   appAccentColor: "green",
   controllerMode: false,
+  launchInConsoleMode: false,
   autoFullScreen: false,
   favoriteGameIds: [],
   sessionCounterEnabled: false,

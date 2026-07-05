@@ -546,7 +546,7 @@
       "decode": "Decode",
       "encode": "Encode",
       "profiles": "Profiles:",
-      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's VA-API/WebRTC capability report. OpenNOW now enables NVIDIA VA-API flags on restart, but proprietary NVIDIA systems still need distro codecs plus libva-nvidia-driver/nvidia-vaapi-driver; if H.265 or GPU stays missing, check your distro's VA-API setup rather than installing more AppImage files."
+      "linuxHardwareHint": "This web-client diagnostic uses Chromium's WebRTC/MediaCapabilities path. On Linux ARM, Chromium/Electron may not expose V4L2 decode; use Native Streamer with the GStreamer V4L2 backend and check Native Streamer > Video Path for the actual native decode path."
     },
     "colorQuality": {
       "mostCompatible": "Most compatible",
@@ -710,7 +710,7 @@
       "checkNativeStreamer": "Check native streamer",
       "gstreamerReady": "GStreamer Ready",
       "notReady": "Not Ready",
-      "statusDefaultHint": "OpenNOW will check the bundled GStreamer streamer when this tab opens.",
+      "statusDefaultHint": "OpenNOW will check the GStreamer native streamer when this tab opens.",
       "gstreamerRuntime": "GStreamer Runtime",
       "bundledPathDetected": "Bundled path detected",
       "runtimeDefaultHint": "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages.",
@@ -719,8 +719,8 @@
       "codecSupportUnknown": "Codec support unknown",
       "memoryPathUnknown": "Memory path unknown",
       "videoPathDefaultHint": "OpenNOW will show the active hardware decode path after GStreamer is detected.",
-      "directxBackend": "DirectX Backend",
-      "directxBackendHint": "Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.",
+      "directxBackend": "Native Video Backend",
+      "directxBackendHint": "Applies to the next native streamer process. Auto uses the fastest platform default; choose a backend to force DirectX on Windows or V4L2/VAAPI/Vulkan/software on Linux.",
       "framePacing": "Frame Pacing",
       "lowestLatency": "Lowest Latency",
       "smoothGsync": "Smooth G-Sync",

@@ -18,7 +18,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   createUnsupportedNativeStreamerStatus,
   isNativeStreamerSupportedPlatform,
-  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+  NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
+  normalizeNativeVideoBackendPreferenceForPlatform,
   nativeStreamerFeatureModeToEnvValue,
   type IceCandidatePayload,
   type KeyframeRequest,
@@ -603,7 +604,10 @@ export class NativeStreamerManager {
       const videoBackends = this.capabilities?.videoBackends ?? [];
       const activeVideoBackend = resolveActiveVideoBackend(
         videoBackends,
-        this.options.getVideoBackendPreference(),
+        normalizeNativeVideoBackendPreferenceForPlatform(
+          this.options.getVideoBackendPreference(),
+          process.platform,
+        ),
       );
       const codecSummary = summarizeCodecs(activeVideoBackend);
       const zeroCopySummary = summarizeZeroCopy(activeVideoBackend);
@@ -790,7 +794,7 @@ export class NativeStreamerManager {
 
   private async ensureProcess(): Promise<void> {
     if (!isNativeStreamerSupportedPlatform(process.platform)) {
-      throw new Error(NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE);
+      throw new Error(NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
     }
 
     if (this.child && this.capabilities) {
@@ -850,7 +854,10 @@ export class NativeStreamerManager {
   ): Promise<void> {
     console.log("[NativeStreamer] Starting:", executablePath);
     console.log("[NativeStreamer] Backend preference:", backendPreference);
-    const videoBackendPreference = this.options.getVideoBackendPreference();
+    const videoBackendPreference = normalizeNativeVideoBackendPreferenceForPlatform(
+      this.options.getVideoBackendPreference(),
+      process.platform,
+    );
     console.log("[NativeStreamer] Video backend preference:", videoBackendPreference);
 
     const childEnv: NodeJS.ProcessEnv = {

@@ -12,18 +12,59 @@ export type AppLaunchMode = "default" | "gamepadFriendly" | "touchFriendly";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
-export type NativeVideoBackendPreference = "auto" | "d3d11" | "d3d12";
+export type NativeVideoBackendPreference =
+  | "auto"
+  | "d3d11"
+  | "d3d12"
+  | "vaapi"
+  | "v4l2"
+  | "vulkan"
+  | "software";
 export type NativeQueueMode = "auto" | "fixed" | "adaptive" | "vrr";
 
-export const NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE = "experimental feature: Windows only. Mac and Linux support is being worked on";
+export const NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE = "experimental feature: native streaming is supported on Windows and Linux. macOS support is being worked on";
+
+const WINDOWS_NATIVE_VIDEO_BACKENDS = new Set<NativeVideoBackendPreference>(["d3d11", "d3d12"]);
+const LINUX_NATIVE_VIDEO_BACKENDS = new Set<NativeVideoBackendPreference>(["vaapi", "v4l2", "vulkan", "software"]);
+
+function normalizePlatformLabel(platform: string): "windows" | "linux" | "macos" | "other" {
+  const normalized = platform.toLowerCase();
+  if (normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows")) {
+    return "windows";
+  }
+  if (normalized === "linux" || normalized.includes("linux")) {
+    return "linux";
+  }
+  if (normalized === "darwin" || normalized.includes("mac")) {
+    return "macos";
+  }
+  return "other";
+}
 
 export function isNativeStreamerSupportedPlatform(platform: string): boolean {
-  const normalized = platform.toLowerCase();
-  return normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows");
+  const normalized = normalizePlatformLabel(platform);
+  return normalized === "windows" || normalized === "linux";
 }
 
 export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, platform: string): StreamClientMode {
   return mode === "native" && !isNativeStreamerSupportedPlatform(platform) ? "web" : mode;
+}
+
+export function normalizeNativeVideoBackendPreferenceForPlatform(
+  preference: NativeVideoBackendPreference,
+  platform: string,
+): NativeVideoBackendPreference {
+  if (preference === "auto") {
+    return "auto";
+  }
+  switch (normalizePlatformLabel(platform)) {
+    case "windows":
+      return WINDOWS_NATIVE_VIDEO_BACKENDS.has(preference) ? preference : "auto";
+    case "linux":
+      return LINUX_NATIVE_VIDEO_BACKENDS.has(preference) ? preference : "auto";
+    default:
+      return "auto";
+  }
 }
 
 export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
@@ -201,9 +242,9 @@ export function createUnsupportedNativeStreamerStatus(): NativeStreamerStatus {
     gstreamerRuntime: {
       source: "unknown",
       bundled: false,
-      message: NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+      message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
     },
-    message: NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+    message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
   };
 }
 

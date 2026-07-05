@@ -695,7 +695,7 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
       secureRTSPSupported: false,
       partnerCustomData: "",
       accountLinked,
-      enablePersistingInGameSettings: true,
+      enablePersistingInGameSettings: input.enablePersistingInGameSettings === true,
       userAge: 26,
       requestedStreamingFeatures: buildRequestedStreamingFeatures(
         input.settings,
@@ -1425,6 +1425,10 @@ async function fetchActiveSessionsFromBase(
         typeof rawAppLaunchMode === "number" && Number.isFinite(rawAppLaunchMode)
           ? rawAppLaunchMode
           : undefined;
+      const enablePersistingInGameSettings =
+        typeof s.sessionRequestData?.enablePersistingInGameSettings === "boolean"
+          ? s.sessionRequestData.enablePersistingInGameSettings
+          : undefined;
 
       // Prefer the real server IP from connectionInfo[usage=14] — this is the actual game server,
       // not the zone load balancer. sessionControlInfo.ip is the zone LB hostname and cannot
@@ -1455,6 +1459,7 @@ async function fetchActiveSessionsFromBase(
         sessionId: s.sessionId,
         appId,
         appLaunchMode,
+        enablePersistingInGameSettings,
         gpuType: s.gpuType,
         status: s.status,
         streamingBaseUrl: base,
@@ -1484,6 +1489,7 @@ function buildClaimRequestBody(
   appId: string,
   settings: StreamSettings,
   sessionAppLaunchMode?: number,
+  enablePersistingInGameSettings = false,
 ): unknown {
   // For RESUME claims, we must NOT attempt to renegotiate streaming parameters.
   // The session is already configured on the server side. Sending different fps, resolution,
@@ -1530,7 +1536,7 @@ function buildClaimRequestBody(
       clientDisplayHdrCapabilities: null,
       accountLinked: true,
       partnerCustomData: "",
-      enablePersistingInGameSettings: true,
+      enablePersistingInGameSettings,
       secureRTSPSupported: false,
       userAge: 26,
     },
@@ -1645,7 +1651,13 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   // Only send the RESUME claim PUT if the session is in a paused state (status 2 or 3).
   // For status=1 (still launching) we bypass the claim and fall through to the polling loop.
   if (preClaimStatus !== 1 && shouldSendResumeClaim) {
-    const payload = buildClaimRequestBody(input.sessionId, appId, settings, input.appLaunchMode);
+    const payload = buildClaimRequestBody(
+      input.sessionId,
+      appId,
+      settings,
+      input.appLaunchMode,
+      input.enablePersistingInGameSettings === true,
+    );
 
     const headers = buildGfnCloudMatchClaimHeaders({ token: input.token, clientId, deviceId });
 

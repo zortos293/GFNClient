@@ -146,6 +146,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
   type CapturedSessionRequestBody = {
     sessionRequestData: {
       appLaunchMode?: number;
+      enablePersistingInGameSettings?: boolean;
       requestedStreamingFeatures: {
         bitDepth?: number;
         chromaFormat?: number;
@@ -224,6 +225,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 1);
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 1);
     assert.equal(capturedRequestBody.sessionRequestData.appLaunchMode, 2);
+    assert.equal(capturedRequestBody.sessionRequestData.enablePersistingInGameSettings, false);
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
@@ -264,7 +266,7 @@ test("CloudMatch falls back to serverInfo local region when active-session HTTP 
           sessionId: "session-1",
           status: 3,
           gpuType: "RTX",
-          sessionRequestData: { appId: "1001" },
+          sessionRequestData: { appId: "1001", enablePersistingInGameSettings: true },
           sessionControlInfo: { ip: "th.bpc.geforcenow.nvidiagrid.net" },
           connectionInfo: [{ ip: "161.248.11.132", port: 443, usage: 14 }],
           monitorSettings: [{ widthInPixels: 1920, heightInPixels: 1080, framesPerSecond: 60 }],
@@ -281,6 +283,7 @@ test("CloudMatch falls back to serverInfo local region when active-session HTTP 
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].sessionId, "session-1");
     assert.equal(sessions[0].serverIp, "161.248.11.132");
+    assert.equal(sessions[0].enablePersistingInGameSettings, true);
     assert.deepEqual(calls, [
       "https://prod.bpc.geforcenow.nvidiagrid.net/v2/session",
       "https://prod.bpc.geforcenow.nvidiagrid.net/v2/serverInfo",
@@ -306,7 +309,12 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
   console.warn = () => {};
   console.log = () => {};
 
-  const claimBodies: Array<{ sessionRequestData: { appLaunchMode?: number } }> = [];
+  const claimBodies: Array<{
+    sessionRequestData: {
+      appLaunchMode?: number;
+      enablePersistingInGameSettings?: boolean;
+    };
+  }> = [];
 
   const readySessionResponse = JSON.stringify({
     requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
@@ -354,6 +362,7 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
       sessionId: "sess-1",
       serverIp: "203.0.113.10",
       appId: "1001",
+      enablePersistingInGameSettings: true,
       settings: makeSettings({ appLaunchMode: "gamepadFriendly" }),
     });
 
@@ -369,6 +378,9 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
     assert.equal(claimBodies[0].sessionRequestData.appLaunchMode, 2);
     assert.equal(claimBodies[1].sessionRequestData.appLaunchMode, 2);
     assert.equal(claimBodies[2].sessionRequestData.appLaunchMode, 1);
+    assert.equal(claimBodies[0].sessionRequestData.enablePersistingInGameSettings, false);
+    assert.equal(claimBodies[1].sessionRequestData.enablePersistingInGameSettings, true);
+    assert.equal(claimBodies[2].sessionRequestData.enablePersistingInGameSettings, false);
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;

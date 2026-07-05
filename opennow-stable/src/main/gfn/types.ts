@@ -153,7 +153,9 @@ export interface CloudMatchResponse {
       }>;
     };
     sessionRequestData?: {
+      appId?: string;
       appLaunchMode?: number;
+      enablePersistingInGameSettings?: boolean;
       clientRequestMonitorSettings?: Array<{
         widthInPixels?: number;
         heightInPixels?: number;

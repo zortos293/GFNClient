@@ -955,6 +955,11 @@ export interface SessionCreateRequest {
   appId: string;
   internalTitle: string;
   accountLinked?: boolean;
+  /**
+   * Official clients only enable server-side in-game graphics/settings persistence
+   * when the user is entitled and has opted in. Leave disabled by default.
+   */
+  enablePersistingInGameSettings?: boolean;
   existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
@@ -1136,6 +1141,8 @@ export interface ActiveSessionInfo {
   appId: number;
   /** Wire appLaunchMode the session was created with, as echoed by the server */
   appLaunchMode?: number;
+  /** Wire in-game settings persistence value the session was created with, when echoed by the server */
+  enablePersistingInGameSettings?: boolean;
   gpuType?: string;
   status: number;
   streamingBaseUrl?: string;
@@ -1156,6 +1163,8 @@ export interface SessionClaimRequest {
   appId?: string;
   /** Session-stable wire appLaunchMode captured when the session was created */
   appLaunchMode?: number;
+  /** In-game settings persistence value to send with the resume claim. Defaults to false. */
+  enablePersistingInGameSettings?: boolean;
   settings?: StreamSettings;
   /** True when claim is triggered by automatic reconnect recovery logic */
   recoveryMode?: boolean;

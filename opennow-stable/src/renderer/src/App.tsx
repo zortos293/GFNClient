@@ -2515,6 +2515,7 @@ export function App(): JSX.Element {
           ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
           appLaunchMode: existingSession.appLaunchMode,
+          enablePersistingInGameSettings: existingSession.enablePersistingInGameSettings,
           settings: streamSettings,
         });
 
@@ -2669,6 +2670,7 @@ export function App(): JSX.Element {
             recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
             appLaunchMode: candidate.appLaunchMode,
+            enablePersistingInGameSettings: candidate.enablePersistingInGameSettings,
             settings: recoveryStreamSettings,
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {

@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  expandEntitledStreamResolutions,
   getSafeFallbackEntitledResolutions,
   resolveEntitledStreamProfile,
   SAFE_FALLBACK_STREAM_PROFILE,
@@ -33,5 +34,71 @@ test("safe fallback entitlements resolve oversized requests to 1080p60", () => {
       { resolution: "3840x2160", fps: 240 },
     ),
     SAFE_FALLBACK_STREAM_PROFILE,
+  );
+});
+
+test("derives official ultrawide modes covered by a larger entitlement", () => {
+  const entitlements = [
+    { width: 3840, height: 2160, fps: 120 },
+    { width: 2560, height: 1080, fps: 120 },
+  ];
+
+  assert.ok(
+    expandEntitledStreamResolutions(entitlements).some(
+      (resolution) =>
+        resolution.width === 3440 &&
+        resolution.height === 1440 &&
+        resolution.fps === 120,
+    ),
+  );
+  assert.deepEqual(
+    resolveEntitledStreamProfile(entitlements, { resolution: "3440x1440", fps: 120 }),
+    { resolution: "3440x1440", fps: 120 },
+  );
+});
+
+test("does not derive ultrawide modes larger than the entitlement envelope", () => {
+  const entitlements = [
+    { width: 2560, height: 1440, fps: 120 },
+    { width: 2560, height: 1080, fps: 120 },
+  ];
+
+  assert.equal(
+    expandEntitledStreamResolutions(entitlements).some(
+      (resolution) =>
+        resolution.width === 3440 &&
+        resolution.height === 1440,
+    ),
+    false,
+  );
+  assert.deepEqual(
+    resolveEntitledStreamProfile(entitlements, { resolution: "3440x1440", fps: 120 }),
+    { resolution: "2560x1440", fps: 120 },
+  );
+});
+
+test("does not derive modes that exceed entitlement dimensions", () => {
+  const entitlements = [{ width: 1920, height: 1080, fps: 120 }];
+  const expanded = expandEntitledStreamResolutions(entitlements);
+
+  assert.equal(
+    expanded.some(
+      (resolution) =>
+        resolution.width === 1600 &&
+        resolution.height === 1200,
+    ),
+    false,
+  );
+  assert.equal(
+    expanded.some(
+      (resolution) =>
+        resolution.width === 1680 &&
+        resolution.height === 1050,
+    ),
+    true,
+  );
+  assert.deepEqual(
+    resolveEntitledStreamProfile(entitlements, { resolution: "1600x1200", fps: 120 }),
+    { resolution: "1920x1080", fps: 120 },
   );
 });

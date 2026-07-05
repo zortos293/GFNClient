@@ -30,6 +30,7 @@ import {
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
   colorQualityRequiresHevc,
+  expandEntitledStreamResolutions,
   getSafeFallbackEntitledResolutions,
   keyboardLayoutOptions,
   resolveEntitledStreamProfile,
@@ -1024,11 +1025,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [t]);
 
   const effectiveEntitledResolutions = useMemo(
-    () => entitledResolutions.length > 0
-      ? entitledResolutions
-      : subscriptionInfo
-        ? getSafeFallbackEntitledResolutions()
-        : [],
+    () => {
+      const baseResolutions = entitledResolutions.length > 0
+        ? entitledResolutions
+        : subscriptionInfo
+          ? getSafeFallbackEntitledResolutions()
+          : [];
+      return expandEntitledStreamResolutions(baseResolutions);
+    },
     [entitledResolutions, subscriptionInfo],
   );
   const useEntitledStreamOptions = effectiveEntitledResolutions.length > 0;

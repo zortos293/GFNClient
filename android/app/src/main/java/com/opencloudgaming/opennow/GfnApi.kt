@@ -1327,6 +1327,8 @@ class GfnCatalogRepository(
                     launchAppId = id.takeIf { it.all(Char::isDigit) },
                     title = title,
                     imageUrl = steamAppId?.takeIf { it.isNotBlank() }?.let { "https://cdn.cloudflare.steamstatic.com/steam/apps/$it/library_600x900.jpg" },
+                    screenshotUrl = steamAppId?.takeIf { it.isNotBlank() }?.let { "https://cdn.cloudflare.steamstatic.com/steam/apps/$it/library_hero.jpg" },
+                    tvBannerUrl = steamAppId?.takeIf { it.isNotBlank() }?.let { "https://cdn.cloudflare.steamstatic.com/steam/apps/$it/library_hero.jpg" },
                     searchText = listOf(title, store, obj.string("publisher")).filterNotNull().joinToString(" ").lowercase(),
                     selectedVariantIndex = 0,
                     variants = listOf(GameVariant(id = id, store = store)),
@@ -1457,9 +1459,13 @@ class GfnCatalogRepository(
             ?.string("id")
         val selectedIndex = max(0, variants.indexOfFirst { it.id == (selectedVariantId ?: numericAppId) })
         val images = app.obj("images")
-        val imageUrl = listOf("KEY_ART", "GAME_BOX_ART", "TV_BANNER", "HERO_IMAGE")
+        val imageUrl = listOf("GAME_BOX_ART", "KEY_ART", "HERO_IMAGE", "TV_BANNER")
             .firstNotNullOfOrNull { images?.string(it) }
             ?.let(::optimizeImage)
+        val screenshotUrl = listOf("HERO_IMAGE", "TV_BANNER", "KEY_ART", "GAME_BOX_ART")
+            .firstNotNullOfOrNull { images?.string(it) }
+        val tvBannerUrl = listOf("TV_BANNER", "HERO_IMAGE", "KEY_ART", "GAME_BOX_ART")
+            .firstNotNullOfOrNull { images?.string(it) }
         val genres = extractLabels(app.arr("genres"))
         val featureLabels = (extractLabels(app.arr("features")) + extractLabels(app.arr("gameFeatures")) + extractLabels(app.arr("appFeatures")) + genres).distinct()
         val title = app.string("title") ?: app.string("id") ?: "Unknown Game"
@@ -1474,6 +1480,8 @@ class GfnCatalogRepository(
             featureLabels = featureLabels,
             genres = genres,
             imageUrl = imageUrl,
+            screenshotUrl = screenshotUrl,
+            tvBannerUrl = tvBannerUrl,
             playType = app.obj("gfn")?.string("playType"),
             membershipTierLabel = app.obj("gfn")?.string("minimumMembershipTierLabel"),
             publisherName = app.string("publisherName"),
@@ -1596,6 +1604,8 @@ class GfnCatalogRepository(
                     description = left.description ?: right.description,
                     longDescription = left.longDescription ?: right.longDescription,
                     imageUrl = left.imageUrl ?: right.imageUrl,
+                    screenshotUrl = left.screenshotUrl ?: right.screenshotUrl,
+                    tvBannerUrl = left.tvBannerUrl ?: right.tvBannerUrl,
                     variants = variants,
                     availableStores = displayStoresForVariants(variants),
                     genres = (left.genres + right.genres).distinct(),
@@ -1616,6 +1626,8 @@ class GfnCatalogRepository(
             if (supplemental.isEmpty()) game else game.copy(
                 launchAppId = game.launchAppId ?: publicGame.launchAppId,
                 imageUrl = game.imageUrl ?: publicGame.imageUrl,
+                screenshotUrl = game.screenshotUrl ?: publicGame.screenshotUrl,
+                tvBannerUrl = game.tvBannerUrl ?: publicGame.tvBannerUrl,
                 variants = game.variants + supplemental,
                 availableStores = displayStoresForVariants(game.variants + supplemental),
                 searchText = listOfNotNull(game.searchText, publicGame.searchText).joinToString(" "),
@@ -1623,7 +1635,8 @@ class GfnCatalogRepository(
         }
     }
 
-    private fun optimizeImage(url: String): String = if (url.contains("img.nvidiagrid.net")) "$url;f=webp;w=272" else url
+    private fun optimizeImage(url: String): String =
+        if (url.contains("img.nvidiagrid.net")) "$url;f=webp;w=272" else url
 
     private fun GameInfo.matchesSearch(query: String): Boolean {
         val normalized = query.trim().lowercase()

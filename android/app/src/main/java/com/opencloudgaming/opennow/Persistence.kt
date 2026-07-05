@@ -20,7 +20,9 @@ private const val KEY_AUTH = "auth"
 private const val KEY_DEVICE_ID = "gfn_device_id"
 private const val KEY_CATALOG_CACHE_PREFIX = "catalog_cache_"
 private const val KEY_ANDROID_UPDATE_DISMISSED_NOTICE = "android_update_dismissed_notice"
+private const val KEY_QUEUED_GAME_KEYS = "queued_game_keys"
 private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
+private const val QUEUED_GAME_LIMIT = 24
 
 class SettingsStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
@@ -242,6 +244,29 @@ class CatalogCacheStore(context: Context) {
     private fun storageKey(key: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
         return KEY_CATALOG_CACHE_PREFIX + digest.joinToString("") { "%02x".format(it) }
+    }
+}
+
+class QueuedGameStore(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+
+    fun load(): List<String> {
+        val raw = prefs.getString(KEY_QUEUED_GAME_KEYS, null) ?: return emptyList()
+        return runCatching { OpenNowJson.decodeFromString<List<String>>(raw) }
+            .getOrElse { emptyList() }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(QUEUED_GAME_LIMIT)
+    }
+
+    fun record(gameKey: String): List<String> {
+        val normalized = gameKey.trim()
+        if (normalized.isBlank()) return load()
+        val next = (listOf(normalized) + load().filterNot { it == normalized })
+            .take(QUEUED_GAME_LIMIT)
+        prefs.edit().putString(KEY_QUEUED_GAME_KEYS, OpenNowJson.encodeToString(next)).apply()
+        return next
     }
 }
 

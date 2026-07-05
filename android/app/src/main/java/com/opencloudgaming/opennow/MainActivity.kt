@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.os.Build
@@ -36,9 +37,12 @@ class MainActivity : ComponentActivity() {
     private var streamDisplayRefreshFps = 60
     private var streamSystemUiEnforcerJob: Job? = null
     private var lastStreamSystemUiInputReapplyMs = 0L
+    private var defaultRequestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+    private var phoneStreamOrientationLocked = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        defaultRequestedOrientation = requestedOrientation
         volumeControlStream = AudioManager.STREAM_MUSIC
         setContent {
             OpenNowApp(viewModel)
@@ -48,6 +52,9 @@ class MainActivity : ComponentActivity() {
                 requestQueueNotificationPermissionIfNeeded(state)
                 queueStatusNotifier.update(state)
                 val streamActive = state.page == AppPage.Stream && state.streamStatus != "idle"
+                applyPhoneStreamOrientationLock(
+                    shouldLockPhoneStreamLandscape(state, resources.configuration.smallestScreenWidthDp),
+                )
                 applyStreamSystemUi(streamActive)
                 applyStreamDisplayRefreshRate(streamActive, state.activeStreamSettings?.fps ?: state.settings.stream.fps)
             }
@@ -66,6 +73,9 @@ class MainActivity : ComponentActivity() {
         if (streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
             applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
+        }
+        if (phoneStreamOrientationLocked) {
+            applyPhoneStreamOrientationLock(true, force = true)
         }
     }
 
@@ -213,6 +223,19 @@ class MainActivity : ComponentActivity() {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    private fun applyPhoneStreamOrientationLock(active: Boolean, force: Boolean = false) {
+        if (!force && phoneStreamOrientationLocked == active) return
+        phoneStreamOrientationLocked = active
+        val nextOrientation = if (active) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            defaultRequestedOrientation
+        }
+        if (requestedOrientation != nextOrientation) {
+            requestedOrientation = nextOrientation
         }
     }
 

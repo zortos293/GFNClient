@@ -478,8 +478,20 @@ private fun SettingsContent(
                         placeholder = { Text("http://127.0.0.1:8080") },
                     )
                 }
-                SettingSwitch(stringResource(R.string.settings_l4s), settings.stream.enableL4S) { viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) } }
-                SettingSwitch(stringResource(R.string.settings_cloud_gsync), settings.stream.enableCloudGsync) { viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) } }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_l4s),
+                    checked = settings.stream.enableL4S,
+                    description = stringResource(R.string.settings_l4s_desc),
+                ) {
+                    viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_cloud_gsync),
+                    checked = settings.stream.enableCloudGsync,
+                    description = stringResource(R.string.settings_cloud_gsync_desc),
+                ) {
+                    viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) }
+                }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, "Input", "input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "button", "tone") {
                 NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f) {
@@ -517,9 +529,44 @@ private fun SettingsContent(
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
                     }
                 }
-                SettingSwitch(stringResource(R.string.settings_nerd_mode), settings.nerdMode) { viewModel.updateSettings(settings.copy(nerdMode = it)) }
-                SettingSwitch(stringResource(R.string.settings_expressive_ui), settings.expressiveUi) { viewModel.updateSettings(settings.copy(expressiveUi = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_nerd_mode),
+                    checked = settings.nerdMode,
+                    description = stringResource(R.string.settings_nerd_mode_desc),
+                ) {
+                    viewModel.updateSettings(settings.copy(nerdMode = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_expressive_ui),
+                    checked = settings.expressiveUi,
+                    description = stringResource(R.string.settings_expressive_ui_desc),
+                ) {
+                    viewModel.updateSettings(settings.copy(expressiveUi = it))
+                }
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_handheld_landscape_four_columns),
+                    checked = settings.handheldLandscapeFourColumnGrid,
+                    description = stringResource(R.string.settings_handheld_landscape_four_columns_desc),
+                ) {
+                    viewModel.updateSettings(settings.copy(handheldLandscapeFourColumnGrid = it))
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_handheld_landscape_square_cards),
+                    checked = settings.handheldLandscapeSquareCards,
+                    description = stringResource(R.string.settings_handheld_landscape_square_cards_desc),
+                ) {
+                    viewModel.updateSettings(settings.copy(handheldLandscapeSquareCards = it))
+                }
+                if (settings.nerdMode) {
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_nerd_catalog_background),
+                        checked = settings.nerdCatalogBackground,
+                        description = stringResource(R.string.settings_nerd_catalog_background_desc),
+                    ) {
+                        viewModel.updateSettings(settings.copy(nerdCatalogBackground = it))
+                    }
+                }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
                 NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, 0.82f, 1.08f, 0.02f) { value -> viewModel.updateSettings(settings.copy(posterSizeScale = value)) }
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
@@ -549,7 +596,11 @@ private fun SettingsContent(
             }
     if (settings.nerdMode) {
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_section_nerd_tools), "nerd", "intro", "music", "rock", "tone", "button", "sound", "stretch", "fill", "fullscreen", "wave") {
-                    SettingSwitch(stringResource(R.string.settings_button_press_tones), settings.controllerUiSounds) { enabled ->
+                    SettingSwitch(
+                        label = stringResource(R.string.settings_button_press_tones),
+                        checked = settings.controllerUiSounds,
+                        description = stringResource(R.string.settings_button_press_tones_desc),
+                    ) { enabled ->
                         viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
                     }
                 }

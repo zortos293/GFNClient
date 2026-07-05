@@ -134,6 +134,9 @@ data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
     val posterSizeScale: Float = 1f,
     val compactGameCards: Boolean = true,
+    val handheldLandscapeFourColumnGrid: Boolean = false,
+    val handheldLandscapeSquareCards: Boolean = false,
+    val nerdCatalogBackground: Boolean = false,
     val showGameStoreLabels: Boolean = true,
     val expressiveUi: Boolean = true,
     val dynamicColor: Boolean = false,
@@ -624,6 +627,7 @@ data class GameInfo(
     val genres: List<String> = emptyList(),
     val imageUrl: String? = null,
     val screenshotUrl: String? = null,
+    val tvBannerUrl: String? = null,
     val playType: String? = null,
     val membershipTierLabel: String? = null,
     val publisherName: String? = null,
@@ -658,6 +662,11 @@ internal fun isOwnedGameVariant(variant: GameVariant): Boolean =
 
 internal fun isGameInLibrary(game: GameInfo): Boolean =
     game.isInLibrary || game.variants.any(::isOwnedGameVariant)
+
+internal fun gameTrackingKey(game: GameInfo): String =
+    game.uuid?.takeIf { it.isNotBlank() }
+        ?: game.launchAppId?.takeIf { it.isNotBlank() }
+        ?: game.id
 
 internal fun shouldLaunchWithAccountLinked(game: GameInfo, selectedVariant: GameVariant?): Boolean {
     if (game.playType == "INSTALL_TO_PLAY") return false
@@ -772,6 +781,7 @@ private fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
         longDescription = left.longDescription ?: right.longDescription,
         imageUrl = left.imageUrl ?: right.imageUrl,
         screenshotUrl = left.screenshotUrl ?: right.screenshotUrl,
+        tvBannerUrl = left.tvBannerUrl ?: right.tvBannerUrl,
         playType = left.playType ?: right.playType,
         membershipTierLabel = left.membershipTierLabel ?: right.membershipTierLabel,
         publisherName = left.publisherName ?: right.publisherName,

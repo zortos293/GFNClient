@@ -1,11 +1,14 @@
 package com.opencloudgaming.opennow
 
 import android.app.Activity
+import android.content.Context
 import android.content.res.Configuration
 import android.content.Intent
 import android.graphics.Color as AndroidColor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.speech.RecognizerIntent
@@ -20,12 +23,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -70,6 +76,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -98,7 +105,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -128,6 +137,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusDirection
@@ -138,9 +148,11 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -168,6 +180,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -194,6 +207,7 @@ import java.net.URL
 import kotlin.math.min
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 private val Green = Color(0xff6af0a0)
@@ -202,6 +216,8 @@ private val Panel = Color(0xff11161a)
 private val PanelAlt = Color(0xff171d22)
 private val TextPrimary = Color(0xffeef3f5)
 private val TextMuted = Color(0xff98a4aa)
+private const val HANDHELD_CATALOG_WALLPAPER_URL = "https://wallpapercave.com/wp/wp9464307.jpg"
+private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
 private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> Green
@@ -283,6 +299,7 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         state.queuePosition,
         state.streamSession?.sessionId,
         state.streamSession?.queuePosition,
+        state.streamSession?.seatSetupStep,
     ) {
         val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
         val sessionId = state.streamSession?.sessionId
@@ -294,8 +311,7 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         previousStreamStatus = state.streamStatus
         if (state.streamStatus == "queue") {
             queuedForStartCue = queuedForStartCue ||
-                state.queuePosition != null ||
-                state.streamSession?.queuePosition?.takeIf { it > 0 } != null ||
+                queueDisplayPosition(state) != null ||
                 state.launchPhase.equals("Queue", ignoreCase = true)
         }
 
@@ -328,11 +344,9 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     OpenNowTheme(state.settings) {
         Box(Modifier.fillMaxSize()) {
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                val startingText = stringResource(R.string.status_starting_opennow)
                 when {
-                    state.initializing -> LoadingScreen(state.launchPhase.ifBlank { startingText })
-                    state.authSession == null -> LoginScreen(state, viewModel)
-                    else -> MainShell(state, viewModel)
+                    state.authSession != null -> MainShell(state, viewModel)
+                    else -> LoginScreen(state, viewModel)
                 }
             }
             updatePromptKey?.takeIf { showUpdatePrompt }?.let { promptKey ->
@@ -507,7 +521,7 @@ private fun TvDeviceLoginScreen(prompt: DeviceLoginPrompt, phase: String, onCanc
 }
 
 @Composable
-private fun DeviceLoginPanel(
+internal fun DeviceLoginPanel(
     prompt: DeviceLoginPrompt,
     phase: String,
     onCancel: () -> Unit,
@@ -713,13 +727,47 @@ private fun isPhonePortrait(width: androidx.compose.ui.unit.Dp, height: androidx
     height >= width && minOf(width, height) < PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH
 
 @Composable
+private fun CatalogWallpaperBackdrop(
+    settings: AppSettings,
+    tvProfile: Boolean,
+    width: Dp,
+    height: Dp,
+) {
+    if (!settings.nerdMode || !settings.nerdCatalogBackground || tvProfile || width <= height) {
+        return
+    }
+    Box(Modifier.fillMaxSize().clipToBounds()) {
+        UrlImage(
+            HANDHELD_CATALOG_WALLPAPER_URL,
+            Modifier
+                .matchParentSize()
+                .graphicsLayer(alpha = 0.72f),
+        )
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(Color.Black.copy(alpha = 0.28f)),
+        )
+    }
+}
+
+@Composable
 private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+    val context = LocalContext.current
     val inStream = state.page == AppPage.Stream
     val streamingActive = inStream && state.streamStatus != "idle"
     val modalPickerOpen = state.pendingPrintedWasteGame != null || state.pendingStoreChoiceGame != null
     val tvProfile = state.codecReport?.androidTvProfile == true
+    val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
     var settingsSearchQuery by remember { mutableStateOf("") }
+    val navigationToneEnabled = state.settings.nerdMode && state.settings.controllerUiSounds && !inStream
+    val showMinimizedQueueDock = state.streamLaunchMinimized && shouldShowQueueLaunchStatus(state)
+    DisposableEffect(navAudioController) {
+        onDispose {
+            navAudioController.release()
+        }
+    }
     fun revealSearch(
         target: SearchTarget = when (state.page) {
             AppPage.Library -> SearchTarget.Library
@@ -759,54 +807,74 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             contentWindowInsets = if (streamingActive) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
             bottomBar = {
                 if (!inStream && !showNavigationRail) {
-                    NavigationBar(
-                        containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
-                        tonalElevation = 0.dp,
-                    ) {
-                        BottomNavItem(
-                            selected = state.page == AppPage.Home && visibleSearchTarget != SearchTarget.Store,
-                            onClick = {
-                                visibleSearchTarget = null
-                                viewModel.setPage(AppPage.Home)
-                            },
-                            iconRes = R.drawable.ic_tab_store,
-                            label = stringResource(R.string.nav_store),
-                        )
-                        BottomNavItem(
-                            selected = visibleSearchTarget != null,
-                            onClick = { revealSearch() },
-                            iconRes = R.drawable.ic_search,
-                            label = stringResource(R.string.nav_search),
-                        )
-                        BottomNavItem(
-                            selected = state.page == AppPage.Library && visibleSearchTarget != SearchTarget.Library,
-                            onClick = {
-                                visibleSearchTarget = null
-                                viewModel.setPage(AppPage.Library)
-                            },
-                            iconRes = R.drawable.ic_tab_library,
-                            label = stringResource(R.string.nav_library),
-                        )
-                        BottomNavItem(
-                            selected = state.page == AppPage.Settings && visibleSearchTarget != SearchTarget.Settings,
-                            onClick = {
-                                visibleSearchTarget = null
-                                viewModel.setPage(AppPage.Settings)
-                            },
-                            iconRes = R.drawable.ic_tab_settings,
-                            label = stringResource(R.string.nav_settings),
-                        )
+                    Column {
+                        if (showMinimizedQueueDock) {
+                            MinimizedQueueDock(
+                                state = state,
+                                onRestore = viewModel::restoreStreamLaunch,
+                                onCancel = viewModel::stopStream,
+                            )
+                        }
+                        NavigationBar(
+                            containerColor = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
+                            tonalElevation = 0.dp,
+                        ) {
+                            BottomNavItem(
+                                selected = state.page == AppPage.Home && visibleSearchTarget != SearchTarget.Store,
+                                onClick = {
+                                    visibleSearchTarget = null
+                                    viewModel.setPage(AppPage.Home)
+                                },
+                                iconRes = R.drawable.ic_tab_store,
+                                label = stringResource(R.string.nav_store),
+                            )
+                            BottomNavItem(
+                                selected = visibleSearchTarget != null,
+                                onClick = { revealSearch() },
+                                iconRes = R.drawable.ic_search,
+                                label = stringResource(R.string.nav_search),
+                            )
+                            BottomNavItem(
+                                selected = state.page == AppPage.Library && visibleSearchTarget != SearchTarget.Library,
+                                onClick = {
+                                    visibleSearchTarget = null
+                                    viewModel.setPage(AppPage.Library)
+                                },
+                                iconRes = R.drawable.ic_tab_library,
+                                label = stringResource(R.string.nav_library),
+                            )
+                            BottomNavItem(
+                                selected = state.page == AppPage.Settings && visibleSearchTarget != SearchTarget.Settings,
+                                onClick = {
+                                    visibleSearchTarget = null
+                                    viewModel.setPage(AppPage.Settings)
+                                },
+                                iconRes = R.drawable.ic_tab_settings,
+                                label = stringResource(R.string.nav_settings),
+                            )
+                        }
                     }
                 }
             },
         ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .onPreviewKeyEvent { event ->
+                        if (isNavigationToneKey(event)) {
+                            navAudioController.playButtonTone(navigationToneEnabled)
+                        }
+                        false
+                    },
+            ) {
                 Row(Modifier.fillMaxSize()) {
                     if (showNavigationRail) {
                         AppNavigationRail(
                             state = state,
                             activeSearchTarget = visibleSearchTarget,
                             showAppIcon = showNavigationRail && horizontalChrome,
+                            largeIcons = phoneLandscapeChrome,
                             onNavigate = { page ->
                                 visibleSearchTarget = null
                                 viewModel.setPage(page)
@@ -820,16 +888,21 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             .fillMaxHeight(),
                     ) {
                         AnimatedVisibility(
-                            visible = portraitChrome,
+                            visible = portraitChrome || (phoneLandscapeChrome && !phoneLandscapeScrollChromeHidden),
                         ) {
                             if (!inStream) {
                                 TopStatusBar(
                                     state = state,
                                     onResumeActiveSession = viewModel::resumeActiveSession,
+                                    showLogo = portraitChrome,
                                 )
                             }
                         }
-                        Box(Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                        ) {
                             when (state.page) {
                                 AppPage.Home -> HomeScreen(
                                     state = state,
@@ -869,6 +942,13 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                 AppPage.Stream -> StreamScreen(state, viewModel)
                             }
                         }
+                        if (showMinimizedQueueDock && showNavigationRail) {
+                            MinimizedQueueDock(
+                                state = state,
+                                onRestore = viewModel::restoreStreamLaunch,
+                                onCancel = viewModel::stopStream,
+                            )
+                        }
                     }
                 }
                 AnimatedVisibility(
@@ -905,14 +985,6 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         )
                     }
                 }
-                if (state.streamLaunchMinimized && shouldShowQueueLaunchStatus(state)) {
-                    MinimizedQueuePill(
-                        state = state,
-                        onRestore = viewModel::restoreStreamLaunch,
-                        onCancel = viewModel::stopStream,
-                        modifier = Modifier.align(Alignment.BottomCenter),
-                    )
-                }
             }
         }
     }
@@ -923,6 +995,7 @@ private fun AppNavigationRail(
     state: OpenNowUiState,
     activeSearchTarget: SearchTarget?,
     showAppIcon: Boolean,
+    largeIcons: Boolean,
     onNavigate: (AppPage) -> Unit,
     onSearch: (SearchTarget) -> Unit,
 ) {
@@ -939,10 +1012,11 @@ private fun AppNavigationRail(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
+                        .clickable { onNavigate(AppPage.Home) }
                         .padding(top = 12.dp, bottom = 8.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    OpenNowAppIcon(34.dp)
+                    OpenNowAppIcon(if (largeIcons) 44.dp else 34.dp)
                 }
             }
             Column(
@@ -959,6 +1033,7 @@ private fun AppNavigationRail(
                     onClick = { onNavigate(AppPage.Home) },
                     iconRes = R.drawable.ic_tab_store,
                     label = stringResource(R.string.nav_store),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
                 )
                 AppNavigationRailItem(
                     selected = activeSearchTarget != null,
@@ -973,18 +1048,21 @@ private fun AppNavigationRail(
                     },
                     iconRes = R.drawable.ic_search,
                     label = stringResource(R.string.nav_search),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
                 )
                 AppNavigationRailItem(
                     selected = state.page == AppPage.Library && activeSearchTarget != SearchTarget.Library,
                     onClick = { onNavigate(AppPage.Library) },
                     iconRes = R.drawable.ic_tab_library,
                     label = stringResource(R.string.nav_library),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
                 )
                 AppNavigationRailItem(
                     selected = state.page == AppPage.Settings && activeSearchTarget != SearchTarget.Settings,
                     onClick = { onNavigate(AppPage.Settings) },
                     iconRes = R.drawable.ic_tab_settings,
                     label = stringResource(R.string.nav_settings),
+                    iconSize = if (largeIcons) 30.dp else 24.dp,
                 )
             }
         }
@@ -992,15 +1070,22 @@ private fun AppNavigationRail(
 }
 
 @Composable
-private fun AppNavigationRailItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String) {
+private fun AppNavigationRailItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String, iconSize: Dp = 24.dp) {
     NavigationRailItem(
         selected = selected,
         onClick = onClick,
+        colors = NavigationRailItemDefaults.colors(
+            selectedIconColor = MaterialTheme.colorScheme.primary,
+            selectedTextColor = MaterialTheme.colorScheme.primary,
+            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+            unselectedIconColor = TextMuted,
+            unselectedTextColor = TextMuted,
+        ),
         icon = {
             Icon(
                 painter = painterResource(iconRes),
                 contentDescription = label,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier.size(iconSize),
             )
         },
         label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -1012,6 +1097,13 @@ private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconR
     NavigationBarItem(
         selected = selected,
         onClick = onClick,
+        colors = NavigationBarItemDefaults.colors(
+            selectedIconColor = MaterialTheme.colorScheme.primary,
+            selectedTextColor = MaterialTheme.colorScheme.primary,
+            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+            unselectedIconColor = TextMuted,
+            unselectedTextColor = TextMuted,
+        ),
         icon = {
             Icon(
                 painter = painterResource(iconRes),
@@ -1027,6 +1119,7 @@ private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconR
 private fun TopStatusBar(
     state: OpenNowUiState,
     onResumeActiveSession: () -> Unit,
+    showLogo: Boolean = true,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1038,8 +1131,10 @@ private fun TopStatusBar(
             Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            OpenNowMark(34.dp)
-            Spacer(Modifier.width(10.dp))
+            if (showLogo) {
+                OpenNowMark(34.dp)
+                Spacer(Modifier.width(10.dp))
+            }
             Column(Modifier.weight(1f)) {
                 Text(state.authSession?.user?.displayName ?: "OpenNOW", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
@@ -1062,6 +1157,7 @@ private fun TopStatusBar(
 @Composable
 private fun TopStatusDetails(state: OpenNowUiState) {
     val stream = state.activeStreamSettings ?: state.settings.stream
+    val summary = streamStatusSummary(stream)
     Row(
         horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1072,7 +1168,7 @@ private fun TopStatusDetails(state: OpenNowUiState) {
             tonalElevation = 0.dp,
         ) {
             Text(
-                "Codec ${stream.codec.name}",
+                summary,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 color = TextMuted,
                 style = MaterialTheme.typography.labelSmall,
@@ -1080,6 +1176,23 @@ private fun TopStatusDetails(state: OpenNowUiState) {
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+private fun streamStatusSummary(stream: StreamSettings): String =
+    listOf(
+        formatTopBarResolution(stream.resolution),
+        stream.aspectRatio,
+        stream.codec.name,
+        "${stream.fps} FPS",
+    ).filter { it.isNotBlank() }.joinToString(" • ")
+
+private fun formatTopBarResolution(resolution: String): String {
+    val parts = resolution.lowercase(Locale.US).split("x", limit = 2)
+    return if (parts.size == 2 && parts.all { it.trim().isNotBlank() }) {
+        "${parts[0].trim()} × ${parts[1].trim()}"
+    } else {
+        resolution
     }
 }
 
@@ -1201,6 +1314,15 @@ private fun handleDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, f
     return focusManager.moveFocus(direction)
 }
 
+private fun isNavigationToneKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean =
+    event.type == KeyEventType.KeyDown &&
+        event.key in setOf(
+            Key.DirectionUp,
+            Key.DirectionDown,
+            Key.DirectionLeft,
+            Key.DirectionRight,
+        )
+
 internal fun handleVerticalDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, focusManager: FocusManager): Boolean {
     if (event.type != KeyEventType.KeyDown) return false
     val direction = when (event.key) {
@@ -1262,6 +1384,12 @@ private fun HomeScreen(
         modifier = Modifier.fillMaxSize(),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
+            CatalogWallpaperBackdrop(
+                settings = state.settings,
+                tvProfile = tvProfile,
+                width = maxWidth,
+                height = maxHeight,
+            )
             Column(
                 Modifier
                     .fillMaxSize()
@@ -1306,6 +1434,8 @@ private fun HomeScreen(
                             )
                             RefreshingGamesPlaceholder(
                                 settings = state.settings,
+                                tvProfile = tvProfile,
+                                storeLayout = true,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -1483,6 +1613,12 @@ private fun LibraryScreen(
         modifier = Modifier.fillMaxSize(),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
+            CatalogWallpaperBackdrop(
+                settings = state.settings,
+                tvProfile = tvProfile,
+                width = maxWidth,
+                height = maxHeight,
+            )
             Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
@@ -1506,6 +1642,7 @@ private fun LibraryScreen(
                 if (state.loadingGames && state.libraryGames.isEmpty()) {
                     RefreshingGamesPlaceholder(
                         settings = state.settings,
+                        tvProfile = tvProfile,
                         modifier = Modifier.weight(1f),
                     )
                 } else {
@@ -1745,67 +1882,232 @@ private fun SearchEmptyState(
 @Composable
 private fun RefreshingGamesPlaceholder(
     settings: AppSettings,
+    tvProfile: Boolean,
+    storeLayout: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    GameGridSkeleton(settings = settings, modifier = modifier)
+    GameGridSkeleton(settings = settings, tvProfile = tvProfile, storeLayout = storeLayout, modifier = modifier)
 }
 
 @Composable
 private fun GameGridSkeleton(
     settings: AppSettings,
+    tvProfile: Boolean,
+    storeLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val shimmerBrush = rememberLoadingShimmerBrush(label = "game-grid-skeleton-shimmer")
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout)
-        val placeholderItems = remember(gridSpec.columns) { List(gridSpec.columns * 3) { it } }
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+        val placeholderItems = remember(gridSpec.columns, storeLayout) {
+            List(gridSpec.columns * if (storeLayout) 4 else 3) { it }
+        }
         LazyVerticalGrid(
             modifier = Modifier.fillMaxSize(),
             columns = GridCells.Fixed(gridSpec.columns),
-            contentPadding = PaddingValues(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+            contentPadding = gridSpec.contentPadding,
+            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
+            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
             userScrollEnabled = false,
         ) {
+            if (storeLayout) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    StoreStartRailsSkeleton(
+                        settings = settings,
+                        tvProfile = tvProfile,
+                        shimmerBrush = shimmerBrush,
+                    )
+                }
+            }
             gridItems(placeholderItems, key = { it }) {
-                GameCardSkeleton(cardHeight = gridSpec.cardHeight * scale)
+                GameCardSkeleton(
+                    cardHeight = gridSpec.cardHeight * scale,
+                    squareCard = gridSpec.squareCards,
+                    thumbnailPlayOverlay = !tvProfile,
+                    showStoreLabels = settings.showGameStoreLabels,
+                    shimmerBrush = shimmerBrush,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun GameCardSkeleton(cardHeight: Dp) {
+private fun StoreStartRailsSkeleton(
+    settings: AppSettings,
+    tvProfile: Boolean,
+    shimmerBrush: Brush,
+) {
+    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val cardWidth = when {
+        tvProfile -> 158.dp
+        landscapeLayout -> 126.dp
+        else -> 142.dp
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        repeat(2) {
+            StoreRailSectionSkeleton(
+                cardWidth = cardWidth,
+                expressiveUi = settings.expressiveUi,
+                shimmerBrush = shimmerBrush,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StoreRailSectionSkeleton(
+    cardWidth: Dp,
+    expressiveUi: Boolean,
+    shimmerBrush: Brush,
+) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SkeletonLine(widthFraction = 0.34f, height = 15.dp, shimmerBrush = shimmerBrush)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clipToBounds(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            repeat(6) {
+                StoreRailGameCardSkeleton(
+                    width = cardWidth,
+                    expressiveUi = expressiveUi,
+                    shimmerBrush = shimmerBrush,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StoreRailGameCardSkeleton(
+    width: Dp,
+    expressiveUi: Boolean,
+    shimmerBrush: Brush,
+) {
+    val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
+    Surface(
+        modifier = Modifier
+            .width(width)
+            .aspectRatio(1f)
+            .border(1.dp, Color.White.copy(alpha = 0.08f), shape),
+        shape = shape,
+        color = Color.Black,
+        tonalElevation = 0.dp,
+        shadowElevation = 1.dp,
+    ) {
+        Box(Modifier.fillMaxSize().clip(shape)) {
+            LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+            SkeletonCircle(
+                size = 44.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(6.dp),
+                shimmerBrush = shimmerBrush,
+            )
+            SkeletonCircle(
+                size = 44.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(6.dp),
+                shimmerBrush = shimmerBrush,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GameCardSkeleton(
+    cardHeight: Dp,
+    squareCard: Boolean,
+    thumbnailPlayOverlay: Boolean,
+    showStoreLabels: Boolean,
+    shimmerBrush: Brush,
+) {
+    val cardShape = RoundedCornerShape(12.dp)
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(cardHeight),
+            .then(if (squareCard) Modifier.aspectRatio(1f) else Modifier.height(cardHeight)),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
-        shape = RoundedCornerShape(12.dp),
+        shape = cardShape,
     ) {
-        Column(Modifier.fillMaxSize()) {
-            GameImagePulse(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-            )
-            Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                SkeletonLine(widthFraction = 0.74f)
-                SkeletonLine(widthFraction = 0.46f)
+        if (thumbnailPlayOverlay) {
+            Box(Modifier.fillMaxSize()) {
+                LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+                SkeletonCircle(
+                    size = 44.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(8.dp),
+                    shimmerBrush = shimmerBrush,
+                )
+                SkeletonCircle(
+                    size = 44.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
+                    shimmerBrush = shimmerBrush,
+                )
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+                    SkeletonCircle(
+                        size = 44.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
+                        shimmerBrush = shimmerBrush,
+                    )
+                }
+                if (showStoreLabels) {
+                    Column(Modifier.padding(horizontal = 9.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        SkeletonLine(widthFraction = 0.62f, shimmerBrush = shimmerBrush)
+                    }
+                }
+                Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
+                    LoadingShimmer(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(999.dp)),
+                        shimmerBrush = shimmerBrush,
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun SkeletonLine(widthFraction: Float) {
-    GameImagePulse(
+private fun SkeletonLine(widthFraction: Float, height: Dp = 9.dp, shimmerBrush: Brush) {
+    LoadingShimmer(
         Modifier
             .fillMaxWidth(widthFraction)
-            .height(9.dp)
+            .height(height)
             .clip(RoundedCornerShape(999.dp)),
+        shimmerBrush = shimmerBrush,
+    )
+}
+
+@Composable
+private fun SkeletonCircle(size: Dp, modifier: Modifier = Modifier, shimmerBrush: Brush) {
+    LoadingShimmer(
+        modifier
+            .size(size)
+            .clip(CircleShape),
+        shimmerBrush = shimmerBrush,
     )
 }
 
@@ -1866,22 +2168,22 @@ private fun GameGrid(
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout)
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         LazyVerticalGrid(
             modifier = Modifier.fillMaxSize(),
             state = gridState,
             columns = GridCells.Fixed(gridSpec.columns),
-            contentPadding = PaddingValues(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+            contentPadding = gridSpec.contentPadding,
+            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
+            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
         ) {
             gridItems(games, key = { it.id }) { game ->
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
                     settings = settings,
-                    tvProfile = tvProfile,
                     cardHeight = gridSpec.cardHeight * scale,
+                    squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
@@ -1939,25 +2241,39 @@ private fun StoreGameGrid(
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout)
+        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         LazyVerticalGrid(
             modifier = Modifier.fillMaxSize(),
             state = gridState,
             columns = GridCells.Fixed(gridSpec.columns),
-            contentPadding = PaddingValues(0.dp),
-            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
-            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+            contentPadding = gridSpec.contentPadding,
+            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
+            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 StoreScrollableControls(state, onSortChange, onFilterToggle)
+            }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                StoreStartRails(
+                    games = games,
+                    libraryGames = state.libraryGames,
+                    favoriteIds = favoriteIds,
+                    queuedGameKeys = state.queuedGameKeys,
+                    settings = settings,
+                    tvProfile = tvProfile,
+                    onSelect = onSelect,
+                    onFavorite = onFavorite,
+                    onPlay = onPlay,
+                    onChooseStore = onChooseStore,
+                )
             }
             gridItems(games, key = { it.id }) { game ->
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
                     settings = settings,
-                    tvProfile = tvProfile,
                     cardHeight = gridSpec.cardHeight * scale,
+                    squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
@@ -1969,40 +2285,362 @@ private fun StoreGameGrid(
     }
 }
 
+@Composable
+private fun StoreStartRails(
+    games: List<GameInfo>,
+    libraryGames: List<GameInfo>,
+    favoriteIds: List<String>,
+    queuedGameKeys: List<String>,
+    settings: AppSettings,
+    tvProfile: Boolean,
+    onSelect: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
+) {
+    val jumpBackIn = remember(games, libraryGames, favoriteIds, queuedGameKeys) {
+        jumpBackInGames(games, libraryGames, favoriteIds, queuedGameKeys)
+    }
+    val recommendations = remember(games, libraryGames, favoriteIds, jumpBackIn) {
+        recommendedStoreGames(
+            games = games,
+            libraryGames = libraryGames,
+            favoriteIds = favoriteIds,
+            excludedGames = jumpBackIn,
+        )
+    }
+    if (jumpBackIn.isEmpty() && recommendations.isEmpty()) return
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (jumpBackIn.isNotEmpty()) {
+            StoreRailSection(
+                title = stringResource(R.string.store_jump_back_in),
+                games = jumpBackIn,
+                favoriteIds = favoriteIds,
+                settings = settings,
+                tvProfile = tvProfile,
+                onSelect = onSelect,
+                onFavorite = onFavorite,
+                onPlay = onPlay,
+                onChooseStore = onChooseStore,
+            )
+        }
+        if (recommendations.isNotEmpty()) {
+            StoreRailSection(
+                title = stringResource(R.string.store_recommendations),
+                games = recommendations,
+                favoriteIds = favoriteIds,
+                settings = settings,
+                tvProfile = tvProfile,
+                onSelect = onSelect,
+                onFavorite = onFavorite,
+                onPlay = onPlay,
+                onChooseStore = onChooseStore,
+            )
+        }
+    }
+}
+
+@Composable
+private fun StoreRailSection(
+    title: String,
+    games: List<GameInfo>,
+    favoriteIds: List<String>,
+    settings: AppSettings,
+    tvProfile: Boolean,
+    onSelect: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
+) {
+    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val cardWidth = when {
+        tvProfile -> 158.dp
+        landscapeLayout -> 126.dp
+        else -> 142.dp
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            title,
+            color = TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(horizontal = 2.dp),
+        ) {
+            items(games, key = { storeRailGameKey(it) }) { game ->
+                StoreRailGameCard(
+                    game = game,
+                    favorite = game.id in favoriteIds,
+                    settings = settings,
+                    width = cardWidth,
+                    onSelect = onSelect,
+                    onFavorite = onFavorite,
+                    onPlay = onPlay,
+                    onChooseStore = onChooseStore,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun StoreRailGameCard(
+    game: GameInfo,
+    favorite: Boolean,
+    settings: AppSettings,
+    width: Dp,
+    onSelect: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val shape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
+    Surface(
+        modifier = Modifier
+            .width(width)
+            .aspectRatio(1f)
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+            .border(
+                width = if (focused) 2.dp else 1.dp,
+                color = if (focused) Color.White else Color.White.copy(alpha = 0.08f),
+                shape = shape,
+            )
+            .onPreviewKeyEvent { event ->
+                when {
+                    isTvActivateKey(event) -> {
+                        onSelect(game)
+                        true
+                    }
+                    else -> handleDpadFocusMove(event, focusManager)
+                }
+            }
+            .focusable()
+            .combinedClickable(
+                onClick = { onSelect(game) },
+                onLongClick = { onChooseStore(game) },
+                onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+            ),
+        shape = shape,
+        color = Color.Black,
+        tonalElevation = if (focused) 4.dp else 0.dp,
+        shadowElevation = if (focused) 8.dp else 1.dp,
+    ) {
+        Box(Modifier.fillMaxSize().clip(shape)) {
+            UrlImage(game.imageUrl, Modifier.fillMaxSize())
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.06f)))
+            ThumbnailPlayButton(
+                onClick = { onPlay(game) },
+                onLongClick = { onChooseStore(game) },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(6.dp),
+            )
+            FavoriteIconButton(
+                favorite = favorite,
+                onClick = { onFavorite(game.id) },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(6.dp),
+            )
+        }
+    }
+}
+
+private fun jumpBackInGames(
+    games: List<GameInfo>,
+    libraryGames: List<GameInfo>,
+    favoriteIds: List<String>,
+    queuedGameKeys: List<String>,
+): List<GameInfo> {
+    val favoriteSet = favoriteIds.toSet()
+    val combined = distinctStoreGames(libraryGames + games)
+    val byKey = combined.associateBy(::storeRailGameKey)
+    val queued = queuedGameKeys.mapNotNull(byKey::get)
+    val favorites = combined.filter { it.id in favoriteSet }
+    val recent = combined
+        .filter { it.recentPlaySortKey() != null }
+        .sortedByDescending { it.recentPlaySortKey() }
+    val owned = combined.filter(::isGameInLibrary)
+    return distinctStoreGames(queued + favorites + recent + owned).take(STORE_RAIL_GAME_LIMIT)
+}
+
+private fun recommendedStoreGames(
+    games: List<GameInfo>,
+    libraryGames: List<GameInfo>,
+    favoriteIds: List<String>,
+    excludedGames: List<GameInfo>,
+): List<GameInfo> {
+    val excludedKeys = excludedGames.map(::storeRailGameKey).toSet()
+    val preferredGenres = distinctStoreGames(libraryGames + games.filter { it.id in favoriteIds })
+        .flatMap { it.cleanGenreKeys() }
+        .toSet()
+    val preferredStores = libraryGames
+        .flatMap { libraryStoreDisplayNames(it) }
+        .map(::normalizeGameStore)
+        .filter { it.isNotBlank() }
+        .toSet()
+    val candidates = distinctStoreGames(games)
+        .filterNot { storeRailGameKey(it) in excludedKeys }
+    val scored = candidates
+        .map { game -> game to game.recommendationScore(preferredGenres, preferredStores) }
+        .filter { it.second > 0 }
+        .sortedWith(
+            compareByDescending<Pair<GameInfo, Int>> { it.second }
+                .thenBy { it.first.title.lowercase(Locale.US) },
+        )
+        .map { it.first }
+    return distinctStoreGames(scored + candidates).take(STORE_RAIL_GAME_LIMIT)
+}
+
+private fun GameInfo.recommendationScore(preferredGenres: Set<String>, preferredStores: Set<String>): Int {
+    var score = cleanGenreKeys().count { it in preferredGenres } * 4
+    val storeScore = (availableStores + variants.map { it.store })
+        .flatMap(::splitGameStoreKeys)
+        .map(::normalizeGameStore)
+        .count { it in preferredStores }
+    score += storeScore
+    if (!publisherName.isNullOrBlank()) score += 1
+    if (featureLabels.isNotEmpty()) score += 1
+    return score
+}
+
+private fun GameInfo.cleanGenreKeys(): List<String> =
+    genres
+        .map { formatGameMetadataLabel(it).lowercase(Locale.US).trim() }
+        .filter { it.isNotBlank() && !isNoisyGameTag(it) }
+        .distinct()
+
+private fun GameInfo.recentPlaySortKey(): String? =
+    listOfNotNull(
+        lastPlayed?.takeIf { it.isNotBlank() },
+        variants.mapNotNull { it.lastPlayedDate?.takeIf(String::isNotBlank) }.maxOrNull(),
+    ).maxOrNull()
+
+private fun distinctStoreGames(games: List<GameInfo>): List<GameInfo> {
+    val byKey = linkedMapOf<String, GameInfo>()
+    games.forEach { game ->
+        byKey.putIfAbsent(storeRailGameKey(game), game)
+    }
+    return byKey.values.toList()
+}
+
+private fun storeRailGameKey(game: GameInfo): String =
+    gameTrackingKey(game)
+
+private const val STORE_RAIL_GAME_LIMIT = 14
+
 private data class GameGridSpec(
     val columns: Int,
     val cardHeight: Dp,
+    val horizontalSpacing: Dp,
+    val verticalSpacing: Dp,
+    val contentPadding: PaddingValues,
+    val squareCards: Boolean,
 )
 
 private fun gameGridSpec(
     maxWidth: androidx.compose.ui.unit.Dp,
     compact: Boolean,
     landscapeLayout: Boolean,
+    settings: AppSettings,
+    handheldLayout: Boolean,
 ): GameGridSpec {
+    val handheldFourColumn = landscapeLayout && handheldLayout && settings.handheldLandscapeFourColumnGrid
+    val minimumPortraitColumns = if (!landscapeLayout && handheldLayout) 3 else 2
+    val compactHorizontalSpacing = if (compact) 8.dp else 10.dp
+    val compactVerticalSpacing = if (compact) 10.dp else 12.dp
+    val landscapeHorizontalSpacing = if (handheldFourColumn) 14.dp else compactHorizontalSpacing
+    val landscapeContentHorizontalPadding = if (handheldFourColumn) 8.dp else 4.dp
     return when {
         landscapeLayout -> GameGridSpec(
-            columns = landscapePosterColumnCount(maxWidth),
+            columns = landscapePosterColumnCount(
+                maxWidth = maxWidth,
+                forceFourColumns = handheldFourColumn,
+                horizontalSpacing = landscapeHorizontalSpacing,
+                horizontalContentPadding = landscapeContentHorizontalPadding,
+                handheldLayout = handheldLayout,
+            ),
             cardHeight = if (compact) 188.dp else 214.dp,
+            horizontalSpacing = landscapeHorizontalSpacing,
+            verticalSpacing = if (handheldFourColumn) 16.dp else compactVerticalSpacing,
+            contentPadding = PaddingValues(horizontal = landscapeContentHorizontalPadding, vertical = 4.dp),
+            squareCards = handheldLayout && settings.handheldLandscapeSquareCards,
         )
-        compact -> GameGridSpec(columns = gameGridColumnCount(maxWidth), cardHeight = 218.dp)
-        else -> GameGridSpec(columns = gameGridColumnCount(maxWidth), cardHeight = 246.dp)
+        compact -> GameGridSpec(
+            columns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
+            cardHeight = 218.dp,
+            horizontalSpacing = compactHorizontalSpacing,
+            verticalSpacing = compactVerticalSpacing,
+            contentPadding = PaddingValues(4.dp),
+            squareCards = false,
+        )
+        else -> GameGridSpec(
+            columns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
+            cardHeight = 246.dp,
+            horizontalSpacing = compactHorizontalSpacing,
+            verticalSpacing = compactVerticalSpacing,
+            contentPadding = PaddingValues(4.dp),
+            squareCards = false,
+        )
     }
 }
 
-private fun landscapePosterColumnCount(maxWidth: androidx.compose.ui.unit.Dp): Int =
-    when {
+private fun landscapePosterColumnCount(
+    maxWidth: androidx.compose.ui.unit.Dp,
+    forceFourColumns: Boolean,
+    horizontalSpacing: Dp,
+    horizontalContentPadding: Dp,
+    handheldLayout: Boolean,
+): Int {
+    val minCardWidth = when {
+        forceFourColumns -> 118.dp
+        handheldLayout -> 136.dp
+        else -> 150.dp
+    }
+    val preferredColumns = when {
+        forceFourColumns -> 4
         maxWidth >= 1440.dp -> 8
         maxWidth >= 1050.dp -> 7
         maxWidth >= 520.dp -> 6
         else -> 5
     }
+    val minimumColumns = 3
+    for (columns in preferredColumns downTo minimumColumns) {
+        if (landscapeCardWidth(maxWidth, columns, horizontalSpacing, horizontalContentPadding) >= minCardWidth) {
+            return columns
+        }
+    }
+    return minimumColumns
+}
 
-private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp): Int =
+private fun landscapeCardWidth(
+    maxWidth: androidx.compose.ui.unit.Dp,
+    columns: Int,
+    horizontalSpacing: Dp,
+    horizontalContentPadding: Dp,
+): Dp {
+    val reservedWidth = horizontalContentPadding.value * 2f + horizontalSpacing.value * (columns - 1).coerceAtLeast(0)
+    return ((maxWidth.value - reservedWidth).coerceAtLeast(0f) / columns.coerceAtLeast(1)).dp
+}
+
+private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp, minimumColumns: Int = 2): Int =
     when {
         maxWidth >= 1100.dp -> 5
         maxWidth >= 840.dp -> 4
         maxWidth >= 600.dp -> 3
-        else -> 2
+        else -> minimumColumns
     }
 
 @Composable
@@ -2010,8 +2648,8 @@ private fun GameCard(
     game: GameInfo,
     favorite: Boolean,
     settings: AppSettings,
-    tvProfile: Boolean,
     cardHeight: androidx.compose.ui.unit.Dp,
+    squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
@@ -2019,36 +2657,32 @@ private fun GameCard(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
     val cardShape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(cardHeight)
+            .then(if (squareCard) Modifier.aspectRatio(1f) else Modifier.height(cardHeight))
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .then(
-                if (tvProfile) {
-                    Modifier
-                        .border(
-                            width = if (focused) 2.dp else 1.dp,
-                            color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                            shape = cardShape,
-                        )
-                        .onPreviewKeyEvent { event ->
-                            if (isTvActivateKey(event)) {
-                                onSelect(game)
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        .focusable()
-                } else {
-                    Modifier
-                },
-            ),
+            .border(
+                width = if (focused) 3.dp else 1.dp,
+                color = if (focused) Color.White else Color.Transparent,
+                shape = cardShape,
+            )
+            .onPreviewKeyEvent { event ->
+                when {
+                    isTvActivateKey(event) -> {
+                        onSelect(game)
+                        true
+                    }
+                    else -> handleDpadFocusMove(event, focusManager)
+                }
+            }
+            .focusable(),
         colors = CardDefaults.cardColors(
             containerColor = if (settings.expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
         ),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (focused) 8.dp else 0.dp),
         shape = cardShape,
     ) {
         Box(
@@ -2057,17 +2691,10 @@ private fun GameCard(
                 .clickable { onSelect(game) },
         ) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
-            FavoriteIconButton(
-                favorite = favorite,
-                onClick = { onFavorite(game.id) },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp),
-            )
             if (thumbnailPlayOverlay) {
-                ThumbnailStoreButton(
-                    badge = launcherBadgeForGame(game),
-                    onClick = { onChooseStore(game) },
+                FavoriteIconButton(
+                    favorite = favorite,
+                    onClick = { onFavorite(game.id) },
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(8.dp),
@@ -2077,6 +2704,14 @@ private fun GameCard(
                     onLongClick = { onChooseStore(game) },
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
+                        .padding(8.dp),
+                )
+            } else {
+                FavoriteIconButton(
+                    favorite = favorite,
+                    onClick = { onFavorite(game.id) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
                         .padding(8.dp),
                 )
             }
@@ -2113,47 +2748,6 @@ private fun GameCard(
             }
         }
     }
-}
-
-@Composable
-private fun ThumbnailStoreButton(badge: LauncherBadge, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val chooseLauncherLabel = stringResource(R.string.store_selector_choose_launcher)
-    Surface(
-        modifier = modifier.size(44.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = badge.background.copy(alpha = 0.94f),
-        tonalElevation = 3.dp,
-        shadowElevation = 3.dp,
-    ) {
-        IconButton(
-            onClick = onClick,
-            modifier = Modifier.semantics {
-                contentDescription = "${badge.name} $chooseLauncherLabel"
-            },
-        ) {
-            Icon(
-                painter = painterResource(badge.iconRes),
-                contentDescription = null,
-                tint = badge.foreground,
-                modifier = Modifier.size(24.dp),
-            )
-        }
-    }
-}
-
-private fun launcherBadgeForGame(game: GameInfo): LauncherBadge {
-    val candidateStores = mutableListOf<String>()
-    game.variants.getOrNull(game.selectedVariantIndex)?.let { selectedVariant ->
-        candidateStores += splitGameStoreKeys(selectedVariant.store)
-    }
-    game.variants.forEach { variant ->
-        candidateStores += splitGameStoreKeys(variant.store)
-    }
-    game.availableStores.forEach { store ->
-        candidateStores += splitGameStoreKeys(store)
-    }
-    val key = candidateStores.firstOrNull { it.isNotBlank() }
-    return launcherBadgeForStoreKey(key)
 }
 
 internal fun launcherBadgeForStoreKey(storeKey: String?): LauncherBadge =
@@ -2308,8 +2902,7 @@ private fun GameDetailsLandscapeContent(
     imageActionsOverlay: Boolean,
 ) {
     val description = gameDescriptionForDetails(game)
-    val chips = gameDetailChips(game)
-    val launchStores = displayStoresForVariants(game.variants).ifEmpty { game.availableStores }.map(::gameStoreDisplayName).distinct()
+    val context = LocalContext.current
     val sideScrollState = rememberScrollState()
     Row(
         Modifier
@@ -2324,8 +2917,13 @@ private fun GameDetailsLandscapeContent(
                 .fillMaxHeight()
                 .clip(RoundedCornerShape(20.dp)),
         ) {
-            UrlImage(game.screenshotUrl ?: game.imageUrl, Modifier.fillMaxSize())
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
+            UrlImage(gameHeroImageUrl(context, game), Modifier.fillMaxSize())
+            GameImageTitleOverlay(
+                game = game,
+                compact = shortHeight,
+                reserveEndSpace = imageActionsOverlay,
+                modifier = Modifier.align(Alignment.BottomStart),
+            )
             if (imageActionsOverlay) {
                 ImageCloseButton(
                     onClick = onDismiss,
@@ -2341,27 +2939,6 @@ private fun GameDetailsLandscapeContent(
                     .align(Alignment.TopEnd)
                     .padding(10.dp),
             )
-            Column(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .padding(
-                        start = if (shortHeight) 16.dp else 20.dp,
-                        top = if (shortHeight) 16.dp else 20.dp,
-                        end = if (imageActionsOverlay) 152.dp else if (shortHeight) 16.dp else 20.dp,
-                        bottom = if (shortHeight) 16.dp else 20.dp,
-                    ),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    game.title,
-                    style = if (shortHeight) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
             if (imageActionsOverlay) {
                 LongPressPlayButton(
                     onClick = {
@@ -2388,31 +2965,10 @@ private fun GameDetailsLandscapeContent(
                 .then(if (imageActionsOverlay) Modifier.verticalScroll(sideScrollState) else Modifier),
             verticalArrangement = Arrangement.spacedBy(if (shortHeight) 8.dp else 10.dp),
         ) {
-            Text(
-                description ?: "No description is available for this game yet.",
-                color = if (description == null) TextMuted else TextPrimary,
-                style = MaterialTheme.typography.bodyMedium,
-                lineHeight = if (shortHeight) MaterialTheme.typography.bodyMedium.lineHeight * 0.92f else MaterialTheme.typography.bodyMedium.lineHeight,
-                maxLines = if (shortHeight) 6 else 8,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (chips.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    chips.take(if (shortHeight) 8 else 12).forEach { label ->
-                        AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                    }
-                }
-            }
+            OwnershipStatusRow(game = game, compact = true)
+            GameGenreChips(game = game, compact = true)
+            GameDescriptionDisclosure(description = description, compact = true)
             CompactDetailRows(game)
-            if (launchStores.isNotEmpty()) {
-                Text(
-                    "Launchers: ${launchStores.joinToString(", ")}",
-                    color = TextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
             LaunchOptionsList(
                 game = game,
                 defaultVariantId = defaultVariantId,
@@ -2459,6 +3015,7 @@ private fun GameDetailsScrollableContent(
     onDismiss: () -> Unit,
     playFocusRequester: FocusRequester,
 ) {
+    val context = LocalContext.current
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.weight(1f),
@@ -2472,10 +3029,15 @@ private fun GameDetailsScrollableContent(
                         .height(220.dp),
                 ) {
                     UrlImage(
-                        game.screenshotUrl ?: game.imageUrl,
+                        gameHeroImageUrl(context, game),
                         Modifier.fillMaxSize(),
                     )
-                    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)))
+                    GameImageTitleOverlay(
+                        game = game,
+                        compact = false,
+                        reserveEndSpace = false,
+                        modifier = Modifier.align(Alignment.BottomStart),
+                    )
                     FavoriteIconButton(
                         favorite = favorite,
                         onClick = { onFavorite(game.id) },
@@ -2483,39 +3045,14 @@ private fun GameDetailsScrollableContent(
                             .align(Alignment.TopEnd)
                             .padding(10.dp),
                     )
-                    Column(
-                        Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            game.title,
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
                 }
             }
             item {
                 Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val description = gameDescriptionForDetails(game)
-                    if (description != null) {
-                        Text(description, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                    } else {
-                        Text("No description is available for this game yet.", color = TextMuted)
-                    }
-                    val chips = gameDetailChips(game)
-                    if (chips.isNotEmpty()) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            chips.take(12).forEach { label ->
-                                AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                            }
-                        }
-                    }
+                    OwnershipStatusRow(game = game, compact = false)
+                    GameGenreChips(game = game, compact = false)
+                    GameDescriptionDisclosure(description = description, compact = false)
                     DetailRows(game)
                     LaunchOptionsList(
                         game = game,
@@ -2700,14 +3237,230 @@ private fun gameDescriptionForDetails(game: GameInfo): String? =
     game.longDescription?.takeIf { it.isNotBlank() }
         ?: game.description?.takeIf { it.isNotBlank() }
 
-private fun gameDetailChips(game: GameInfo): List<String> =
-    (game.featureLabels + game.genres + listOfNotNull(game.playType, game.membershipTierLabel))
+private fun gameHeroImageUrl(context: Context, game: GameInfo?): String? {
+    val url = game?.screenshotUrl?.takeIf { it.isNotBlank() }
+        ?: game?.tvBannerUrl?.takeIf { it.isNotBlank() }
+        ?: game?.imageUrl?.takeIf { it.isNotBlank() }
+        ?: return null
+    return optimizedNvidiaImageUrl(url, wideImageRequestWidth(context))
+}
+
+private fun gameTvBannerImageUrl(context: Context, game: GameInfo?): String? {
+    val url = game?.tvBannerUrl?.takeIf { it.isNotBlank() }
+        ?: game?.screenshotUrl?.takeIf { it.isNotBlank() }
+        ?: game?.imageUrl?.takeIf { it.isNotBlank() }
+        ?: return null
+    return optimizedNvidiaImageUrl(url, wideImageRequestWidth(context))
+}
+
+private fun optimizedNvidiaImageUrl(url: String, width: Int): String {
+    if (!url.contains("img.nvidiagrid.net")) return url
+    val base = url
+        .substringBefore(";f=")
+        .substringBefore(";w=")
+        .substringBefore(";h=")
+        .substringBefore(";dpr=")
+    return "$base;f=webp;w=$width"
+}
+
+private fun wideImageRequestWidth(context: Context): Int {
+    val connectivity = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    val capabilities = connectivity?.getNetworkCapabilities(connectivity.activeNetwork)
+    val downstreamKbps = capabilities?.linkDownstreamBandwidthKbps ?: 0
+    return when {
+        downstreamKbps >= 25_000 -> 1920
+        downstreamKbps in 10_000 until 25_000 -> 1600
+        downstreamKbps in 3_000 until 10_000 -> 1280
+        downstreamKbps in 1 until 3_000 -> 960
+        capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true -> 1600
+        capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> 960
+        else -> 1280
+    }
+}
+
+@Composable
+private fun GameImageTitleOverlay(
+    game: GameInfo,
+    compact: Boolean,
+    reserveEndSpace: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val textShadow = Shadow(
+        color = Color.Black,
+        offset = Offset(0f, 3f),
+        blurRadius = 14f,
+    )
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(
+                start = if (compact) 12.dp else 16.dp,
+                top = if (compact) 9.dp else 12.dp,
+                end = if (reserveEndSpace) 154.dp else if (compact) 12.dp else 16.dp,
+                bottom = if (compact) 10.dp else 14.dp,
+            ),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(
+            game.title,
+            color = TextPrimary,
+            style = (if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall).copy(
+                shadow = textShadow,
+            ),
+            fontWeight = FontWeight.Bold,
+            maxLines = if (compact) 2 else 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            game.publisherName?.takeIf { it.isNotBlank() } ?: "Unknown publisher",
+            color = TextPrimary.copy(alpha = 0.88f),
+            style = MaterialTheme.typography.bodyMedium.copy(shadow = textShadow),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun GameTitleBlock(game: GameInfo, compact: Boolean) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (compact) 3.dp else 5.dp)) {
+        Text(
+            game.title,
+            color = TextPrimary,
+            style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = if (compact) 2 else 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            game.publisherName?.takeIf { it.isNotBlank() } ?: "Unknown publisher",
+            color = TextMuted,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun OwnershipStatusRow(game: GameInfo, compact: Boolean) {
+    val ownedStores = ownedStoreLabels(game)
+    val shape = RoundedCornerShape(if (compact) 12.dp else 14.dp)
+    if (ownedStores.isEmpty()) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = shape,
+            color = Color(0xff4a1216),
+            tonalElevation = 0.dp,
+        ) {
+            Text(
+                "Not owned",
+                color = Color(0xffffb8bf),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        return
+    }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        ownedStores.forEach { store ->
+            val badge = launcherBadgeForStoreKey(normalizeGameStore(store))
+            Surface(
+                shape = shape,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                tonalElevation = 0.dp,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = if (compact) 6.dp else 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ConnectorStoreIcon(badge)
+                    Text(
+                        "Owned on $store",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun ownedStoreLabels(game: GameInfo): List<String> =
+    libraryStoreDisplayNames(game).ifEmpty {
+        if (isGameInLibrary(game)) listOf("GeForce NOW") else emptyList()
+    }
+
+@Composable
+private fun GameGenreChips(game: GameInfo, compact: Boolean) {
+    val genres = game.genres
         .map { it.trim() }
         .filter { it.isNotBlank() }
         .map(::formatGameMetadataLabel)
         .filterNot(::isNoisyGameTag)
         .distinctBy { it.lowercase(Locale.US) }
-        .take(10)
+        .take(if (compact) 12 else 20)
+    if (genres.isEmpty()) return
+    LazyRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 7.dp),
+        contentPadding = PaddingValues(end = if (compact) 6.dp else 8.dp),
+    ) {
+        items(genres, key = { it }) { label ->
+            AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+        }
+    }
+}
+
+@Composable
+private fun GameDescriptionDisclosure(description: String?, compact: Boolean) {
+    var expanded by remember(description) { mutableStateOf(true) }
+    val text = description?.takeIf { it.isNotBlank() } ?: "No description is available for this game yet."
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
+        color = PanelAlt,
+        tonalElevation = 0.dp,
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Description",
+                    color = TextPrimary,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_chevron_right),
+                        contentDescription = if (expanded) "Hide description" else "Show description",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .graphicsLayer(rotationZ = if (expanded) 90f else 0f),
+                    )
+                }
+            }
+            if (expanded) {
+                Text(
+                    text,
+                    color = if (description == null) TextMuted else TextPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = if (compact) 8 else Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
 
 private fun formatGameMetadataLabel(raw: String): String {
     val compact = raw.trim()
@@ -2746,57 +3499,87 @@ private fun isNoisyGameTag(label: String): Boolean {
 
 @Composable
 private fun CompactDetailRows(game: GameInfo) {
-    val rows = listOfNotNull(
-        game.publisherName?.takeIf { it.isNotBlank() }?.let { "Publisher" to it },
-        game.playabilityState?.takeIf { it.isNotBlank() }?.let { "Status" to it },
-        game.contentRatings.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { "Rating" to it },
-        game.lastPlayed?.takeIf { it.isNotBlank() }?.let { "Last played" to it },
-        game.availableStores.takeIf { it.isNotEmpty() }?.map(::gameStoreDisplayName)?.distinct()?.joinToString(", ")?.let { "Stores" to it },
-    ).take(3)
+    val rows = gameDetailRows(game).take(4)
     if (rows.isEmpty()) return
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        rows.forEach { (label, value) ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(PanelAlt)
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(label, color = TextMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(82.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(value, color = TextPrimary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+        rows.forEach { row ->
+            DetailRow(row = row, compact = true)
         }
     }
 }
 
 @Composable
 private fun DetailRows(game: GameInfo) {
-    val rows = listOfNotNull(
-        game.publisherName?.takeIf { it.isNotBlank() }?.let { "Publisher" to it },
-        game.playabilityState?.takeIf { it.isNotBlank() }?.let { "Status" to it },
-        game.contentRatings.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { "Rating" to it },
-        game.lastPlayed?.takeIf { it.isNotBlank() }?.let { "Last played" to it },
-        game.availableStores.takeIf { it.isNotEmpty() }?.map(::gameStoreDisplayName)?.distinct()?.joinToString(", ")?.let { "Stores" to it },
-    )
+    val rows = gameDetailRows(game)
     if (rows.isEmpty()) return
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        rows.forEach { (label, value) ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(PanelAlt)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text(label, color = TextMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(92.dp))
-                Text(value, color = TextPrimary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-            }
+        rows.forEach { row ->
+            DetailRow(row = row, compact = false)
         }
+    }
+}
+
+private data class GameDetailRow(
+    val label: String,
+    val value: String,
+    val copyValue: String? = null,
+)
+
+private fun gameDetailRows(game: GameInfo): List<GameDetailRow> =
+    listOfNotNull(
+        game.playabilityState?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Status", formatGameMetadataLabel(it)) },
+        gameAppIdForDetails(game)?.let { GameDetailRow("App ID", it, copyValue = it) },
+        game.contentRatings.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { GameDetailRow("Rating", it) },
+        game.lastPlayed?.takeIf { it.isNotBlank() }?.let { GameDetailRow("Last played", it) },
+        game.availableStores.takeIf { it.isNotEmpty() }?.map(::gameStoreDisplayName)?.distinct()?.joinToString(", ")?.let { GameDetailRow("Stores", it) },
+    )
+
+private fun gameAppIdForDetails(game: GameInfo): String? =
+    game.launchAppId?.takeIf { it.isNotBlank() }
+        ?: game.variants.firstNotNullOfOrNull { variant -> variant.id.takeIf { it.isNotBlank() && it.all(Char::isDigit) } }
+        ?: game.uuid?.takeIf { it.isNotBlank() }
+        ?: game.id.takeIf { it.isNotBlank() }
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DetailRow(row: GameDetailRow, compact: Boolean) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val shape = RoundedCornerShape(if (compact) 10.dp else 12.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(PanelAlt)
+            .combinedClickable(
+                onClick = {},
+                onLongClick = row.copyValue?.let { value ->
+                    {
+                        clipboard.setText(AnnotatedString(value))
+                        Toast.makeText(context, "App ID copied", Toast.LENGTH_SHORT).show()
+                    }
+                },
+            )
+            .padding(horizontal = if (compact) 10.dp else 12.dp, vertical = if (compact) 7.dp else 10.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+    ) {
+        Text(
+            row.label,
+            color = TextMuted,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.width(if (compact) 82.dp else 92.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            if (row.copyValue != null) "${row.value}" else row.value,
+            color = TextPrimary,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+            maxLines = if (compact) 1 else 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -4633,71 +5416,83 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
     val mediaUrl = ad?.adMediaFiles?.firstOrNull { !it.mediaFileUrl.isNullOrBlank() }?.mediaFileUrl
         ?: ad?.adUrl
         ?: ad?.mediaUrl
-    val queueCopy = queueLaunchStatusText(state)
+    val queuePosition = activeQueuePosition(state)
+    val visibleQueuePosition = rememberStableQueuePosition(queuePosition)
+    val queueCopy = queueLaunchStatusText(state, visibleQueuePosition)
     val hasPlayableAd = ad != null && mediaUrl != null
 
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
-            .padding(18.dp),
+            .clipToBounds(),
         contentAlignment = Alignment.Center,
     ) {
+        QueueAmbientBackdrop(
+            accent = state.settings.uiAccent.color,
+            queuePosition = visibleQueuePosition,
+        )
         val useLandscapeAdLayout = hasPlayableAd && maxWidth > maxHeight
 
-        if (useLandscapeAdLayout) {
-            Row(
-                Modifier.fillMaxSize(),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                QueueStatusPanel(
-                    game = game,
-                    queueCopy = queueCopy,
-                    error = state.error,
-                    compact = true,
-                    onMinimize = viewModel::minimizeStreamLaunch,
-                    onCancel = viewModel::stopStream,
-                    modifier = Modifier.weight(1f),
-                )
-                QueueAdPanel(
-                    ad = ad,
-                    mediaUrl = mediaUrl,
-                    viewModel = viewModel,
-                    modifier = Modifier.weight(1f),
-                    playerModifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f),
-                )
-            }
-        } else {
-            Column(
-                Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                QueueStatusPanel(
-                    game = game,
-                    queueCopy = queueCopy,
-                    error = state.error,
-                    compact = false,
-                    onMinimize = viewModel::minimizeStreamLaunch,
-                    onCancel = viewModel::stopStream,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (hasPlayableAd) {
-                    Spacer(Modifier.height(18.dp))
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(18.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (useLandscapeAdLayout) {
+                Row(
+                    Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    QueueStatusPanel(
+                        game = game,
+                        queueCopy = queueCopy,
+                        queuePosition = visibleQueuePosition,
+                        error = state.error,
+                        compact = true,
+                        onMinimize = viewModel::minimizeStreamLaunch,
+                        onCancel = viewModel::stopStream,
+                        modifier = Modifier.weight(1f),
+                    )
                     QueueAdPanel(
                         ad = ad,
                         mediaUrl = mediaUrl,
                         viewModel = viewModel,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.weight(1f),
                         playerModifier = Modifier
-                            .fillMaxWidth(0.8f)
-                            .height(220.dp),
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f),
                     )
-                } else if (isSessionAdsRequired(session?.adState)) {
-                    Spacer(Modifier.height(12.dp))
-                    Text(session?.adState?.message ?: "Ad is required before the queue can continue.", color = TextMuted)
+                }
+            } else {
+                Column(
+                    Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    QueueStatusPanel(
+                        game = game,
+                        queueCopy = queueCopy,
+                        queuePosition = visibleQueuePosition,
+                        error = state.error,
+                        compact = false,
+                        onMinimize = viewModel::minimizeStreamLaunch,
+                        onCancel = viewModel::stopStream,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (hasPlayableAd) {
+                        Spacer(Modifier.height(18.dp))
+                        QueueAdPanel(
+                            ad = ad,
+                            mediaUrl = mediaUrl,
+                            viewModel = viewModel,
+                            modifier = Modifier.fillMaxWidth(),
+                            playerModifier = Modifier
+                                .fillMaxWidth(0.8f)
+                                .height(220.dp),
+                        )
+                    }
                 }
             }
         }
@@ -4705,27 +5500,509 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
 }
 
 @Composable
+private fun QueueAmbientBackdrop(
+    accent: Color,
+    queuePosition: Int?,
+    modifier: Modifier = Modifier,
+) {
+    val transition = rememberInfiniteTransition(label = "queue-ambient")
+    val driftA by transition.animateFloat(
+        initialValue = -1f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 11000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "queue-ambient-drift-a",
+    )
+    val driftB by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = -1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 14000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "queue-ambient-drift-b",
+    )
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 16000, easing = LinearEasing),
+        ),
+        label = "queue-ambient-phase",
+    )
+    val shimmer by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 5200, easing = LinearEasing),
+        ),
+        label = "queue-ambient-shimmer",
+    )
+    val orbADim by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.72f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 8200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "queue-ambient-orb-a-dim",
+    )
+    val orbBDim by transition.animateFloat(
+        initialValue = 0.26f,
+        targetValue = 0.56f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 9800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "queue-ambient-orb-b-dim",
+    )
+
+    BoxWithConstraints(
+        modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xff010203),
+                        Color(0xff05080a),
+                        Color(0xff020304),
+                    ),
+                ),
+            ),
+    ) {
+        val baseSize = minOf(maxWidth, maxHeight)
+        QueueAmbientOrb(
+            color = accent,
+            size = baseSize * 0.92f,
+            alpha = orbADim,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(
+                    x = maxWidth * (-0.22f + 0.10f * driftA),
+                    y = maxHeight * (0.02f + 0.08f * driftB),
+                ),
+        )
+        QueueAmbientOrb(
+            color = Color(0xff2bdcff),
+            size = baseSize * 0.7f,
+            alpha = orbBDim,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(
+                    x = maxWidth * (0.15f + 0.08f * driftB),
+                    y = maxHeight * (0.10f + 0.07f * driftA),
+                ),
+        )
+        QueueSignalField(
+            accent = accent,
+            queuePosition = queuePosition,
+            phase = phase,
+            shimmer = shimmer,
+            modifier = Modifier.matchParentSize(),
+        )
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(Color.Black.copy(alpha = 0.34f)),
+        )
+    }
+}
+
+@Composable
+private fun QueueAmbientOrb(
+    color: Color,
+    size: Dp,
+    alpha: Float,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .size(size)
+            .blur(64.dp)
+            .graphicsLayer(alpha = alpha.coerceIn(0f, 1f))
+            .background(
+                Brush.radialGradient(
+                    listOf(
+                        color.copy(alpha = 0.58f),
+                        color.copy(alpha = 0.16f),
+                        Color.Transparent,
+                    ),
+                ),
+                CircleShape,
+            ),
+    )
+}
+
+@Composable
+private fun QueueSignalField(
+    accent: Color,
+    queuePosition: Int?,
+    phase: Float,
+    shimmer: Float,
+    modifier: Modifier = Modifier,
+) {
+    val heat = queueUrgency(queuePosition)
+    Canvas(modifier) {
+        val lineCount = 9
+        val spacing = size.height / lineCount
+        val offset = shimmer * spacing
+        for (index in -1..lineCount) {
+            val y = index * spacing + offset
+            drawLine(
+                color = accent.copy(alpha = 0.035f + heat * 0.035f),
+                start = Offset(-size.width * 0.12f, y),
+                end = Offset(size.width * 1.08f, y - size.height * 0.10f),
+                strokeWidth = 1.dp.toPx(),
+            )
+        }
+        repeat(12) { index ->
+            val lane = index + 1
+            val x = ((lane * 0.173f + phase * (0.08f + lane * 0.006f)) % 1f) * size.width
+            val y = ((lane * 0.291f + shimmer * (0.12f + lane * 0.004f)) % 1f) * size.height
+            drawCircle(
+                color = accent.copy(alpha = 0.05f + heat * 0.04f),
+                radius = (1.5f + (index % 4)) * density,
+                center = Offset(x, y),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnimatedQueueStatusText(
+    queueCopy: String,
+    queuePosition: Int?,
+    compact: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (queuePosition == null) {
+        Text(
+            queueCopy,
+            modifier = modifier,
+            color = queueIdleStatusColor(queueCopy),
+            style = (if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium)
+                .copy(fontWeight = FontWeight.Normal),
+            textAlign = TextAlign.Center,
+        )
+        return
+    }
+
+    var previousQueuePosition by remember { mutableStateOf<Int?>(null) }
+    val numberProgress = remember { Animatable(1f) }
+    var numberTrigger by remember { mutableStateOf(0) }
+    var numberFrom by remember { mutableStateOf(queuePosition.toString()) }
+    var numberTo by remember { mutableStateOf(queuePosition.toString()) }
+    val heat = queueUrgency(queuePosition)
+    val hotQueue = queuePosition < 10
+    val transition = rememberInfiniteTransition(label = "queue-status-glow")
+    val glow by transition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (hotQueue) 520 else 1100, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "queue-status-glow-alpha",
+    )
+    val moleculePhase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = (190 - heat * 95).roundToInt().coerceIn(92, 190),
+                easing = LinearEasing,
+            ),
+        ),
+        label = "queue-status-molecule-phase",
+    )
+    val statusColor by animateColorAsState(
+        targetValue = queueUrgencyColor(queuePosition),
+        animationSpec = tween(durationMillis = 240),
+        label = "queue-status-color",
+    )
+
+    LaunchedEffect(queuePosition) {
+        val current = queuePosition
+        val previous = previousQueuePosition
+        if (previous != null && current < previous) {
+            numberFrom = previous.toString()
+            numberTo = current.toString()
+            numberTrigger += 1
+        } else {
+            numberFrom = current.toString()
+            numberTo = current.toString()
+        }
+        previousQueuePosition = current
+    }
+
+    LaunchedEffect(numberTrigger) {
+        if (numberTrigger == 0) return@LaunchedEffect
+        numberProgress.snapTo(0f)
+        numberProgress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = if (hotQueue) 320 else 420),
+        )
+    }
+
+    val moleculeCagePx = with(LocalDensity.current) {
+        (if (hotQueue) (0.45f + heat * 1.45f).dp else 0.dp).toPx()
+    }
+    val shakeX = if (hotQueue) {
+        (sin(moleculePhase * 31.415928f) * 0.64f + sin(moleculePhase * 106.81416f) * 0.36f) * moleculeCagePx
+    } else {
+        0f
+    }
+    val shakeY = if (hotQueue) {
+        (sin(moleculePhase * 43.982296f) * 0.55f + sin(moleculePhase * 81.68141f) * 0.45f) * moleculeCagePx * 0.55f
+    } else {
+        0f
+    }
+    val parts = queueStatusParts(queueCopy, queuePosition)
+    val textStyle = (if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium)
+        .copy(fontWeight = FontWeight.Normal)
+    val numberPhase = numberProgress.value
+    val numberAnimating = numberPhase < 1f
+    val numberTravelPx = with(LocalDensity.current) { (if (compact) 18.dp else 22.dp).toPx() }
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            parts.prefix,
+            color = TextMuted,
+            style = textStyle,
+            textAlign = TextAlign.Center,
+        )
+        AnimatedQueueNumber(
+            currentNumber = parts.number,
+            previousNumber = numberFrom,
+            targetNumber = numberTo,
+            animating = numberAnimating,
+            phase = numberPhase,
+            travelPx = numberTravelPx,
+            color = statusColor,
+            style = textStyle.copy(
+                shadow = Shadow(
+                    color = statusColor.copy(alpha = heat * (0.38f + 0.42f * glow)),
+                    offset = Offset(0f, 0f),
+                    blurRadius = 18f + heat * 18f,
+                ),
+            ),
+            shakeX = shakeX,
+            shakeY = shakeY,
+        )
+        Text(
+            parts.suffix,
+            color = TextMuted,
+            style = textStyle,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun AnimatedQueueNumber(
+    currentNumber: String,
+    previousNumber: String,
+    targetNumber: String,
+    animating: Boolean,
+    phase: Float,
+    travelPx: Float,
+    color: Color,
+    style: TextStyle,
+    shakeX: Float,
+    shakeY: Float,
+) {
+    val fromNumber = if (animating) previousNumber else currentNumber
+    val toNumber = if (animating) targetNumber else currentNumber
+    val slotCount = toNumber.length
+
+    Row(
+        modifier = Modifier
+            .clipToBounds()
+            .graphicsLayer(
+                translationX = shakeX,
+                translationY = shakeY,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(slotCount) { slotIndex ->
+            val fromDigit = fromNumber.rightAlignedCharAt(slotIndex, slotCount)
+            val toDigit = toNumber.rightAlignedCharAt(slotIndex, slotCount)
+            QueueNumberDigitSlot(
+                fromDigit = fromDigit,
+                toDigit = toDigit,
+                digitChanged = animating && fromDigit != toDigit,
+                phase = phase,
+                travelPx = travelPx,
+                color = color,
+                style = style,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueueNumberDigitSlot(
+    fromDigit: Char?,
+    toDigit: Char?,
+    digitChanged: Boolean,
+    phase: Float,
+    travelPx: Float,
+    color: Color,
+    style: TextStyle,
+) {
+    val from = fromDigit?.toString().orEmpty()
+    val to = toDigit?.toString().orEmpty()
+    Box(
+        modifier = Modifier.clipToBounds(),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (from.isNotEmpty()) {
+            Text(
+                from,
+                modifier = Modifier.graphicsLayer(alpha = 0f),
+                color = color,
+                style = style,
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (to.isNotEmpty() && to != from) {
+            Text(
+                to,
+                modifier = Modifier.graphicsLayer(alpha = 0f),
+                color = color,
+                style = style,
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (digitChanged) {
+            if (from.isNotEmpty()) {
+                Text(
+                    from,
+                    modifier = Modifier.graphicsLayer(
+                        translationY = -travelPx * phase,
+                        scaleX = 1f - phase * 0.03f,
+                        scaleY = 1f - phase * 0.03f,
+                        alpha = 1f - phase,
+                    ),
+                    color = color,
+                    style = style,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            if (to.isNotEmpty()) {
+                Text(
+                    to,
+                    modifier = Modifier.graphicsLayer(
+                        translationY = travelPx * (1f - phase),
+                        scaleX = 0.97f + phase * 0.03f,
+                        scaleY = 0.97f + phase * 0.03f,
+                        alpha = phase,
+                    ),
+                    color = color,
+                    style = style,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        } else if (to.isNotEmpty()) {
+            Text(
+                to,
+                color = color,
+                style = style,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+private fun String.rightAlignedCharAt(slotIndex: Int, slotCount: Int): Char? =
+    getOrNull(length - slotCount + slotIndex)
+
+private data class QueueStatusParts(
+    val prefix: String,
+    val number: String,
+    val suffix: String,
+)
+
+private fun queueStatusParts(queueCopy: String, queuePosition: Int): QueueStatusParts {
+    val number = queuePosition.toString()
+    val index = queueCopy.indexOf(number)
+    if (index < 0) {
+        return QueueStatusParts(prefix = "$queueCopy ", number = number, suffix = "")
+    }
+    return QueueStatusParts(
+        prefix = queueCopy.substring(0, index),
+        number = number,
+        suffix = queueCopy.substring(index + number.length),
+    )
+}
+
+private fun queueUrgency(queuePosition: Int?): Float {
+    val position = queuePosition ?: return 0f
+    if (position >= 10) return 0f
+    return ((10 - position).toFloat() / 9f).coerceIn(0f, 1f)
+}
+
+private fun activeQueuePosition(state: OpenNowUiState): Int? =
+    queueDisplayPosition(state)
+
+@Composable
+private fun rememberStableQueuePosition(queuePosition: Int?): Int? {
+    var stableQueuePosition by remember { mutableStateOf(queuePosition) }
+    LaunchedEffect(queuePosition) {
+        if (queuePosition == stableQueuePosition) return@LaunchedEffect
+        if (queuePosition == null || stableQueuePosition == null) {
+            stableQueuePosition = queuePosition
+            return@LaunchedEffect
+        }
+        delay(QUEUE_POSITION_VISUAL_SETTLE_MS)
+        stableQueuePosition = queuePosition
+    }
+    return stableQueuePosition
+}
+
+private fun queueLaunchStatusText(state: OpenNowUiState, queuePosition: Int?): String =
+    queuePosition?.let { "Queue position $it" } ?: queueLaunchStatusText(state)
+
+private fun queueIdleStatusColor(queueCopy: String): Color =
+    if (queueCopy.equals("Starting session", ignoreCase = true)) Green else TextMuted
+
+private fun queueUrgencyColor(queuePosition: Int?): Color {
+    val heat = queueUrgency(queuePosition)
+    if (heat <= 0f) return TextMuted
+    val green = (0.57f - 0.49f * heat).coerceIn(0.06f, 0.57f)
+    val blue = (0.25f - 0.17f * heat).coerceIn(0.08f, 0.25f)
+    return Color(red = 1f, green = green, blue = blue, alpha = 1f)
+}
+
+@Composable
 private fun QueueStatusPanel(
     game: GameInfo?,
     queueCopy: String,
+    queuePosition: Int?,
     error: String?,
     compact: Boolean,
     onMinimize: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     Column(
         modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        val imageWidth = if (compact) 76.dp else 96.dp
-        val imageHeight = if (compact) 102.dp else 128.dp
+        val imageWidth = if (compact) 154.dp else 220.dp
         UrlImage(
-            game?.imageUrl,
+            gameTvBannerImageUrl(context, game),
             Modifier
                 .width(imageWidth)
-                .height(imageHeight)
+                .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(14.dp)),
         )
         Spacer(Modifier.height(if (compact) 12.dp else 16.dp))
@@ -4737,10 +6014,10 @@ private fun QueueStatusPanel(
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
-        Text(
-            queueCopy,
-            color = TextMuted,
-            textAlign = TextAlign.Center,
+        AnimatedQueueStatusText(
+            queueCopy = queueCopy,
+            queuePosition = queuePosition,
+            compact = compact,
         )
         Spacer(Modifier.height(if (compact) 14.dp else 18.dp))
         LinearProgressIndicator(Modifier.fillMaxWidth(if (compact) 0.9f else 0.7f))
@@ -4756,9 +6033,74 @@ private fun QueueStatusPanel(
                 Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
+        if (compact && queuePosition != null) {
+            Spacer(Modifier.height(14.dp))
+            LandscapeQueuePositionDock(queuePosition = queuePosition)
+        }
         error?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, color = Color(0xffff9f9f), textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+private fun LandscapeQueuePositionDock(queuePosition: Int, modifier: Modifier = Modifier) {
+    val accent = queueUrgencyColor(queuePosition)
+    val heat = queueUrgency(queuePosition)
+    val shape = RoundedCornerShape(16.dp)
+    Box(
+        modifier
+            .fillMaxWidth(0.92f)
+            .clip(shape)
+            .background(
+                Brush.horizontalGradient(
+                    listOf(
+                        accent.copy(alpha = 0.18f + heat * 0.16f),
+                        PanelAlt.copy(alpha = 0.94f),
+                        Color.Black.copy(alpha = 0.36f),
+                    ),
+                ),
+            )
+            .border(1.dp, accent.copy(alpha = 0.32f + heat * 0.36f), shape)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    "Queue",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "Live position",
+                    color = TextMuted.copy(alpha = 0.78f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                queuePosition.toString(),
+                color = accent,
+                style = MaterialTheme.typography.displaySmall.copy(
+                    fontWeight = FontWeight.Black,
+                    shadow = Shadow(
+                        color = accent.copy(alpha = 0.24f + heat * 0.42f),
+                        offset = Offset(0f, 0f),
+                        blurRadius = 18f + heat * 14f,
+                    ),
+                ),
+                maxLines = 1,
+                textAlign = TextAlign.End,
+            )
         }
     }
 }
@@ -4800,22 +6142,25 @@ private fun QueueAdPanel(
 }
 
 @Composable
-private fun MinimizedQueuePill(
+private fun MinimizedQueueDock(
     state: OpenNowUiState,
     onRestore: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val queuePosition = activeQueuePosition(state)
+    val visibleQueuePosition = rememberStableQueuePosition(queuePosition)
+    val queueCopy = queueLaunchStatusText(state, visibleQueuePosition)
     Surface(
         modifier = modifier
-            .padding(horizontal = 12.dp, vertical = 86.dp)
             .fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = Panel.copy(alpha = 0.95f),
-        tonalElevation = 8.dp,
+        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+        color = Panel.copy(alpha = 0.98f),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
     ) {
         Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -4827,13 +6172,37 @@ private fun MinimizedQueuePill(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(queueLaunchStatusText(state), color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                MinimizedQueueStatusText(
+                    queueCopy = queueCopy,
+                    queuePosition = visibleQueuePosition,
+                )
             }
             TextButton(onClick = onRestore) { Text("View") }
             OutlinedButton(onClick = onCancel, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
                 Text("Cancel")
             }
         }
+    }
+}
+
+@Composable
+private fun MinimizedQueueStatusText(
+    queueCopy: String,
+    queuePosition: Int?,
+) {
+    if (queuePosition == null) {
+        Text(queueCopy, color = queueIdleStatusColor(queueCopy), style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    val parts = queueStatusParts(queueCopy, queuePosition)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(parts.prefix, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+        Text(
+            parts.number,
+            color = queueUrgencyColor(queuePosition),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(parts.suffix, color = TextMuted, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -5808,6 +7177,7 @@ private fun PrintedWasteSelector(
     }
     var selectedZoneId by remember(game.id, sortedZones) { mutableStateOf<String?>(autoZone?.zoneId) }
     val selectedZone = sortedZones.firstOrNull { it.zoneId == selectedZoneId } ?: autoZone
+    val context = LocalContext.current
 
     BoxWithConstraints(
         Modifier
@@ -5870,10 +7240,10 @@ private fun PrintedWasteSelector(
                     Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             UrlImage(
-                                game.imageUrl,
+                                gameTvBannerImageUrl(context, game),
                                 Modifier
-                                    .width(58.dp)
-                                    .height(76.dp)
+                                    .width(98.dp)
+                                    .aspectRatio(16f / 9f)
                                     .clip(RoundedCornerShape(12.dp)),
                             )
                             Spacer(Modifier.width(12.dp))
@@ -5908,12 +7278,13 @@ private fun PrintedWasteGameSummary(
     game: GameInfo,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         UrlImage(
-            game.imageUrl,
+            gameTvBannerImageUrl(context, game),
             Modifier
                 .fillMaxWidth()
-                .weight(1f)
+                .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(16.dp)),
         )
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -6187,7 +7558,7 @@ internal fun UrlImage(url: String?, modifier: Modifier = Modifier) {
     }
     Box(modifier.background(Color(0xff102015)), contentAlignment = Alignment.Center) {
         when (val state = imageState) {
-            UrlImageState.Loading -> GameImagePulse(Modifier.fillMaxSize())
+            UrlImageState.Loading -> LoadingShimmer(Modifier.fillMaxSize())
             is UrlImageState.Loaded -> Image(
                 bitmap = state.bitmap,
                 contentDescription = null,
@@ -6202,21 +7573,36 @@ internal fun UrlImage(url: String?, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun GameImagePulse(modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "game-image-loading")
-    val pulse by transition.animateFloat(
-        initialValue = 0.42f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "game-image-loading-alpha",
-    )
+private fun LoadingShimmer(modifier: Modifier = Modifier, shimmerBrush: Brush = rememberLoadingShimmerBrush()) {
     Box(
         modifier
             .background(Color(0xff0d1216))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.05f + pulse * 0.07f)),
+            .background(shimmerBrush),
+    )
+}
+
+@Composable
+private fun rememberLoadingShimmerBrush(label: String = "loading-shimmer"): Brush {
+    val transition = rememberInfiniteTransition(label = label)
+    val shimmer by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1150, easing = LinearEasing),
+        ),
+        label = "$label-offset",
+    )
+    val base = Color(0xff0d1216)
+    return Brush.linearGradient(
+        colors = listOf(
+            base,
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
+            base,
+        ),
+        start = Offset(-720f + shimmer * 1440f, -120f),
+        end = Offset(-240f + shimmer * 1440f, 520f),
     )
 }
 

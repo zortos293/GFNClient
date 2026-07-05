@@ -52,7 +52,7 @@ private data class DebugLogEvent(
 )
 
 data class OpenNowUiState(
-    val initializing: Boolean = true,
+    val initializing: Boolean = false,
     val page: AppPage = AppPage.Home,
     val authSession: AuthSession? = null,
     val providers: List<LoginProvider> = listOf(defaultProvider()),
@@ -65,6 +65,7 @@ data class OpenNowUiState(
     val regions: List<StreamRegion> = emptyList(),
     val games: List<GameInfo> = emptyList(),
     val libraryGames: List<GameInfo> = emptyList(),
+    val queuedGameKeys: List<String> = emptyList(),
     val catalogResult: CatalogBrowseResult = CatalogBrowseResult(emptyList()),
     val catalogSearch: String = "",
     val librarySearch: String = "",
@@ -110,6 +111,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val authRepository = GfnAuthRepository(application, authStore, http)
     private val catalogRepository = GfnCatalogRepository(http)
     private val catalogCacheStore = CatalogCacheStore(application)
+    private val queuedGameStore = QueuedGameStore(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
     private val accountConnectorRepository = GfnAccountConnectorRepository(http)
     private val printedWasteRepository = PrintedWasteRepository(http)
@@ -121,12 +123,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val resolutionMismatchRestartKeys = mutableSetOf<String>()
     private val debugEventsLock = Any()
     private val debugEvents = ArrayDeque<DebugLogEvent>()
+    private val authRestoreMutex = Mutex()
 
+    private val initialAuthSession = authStore.activeSession()
     private val _state = MutableStateFlow(
         OpenNowUiState(
+            authSession = initialAuthSession,
+            providers = initialProviders(initialAuthSession),
+            selectedProvider = authStore.state.value.selectedProvider ?: initialAuthSession?.provider ?: defaultProvider(),
+            savedAccounts = authStore.state.value.sessions.map { session -> session.toSavedAccount() },
+            loadingGames = initialAuthSession != null,
             settings = settingsStore.settings.value,
             androidUpdate = appUpdater.state.value,
             dismissedAndroidUpdateNoticeKey = androidUpdateNoticeStore.dismissedKey(),
+            queuedGameKeys = queuedGameStore.load(),
         ),
     )
     val state: StateFlow<OpenNowUiState> = _state.asStateFlow()
@@ -191,25 +201,42 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun initialize() {
         viewModelScope.launch {
             val codecReport = CodecProbe.report(getApplication())
-            _state.update { it.copy(codecReport = codecReport, initializing = true, launchPhase = "Restoring session") }
+            _state.update { it.copy(codecReport = codecReport, initializing = false) }
+            val restoreResult = restoreAuthSession()
             val providers = runCatching { authRepository.loginProviders() }.getOrDefault(listOf(defaultProvider()))
-            val restored = runCatching { authRepository.restore(forceRefresh = false) }.getOrNull()
-            val selected = restored?.provider ?: providers.firstOrNull() ?: defaultProvider()
+            val restored = restoreResult.getOrNull()
+            val activeSession = restored ?: authStore.activeSession()
+            val selected = activeSession?.provider ?: authStore.state.value.selectedProvider ?: providers.firstOrNull() ?: defaultProvider()
+            val restoreError = restoreResult.exceptionOrNull()?.message?.takeIf { activeSession == null }
             _state.update {
                 it.copy(
                     providers = providers,
                     selectedProvider = selected,
-                    authSession = restored,
+                    authSession = activeSession,
                     savedAccounts = authStore.state.value.sessions.map { session -> session.toSavedAccount() },
                     initializing = false,
                     launchPhase = "",
+                    loadingGames = if (activeSession == null) false else it.loadingGames,
+                    games = if (activeSession == null) emptyList() else it.games,
+                    libraryGames = if (activeSession == null) emptyList() else it.libraryGames,
+                    catalogResult = if (activeSession == null) CatalogBrowseResult(emptyList()) else it.catalogResult,
+                    error = restoreError ?: it.error,
                 )
             }
-            if (restored != null) {
-                refreshAfterAuth(restored)
+            if (activeSession != null) {
+                refreshAfterAuth(activeSession)
             }
         }
     }
+
+    private fun initialProviders(activeSession: AuthSession?): List<LoginProvider> =
+        listOfNotNull(authStore.state.value.selectedProvider, activeSession?.provider, defaultProvider())
+            .distinctBy { provider -> provider.code.uppercase(Locale.US) }
+
+    private suspend fun restoreAuthSession(): Result<AuthSession?> =
+        authRestoreMutex.withLock {
+            runCatching { authRepository.restore(forceRefresh = false) }
+        }
 
     fun setPage(page: AppPage) {
         _state.update { it.copy(page = page, selectedGame = null) }
@@ -894,6 +921,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 "launch",
                 "Starting launch game=${game.title} base=${hostForDebug(baseUrl)} settings=${settings.debugSummary()} override=${streamingBaseUrlOverride != null}",
             )
+            recordQueuedGame(game)
             OpenNowAnalytics.capture(
                 event = "stream_started",
                 properties = mapOf(
@@ -967,7 +995,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                                 activeSession = launchingCandidate,
                                 streamSession = pending,
                                 activeStreamSettings = settings,
-                                queuePosition = pending.queuePosition?.takeIf { position -> position > 0 },
+                                queuePosition = queueDisplayPosition(pending),
                                 queueAdActiveId = null,
                             )
                         }
@@ -1042,6 +1070,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+    }
+
+    private fun recordQueuedGame(game: GameInfo) {
+        val next = queuedGameStore.record(gameTrackingKey(game))
+        _state.update { it.copy(queuedGameKeys = next) }
     }
 
     fun stopStream() {
@@ -1347,7 +1380,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     val merged = mergeQueueSessionState(previous, updated)
                     current.copy(
                         streamSession = merged,
-                        queuePosition = merged.queuePosition?.takeIf { position -> position > 0 },
+                        queuePosition = queueDisplayPosition(merged),
                         queueAdActiveId = chooseQueueAdActiveId(current.queueAdActiveId, merged),
                     )
                 }
@@ -1763,12 +1796,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             _state.update { it.copy(launchPhase = "Finishing login", error = null) }
             return
         }
-        val id = intent.getStringExtra("id")
-            ?: intent.getStringExtra("appId")
-            ?: intent.getStringExtra("launchAppId")
-            ?: uri?.getQueryParameter("id")
-            ?: uri?.getQueryParameter("appId")
-            ?: uri?.lastPathSegment
+        val id = extractExternalLaunchId(intent)
         if (id.isNullOrBlank()) return
         val allGames = state.value.games + state.value.libraryGames
         val game = allGames.firstOrNull { game ->
@@ -1782,6 +1810,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             variants = listOf(GameVariant(id = id, store = "Unknown")),
         )
         play(game)
+    }
+
+    private fun extractExternalLaunchId(intent: Intent): String? {
+        val uri = intent.data
+        return externalLaunchIdFromParts(
+            extras = listOf(
+                intent.getStringExtra("id"),
+                intent.getStringExtra("appId"),
+                intent.getStringExtra("launchAppId"),
+            ),
+            scheme = uri?.scheme,
+            host = uri?.host,
+            pathSegments = uri?.pathSegments.orEmpty(),
+            schemeSpecificPart = uri?.schemeSpecificPart,
+            queryParameters = mapOf(
+                "id" to uri?.let { runCatching { it.getQueryParameter("id") }.getOrNull() },
+                "appId" to uri?.let { runCatching { it.getQueryParameter("appId") }.getOrNull() },
+                "launchAppId" to uri?.let { runCatching { it.getQueryParameter("launchAppId") }.getOrNull() },
+            ),
+        )
     }
 
     private fun GameInfo.withSelectedVariant(variantId: String): GameInfo {
@@ -2093,7 +2141,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 streamSession = latest,
                 launchPhase = loadingPhaseFor(latest),
-                queuePosition = latest.queuePosition?.takeIf { position -> position > 0 },
+                queuePosition = queueDisplayPosition(latest),
                 queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
             )
         }
@@ -2129,7 +2177,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     streamSession = latest,
                     activeStreamSettings = settings,
                     launchPhase = loadingPhaseFor(latest),
-                    queuePosition = latest.queuePosition?.takeIf { position -> position > 0 },
+                    queuePosition = queueDisplayPosition(latest),
                     queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
                 )
             }
@@ -2145,7 +2193,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 streamSession = latest,
                 launchPhase = loadingPhaseFor(latest),
-                queuePosition = latest.queuePosition?.takeIf { position -> position > 0 },
+                queuePosition = queueDisplayPosition(latest),
                 queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
             )
         }
@@ -2192,7 +2240,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(
                     streamSession = latest,
                     launchPhase = loadingPhaseFor(latest),
-                    queuePosition = latest.queuePosition?.takeIf { position -> position > 0 },
+                    queuePosition = queueDisplayPosition(latest),
                     queueAdActiveId = chooseQueueAdActiveId(it.queueAdActiveId, latest),
                 )
             }
@@ -2244,7 +2292,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun loadingPhaseFor(session: SessionInfo): String =
         when {
-            (session.queuePosition ?: 0) > 0 || session.seatSetupStep == 1 -> "Queue"
+            queueDisplayPosition(session) != null || session.seatSetupStep == 1 -> "Queue"
             session.status == 0 || session.status == 1 -> "Checking queue"
             else -> "Setting up rig"
         }
@@ -2316,6 +2364,50 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             membershipTier = user.membershipTier,
             providerCode = provider.code,
         )
+}
+
+internal fun externalLaunchIdFromParts(
+    extras: List<String?>,
+    scheme: String?,
+    host: String?,
+    pathSegments: List<String>,
+    schemeSpecificPart: String?,
+    queryParameters: Map<String, String?>,
+): String? {
+    val normalizedScheme = scheme.orEmpty().lowercase(Locale.US)
+    val uriCandidates = if (normalizedScheme == "opennow") {
+        buildList {
+            add(queryParameters["id"])
+            add(queryParameters["appId"])
+            add(queryParameters["launchAppId"])
+            val routeHost = host.orEmpty()
+            if (routeHost.equals("launch", ignoreCase = true)) {
+                add(pathSegments.firstOrNull())
+            } else if (routeHost.isNotBlank()) {
+                add(routeHost)
+            }
+            if (pathSegments.firstOrNull()?.equals("launch", ignoreCase = true) == true) {
+                add(pathSegments.getOrNull(1))
+            }
+            add(pathSegments.lastOrNull())
+            add(schemeSpecificPart)
+        }
+    } else {
+        emptyList()
+    }
+    return (extras + uriCandidates).firstNotNullOfOrNull { it.normalizedExternalLaunchId() }
+}
+
+private fun String?.normalizedExternalLaunchId(): String? {
+    val trimmed = this?.trim()?.trim('/', '?', '#') ?: return null
+    if (trimmed.isBlank() || trimmed.equals("launch", ignoreCase = true)) return null
+    val cleaned = trimmed
+        .removePrefix("//")
+        .substringBefore('#')
+        .substringBefore('?')
+        .trim('/')
+    if (cleaned.isBlank() || cleaned.equals("launch", ignoreCase = true)) return null
+    return cleaned.split('/').lastOrNull { it.isNotBlank() && !it.equals("launch", ignoreCase = true) }
 }
 
 private fun shortDebugId(value: String?): String {

@@ -19,6 +19,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -38,6 +40,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -80,9 +83,16 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
 }
 
 @Composable
-internal fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean = true, onCheckedChange: (Boolean) -> Unit) {
+internal fun SettingSwitch(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    description: String? = null,
+    onCheckedChange: (Boolean) -> Unit,
+) {
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
+    var descriptionExpanded by remember(label) { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
     val toggle = {
         if (enabled) {
@@ -115,7 +125,33 @@ internal fun SettingSwitch(label: String, checked: Boolean, enabled: Boolean = t
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.45f)
-        Text(label, Modifier.weight(1f), color = contentColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(label, color = contentColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (!description.isNullOrBlank() && descriptionExpanded) {
+                Text(
+                    description,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.86f else 0.45f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (!description.isNullOrBlank()) {
+            IconButton(
+                onClick = { descriptionExpanded = !descriptionExpanded },
+                modifier = Modifier.width(40.dp),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_help),
+                    contentDescription = if (descriptionExpanded) "Hide description" else "Show description",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
         Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
     }
 }
@@ -267,4 +303,3 @@ internal fun ChoiceOptionRow(label: String, options: List<SettingsChoiceOption>,
         options.firstOrNull { it.label == selected }?.value?.let(onSelect)
     }
 }
-

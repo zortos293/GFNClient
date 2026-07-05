@@ -2,8 +2,7 @@ package com.opencloudgaming.opennow
 
 internal fun queueLaunchStatusText(state: OpenNowUiState): String {
     val session = state.streamSession
-    val queuePosition = state.queuePosition?.takeIf { it > 0 }
-        ?: session?.queuePosition?.takeIf { it > 0 }
+    val queuePosition = queueDisplayPosition(state)
     return when {
         queuePosition != null -> "Queue position $queuePosition"
         session?.seatSetupStep == 1 -> "Waiting for a rig"
@@ -12,6 +11,17 @@ internal fun queueLaunchStatusText(state: OpenNowUiState): String {
         state.launchPhase.equals("Setting up rig", ignoreCase = true) -> "Setting up rig"
         else -> "Starting session"
     }
+}
+
+internal fun queueDisplayPosition(state: OpenNowUiState): Int? {
+    val session = state.streamSession
+    if (session?.seatSetupStep == 5) return null
+    return state.queuePosition?.takeIf { it > 0 } ?: queueDisplayPosition(session)
+}
+
+internal fun queueDisplayPosition(session: SessionInfo?): Int? {
+    if (session?.seatSetupStep == 5) return null
+    return session?.queuePosition?.takeIf { it > 0 }
 }
 
 internal fun shouldShowQueueLaunchStatus(state: OpenNowUiState): Boolean {

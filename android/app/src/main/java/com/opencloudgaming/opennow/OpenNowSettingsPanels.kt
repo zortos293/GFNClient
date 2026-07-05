@@ -5,6 +5,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -452,6 +455,22 @@ private fun formatUpdateBytes(bytes: Long): String {
 internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val currentUserId = state.authSession?.user?.userId
     val context = LocalContext.current
+    var addAccountPromptOpen by remember { mutableStateOf(false) }
+    val addAccountProviders = remember(state.providers, state.selectedProvider) {
+        accountProviderOptions(state.providers, state.selectedProvider)
+    }
+    if (addAccountPromptOpen) {
+        AddAccountProviderDialog(
+            providers = addAccountProviders,
+            selectedProvider = state.selectedProvider,
+            onProviderSelected = { provider ->
+                addAccountPromptOpen = false
+                viewModel.selectProvider(provider)
+                viewModel.login(provider)
+            },
+            onDismiss = { addAccountPromptOpen = false },
+        )
+    }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.savedAccounts.ifEmpty {
             state.authSession?.toSavedAccount()?.let { listOf(it) } ?: emptyList()
@@ -497,8 +516,17 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
             subscriptionInfo = state.subscriptionInfo,
             fallbackMembershipTier = state.authSession?.user?.membershipTier,
         )
+        state.deviceLoginPrompt?.let { prompt ->
+            DeviceLoginPanel(
+                prompt = prompt,
+                phase = state.launchPhase,
+                onCancel = viewModel::cancelLogin,
+                modifier = Modifier.fillMaxWidth(),
+                qrMaxSize = 240.dp,
+            )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = { viewModel.login() }, modifier = Modifier.weight(1f)) { Text("Add account") }
+            Button(onClick = { addAccountPromptOpen = true }, modifier = Modifier.weight(1f)) { Text("Add account") }
             OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
         }
         OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text("Sign out all accounts") }
@@ -531,6 +559,95 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun AddAccountProviderDialog(
+    providers: List<LoginProvider>,
+    selectedProvider: LoginProvider,
+    onProviderSelected: (LoginProvider) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var providerChoice by remember(providers, selectedProvider) {
+        mutableStateOf(providers.preferredProvider(selectedProvider))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Choose provider") },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "Select the GeForce NOW provider to use for the new account.",
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                providers.forEach { provider ->
+                    ProviderChoiceRow(
+                        provider = provider,
+                        selected = provider.sameProvider(providerChoice),
+                        onClick = { providerChoice = provider },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onProviderSelected(providerChoice) }) {
+                Text("Continue")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun ProviderChoiceRow(provider: LoginProvider, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f)
+        },
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    provider.displayName,
+                    color = SettingsText,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    provider.code,
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (selected) {
+                Text("Selected", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 
@@ -926,6 +1043,22 @@ private fun AuthSession.toSavedAccount(): SavedAccount =
         membershipTier = user.membershipTier,
         providerCode = provider.code,
     )
+
+private fun accountProviderOptions(providers: List<LoginProvider>, selectedProvider: LoginProvider): List<LoginProvider> =
+    (providers + selectedProvider)
+        .distinctBy { it.providerIdentityKey() }
+        .ifEmpty { listOf(selectedProvider) }
+
+private fun List<LoginProvider>.preferredProvider(provider: LoginProvider): LoginProvider =
+    firstOrNull { it.sameProvider(provider) }
+        ?: firstOrNull()
+        ?: provider
+
+private fun LoginProvider.sameProvider(other: LoginProvider): Boolean =
+    providerIdentityKey() == other.providerIdentityKey()
+
+private fun LoginProvider.providerIdentityKey(): String =
+    idpId.ifBlank { code }.lowercase(Locale.US)
 
 private const val GFN_STORAGE_MANAGEMENT_URL = "https://gfn.link/cloudstorage"
 private const val GFN_STORAGE_RESET_URL = "https://gfn.link/resetstorage"

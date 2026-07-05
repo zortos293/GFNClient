@@ -8,6 +8,7 @@ import type {
   AuthSessionRequest,
   CatalogBrowseRequest,
   GamesFetchRequest,
+  MarkGameOwnedRequest,
   RegionsFetchRequest,
   ResolveLaunchIdRequest,
   ResolveStoreUrlRequest,
@@ -26,6 +27,7 @@ import {
   fetchStorePanels,
   peekCachedBrowseCatalog,
   fetchLibraryGamesFromCache,
+  markGameOwned,
   resolveLaunchAppId,
   resolveStoreUrl,
 } from "../gfn/games";
@@ -401,6 +403,33 @@ export function registerAccountCatalogIpcHandlers(
         variantId: payload.variantId,
         store: payload.store,
         proxyUrl: payload.proxyUrl,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GAMES_MARK_OWNED,
+    async (_event, payload: MarkGameOwnedRequest) => {
+      const session = await authService.ensureValidSession();
+      if (!session) {
+        throw new Error("No authenticated session available");
+      }
+
+      const token = await resolveJwt(payload?.token ?? session.tokens.idToken ?? session.tokens.accessToken);
+      const streamingBaseUrl =
+        payload?.providerStreamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
+      const userId = payload.userId ?? session.user.userId;
+      const proxyUrl = payload.proxyUrl;
+      refreshScheduler.updateAuthContext(token, userId, streamingBaseUrl, proxyUrl);
+
+      return markGameOwned({
+        token,
+        userId,
+        variantId: payload.variantId,
+        providerStreamingBaseUrl: streamingBaseUrl,
+        proxyUrl,
+        tokens: [session.tokens.idToken, session.tokens.accessToken],
       });
     },
   );

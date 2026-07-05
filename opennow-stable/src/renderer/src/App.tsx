@@ -14,6 +14,7 @@ import type {
   ExistingSessionStrategy,
   GameInfo,
   GamePanelResult,
+  GameVariant,
   LoginProvider,
   MainToRendererSignalingEvent,
   NativeStreamerShortcutAction,
@@ -292,6 +293,72 @@ function gameIdentityMatches(left: GameInfo, right: GameInfo): boolean {
   return left.title.trim().length > 0 && left.title.localeCompare(right.title, undefined, { sensitivity: "accent" }) === 0;
 }
 
+function markVariantOwned(variant: GameVariant, selected: boolean): GameVariant {
+  return {
+    ...variant,
+    inLibrary: true,
+    librarySelected: selected,
+    libraryStatus: "MANUAL",
+  };
+}
+
+function markGameVariantOwned(game: GameInfo, variantId: string): GameInfo {
+  const selectedVariantIndex = game.variants.findIndex((variant) => variant.id === variantId);
+  if (selectedVariantIndex < 0) {
+    return game;
+  }
+
+  return {
+    ...game,
+    isInLibrary: true,
+    selectedVariantIndex,
+    variants: game.variants.map((variant, index) => (
+      index === selectedVariantIndex
+        ? markVariantOwned(variant, true)
+        : { ...variant, librarySelected: false }
+    )),
+  };
+}
+
+function markGameOwnedInList(games: GameInfo[], target: GameInfo, variantId: string): GameInfo[] {
+  let changed = false;
+  const next = games.map((game) => {
+    if (!gameIdentityMatches(game, target)) return game;
+    if (!game.variants.some((variant) => variant.id === variantId)) return game;
+    changed = true;
+    return markGameVariantOwned(game, variantId);
+  });
+  return changed ? next : games;
+}
+
+function upsertMarkedOwnedLibraryGame(games: GameInfo[], target: GameInfo, variantId: string): GameInfo[] {
+  let changed = false;
+  const next = games.map((game) => {
+    if (!gameIdentityMatches(game, target)) return game;
+    if (!game.variants.some((variant) => variant.id === variantId)) return game;
+    changed = true;
+    return markGameVariantOwned(game, variantId);
+  });
+  return changed ? next : [markGameVariantOwned(target, variantId), ...games];
+}
+
+function markGameOwnedInPanels(panels: GamePanelResult[], target: GameInfo, variantId: string): GamePanelResult[] {
+  let changed = false;
+  const next = panels.map((panel) => ({
+    ...panel,
+    sections: panel.sections.map((section) => ({
+      ...section,
+      games: section.games.map((game) => {
+        if (!gameIdentityMatches(game, target)) return game;
+        if (!game.variants.some((variant) => variant.id === variantId)) return game;
+        changed = true;
+        return markGameVariantOwned(game, variantId);
+      }),
+    })),
+  }));
+  return changed ? next : panels;
+}
+
 function getLibrarySelectedVariantId(storeGame: GameInfo, libraryGames: GameInfo[]): string | undefined {
   const libraryGame = libraryGames.find((candidate) => gameIdentityMatches(storeGame, candidate));
   const libraryVariant = libraryGame?.variants.find((variant) => variant.librarySelected)
@@ -410,6 +477,11 @@ export function App(): JSX.Element {
   const [catalogTotalCount, setCatalogTotalCount] = useState(0);
   const [catalogSupportedCount, setCatalogSupportedCount] = useState(0);
   const catalogFilterKey = useMemo(() => catalogSelectedFilterIds.join("|"), [catalogSelectedFilterIds]);
+  const [markOwnedInFlightByVariantId, setMarkOwnedInFlightByVariantId] = useState<Record<string, boolean>>({});
+  const [catalogActionNotice, setCatalogActionNotice] = useState<{
+    tone: "success" | "warn";
+    text: string;
+  } | null>(null);
 
   // Settings State
   const [settings, setSettings] = useState<Settings>({
@@ -1556,6 +1628,14 @@ export function App(): JSX.Element {
     applyAccentColor(settings.appAccentColor);
   }, [settings.appAccentColor]);
 
+  useEffect(() => {
+    if (!catalogActionNotice) return;
+    const timer = window.setTimeout(() => {
+      setCatalogActionNotice((current) => (current === catalogActionNotice ? null : current));
+    }, 4500);
+    return () => window.clearTimeout(timer);
+  }, [catalogActionNotice]);
+
   // Save settings when changed
   const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
@@ -2247,7 +2327,7 @@ export function App(): JSX.Element {
     }
   }, [activeSessionProxyUrl, applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames.length, searchQuery, catalogFilterKey, catalogSelectedSortId]);
 
-  const loadStorePanels = useCallback(async () => {
+  const loadStorePanels = useCallback(async (options?: { force?: boolean; background?: boolean }) => {
     const session = authSession;
     if (!session) return;
 
@@ -2255,11 +2335,11 @@ export function App(): JSX.Element {
     if (!token) return;
 
     const contextKey = `${session.user.userId}\0${effectiveStreamingBaseUrl}\0${getSessionProxyUiScope(activeSessionProxyUrl)}`;
-    if (storePanelsLoadedContextRef.current === contextKey) return;
+    if (!options?.force && storePanelsLoadedContextRef.current === contextKey) return;
 
     const loadId = ++storePanelsLoadIdRef.current;
     const isCurrentLoad = (): boolean => storePanelsLoadIdRef.current === loadId;
-    setIsLoadingStorePanels(true);
+    if (!options?.background) setIsLoadingStorePanels(true);
     try {
       const panels = await window.openNow.fetchStorePanels({
         token,
@@ -2284,9 +2364,74 @@ export function App(): JSX.Element {
       storePanelsLoadedContextRef.current = "";
       setStorePanels([]);
     } finally {
-      if (isCurrentLoad()) setIsLoadingStorePanels(false);
+      if (isCurrentLoad() && !options?.background) setIsLoadingStorePanels(false);
     }
   }, [activeSessionProxyUrl, authSession, effectiveStreamingBaseUrl]);
+
+  const handleMarkGameOwned = useCallback(async (game: GameInfo, selectedVariantId?: string): Promise<void> => {
+    const session = authSession;
+    const token = session?.tokens.idToken ?? session?.tokens.accessToken;
+    const userId = session?.user.userId;
+    if (!token || !userId) {
+      setCatalogActionNotice({ tone: "warn", text: t("errors.markOwnedSignInRequired") });
+      return;
+    }
+
+    const selectedVariant = getSelectedVariant(game, selectedVariantId ?? variantByGameId[game.id] ?? defaultVariantId(game));
+    const variantId = selectedVariant?.id ?? selectedVariantId;
+    if (!variantId) {
+      setCatalogActionNotice({ tone: "warn", text: t("errors.markOwnedMissingVariant") });
+      return;
+    }
+    if (markOwnedInFlightByVariantId[variantId]) {
+      return;
+    }
+
+    setMarkOwnedInFlightByVariantId((previous) => ({ ...previous, [variantId]: true }));
+    try {
+      await window.openNow.markGameOwned({
+        token,
+        userId,
+        providerStreamingBaseUrl: effectiveStreamingBaseUrl,
+        proxyUrl: activeSessionProxyUrl,
+        variantId,
+      });
+
+      setVariantByGameId((previous) => ({ ...previous, [game.id]: variantId }));
+      setGames((previous) => markGameOwnedInList(previous, game, variantId));
+      setFeaturedGames((previous) => markGameOwnedInList(previous, game, variantId));
+      setLibraryGames((previous) => upsertMarkedOwnedLibraryGame(previous, game, variantId));
+      setStorePanels((previous) => markGameOwnedInPanels(previous, game, variantId));
+      setCatalogActionNotice({ tone: "success", text: t("games.markOwned.success", { title: game.title }) });
+
+      void loadGames("main", { background: true });
+      void loadGames("library", { background: true });
+      void loadStorePanels({ force: true, background: true });
+    } catch (error) {
+      console.error("Failed to mark game as owned:", error);
+      setCatalogActionNotice({
+        tone: "warn",
+        text: error instanceof Error && error.message
+          ? t("errors.markOwnedFailedWithReason", { reason: error.message })
+          : t("errors.markOwnedFailed"),
+      });
+    } finally {
+      setMarkOwnedInFlightByVariantId((previous) => {
+        const next = { ...previous };
+        delete next[variantId];
+        return next;
+      });
+    }
+  }, [
+    activeSessionProxyUrl,
+    authSession,
+    effectiveStreamingBaseUrl,
+    loadGames,
+    loadStorePanels,
+    markOwnedInFlightByVariantId,
+    t,
+    variantByGameId,
+  ]);
 
   useEffect(() => {
     if (storePanelGames.length === 0 || libraryGames.length === 0) return;
@@ -4375,6 +4520,11 @@ export function App(): JSX.Element {
           {startupRefreshNotice.text}
         </div>
       )}
+      {catalogActionNotice && (
+        <div className={`auth-refresh-notice auth-refresh-notice--${catalogActionNotice.tone}`}>
+          {catalogActionNotice.text}
+        </div>
+      )}
       <Navbar
         currentPage={currentPage}
         onNavigate={handleNavigate}
@@ -4434,6 +4584,8 @@ export function App(): JSX.Element {
                 storeHeroGames={featuredGames}
                 activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}
+                onMarkGameOwned={handleMarkGameOwned}
+                markOwnedInFlightByVariantId={markOwnedInFlightByVariantId}
                 onPreviousControllerPage={() => navigateControllerPage(-1)}
                 onNextControllerPage={() => navigateControllerPage(1)}
               />

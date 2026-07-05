@@ -311,6 +311,9 @@
       "kicker": "Ready",
       "title": "Session started"
     },
+    "connectedBadge": {
+      "title": "Connected"
+    },
     "stats": {
       "overlayLabel": "Stream statistics",
       "expand": "Show detailed stats",

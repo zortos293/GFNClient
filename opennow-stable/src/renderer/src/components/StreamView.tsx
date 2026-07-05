@@ -79,6 +79,7 @@ interface StreamViewProps {
   onMouseAccelerationChange: (value: number) => void;
   onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
+  onNativeInputPaused?: (paused: boolean) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
@@ -435,6 +436,7 @@ export function StreamView({
   onMouseAccelerationChange,
   onRequestPointerLock,
   onReleasePointerLock,
+  onNativeInputPaused,
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
@@ -1322,6 +1324,15 @@ export function StreamView({
   }, [isPointerLocked]);
 
   useEffect(() => {
+    onNativeInputPaused?.(showSideBar);
+    return () => {
+      if (showSideBar) {
+        onNativeInputPaused?.(false);
+      }
+    };
+  }, [onNativeInputPaused, showSideBar]);
+
+  useEffect(() => {
     if (showSideBar) {
       // Mark sidebar open so input auto-lock code can avoid re-requesting.
       try {
@@ -1411,6 +1422,14 @@ export function StreamView({
         return;
       }
 
+      const key = event.key.toLowerCase();
+      const isSidebarShortcut = isMacClient
+        ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === "g"
+        : event.ctrlKey && !event.altKey && !event.metaKey && key === "g";
+      if (isSidebarShortcut) {
+        return;
+      }
+
       if (isShortcutMatch(event, screenshotShortcut)) {
         event.preventDefault();
         event.stopPropagation();
@@ -1428,7 +1447,7 @@ export function StreamView({
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [captureScreenshot, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
+  }, [captureScreenshot, isMacClient, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

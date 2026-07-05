@@ -1078,6 +1078,10 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
   const finalizedStreamingFeatures = normalizeStreamingFeatures(
     payload.session.finalizedStreamingFeatures,
   );
+  const enablePersistingInGameSettings =
+    typeof payload.session.sessionRequestData?.enablePersistingInGameSettings === "boolean"
+      ? payload.session.sessionRequestData.enablePersistingInGameSettings
+      : undefined;
 
   // Debug logging to trace signaling resolution
   const connections = payload.session.connectionInfo ?? [];
@@ -1114,6 +1118,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     signalingUrl: signaling.signalingUrl,
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
+    enablePersistingInGameSettings,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
     negotiatedStreamProfile,
@@ -1723,6 +1728,10 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       const finalizedStreamingFeatures = normalizeStreamingFeatures(
         pollApiResponse.session.finalizedStreamingFeatures,
       );
+      const enablePersistingInGameSettings =
+        typeof pollApiResponse.session.sessionRequestData?.enablePersistingInGameSettings === "boolean"
+          ? pollApiResponse.session.sessionRequestData.enablePersistingInGameSettings
+          : undefined;
       console.log(
         `[CloudMatch] claimed negotiated streaming features: requested=${JSON.stringify(requestedStreamingFeatures ?? {})} finalized=${JSON.stringify(finalizedStreamingFeatures ?? {})} cloudGsync=${negotiatedStreamProfile?.enableCloudGsync ?? "n/a"}, reflex=${negotiatedStreamProfile?.enableReflex ?? "n/a"}, l4s=${negotiatedStreamProfile?.enableL4S ?? "n/a"}`,
       );
@@ -1738,6 +1747,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         signalingUrl: signaling.signalingUrl,
         gpuType: sessionData.gpuType,
         appLaunchMode: echoedSessionAppLaunchMode(pollApiResponse) ?? input.appLaunchMode,
+        enablePersistingInGameSettings,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
         negotiatedStreamProfile: negotiatedStreamProfile ?? extractNegotiatedStreamProfile(pollApiResponse),

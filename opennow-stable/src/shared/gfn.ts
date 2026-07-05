@@ -1126,6 +1126,8 @@ export interface SessionInfo {
   gpuType?: string;
   /** Wire appLaunchMode the session runs with, kept session-stable for resumes */
   appLaunchMode?: number;
+  /** Wire in-game settings persistence value the session was created with, kept session-stable for resumes */
+  enablePersistingInGameSettings?: boolean;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
   negotiatedStreamProfile?: NegotiatedStreamProfile;

@@ -196,6 +196,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
           sessionRequestData: {
             clientRequestMonitorSettings: [{ widthInPixels: 2560, heightInPixels: 1440, framesPerSecond: 240 }],
             requestedStreamingFeatures: createdRequestBody.sessionRequestData.requestedStreamingFeatures,
+            enablePersistingInGameSettings: createdRequestBody.sessionRequestData.enablePersistingInGameSettings,
           },
         },
       }), { status: 200 });
@@ -216,6 +217,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     });
 
     assert.equal(session.streamingBaseUrl, "https://np-lax-01.cloudmatchbeta.nvidiagrid.net");
+    assert.equal(session.enablePersistingInGameSettings, false);
     assert.deepEqual(calls, [
       "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
       expectedSessionUrl,

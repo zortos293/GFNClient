@@ -928,6 +928,7 @@ export function App(): JSX.Element {
           signalingUrl: session.signalingUrl,
           appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
           appLaunchMode: session.appLaunchMode,
+          enablePersistingInGameSettings: session.enablePersistingInGameSettings,
           clientId: session.clientId,
           deviceId: session.deviceId,
         }
@@ -939,6 +940,7 @@ export function App(): JSX.Element {
             signalingUrl: navbarActiveSession.signalingUrl,
             appId: Number.isFinite(navbarActiveSession.appId) ? navbarActiveSession.appId : undefined,
             appLaunchMode: navbarActiveSession.appLaunchMode,
+            enablePersistingInGameSettings: navbarActiveSession.enablePersistingInGameSettings,
           }
           : null,
     };
@@ -2634,6 +2636,7 @@ export function App(): JSX.Element {
                     ? (persisted.appId as number)
                     : (previousAppId ?? 0),
                 appLaunchMode: persisted.appLaunchMode,
+                enablePersistingInGameSettings: persisted.enablePersistingInGameSettings,
                 status: 2,
                 serverIp: persisted.serverIp,
                 streamingBaseUrl: persisted.streamingBaseUrl,

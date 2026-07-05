@@ -18,6 +18,8 @@ export interface RuntimeSnapshot {
     signalingServer?: string;
     signalingUrl?: string;
     appId?: number;
+    /** Wire appLaunchMode the session was created with, for session-stable claims */
+    appLaunchMode?: number;
     clientId?: string;
     deviceId?: string;
   } | null;
@@ -61,6 +63,11 @@ export function loadRuntimeSnapshot(): RuntimeSnapshot | null {
             appId:
               typeof parsed.resumeContext.appId === "number" && Number.isFinite(parsed.resumeContext.appId)
                 ? parsed.resumeContext.appId
+                : undefined,
+            appLaunchMode:
+              typeof parsed.resumeContext.appLaunchMode === "number" &&
+                Number.isFinite(parsed.resumeContext.appLaunchMode)
+                ? parsed.resumeContext.appLaunchMode
                 : undefined,
             clientId:
               typeof parsed.resumeContext.clientId === "string"

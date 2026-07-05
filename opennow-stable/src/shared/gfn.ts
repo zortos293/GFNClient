@@ -1119,6 +1119,8 @@ export interface SessionInfo {
   signalingServer: string;
   signalingUrl: string;
   gpuType?: string;
+  /** Wire appLaunchMode the session runs with, kept session-stable for resumes */
+  appLaunchMode?: number;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
   negotiatedStreamProfile?: NegotiatedStreamProfile;

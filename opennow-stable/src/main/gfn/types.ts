@@ -153,6 +153,7 @@ export interface CloudMatchResponse {
       }>;
     };
     sessionRequestData?: {
+      appLaunchMode?: number;
       clientRequestMonitorSettings?: Array<{
         widthInPixels?: number;
         heightInPixels?: number;

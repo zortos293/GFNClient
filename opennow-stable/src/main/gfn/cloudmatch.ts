@@ -172,6 +172,12 @@ export function appLaunchModeWireValue(mode: AppLaunchMode | undefined): number 
   return APP_LAUNCH_MODE_WIRE_VALUES[mode ?? "default"];
 }
 
+/** Wire appLaunchMode the server echoes back for an existing session, if present. */
+function echoedSessionAppLaunchMode(payload: CloudMatchResponse): number | undefined {
+  const raw = payload.session?.sessionRequestData?.appLaunchMode;
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
+}
+
 export function buildRequestedStreamingFeatures(
   settings: StreamSettings,
   bitDepth: number,
@@ -1049,6 +1055,8 @@ interface ToSessionInfoOptions {
   payload: CloudMatchResponse;
   clientId?: string;
   deviceId?: string;
+  /** Wire appLaunchMode sent with the request, used when the server does not echo it */
+  fallbackAppLaunchMode?: number;
 }
 
 async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo> {
@@ -1105,6 +1113,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,
     gpuType: payload.session.gpuType,
+    appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
     negotiatedStreamProfile,
@@ -1148,7 +1157,14 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   }, input.proxyUrl);
 
   const { payload } = await readCloudMatchJson<CloudMatchResponse>(response);
-  return await toSessionInfo({ zone: input.zone, streamingBaseUrl: base, payload, clientId, deviceId });
+  return await toSessionInfo({
+    zone: input.zone,
+    streamingBaseUrl: base,
+    payload,
+    clientId,
+    deviceId,
+    fallbackAppLaunchMode: appLaunchModeWireValue(input.settings.appLaunchMode),
+  });
 }
 
 export async function pollSession(input: SessionPollRequest): Promise<SessionInfo> {
@@ -1709,6 +1725,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         signalingServer: signaling.signalingServer,
         signalingUrl: signaling.signalingUrl,
         gpuType: sessionData.gpuType,
+        appLaunchMode: echoedSessionAppLaunchMode(pollApiResponse) ?? input.appLaunchMode,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
         negotiatedStreamProfile: negotiatedStreamProfile ?? extractNegotiatedStreamProfile(pollApiResponse),

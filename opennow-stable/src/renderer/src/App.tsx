@@ -972,27 +972,29 @@ export function App(): JSX.Element {
       streamingGameId: streamingGame?.id ?? null,
       streamingStore: streamingStore ?? null,
       recoveryAppId: signalingRecoveryRef.current.appId,
-      resumeContext: latestSession
-        ? {
-          sessionId: latestSession.sessionId,
-          serverIp: latestSession.serverIp,
-          streamingBaseUrl: latestSession.streamingBaseUrl,
-          signalingServer: latestSession.signalingServer,
-          signalingUrl: latestSession.signalingUrl,
-          appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
-          appLaunchMode: latestSession.appLaunchMode,
-          clientId: latestSession.clientId,
-          deviceId: latestSession.deviceId,
-        }
-        : (latestNavbarSession?.sessionId && latestNavbarSession.serverIp)
+        resumeContext: latestSession
           ? {
-            sessionId: latestNavbarSession.sessionId,
-            serverIp: latestNavbarSession.serverIp,
-            streamingBaseUrl: latestNavbarSession.streamingBaseUrl,
-            signalingUrl: latestNavbarSession.signalingUrl,
-            appId: Number.isFinite(latestNavbarSession.appId) ? latestNavbarSession.appId : undefined,
-            appLaunchMode: latestNavbarSession.appLaunchMode,
+            sessionId: latestSession.sessionId,
+            serverIp: latestSession.serverIp,
+            streamingBaseUrl: latestSession.streamingBaseUrl,
+            signalingServer: latestSession.signalingServer,
+            signalingUrl: latestSession.signalingUrl,
+            appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+            appLaunchMode: latestSession.appLaunchMode,
+            enablePersistingInGameSettings: latestSession.enablePersistingInGameSettings,
+            clientId: latestSession.clientId,
+            deviceId: latestSession.deviceId,
           }
+          : (latestNavbarSession?.sessionId && latestNavbarSession.serverIp)
+            ? {
+              sessionId: latestNavbarSession.sessionId,
+              serverIp: latestNavbarSession.serverIp,
+              streamingBaseUrl: latestNavbarSession.streamingBaseUrl,
+              signalingUrl: latestNavbarSession.signalingUrl,
+              appId: Number.isFinite(latestNavbarSession.appId) ? latestNavbarSession.appId : undefined,
+              appLaunchMode: latestNavbarSession.appLaunchMode,
+              enablePersistingInGameSettings: latestNavbarSession.enablePersistingInGameSettings,
+            }
           : null,
     };
 

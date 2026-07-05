@@ -3214,9 +3214,10 @@ export function App(): JSX.Element {
         game,
         variant: selectedVariant,
       };
+      const launchVariant = matchedGameContext.variant ?? selectedVariant;
       launchGameContext = matchedGameContext.game;
       setStreamingGame(matchedGameContext.game);
-      setStreamingStore(matchedGameContext.variant?.store ?? null);
+      setStreamingStore(launchVariant?.store ?? null);
 
       let existingSessionStrategy: ExistingSessionStrategy | undefined;
 
@@ -3271,6 +3272,7 @@ export function App(): JSX.Element {
         appId,
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
+        supportsInGameSettingsPersistence: launchVariant?.supportsInGameSettingsPersistence === true,
         existingSessionStrategy,
         proxyUrl: sessionProxyUrl,
         zone: "prod",

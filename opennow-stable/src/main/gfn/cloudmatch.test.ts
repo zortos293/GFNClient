@@ -234,6 +234,83 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
   }
 });
 
+test("CloudMatch only sends in-game settings persistence when user opt-in and game support are both true", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  console.log = () => {};
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  });
+
+  const persistenceFlags: boolean[] = [];
+  const expectedSessionUrl = `https://np-test.example.test/v2/session?${new URLSearchParams({
+    keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
+    languageCode: "en_US",
+  }).toString()}`;
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url !== expectedSessionUrl) {
+      throw new Error(`Unexpected fetch: ${url}`);
+    }
+
+    const body = JSON.parse(String(init?.body)) as {
+      sessionRequestData: {
+        enablePersistingInGameSettings?: boolean;
+      };
+    };
+    const enablePersistingInGameSettings = body.sessionRequestData.enablePersistingInGameSettings === true;
+    persistenceFlags.push(enablePersistingInGameSettings);
+
+    return new Response(JSON.stringify({
+      requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
+      session: {
+        sessionId: `session-${persistenceFlags.length}`,
+        status: 1,
+        seatSetupInfo: { seatSetupStep: 0 },
+        sessionControlInfo: { ip: "np-test.example.test" },
+        connectionInfo: [],
+        iceServerConfiguration: {
+          iceServers: [{ urls: "stun:127.0.0.1:19302" }],
+        },
+        sessionRequestData: {
+          enablePersistingInGameSettings,
+        },
+      },
+    }), { status: 200 });
+  }) as typeof fetch;
+
+  const baseRequest = {
+    token: "token",
+    streamingBaseUrl: "https://np-test.example.test/",
+    appId: "1001",
+    internalTitle: "Test Game",
+    accountLinked: true,
+    zone: "prod",
+    settings: makeSettings(),
+  };
+
+  await createSession({
+    ...baseRequest,
+    enablePersistingInGameSettings: true,
+    supportsInGameSettingsPersistence: false,
+  });
+  await createSession({
+    ...baseRequest,
+    enablePersistingInGameSettings: true,
+    supportsInGameSettingsPersistence: true,
+  });
+  await createSession({
+    ...baseRequest,
+    enablePersistingInGameSettings: false,
+    supportsInGameSettingsPersistence: true,
+  });
+
+  assert.deepEqual(persistenceFlags, [false, true, false]);
+});
+
 test("CloudMatch falls back to serverInfo local region when active-session HTTP request fails", async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;

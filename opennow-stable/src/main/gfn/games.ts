@@ -19,6 +19,7 @@ import {
 import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
 import { fetchWithOptionalProxy } from "./proxyFetch";
 import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
+import { supportsInGameSettingsPersistence } from "./gameFeatures";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
@@ -262,6 +263,7 @@ interface AppData {
     supportedControls?: string[];
     gfn?: {
       status?: string;
+      features?: unknown;
       library?: {
         status?: string;
         selected?: boolean;
@@ -522,17 +524,21 @@ function resolveAppData(app: AppData): AppResolution {
 }
 
 function appToVariants(app: AppData): GameVariant[] {
-  return app.variants?.map((variant) => ({
-    id: variant.id,
-    store: variant.appStore,
-    storeUrl: variant.storeUrl,
-    supportedControls: variant.supportedControls ?? [],
-    librarySelected: variant.gfn?.library?.selected,
-    inLibrary: variant.gfn?.library?.selected === true,
-    libraryStatus: variant.gfn?.library?.status,
-    lastPlayedDate: variant.gfn?.library?.lastPlayedDate,
-    gfnStatus: variant.gfn?.status,
-  })) ?? [];
+  return app.variants?.map((variant) => {
+    const supportsPersistence = supportsInGameSettingsPersistence(variant);
+    return {
+      id: variant.id,
+      store: variant.appStore,
+      storeUrl: variant.storeUrl,
+      supportedControls: variant.supportedControls ?? [],
+      ...(supportsPersistence ? { supportsInGameSettingsPersistence: true } : {}),
+      librarySelected: variant.gfn?.library?.selected,
+      inLibrary: variant.gfn?.library?.selected === true,
+      libraryStatus: variant.gfn?.library?.status,
+      lastPlayedDate: variant.gfn?.library?.lastPlayedDate,
+      gfnStatus: variant.gfn?.status,
+    };
+  }) ?? [];
 }
 
 function appToGame(app: AppData): GameInfo {
@@ -998,6 +1004,7 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
           supportedControls
           gfn {
             status
+            features { key value values }
             library { status selected }
           }
         }
@@ -1331,6 +1338,7 @@ async function fetchPaginatedLibraryApps(token: string, vpcId: string, proxyUrl?
           supportedControls
           gfn {
             status
+            features { key value values }
             library { status selected lastPlayedDate }
           }
         }

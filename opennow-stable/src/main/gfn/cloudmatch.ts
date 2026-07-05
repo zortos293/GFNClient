@@ -695,7 +695,9 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
       secureRTSPSupported: false,
       partnerCustomData: "",
       accountLinked,
-      enablePersistingInGameSettings: input.enablePersistingInGameSettings === true,
+      enablePersistingInGameSettings:
+        input.enablePersistingInGameSettings === true &&
+        input.supportsInGameSettingsPersistence === true,
       userAge: 26,
       requestedStreamingFeatures: buildRequestedStreamingFeatures(
         input.settings,

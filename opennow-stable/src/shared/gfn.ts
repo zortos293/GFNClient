@@ -800,6 +800,7 @@ export interface GameVariant {
   store: string;
   storeUrl?: string;
   supportedControls: string[];
+  supportsInGameSettingsPersistence?: boolean;
   librarySelected?: boolean;
   inLibrary?: boolean;
   libraryStatus?: string;
@@ -960,6 +961,8 @@ export interface SessionCreateRequest {
    * when the user is entitled and has opted in. Leave disabled by default.
    */
   enablePersistingInGameSettings?: boolean;
+  /** Selected game variant must advertise IN_GAME_SETTINGS_PERSISTENCE_ENABLED. */
+  supportsInGameSettingsPersistence?: boolean;
   existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;

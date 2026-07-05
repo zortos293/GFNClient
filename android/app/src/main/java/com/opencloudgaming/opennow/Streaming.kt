@@ -67,6 +67,7 @@ import org.webrtc.VideoDecoderFactory
 import org.webrtc.VideoTrack
 import org.webrtc.audio.AudioDeviceModule
 import org.webrtc.audio.JavaAudioDeviceModule
+import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -398,6 +399,15 @@ private fun IceCandidate.diagnosticSummary(): String {
 private fun sdpDiagnosticSummary(label: String, sdp: String): String {
     val lines = sdp.split(Regex("\\r?\\n")).filter { it.isNotBlank() }
     val media = lines.filter { it.startsWith("m=") }.joinToString("|").take(180)
+    val candidateEndpoints = lines
+        .filter { it.startsWith("a=candidate:") }
+        .mapNotNull { line ->
+            Regex("""a=candidate:\S+\s+\d+\s+\S+\s+\d+\s+([^\s]+)\s+(\d+)""")
+                .find(line)
+                ?.let { match -> "${match.groupValues[1]}:${match.groupValues[2]}" }
+        }
+        .distinct()
+        .joinToString(limit = 6)
     val codecs = lines
         .filter { it.startsWith("a=rtpmap:") }
         .mapNotNull { line -> line.substringAfter(' ', "").substringBefore('/').takeIf { it.isNotBlank() } }
@@ -407,7 +417,7 @@ private fun sdpDiagnosticSummary(label: String, sdp: String): String {
     val candidates = lines.count { it.startsWith("a=candidate:") }
     val hasIce = lines.any { it.startsWith("a=ice-ufrag:") } && lines.any { it.startsWith("a=ice-pwd:") }
     val hasFingerprint = lines.any { it.startsWith("a=fingerprint:") }
-    return "$label lines=${lines.size} media=$media codecs=$codecs candidates=$candidates ice=$hasIce fingerprint=$hasFingerprint"
+    return "$label lines=${lines.size} media=$media codecs=$codecs candidates=$candidates endpoints=$candidateEndpoints ice=$hasIce fingerprint=$hasFingerprint"
 }
 
 sealed interface SignalingEvent {
@@ -2658,7 +2668,7 @@ class NativeStreamClient(
     }
 
     private fun prepareRemoteOffer(rawOffer: String, session: SessionInfo): String {
-        var prepared = SdpTools.fixServerIp(rawOffer, session.serverIp)
+        var prepared = SdpTools.fixServerEndpoint(rawOffer, session.serverIp, session.mediaConnectionInfo)
         if (settings.codec == VideoCodec.H265) {
             val maxLevels = h265ReceiverMaxLevelsByProfile()
             if (maxLevels.isNotEmpty()) {
@@ -3834,11 +3844,27 @@ open class SimpleSdpObserver : SdpObserver {
 object SdpTools {
     data class RewriteResult(val sdp: String, val replacements: Int)
 
-    fun fixServerIp(sdp: String, serverIp: String): String {
-        val ip = extractPublicIp(serverIp) ?: return sdp
+    fun fixServerIp(sdp: String, serverIp: String): String =
+        fixServerEndpoint(sdp, serverIp, mediaConnectionInfo = null)
+
+    fun fixServerEndpoint(sdp: String, serverIp: String, mediaConnectionInfo: MediaConnectionInfo?): String {
+        val signalingIp = extractPublicIp(serverIp) ?: return sdp
+        val mediaIp = mediaConnectionInfo?.ip?.let(::extractPublicIp) ?: signalingIp
+        val mediaPort = mediaConnectionInfo?.port?.takeIf { it in 1..65535 }
         return sdp
-            .replace("c=IN IP4 0.0.0.0", "c=IN IP4 $ip")
-            .replace(Regex("(a=candidate:\\S+\\s+\\d+\\s+\\w+\\s+\\d+\\s+)0\\.0\\.0\\.0(\\s+)"), "$1$ip$2")
+            .replace(Regex("c=IN IP4 ([^\\r\\n]+)")) { match ->
+                val address = match.groupValues[1]
+                if (shouldRewriteRemoteEndpoint(address, mediaConnectionInfo != null)) "c=IN IP4 $mediaIp" else match.value
+            }
+            .replace(Regex("(a=candidate:\\S+\\s+\\d+\\s+\\w+\\s+\\d+\\s+)([^\\s]+)\\s+(\\d+)(\\s+)")) { match ->
+                val address = match.groupValues[2]
+                val port = match.groupValues[3]
+                if (shouldRewriteRemoteEndpoint(address, mediaConnectionInfo != null)) {
+                    "${match.groupValues[1]}$mediaIp ${mediaPort ?: port}${match.groupValues[4]}"
+                } else {
+                    match.value
+                }
+            }
     }
 
     fun preferCodec(sdp: String, settings: StreamSettings): String =
@@ -4206,6 +4232,35 @@ object SdpTools {
         val first = hostOrIp.substringBefore(".")
         val parts = first.split("-")
         return if (parts.size == 4 && parts.all { it.all(Char::isDigit) }) parts.joinToString(".") else null
+    }
+
+    private fun shouldRewriteRemoteEndpoint(address: String, hasMediaEndpoint: Boolean): Boolean {
+        val remoteAddress = parseIpv4Address(address) ?: return false
+        if (remoteAddress.inetAddress.isAnyLocalAddress) return true
+        return hasMediaEndpoint && remoteAddress.isUnroutable()
+    }
+
+    private data class RemoteIpv4Address(
+        val octets: List<Int>,
+        val inetAddress: InetAddress,
+    ) {
+        fun isUnroutable(): Boolean =
+            inetAddress.isLoopbackAddress ||
+                inetAddress.isSiteLocalAddress ||
+                inetAddress.isLinkLocalAddress ||
+                inetAddress.isMulticastAddress ||
+                isCarrierGradeNatAddress(octets)
+    }
+
+    private fun parseIpv4Address(address: String): RemoteIpv4Address? {
+        val octets = address.split(".").map { it.toIntOrNull() ?: return null }
+        if (octets.size != 4 || octets.any { it !in 0..255 }) return null
+        val inetAddress = InetAddress.getByAddress(octets.map { it.toByte() }.toByteArray())
+        return RemoteIpv4Address(octets, inetAddress)
+    }
+
+    private fun isCarrierGradeNatAddress(octets: List<Int>): Boolean {
+        return octets[0] == 100 && octets[1] in 64..127
     }
 
     private fun parseRiIntegerAttribute(sdp: String, attribute: String, fallback: Int): Int {

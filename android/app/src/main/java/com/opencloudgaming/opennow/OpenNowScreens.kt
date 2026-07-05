@@ -1677,11 +1677,10 @@ private fun LibraryScreen(
                     RefreshingGamesPlaceholder(
                         settings = state.settings,
                         tvProfile = tvProfile,
-                        libraryLayout = true,
                         modifier = Modifier.weight(1f),
                     )
                 } else {
-                    LibraryGameGrid(
+                    GameGrid(
                         games,
                         state.settings.favoriteGameIds,
                         state.settings,
@@ -1919,14 +1918,12 @@ private fun RefreshingGamesPlaceholder(
     settings: AppSettings,
     tvProfile: Boolean,
     storeLayout: Boolean = false,
-    libraryLayout: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     GameGridSkeleton(
         settings = settings,
         tvProfile = tvProfile,
         storeLayout = storeLayout,
-        libraryLayout = libraryLayout,
         modifier = modifier,
     )
 }
@@ -1936,7 +1933,6 @@ private fun GameGridSkeleton(
     settings: AppSettings,
     tvProfile: Boolean,
     storeLayout: Boolean,
-    libraryLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
@@ -1944,29 +1940,6 @@ private fun GameGridSkeleton(
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val shimmerBrush = rememberLoadingShimmerBrush(label = "game-grid-skeleton-shimmer")
     BoxWithConstraints(modifier.fillMaxSize()) {
-        if (libraryLayout) {
-            val librarySpec = libraryGameGridSpec(maxWidth, tvProfile, landscapeLayout)
-            val placeholderItems = remember(librarySpec.columns) {
-                List(librarySpec.columns * 3) { it }
-            }
-            LazyVerticalGrid(
-                modifier = Modifier.fillMaxSize(),
-                columns = GridCells.Fixed(librarySpec.columns),
-                contentPadding = librarySpec.contentPadding,
-                horizontalArrangement = Arrangement.spacedBy(librarySpec.horizontalSpacing),
-                verticalArrangement = Arrangement.spacedBy(librarySpec.verticalSpacing),
-                userScrollEnabled = false,
-            ) {
-                gridItems(placeholderItems, key = { it }) {
-                    StoreRailGameCardSkeleton(
-                        width = librarySpec.cardWidth,
-                        expressiveUi = settings.expressiveUi,
-                        shimmerBrush = shimmerBrush,
-                    )
-                }
-            }
-            return@BoxWithConstraints
-        }
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         val placeholderItems = remember(gridSpec.columns, storeLayout) {
             List(gridSpec.columns * if (storeLayout) 4 else 3) { it }
@@ -2257,57 +2230,6 @@ private fun GameGrid(
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
-                    onSelect = onSelect,
-                    onFavorite = onFavorite,
-                    onPlay = onPlay,
-                    onChooseStore = onChooseStore,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LibraryGameGrid(
-    games: List<GameInfo>,
-    favoriteIds: List<String>,
-    settings: AppSettings,
-    tvProfile: Boolean,
-    onSelect: (GameInfo) -> Unit,
-    onFavorite: (String) -> Unit,
-    onPlay: (GameInfo) -> Unit,
-    onChooseStore: (GameInfo) -> Unit,
-    modifier: Modifier = Modifier,
-    gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState(),
-    emptyContent: (@Composable () -> Unit)? = null,
-) {
-    if (games.isEmpty()) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (emptyContent != null) {
-                emptyContent()
-            } else {
-                Text(stringResource(R.string.no_games_loaded), color = TextMuted)
-            }
-        }
-        return
-    }
-    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    BoxWithConstraints(modifier.fillMaxSize()) {
-        val gridSpec = libraryGameGridSpec(maxWidth, tvProfile, landscapeLayout)
-        LazyVerticalGrid(
-            modifier = Modifier.fillMaxSize(),
-            state = gridState,
-            columns = GridCells.Fixed(gridSpec.columns),
-            contentPadding = gridSpec.contentPadding,
-            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
-            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
-        ) {
-            gridItems(games, key = { it.id }) { game ->
-                StoreRailGameCard(
-                    game = game,
-                    favorite = game.id in favoriteIds,
-                    settings = settings,
-                    width = gridSpec.cardWidth,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
                     onPlay = onPlay,
@@ -2660,14 +2582,6 @@ private fun storeRailGameKey(game: GameInfo): String =
 
 private const val STORE_RAIL_GAME_LIMIT = 14
 
-private data class LibraryGameGridSpec(
-    val columns: Int,
-    val cardWidth: Dp,
-    val horizontalSpacing: Dp,
-    val verticalSpacing: Dp,
-    val contentPadding: PaddingValues,
-)
-
 private data class GameGridSpec(
     val columns: Int,
     val cardHeight: Dp,
@@ -2683,35 +2597,6 @@ private fun storeRailCardWidth(tvProfile: Boolean, landscapeLayout: Boolean): Dp
         landscapeLayout -> 126.dp
         else -> 142.dp
     }
-
-private fun libraryGameGridSpec(
-    maxWidth: Dp,
-    tvProfile: Boolean,
-    landscapeLayout: Boolean,
-): LibraryGameGridSpec {
-    val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
-    val horizontalSpacing = 10.dp
-    val minimumHorizontalPadding = 4.dp
-    val availableWidth = (maxWidth.value - minimumHorizontalPadding.value * 2f).coerceAtLeast(cardWidth.value)
-    val columns = floor((availableWidth + horizontalSpacing.value) / (cardWidth.value + horizontalSpacing.value))
-        .toInt()
-        .coerceAtLeast(1)
-    val usedWidth = cardWidth.value * columns + horizontalSpacing.value * (columns - 1).coerceAtLeast(0)
-    val horizontalPadding = ((maxWidth.value - usedWidth) / 2f)
-        .coerceAtLeast(minimumHorizontalPadding.value)
-        .dp
-    return LibraryGameGridSpec(
-        columns = columns,
-        cardWidth = cardWidth,
-        horizontalSpacing = horizontalSpacing,
-        verticalSpacing = when {
-            tvProfile -> 20.dp
-            landscapeLayout -> 26.dp
-            else -> 18.dp
-        },
-        contentPadding = PaddingValues(horizontal = horizontalPadding, vertical = 10.dp),
-    )
-}
 
 private fun gameGridSpec(
     maxWidth: androidx.compose.ui.unit.Dp,

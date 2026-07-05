@@ -73,6 +73,102 @@ class SdpToolsTest {
     }
 
     @Test
+    fun fixesPlaceholderCandidatesWithSignalingEndpointWhenMediaEndpointIsMissing() {
+        val offer = """
+            v=0
+            c=IN IP4 0.0.0.0
+            m=video 47998 UDP/TLS/RTP/SAVPF 96
+            a=candidate:1 1 udp 2122260223 0.0.0.0 47998 typ host generation 0
+            a=rtpmap:96 H264/90000
+        """.trimIndent()
+
+        val fixed = SdpTools.fixServerIp(
+            offer,
+            serverIp = "66-22-131-132.cloudmatchbeta.nvidiagrid.net",
+        )
+
+        assertTrue(fixed.contains("c=IN IP4 66.22.131.132"))
+        assertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 66.22.131.132 47998 typ host generation 0"))
+    }
+
+    @Test
+    fun fixesPlaceholderCandidatesWithCloudMatchMediaEndpoint() {
+        val offer = """
+            v=0
+            c=IN IP4 0.0.0.0
+            m=video 47998 UDP/TLS/RTP/SAVPF 96
+            a=candidate:1 1 udp 2122260223 0.0.0.0 47998 typ host generation 0
+            a=rtpmap:96 H264/90000
+        """.trimIndent()
+
+        val fixed = SdpTools.fixServerEndpoint(
+            offer,
+            serverIp = "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+            mediaConnectionInfo = MediaConnectionInfo("183-78-14-231.yes.geforcenow.nvidiagrid.net", 19353),
+        )
+
+        assertTrue(fixed.contains("c=IN IP4 183.78.14.231"))
+        assertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 19353 typ host generation 0"))
+    }
+
+    @Test
+    fun leavesPrivateCandidatesWithoutCloudMatchMediaEndpoint() {
+        val offer = """
+            v=0
+            c=IN IP4 10.0.175.0
+            m=video 47998 UDP/TLS/RTP/SAVPF 96
+            a=candidate:1 1 udp 2122260223 10.0.175.0 47998 typ host generation 0
+            a=rtpmap:96 H264/90000
+        """.trimIndent()
+
+        val fixed = SdpTools.fixServerIp(
+            offer,
+            serverIp = "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+        )
+
+        assertEquals(offer, fixed)
+    }
+
+    @Test
+    fun fixesPrivateCandidatesWithCloudMatchMediaEndpoint() {
+        val offer = """
+            v=0
+            c=IN IP4 10.0.175.0
+            m=video 47998 UDP/TLS/RTP/SAVPF 96
+            a=candidate:1 1 udp 2122260223 10.0.175.0 47998 typ host generation 0
+            a=rtpmap:96 H264/90000
+        """.trimIndent()
+
+        val fixed = SdpTools.fixServerEndpoint(
+            offer,
+            serverIp = "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+            mediaConnectionInfo = MediaConnectionInfo("183.78.14.231", 14317),
+        )
+
+        assertTrue(fixed.contains("c=IN IP4 183.78.14.231"))
+        assertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 14317 typ host generation 0"))
+    }
+
+    @Test
+    fun leavesResolvedCandidatesOnTheirAdvertisedEndpoint() {
+        val offer = """
+            v=0
+            c=IN IP4 203.0.113.10
+            m=video 47998 UDP/TLS/RTP/SAVPF 96
+            a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host generation 0
+            a=rtpmap:96 H264/90000
+        """.trimIndent()
+
+        val fixed = SdpTools.fixServerEndpoint(
+            offer,
+            serverIp = "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+            mediaConnectionInfo = MediaConnectionInfo("183-78-14-231.yes.geforcenow.nvidiagrid.net", 19353),
+        )
+
+        assertEquals(offer, fixed)
+    }
+
+    @Test
     fun nvstSdpUsesConfiguredResolutionViewport() {
         val nvst = SdpTools.buildNvstSdp(
             offerSdp = "a=ri.partialReliableThresholdMs:42",

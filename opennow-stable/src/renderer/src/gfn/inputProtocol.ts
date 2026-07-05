@@ -5,6 +5,7 @@ export const INPUT_KEY_DOWN = 3;
 export const INPUT_KEY_UP = 4;
 /** Lock-key state sync (Caps/Num/Scroll), matches official GFN Cc()/Ic() type 19. */
 export const INPUT_LOCK_KEYS_SYNC = 19;
+export const INPUT_MOUSE_ABS = 5;
 export const INPUT_MOUSE_REL = 7;
 export const INPUT_MOUSE_BUTTON_DOWN = 8;
 export const INPUT_MOUSE_BUTTON_UP = 9;
@@ -173,6 +174,19 @@ export interface MouseMovePayload {
   timestampUs: bigint;
 }
 
+/**
+ * Absolute mouse position (input type 5). Coordinates are expressed inside a
+ * client-defined extent (`width`/`height`) that the server uses to scale onto
+ * the remote desktop, mirroring the official client's Hc() encoder.
+ */
+export interface MouseAbsolutePayload {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  timestampUs: bigint;
+}
+
 export interface MouseButtonPayload {
   button: number;
   timestampUs: bigint;
@@ -204,7 +218,7 @@ export function partiallyReliableHidMaskForInputType(inputType: number): number 
 }
 
 export function isPartiallyReliableHidTransferEligible(inputType: number): boolean {
-  return inputType === INPUT_MOUSE_REL;
+  return inputType === INPUT_MOUSE_REL || inputType === INPUT_MOUSE_ABS;
 }
 
 export interface KeyMapping {
@@ -863,6 +877,22 @@ export class InputEncoder {
     return wrapMouseMoveEvent(bytes, this.protocolVersion);
   }
 
+  encodeMouseAbsolute(payload: MouseAbsolutePayload): Uint8Array {
+    const bytes = new Uint8Array(26);
+    const view = new DataView(bytes.buffer);
+    // Official client Hc() with absolute flag (opcode 5, 26 bytes):
+    // [type 4B LE][x 2B BE][y 2B BE][reserved 2B BE][width 2B BE][height 2B BE][reserved 4B BE][timestamp 8B BE]
+    view.setUint32(0, INPUT_MOUSE_ABS, true);             // type: LE
+    view.setUint16(4, clampU16(payload.x), false);         // x: BE
+    view.setUint16(6, clampU16(payload.y), false);         // y: BE
+    view.setUint16(8, 0, false);                           // reserved: BE
+    view.setUint16(10, clampU16(payload.width), false);    // extent width: BE
+    view.setUint16(12, clampU16(payload.height), false);   // extent height: BE
+    view.setUint32(14, 0, false);                          // reserved: BE
+    view.setBigUint64(18, payload.timestampUs, false);     // timestamp: BE
+    return wrapMouseMoveEvent(bytes, this.protocolVersion);
+  }
+
   encodeMouseButtonDown(payload: MouseButtonPayload): Uint8Array {
     return this.encodeMouseButton(INPUT_MOUSE_BUTTON_DOWN, payload);
   }
@@ -1006,6 +1036,10 @@ export class InputEncoder {
     view.setBigUint64(10, payload.timestampUs, false);    // timestamp: BE
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
+}
+
+function clampU16(value: number): number {
+  return Math.max(0, Math.min(65535, Math.round(value)));
 }
 
 function textInputChunkLength(bytes: Uint8Array, offset: number): number {

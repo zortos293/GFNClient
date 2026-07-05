@@ -13,6 +13,7 @@ import type {
 import {
   InputEncoder,
   INPUT_MOUSE_REL,
+  INPUT_MOUSE_ABS,
   PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
   partiallyReliableHidMaskForInputType,
@@ -765,6 +766,14 @@ export class GfnWebRtcClient {
   private gamepadPollTimer: number | null = null;
   private pendingMouseDxFloat = 0;
   private pendingMouseDyFloat = 0;
+  /**
+   * Latest overlay cursor position awaiting an absolute mouse packet (input
+   * type 5). Used while the cursor_channel overlay cursor is visible so the
+   * server cursor is pinned to the overlay position instead of drifting on
+   * accumulated relative deltas. Latest position wins, like the official
+   * client's batch coalescing.
+   */
+  private pendingMouseAbs: { x: number; y: number; width: number; height: number } | null = null;
   private inputCleanup: Array<() => void> = [];
   private queuedCandidates: RTCIceCandidateInit[] = [];
 
@@ -2107,6 +2116,7 @@ export class GfnWebRtcClient {
     this.gamepadBitmap = 0;
     this.pendingMouseDxFloat = 0;
     this.pendingMouseDyFloat = 0;
+    this.pendingMouseAbs = null;
     this.pendingMouseTimestampUs = null;
     this.mouseDeltaFilter.reset();
     this.mouseFlushLastSendMs = 0;
@@ -3426,6 +3436,7 @@ export class GfnWebRtcClient {
     this.mouseCoalescedBatchEntries = 0;
     this.pendingMouseDxFloat = 0;
     this.pendingMouseDyFloat = 0;
+    this.pendingMouseAbs = null;
     this.pendingMouseTimestampUs = null;
     this.mousePacketsPerSecond = 0;
     this.mousePacketsSentInWindow = 0;
@@ -3492,12 +3503,51 @@ export class GfnWebRtcClient {
     let lastPointerClientY = Number.NaN;
 
     const hasPendingMouseMovement = (): boolean =>
-      Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
+      this.pendingMouseAbs !== null
+      || Math.abs(this.pendingMouseDxFloat) >= 0.5
+      || Math.abs(this.pendingMouseDyFloat) >= 0.5;
+
+    const markServerCursorAt = (abs: { x: number; y: number; width: number; height: number }): void => {
+      // An absolute packet pins the server cursor exactly; keep the simulated
+      // server-pixel baseline in sync for the pointer-lock entry alignment path.
+      const { serverWidth, serverHeight } = getPointerScale();
+      simulatedAbsX = Math.round((abs.x / abs.width) * serverWidth);
+      simulatedAbsY = Math.round((abs.y / abs.height) * serverHeight);
+    };
 
     const flushMouse = (): boolean => {
       const tickNow = performance.now();
       if (!this.inputReady || !hasPendingMouseMovement()) {
         return false;
+      }
+
+      if (this.pendingMouseAbs !== null) {
+        const abs = this.pendingMouseAbs;
+        this.pendingMouseAbs = null;
+        // Movement was already consumed by the overlay position; drop any
+        // stale relative residue so it cannot double-apply after this packet.
+        this.pendingMouseDxFloat = 0;
+        this.pendingMouseDyFloat = 0;
+
+        const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
+        this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
+          this.inputQueueMaxSchedulingDelayMsWindow,
+          Math.max(0, tickNow - expectedSendAt),
+        );
+
+        const payload = this.inputEncoder.encodeMouseAbsolute({
+          ...abs,
+          timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
+        });
+        this.pendingMouseTimestampUs = null;
+        this.mouseCoalescedBatchEntries = 0;
+        this.sendInputPacket(payload, INPUT_MOUSE_ABS);
+        this.mousePacketsSentInWindow += 1;
+        this.mouseFlushLastSendMs = tickNow;
+        updateMousePacketRate();
+        this.mouseAdaptiveFlushActive = false;
+        markServerCursorAt(abs);
+        return true;
       }
 
       const { scaleX, scaleY } = getPointerScale();
@@ -3618,43 +3668,57 @@ export class GfnWebRtcClient {
         if (typeof targetAbsX === "number" && typeof targetAbsY === "number") {
           const targetRect = pointerLockTarget.getBoundingClientRect();
           this.cursorOverlay?.setClientPosition(targetRect.left + targetAbsX, targetRect.top + targetAbsY);
+          const overlayAbs = this.cursorOverlay?.isCursorVisible()
+            ? this.cursorOverlay.getAbsolutePosition()
+            : null;
           const { scaleX, scaleY, serverWidth, serverHeight } = getPointerScale();
 
-          // Translate the element-local target into server pixels.
-          const targetServerX = Math.round(targetAbsX * scaleX);
-          const targetServerY = Math.round(targetAbsY * scaleY);
-
-          if (simulatedAbsX === null || simulatedAbsY === null) {
-            // No baseline known: assume server cursor is centered and move from
-            // center -> target in server pixels so remote cursor matches HW cursor.
-            const baselineXServer = Math.round(serverWidth / 2);
-            const baselineYServer = Math.round(serverHeight / 2);
-            const dx = Math.round(targetServerX - baselineXServer);
-            const dy = Math.round(targetServerY - baselineYServer);
-            if (dx !== 0 || dy !== 0) {
-              const movePayload = this.inputEncoder.encodeMouseMove({
-                dx: Math.max(-32768, Math.min(32767, dx)),
-                dy: Math.max(-32768, Math.min(32767, dy)),
-                timestampUs: timestampUs(),
-              });
-              this.sendReliable(movePayload);
-            }
-            // Record simulated baseline in server pixels.
-            simulatedAbsX = targetServerX;
-            simulatedAbsY = targetServerY;
+          if (overlayAbs) {
+            // Overlay cursor is visible: pin the server cursor with one
+            // absolute packet instead of simulating relative moves.
+            const movePayload = this.inputEncoder.encodeMouseAbsolute({
+              ...overlayAbs,
+              timestampUs: timestampUs(),
+            });
+            this.sendReliable(movePayload);
+            markServerCursorAt(overlayAbs);
           } else {
-            // sim values are stored in server pixels now; compute server delta.
-            const dx = Math.round(targetServerX - simulatedAbsX);
-            const dy = Math.round(targetServerY - simulatedAbsY);
-            if (dx !== 0 || dy !== 0) {
-              const movePayload = this.inputEncoder.encodeMouseMove({
-                dx: Math.max(-32768, Math.min(32767, dx)),
-                dy: Math.max(-32768, Math.min(32767, dy)),
-                timestampUs: timestampUs(),
-              });
-              this.sendReliable(movePayload);
-              simulatedAbsX += dx;
-              simulatedAbsY += dy;
+            // Translate the element-local target into server pixels.
+            const targetServerX = Math.round(targetAbsX * scaleX);
+            const targetServerY = Math.round(targetAbsY * scaleY);
+
+            if (simulatedAbsX === null || simulatedAbsY === null) {
+              // No baseline known: assume server cursor is centered and move from
+              // center -> target in server pixels so remote cursor matches HW cursor.
+              const baselineXServer = Math.round(serverWidth / 2);
+              const baselineYServer = Math.round(serverHeight / 2);
+              const dx = Math.round(targetServerX - baselineXServer);
+              const dy = Math.round(targetServerY - baselineYServer);
+              if (dx !== 0 || dy !== 0) {
+                const movePayload = this.inputEncoder.encodeMouseMove({
+                  dx: Math.max(-32768, Math.min(32767, dx)),
+                  dy: Math.max(-32768, Math.min(32767, dy)),
+                  timestampUs: timestampUs(),
+                });
+                this.sendReliable(movePayload);
+              }
+              // Record simulated baseline in server pixels.
+              simulatedAbsX = targetServerX;
+              simulatedAbsY = targetServerY;
+            } else {
+              // sim values are stored in server pixels now; compute server delta.
+              const dx = Math.round(targetServerX - simulatedAbsX);
+              const dy = Math.round(targetServerY - simulatedAbsY);
+              if (dx !== 0 || dy !== 0) {
+                const movePayload = this.inputEncoder.encodeMouseMove({
+                  dx: Math.max(-32768, Math.min(32767, dx)),
+                  dy: Math.max(-32768, Math.min(32767, dy)),
+                  timestampUs: timestampUs(),
+                });
+                this.sendReliable(movePayload);
+                simulatedAbsX += dx;
+                simulatedAbsY += dy;
+              }
             }
           }
         }
@@ -3692,6 +3756,25 @@ export class GfnWebRtcClient {
       }
 
       this.cursorOverlay?.moveBy(adjustedDx, adjustedDy);
+
+      // Official GFN local-cursor mode: while the client-rendered cursor is
+      // visible, send absolute positions (type 5) that mirror the clamped
+      // overlay position so the server cursor cannot drift from the overlay.
+      // Relative deltas (type 7) remain for hidden-cursor/raw-input games.
+      if (this.cursorOverlay?.isCursorVisible()) {
+        const abs = this.cursorOverlay.getAbsolutePosition();
+        if (abs) {
+          this.pendingMouseAbs = abs;
+          this.pendingMouseDxFloat = 0;
+          this.pendingMouseDyFloat = 0;
+          if (this.pendingMouseTimestampUs === null) {
+            this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
+          }
+          this.mouseCoalescedBatchEntries += 1;
+          return;
+        }
+      }
+
       this.pendingMouseDxFloat += adjustedDx;
       this.pendingMouseDyFloat += adjustedDy;
       if (this.pendingMouseTimestampUs === null) {
@@ -4321,6 +4404,7 @@ export class GfnWebRtcClient {
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDxFloat = 0;
       this.pendingMouseDyFloat = 0;
+      this.pendingMouseAbs = null;
       this.pendingMouseTimestampUs = null;
       this.mouseDeltaFilter.reset();
       this.pointerLockTarget = null;

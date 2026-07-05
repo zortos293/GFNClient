@@ -302,6 +302,34 @@ export class GfnCursorOverlayController {
     return true;
   }
 
+  public isCursorVisible(): boolean {
+    return this.cursorVisible;
+  }
+
+  /**
+   * Current overlay cursor position inside the letterboxed stream viewport,
+   * plus the viewport extent, both in CSS pixels. Used to drive absolute mouse
+   * position packets (input type 5) so the server cursor matches the overlay
+   * exactly, mirroring the official client's local-cursor mode.
+   */
+  public getAbsolutePosition(): { x: number; y: number; width: number; height: number } | null {
+    const viewport = this.getViewport();
+    if (viewport.width <= 0 || viewport.height <= 0) {
+      return null;
+    }
+    if (!this.positionInitialized) {
+      this.positionX = viewport.width / 2;
+      this.positionY = viewport.height / 2;
+      this.positionInitialized = true;
+    }
+    return {
+      x: Math.max(0, Math.min(viewport.width, this.positionX)),
+      y: Math.max(0, Math.min(viewport.height, this.positionY)),
+      width: viewport.width,
+      height: viewport.height,
+    };
+  }
+
   public moveBy(dx: number, dy: number): void {
     if (!this.cursorVisible || !Number.isFinite(dx) || !Number.isFinite(dy)) {
       return;

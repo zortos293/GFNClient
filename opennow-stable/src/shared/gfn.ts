@@ -387,6 +387,8 @@ export interface Settings {
   keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** User opt-in for NVIDIA's per-game in-game graphics/settings persistence. */
+  enablePersistingInGameSettings: boolean;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */

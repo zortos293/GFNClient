@@ -16,6 +16,7 @@
       "open": "Open",
       "play": "Play",
       "buy": "Buy",
+      "markAsOwned": "Mark as Owned",
       "refresh": "Refresh",
       "remove": "Remove",
       "reset": "Reset",
@@ -38,6 +39,7 @@
       "failed": "Failed",
       "idle": "Idle",
       "loading": "Loading...",
+      "markingOwned": "Marking as owned...",
       "ready": "Ready",
       "saved": "Saved",
       "testing": "Testing...",
@@ -186,7 +188,12 @@
     "searchPlaceholder": "Search your library...",
     "gameCount": "{{count}} game",
     "gameCount_plural": "{{count}} games",
+    "filteredGameCount": "{{shown}} of {{total}} games",
     "filter": "Filter",
+    "filters": "Filters",
+    "activeFilters": "Active filters",
+    "clearFilters": "Clear",
+    "removeFilter": "Remove {{filter}} filter",
     "allStores": "All Stores",
     "storeFilter": "Store Filter",
     "chooseStore": "Choose a Store",
@@ -203,6 +210,21 @@
     "nvidiaTech": "NVIDIA Tech: {{tech}}",
     "genres": "Genres: {{genres}}",
     "rating": "Rating: {{rating}}",
+    "filterGroups": {
+      "playType": "Play Type",
+      "platform": "Platform",
+      "controls": "Controls",
+      "activity": "Activity"
+    },
+    "filterOptions": {
+      "installToPlay": "Install to Play",
+      "cloudLaunch": "Cloud Launch",
+      "keyboardMouse": "Keyboard & Mouse",
+      "controller": "Controller",
+      "touch": "Touch",
+      "played": "Played",
+      "neverPlayed": "Never Played"
+    },
     "lastPlayed": {
       "never": "Never played",
       "justNow": "Just now",
@@ -216,7 +238,9 @@
       "libraryEmpty": "Your library is empty",
       "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
       "noGamesFound": "No games found",
-      "noGamesMatch": "No games match \"{{query}}\""
+      "noGamesMatch": "No games match \"{{query}}\"",
+      "noFilteredGames": "No games match those filters",
+      "tryAdjustingFilters": "Try clearing a filter or changing your search."
     }
   },
   "gameCard": {
@@ -310,6 +334,9 @@
     "sessionStarted": {
       "kicker": "Ready",
       "title": "Session started"
+    },
+    "connectedBadge": {
+      "title": "Connected"
     },
     "stats": {
       "overlayLabel": "Stream statistics",
@@ -543,7 +570,7 @@
       "decode": "Decode",
       "encode": "Encode",
       "profiles": "Profiles:",
-      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's VA-API/WebRTC capability report. OpenNOW now enables NVIDIA VA-API flags on restart, but proprietary NVIDIA systems still need distro codecs plus libva-nvidia-driver/nvidia-vaapi-driver; if H.265 or GPU stays missing, check your distro's VA-API setup rather than installing more AppImage files."
+      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's WebRTC/MediaCapabilities report. Hardware decode depends on the Chromium build plus your distro GPU/video stack: x64 systems may need VA-API/NVIDIA VA-API drivers, while ARM V4L2 support depends on Chromium/Electron exposing that decoder."
     },
     "colorQuality": {
       "mostCompatible": "Most compatible",
@@ -784,6 +811,11 @@
       "notAvailable": "N/A"
     }
   },
+  "games": {
+    "markOwned": {
+      "success": "Marked {{title}} as owned."
+    }
+  },
   "errors": {
     "launchUnknown": "The game could not start. Please try again.",
     "launchFailedTitle": "Launch Failed",
@@ -795,6 +827,10 @@
     "insufficientPlayabilityDescription": "Your current GeForce NOW membership is not high enough to play this game. Upgrade to a higher tier and try again.",
     "insufficientPlayabilityTierDescription": "This game requires {{tier}} on GeForce NOW. Upgrade your membership to play it.",
     "loginFailed": "Login failed",
+    "markOwnedFailed": "Failed to mark game as owned.",
+    "markOwnedFailedWithReason": "Failed to mark game as owned: {{reason}}",
+    "markOwnedMissingVariant": "Select a store variant before marking it owned.",
+    "markOwnedSignInRequired": "Sign in before marking games as owned.",
     "switchAccountFailed": "Failed to switch account",
     "nativeStreamerStoppedTitle": "Native Streamer Stopped",
     "nativeStreamerStoppedDescription": "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",

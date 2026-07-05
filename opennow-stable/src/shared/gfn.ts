@@ -461,6 +461,35 @@ export interface EntitledStreamProfile {
   fps: number;
 }
 
+const STREAM_MODE_PRESETS: ReadonlyArray<Readonly<{
+  width: number;
+  height: number;
+  fps: readonly number[];
+}>> = Object.freeze([
+  { width: 3840, height: 2160, fps: [120, 60, 30] },
+  { width: 3456, height: 2160, fps: [120, 60, 30] },
+  { width: 3840, height: 1600, fps: [120, 60, 30] },
+  { width: 3440, height: 1440, fps: [120, 60, 30] },
+  { width: 3840, height: 1080, fps: [120, 60, 30] },
+  { width: 2560, height: 1600, fps: [120, 60, 30] },
+  { width: 2560, height: 1440, fps: [120, 60, 30] },
+  { width: 2560, height: 1080, fps: [120, 60, 30] },
+  { width: 1920, height: 1200, fps: [240, 120, 60, 30] },
+  { width: 1920, height: 1080, fps: [240, 120, 60, 30] },
+  { width: 1600, height: 1200, fps: [120, 60, 30] },
+  { width: 1680, height: 1050, fps: [120, 60, 30] },
+  { width: 1600, height: 900, fps: [120, 60, 30] },
+  { width: 1280, height: 1024, fps: [120, 60, 30] },
+  { width: 1440, height: 900, fps: [120, 60, 30] },
+  { width: 1680, height: 720, fps: [120, 60, 30] },
+  { width: 1366, height: 768, fps: [120, 60, 30] },
+  { width: 1280, height: 800, fps: [120, 60, 30] },
+  { width: 1112, height: 834, fps: [120, 60, 30] },
+  { width: 1280, height: 720, fps: [120, 60, 30] },
+  { width: 1376, height: 640, fps: [120, 60, 30] },
+  { width: 1024, height: 768, fps: [120, 60, 30] },
+]);
+
 export const SAFE_FALLBACK_STREAM_PROFILE: Readonly<EntitledStreamProfile> = Object.freeze({
   resolution: "1920x1080",
   fps: 60,
@@ -496,11 +525,63 @@ function compareEntitledResolutionDescending(a: EntitledResolution, b: EntitledR
   return b.fps - a.fps;
 }
 
+function normalizeEntitledResolution(resolution: EntitledResolution): EntitledResolution {
+  return {
+    width: Math.trunc(resolution.width),
+    height: Math.trunc(resolution.height),
+    fps: Math.trunc(resolution.fps),
+  };
+}
+
+function isModeCoveredByEntitlement(
+  entitlements: readonly EntitledResolution[],
+  width: number,
+  height: number,
+  fps: number,
+): boolean {
+  return entitlements.some(
+    (entitlement) =>
+      entitlement.width >= width &&
+      entitlement.height >= height &&
+      entitlement.fps >= fps,
+  );
+}
+
+export function expandEntitledStreamResolutions(
+  entitledResolutions: readonly EntitledResolution[],
+): EntitledResolution[] {
+  const validEntitlements = entitledResolutions
+    .filter(isValidEntitledResolution)
+    .map(normalizeEntitledResolution);
+  const byKey = new Map<string, EntitledResolution>();
+
+  const addResolution = (resolution: EntitledResolution): void => {
+    byKey.set(
+      `${resolution.width}x${resolution.height}@${resolution.fps}`,
+      resolution,
+    );
+  };
+
+  for (const resolution of validEntitlements) {
+    addResolution(resolution);
+  }
+
+  for (const mode of STREAM_MODE_PRESETS) {
+    for (const fps of mode.fps) {
+      if (isModeCoveredByEntitlement(validEntitlements, mode.width, mode.height, fps)) {
+        addResolution({ width: mode.width, height: mode.height, fps });
+      }
+    }
+  }
+
+  return [...byKey.values()].sort(compareEntitledResolutionDescending);
+}
+
 export function resolveEntitledStreamProfile(
   entitledResolutions: readonly EntitledResolution[],
   requested: EntitledStreamProfile,
 ): EntitledStreamProfile | null {
-  const validEntitlements = entitledResolutions.filter(isValidEntitledResolution);
+  const validEntitlements = expandEntitledStreamResolutions(entitledResolutions);
   if (validEntitlements.length === 0) {
     return null;
   }
@@ -720,6 +801,16 @@ export interface ResolveStoreUrlRequest {
   appIdOrUuid: string;
   variantId?: string;
   store?: string;
+}
+
+export interface MarkGameOwnedRequest extends GamesFetchRequest {
+  variantId: string;
+}
+
+export interface MarkGameOwnedResult {
+  ok: true;
+  variantId: string;
+  libraryStatus: "MANUAL";
 }
 
 export interface SubscriptionFetchRequest {
@@ -1425,6 +1516,7 @@ export interface OpenNowApi {
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   resolveStoreUrl(input: ResolveStoreUrlRequest): Promise<string | null>;
+  markGameOwned(input: MarkGameOwnedRequest): Promise<MarkGameOwnedResult>;
   getPendingDirectLaunchRequest(): Promise<DirectLaunchRequest | null>;
   onDirectLaunchRequest(listener: (request: DirectLaunchRequest) => void): () => void;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;

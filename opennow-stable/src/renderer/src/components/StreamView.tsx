@@ -509,7 +509,7 @@ export function StreamView({
   const streamVideoReady = streamHasVideo || videoElementHasFrame;
   const [sessionReadySplashVisible, setSessionReadySplashVisible] = useState(false);
   const sessionReadySplashShownRef = useRef(false);
-  const showStatsHud = showStats && !nativeRendererActive && !isConnecting && !sessionReadySplashVisible;
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
 
   useEffect(() => {
     if (isConnecting) {

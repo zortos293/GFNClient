@@ -15,6 +15,8 @@ import type {
   ResolveStoreUrlRequest,
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
+  MarkGameOwnedRequest,
+  MarkGameOwnedResult,
   OpenNowApi,
   SavedAccount,
   SessionAdReportRequest,
@@ -115,6 +117,8 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
   resolveStoreUrl: (input: ResolveStoreUrlRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_STORE_URL, input),
+  markGameOwned: (input: MarkGameOwnedRequest): Promise<MarkGameOwnedResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAMES_MARK_OWNED, input),
   getPendingDirectLaunchRequest: (): Promise<DirectLaunchRequest | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.DIRECT_LAUNCH_GET_PENDING),
   onDirectLaunchRequest: (listener: (request: DirectLaunchRequest) => void) => {

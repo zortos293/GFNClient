@@ -3521,72 +3521,70 @@ export class GfnWebRtcClient {
         return false;
       }
 
+      // A batch can hold both an absolute position (queued while the overlay
+      // cursor was visible) and relative deltas accumulated after the cursor
+      // was hidden mid-batch. Send the absolute packet first, then the
+      // relative deltas, preserving event order like the official client's
+      // mixed batch encoding — never discard queued relative movement.
+      const batchTimestampUs = this.pendingMouseTimestampUs ?? timestampUs();
+      let sentAny = false;
+
       if (this.pendingMouseAbs !== null) {
         const abs = this.pendingMouseAbs;
         this.pendingMouseAbs = null;
-        // Movement was already consumed by the overlay position; drop any
-        // stale relative residue so it cannot double-apply after this packet.
-        this.pendingMouseDxFloat = 0;
-        this.pendingMouseDyFloat = 0;
-
-        const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
-        this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
-          this.inputQueueMaxSchedulingDelayMsWindow,
-          Math.max(0, tickNow - expectedSendAt),
-        );
-
         const payload = this.inputEncoder.encodeMouseAbsolute({
           ...abs,
-          timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
+          timestampUs: batchTimestampUs,
         });
-        this.pendingMouseTimestampUs = null;
-        this.mouseCoalescedBatchEntries = 0;
         this.sendInputPacket(payload, INPUT_MOUSE_ABS);
         this.mousePacketsSentInWindow += 1;
-        this.mouseFlushLastSendMs = tickNow;
-        updateMousePacketRate();
-        this.mouseAdaptiveFlushActive = false;
         markServerCursorAt(abs);
-        return true;
+        sentAny = true;
       }
 
-      const { scaleX, scaleY } = getPointerScale();
-      const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
-      const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
-      const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
-      const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
-      if (dxServer === 0 && dyServer === 0) {
+      if (
+        Math.abs(this.pendingMouseDxFloat) >= 0.5
+        || Math.abs(this.pendingMouseDyFloat) >= 0.5
+      ) {
+        const { scaleX, scaleY } = getPointerScale();
+        const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
+        const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
+        const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
+        const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
+        if (dxServer !== 0 || dyServer !== 0) {
+          this.pendingMouseDxFloat = dxQuantized.residual;
+          this.pendingMouseDyFloat = dyQuantized.residual;
+
+          const payload = this.inputEncoder.encodeMouseMove({
+            dx: dxServer,
+            dy: dyServer,
+            timestampUs: batchTimestampUs,
+          });
+          this.sendInputPacket(payload, INPUT_MOUSE_REL);
+          this.mousePacketsSentInWindow += 1;
+
+          if (simulatedAbsX !== null && simulatedAbsY !== null) {
+            simulatedAbsX += dxServer;
+            simulatedAbsY += dyServer;
+          }
+          sentAny = true;
+        }
+      }
+
+      if (!sentAny) {
         return false;
       }
 
       const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
-      const schedulingDelay = Math.max(0, tickNow - expectedSendAt);
       this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
         this.inputQueueMaxSchedulingDelayMsWindow,
-        schedulingDelay,
+        Math.max(0, tickNow - expectedSendAt),
       );
-
-      this.pendingMouseDxFloat = dxQuantized.residual;
-      this.pendingMouseDyFloat = dyQuantized.residual;
-
-      const payload = this.inputEncoder.encodeMouseMove({
-        dx: dxServer,
-        dy: dyServer,
-        timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
-      });
-
       this.pendingMouseTimestampUs = null;
       this.mouseCoalescedBatchEntries = 0;
-      this.sendInputPacket(payload, INPUT_MOUSE_REL);
-      this.mousePacketsSentInWindow += 1;
       this.mouseFlushLastSendMs = tickNow;
       updateMousePacketRate();
       this.mouseAdaptiveFlushActive = false;
-
-      if (simulatedAbsX !== null && simulatedAbsY !== null) {
-        simulatedAbsX += dxServer;
-        simulatedAbsY += dyServer;
-      }
       return true;
     };
 
@@ -3765,6 +3763,10 @@ export class GfnWebRtcClient {
         const abs = this.cursorOverlay.getAbsolutePosition();
         if (abs) {
           this.pendingMouseAbs = abs;
+          // Drop any relative residue queued before the cursor became
+          // visible: the absolute packet pins the final position, and a
+          // stale delta sent afterwards would shift the server cursor off
+          // the overlay again.
           this.pendingMouseDxFloat = 0;
           this.pendingMouseDyFloat = 0;
           if (this.pendingMouseTimestampUs === null) {

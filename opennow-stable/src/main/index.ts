@@ -217,6 +217,10 @@ function emitDirectLaunchRequest(request: DirectLaunchRequest): void {
 function enqueueDirectLaunchRequest(request: DirectLaunchRequest): void {
   pendingDirectLaunchRequest = request;
   focusMainWindow();
+  // Argument launches always run as a fullscreen console session.
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(true);
+  }
   emitDirectLaunchRequest(request);
 }
 
@@ -423,12 +427,17 @@ async function createMainWindow(): Promise<void> {
     settingsManager.set("controllerMode", true);
   }
 
+  // Direct-launch arguments always start fullscreen; the renderer applies the
+  // console shell for the run without persisting the Controller Mode setting.
+  const startFullscreen =
+    settings.launchInConsoleMode || pendingDirectLaunchRequest !== null;
+
   mainWindow = new BrowserWindow({
     width: settings.windowWidth || 1400,
     height: settings.windowHeight || 900,
     minWidth: 1024,
     minHeight: 680,
-    fullscreen: settings.launchInConsoleMode,
+    fullscreen: startFullscreen,
     autoHideMenuBar: true,
     backgroundColor: "#0f172a",
     webPreferences: {

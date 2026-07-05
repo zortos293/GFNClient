@@ -3515,78 +3515,105 @@ export class GfnWebRtcClient {
       simulatedAbsY = Math.round((abs.y / abs.height) * serverHeight);
     };
 
-    const flushMouse = (): boolean => {
+    const flushMouse = (forceReliable = false): boolean => {
       const tickNow = performance.now();
       if (!this.inputReady || !hasPendingMouseMovement()) {
         return false;
       }
 
+      // A batch can hold both an absolute position (queued while the overlay
+      // cursor was visible) and relative deltas accumulated after the cursor
+      // was hidden mid-batch. Send the absolute packet first, then the
+      // relative deltas, preserving event order like the official client's
+      // mixed batch encoding — never discard queued relative movement.
+      const batchTimestampUs = this.pendingMouseTimestampUs ?? timestampUs();
+      let sentAny = false;
+
+      // Compute the relative part first (without consuming it) so a mixed
+      // abs+rel pair can be detected up front. The partially reliable channel
+      // is unordered, so a dependent pair must travel on the ordered reliable
+      // channel or the relative delta could arrive before the absolute pin
+      // and be overwritten by it.
+      let relPart: {
+        dxServer: number;
+        dyServer: number;
+        residualX: number;
+        residualY: number;
+      } | null = null;
+      if (
+        Math.abs(this.pendingMouseDxFloat) >= 0.5
+        || Math.abs(this.pendingMouseDyFloat) >= 0.5
+      ) {
+        const { scaleX, scaleY } = getPointerScale();
+        const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
+        const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
+        const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
+        const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
+        if (dxServer !== 0 || dyServer !== 0) {
+          relPart = {
+            dxServer,
+            dyServer,
+            residualX: dxQuantized.residual,
+            residualY: dyQuantized.residual,
+          };
+        }
+      }
+      const mixedBatch = this.pendingMouseAbs !== null && relPart !== null;
+
       if (this.pendingMouseAbs !== null) {
         const abs = this.pendingMouseAbs;
         this.pendingMouseAbs = null;
-        // Movement was already consumed by the overlay position; drop any
-        // stale relative residue so it cannot double-apply after this packet.
-        this.pendingMouseDxFloat = 0;
-        this.pendingMouseDyFloat = 0;
-
-        const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
-        this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
-          this.inputQueueMaxSchedulingDelayMsWindow,
-          Math.max(0, tickNow - expectedSendAt),
-        );
-
         const payload = this.inputEncoder.encodeMouseAbsolute({
           ...abs,
-          timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
+          timestampUs: batchTimestampUs,
         });
-        this.pendingMouseTimestampUs = null;
-        this.mouseCoalescedBatchEntries = 0;
-        this.sendInputPacket(payload, INPUT_MOUSE_ABS);
+        if (mixedBatch || forceReliable) {
+          this.sendReliable(payload);
+        } else {
+          this.sendInputPacket(payload, INPUT_MOUSE_ABS);
+        }
         this.mousePacketsSentInWindow += 1;
-        this.mouseFlushLastSendMs = tickNow;
-        updateMousePacketRate();
-        this.mouseAdaptiveFlushActive = false;
         markServerCursorAt(abs);
-        return true;
+        sentAny = true;
       }
 
-      const { scaleX, scaleY } = getPointerScale();
-      const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
-      const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
-      const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
-      const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
-      if (dxServer === 0 && dyServer === 0) {
+      if (relPart !== null) {
+        this.pendingMouseDxFloat = relPart.residualX;
+        this.pendingMouseDyFloat = relPart.residualY;
+
+        const payload = this.inputEncoder.encodeMouseMove({
+          dx: relPart.dxServer,
+          dy: relPart.dyServer,
+          timestampUs: batchTimestampUs,
+        });
+        if (mixedBatch || forceReliable) {
+          this.sendReliable(payload);
+        } else {
+          this.sendInputPacket(payload, INPUT_MOUSE_REL);
+        }
+        this.mousePacketsSentInWindow += 1;
+
+        if (simulatedAbsX !== null && simulatedAbsY !== null) {
+          simulatedAbsX += relPart.dxServer;
+          simulatedAbsY += relPart.dyServer;
+        }
+        sentAny = true;
+      }
+
+      if (!sentAny) {
         return false;
       }
 
       const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
-      const schedulingDelay = Math.max(0, tickNow - expectedSendAt);
       this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
         this.inputQueueMaxSchedulingDelayMsWindow,
-        schedulingDelay,
+        Math.max(0, tickNow - expectedSendAt),
       );
-
-      this.pendingMouseDxFloat = dxQuantized.residual;
-      this.pendingMouseDyFloat = dyQuantized.residual;
-
-      const payload = this.inputEncoder.encodeMouseMove({
-        dx: dxServer,
-        dy: dyServer,
-        timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
-      });
-
       this.pendingMouseTimestampUs = null;
       this.mouseCoalescedBatchEntries = 0;
-      this.sendInputPacket(payload, INPUT_MOUSE_REL);
-      this.mousePacketsSentInWindow += 1;
       this.mouseFlushLastSendMs = tickNow;
       updateMousePacketRate();
       this.mouseAdaptiveFlushActive = false;
-
-      if (simulatedAbsX !== null && simulatedAbsY !== null) {
-        simulatedAbsX += dxServer;
-        simulatedAbsY += dyServer;
-      }
       return true;
     };
 
@@ -3764,9 +3791,19 @@ export class GfnWebRtcClient {
       if (this.cursorOverlay?.isCursorVisible()) {
         const abs = this.cursorOverlay.getAbsolutePosition();
         if (abs) {
-          this.pendingMouseAbs = abs;
+          // Deliver raw-input deltas queued before the cursor became
+          // visible ahead of the absolute pin, in order, on the reliable
+          // channel — never after it, where they would shift the server
+          // cursor off the overlay.
+          if (
+            Math.abs(this.pendingMouseDxFloat) >= 0.5
+            || Math.abs(this.pendingMouseDyFloat) >= 0.5
+          ) {
+            flushMouse(true);
+          }
           this.pendingMouseDxFloat = 0;
           this.pendingMouseDyFloat = 0;
+          this.pendingMouseAbs = abs;
           if (this.pendingMouseTimestampUs === null) {
             this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
           }

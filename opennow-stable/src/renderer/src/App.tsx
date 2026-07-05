@@ -581,6 +581,7 @@ export function App(): JSX.Element {
   const [removeAccountConfirmOpen, setRemoveAccountConfirmOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [launchError, setLaunchError] = useState<LaunchErrorState | null>(null);
+  const [settingsFocusSection, setSettingsFocusSection] = useState<"account" | undefined>();
   const [pendingDirectLaunchRequest, setPendingDirectLaunchRequest] = useState<DirectLaunchRequest | null>(null);
   // Argument-driven launches always use the console (big picture) experience for this run,
   // without persisting the user's Controller Mode setting.
@@ -4105,6 +4106,21 @@ export function App(): JSX.Element {
     void refreshNavbarActiveSession();
   }, [markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime]);
 
+  const handleLaunchErrorAction = useCallback((): void => {
+    if (launchError?.action !== "persistent-storage-settings") return;
+    void (async () => {
+      try {
+        await handleDismissLaunchError();
+      } finally {
+        setSettingsFocusSection("account");
+        if (currentPage !== "settings") {
+          setPageBeforeSettings(currentPage);
+        }
+        setCurrentPage("settings");
+      }
+    })();
+  }, [currentPage, handleDismissLaunchError, launchError?.action]);
+
   const releasePointerLockIfNeeded = useCallback(async () => {
     if (document.pointerLockElement) {
       clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
@@ -4352,6 +4368,7 @@ export function App(): JSX.Element {
   }, [currentPage]);
 
   const handleCloseSettings = useCallback((): void => {
+    setSettingsFocusSection(undefined);
     setCurrentPage(pageBeforeSettings);
   }, [pageBeforeSettings]);
 
@@ -4521,9 +4538,11 @@ export function App(): JSX.Element {
                     title: launchError.title,
                     description: launchError.description,
                     code: launchError.codeLabel,
+                    actionLabel: launchError.actionLabel,
                   }
                 : undefined
             }
+            onErrorAction={launchError?.action ? handleLaunchErrorAction : undefined}
             onCancel={() => {
               if (launchError) {
                 void handleDismissLaunchError();
@@ -4658,6 +4677,7 @@ export function App(): JSX.Element {
             onRunCodecTest={runCodecTest}
             onSettingChange={updateSetting}
             onClose={handleCloseSettings}
+            focusSection={settingsFocusSection}
             onOpenWhatsNew={handleOpenWhatsNew}
           />
         )}

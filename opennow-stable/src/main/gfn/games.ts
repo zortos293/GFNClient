@@ -39,6 +39,17 @@ const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
 const CATALOG_GAMES_CACHE_SCOPE = "catalog";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
 const DEFAULT_CLOUDMATCH_BASE_URL = "https://prod.cloudmatchbeta.nvidiagrid.net/";
+const GFN_FEATURE_FIELDS = `
+              __typename
+              ... on GfnSubscriptionFeatureValue {
+                key
+                value
+              }
+              ... on GfnSubscriptionFeatureValueList {
+                key
+                values
+              }
+`;
 const ADD_OWNED_VARIANT_MUTATION = `mutation AddOwnedVariant($cmsId: String!, $locale: String!) {
   addOwnedVariant(language: $locale, variantId: $cmsId) {
     app {
@@ -1080,7 +1091,9 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
           supportedControls
           gfn {
             status
-            features { key value values }
+            features {
+${GFN_FEATURE_FIELDS}
+            }
             library { status selected }
           }
         }
@@ -1414,7 +1427,9 @@ async function fetchPaginatedLibraryApps(token: string, vpcId: string, proxyUrl?
           supportedControls
           gfn {
             status
-            features { key value values }
+            features {
+${GFN_FEATURE_FIELDS}
+            }
             library { status selected lastPlayedDate }
           }
         }

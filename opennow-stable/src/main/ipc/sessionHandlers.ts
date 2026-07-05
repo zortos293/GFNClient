@@ -110,9 +110,11 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
             numericAppId,
           );
           if (launchingCandidate) {
-            const candidatePersistence =
-              launchingCandidate.enablePersistingInGameSettings === true;
-            if (candidatePersistence !== requestedPersistence) {
+            const candidatePersistence = launchingCandidate.enablePersistingInGameSettings;
+            if (
+              typeof candidatePersistence === "boolean" &&
+              candidatePersistence !== requestedPersistence
+            ) {
               console.log(
                 `[CreateSession] Stopping launching session ${launchingCandidate.sessionId} because in-game settings persistence changed ` +
                   `(session=${candidatePersistence}, requested=${requestedPersistence}); creating a fresh session.`,

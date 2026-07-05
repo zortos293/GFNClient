@@ -98,6 +98,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
               serverIp: readyCandidate.serverIp!,
               appId: resolvedPayload.appId,
               appLaunchMode: readyCandidate.appLaunchMode,
+              enablePersistingInGameSettings: readyCandidate.enablePersistingInGameSettings,
               settings: resolvedPayload.settings,
             });
           }

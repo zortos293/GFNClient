@@ -387,6 +387,8 @@ export interface Settings {
   keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** User opt-in for NVIDIA's per-game in-game graphics/settings persistence. */
+  enablePersistingInGameSettings: boolean;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
@@ -891,6 +893,7 @@ export interface GameVariant {
   store: string;
   storeUrl?: string;
   supportedControls: string[];
+  supportsInGameSettingsPersistence?: boolean;
   librarySelected?: boolean;
   inLibrary?: boolean;
   libraryStatus?: string;
@@ -1046,6 +1049,13 @@ export interface SessionCreateRequest {
   appId: string;
   internalTitle: string;
   accountLinked?: boolean;
+  /**
+   * Official clients only enable server-side in-game graphics/settings persistence
+   * when the user is entitled and has opted in. Leave disabled by default.
+   */
+  enablePersistingInGameSettings?: boolean;
+  /** Selected game variant must advertise IN_GAME_SETTINGS_PERSISTENCE_ENABLED. */
+  supportsInGameSettingsPersistence?: boolean;
   existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
@@ -1212,6 +1222,8 @@ export interface SessionInfo {
   gpuType?: string;
   /** Wire appLaunchMode the session runs with, kept session-stable for resumes */
   appLaunchMode?: number;
+  /** Wire in-game settings persistence value the session was created with, kept session-stable for resumes */
+  enablePersistingInGameSettings?: boolean;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
   negotiatedStreamProfile?: NegotiatedStreamProfile;
@@ -1227,6 +1239,8 @@ export interface ActiveSessionInfo {
   appId: number;
   /** Wire appLaunchMode the session was created with, as echoed by the server */
   appLaunchMode?: number;
+  /** Wire in-game settings persistence value the session was created with, when echoed by the server */
+  enablePersistingInGameSettings?: boolean;
   gpuType?: string;
   status: number;
   streamingBaseUrl?: string;
@@ -1247,6 +1261,8 @@ export interface SessionClaimRequest {
   appId?: string;
   /** Session-stable wire appLaunchMode captured when the session was created */
   appLaunchMode?: number;
+  /** In-game settings persistence value to send with the resume claim. Defaults to false. */
+  enablePersistingInGameSettings?: boolean;
   settings?: StreamSettings;
   /** True when claim is triggered by automatic reconnect recovery logic */
   recoveryMode?: boolean;

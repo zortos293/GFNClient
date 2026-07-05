@@ -20,6 +20,8 @@ export interface RuntimeSnapshot {
     appId?: number;
     /** Wire appLaunchMode the session was created with, for session-stable claims */
     appLaunchMode?: number;
+    /** Wire in-game settings persistence value the session was created with, for session-stable claims */
+    enablePersistingInGameSettings?: boolean;
     clientId?: string;
     deviceId?: string;
   } | null;
@@ -68,6 +70,10 @@ export function loadRuntimeSnapshot(): RuntimeSnapshot | null {
               typeof parsed.resumeContext.appLaunchMode === "number" &&
                 Number.isFinite(parsed.resumeContext.appLaunchMode)
                 ? parsed.resumeContext.appLaunchMode
+                : undefined,
+            enablePersistingInGameSettings:
+              typeof parsed.resumeContext.enablePersistingInGameSettings === "boolean"
+                ? parsed.resumeContext.enablePersistingInGameSettings
                 : undefined,
             clientId:
               typeof parsed.resumeContext.clientId === "string"

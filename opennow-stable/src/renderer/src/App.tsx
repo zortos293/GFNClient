@@ -539,6 +539,7 @@ export function App(): JSX.Element {
     windowHeight: 900,
     keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
     gameLanguage: "en_US",
+    enablePersistingInGameSettings: false,
     enableL4S: false,
     enableCloudGsync: false,
     discordRichPresence: false,
@@ -1000,6 +1001,7 @@ export function App(): JSX.Element {
           signalingUrl: session.signalingUrl,
           appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
           appLaunchMode: session.appLaunchMode,
+          enablePersistingInGameSettings: session.enablePersistingInGameSettings,
           clientId: session.clientId,
           deviceId: session.deviceId,
         }
@@ -1011,6 +1013,7 @@ export function App(): JSX.Element {
             signalingUrl: navbarActiveSession.signalingUrl,
             appId: Number.isFinite(navbarActiveSession.appId) ? navbarActiveSession.appId : undefined,
             appLaunchMode: navbarActiveSession.appLaunchMode,
+            enablePersistingInGameSettings: navbarActiveSession.enablePersistingInGameSettings,
           }
           : null,
     };
@@ -1041,27 +1044,29 @@ export function App(): JSX.Element {
       streamingGameId: streamingGame?.id ?? null,
       streamingStore: streamingStore ?? null,
       recoveryAppId: signalingRecoveryRef.current.appId,
-      resumeContext: latestSession
-        ? {
-          sessionId: latestSession.sessionId,
-          serverIp: latestSession.serverIp,
-          streamingBaseUrl: latestSession.streamingBaseUrl,
-          signalingServer: latestSession.signalingServer,
-          signalingUrl: latestSession.signalingUrl,
-          appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
-          appLaunchMode: latestSession.appLaunchMode,
-          clientId: latestSession.clientId,
-          deviceId: latestSession.deviceId,
-        }
-        : (latestNavbarSession?.sessionId && latestNavbarSession.serverIp)
+        resumeContext: latestSession
           ? {
-            sessionId: latestNavbarSession.sessionId,
-            serverIp: latestNavbarSession.serverIp,
-            streamingBaseUrl: latestNavbarSession.streamingBaseUrl,
-            signalingUrl: latestNavbarSession.signalingUrl,
-            appId: Number.isFinite(latestNavbarSession.appId) ? latestNavbarSession.appId : undefined,
-            appLaunchMode: latestNavbarSession.appLaunchMode,
+            sessionId: latestSession.sessionId,
+            serverIp: latestSession.serverIp,
+            streamingBaseUrl: latestSession.streamingBaseUrl,
+            signalingServer: latestSession.signalingServer,
+            signalingUrl: latestSession.signalingUrl,
+            appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+            appLaunchMode: latestSession.appLaunchMode,
+            enablePersistingInGameSettings: latestSession.enablePersistingInGameSettings,
+            clientId: latestSession.clientId,
+            deviceId: latestSession.deviceId,
           }
+          : (latestNavbarSession?.sessionId && latestNavbarSession.serverIp)
+            ? {
+              sessionId: latestNavbarSession.sessionId,
+              serverIp: latestNavbarSession.serverIp,
+              streamingBaseUrl: latestNavbarSession.streamingBaseUrl,
+              signalingUrl: latestNavbarSession.signalingUrl,
+              appId: Number.isFinite(latestNavbarSession.appId) ? latestNavbarSession.appId : undefined,
+              appLaunchMode: latestNavbarSession.appLaunchMode,
+              enablePersistingInGameSettings: latestNavbarSession.enablePersistingInGameSettings,
+            }
           : null,
     };
 
@@ -2667,6 +2672,7 @@ export function App(): JSX.Element {
           ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
           appLaunchMode: existingSession.appLaunchMode,
+          enablePersistingInGameSettings: existingSession.enablePersistingInGameSettings,
           settings: streamSettings,
         });
 
@@ -2785,6 +2791,7 @@ export function App(): JSX.Element {
                     ? (persisted.appId as number)
                     : (previousAppId ?? 0),
                 appLaunchMode: persisted.appLaunchMode,
+                enablePersistingInGameSettings: persisted.enablePersistingInGameSettings,
                 status: 2,
                 serverIp: persisted.serverIp,
                 streamingBaseUrl: persisted.streamingBaseUrl,
@@ -2821,6 +2828,7 @@ export function App(): JSX.Element {
             recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
             appLaunchMode: candidate.appLaunchMode,
+            enablePersistingInGameSettings: candidate.enablePersistingInGameSettings,
             settings: recoveryStreamSettings,
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {
@@ -3366,9 +3374,10 @@ export function App(): JSX.Element {
         game,
         variant: selectedVariant,
       };
+      const launchVariant = matchedGameContext.variant ?? selectedVariant;
       launchGameContext = matchedGameContext.game;
       setStreamingGame(matchedGameContext.game);
-      setStreamingStore(matchedGameContext.variant?.store ?? null);
+      setStreamingStore(launchVariant?.store ?? null);
 
       let existingSessionStrategy: ExistingSessionStrategy | undefined;
 
@@ -3423,6 +3432,8 @@ export function App(): JSX.Element {
         appId,
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
+        enablePersistingInGameSettings: settings.enablePersistingInGameSettings,
+        supportsInGameSettingsPersistence: launchVariant?.supportsInGameSettingsPersistence === true,
         existingSessionStrategy,
         proxyUrl: sessionProxyUrl,
         zone: "prod",
@@ -3579,6 +3590,7 @@ export function App(): JSX.Element {
     resetStatsOverlayToPreference,
     resolveSubscriptionInfoForLaunch,
     selectedProvider,
+    settings.enablePersistingInGameSettings,
     streamStatus,
     t,
     variantByGameId,

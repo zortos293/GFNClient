@@ -153,6 +153,7 @@ export interface CloudMatchResponse {
       }>;
     };
     sessionRequestData?: {
+      appLaunchMode?: number;
       clientRequestMonitorSettings?: Array<{
         widthInPixels?: number;
         heightInPixels?: number;
@@ -190,6 +191,7 @@ export interface SessionEntry {
   gpuType?: string;
   sessionRequestData?: {
     appId?: string;
+    appLaunchMode?: number;
     [key: string]: unknown;
   };
   sessionControlInfo?: {

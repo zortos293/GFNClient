@@ -125,12 +125,15 @@ export function mergeAdState(
 }
 
 export function mergePolledSessionState(previous: SessionInfo, next: SessionInfo): SessionInfo {
+  // Poll responses may omit the echoed appLaunchMode; keep the session-stable value.
+  const appLaunchMode = next.appLaunchMode ?? previous.appLaunchMode;
   if (isSessionReadyForConnect(next.status)) {
-    return next;
+    return { ...next, appLaunchMode };
   }
 
   return {
     ...next,
+    appLaunchMode,
     adState: mergeAdState(previous.adState, next.adState),
     mediaConnectionInfo: next.mediaConnectionInfo ?? previous.mediaConnectionInfo,
   };

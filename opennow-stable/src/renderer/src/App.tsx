@@ -927,6 +927,7 @@ export function App(): JSX.Element {
           signalingServer: session.signalingServer,
           signalingUrl: session.signalingUrl,
           appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+          appLaunchMode: session.appLaunchMode,
           clientId: session.clientId,
           deviceId: session.deviceId,
         }
@@ -937,6 +938,7 @@ export function App(): JSX.Element {
             streamingBaseUrl: navbarActiveSession.streamingBaseUrl,
             signalingUrl: navbarActiveSession.signalingUrl,
             appId: Number.isFinite(navbarActiveSession.appId) ? navbarActiveSession.appId : undefined,
+            appLaunchMode: navbarActiveSession.appLaunchMode,
           }
           : null,
     };
@@ -975,6 +977,7 @@ export function App(): JSX.Element {
           signalingServer: latestSession.signalingServer,
           signalingUrl: latestSession.signalingUrl,
           appId: Number.isFinite(signalingRecoveryRef.current.appId ?? NaN) ? signalingRecoveryRef.current.appId ?? undefined : undefined,
+          appLaunchMode: latestSession.appLaunchMode,
           clientId: latestSession.clientId,
           deviceId: latestSession.deviceId,
         }
@@ -985,6 +988,7 @@ export function App(): JSX.Element {
             streamingBaseUrl: latestNavbarSession.streamingBaseUrl,
             signalingUrl: latestNavbarSession.signalingUrl,
             appId: Number.isFinite(latestNavbarSession.appId) ? latestNavbarSession.appId : undefined,
+            appLaunchMode: latestNavbarSession.appLaunchMode,
           }
           : null,
     };
@@ -2510,6 +2514,7 @@ export function App(): JSX.Element {
           sessionId: existingSession.sessionId,
           ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
+          appLaunchMode: existingSession.appLaunchMode,
           settings: streamSettings,
         });
 
@@ -2627,6 +2632,7 @@ export function App(): JSX.Element {
                   Number.isFinite(persisted.appId ?? NaN)
                     ? (persisted.appId as number)
                     : (previousAppId ?? 0),
+                appLaunchMode: persisted.appLaunchMode,
                 status: 2,
                 serverIp: persisted.serverIp,
                 streamingBaseUrl: persisted.streamingBaseUrl,
@@ -2662,6 +2668,7 @@ export function App(): JSX.Element {
             ...resolveResumeIdentity(candidate.sessionId),
             recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
+            appLaunchMode: candidate.appLaunchMode,
             settings: recoveryStreamSettings,
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {

@@ -6,9 +6,55 @@ import assert from "node:assert/strict";
 import {
   chooseAdaptiveMouseFlushInterval,
   classifyStreamLagReason,
+  evaluateControllerOverlayShortcutGate,
   quantizeMouseDeltaWithResidual,
   subsampleCoalescedPointerEvents,
 } from "./webrtcClient";
+
+function gamepadWithButtons(pressed: number[]): Pick<Gamepad, "buttons"> {
+  const pressedButtons = new Set(pressed);
+  return {
+    buttons: Array.from({ length: 17 }, (_, index) => {
+      const isPressed = pressedButtons.has(index);
+      return {
+        pressed: isPressed,
+        touched: isPressed,
+        value: isPressed ? 1 : 0,
+      };
+    }),
+  };
+}
+
+test("controller overlay gate preempts view/menu chord halves before stream forwarding", () => {
+  const viewOnly = evaluateControllerOverlayShortcutGate(gamepadWithButtons([8]), null, 1000, 120);
+  assert.equal(viewOnly.overlayPressed, false);
+  assert.equal(viewOnly.preemptInput, true);
+
+  const chord = evaluateControllerOverlayShortcutGate(gamepadWithButtons([8, 9]), viewOnly.nextState, 1050, 120);
+  assert.equal(chord.overlayPressed, true);
+  assert.equal(chord.preemptInput, true);
+});
+
+test("controller overlay gate lets standalone view/menu through after grace period", () => {
+  const viewOnly = evaluateControllerOverlayShortcutGate(gamepadWithButtons([8]), null, 1000, 120);
+  const standalone = evaluateControllerOverlayShortcutGate(gamepadWithButtons([8]), viewOnly.nextState, 1120, 120);
+  assert.equal(standalone.overlayPressed, false);
+  assert.equal(standalone.preemptInput, false);
+
+  const lateMenu = evaluateControllerOverlayShortcutGate(gamepadWithButtons([8, 9]), standalone.nextState, 1130, 120);
+  assert.equal(lateMenu.overlayPressed, false);
+  assert.equal(lateMenu.preemptInput, false);
+});
+
+test("controller overlay gate opens immediately for guide and simultaneous view/menu", () => {
+  const guide = evaluateControllerOverlayShortcutGate(gamepadWithButtons([16]), null, 1000, 120);
+  assert.equal(guide.overlayPressed, true);
+  assert.equal(guide.preemptInput, true);
+
+  const chord = evaluateControllerOverlayShortcutGate(gamepadWithButtons([8, 9]), null, 1000, 120);
+  assert.equal(chord.overlayPressed, true);
+  assert.equal(chord.preemptInput, true);
+});
 
 test("quantizeMouseDeltaWithResidual preserves precision across sends", () => {
   const a = quantizeMouseDeltaWithResidual(0.4);

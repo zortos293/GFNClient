@@ -1438,6 +1438,13 @@ export function App(): JSX.Element {
     }
   }, [requestPointerLockCapture]);
 
+  const setNativeInputPaused = useCallback((paused: boolean): void => {
+    if (!nativeStreamingRef.current && settings.streamClientMode !== "native") {
+      return;
+    }
+    window.openNow.setNativeInputPaused(paused);
+  }, [settings.streamClientMode]);
+
   const resolveExitPrompt = useCallback((confirmed: boolean) => {
     const resolver = exitPromptResolverRef.current;
     exitPromptResolverRef.current = null;
@@ -2916,6 +2923,11 @@ export function App(): JSX.Element {
         },
         onMicStateChange: (state) => {
           console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
+        },
+        onControllerMetaPress: () => {
+          if (streamStatusRef.current === "streaming") {
+            dispatchStreamShortcutAction("toggleSidebar");
+          }
         },
         onIceConnectionStateChange: (iceState) => {
           latestIceConnectionStateRef.current = iceState;
@@ -4473,6 +4485,7 @@ export function App(): JSX.Element {
             onReleasePointerLock={() => {
               void releasePointerLockIfNeeded();
             }}
+            onNativeInputPaused={setNativeInputPaused}
             allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
             videoShader={settings.videoShader}
             onVideoShaderChange={handleVideoShaderChange}

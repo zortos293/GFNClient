@@ -1520,6 +1520,7 @@ export interface OpenNowApi {
   sendAnswer(input: SendAnswerRequest): Promise<void>;
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
   sendNativeInput(input: NativeInputPacket): void;
+  setNativeInputPaused(paused: boolean): void;
   updateNativeRenderSurface(input: NativeRenderSurfaceUpdate): void;
   updateNativeShortcuts(shortcuts: NativeStreamerShortcutBindings): void;
   requestKeyframe(input: KeyframeRequest): Promise<void>;

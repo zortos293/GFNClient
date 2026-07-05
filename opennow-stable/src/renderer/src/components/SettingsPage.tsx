@@ -431,7 +431,8 @@ const shortcutDefaults = {
 } as const;
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
-const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+Shift+G";
+const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+G";
+const SIDEBAR_TOGGLE_SHORTCUT_ALIASES = isMac ? [SIDEBAR_TOGGLE_SHORTCUT_RAW] : [SIDEBAR_TOGGLE_SHORTCUT_RAW, "Ctrl+Shift+G"];
 const NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS = 160;
 
 type ShortcutSettingKey = keyof typeof shortcutDefaults;
@@ -443,8 +444,11 @@ function getShortcutConflictMessage(
   candidateCanonical: string,
   currentSettings: Settings,
 ): string | null {
-  const sidebarParsed = normalizeShortcut(SIDEBAR_TOGGLE_SHORTCUT_RAW);
-  if (sidebarParsed.valid && candidateCanonical === sidebarParsed.canonical) {
+  const sidebarShortcuts = SIDEBAR_TOGGLE_SHORTCUT_ALIASES
+    .map((value) => normalizeShortcut(value))
+    .filter((parsed) => parsed.valid)
+    .map((parsed) => parsed.canonical);
+  if (sidebarShortcuts.includes(candidateCanonical)) {
     return "Shortcut conflicts with the settings sidebar toggle.";
   }
   for (const key of SHORTCUT_SETTING_KEYS) {

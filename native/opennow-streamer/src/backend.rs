@@ -19,6 +19,7 @@ pub trait NativeStreamerBackend {
     fn handle_offer(&mut self, command: CommandEnvelope) -> BackendReply;
     fn add_remote_ice(&mut self, command: CommandEnvelope) -> BackendReply;
     fn send_input(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn set_input_paused(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply;
@@ -474,6 +475,14 @@ impl NativeStreamerBackend for StubBackend {
             let _ = packet.payload_bytes();
         }
         BackendReply::continue_without_response()
+    }
+
+    fn set_input_paused(&mut self, command: CommandEnvelope) -> BackendReply {
+        if command.paused.is_none() {
+            return BackendReply::response(missing_field(&command.id, "paused"));
+        }
+
+        BackendReply::response(Response::Ok { id: command.id })
     }
 
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply {

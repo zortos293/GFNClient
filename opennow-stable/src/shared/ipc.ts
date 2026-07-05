@@ -41,6 +41,7 @@ export const IPC_CHANNELS = {
   SEND_ANSWER: "gfn:send-answer",
   SEND_ICE_CANDIDATE: "gfn:send-ice-candidate",
   NATIVE_INPUT: "gfn:native-input",
+  NATIVE_INPUT_PAUSED: "gfn:native-input-paused",
   NATIVE_RENDER_SURFACE: "gfn:native-render-surface",
   NATIVE_UPDATE_SHORTCUTS: "gfn:native-update-shortcuts",
   REQUEST_KEYFRAME: "gfn:request-keyframe",

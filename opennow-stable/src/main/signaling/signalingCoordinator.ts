@@ -95,6 +95,17 @@ export class SignalingCoordinator {
     );
 
     ipcMain.on(
+      IPC_CHANNELS.NATIVE_INPUT_PAUSED,
+      (_event, paused: boolean) => {
+        if (!this.isNativeStreamerSelected() || !this.nativeStreamerContext) {
+          return;
+        }
+
+        this.nativeStreamerManager?.setInputPaused(paused === true);
+      },
+    );
+
+    ipcMain.on(
       IPC_CHANNELS.NATIVE_RENDER_SURFACE,
       (event, payload: NativeRenderSurfaceUpdate) => {
         if (!this.isNativeStreamerSelected()) {

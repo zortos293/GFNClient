@@ -148,6 +148,9 @@ const api: OpenNowApi = {
   sendNativeInput: (input: NativeInputPacket) => {
     ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT, input);
   },
+  setNativeInputPaused: (paused: boolean) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT_PAUSED, paused);
+  },
   updateNativeRenderSurface: (input: NativeRenderSurfaceUpdate) => {
     ipcRenderer.send(IPC_CHANNELS.NATIVE_RENDER_SURFACE, input);
   },

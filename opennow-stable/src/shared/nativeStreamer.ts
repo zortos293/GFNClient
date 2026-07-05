@@ -10,7 +10,7 @@ import type {
   SendAnswerRequest,
 } from "./gfn";
 
-export const NATIVE_STREAMER_PROTOCOL_VERSION = 3;
+export const NATIVE_STREAMER_PROTOCOL_VERSION = 4;
 
 export type { NativeStreamerBackend };
 
@@ -57,6 +57,11 @@ export type NativeStreamerCommand =
       id: string;
       type: "input";
       input: NativeStreamerInputPacket;
+    }
+  | {
+      id: string;
+      type: "input-paused";
+      paused: boolean;
     }
   | {
       id: string;

@@ -257,8 +257,86 @@ interface ClientOptions {
   onMicStateChange?: (state: MicStateChange) => void;
   onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
   onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
-  /** Optional host callback for Meta/Home button edge presses (button 16). */
+  /** Optional host callback for controller overlay shortcut edge presses. */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
+}
+
+function isPressedGamepadButton(button: GamepadButton | undefined): boolean {
+  return Boolean(button?.pressed || (button?.value ?? 0) > 0.5);
+}
+
+type ControllerOverlayChordHalf = "view" | "menu";
+
+export interface ControllerOverlayChordState {
+  pendingHalf: ControllerOverlayChordHalf;
+  pendingSinceMs: number;
+  disqualified: boolean;
+}
+
+export interface ControllerOverlayShortcutGate {
+  overlayPressed: boolean;
+  preemptInput: boolean;
+  nextState: ControllerOverlayChordState | null;
+}
+
+const CONTROLLER_OVERLAY_CHORD_GRACE_MS = 120;
+
+export function evaluateControllerOverlayShortcutGate(
+  gamepad: Pick<Gamepad, "buttons">,
+  state: ControllerOverlayChordState | null,
+  nowMs: number,
+  graceMs: number = CONTROLLER_OVERLAY_CHORD_GRACE_MS,
+): ControllerOverlayShortcutGate {
+  const guidePressed = isPressedGamepadButton(gamepad.buttons[16]);
+  const viewPressed = isPressedGamepadButton(gamepad.buttons[8]);
+  const menuPressed = isPressedGamepadButton(gamepad.buttons[9]);
+  const pressedHalf: ControllerOverlayChordHalf | null = viewPressed === menuPressed
+    ? null
+    : viewPressed
+      ? "view"
+      : "menu";
+
+  if (guidePressed) {
+    return { overlayPressed: true, preemptInput: true, nextState: null };
+  }
+
+  if (viewPressed && menuPressed) {
+    if (state?.disqualified) {
+      return { overlayPressed: false, preemptInput: false, nextState: state };
+    }
+
+    return { overlayPressed: true, preemptInput: true, nextState: null };
+  }
+
+  if (!pressedHalf) {
+    return { overlayPressed: false, preemptInput: false, nextState: null };
+  }
+
+  if (state?.disqualified) {
+    return {
+      overlayPressed: false,
+      preemptInput: false,
+      nextState: state.pendingHalf === pressedHalf
+        ? state
+        : { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: true },
+    };
+  }
+
+  if (!state || state.pendingHalf !== pressedHalf) {
+    return {
+      overlayPressed: false,
+      preemptInput: true,
+      nextState: { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: false },
+    };
+  }
+
+  const disqualified = nowMs - state.pendingSinceMs >= graceMs;
+  const nextState = { ...state, disqualified };
+  return {
+    overlayPressed: false,
+    preemptInput: !disqualified,
+    nextState,
+  };
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -834,6 +912,7 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private gamepadMetaPressed: Map<number, boolean> = new Map();
+  private gamepadOverlayChordStates: Map<number, ControllerOverlayChordState> = new Map();
   private lastEmittedDiagnostics: StreamDiagnostics | null = null;
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private lastRumbleWeak: number[] = [0, 0, 0, 0];
@@ -2113,6 +2192,8 @@ export class GfnWebRtcClient {
     this.resetInputState();
     this.resetDiagnostics();
     this.connectedGamepads.clear();
+    this.gamepadMetaPressed.clear();
+    this.gamepadOverlayChordStates.clear();
     this.previousGamepadStates.clear();
     this.gamepadSendCount = 0;
     this.lastGamepadSendMs = 0;
@@ -2182,7 +2263,7 @@ export class GfnWebRtcClient {
     // state forwarding is suppressed inside pollGamepads() when nativeInputActive
     // is true so the native renderer remains the sole source for controller input.
     this.setupGamepadPolling();
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller overlay shortcut detection active, gamepad forwarding handled by native renderer.`);
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2378,7 +2459,8 @@ export class GfnWebRtcClient {
   }
 
   private isStreamInputBlocked(): boolean {
-    return this.inputPaused || this.windowStateInputPaused;
+    const sidebarOpen = typeof document !== "undefined" && document.body?.dataset?.sidebarOpen === "1";
+    return this.inputPaused || this.windowStateInputPaused || sidebarOpen;
   }
 
   private getGamepadPollIntervalMs(): number {
@@ -2393,7 +2475,7 @@ export class GfnWebRtcClient {
     // Poll at reduced rate while input is paused (dashboard open) — fast enough
     // to catch the Meta button release and next press, but not burning CPU at
     // the full 4 ms stream-input rate.
-    return this.inputPaused ? 16 : 4;
+    return this.isStreamInputBlocked() ? 16 : 4;
   }
 
   private shouldPollGamepads(): boolean {
@@ -2436,16 +2518,26 @@ export class GfnWebRtcClient {
       if (gamepad && gamepad.connected) {
         connectedCount++;
         this.updateGamepadBitmap(i, gamepad);
-        const metaPressed = Boolean(gamepad.buttons[16]?.pressed);
-        const prevMetaPressed = this.gamepadMetaPressed.get(i) ?? false;
-        if (metaPressed && !prevMetaPressed) {
+        const overlayShortcutGate = evaluateControllerOverlayShortcutGate(
+          gamepad,
+          this.gamepadOverlayChordStates.get(i) ?? null,
+          nowMs,
+        );
+        if (overlayShortcutGate.nextState) {
+          this.gamepadOverlayChordStates.set(i, overlayShortcutGate.nextState);
+        } else {
+          this.gamepadOverlayChordStates.delete(i);
+        }
+        const overlayShortcutPressed = overlayShortcutGate.overlayPressed;
+        const prevOverlayShortcutPressed = this.gamepadMetaPressed.get(i) ?? false;
+        if (overlayShortcutPressed && !prevOverlayShortcutPressed) {
           try {
             this.options.onControllerMetaPress?.({ controllerId: i, gamepad });
           } catch {
             // Host callbacks must never break stream input polling.
           }
         }
-        this.gamepadMetaPressed.set(i, metaPressed);
+        this.gamepadMetaPressed.set(i, overlayShortcutPressed);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
@@ -2460,7 +2552,7 @@ export class GfnWebRtcClient {
         // Read and encode gamepad state
         // Skip forwarding to the stream if input is blocked (dashboard open) or
         // the native renderer is handling controller input directly.
-        if (streamInputBlocked || this.nativeInputActive) {
+        if (streamInputBlocked || this.nativeInputActive || overlayShortcutGate.preemptInput) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);
@@ -2499,6 +2591,7 @@ export class GfnWebRtcClient {
         this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
         this.gamepadMetaPressed.delete(i);
+        this.gamepadOverlayChordStates.delete(i);
         this.previousGamepadStates.delete(i);
         this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);

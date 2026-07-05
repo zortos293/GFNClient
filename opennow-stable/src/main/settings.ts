@@ -248,6 +248,60 @@ const DEFAULT_SETTINGS: Settings = {
   videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
 };
 
+const SHORTCUT_SETTING_KEYS = [
+  "shortcutToggleStats",
+  "shortcutTogglePointerLock",
+  "shortcutToggleFullscreen",
+  "shortcutStopStream",
+  "shortcutToggleAntiAfk",
+  "shortcutToggleMicrophone",
+  "shortcutScreenshot",
+  "shortcutToggleRecording",
+] as const satisfies readonly (keyof Settings)[];
+
+type ShortcutSettingKey = typeof SHORTCUT_SETTING_KEYS[number];
+
+const SIDEBAR_RESERVED_SHORTCUTS_NON_MAC = new Set(["CTRL+G", "CTRL+SHIFT+G"]);
+const SIDEBAR_RESERVED_SHORTCUTS_MAC = new Set(["META+G", "CMD+G", "COMMAND+G"]);
+const SIDEBAR_RESERVED_SHORTCUT_FALLBACKS: Record<ShortcutSettingKey, readonly string[]> = {
+  shortcutToggleStats: ["F3", "Ctrl+Shift+F3", "Ctrl+Alt+F3"],
+  shortcutTogglePointerLock: ["F8", "Ctrl+Shift+F8", "Ctrl+Alt+F8"],
+  shortcutToggleFullscreen: ["F10", "Ctrl+Shift+F10", "Ctrl+Alt+F10"],
+  shortcutStopStream: [defaultStopShortcut, "Ctrl+Alt+Q", "Ctrl+Alt+Shift+Q"],
+  shortcutToggleAntiAfk: [defaultAntiAfkShortcut, "Ctrl+Alt+K", "Ctrl+Alt+Shift+K"],
+  shortcutToggleMicrophone: [defaultMicShortcut, "Ctrl+Alt+M", "Ctrl+Alt+Shift+M"],
+  shortcutScreenshot: ["F11", "Ctrl+Shift+S", "Ctrl+Alt+S", "Ctrl+Shift+F11", "Ctrl+Alt+Shift+S"],
+  shortcutToggleRecording: ["F12", "Ctrl+Shift+R", "Ctrl+Alt+R", "Ctrl+Shift+F12", "Ctrl+Alt+Shift+R"],
+};
+
+function normalizeShortcutForComparison(value: string): string {
+  return value.replace(/\s+/g, "").toUpperCase();
+}
+
+function isSidebarReservedShortcut(value: string): boolean {
+  const normalized = normalizeShortcutForComparison(value);
+  const reserved = process.platform === "darwin"
+    ? SIDEBAR_RESERVED_SHORTCUTS_MAC
+    : SIDEBAR_RESERVED_SHORTCUTS_NON_MAC;
+  return reserved.has(normalized);
+}
+
+function isShortcutAvailable(
+  settings: Settings,
+  key: ShortcutSettingKey,
+  candidate: string,
+): boolean {
+  const normalizedCandidate = normalizeShortcutForComparison(candidate);
+  if (isSidebarReservedShortcut(candidate)) {
+    return false;
+  }
+
+  return SHORTCUT_SETTING_KEYS.every((otherKey) => (
+    otherKey === key ||
+    normalizeShortcutForComparison(settings[otherKey]) !== normalizedCandidate
+  ));
+}
+
 export class SettingsManager {
   private settings: Settings;
   private readonly settingsPath: string;
@@ -395,6 +449,18 @@ export class SettingsManager {
 
     if (LEGACY_ANTI_AFK_SHORTCUTS.has(antiAfkShortcut)) {
       settings.shortcutToggleAntiAfk = defaultAntiAfkShortcut;
+      migrated = true;
+    }
+
+    for (const key of SHORTCUT_SETTING_KEYS) {
+      if (!isSidebarReservedShortcut(settings[key])) {
+        continue;
+      }
+
+      const fallback = SIDEBAR_RESERVED_SHORTCUT_FALLBACKS[key].find((candidate) =>
+        isShortcutAvailable(settings, key, candidate),
+      ) ?? DEFAULT_SETTINGS[key];
+      settings[key] = fallback;
       migrated = true;
     }
 

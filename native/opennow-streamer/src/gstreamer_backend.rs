@@ -378,6 +378,18 @@ impl NativeStreamerBackend for GstreamerBackend {
         BackendReply::continue_without_response()
     }
 
+    fn set_input_paused(&mut self, command: CommandEnvelope) -> BackendReply {
+        let Some(paused) = command.paused else {
+            return BackendReply::response(missing_field(&command.id, "paused"));
+        };
+
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            pipeline.set_input_paused(paused);
+        }
+
+        BackendReply::response(Response::Ok { id: command.id })
+    }
+
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply {
         let Some(surface) = command.surface else {
             return BackendReply::response(missing_field(&command.id, "surface"));

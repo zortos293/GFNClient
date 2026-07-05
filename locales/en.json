@@ -216,6 +216,10 @@
     },
     "filterOptions": {
       "installToPlay": "Install to Play",
+      "cloudLaunch": "Cloud Launch",
+      "keyboardMouse": "Keyboard & Mouse",
+      "controller": "Controller",
+      "touch": "Touch",
       "played": "Played",
       "neverPlayed": "Never Played"
     },

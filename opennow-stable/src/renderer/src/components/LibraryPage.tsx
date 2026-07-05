@@ -41,6 +41,8 @@ interface LibraryFilterGroup {
   options: LibraryFilterOption[];
 }
 
+type LibraryTranslation = (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string;
+
 export interface LibraryPageProps {
   games: GameInfo[];
   allGames: GameInfo[];
@@ -154,21 +156,6 @@ function formatLibraryFilterLabel(value: string): string {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
-function formatLibraryPlayTypeLabel(playType: string): string {
-  const normalized = normalizeLibraryFilterValue(playType);
-  if (normalized.includes("install")) return "Install to Play";
-  if (normalized.includes("instant") || normalized.includes("stream") || normalized.includes("cloud")) return "Cloud Launch";
-  return formatLibraryFilterLabel(playType);
-}
-
-function formatLibraryControlLabel(control: string): string {
-  const normalized = normalizeLibraryFilterValue(control);
-  if (normalized.includes("keyboard") || normalized.includes("mouse")) return "Keyboard & Mouse";
-  if (normalized.includes("gamepad") || normalized.includes("controller")) return "Controller";
-  if (normalized.includes("touch")) return "Touch";
-  return formatLibraryFilterLabel(control);
-}
-
 function getGameCatalogSkuText(game: GameInfo): string {
   const values = Object.values(game.catalogSkuStrings ?? {});
   const parts: string[] = [];
@@ -192,13 +179,19 @@ function gameRequiresInstallToPlay(game: GameInfo): boolean {
   return haystack.includes("install");
 }
 
-function getGamePlayTypeFilter(game: GameInfo, installToPlayLabel: string): LibraryFilterOption | null {
+function getGamePlayTypeFilter(game: GameInfo, t: LibraryTranslation): LibraryFilterOption | null {
   if (gameRequiresInstallToPlay(game)) {
-    return { id: "play:install-to-play", label: installToPlayLabel, count: 0 };
+    return { id: "play:install-to-play", label: t("library.filterOptions.installToPlay"), count: 0 };
   }
   if (!game.playType?.trim()) return null;
-  const key = normalizeLibraryFilterValue(game.playType);
-  return key ? { id: `play:${key}`, label: formatLibraryPlayTypeLabel(game.playType), count: 0 } : null;
+  const normalized = normalizeLibraryFilterValue(game.playType);
+  if (!normalized) return null;
+  if (normalized.includes("instant") || normalized.includes("stream") || normalized.includes("cloud")) {
+    return { id: "play:cloud-launch", label: t("library.filterOptions.cloudLaunch"), count: 0 };
+  }
+  const label = formatLibraryFilterLabel(game.playType);
+  const key = normalizeLibraryFilterValue(label);
+  return key ? { id: `play:${key}`, label, count: 0 } : null;
 }
 
 function getGameStoreFilters(game: GameInfo): Array<{ id: string; label: string }> {
@@ -215,7 +208,24 @@ function getGameStoreFilters(game: GameInfo): Array<{ id: string; label: string 
   return filters;
 }
 
-function getGameControlFilters(game: GameInfo): Array<{ id: string; label: string }> {
+function getControlFilter(control: string, t: LibraryTranslation): { id: string; label: string } | null {
+  const normalized = normalizeLibraryFilterValue(control);
+  if (!normalized) return null;
+  if (normalized.includes("keyboard") || normalized.includes("mouse")) {
+    return { id: "controls:keyboard-mouse", label: t("library.filterOptions.keyboardMouse") };
+  }
+  if (normalized.includes("gamepad") || normalized.includes("controller")) {
+    return { id: "controls:controller", label: t("library.filterOptions.controller") };
+  }
+  if (normalized.includes("touch")) {
+    return { id: "controls:touch", label: t("library.filterOptions.touch") };
+  }
+  const label = formatLibraryFilterLabel(control);
+  const key = normalizeLibraryFilterValue(label);
+  return key ? { id: `controls:${key}`, label } : null;
+}
+
+function getGameControlFilters(game: GameInfo, t: LibraryTranslation): Array<{ id: string; label: string }> {
   const controls = [
     ...(game.supportedControls ?? []),
     ...game.variants.flatMap((variant) => variant.supportedControls),
@@ -223,10 +233,10 @@ function getGameControlFilters(game: GameInfo): Array<{ id: string; label: strin
   const seen = new Set<string>();
   const filters: Array<{ id: string; label: string }> = [];
   for (const control of controls) {
-    const key = normalizeLibraryFilterValue(control);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    filters.push({ id: `controls:${key}`, label: formatLibraryControlLabel(control) });
+    const filter = getControlFilter(control, t);
+    if (!filter || seen.has(filter.id)) continue;
+    seen.add(filter.id);
+    filters.push(filter);
   }
   return filters;
 }
@@ -251,22 +261,21 @@ function gameHasLibraryActivity(game: GameInfo, playtimeData: PlaytimeData): boo
   return Boolean(record.lastPlayedAt) || (record.totalSeconds ?? 0) > 0 || (record.sessionCount ?? 0) > 0;
 }
 
-function getLibraryFilterGroups(games: GameInfo[], playtimeData: PlaytimeData, t: (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string): LibraryFilterGroup[] {
+function getLibraryFilterGroups(games: GameInfo[], playtimeData: PlaytimeData, t: LibraryTranslation): LibraryFilterGroup[] {
   const playTypeOptions = new Map<string, LibraryFilterOption>();
   const platformOptions = new Map<string, LibraryFilterOption>();
   const controlOptions = new Map<string, LibraryFilterOption>();
   const activityOptions = new Map<string, LibraryFilterOption>();
-  const installToPlayLabel = t("library.filterOptions.installToPlay");
 
   for (const game of games) {
-    const playTypeOption = getGamePlayTypeFilter(game, installToPlayLabel);
+    const playTypeOption = getGamePlayTypeFilter(game, t);
     if (playTypeOption) upsertLibraryFilterOption(playTypeOptions, playTypeOption.id, playTypeOption.label);
 
     for (const option of getGameStoreFilters(game)) {
       upsertLibraryFilterOption(platformOptions, option.id, option.label);
     }
 
-    for (const option of getGameControlFilters(game)) {
+    for (const option of getGameControlFilters(game, t)) {
       upsertLibraryFilterOption(controlOptions, option.id, option.label);
     }
 
@@ -291,12 +300,12 @@ function getLibraryFilterGroupId(filterId: string): string {
   return separatorIndex >= 0 ? filterId.slice(0, separatorIndex) : filterId;
 }
 
-function gameMatchesLibraryFilter(game: GameInfo, filterId: string, playtimeData: PlaytimeData, installToPlayLabel: string): boolean {
+function gameMatchesLibraryFilter(game: GameInfo, filterId: string, playtimeData: PlaytimeData, t: LibraryTranslation): boolean {
   const [groupId, value] = filterId.split(":");
   if (!value) return true;
 
   if (groupId === "play") {
-    return getGamePlayTypeFilter(game, installToPlayLabel)?.id === filterId;
+    return getGamePlayTypeFilter(game, t)?.id === filterId;
   }
 
   if (groupId === "platform") {
@@ -304,7 +313,7 @@ function gameMatchesLibraryFilter(game: GameInfo, filterId: string, playtimeData
   }
 
   if (groupId === "controls") {
-    return getGameControlFilters(game).some((option) => option.id === filterId);
+    return getGameControlFilters(game, t).some((option) => option.id === filterId);
   }
 
   if (groupId === "activity") {
@@ -315,7 +324,7 @@ function gameMatchesLibraryFilter(game: GameInfo, filterId: string, playtimeData
   return true;
 }
 
-function gameMatchesLibraryFilters(game: GameInfo, selectedFilterIds: string[], playtimeData: PlaytimeData, installToPlayLabel: string): boolean {
+function gameMatchesLibraryFilters(game: GameInfo, selectedFilterIds: string[], playtimeData: PlaytimeData, t: LibraryTranslation): boolean {
   if (selectedFilterIds.length === 0) return true;
   const selectedByGroup = new Map<string, string[]>();
   for (const filterId of selectedFilterIds) {
@@ -323,7 +332,7 @@ function gameMatchesLibraryFilters(game: GameInfo, selectedFilterIds: string[], 
     selectedByGroup.set(groupId, [...(selectedByGroup.get(groupId) ?? []), filterId]);
   }
   for (const groupFilterIds of selectedByGroup.values()) {
-    if (!groupFilterIds.some((filterId) => gameMatchesLibraryFilter(game, filterId, playtimeData, installToPlayLabel))) return false;
+    if (!groupFilterIds.some((filterId) => gameMatchesLibraryFilter(game, filterId, playtimeData, t))) return false;
   }
   return true;
 }
@@ -462,15 +471,14 @@ export const LibraryPage = memo(function LibraryPage({
     controllerSearchInputRef.current?.focus();
   }, [controllerMode, controllerSearchOpen]);
 
-  const installToPlayFilterLabel = t("library.filterOptions.installToPlay");
   const librarySearchHasQuery = searchQuery.trim().length > 0;
   const libraryFilterGroups = useMemo(
     () => getLibraryFilterGroups(allGames, playtimeData, t),
     [allGames, playtimeData, t],
   );
   const visibleLibraryGames = useMemo(
-    () => games.filter((game) => gameMatchesLibraryFilters(game, selectedLibraryFilterIds, playtimeData, installToPlayFilterLabel)),
-    [games, installToPlayFilterLabel, playtimeData, selectedLibraryFilterIds],
+    () => games.filter((game) => gameMatchesLibraryFilters(game, selectedLibraryFilterIds, playtimeData, t)),
+    [games, playtimeData, selectedLibraryFilterIds, t],
   );
   const activeLibraryFilterOptions = useMemo(
     () => selectedLibraryFilterIds

@@ -106,7 +106,7 @@
     <string name="settings_thanks_body">Thanks to the people helping improve OpenNOW for everyone.</string>
     <string name="settings_thanks_darkevilpt">DarkevilPT</string>
     <string name="settings_thanks_darkevilpt_note">Community support</string>
-    <string name="settings_donate_paypal">Donate with PayPal</string>
+    <string name="settings_donate">Donate</string>
     <string name="settings_donate_link_copied">Donate link copied</string>
     <string name="accent_opennow">OpenNOW</string>
     <string name="accent_pixel">Pixel blue</string>

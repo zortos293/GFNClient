@@ -9,6 +9,43 @@ plugins {
 val localProperties = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
+fun Sequence<String?>.firstNonBlankOrNull(): String? =
+    mapNotNull { value -> value?.trim()?.takeIf { it.isNotEmpty() } }.firstOrNull()
+
+fun gradlePropertyValue(vararg names: String): String? =
+    names.asSequence().map { name -> providers.gradleProperty(name).orNull }.firstNonBlankOrNull()
+
+fun localPropertyValue(vararg names: String): String? =
+    names.asSequence().map { name -> localProperties.getProperty(name) }.firstNonBlankOrNull()
+
+fun environmentValue(vararg names: String): String? =
+    names.asSequence().map { name -> providers.environmentVariable(name).orNull }.firstNonBlankOrNull()
+
+fun firstNonBlankValue(vararg values: String?): String =
+    values.asSequence().firstNonBlankOrNull().orEmpty()
+
+fun buildConfigString(value: String): String =
+    "\"" + value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r") + "\""
+
+val defaultPostHogProjectToken = "phc_pdob6BhBvbayfd7BA6zXBkty8o6EkxKYY7sF3ZwLymk3"
+val defaultPostHogHost = "https://aa.printedwaste.com"
+
+val postHogProjectToken = firstNonBlankValue(
+    gradlePropertyValue("posthog.apiKey", "posthog.projectToken"),
+    environmentValue("POSTHOG_API_KEY", "POSTHOG_PROJECT_TOKEN"),
+    localPropertyValue("posthog.apiKey", "posthog.projectToken"),
+    defaultPostHogProjectToken,
+)
+val postHogHost = firstNonBlankValue(
+    gradlePropertyValue("posthog.host"),
+    environmentValue("POSTHOG_HOST"),
+    localPropertyValue("posthog.host"),
+    defaultPostHogHost,
+)
 val buildingPlayReleaseBundle = gradle.startParameter.taskNames.any { taskName ->
     taskName.substringAfterLast(":").equals("bundleRelease", ignoreCase = true)
 }
@@ -21,11 +58,11 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 24
         targetSdk = 36
-        versionCode = 22
-        versionName = "0.6.7"
+        versionCode = 23
+        versionName = "0.6.8"
 
-        buildConfigField("String", "POSTHOG_PROJECT_TOKEN", "\"${localProperties.getProperty("posthog.apiKey", "")}\"")
-        buildConfigField("String", "POSTHOG_HOST", "\"${localProperties.getProperty("posthog.host", "https://us.i.posthog.com")}\"")
+        buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
+        buildConfigField("String", "POSTHOG_HOST", buildConfigString(postHogHost))
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
 
         ndk {

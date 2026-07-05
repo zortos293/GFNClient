@@ -1,14 +1,20 @@
 package com.opencloudgaming.opennow
 
 import android.app.Application
+import android.util.Log
 import com.posthog.PostHog
 import com.posthog.android.PostHogAndroid
 import com.posthog.android.PostHogAndroidConfig
 
+private const val ANALYTICS_LOG_TAG = "OpenNowAnalytics"
+
 internal object OpenNowAnalytics {
     fun setup(application: Application, settings: AppSettings) {
         val token = BuildConfig.POSTHOG_PROJECT_TOKEN.trim()
-        if (token.isEmpty()) return
+        if (token.isEmpty()) {
+            Log.w(ANALYTICS_LOG_TAG, "PostHog disabled because no project token is configured.")
+            return
+        }
 
         val config = PostHogAndroidConfig(
             apiKey = token,
@@ -18,6 +24,8 @@ internal object OpenNowAnalytics {
         runCatching {
             PostHogAndroid.setup(application, config)
             applyOptOut(settings.analyticsOptOut)
+        }.onFailure { error ->
+            Log.w(ANALYTICS_LOG_TAG, "PostHog setup failed.", error)
         }
     }
 
@@ -37,7 +45,7 @@ internal object OpenNowAnalytics {
                 distinctId = session.user.userId,
                 userProperties = mapOf(
                     "display_name" to session.user.displayName,
-                    "membership_tier" to (session.user.membershipTier ?: ""),
+                    "membership_tier" to session.user.membershipTier,
                     "provider" to session.provider.code,
                 ),
             )

@@ -152,4 +152,37 @@ class GfnApiTest {
 
         assertEquals(signature, activeSessionSettingsSignature(session))
     }
+
+    @Test
+    fun diagnosticLogPayloadRedactsSensitiveJsonFields() {
+        val exported = sanitizeDiagnosticLogPayload(
+            """
+            {
+              "session": {
+                "sessionId": "session-123",
+                "queuePosition": 4,
+                "iceServerConfiguration": {
+                  "iceServers": [
+                    {
+                      "urls": ["turn:example.invalid"],
+                      "username": "ice-user",
+                      "credential": "ice-secret"
+                    }
+                  ]
+                }
+              },
+              "accessToken": "token-value",
+              "email": "player@example.invalid"
+            }
+            """.trimIndent(),
+        )
+
+        assertTrue(exported.contains("\"sessionId\": \"session-123\""))
+        assertTrue(exported.contains("\"queuePosition\": 4"))
+        assertFalse(exported.contains("ice-secret"))
+        assertFalse(exported.contains("token-value"))
+        assertFalse(exported.contains("player@example.invalid"))
+        assertTrue(exported.contains("\"credential\": \"[redacted]\""))
+        assertTrue(exported.contains("\"accessToken\": \"[redacted]\""))
+    }
 }

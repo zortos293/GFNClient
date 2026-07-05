@@ -512,10 +512,6 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
             onOpenUpdates = viewModel::openAndroidUpdateSettings,
             onDismiss = viewModel::dismissAndroidUpdateNotice,
         )
-        AccountPlayTimeStatsPanel(
-            subscriptionInfo = state.subscriptionInfo,
-            fallbackMembershipTier = state.authSession?.user?.membershipTier,
-        )
         state.deviceLoginPrompt?.let { prompt ->
             DeviceLoginPanel(
                 prompt = prompt,
@@ -530,6 +526,10 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
             OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
         }
         OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text("Sign out all accounts") }
+        AccountPlayTimeStatsPanel(
+            subscriptionInfo = state.subscriptionInfo,
+            fallbackMembershipTier = state.authSession?.user?.membershipTier,
+        )
         StorageAddonPanel(
             storageAddon = state.subscriptionInfo?.storageAddon,
             openExternal = { url ->
@@ -1065,8 +1065,16 @@ private const val GFN_STORAGE_RESET_URL = "https://gfn.link/resetstorage"
 private const val GFN_ADD_STORAGE_URL = "https://gfn.link/addstorage"
 private const val GFN_ACCOUNT_HELP_URL = "https://gfn.link/5399"
 private const val OPENNOW_GITHUB_URL = "https://github.com/OpenCloudGaming/OpenNOW"
-private const val DEVELOPER_GITHUB_URL = "https://github.com/Kief5555"
-private const val DEVELOPER_AVATAR_URL = "https://github.com/Kief5555.png?size=160"
+
+private data class DeveloperCredit(
+    val name: String,
+    val githubUrl: String,
+)
+
+private val DEVELOPER_CREDITS = listOf(
+    DeveloperCredit("Kiefer", "https://github.com/Kief5555"),
+    DeveloperCredit("Zortos", "https://github.com/zortos293"),
+)
 
 private fun formatStorageGb(value: Double): String =
     if (value % 1.0 == 0.0) "${value.toInt()} GB" else "%.1f GB".format(Locale.US, value)
@@ -1287,28 +1295,32 @@ internal fun OpenNowGitHubPanel() {
 internal fun DeveloperPanel() {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(SettingsPanelAlt)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Surface(
-            modifier = Modifier.size(52.dp),
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceVariant,
-        ) {
-            UrlImage(DEVELOPER_AVATAR_URL, Modifier.fillMaxSize().clip(CircleShape))
-        }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text("Kiefer", color = SettingsText, fontWeight = FontWeight.SemiBold)
-            Text("Developer", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        OutlinedButton(onClick = { openExternalUrlOrCopy(context, clipboard, DEVELOPER_GITHUB_URL, "GitHub link copied") }) {
-            Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        DEVELOPER_CREDITS.forEach { developer ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(SettingsPanelAlt)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    modifier = Modifier.size(52.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    UrlImage("${developer.githubUrl}.png?size=160", Modifier.fillMaxSize().clip(CircleShape))
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(developer.name, color = SettingsText, fontWeight = FontWeight.SemiBold)
+                    Text("Developer", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedButton(onClick = { openExternalUrlOrCopy(context, clipboard, developer.githubUrl, "GitHub link copied") }) {
+                    Text("GitHub", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }
@@ -1342,7 +1354,7 @@ internal fun ThanksPanel() {
         },
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Text(stringResource(R.string.settings_donate_paypal), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(stringResource(R.string.settings_donate), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -1379,7 +1391,10 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
             saveError = error.message ?: "Could not save logs"
         }
     }
-    Text("Includes launch state, queue state, ad reports, stream events, recovery events, stream settings, input settings, and codec capabilities.", color = SettingsTextMuted)
+    Text(
+        "Exports launch state, queue state, stream updates, recovery events, settings, codec capabilities, and recent sanitized CloudMatch JSON responses.",
+        color = SettingsTextMuted,
+    )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         Button(
             onClick = {
@@ -1395,11 +1410,11 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
                 pendingLogText = viewModel.debugLogText()
                 saved = false
                 saveError = null
-                saveLauncher.launch("opennow-android-logs.txt")
+                saveLauncher.launch(viewModel.debugLogFileName())
             },
             modifier = Modifier.weight(1f),
         ) {
-            Text(if (saved) "Saved .txt" else "Save .txt", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(if (saved) "Exported" else "Export logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
     state.error?.let { error ->

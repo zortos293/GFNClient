@@ -22,7 +22,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.OkHttpClient
+import java.text.SimpleDateFormat
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,12 +49,30 @@ internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 
 private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
 private const val DEBUG_EVENT_LIMIT = 140
 private const val DEBUG_EVENT_MESSAGE_LIMIT = 640
+private const val DEBUG_PAYLOAD_LIMIT = 40
+private const val DEBUG_PAYLOAD_BODY_LIMIT = 20_000
 private const val DEBUG_LOG_TAG = "OpenNOWDebug"
+
+private val DebugPayloadJson = Json {
+    prettyPrint = true
+    ignoreUnknownKeys = true
+    explicitNulls = false
+    isLenient = true
+    encodeDefaults = true
+}
 
 private data class DebugLogEvent(
     val timestampMs: Long,
     val category: String,
     val message: String,
+)
+
+private data class DebugPayloadEvent(
+    val timestampMs: Long,
+    val operation: String,
+    val url: String,
+    val statusCode: Int,
+    val body: String,
 )
 
 data class OpenNowUiState(
@@ -115,7 +139,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
     private val accountConnectorRepository = GfnAccountConnectorRepository(http)
     private val printedWasteRepository = PrintedWasteRepository(http)
-    private val sessionRepository = GfnSessionRepository(authStore, http)
+    private val sessionRepository = GfnSessionRepository(authStore, http) { response ->
+        recordSessionDiagnosticResponse(response)
+    }
     private val appUpdater = AndroidAppUpdater(application, http)
     private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
     private val queueAdReportMutex = Mutex()
@@ -123,6 +149,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val resolutionMismatchRestartKeys = mutableSetOf<String>()
     private val debugEventsLock = Any()
     private val debugEvents = ArrayDeque<DebugLogEvent>()
+    private val debugPayloadsLock = Any()
+    private val debugPayloads = ArrayDeque<DebugPayloadEvent>()
     private val authRestoreMutex = Mutex()
 
     private val initialAuthSession = authStore.activeSession()
@@ -197,6 +225,30 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun debugEventSnapshot(): List<DebugLogEvent> =
         synchronized(debugEventsLock) { debugEvents.toList() }
+
+    private fun recordSessionDiagnosticResponse(response: GfnSessionDiagnosticResponse) {
+        val sanitizedBody = sanitizeDiagnosticLogPayload(response.responseBody)
+        val event = DebugPayloadEvent(
+            timestampMs = System.currentTimeMillis(),
+            operation = response.operation,
+            url = response.url,
+            statusCode = response.statusCode,
+            body = sanitizedBody,
+        )
+        synchronized(debugPayloadsLock) {
+            debugPayloads.addLast(event)
+            while (debugPayloads.size > DEBUG_PAYLOAD_LIMIT) {
+                debugPayloads.removeFirst()
+            }
+        }
+        Log.d(
+            DEBUG_LOG_TAG,
+            "gfn-json: ${response.operation} http=${response.statusCode} bytes=${response.responseBody.length} captured=${sanitizedBody.length} host=${hostForDebug(response.url)}",
+        )
+    }
+
+    private fun debugPayloadSnapshot(): List<DebugPayloadEvent> =
+        synchronized(debugPayloadsLock) { debugPayloads.toList() }
 
     fun initialize() {
         viewModelScope.launch {
@@ -322,7 +374,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         event = "user_logged_in",
                         properties = mapOf(
                             "provider" to session.provider.code,
-                            "membership_tier" to (session.user.membershipTier ?: ""),
+                            "membership_tier" to session.user.membershipTier,
                         ),
                     )
                     refreshAfterAuth(session)
@@ -367,7 +419,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         event = "user_logged_in",
                         properties = mapOf(
                             "provider" to session.provider.code,
-                            "membership_tier" to (session.user.membershipTier ?: ""),
+                            "membership_tier" to session.user.membershipTier,
                             "login_method" to "device_code",
                         ),
                     )
@@ -494,7 +546,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 event = "account_switched",
                 properties = mapOf(
                     "provider" to session.provider.code,
-                    "membership_tier" to (session.user.membershipTier ?: ""),
+                    "membership_tier" to session.user.membershipTier,
                 ),
             )
             refreshAfterAuth(session)
@@ -1873,7 +1925,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     appendLine("event.${index + 1} ${formatter.format(Date(event.timestampMs))} [${event.category}] ${event.message}")
                 }
             }
+            val payloads = debugPayloadSnapshot()
+            appendLine("advancedJson.count=${payloads.size}")
+            if (payloads.isEmpty()) {
+                appendLine("advancedJson=(empty)")
+            } else {
+                val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)
+                payloads.forEachIndexed { index, payload ->
+                    appendLine("advancedJson.${index + 1} ${formatter.format(Date(payload.timestampMs))} [${payload.operation}] http=${payload.statusCode} url=${payload.url}")
+                    appendLine(payload.body)
+                }
+            }
         }
+    }
+
+    fun debugLogFileName(): String {
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        return "opennow-android-logs-$timestamp.txt"
     }
 
     private suspend fun refreshAfterAuth(session: AuthSession, keepRefreshVisibleWithCache: Boolean = false) {
@@ -2364,6 +2432,49 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             membershipTier = user.membershipTier,
             providerCode = provider.code,
         )
+}
+
+internal fun sanitizeDiagnosticLogPayload(raw: String): String {
+    val trimmed = raw.trim()
+    if (trimmed.isBlank()) return "(empty)"
+    val formatted = runCatching {
+        val sanitized = redactDiagnosticJsonElement(OpenNowJson.parseToJsonElement(trimmed))
+        DebugPayloadJson.encodeToString(JsonElement.serializer(), sanitized)
+    }.getOrElse {
+        redactDiagnosticText(trimmed)
+    }
+    return if (formatted.length <= DEBUG_PAYLOAD_BODY_LIMIT) {
+        formatted
+    } else {
+        formatted.take(DEBUG_PAYLOAD_BODY_LIMIT) + "\n... truncated ${formatted.length - DEBUG_PAYLOAD_BODY_LIMIT} chars ..."
+    }
+}
+
+private fun redactDiagnosticJsonElement(element: JsonElement, keyHint: String? = null): JsonElement =
+    when {
+        keyHint != null && shouldRedactDiagnosticKey(keyHint) -> JsonPrimitive("[redacted]")
+        element is JsonObject -> JsonObject(element.mapValues { (key, value) -> redactDiagnosticJsonElement(value, key) })
+        element is JsonArray -> JsonArray(element.map { redactDiagnosticJsonElement(it) })
+        else -> element
+    }
+
+private fun shouldRedactDiagnosticKey(key: String): Boolean {
+    val normalized = key.lowercase(Locale.US).filter(Char::isLetterOrDigit)
+    return normalized.contains("authorization") ||
+        normalized.contains("token") ||
+        normalized.contains("credential") ||
+        normalized.contains("password") ||
+        normalized.contains("secret") ||
+        normalized.contains("cookie") ||
+        normalized == "email" ||
+        normalized == "userid"
+}
+
+private fun redactDiagnosticText(text: String): String {
+    val sensitive = Regex("""(?i)(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|credential|password|secret|cookie)(\s*[=:]\s*)([^\s,;]+)""")
+    return sensitive.replace(text) { match ->
+        "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
+    }
 }
 
 internal fun externalLaunchIdFromParts(

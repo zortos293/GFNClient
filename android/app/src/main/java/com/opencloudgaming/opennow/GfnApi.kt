@@ -2008,9 +2008,17 @@ class PrintedWasteRepository(
         }.getOrNull()
 }
 
+data class GfnSessionDiagnosticResponse(
+    val operation: String,
+    val url: String,
+    val statusCode: Int,
+    val responseBody: String,
+)
+
 class GfnSessionRepository(
     private val authStore: AuthStore,
     private val http: OkHttpClient = defaultHttpClient(),
+    private val diagnosticsSink: (GfnSessionDiagnosticResponse) -> Unit = {},
 ) {
     suspend fun createSession(
         token: String,
@@ -2034,7 +2042,8 @@ class GfnSessionRepository(
             .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = true))
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val (_, text) = requestHttp.awaitText(request)
+        val (code, text) = requestHttp.awaitText(request)
+        recordDiagnosticResponse("session.create", request, code, text)
         val payload = OpenNowJson.parseToJsonElement(text).jsonObject
         return toSessionInfo(zone, base, payload, clientId, deviceId)
     }
@@ -2058,7 +2067,8 @@ class GfnSessionRepository(
             .url("$base/v2/session/$sessionId")
             .headers(cloudMatchHeaders(token, cid, did, includeOrigin = false))
             .build()
-        val (_, text) = requestHttp.awaitText(request)
+        val (code, text) = requestHttp.awaitText(request)
+        recordDiagnosticResponse("session.poll", request, code, text)
         val payload = OpenNowJson.parseToJsonElement(text).jsonObject
         val realServer = streamingServerIp(payload)
         if (isZoneHostname(host) && realServer != null && !isZoneHostname(realServer) && READY_SESSION_STATUSES.contains(payload.obj("session")?.int("status"))) {
@@ -2068,6 +2078,7 @@ class GfnSessionRepository(
                 .headers(cloudMatchHeaders(token, cid, did, includeOrigin = false))
                 .build()
             val (code, directText) = http.awaitText(directRequest)
+            recordDiagnosticResponse("session.poll.direct", directRequest, code, directText)
             if (code in 200..299) {
                 val directPayload = OpenNowJson.parseToJsonElement(directText).jsonObject
                 if (directPayload.obj("requestStatus")?.int("statusCode") == 1) {
@@ -2089,7 +2100,8 @@ class GfnSessionRepository(
             .headers(cloudMatchHeaders(token, cid, did, includeOrigin = false))
             .delete()
             .build()
-        requestHttp.awaitText(request)
+        val (code, text) = requestHttp.awaitText(request)
+        recordDiagnosticResponse("session.stop", request, code, text)
     }
 
     suspend fun getActiveSessions(token: String, streamingBaseUrl: String, settings: StreamSettings): List<ActiveSessionInfo> {
@@ -2101,6 +2113,7 @@ class GfnSessionRepository(
             .headers(cloudMatchHeaders(token, UUID.randomUUID().toString(), authStore.stableDeviceId(), includeOrigin = false))
             .build()
         val (code, text) = requestHttp.awaitText(request)
+        recordDiagnosticResponse("session.active", request, code, text)
         if (code !in 200..299) return emptyList()
         val payload = runCatching { OpenNowJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return emptyList()
         if (payload.obj("requestStatus")?.int("statusCode") != 1) return emptyList()
@@ -2152,6 +2165,7 @@ class GfnSessionRepository(
                 .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false))
                 .build()
             val (code, text) = requestHttp.awaitText(prefetch)
+            recordDiagnosticResponse("session.claim.prefetch", prefetch, code, text)
             if (code in 200..299) {
                 streamingServerIp(OpenNowJson.parseToJsonElement(text).jsonObject)?.let { effectiveServerIp = it }
             }
@@ -2162,7 +2176,8 @@ class GfnSessionRepository(
             .url(validationUrl)
             .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false))
             .build()
-        val (_, validationText) = http.awaitText(validationRequest)
+        val (validationCode, validationText) = http.awaitText(validationRequest)
+        recordDiagnosticResponse("session.claim.validation", validationRequest, validationCode, validationText)
         val validation = runCatching { OpenNowJson.parseToJsonElement(validationText).jsonObject }.getOrNull()
         val status = validation?.obj("session")?.int("status")
         if (status != 1) {
@@ -2172,7 +2187,8 @@ class GfnSessionRepository(
                 .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = true))
                 .put(claimBody.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
-            http.awaitText(claimRequest)
+            val (claimCode, claimText) = http.awaitText(claimRequest)
+            recordDiagnosticResponse("session.claim.put", claimRequest, claimCode, claimText)
         }
         var latestSession: SessionInfo? = null
         repeat(60) { attempt ->
@@ -2182,6 +2198,7 @@ class GfnSessionRepository(
                 .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = false))
                 .build()
             val (code, text) = http.awaitText(poll)
+            recordDiagnosticResponse("session.claim.poll", poll, code, text)
             if (code in 200..299) {
                 val payload = OpenNowJson.parseToJsonElement(text).jsonObject
                 val pollStatus = payload.obj("session")?.int("status")
@@ -2258,8 +2275,22 @@ class GfnSessionRepository(
             .put(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val (code, text) = requestHttp.awaitText(request)
+        recordDiagnosticResponse("session.adUpdate", request, code, text)
         check(code in 200..299) { "Queue ad update failed ($code): ${text.take(400)}" }
         return toSessionInfo(session.zone, base, OpenNowJson.parseToJsonElement(text).jsonObject, cid, did)
+    }
+
+    private fun recordDiagnosticResponse(operation: String, request: Request, statusCode: Int, responseBody: String) {
+        runCatching {
+            diagnosticsSink(
+                GfnSessionDiagnosticResponse(
+                    operation = operation,
+                    url = request.url.toString(),
+                    statusCode = statusCode,
+                    responseBody = responseBody,
+                ),
+            )
+        }
     }
 
     private fun buildSessionRequestBody(

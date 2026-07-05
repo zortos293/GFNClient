@@ -54,7 +54,7 @@ internal val SettingsPanel = Color(0xff11161a)
 internal val SettingsPanelAlt = Color(0xff171d22)
 internal val SettingsText = Color(0xffeef3f5)
 internal val SettingsTextMuted = Color(0xff98a4aa)
-internal const val DONATE_URL = "https://paypal.me/PrintedWaste"
+internal const val DONATE_URL = "https://printedwaste.com/donate"
 internal val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 internal val APP_NAV_RAIL_WIDTH = 80.dp
 internal const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
@@ -607,11 +607,11 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
                     CodecDiagnosticsPanel(state.codecReport)
                 }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Debug Logs", "debug", "logs", "logcat", "events") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Debug Logs", "debug", "logs", "logcat", "events", "export", "json", "cloudmatch", "queue", "stream") {
                     DebugLogsPanel(state = state, viewModel = viewModel)
                 }
     }
-    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app", "github", "developer", "kiefer", "opennow", "repository") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
                 AppVersionPanel()
                 OpenNowGitHubPanel()
                 DeveloperPanel()
@@ -654,7 +654,7 @@ private fun SettingsCategoryLanding(
                 }
             }
         }
-        SearchableSettingsSection("", "About", "about", "version", "build", "app", "github", "developer", "kiefer", "opennow", "repository") {
+        SearchableSettingsSection("", "About", "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
             AppVersionPanel()
             OpenNowGitHubPanel()
             DeveloperPanel()

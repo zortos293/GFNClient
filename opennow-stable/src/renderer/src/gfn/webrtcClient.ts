@@ -3515,7 +3515,7 @@ export class GfnWebRtcClient {
       simulatedAbsY = Math.round((abs.y / abs.height) * serverHeight);
     };
 
-    const flushMouse = (): boolean => {
+    const flushMouse = (forceReliable = false): boolean => {
       const tickNow = performance.now();
       if (!this.inputReady || !hasPendingMouseMovement()) {
         return false;
@@ -3567,7 +3567,7 @@ export class GfnWebRtcClient {
           ...abs,
           timestampUs: batchTimestampUs,
         });
-        if (mixedBatch) {
+        if (mixedBatch || forceReliable) {
           this.sendReliable(payload);
         } else {
           this.sendInputPacket(payload, INPUT_MOUSE_ABS);
@@ -3586,7 +3586,7 @@ export class GfnWebRtcClient {
           dy: relPart.dyServer,
           timestampUs: batchTimestampUs,
         });
-        if (mixedBatch) {
+        if (mixedBatch || forceReliable) {
           this.sendReliable(payload);
         } else {
           this.sendInputPacket(payload, INPUT_MOUSE_REL);
@@ -3791,13 +3791,19 @@ export class GfnWebRtcClient {
       if (this.cursorOverlay?.isCursorVisible()) {
         const abs = this.cursorOverlay.getAbsolutePosition();
         if (abs) {
-          this.pendingMouseAbs = abs;
-          // Drop any relative residue queued before the cursor became
-          // visible: the absolute packet pins the final position, and a
-          // stale delta sent afterwards would shift the server cursor off
-          // the overlay again.
+          // Deliver raw-input deltas queued before the cursor became
+          // visible ahead of the absolute pin, in order, on the reliable
+          // channel — never after it, where they would shift the server
+          // cursor off the overlay.
+          if (
+            Math.abs(this.pendingMouseDxFloat) >= 0.5
+            || Math.abs(this.pendingMouseDyFloat) >= 0.5
+          ) {
+            flushMouse(true);
+          }
           this.pendingMouseDxFloat = 0;
           this.pendingMouseDyFloat = 0;
+          this.pendingMouseAbs = abs;
           if (this.pendingMouseTimestampUs === null) {
             this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
           }

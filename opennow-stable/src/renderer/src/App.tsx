@@ -4442,6 +4442,8 @@ export function App(): JSX.Element {
             {mainPage === "library" && (
               <LibraryPage
                 games={filteredLibraryGames}
+                allGames={libraryGames}
+                playtimeData={playtime}
                 searchQuery={searchQuery}
                 onSearchChange={setSearchQuery}
                 onPlayGame={handleInitiatePlay}

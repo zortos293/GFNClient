@@ -186,7 +186,12 @@
     "searchPlaceholder": "Search your library...",
     "gameCount": "{{count}} game",
     "gameCount_plural": "{{count}} games",
+    "filteredGameCount": "{{shown}} of {{total}} games",
     "filter": "Filter",
+    "filters": "Filters",
+    "activeFilters": "Active filters",
+    "clearFilters": "Clear",
+    "removeFilter": "Remove {{filter}} filter",
     "allStores": "All Stores",
     "storeFilter": "Store Filter",
     "chooseStore": "Choose a Store",
@@ -203,6 +208,21 @@
     "nvidiaTech": "NVIDIA Tech: {{tech}}",
     "genres": "Genres: {{genres}}",
     "rating": "Rating: {{rating}}",
+    "filterGroups": {
+      "playType": "Play Type",
+      "platform": "Platform",
+      "controls": "Controls",
+      "activity": "Activity"
+    },
+    "filterOptions": {
+      "installToPlay": "Install to Play",
+      "cloudLaunch": "Cloud Launch",
+      "keyboardMouse": "Keyboard & Mouse",
+      "controller": "Controller",
+      "touch": "Touch",
+      "played": "Played",
+      "neverPlayed": "Never Played"
+    },
     "lastPlayed": {
       "never": "Never played",
       "justNow": "Just now",
@@ -216,7 +236,9 @@
       "libraryEmpty": "Your library is empty",
       "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
       "noGamesFound": "No games found",
-      "noGamesMatch": "No games match \"{{query}}\""
+      "noGamesMatch": "No games match \"{{query}}\"",
+      "noFilteredGames": "No games match those filters",
+      "tryAdjustingFilters": "Try clearing a filter or changing your search."
     }
   },
   "gameCard": {

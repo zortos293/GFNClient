@@ -20,7 +20,9 @@ try {
   const pkgPath = path.join(pkgRoot, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   const version = pkg.version;
-  console.log(`Building webOS IPK for version: ${version}`);
+  // Normalize version for webOS (needs strictly x.y.z format, no prerelease tag)
+  const cleanVersion = version.match(/^\d+\.\d+\.\d+/)?.[0] || '1.0.0';
+  console.log(`Building webOS IPK. Package version: ${version}, Normalized webOS version: ${cleanVersion}`);
 
   // 2. Read appinfo.json
   const appinfoPath = path.join(pkgRoot, 'webos', 'appinfo.json');
@@ -28,7 +30,7 @@ try {
     throw new Error(`appinfo.json not found at ${appinfoPath}`);
   }
   const appinfo = JSON.parse(fs.readFileSync(appinfoPath, 'utf8'));
-  appinfo.version = version;
+  appinfo.version = cleanVersion;
 
   // 3. Ensure Vite build (dist) exists
   const distPath = path.join(pkgRoot, 'dist');
@@ -47,23 +49,50 @@ try {
   const appDir = path.join(dataDir, 'usr', 'palm', 'applications', appinfo.id);
   fs.mkdirSync(appDir, { recursive: true });
 
-  // 5. Copy dist contents and inject manifest/icon
+  // 5. Copy dist contents and inject manifest/icon/bridge
   console.log(`Staging application files...`);
   fs.cpSync(distPath, appDir, { recursive: true });
   fs.writeFileSync(path.join(appDir, 'appinfo.json'), JSON.stringify(appinfo, null, 2));
 
-  const logoPath = path.join(repoRoot, 'logo.png');
-  if (fs.existsSync(logoPath)) {
-    fs.copyFileSync(logoPath, path.join(appDir, 'icon.png'));
+  // Copy icon: prefer the 80x80 iOS app icon to satisfy webOS metadata checks
+  const preferredIconPath = path.join(repoRoot, 'ios', 'OpenNOWiOS', 'OpenNOWiOS', 'Assets.xcassets', 'AppIcon.appiconset', 'ipad-40@2x.png');
+  const fallbackIconPath = path.join(repoRoot, 'logo.png');
+  let iconToCopy = fallbackIconPath;
+  if (fs.existsSync(preferredIconPath)) {
+    iconToCopy = preferredIconPath;
+    console.log(`Using preferred 80x80 icon from iOS assets.`);
   } else {
-    console.warn(`Warning: logo.png not found at ${logoPath}. No icon copied.`);
+    console.warn(`Warning: preferred 80x80 icon not found at ${preferredIconPath}. Using fallback logo.png.`);
+  }
+  if (fs.existsSync(iconToCopy)) {
+    fs.copyFileSync(iconToCopy, path.join(appDir, 'icon.png'));
+  }
+
+  // Copy and inject webOS browser bridge
+  const bridgeSrcPath = path.join(pkgRoot, 'webos', 'webos-bridge.js');
+  if (fs.existsSync(bridgeSrcPath)) {
+    fs.copyFileSync(bridgeSrcPath, path.join(appDir, 'webos-bridge.js'));
+    console.log(`Staged webos-bridge.js.`);
+
+    // Inject bridge script into index.html right before </head>
+    const indexPath = path.join(appDir, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      let indexHtml = fs.readFileSync(indexPath, 'utf8');
+      indexHtml = indexHtml.replace('</head>', '<script src="webos-bridge.js"></script></head>');
+      fs.writeFileSync(indexPath, indexHtml, 'utf8');
+      console.log(`Injected webos-bridge.js script tag into index.html.`);
+    } else {
+      console.warn(`Warning: index.html not found in dist. Bridge script tag not injected.`);
+    }
+  } else {
+    console.warn(`Warning: webos-bridge.js not found at ${bridgeSrcPath}. No bridge copied.`);
   }
 
   // 6. Create control configuration file
   const controlDir = path.join(tempDir, 'control');
   fs.mkdirSync(controlDir, { recursive: true });
   const controlContent = `Package: ${appinfo.id}
-Version: ${version}
+Version: ${cleanVersion}
 Description: ${appinfo.description || 'OpenNOW webOS App'}
 Section: misc
 Priority: optional

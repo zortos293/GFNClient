@@ -621,6 +621,8 @@
       "accentColorViolet": "Violet",
       "accentColorAmber": "Amber",
       "accentColorRose": "Rose",
+      "shaderBackground": "Shader Background",
+      "shaderBackgroundHint": "Render a live animated shader behind the desktop UI. It follows your accent color and pauses automatically when the window is hidden.",
       "hideStreamOverlayButtons": "Hide Stream Overlay Buttons",
       "hideStreamOverlayButtonsHint": "Hide microphone, fullscreen, and end-session buttons while streaming.",
       "showStatsOnStreamLaunch": "Show Stats on Stream Launch",

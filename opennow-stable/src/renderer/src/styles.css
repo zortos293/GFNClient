@@ -308,9 +308,36 @@ body,
   height: 100%;
   display: flex;
   flex-direction: column;
+  isolation: isolate;
   background:
     radial-gradient(900px 400px at 80% -5%, rgba(var(--accent-rgb), 0.03), transparent 70%),
     linear-gradient(180deg, var(--bg-a), var(--bg-b));
+}
+
+/* ======================================================
+   SHADER BACKGROUND — animated WebGL ambient layer
+   ====================================================== */
+.shader-bg {
+  display: block;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* App shell: paints above .app-container's gradient but under all content. */
+.shader-bg--shell {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+}
+
+/* Login screen: fills the .login-bg layer under the noise overlay. */
+.shader-bg--login {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .app-container--controller {

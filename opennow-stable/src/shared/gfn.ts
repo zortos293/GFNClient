@@ -364,6 +364,8 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** Animated WebGL shader background across the desktop UI */
+  uiShaderBackground: boolean;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
   autoFullScreen: boolean;

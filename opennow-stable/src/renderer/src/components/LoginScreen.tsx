@@ -2,9 +2,10 @@ import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
 import QRCode from "qrcode";
 import { LogIn, ChevronDown, QrCode } from "lucide-react";
-import type { AuthDeviceLoginChallenge, LoginProvider } from "@shared/gfn";
+import type { AppAccentColor, AuthDeviceLoginChallenge, LoginProvider } from "@shared/gfn";
 import { useTranslation } from "../i18n";
 import { OpenNowLogoMark } from "./OpenNowLogoMark";
+import { ShaderBackground } from "./ShaderBackground";
 
 export interface LoginScreenProps {
   providers: LoginProvider[];
@@ -19,6 +20,9 @@ export interface LoginScreenProps {
   statusMessage?: string;
   qrLoginChallenge?: AuthDeviceLoginChallenge | null;
   isQrLoginPending?: boolean;
+  /** Render the animated WebGL shader background instead of the static CSS orbs */
+  shaderBackground?: boolean;
+  accentColor?: AppAccentColor;
 }
 
 export function LoginScreen({
@@ -34,6 +38,8 @@ export function LoginScreen({
   statusMessage,
   qrLoginChallenge,
   isQrLoginPending = false,
+  shaderBackground = true,
+  accentColor = "green",
 }: LoginScreenProps): JSX.Element {
   const { t } = useTranslation();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -96,9 +102,15 @@ export function LoginScreen({
   return (
     <div className="login-screen">
       <div className="login-bg">
-        <div className="login-bg-orb login-bg-orb--1" />
-        <div className="login-bg-orb login-bg-orb--2" />
-        <div className="login-bg-orb login-bg-orb--3" />
+        {shaderBackground ? (
+          <ShaderBackground accentColor={accentColor} intensity={1} className="shader-bg--login" />
+        ) : (
+          <>
+            <div className="login-bg-orb login-bg-orb--1" />
+            <div className="login-bg-orb login-bg-orb--2" />
+            <div className="login-bg-orb login-bg-orb--3" />
+          </>
+        )}
         <div className="login-bg-noise" />
       </div>
 

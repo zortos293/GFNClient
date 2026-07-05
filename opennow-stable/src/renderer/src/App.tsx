@@ -110,6 +110,7 @@ import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
+import { ShaderBackground } from "./components/ShaderBackground";
 import { pageTransition } from "./components/MotionProvider";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
@@ -455,6 +456,7 @@ export function App(): JSX.Element {
     showStatsOnLaunch: false,
     hideServerSelector: false,
     appAccentColor: "green",
+    uiShaderBackground: true,
     controllerMode: false,
     autoFullScreen: false,
     favoriteGameIds: [],
@@ -4199,6 +4201,8 @@ export function App(): JSX.Element {
           statusMessage={startupStatusMessage}
           qrLoginChallenge={qrLoginChallenge}
           isQrLoginPending={activeLoginMode === "qr" && !qrLoginChallenge}
+          shaderBackground={settings.uiShaderBackground}
+          accentColor={settings.appAccentColor}
         />
         {releaseHighlightsPayload && (
           <ReleaseHighlightsModal
@@ -4332,6 +4336,13 @@ export function App(): JSX.Element {
   // Main app layout
   return (
     <div className={`app-container${settings.controllerMode ? " app-container--controller" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
+      {settings.uiShaderBackground && (
+        <ShaderBackground
+          accentColor={settings.appAccentColor}
+          intensity={0.55}
+          className="shader-bg--shell"
+        />
+      )}
       {startupRefreshNotice && (
         <div className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}>
           {startupRefreshNotice.text}

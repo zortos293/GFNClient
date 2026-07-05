@@ -115,6 +115,8 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** Animated WebGL shader background across the desktop UI */
+  uiShaderBackground: boolean;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
   /** Automatically enter fullscreen when launching a stream */
@@ -224,6 +226,7 @@ const DEFAULT_SETTINGS: Settings = {
   showStatsOnLaunch: false,
   hideServerSelector: false,
   appAccentColor: "green",
+  uiShaderBackground: true,
   controllerMode: false,
   autoFullScreen: false,
   favoriteGameIds: [],

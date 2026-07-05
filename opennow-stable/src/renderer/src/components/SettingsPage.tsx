@@ -4035,6 +4035,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 <div className="settings-toggle-grid">
                   <div className="settings-row">
                     <label className="settings-label">
+                      {t("settings.interface.shaderBackground")}
+                      <span className="settings-hint">{t("settings.interface.shaderBackgroundHint")}</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.uiShaderBackground}
+                        onChange={(e) => handleChange("uiShaderBackground", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
                       {t("settings.interface.hideStreamOverlayButtons")}
                       <span className="settings-hint">{t("settings.interface.hideStreamOverlayButtonsHint")}</span>
                     </label>

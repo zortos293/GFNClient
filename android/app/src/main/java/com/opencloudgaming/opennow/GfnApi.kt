@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.util.Base64
 import androidx.browser.customtabs.CustomTabsIntent
 import kotlinx.coroutines.Dispatchers
@@ -461,8 +462,30 @@ private fun JsonObject.checkGraphQlErrors(label: String = "GFN GraphQL"): JsonOb
 
 private suspend fun OkHttpClient.awaitText(request: Request): Pair<Int, String> =
     withContext(Dispatchers.IO) {
-        newCall(request).execute().use { response ->
-            response.code to (response.body?.string().orEmpty())
+        val requestBody = OpenNowHttpDiagnostics.captureRequestBody(request)
+        val startedAtMs = SystemClock.elapsedRealtime()
+        try {
+            newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                OpenNowHttpDiagnostics.record(
+                    request = request,
+                    requestBody = requestBody,
+                    statusCode = response.code,
+                    responseBody = text,
+                    elapsedMs = SystemClock.elapsedRealtime() - startedAtMs,
+                )
+                response.code to text
+            }
+        } catch (error: Throwable) {
+            OpenNowHttpDiagnostics.record(
+                request = request,
+                requestBody = requestBody,
+                statusCode = null,
+                responseBody = "",
+                elapsedMs = SystemClock.elapsedRealtime() - startedAtMs,
+                error = error,
+            )
+            throw error
         }
     }
 
@@ -2010,8 +2033,10 @@ class PrintedWasteRepository(
 
 data class GfnSessionDiagnosticResponse(
     val operation: String,
+    val method: String,
     val url: String,
     val statusCode: Int,
+    val requestBody: String,
     val responseBody: String,
 )
 
@@ -2032,7 +2057,7 @@ class GfnSessionRepository(
         require(appId.all(Char::isDigit)) { "Invalid launch appId '$appId'." }
         val clientId = UUID.randomUUID().toString()
         val deviceId = authStore.stableDeviceId()
-        val base = resolveStreamingBaseUrl(zone, streamingBaseUrl)
+        val base = resolveLaunchSessionBaseUrl(token, resolveStreamingBaseUrl(zone, streamingBaseUrl))
         val body = buildSessionRequestBody(appId, internalTitle, settings, accountLinked, deviceId)
         val url = "$base/v2/session?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}"
         val host = Uri.parse(base).host.orEmpty()
@@ -2285,8 +2310,10 @@ class GfnSessionRepository(
             diagnosticsSink(
                 GfnSessionDiagnosticResponse(
                     operation = operation,
+                    method = request.method,
                     url = request.url.toString(),
                     statusCode = statusCode,
+                    requestBody = OpenNowHttpDiagnostics.captureRequestBody(request),
                     responseBody = responseBody,
                 ),
             )
@@ -2534,7 +2561,7 @@ class GfnSessionRepository(
     }
 
     private fun resolveMediaConnectionInfo(connections: List<JsonObject>, serverIp: String): MediaConnectionInfo? {
-        fun extractIp(conn: JsonObject): String? = conn.string("ip") ?: conn.string("resourcePath")?.let(::extractHostFromUrl)
+        fun extractIp(conn: JsonObject): String? = conn.string("ip")?.let(::usableSessionHost) ?: conn.string("resourcePath")?.let(::extractHostFromUrl)
         fun extractPort(conn: JsonObject): Int = conn.int("port") ?: conn.string("resourcePath")?.let { Uri.parse(it.replace("rtsps://", "https://").replace("rtsp://", "http://")).port } ?: 0
         listOf(2, 17).forEach { usage ->
             connections.firstOrNull { it.int("usage") == usage }?.let {
@@ -2557,18 +2584,18 @@ class GfnSessionRepository(
 
     private fun streamingServerIpFromSession(session: JsonObject): String? {
         val conn = session.arr("connectionInfo")?.mapNotNull { it.asObject() }?.firstOrNull { it.int("usage") == 14 }
-        conn?.string("ip")?.takeIf { it.isNotBlank() }?.let { return it }
+        conn?.string("ip")?.let(::usableSessionHost)?.let { return it }
         conn?.string("resourcePath")?.let(::extractHostFromUrl)?.let { return it }
-        return session.obj("sessionControlInfo")?.string("ip")
+        return session.obj("sessionControlInfo")?.string("ip")?.let(::usableSessionHost)
     }
 
     private fun buildSignalingUrl(raw: String, serverIp: String): Pair<String, String?> =
         when {
             raw.startsWith("rtsps://") || raw.startsWith("rtsp://") -> {
                 val host = raw.substringAfter("://").substringBefore(":").substringBefore("/")
-                if (host.isNotBlank() && !host.startsWith(".")) "wss://$host/nvst/" to host else "wss://$serverIp:443/nvst/" to null
+                usableSessionHost(host)?.let { "wss://$it/nvst/" to it } ?: ("wss://$serverIp:443/nvst/" to null)
             }
-            raw.startsWith("wss://") -> raw to raw.removePrefix("wss://").substringBefore("/")
+            raw.startsWith("wss://") -> extractHostFromUrl(raw)?.let { raw to it } ?: ("wss://$serverIp:443/nvst/" to null)
             raw.startsWith("/") -> "wss://$serverIp:443$raw" to null
             else -> "wss://$serverIp:443/nvst/" to null
         }
@@ -2576,11 +2603,17 @@ class GfnSessionRepository(
     private fun extractHostFromUrl(raw: String): String? {
         val after = listOf("rtsps://", "rtsp://", "wss://", "https://").firstOrNull { raw.startsWith(it) }?.let { raw.removePrefix(it) } ?: return null
         val host = after.substringBefore(":").substringBefore("/")
-        return host.takeIf { it.isNotBlank() && !it.startsWith(".") }
+        return usableSessionHost(host)
     }
 
     private fun isZoneHostname(value: String): Boolean =
         value.contains("cloudmatchbeta.nvidiagrid.net") || value.contains("cloudmatch.nvidiagrid.net")
+
+    private suspend fun resolveLaunchSessionBaseUrl(token: String, base: String): String {
+        if (!isProviderRootStreamingBase(base)) return base
+        val regions = fetchDynamicRegions(http, token, base).first
+        return providerLaunchBaseUrl(base, regions)
+    }
 
     private fun resolveStreamingBaseUrl(zone: String, provided: String?): String {
         normalizeStreamingServiceUrl(provided.orEmpty())?.let { return it.trimEnd('/') }
@@ -2594,6 +2627,36 @@ class GfnSessionRepository(
         return if (host != null && base.contains("cloudmatchbeta.nvidiagrid.net") && !isZoneHostname(host)) "https://$host" else base
     }
 
+}
+
+internal fun usableSessionHost(value: String?): String? {
+    val host = value?.trim().orEmpty()
+    return host.takeIf {
+        it.isNotBlank() &&
+            !it.startsWith(".") &&
+            !it.endsWith(".") &&
+            !it.contains("..")
+    }
+}
+
+private fun isProviderRootStreamingBase(base: String): Boolean {
+    val url = base.toHttpUrlOrNull() ?: return false
+    val host = url.host.lowercase(Locale.US)
+    return host.startsWith("prod.") && host.endsWith(".geforcenow.nvidiagrid.net")
+}
+
+internal fun providerLaunchBaseUrl(providerBase: String, regions: List<StreamRegion>): String {
+    val normalizedBase = normalizeStreamingServiceUrl(providerBase)?.trimEnd('/') ?: providerBase.trim().trimEnd('/')
+    if (!isProviderRootStreamingBase(normalizedBase)) return normalizedBase
+    val providerHost = normalizedBase.toHttpUrlOrNull()?.host?.lowercase(Locale.US) ?: return normalizedBase
+    val regionUrls = regions
+        .mapNotNull { normalizeStreamingServiceUrl(it.url)?.trimEnd('/') }
+        .distinct()
+        .filter { regionUrl ->
+            val regionHost = regionUrl.toHttpUrlOrNull()?.host?.lowercase(Locale.US)
+            regionHost != null && regionHost != providerHost
+        }
+    return if (regionUrls.size == 1) regionUrls.first() else normalizedBase
 }
 
 suspend fun fetchDynamicRegions(

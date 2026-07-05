@@ -22,11 +22,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.OkHttpClient
 import java.text.SimpleDateFormat
 import java.text.DateFormat
@@ -47,19 +42,9 @@ enum class SettingsRouteTarget {
 private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
 internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
 private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
-private const val DEBUG_EVENT_LIMIT = 140
+private const val DEBUG_EVENT_LIMIT = 400
 private const val DEBUG_EVENT_MESSAGE_LIMIT = 640
-private const val DEBUG_PAYLOAD_LIMIT = 40
-private const val DEBUG_PAYLOAD_BODY_LIMIT = 20_000
-private const val DEBUG_LOG_TAG = "OpenNOWDebug"
-
-private val DebugPayloadJson = Json {
-    prettyPrint = true
-    ignoreUnknownKeys = true
-    explicitNulls = false
-    isLenient = true
-    encodeDefaults = true
-}
+private const val DEBUG_PAYLOAD_LIMIT = 80
 
 private data class DebugLogEvent(
     val timestampMs: Long,
@@ -70,8 +55,10 @@ private data class DebugLogEvent(
 private data class DebugPayloadEvent(
     val timestampMs: Long,
     val operation: String,
+    val method: String,
     val url: String,
     val statusCode: Int,
+    val requestBody: String,
     val body: String,
 )
 
@@ -147,6 +134,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val queueAdReportMutex = Mutex()
     private val accountConnectorRefreshMutex = Mutex()
     private val resolutionMismatchRestartKeys = mutableSetOf<String>()
+    private val resolutionFallbackNoticeKeys = mutableSetOf<String>()
     private val debugEventsLock = Any()
     private val debugEvents = ArrayDeque<DebugLogEvent>()
     private val debugPayloadsLock = Any()
@@ -220,7 +208,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 debugEvents.removeFirst()
             }
         }
-        Log.d(DEBUG_LOG_TAG, "${event.category}: ${event.message}")
+        Log.d(OPENNOW_DEBUG_LOG_TAG, "${event.category}: ${event.message}")
     }
 
     private fun debugEventSnapshot(): List<DebugLogEvent> =
@@ -231,8 +219,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val event = DebugPayloadEvent(
             timestampMs = System.currentTimeMillis(),
             operation = response.operation,
+            method = response.method,
             url = response.url,
             statusCode = response.statusCode,
+            requestBody = response.requestBody.takeIf { it.isNotBlank() }?.let(::sanitizeDiagnosticLogPayload).orEmpty(),
             body = sanitizedBody,
         )
         synchronized(debugPayloadsLock) {
@@ -242,8 +232,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         Log.d(
-            DEBUG_LOG_TAG,
-            "gfn-json: ${response.operation} http=${response.statusCode} bytes=${response.responseBody.length} captured=${sanitizedBody.length} host=${hostForDebug(response.url)}",
+            OPENNOW_DEBUG_LOG_TAG,
+            "gfn-json: ${response.operation} ${response.method} http=${response.statusCode} requestBytes=${response.requestBody.length} responseBytes=${response.responseBody.length} captured=${sanitizedBody.length} host=${hostForDebug(response.url)}",
         )
     }
 
@@ -1504,21 +1494,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
         val safeSettings = currentSettings.androidSafeVideoFallback()
         recordDebugEvent("recovery", "Safe video restart requested reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} current=${currentSettings.debugSummary()} safe=${safeSettings.debugSummary()}")
-        if (currentSettings == safeSettings) {
-            if (initial.streamSession != null) {
-                recoverStreamSession("$reason. Reconnecting the existing session.")
-                return
-            }
-            _state.update {
-                it.copy(
-                    error = "$reason. Safe H264 profile also stalled.",
-                    streamStatus = "idle",
-                    activeStreamSettings = null,
-                    launchPhase = "",
-                )
-            }
-            return
-        }
         launchJob = viewModelScope.launch {
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val snapshot = state.value
@@ -1731,6 +1706,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun recordServerNegotiatedResolutionFallback(actualResolution: String, expectedResolution: String) {
+        val current = state.value
+        val currentSettings = current.activeStreamSettings ?: effectiveStreamSettings()
+        val noticeKey = listOf(
+            current.streamGame?.id ?: current.activeSession?.appId?.toString() ?: current.streamSession?.sessionId.orEmpty(),
+            streamSettingsSessionSignature(currentSettings),
+            actualResolution,
+            expectedResolution,
+        ).joinToString("|")
+        if (!resolutionFallbackNoticeKeys.add(noticeKey)) return
+        recordDebugEvent(
+            "stream",
+            "Server negotiated fallback resolution actual=$actualResolution expected=$expectedResolution; keeping connected stream settings=${currentSettings.debugSummary()}",
+        )
+    }
+
     fun recoverStreamSession(reason: String) {
         if (launchJob?.isActive == true) {
             recordDebugEvent("recovery", "Ignored stream recovery while launch job is active reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
@@ -1914,6 +1905,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} nativeAvailable=${cap.nativeDecoderAvailable ?: "unknown"} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")
             }
             appendLine(NativeInputDiagnostics.snapshot())
+            appendLine(OpenNowHttpDiagnostics.snapshot())
             snapshot.error?.let { appendLine("error=$it") }
             val events = debugEventSnapshot()
             appendLine("events.count=${events.size}")
@@ -1932,7 +1924,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)
                 payloads.forEachIndexed { index, payload ->
-                    appendLine("advancedJson.${index + 1} ${formatter.format(Date(payload.timestampMs))} [${payload.operation}] http=${payload.statusCode} url=${payload.url}")
+                    appendLine("advancedJson.${index + 1} ${formatter.format(Date(payload.timestampMs))} [${payload.operation}] ${payload.method} http=${payload.statusCode} url=${payload.url}")
+                    if (payload.requestBody.isNotBlank()) {
+                        appendLine("request:")
+                        appendLine(payload.requestBody)
+                    }
+                    appendLine("response:")
                     appendLine(payload.body)
                 }
             }
@@ -2432,49 +2429,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             membershipTier = user.membershipTier,
             providerCode = provider.code,
         )
-}
-
-internal fun sanitizeDiagnosticLogPayload(raw: String): String {
-    val trimmed = raw.trim()
-    if (trimmed.isBlank()) return "(empty)"
-    val formatted = runCatching {
-        val sanitized = redactDiagnosticJsonElement(OpenNowJson.parseToJsonElement(trimmed))
-        DebugPayloadJson.encodeToString(JsonElement.serializer(), sanitized)
-    }.getOrElse {
-        redactDiagnosticText(trimmed)
-    }
-    return if (formatted.length <= DEBUG_PAYLOAD_BODY_LIMIT) {
-        formatted
-    } else {
-        formatted.take(DEBUG_PAYLOAD_BODY_LIMIT) + "\n... truncated ${formatted.length - DEBUG_PAYLOAD_BODY_LIMIT} chars ..."
-    }
-}
-
-private fun redactDiagnosticJsonElement(element: JsonElement, keyHint: String? = null): JsonElement =
-    when {
-        keyHint != null && shouldRedactDiagnosticKey(keyHint) -> JsonPrimitive("[redacted]")
-        element is JsonObject -> JsonObject(element.mapValues { (key, value) -> redactDiagnosticJsonElement(value, key) })
-        element is JsonArray -> JsonArray(element.map { redactDiagnosticJsonElement(it) })
-        else -> element
-    }
-
-private fun shouldRedactDiagnosticKey(key: String): Boolean {
-    val normalized = key.lowercase(Locale.US).filter(Char::isLetterOrDigit)
-    return normalized.contains("authorization") ||
-        normalized.contains("token") ||
-        normalized.contains("credential") ||
-        normalized.contains("password") ||
-        normalized.contains("secret") ||
-        normalized.contains("cookie") ||
-        normalized == "email" ||
-        normalized == "userid"
-}
-
-private fun redactDiagnosticText(text: String): String {
-    val sensitive = Regex("""(?i)(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|credential|password|secret|cookie)(\s*[=:]\s*)([^\s,;]+)""")
-    return sensitive.replace(text) { match ->
-        "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
-    }
 }
 
 internal fun externalLaunchIdFromParts(

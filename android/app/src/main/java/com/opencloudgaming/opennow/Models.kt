@@ -183,15 +183,27 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
 internal data class StreamResolutionMismatch(
     val actualResolution: String,
     val expectedResolution: String,
+    val serverNegotiatedResolution: String? = null,
 )
 
-internal fun streamRuntimeResolutionMismatch(settings: StreamSettings, actualResolution: String?): StreamResolutionMismatch? {
+internal val StreamResolutionMismatch.isServerNegotiatedFallback: Boolean
+    get() = serverNegotiatedResolution == actualResolution
+
+internal fun streamRuntimeResolutionMismatch(
+    settings: StreamSettings,
+    actualResolution: String?,
+    serverNegotiatedResolution: String? = null,
+): StreamResolutionMismatch? {
     val actualPixels = parseResolutionPixelsOrNull(actualResolution) ?: return null
     val expectedPixels = streamResolutionPixels(settings)
     if (actualPixels == expectedPixels) return null
+    val negotiatedPixels = parseResolutionPixelsOrNull(serverNegotiatedResolution)
     return StreamResolutionMismatch(
         actualResolution = "${actualPixels.first}x${actualPixels.second}",
         expectedResolution = "${expectedPixels.first}x${expectedPixels.second}",
+        serverNegotiatedResolution = negotiatedPixels
+            ?.takeIf { it == actualPixels }
+            ?.let { "${it.first}x${it.second}" },
     )
 }
 

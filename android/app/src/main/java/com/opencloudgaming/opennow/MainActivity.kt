@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.Log
 import android.view.Display
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -258,8 +259,12 @@ class MainActivity : ComponentActivity() {
 
     private fun applyStreamPointerIcon(active: Boolean) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
-        val icon = if (active) PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL) else null
-        window.decorView.applyPointerIconRecursive(icon)
+        runCatching {
+            val icon = if (active) PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL) else null
+            window.decorView.applyPointerIconRecursive(icon)
+        }.onFailure { error ->
+            Log.w(MAIN_ACTIVITY_LOG_TAG, "Unable to apply stream pointer icon", error)
+        }
     }
 
     private fun applyStreamDisplayRefreshRate(active: Boolean, requestedFps: Int, force: Boolean = false) {
@@ -286,9 +291,13 @@ class MainActivity : ComponentActivity() {
         ) {
             return
         }
-        window.attributes = attributes.apply {
-            preferredDisplayModeId = preferredModeId
-            this.preferredRefreshRate = preferredRefreshRate
+        runCatching {
+            window.attributes = attributes.apply {
+                preferredDisplayModeId = preferredModeId
+                this.preferredRefreshRate = preferredRefreshRate
+            }
+        }.onFailure { error ->
+            Log.w(MAIN_ACTIVITY_LOG_TAG, "Unable to apply stream display refresh preference", error)
         }
     }
 
@@ -411,6 +420,7 @@ class MainActivity : ComponentActivity() {
             keyCode in KeyEvent.KEYCODE_BUTTON_A..KeyEvent.KEYCODE_BUTTON_MODE
 
     private companion object {
+        private const val MAIN_ACTIVITY_LOG_TAG = "OpenNOWMainActivity"
         private const val STREAM_SYSTEM_UI_ENFORCE_INTERVAL_MS = 500L
         private const val STREAM_SYSTEM_UI_INPUT_REAPPLY_MS = 250L
     }

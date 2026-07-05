@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import com.posthog.android.PostHogAndroidConfig
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -23,6 +24,7 @@ class OpenNowAnalyticsTest {
         assertTrue(config.captureApplicationLifecycleEvents)
         assertTrue(config.captureDeepLinks)
         assertTrue(config.captureScreenViews)
+        assertEquals(10, config.flushIntervalSeconds)
         assertTrue(config.sessionReplay)
         assertTrue(config.sessionReplayConfig.screenshot)
         assertTrue(config.sessionReplayConfig.maskAllTextInputs)

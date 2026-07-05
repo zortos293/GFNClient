@@ -81,7 +81,7 @@ class SettingsStore(context: Context) {
             streamIntroMusic = streamIntroMusic,
             queueReadyMusic = queueReadyMusic,
             stretchStreamToFill = stretchStreamToFill,
-            controllerUiSounds = nerdMode && controllerUiSounds,
+            controllerUiSounds = controllerUiSounds,
             autoFullScreen = true,
         )
     }

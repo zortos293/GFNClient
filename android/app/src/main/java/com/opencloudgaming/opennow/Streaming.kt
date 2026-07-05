@@ -365,6 +365,51 @@ private fun StreamSettings.prefersTenBitVideo(): Boolean =
 
 private val WEBRTC_AUXILIARY_VIDEO_CODECS = setOf("RTX", "RED", "ULPFEC", "FLEXFEC-03")
 
+private fun streamDiagnosticId(value: String?): String {
+    val cleaned = value.orEmpty().trim()
+    if (cleaned.isBlank()) return "-"
+    return if (cleaned.length <= 12) cleaned else "${cleaned.take(4)}...${cleaned.takeLast(6)}"
+}
+
+private fun signalingUrlForDiagnostics(url: String, sessionId: String): String =
+    redactDiagnosticUrl(url).replace(sessionId, streamDiagnosticId(sessionId))
+
+private fun IceCandidate.diagnosticSummary(): String {
+    val raw = sdp
+    val protocol = Regex("""\s(udp|tcp)\s""", RegexOption.IGNORE_CASE)
+        .find(raw)
+        ?.value
+        ?.trim()
+        ?.lowercase(Locale.US)
+        ?: "unknown"
+    val type = Regex("""\styp\s+([a-z0-9]+)""", RegexOption.IGNORE_CASE)
+        .find(raw)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.lowercase(Locale.US)
+        ?: "unknown"
+    val address = Regex("""candidate:\S+\s+\d+\s+\S+\s+\d+\s+([^\s]+)\s+(\d+)""")
+        .find(raw)
+        ?.let { match -> "${match.groupValues[1]}:${match.groupValues[2]}" }
+        ?: "unknown"
+    return "mid=${sdpMid.orEmpty()} line=$sdpMLineIndex type=$type protocol=$protocol address=$address raw=${raw.take(240)}"
+}
+
+private fun sdpDiagnosticSummary(label: String, sdp: String): String {
+    val lines = sdp.split(Regex("\\r?\\n")).filter { it.isNotBlank() }
+    val media = lines.filter { it.startsWith("m=") }.joinToString("|").take(180)
+    val codecs = lines
+        .filter { it.startsWith("a=rtpmap:") }
+        .mapNotNull { line -> line.substringAfter(' ', "").substringBefore('/').takeIf { it.isNotBlank() } }
+        .distinct()
+        .take(12)
+        .joinToString(",")
+    val candidates = lines.count { it.startsWith("a=candidate:") }
+    val hasIce = lines.any { it.startsWith("a=ice-ufrag:") } && lines.any { it.startsWith("a=ice-pwd:") }
+    val hasFingerprint = lines.any { it.startsWith("a=fingerprint:") }
+    return "$label lines=${lines.size} media=$media codecs=$codecs candidates=$candidates ice=$hasIce fingerprint=$hasFingerprint"
+}
+
 sealed interface SignalingEvent {
     data object Connected : SignalingEvent
     data class Disconnected(val reason: String) : SignalingEvent
@@ -391,6 +436,7 @@ class GfnSignalingClient(
     fun connect() {
         val url = buildSignInUrl()
         val host = url.removePrefix("wss://").substringBefore("/")
+        onEvent(SignalingEvent.Log("Signaling connecting url=${signalingUrlForDiagnostics(url, session.sessionId)} session=${streamDiagnosticId(session.sessionId)}"))
         val request = Request.Builder()
             .url(url)
             .header("Sec-WebSocket-Protocol", "x-nv-sessionid.${session.sessionId}")
@@ -402,6 +448,11 @@ class GfnSignalingClient(
             request,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    onEvent(
+                        SignalingEvent.Log(
+                            "Signaling open http=${response.code} protocol=${response.header("Sec-WebSocket-Protocol").orEmpty().replace(session.sessionId, streamDiagnosticId(session.sessionId))}",
+                        ),
+                    )
                     sendPeerInfo()
                     heartbeatJob?.cancel()
                     heartbeatJob = scope.launch {
@@ -418,18 +469,23 @@ class GfnSignalingClient(
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     heartbeatJob?.cancel()
-                    onEvent(SignalingEvent.Disconnected(reason.ifBlank { "socket closed" }))
+                    onEvent(SignalingEvent.Disconnected("socket closed code=$code reason=${reason.ifBlank { "none" }}"))
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     heartbeatJob?.cancel()
-                    onEvent(SignalingEvent.Error(t.message ?: "Signaling failed"))
+                    val responseText = response?.let { " http=${it.code} message=${it.message}" }.orEmpty()
+                    onEvent(SignalingEvent.Error("${t.javaClass.simpleName}: ${t.message ?: "Signaling failed"}$responseText"))
                 }
             },
         )
     }
 
     fun sendAnswer(sdp: String, nvstSdp: String?) {
+        onEvent(SignalingEvent.Log(sdpDiagnosticSummary("Sending answer", sdp)))
+        if (!nvstSdp.isNullOrBlank()) {
+            onEvent(SignalingEvent.Log("Sending NVST SDP lines=${nvstSdp.lineSequence().count()} bytes=${nvstSdp.length}"))
+        }
         val msg = buildJsonObject {
             put("type", "answer")
             put("sdp", sdp)
@@ -439,7 +495,11 @@ class GfnSignalingClient(
     }
 
     fun sendIceCandidate(candidate: IceCandidate) {
-        if (candidate.sdp.contains(" tcp ", ignoreCase = true)) return
+        if (candidate.sdp.contains(" tcp ", ignoreCase = true)) {
+            onEvent(SignalingEvent.Log("Dropping TCP local ICE candidate ${candidate.diagnosticSummary()}"))
+            return
+        }
+        onEvent(SignalingEvent.Log("Sending local ICE candidate ${candidate.diagnosticSummary()}"))
         val msg = buildJsonObject {
             put("candidate", candidate.sdp)
             put("sdpMid", candidate.sdpMid)
@@ -499,24 +559,26 @@ class GfnSignalingClient(
         when {
             payload["type"]?.jsonPrimitive?.contentOrNull == "offer" -> {
                 val sdp = payload["sdp"]?.jsonPrimitive?.contentOrNull
-                if (sdp != null) onEvent(SignalingEvent.Offer(sdp))
+                if (sdp != null) {
+                    onEvent(SignalingEvent.Log(sdpDiagnosticSummary("Received offer", sdp)))
+                    onEvent(SignalingEvent.Offer(sdp))
+                }
             }
             payload["candidate"]?.jsonPrimitive?.contentOrNull != null -> {
-                onEvent(
-                    SignalingEvent.RemoteIce(
-                        IceCandidate(
-                            payload["sdpMid"]?.jsonPrimitive?.contentOrNull,
-                            payload["sdpMLineIndex"]?.jsonPrimitive?.intOrNull ?: 0,
-                            payload["candidate"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                        ),
-                    ),
+                val candidate = IceCandidate(
+                    payload["sdpMid"]?.jsonPrimitive?.contentOrNull,
+                    payload["sdpMLineIndex"]?.jsonPrimitive?.intOrNull ?: 0,
+                    payload["candidate"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 )
+                onEvent(SignalingEvent.Log("Received remote ICE candidate ${candidate.diagnosticSummary()}"))
+                onEvent(SignalingEvent.RemoteIce(candidate))
             }
         }
     }
 
     private fun sendPeerInfo() {
         val (width, height) = streamResolutionPixels(settings)
+        onEvent(SignalingEvent.Log("Sending peer info resolution=${width}x$height peer=$peerName"))
         sendJson(
             """
             {"ackid":${nextAckId()},"peer_info":{"browser":"Chrome","browserVersion":"131","connected":true,"id":$peerId,"name":"$peerName","peerRole":0,"resolution":"${width}x$height","version":2}}
@@ -1011,7 +1073,7 @@ object NativeStreamInputRouter {
 }
 
 object NativeInputDiagnostics {
-    private const val MAX_LINES = 80
+    private const val MAX_LINES = 240
     private val lines = ArrayDeque<String>()
 
     @Synchronized
@@ -1929,6 +1991,10 @@ class NativeStreamClient(
         val framesDecoded: Long?,
     )
 
+    private fun recordStreamDiagnostic(message: String) {
+        NativeInputDiagnostics.add("stream $message")
+    }
+
     init {
         WebRtcRuntime.ensureInitialized(appContext)
         factory = PeerConnectionFactory.builder()
@@ -2008,6 +2074,9 @@ class NativeStreamClient(
         audioDeviceModule.setSpeakerMute(audioMuted)
         closeTransport(clearInputState = false)
         armControllerMouseAssistForSession()
+        recordStreamDiagnostic(
+            "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps}",
+        )
         startTransport(session, settings, transportGeneration)
     }
 
@@ -2428,6 +2497,9 @@ class NativeStreamClient(
         lastStatsSample = null
         emitStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
+        recordStreamDiagnostic(
+            "transport start generation=$generation reconnectAttempts=$reconnectAttempts session=${streamDiagnosticId(session.sessionId)} iceServers=${session.iceServers.size} media=${session.mediaConnectionInfo?.let { "${it.ip}:${it.port}" } ?: "unknown"}",
+        )
         emitState(if (reconnectAttempts > 0) "Reconnecting signaling" else "Connecting signaling")
         signaling = GfnSignalingClient(session, settings = settings) { event ->
             handleSignaling(event, generation)
@@ -2435,6 +2507,9 @@ class NativeStreamClient(
     }
 
     private fun closeTransport(clearInputState: Boolean, cancelRecovery: Boolean = true) {
+        if (peerConnection != null || signaling != null || reliableInput != null || partiallyReliableInput != null) {
+            recordStreamDiagnostic("transport close clearInput=$clearInputState cancelRecovery=$cancelRecovery lastIce=${lastIceState?.name ?: "none"}")
+        }
         if (cancelRecovery) {
             iceRecoveryJob?.cancel()
             iceRecoveryJob = null
@@ -2470,13 +2545,23 @@ class NativeStreamClient(
         if (generation != transportGeneration) return
         when (event) {
             SignalingEvent.Connected -> {
+                recordStreamDiagnostic("signaling connected generation=$generation")
                 emitState("Waiting for offer")
                 startOfferTimeout(generation)
             }
-            is SignalingEvent.Disconnected -> scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
-            is SignalingEvent.Error -> scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
-            is SignalingEvent.Log -> emitState(event.message)
-            is SignalingEvent.RemoteIce -> peerConnection?.addIceCandidate(event.candidate)
+            is SignalingEvent.Disconnected -> {
+                recordStreamDiagnostic("signaling disconnected ${event.reason}")
+                scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
+            }
+            is SignalingEvent.Error -> {
+                recordStreamDiagnostic("signaling error ${event.message}")
+                scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
+            }
+            is SignalingEvent.Log -> recordStreamDiagnostic(event.message)
+            is SignalingEvent.RemoteIce -> {
+                val added = peerConnection?.addIceCandidate(event.candidate)
+                recordStreamDiagnostic("remote ICE add requested accepted=${added ?: false} pcReady=${peerConnection != null} ${event.candidate.diagnosticSummary()}")
+            }
             is SignalingEvent.Offer -> handleOffer(event.sdp, generation)
         }
     }
@@ -2485,15 +2570,24 @@ class NativeStreamClient(
         val currentSession = session ?: return
         offerTimeoutJob?.cancel()
         offerTimeoutJob = null
+        recordStreamDiagnostic(sdpDiagnosticSummary("raw offer", rawOffer))
         val fixed = prepareRemoteOffer(rawOffer, currentSession)
         val preferred = SdpTools.preferCodec(fixed, settings)
+        if (fixed != rawOffer) {
+            recordStreamDiagnostic(sdpDiagnosticSummary("fixed offer", fixed))
+        }
+        if (preferred != fixed) {
+            recordStreamDiagnostic(sdpDiagnosticSummary("preferred offer", preferred))
+        }
         val pc = ensurePeerConnection(currentSession, generation)
         ensureInputDataChannels(pc, preferred)
         inputEncoder.setProtocolVersion(SdpTools.parseInputProtocolVersion(preferred))
         partiallyReliableGamepadMask = SdpTools.parsePartiallyReliableGamepadMask(preferred)
+        recordStreamDiagnostic("offer input protocol=${SdpTools.parseInputProtocolVersion(preferred)} partialGamepadMask=$partiallyReliableGamepadMask")
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
                 override fun onSetSuccess() {
+                    recordStreamDiagnostic("remote description set")
                     applyVideoCodecPreferences(pc)
                     pc.createAnswer(
                         object : SimpleSdpObserver() {
@@ -2504,6 +2598,7 @@ class NativeStreamClient(
                                     return
                                 }
                                 val munged = SdpTools.mungeAnswerSdp(rawDescription.description, settings.maxBitrateMbps * 1000)
+                                recordStreamDiagnostic(sdpDiagnosticSummary("created answer", munged))
                                 if (settings.codec != VideoCodec.H264 && !SdpTools.negotiatesCodec(munged, settings.codec)) {
                                     NativeInputDiagnostics.add("local answer did not negotiate requested codec=${settings.codec}; requesting safe fallback")
                                     if (
@@ -2528,6 +2623,7 @@ class NativeStreamClient(
                                                 localAnswer = munged,
                                             )
                                             signaling?.sendAnswer(munged, nvst)
+                                            recordStreamDiagnostic("local description set and answer sent")
                                             emitState("Streaming")
                                             startHeartbeat()
                                             startGamepadKeepalive()
@@ -2535,6 +2631,7 @@ class NativeStreamClient(
                                         }
 
                                         override fun onSetFailure(error: String?) {
+                                            recordStreamDiagnostic("local description failed error=${error.orEmpty()}")
                                             failStream(error ?: "Failed to set local description", generation)
                                         }
                                     },
@@ -2543,6 +2640,7 @@ class NativeStreamClient(
                             }
 
                             override fun onCreateFailure(error: String?) {
+                                recordStreamDiagnostic("answer create failed error=${error.orEmpty()}")
                                 failStream(error ?: "Failed to create WebRTC answer", generation)
                             }
                         },
@@ -2551,6 +2649,7 @@ class NativeStreamClient(
                 }
 
                 override fun onSetFailure(error: String?) {
+                    recordStreamDiagnostic("remote description failed error=${error.orEmpty()}")
                     failStream(error ?: "Failed to apply server offer", generation)
                 }
             },
@@ -2662,31 +2761,53 @@ class NativeStreamClient(
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         }
+        recordStreamDiagnostic(
+            "peer connection create generation=$generation iceServers=${ice.size} iceUrls=${session.iceServers.flatMap { it.urls }.joinToString(limit = 8) { url -> url.substringBefore('?').take(120) }}",
+        )
         val pc = requireNotNull(factory).createPeerConnection(config, object : PeerConnection.Observer {
-            override fun onSignalingChange(state: PeerConnection.SignalingState?) = Unit
+            override fun onSignalingChange(state: PeerConnection.SignalingState?) {
+                recordStreamDiagnostic("webrtc signaling state=${state?.name ?: "null"}")
+            }
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 handleIceConnectionChange(state, generation)
             }
-            override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
-            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) = Unit
-            override fun onIceCandidate(candidate: IceCandidate?) {
-                if (candidate != null) signaling?.sendIceCandidate(candidate)
+            override fun onIceConnectionReceivingChange(receiving: Boolean) {
+                recordStreamDiagnostic("ice receiving=$receiving generation=$generation")
             }
-            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) = Unit
+            override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
+                recordStreamDiagnostic("ice gathering state=${state?.name ?: "null"} generation=$generation")
+            }
+            override fun onIceCandidate(candidate: IceCandidate?) {
+                if (candidate != null) {
+                    recordStreamDiagnostic("local ICE candidate gathered ${candidate.diagnosticSummary()}")
+                    signaling?.sendIceCandidate(candidate)
+                } else {
+                    recordStreamDiagnostic("local ICE candidate gathering complete")
+                }
+            }
+            override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {
+                recordStreamDiagnostic("ice candidates removed count=${candidates?.size ?: 0}")
+            }
             override fun onAddStream(stream: MediaStream?) {
+                recordStreamDiagnostic("media stream added video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
                 stream?.videoTracks?.firstOrNull()?.let(::attachVideo)
                 stream?.audioTracks?.firstOrNull()?.let {
                     audioTrack = it
                     it.setEnabled(!audioMuted)
                 }
             }
-            override fun onRemoveStream(stream: MediaStream?) = Unit
+            override fun onRemoveStream(stream: MediaStream?) {
+                recordStreamDiagnostic("media stream removed video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
+            }
             override fun onDataChannel(channel: DataChannel?) {
                 if (channel != null) attachDataChannel(channel)
             }
-            override fun onRenegotiationNeeded() = Unit
+            override fun onRenegotiationNeeded() {
+                recordStreamDiagnostic("renegotiation needed")
+            }
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                 val track = receiver?.track()
+                recordStreamDiagnostic("track added kind=${track?.kind().orEmpty()} streams=${streams?.size ?: 0}")
                 if (track is VideoTrack) attachVideo(track)
                 if (track is AudioTrack) {
                     audioTrack = track
@@ -2695,6 +2816,7 @@ class NativeStreamClient(
             }
             override fun onTrack(transceiver: RtpTransceiver?) {
                 val track = transceiver?.receiver?.track()
+                recordStreamDiagnostic("transceiver track kind=${track?.kind().orEmpty()} media=${transceiver?.mediaType?.name ?: "unknown"}")
                 if (track is VideoTrack) attachVideo(track)
                 if (track is AudioTrack) {
                     audioTrack = track
@@ -2703,13 +2825,16 @@ class NativeStreamClient(
             }
         }) ?: error("Failed to create PeerConnection")
         peerConnection = pc
+        recordStreamDiagnostic("peer connection ready generation=$generation")
         return pc
     }
 
     private fun handleIceConnectionChange(state: PeerConnection.IceConnectionState?, generation: Int) {
         scope.launch {
             if (generation != transportGeneration) return@launch
+            val previous = lastIceState
             lastIceState = state
+            recordStreamDiagnostic("ice connection ${previous?.name ?: "none"} -> ${state?.name ?: "null"} generation=$generation")
             when (state) {
                 PeerConnection.IceConnectionState.CONNECTED,
                 PeerConnection.IceConnectionState.COMPLETED,
@@ -2738,7 +2863,11 @@ class NativeStreamClient(
     }
 
     private fun scheduleTransportReconnect(reason: String, delayMs: Long, generation: Int) {
-        if (generation != transportGeneration || iceRecoveryJob?.isActive == true) return
+        if (generation != transportGeneration || iceRecoveryJob?.isActive == true) {
+            recordStreamDiagnostic("reconnect not scheduled reason=$reason generation=$generation activeJob=${iceRecoveryJob?.isActive == true}")
+            return
+        }
+        recordStreamDiagnostic("reconnect scheduled reason=$reason delayMs=$delayMs generation=$generation")
         iceRecoveryJob = scope.launch {
             if (delayMs > 0) delay(delayMs)
             if (generation != transportGeneration) return@launch
@@ -2750,13 +2879,25 @@ class NativeStreamClient(
     private fun restartTransport(reason: String) {
         val currentSession = session ?: return
         val currentSettings = settings
+        if (
+            reconnectAttempts >= 1 &&
+            requestSafeVideoFallback(
+                message = "$reason. Recreating the cloud session with safe H264 profile.",
+                diagnosticReason = "transport reconnect",
+                recreateWhenAlreadySafe = true,
+            )
+        ) {
+            return
+        }
         if (reconnectAttempts >= MAX_TRANSPORT_RECONNECT_ATTEMPTS) {
+            recordStreamDiagnostic("reconnect limit reached reason=$reason attempts=$reconnectAttempts")
             requestSessionRecovery("$reason. Stream reconnect failed after $MAX_TRANSPORT_RECONNECT_ATTEMPTS attempts.")
             return
         }
         reconnectAttempts += 1
         transportGeneration += 1
         val generation = transportGeneration
+        recordStreamDiagnostic("transport restart reason=$reason attempt=$reconnectAttempts generation=$generation")
         emitState("Reconnecting stream ($reconnectAttempts/$MAX_TRANSPORT_RECONNECT_ATTEMPTS)")
         closeTransport(clearInputState = false, cancelRecovery = false)
         iceRecoveryJob = null
@@ -2768,6 +2909,7 @@ class NativeStreamClient(
         sessionRecoveryRequested = true
         transportGeneration += 1
         closeTransport(clearInputState = false)
+        recordStreamDiagnostic("session recovery requested message=$message")
         emitState("Recovering cloud session")
         emitSessionRecoveryRequired(message)
     }
@@ -2775,6 +2917,7 @@ class NativeStreamClient(
     private fun failStream(message: String, generation: Int? = null) {
         if (generation != null && generation != transportGeneration) return
         transportGeneration += 1
+        recordStreamDiagnostic("stream failed message=$message")
         closeTransport(clearInputState = true)
         emitError(message)
     }
@@ -2824,6 +2967,7 @@ class NativeStreamClient(
         videoTrack = track
         track.setEnabled(true)
         renderer?.let { track.addSink(it) }
+        recordStreamDiagnostic("video track attached id=${track.id()} state=${track.state()?.name ?: "unknown"} renderer=${renderer != null}")
     }
 
     private fun attachDataChannel(channel: DataChannel) {
@@ -2839,6 +2983,7 @@ class NativeStreamClient(
         channel.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() {
+                NativeInputDiagnostics.add("input channel state label=$normalizedLabel state=${channel.state()}")
                 if (channel.state() == DataChannel.State.OPEN) {
                     inputDropLogged = false
                     NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
@@ -3040,13 +3185,18 @@ class NativeStreamClient(
         }
     }
 
-    private fun requestSafeVideoFallback(message: String, diagnosticReason: String): Boolean {
+    private fun requestSafeVideoFallback(
+        message: String,
+        diagnosticReason: String,
+        recreateWhenAlreadySafe: Boolean = false,
+    ): Boolean {
         val fallback = settings.androidSafeVideoFallback()
-        if (videoSafeFallbackApplied || settings == fallback) return false
+        val alreadySafe = settings == fallback
+        if (videoSafeFallbackApplied || (alreadySafe && !recreateWhenAlreadySafe)) return false
         videoSafeFallbackApplied = true
         settings = fallback
         NativeInputDiagnostics.add(
-            "$diagnosticReason safe video fallback codec=${fallback.codec} resolution=${fallback.resolution} fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
+            "$diagnosticReason ${if (alreadySafe) "safe profile cloud session recreate" else "safe video fallback"} codec=${fallback.codec} resolution=${fallback.resolution} fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
         )
         transportGeneration += 1
         closeTransport(clearInputState = false)

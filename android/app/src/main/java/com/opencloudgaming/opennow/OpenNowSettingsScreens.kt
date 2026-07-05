@@ -27,6 +27,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -154,7 +155,9 @@ internal fun SettingsScreen(
     tvProfile: Boolean,
     searchRequested: Boolean,
     searchQuery: String,
+    backRequestToken: Int,
     onSearchQueryChange: (String) -> Unit,
+    onDetailRouteChange: (Boolean) -> Unit,
 ) {
     var showSessionProxyWarning by remember { mutableStateOf(false) }
     var selectedCategory by remember { mutableStateOf<SettingsCategory?>(null) }
@@ -185,6 +188,17 @@ internal fun SettingsScreen(
     }
     BackHandler(enabled = selectedCategory != null) {
         selectedCategory = null
+    }
+    LaunchedEffect(selectedCategory) {
+        onDetailRouteChange(selectedCategory != null)
+    }
+    LaunchedEffect(backRequestToken) {
+        if (backRequestToken > 0 && selectedCategory != null) {
+            selectedCategory = null
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { onDetailRouteChange(false) }
     }
     if (showSessionProxyWarning) {
         SessionProxyWarningDialog(
@@ -493,7 +507,7 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) }
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, "Input", "input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "button", "tone") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, "Input", "input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "button") {
                 NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
                 }
@@ -521,7 +535,7 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "server selector", "controller", "sounds", "animations", "backdrop", "auto-load", "library", "session counter", "intro", "music", "queue", "stretch", "fill") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "server selector", "controller", "sounds", "button", "tone", "animations", "backdrop", "auto-load", "library", "session counter", "intro", "music", "queue", "stretch", "fill") {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
@@ -577,6 +591,13 @@ private fun SettingsContent(
                 }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_mode), settings.controllerMode) { viewModel.updateSettings(settings.copy(controllerMode = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_button_press_tones),
+                    checked = settings.controllerUiSounds,
+                    description = stringResource(R.string.settings_button_press_tones_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
+                }
                 SettingSwitch(stringResource(R.string.settings_controller_animations), settings.controllerBackgroundAnimations) { viewModel.updateSettings(settings.copy(controllerBackgroundAnimations = it)) }
                 SettingSwitch(stringResource(R.string.settings_controller_backdrop), settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
                 SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
@@ -595,15 +616,6 @@ private fun SettingsContent(
                 AccountSettingsPanel(state = state, viewModel = viewModel)
             }
     if (settings.nerdMode) {
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_section_nerd_tools), "nerd", "intro", "music", "rock", "tone", "button", "sound", "stretch", "fill", "fullscreen", "wave") {
-                    SettingSwitch(
-                        label = stringResource(R.string.settings_button_press_tones),
-                        checked = settings.controllerUiSounds,
-                        description = stringResource(R.string.settings_button_press_tones_desc),
-                    ) { enabled ->
-                        viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
-                    }
-                }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
                     CodecDiagnosticsPanel(state.codecReport)
                 }

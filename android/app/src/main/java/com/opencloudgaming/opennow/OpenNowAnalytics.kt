@@ -7,6 +7,7 @@ import com.posthog.android.PostHogAndroid
 import com.posthog.android.PostHogAndroidConfig
 
 private const val ANALYTICS_LOG_TAG = "OpenNowAnalytics"
+private const val ANALYTICS_FLUSH_INTERVAL_SECONDS = 10
 
 internal object OpenNowAnalytics {
     fun setup(application: Application, settings: AppSettings) {
@@ -30,7 +31,7 @@ internal object OpenNowAnalytics {
     }
 
     fun applyOptOut(optedOut: Boolean) {
-        runCatching {
+        runPostHogOperation("opt-out update") {
             if (optedOut) {
                 PostHog.optOut()
             } else {
@@ -40,7 +41,7 @@ internal object OpenNowAnalytics {
     }
 
     fun identify(session: AuthSession) {
-        runCatching {
+        runPostHogOperation("identify") {
             PostHog.identify(
                 distinctId = session.user.userId,
                 userProperties = mapOf(
@@ -49,23 +50,36 @@ internal object OpenNowAnalytics {
                     "provider" to session.provider.code,
                 ),
             )
+            flushReleaseQueue()
         }
     }
 
     fun capture(event: String, properties: Map<String, Any>? = null) {
-        runCatching {
+        runPostHogOperation("capture") {
             PostHog.capture(
                 event = event,
                 properties = properties,
             )
+            flushReleaseQueue()
         }
     }
 
     fun reset() {
-        runCatching {
+        runPostHogOperation("reset") {
             val optedOut = PostHog.isOptOut()
             PostHog.reset()
             applyOptOut(optedOut)
+        }
+    }
+
+    private fun flushReleaseQueue() {
+        if (BuildConfig.DEBUG) return
+        PostHog.flush()
+    }
+
+    private inline fun runPostHogOperation(operation: String, block: () -> Unit) {
+        runCatching(block).onFailure { error ->
+            Log.w(ANALYTICS_LOG_TAG, "PostHog $operation failed.", error)
         }
     }
 }
@@ -75,6 +89,7 @@ internal fun PostHogAndroidConfig.applyOpenNowSettings(settings: AppSettings) {
     captureApplicationLifecycleEvents = true
     captureDeepLinks = true
     captureScreenViews = true
+    flushIntervalSeconds = ANALYTICS_FLUSH_INTERVAL_SECONDS
     sessionReplay = true
     sessionReplayConfig.apply {
         maskAllTextInputs = true

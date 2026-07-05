@@ -22,6 +22,7 @@ private const val QUEUE_SERVICE_ACTION_STOP = "com.opencloudgaming.opennow.queue
 private const val QUEUE_SERVICE_EXTRA_TITLE = "title"
 private const val QUEUE_SERVICE_EXTRA_TEXT = "text"
 private const val QUEUE_SERVICE_TAG = "OpenNOWQueueService"
+private val QUEUE_NOTIFICATION_SMALL_ICON = R.drawable.ic_tab_stream
 
 class AndroidQueueStatusNotifier(private val context: Context) {
     private val appContext = context.applicationContext
@@ -50,7 +51,14 @@ class AndroidQueueStatusNotifier(private val context: Context) {
         }.onFailure { error ->
             Log.w(QUEUE_SERVICE_TAG, "Unable to start queue foreground service", error)
             if (canPostNotifications()) {
-                notificationManager.notify(QUEUE_NOTIFICATION_ID, buildQueueNotification(appContext, state.streamGame?.title ?: "OpenNOW", queueLaunchStatusText(state)))
+                runCatching {
+                    notificationManager.notify(
+                        QUEUE_NOTIFICATION_ID,
+                        buildQueueNotification(appContext, state.streamGame?.title ?: "OpenNOW", queueLaunchStatusText(state)),
+                    )
+                }.onFailure { notifyError ->
+                    Log.w(QUEUE_SERVICE_TAG, "Unable to post fallback queue notification", notifyError)
+                }
             }
         }
     }
@@ -84,26 +92,29 @@ class AndroidQueueStatusNotifier(private val context: Context) {
 
 class AndroidQueueStatusService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            QUEUE_SERVICE_ACTION_STOP -> {
-                startQueueForeground("OpenNOW", "Queue status")
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
-                return START_NOT_STICKY
+        runCatching {
+            when (intent?.action) {
+                QUEUE_SERVICE_ACTION_STOP -> {
+                    startQueueForeground("OpenNOW", "Queue status")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
+                }
+                QUEUE_SERVICE_ACTION_UPDATE, null -> {
+                    val title = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TITLE) ?: "OpenNOW"
+                    val text = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TEXT) ?: "Queue status"
+                    startQueueForeground(title, text)
+                }
+                else -> {
+                    startQueueForeground("OpenNOW", "Queue status")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
+                }
             }
-            QUEUE_SERVICE_ACTION_UPDATE, null -> {
-                val title = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TITLE) ?: "OpenNOW"
-                val text = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TEXT) ?: "Queue status"
-                startQueueForeground(title, text)
-                return START_NOT_STICKY
-            }
-            else -> {
-                startQueueForeground("OpenNOW", "Queue status")
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
-                return START_NOT_STICKY
-            }
+        }.onFailure { error ->
+            Log.e(QUEUE_SERVICE_TAG, "Queue foreground service failed to start", error)
+            stopSelf(startId)
         }
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -153,7 +164,7 @@ private fun buildQueueNotification(context: Context, title: String, text: String
         Notification.Builder(appContext)
     }
     return builder
-        .setSmallIcon(R.drawable.opennow_icon)
+        .setSmallIcon(QUEUE_NOTIFICATION_SMALL_ICON)
         .setContentTitle(title)
         .setContentText(text)
         .setSubText("OpenNOW")

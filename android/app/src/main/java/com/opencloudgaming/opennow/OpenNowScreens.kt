@@ -216,6 +216,7 @@ private val Panel = Color(0xff11161a)
 private val PanelAlt = Color(0xff171d22)
 private val TextPrimary = Color(0xffeef3f5)
 private val TextMuted = Color(0xff98a4aa)
+private val ChromeScrim = Color.Black.copy(alpha = 0.16f)
 private const val HANDHELD_CATALOG_WALLPAPER_URL = "https://wallpapercave.com/wp/wp9464307.jpg"
 private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
 private val UiAccent.color: Color
@@ -761,11 +762,18 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
     var settingsSearchQuery by remember { mutableStateOf("") }
-    val navigationToneEnabled = state.settings.nerdMode && state.settings.controllerUiSounds && !inStream
+    var settingsDetailRouteOpen by remember { mutableStateOf(false) }
+    var settingsBackRequestToken by remember { mutableStateOf(0) }
+    val navigationToneEnabled = state.settings.controllerUiSounds && !inStream
     val showMinimizedQueueDock = state.streamLaunchMinimized && shouldShowQueueLaunchStatus(state)
     DisposableEffect(navAudioController) {
         onDispose {
             navAudioController.release()
+        }
+    }
+    LaunchedEffect(state.page) {
+        if (state.page != AppPage.Settings) {
+            settingsDetailRouteOpen = false
         }
     }
     fun revealSearch(
@@ -802,8 +810,18 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 phoneLandscapeScrollChromeHidden = false
             }
         }
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+        if (!inStream && (state.page == AppPage.Home || state.page == AppPage.Library)) {
+            CatalogWallpaperBackdrop(
+                settings = state.settings,
+                tvProfile = tvProfile,
+                width = maxWidth,
+                height = maxHeight,
+            )
+        }
 
         Scaffold(
+            containerColor = Color.Transparent,
             contentWindowInsets = if (streamingActive) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
             bottomBar = {
                 if (!inStream && !showNavigationRail) {
@@ -875,11 +893,13 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             activeSearchTarget = visibleSearchTarget,
                             showAppIcon = showNavigationRail && horizontalChrome,
                             largeIcons = phoneLandscapeChrome,
+                            showSettingsBack = state.page == AppPage.Settings && horizontalChrome && settingsDetailRouteOpen,
                             onNavigate = { page ->
                                 visibleSearchTarget = null
                                 viewModel.setPage(page)
                             },
                             onSearch = { revealSearch(it) },
+                            onSettingsBack = { settingsBackRequestToken += 1 },
                         )
                     }
                     Column(
@@ -932,12 +952,14 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                     tvProfile = tvProfile,
                                     searchRequested = visibleSearchTarget == SearchTarget.Settings,
                                     searchQuery = settingsSearchQuery,
+                                    backRequestToken = settingsBackRequestToken,
                                     onSearchQueryChange = { next ->
                                         settingsSearchQuery = next
                                         if (next.isBlank() && visibleSearchTarget == SearchTarget.Settings) {
                                             visibleSearchTarget = null
                                         }
                                     },
+                                    onDetailRouteChange = { settingsDetailRouteOpen = it },
                                 )
                                 AppPage.Stream -> StreamScreen(state, viewModel)
                             }
@@ -996,74 +1018,95 @@ private fun AppNavigationRail(
     activeSearchTarget: SearchTarget?,
     showAppIcon: Boolean,
     largeIcons: Boolean,
+    showSettingsBack: Boolean,
     onNavigate: (AppPage) -> Unit,
     onSearch: (SearchTarget) -> Unit,
+    onSettingsBack: () -> Unit,
 ) {
-    Surface(
+    Box(
         modifier = Modifier
             .width(APP_NAV_RAIL_WIDTH)
-            .fillMaxHeight(),
-        color = if (state.page == AppPage.Settings) SettingsBackground else MaterialTheme.colorScheme.background,
-        tonalElevation = 0.dp,
+            .fillMaxHeight()
+            .padding(start = 6.dp, top = 8.dp, end = 6.dp, bottom = 8.dp),
     ) {
-        Box(Modifier.fillMaxSize()) {
-            if (showAppIcon) {
-                Box(
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = RoundedCornerShape(26.dp),
+            color = ChromeScrim,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+        ) {
+            Box(Modifier.fillMaxSize()) {
+                if (showAppIcon) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .clickable { onNavigate(AppPage.Home) }
+                            .padding(top = 12.dp, bottom = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        OpenNowAppIcon(if (largeIcons) 44.dp else 34.dp)
+                    }
+                }
+                Column(
                     modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .clickable { onNavigate(AppPage.Home) }
-                        .padding(top = 12.dp, bottom = 8.dp),
-                    contentAlignment = Alignment.Center,
+                        .align(Alignment.Center)
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    OpenNowAppIcon(if (largeIcons) 44.dp else 34.dp)
+                    if (!showAppIcon) {
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    AppNavigationRailItem(
+                        selected = state.page == AppPage.Home && activeSearchTarget != SearchTarget.Store,
+                        onClick = { onNavigate(AppPage.Home) },
+                        iconRes = R.drawable.ic_tab_store,
+                        label = stringResource(R.string.nav_store),
+                        iconSize = if (largeIcons) 30.dp else 24.dp,
+                    )
+                    AppNavigationRailItem(
+                        selected = activeSearchTarget != null,
+                        onClick = {
+                            onSearch(
+                                when (state.page) {
+                                    AppPage.Library -> SearchTarget.Library
+                                    AppPage.Settings -> SearchTarget.Settings
+                                    else -> SearchTarget.Store
+                                },
+                            )
+                        },
+                        iconRes = R.drawable.ic_search,
+                        label = stringResource(R.string.nav_search),
+                        iconSize = if (largeIcons) 30.dp else 24.dp,
+                    )
+                    AppNavigationRailItem(
+                        selected = state.page == AppPage.Library && activeSearchTarget != SearchTarget.Library,
+                        onClick = { onNavigate(AppPage.Library) },
+                        iconRes = R.drawable.ic_tab_library,
+                        label = stringResource(R.string.nav_library),
+                        iconSize = if (largeIcons) 30.dp else 24.dp,
+                    )
+                    AppNavigationRailItem(
+                        selected = state.page == AppPage.Settings && activeSearchTarget != SearchTarget.Settings,
+                        onClick = { onNavigate(AppPage.Settings) },
+                        iconRes = R.drawable.ic_tab_settings,
+                        label = stringResource(R.string.nav_settings),
+                        iconSize = if (largeIcons) 30.dp else 24.dp,
+                    )
+                    AnimatedVisibility(visible = showSettingsBack) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Spacer(Modifier.height(6.dp))
+                            AppNavigationRailItem(
+                                selected = false,
+                                onClick = onSettingsBack,
+                                iconRes = R.drawable.ic_arrow_back,
+                                label = "Back",
+                                iconSize = if (largeIcons) 30.dp else 24.dp,
+                            )
+                        }
+                    }
                 }
-            }
-            Column(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                if (!showAppIcon) {
-                    Spacer(Modifier.height(8.dp))
-                }
-                AppNavigationRailItem(
-                    selected = state.page == AppPage.Home && activeSearchTarget != SearchTarget.Store,
-                    onClick = { onNavigate(AppPage.Home) },
-                    iconRes = R.drawable.ic_tab_store,
-                    label = stringResource(R.string.nav_store),
-                    iconSize = if (largeIcons) 30.dp else 24.dp,
-                )
-                AppNavigationRailItem(
-                    selected = activeSearchTarget != null,
-                    onClick = {
-                        onSearch(
-                            when (state.page) {
-                                AppPage.Library -> SearchTarget.Library
-                                AppPage.Settings -> SearchTarget.Settings
-                                else -> SearchTarget.Store
-                            },
-                        )
-                    },
-                    iconRes = R.drawable.ic_search,
-                    label = stringResource(R.string.nav_search),
-                    iconSize = if (largeIcons) 30.dp else 24.dp,
-                )
-                AppNavigationRailItem(
-                    selected = state.page == AppPage.Library && activeSearchTarget != SearchTarget.Library,
-                    onClick = { onNavigate(AppPage.Library) },
-                    iconRes = R.drawable.ic_tab_library,
-                    label = stringResource(R.string.nav_library),
-                    iconSize = if (largeIcons) 30.dp else 24.dp,
-                )
-                AppNavigationRailItem(
-                    selected = state.page == AppPage.Settings && activeSearchTarget != SearchTarget.Settings,
-                    onClick = { onNavigate(AppPage.Settings) },
-                    iconRes = R.drawable.ic_tab_settings,
-                    label = stringResource(R.string.nav_settings),
-                    iconSize = if (largeIcons) 30.dp else 24.dp,
-                )
             }
         }
     }
@@ -1122,13 +1165,16 @@ private fun TopStatusBar(
     showLogo: Boolean = true,
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.background,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 6.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = ChromeScrim,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {
         Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (showLogo) {
@@ -1384,12 +1430,6 @@ private fun HomeScreen(
         modifier = Modifier.fillMaxSize(),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            CatalogWallpaperBackdrop(
-                settings = state.settings,
-                tvProfile = tvProfile,
-                width = maxWidth,
-                height = maxHeight,
-            )
             Column(
                 Modifier
                     .fillMaxSize()
@@ -1613,12 +1653,6 @@ private fun LibraryScreen(
         modifier = Modifier.fillMaxSize(),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            CatalogWallpaperBackdrop(
-                settings = state.settings,
-                tvProfile = tvProfile,
-                width = maxWidth,
-                height = maxHeight,
-            )
             Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
@@ -1643,10 +1677,11 @@ private fun LibraryScreen(
                     RefreshingGamesPlaceholder(
                         settings = state.settings,
                         tvProfile = tvProfile,
+                        libraryLayout = true,
                         modifier = Modifier.weight(1f),
                     )
                 } else {
-                    GameGrid(
+                    LibraryGameGrid(
                         games,
                         state.settings.favoriteGameIds,
                         state.settings,
@@ -1884,9 +1919,16 @@ private fun RefreshingGamesPlaceholder(
     settings: AppSettings,
     tvProfile: Boolean,
     storeLayout: Boolean = false,
+    libraryLayout: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    GameGridSkeleton(settings = settings, tvProfile = tvProfile, storeLayout = storeLayout, modifier = modifier)
+    GameGridSkeleton(
+        settings = settings,
+        tvProfile = tvProfile,
+        storeLayout = storeLayout,
+        libraryLayout = libraryLayout,
+        modifier = modifier,
+    )
 }
 
 @Composable
@@ -1894,6 +1936,7 @@ private fun GameGridSkeleton(
     settings: AppSettings,
     tvProfile: Boolean,
     storeLayout: Boolean,
+    libraryLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
@@ -1901,6 +1944,29 @@ private fun GameGridSkeleton(
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val shimmerBrush = rememberLoadingShimmerBrush(label = "game-grid-skeleton-shimmer")
     BoxWithConstraints(modifier.fillMaxSize()) {
+        if (libraryLayout) {
+            val librarySpec = libraryGameGridSpec(maxWidth, tvProfile, landscapeLayout)
+            val placeholderItems = remember(librarySpec.columns) {
+                List(librarySpec.columns * 3) { it }
+            }
+            LazyVerticalGrid(
+                modifier = Modifier.fillMaxSize(),
+                columns = GridCells.Fixed(librarySpec.columns),
+                contentPadding = librarySpec.contentPadding,
+                horizontalArrangement = Arrangement.spacedBy(librarySpec.horizontalSpacing),
+                verticalArrangement = Arrangement.spacedBy(librarySpec.verticalSpacing),
+                userScrollEnabled = false,
+            ) {
+                gridItems(placeholderItems, key = { it }) {
+                    StoreRailGameCardSkeleton(
+                        width = librarySpec.cardWidth,
+                        expressiveUi = settings.expressiveUi,
+                        shimmerBrush = shimmerBrush,
+                    )
+                }
+            }
+            return@BoxWithConstraints
+        }
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         val placeholderItems = remember(gridSpec.columns, storeLayout) {
             List(gridSpec.columns * if (storeLayout) 4 else 3) { it }
@@ -1942,11 +2008,7 @@ private fun StoreStartRailsSkeleton(
     shimmerBrush: Brush,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val cardWidth = when {
-        tvProfile -> 158.dp
-        landscapeLayout -> 126.dp
-        else -> 142.dp
-    }
+    val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
     Column(
         Modifier
             .fillMaxWidth()
@@ -1969,20 +2031,30 @@ private fun StoreRailSectionSkeleton(
     expressiveUi: Boolean,
     shimmerBrush: Brush,
 ) {
+    val spacing = 10.dp
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SkeletonLine(widthFraction = 0.34f, height = 15.dp, shimmerBrush = shimmerBrush)
-        Row(
+        BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
                 .clipToBounds(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            repeat(6) {
-                StoreRailGameCardSkeleton(
-                    width = cardWidth,
-                    expressiveUi = expressiveUi,
-                    shimmerBrush = shimmerBrush,
-                )
+            val visibleCount = (((maxWidth.value + spacing.value) / (cardWidth.value + spacing.value)).toInt())
+                .coerceAtLeast(1)
+            val fittedCardWidth = ((maxWidth.value - spacing.value * (visibleCount - 1)) / visibleCount)
+                .coerceAtLeast(1f)
+                .dp
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(spacing),
+            ) {
+                repeat(visibleCount) {
+                    StoreRailGameCardSkeleton(
+                        width = fittedCardWidth,
+                        expressiveUi = expressiveUi,
+                        shimmerBrush = shimmerBrush,
+                    )
+                }
             }
         }
     }
@@ -2196,6 +2268,57 @@ private fun GameGrid(
 }
 
 @Composable
+private fun LibraryGameGrid(
+    games: List<GameInfo>,
+    favoriteIds: List<String>,
+    settings: AppSettings,
+    tvProfile: Boolean,
+    onSelect: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
+    modifier: Modifier = Modifier,
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState(),
+    emptyContent: (@Composable () -> Unit)? = null,
+) {
+    if (games.isEmpty()) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (emptyContent != null) {
+                emptyContent()
+            } else {
+                Text(stringResource(R.string.no_games_loaded), color = TextMuted)
+            }
+        }
+        return
+    }
+    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val gridSpec = libraryGameGridSpec(maxWidth, tvProfile, landscapeLayout)
+        LazyVerticalGrid(
+            modifier = Modifier.fillMaxSize(),
+            state = gridState,
+            columns = GridCells.Fixed(gridSpec.columns),
+            contentPadding = gridSpec.contentPadding,
+            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
+            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
+        ) {
+            gridItems(games, key = { it.id }) { game ->
+                StoreRailGameCard(
+                    game = game,
+                    favorite = game.id in favoriteIds,
+                    settings = settings,
+                    width = gridSpec.cardWidth,
+                    onSelect = onSelect,
+                    onFavorite = onFavorite,
+                    onPlay = onPlay,
+                    onChooseStore = onChooseStore,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun StoreGameGrid(
     games: List<GameInfo>,
     favoriteIds: List<String>,
@@ -2358,11 +2481,7 @@ private fun StoreRailSection(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val cardWidth = when {
-        tvProfile -> 158.dp
-        landscapeLayout -> 126.dp
-        else -> 142.dp
-    }
+    val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             title,
@@ -2541,6 +2660,14 @@ private fun storeRailGameKey(game: GameInfo): String =
 
 private const val STORE_RAIL_GAME_LIMIT = 14
 
+private data class LibraryGameGridSpec(
+    val columns: Int,
+    val cardWidth: Dp,
+    val horizontalSpacing: Dp,
+    val verticalSpacing: Dp,
+    val contentPadding: PaddingValues,
+)
+
 private data class GameGridSpec(
     val columns: Int,
     val cardHeight: Dp,
@@ -2549,6 +2676,42 @@ private data class GameGridSpec(
     val contentPadding: PaddingValues,
     val squareCards: Boolean,
 )
+
+private fun storeRailCardWidth(tvProfile: Boolean, landscapeLayout: Boolean): Dp =
+    when {
+        tvProfile -> 158.dp
+        landscapeLayout -> 126.dp
+        else -> 142.dp
+    }
+
+private fun libraryGameGridSpec(
+    maxWidth: Dp,
+    tvProfile: Boolean,
+    landscapeLayout: Boolean,
+): LibraryGameGridSpec {
+    val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
+    val horizontalSpacing = 10.dp
+    val minimumHorizontalPadding = 4.dp
+    val availableWidth = (maxWidth.value - minimumHorizontalPadding.value * 2f).coerceAtLeast(cardWidth.value)
+    val columns = floor((availableWidth + horizontalSpacing.value) / (cardWidth.value + horizontalSpacing.value))
+        .toInt()
+        .coerceAtLeast(1)
+    val usedWidth = cardWidth.value * columns + horizontalSpacing.value * (columns - 1).coerceAtLeast(0)
+    val horizontalPadding = ((maxWidth.value - usedWidth) / 2f)
+        .coerceAtLeast(minimumHorizontalPadding.value)
+        .dp
+    return LibraryGameGridSpec(
+        columns = columns,
+        cardWidth = cardWidth,
+        horizontalSpacing = horizontalSpacing,
+        verticalSpacing = when {
+            tvProfile -> 20.dp
+            landscapeLayout -> 26.dp
+            else -> 18.dp
+        },
+        contentPadding = PaddingValues(horizontal = horizontalPadding, vertical = 10.dp),
+    )
+}
 
 private fun gameGridSpec(
     maxWidth: androidx.compose.ui.unit.Dp,
@@ -3893,8 +4056,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val sessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
     var timerNowMs by remember(session?.sessionId) { mutableStateOf(System.currentTimeMillis()) }
     val smartSessionLimit = smartSessionLimitFor(state.subscriptionInfo, state.authSession?.user?.membershipTier)
-    val nerdMode = state.settings.nerdMode
-    val buttonToneEnabled = nerdMode && state.settings.controllerUiSounds
+    val buttonToneEnabled = state.settings.controllerUiSounds
     val stretchToFill = state.settings.stretchStreamToFill
     val playButtonTone = {
         audioController.playButtonTone(buttonToneEnabled)
@@ -4049,8 +4211,19 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             client.start(session, launchStreamSettings)
         }
     }
-    LaunchedEffect(session?.sessionId, streamReady, streamStats, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) {
-        val mismatch = streamRuntimeResolutionMismatch(launchStreamSettings, streamStats.resolution)
+    LaunchedEffect(
+        session?.sessionId,
+        streamReady,
+        streamStats,
+        launchStreamSettings.resolution,
+        launchStreamSettings.aspectRatio,
+        session?.negotiatedStreamProfile?.resolution,
+    ) {
+        val mismatch = streamRuntimeResolutionMismatch(
+            launchStreamSettings,
+            streamStats.resolution,
+            session?.negotiatedStreamProfile?.resolution,
+        )
         when {
             !streamReady || streamStats.resolution == null -> Unit
             mismatch == null -> resolutionMismatchStats = 0
@@ -4058,11 +4231,18 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 resolutionMismatchStats += 1
                 if (resolutionMismatchStats >= 3 && !resolutionMismatchRestartRequested) {
                     resolutionMismatchRestartRequested = true
-                    client.stop()
-                    viewModel.restartStreamForResolutionMismatch(
-                        actualResolution = mismatch.actualResolution,
-                        expectedResolution = mismatch.expectedResolution,
-                    )
+                    if (mismatch.isServerNegotiatedFallback) {
+                        viewModel.recordServerNegotiatedResolutionFallback(
+                            actualResolution = mismatch.actualResolution,
+                            expectedResolution = mismatch.expectedResolution,
+                        )
+                    } else {
+                        client.stop()
+                        viewModel.restartStreamForResolutionMismatch(
+                            actualResolution = mismatch.actualResolution,
+                            expectedResolution = mismatch.expectedResolution,
+                        )
+                    }
                 }
             }
         }
@@ -4100,13 +4280,6 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     audioMuted = audioMuted,
                     style = state.settings.streamStatsStyle,
                     modifier = Modifier.align(Alignment.TopStart),
-                )
-            }
-            if (nerdMode) {
-                NerdStreamStatusOverlay(
-                    codecLabel = streamStats.codec ?: streamSettings.codec.name,
-                    stretchToFill = stretchToFill,
-                    modifier = Modifier.align(Alignment.TopEnd),
                 )
             }
             if (state.settings.androidTouch.enabled) {
@@ -4278,47 +4451,6 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             exitConfirmOpen = false
                             viewModel.stopStream()
                         },
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun NerdStreamStatusOverlay(
-    codecLabel: String,
-    stretchToFill: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier.padding(top = 8.dp, end = 8.dp),
-        horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = Panel.copy(alpha = 0.52f),
-            tonalElevation = 0.dp,
-        ) {
-            Row(
-                Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Codec ${codecLabel.uppercase(Locale.US)}",
-                    color = TextPrimary,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (stretchToFill) {
-                    Text(
-                        "Fill",
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
                     )
                 }
             }
@@ -4591,7 +4723,9 @@ private fun clampStreamZoomOffset(offset: Offset, zoomScale: Float, viewportSize
 
 private fun androidNullPointerIcon(view: android.view.View): PointerIcon? =
     if (Build.VERSION.SDK_INT >= 24) {
-        PointerIcon.getSystemIcon(view.context, PointerIcon.TYPE_NULL)
+        runCatching { PointerIcon.getSystemIcon(view.context, PointerIcon.TYPE_NULL) }
+            .onFailure { error -> NativeInputDiagnostics.add("pointer icon unavailable error=${error.javaClass.simpleName}") }
+            .getOrNull()
     } else {
         null
     }
@@ -4612,7 +4746,8 @@ private fun View.configureAndroidMousePointerCapture(enabled: Boolean, onCapture
             isFocusableInTouchMode = true
             requestFocus()
             onCaptureInput()
-            requestPointerCapture()
+            runCatching { requestPointerCapture() }
+                .onFailure { error -> NativeInputDiagnostics.add("pointer capture request failed error=${error.javaClass.simpleName}") }
         }
     }
 }
@@ -4620,7 +4755,8 @@ private fun View.configureAndroidMousePointerCapture(enabled: Boolean, onCapture
 private fun View.clearAndroidMousePointerCapture() {
     if (Build.VERSION.SDK_INT < 26) return
     setOnCapturedPointerListener(null)
-    releasePointerCapture()
+    runCatching { releasePointerCapture() }
+        .onFailure { error -> NativeInputDiagnostics.add("pointer capture release failed error=${error.javaClass.simpleName}") }
 }
 
 private fun android.view.View.hideAndroidPointerTree() {
@@ -4636,7 +4772,8 @@ private fun android.view.View.showAndroidPointerTree() {
 
 private fun android.view.View.applyAndroidPointerIconTree(icon: PointerIcon?) {
     if (Build.VERSION.SDK_INT < 24) return
-    pointerIcon = icon
+    runCatching { pointerIcon = icon }
+        .onFailure { error -> NativeInputDiagnostics.add("pointer icon apply failed error=${error.javaClass.simpleName}") }
     if (this is ViewGroup) {
         for (index in 0 until childCount) {
             getChildAt(index).applyAndroidPointerIconTree(icon)
@@ -6826,23 +6963,23 @@ private fun VirtualStick(
             .pointerInput(client, onChange) {
                 awaitPointerEventScope {
                     while (true) {
-                        val event = awaitPointerEvent()
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
                         val change = event.changes.firstOrNull { it.pressed }
                         val maxRadius = min(size.width, size.height) * 0.34f
                         if (change == null) {
                             if (knobOffset != Offset.Zero) {
-                                knobOffset = Offset.Zero
                                 onChange(0f, 0f)
+                                knobOffset = Offset.Zero
                             }
                             continue
                         }
                         val center = Offset(size.width / 2f, size.height / 2f)
                         val clamped = clampStickOffset(change.position - center, maxRadius)
-                        knobOffset = clamped
                         onChange(
                             (clamped.x / maxRadius).coerceIn(-1f, 1f),
                             (clamped.y / maxRadius).coerceIn(-1f, 1f),
                         )
+                        knobOffset = clamped
                         change.consume()
                     }
                 }
@@ -6915,12 +7052,12 @@ private fun GamepadTriggerButton(
             .pointerInput(client, left) {
                 awaitPointerEventScope {
                     while (true) {
-                        val event = awaitPointerEvent()
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
                         val down = event.changes.any { it.pressed }
                         if (down != pressed) {
-                            if (down) onPressTone()
-                            pressed = down
                             client.setVirtualTrigger(left, down)
+                            pressed = down
+                            if (down) onPressTone()
                         }
                         event.changes.forEach { it.consume() }
                     }
@@ -6958,12 +7095,12 @@ private fun GamepadButton(
             .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
-                        val event = awaitPointerEvent()
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
                         val down = event.changes.any { it.pressed }
                         if (down != pressed) {
-                            if (down) onPressTone()
-                            pressed = down
                             client.setVirtualButton(mask, down)
+                            pressed = down
+                            if (down) onPressTone()
                         }
                         event.changes.forEach { it.consume() }
                     }
@@ -7003,12 +7140,12 @@ private fun GamepadPillButton(
             .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
-                        val event = awaitPointerEvent()
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
                         val down = event.changes.any { it.pressed }
                         if (down != pressed) {
-                            if (down) onPressTone()
-                            pressed = down
                             client.setVirtualButton(mask, down)
+                            pressed = down
+                            if (down) onPressTone()
                         }
                         event.changes.forEach { it.consume() }
                     }

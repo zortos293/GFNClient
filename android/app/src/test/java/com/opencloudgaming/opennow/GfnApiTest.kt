@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -154,6 +155,46 @@ class GfnApiTest {
     }
 
     @Test
+    fun providerLaunchBaseUsesSingleAdvertisedAllianceRegion() {
+        val base = providerLaunchBaseUrl(
+            providerBase = "https://prod.yes.geforcenow.nvidiagrid.net/",
+            regions = listOf(StreamRegion("MY YES", "https://my-yes.yes.geforcenow.nvidiagrid.net")),
+        )
+
+        assertEquals("https://my-yes.yes.geforcenow.nvidiagrid.net", base)
+    }
+
+    @Test
+    fun providerLaunchBaseDoesNotGuessWhenProviderHasMultipleRegions() {
+        val base = providerLaunchBaseUrl(
+            providerBase = "https://prod.example.geforcenow.nvidiagrid.net/",
+            regions = listOf(
+                StreamRegion("A", "https://a.example.geforcenow.nvidiagrid.net"),
+                StreamRegion("B", "https://b.example.geforcenow.nvidiagrid.net"),
+            ),
+        )
+
+        assertEquals("https://prod.example.geforcenow.nvidiagrid.net", base)
+    }
+
+    @Test
+    fun providerLaunchBaseDoesNotRewriteCloudmatchRoot() {
+        val base = providerLaunchBaseUrl(
+            providerBase = "https://prod.cloudmatchbeta.nvidiagrid.net/",
+            regions = listOf(StreamRegion("NP-AMS-06", "https://np-ams-06.cloudmatchbeta.nvidiagrid.net")),
+        )
+
+        assertEquals("https://prod.cloudmatchbeta.nvidiagrid.net", base)
+    }
+
+    @Test
+    fun usableSessionHostRejectsPlaceholderAllianceHosts() {
+        assertNull(usableSessionHost(".yes.geforcenow.nvidiagrid.net"))
+        assertNull(usableSessionHost("bad..host"))
+        assertEquals("183-78-14-238.yes.geforcenow.nvidiagrid.net", usableSessionHost("183-78-14-238.yes.geforcenow.nvidiagrid.net"))
+    }
+
+    @Test
     fun diagnosticLogPayloadRedactsSensitiveJsonFields() {
         val exported = sanitizeDiagnosticLogPayload(
             """
@@ -184,5 +225,39 @@ class GfnApiTest {
         assertFalse(exported.contains("player@example.invalid"))
         assertTrue(exported.contains("\"credential\": \"[redacted]\""))
         assertTrue(exported.contains("\"accessToken\": \"[redacted]\""))
+    }
+
+    @Test
+    fun diagnosticLogPayloadRedactsDeviceLoginAndDeviceIds() {
+        val exported = sanitizeDiagnosticLogPayload(
+            """
+            {
+              "device_code": "device-secret",
+              "user_code": "ABCD-EFGH",
+              "verification_uri_complete": "https://login.example/activate?user_code=ABCD-EFGH",
+              "deviceHashId": "stable-device-id",
+              "statusCode": 1
+            }
+            """.trimIndent(),
+        )
+
+        assertFalse(exported.contains("device-secret"))
+        assertFalse(exported.contains("ABCD-EFGH"))
+        assertFalse(exported.contains("stable-device-id"))
+        assertTrue(exported.contains("\"device_code\": \"[redacted]\""))
+        assertTrue(exported.contains("\"user_code\": \"[redacted]\""))
+        assertTrue(exported.contains("\"deviceHashId\": \"[redacted]\""))
+        assertTrue(exported.contains("\"statusCode\": 1"))
+    }
+
+    @Test
+    fun diagnosticUrlRedactsSensitiveQueryParameters() {
+        val exported = redactDiagnosticUrl("https://login.example/token?code=abc123&device_id=device-1&requestType=session")
+
+        assertFalse(exported.contains("abc123"))
+        assertFalse(exported.contains("device-1"))
+        assertTrue(exported.contains("code=%5Bredacted%5D"))
+        assertTrue(exported.contains("device_id=%5Bredacted%5D"))
+        assertTrue(exported.contains("requestType=session"))
     }
 }

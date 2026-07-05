@@ -60,6 +60,25 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun runtimeResolutionMismatchMarksServerNegotiatedFallback() {
+        val mismatch = streamRuntimeResolutionMismatch(
+            StreamSettings(resolution = "1680x720", aspectRatio = "21:9"),
+            actualResolution = "1366x768",
+            serverNegotiatedResolution = "1366x768",
+        )
+
+        assertEquals(
+            StreamResolutionMismatch(
+                actualResolution = "1366x768",
+                expectedResolution = "1680x720",
+                serverNegotiatedResolution = "1366x768",
+            ),
+            mismatch,
+        )
+        assertEquals(true, mismatch?.isServerNegotiatedFallback)
+    }
+
+    @Test
     fun runtimeResolutionMismatchIgnoresExactAndMissingStats() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9")
 

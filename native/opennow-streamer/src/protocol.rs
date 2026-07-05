@@ -62,6 +62,8 @@ pub struct SessionInfo {
 pub struct MediaConnectionInfo {
     pub ip: String,
     pub port: u16,
+    #[serde(default)]
+    pub usage: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

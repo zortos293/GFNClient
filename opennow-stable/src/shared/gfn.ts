@@ -486,7 +486,6 @@ const STREAM_MODE_PRESETS: ReadonlyArray<Readonly<{
   { width: 1280, height: 720, fps: [120, 60, 30] },
   { width: 1376, height: 640, fps: [120, 60, 30] },
   { width: 1024, height: 768, fps: [120, 60, 30] },
-  { width: 5120, height: 1440, fps: [120, 60, 30] },
 ]);
 
 export const SAFE_FALLBACK_STREAM_PROFILE: Readonly<EntitledStreamProfile> = Object.freeze({
@@ -538,10 +537,10 @@ function isModeCoveredByEntitlement(
   height: number,
   fps: number,
 ): boolean {
-  const pixelCount = width * height;
   return entitlements.some(
     (entitlement) =>
-      entitlement.width * entitlement.height >= pixelCount &&
+      entitlement.width >= width &&
+      entitlement.height >= height &&
       entitlement.fps >= fps,
   );
 }

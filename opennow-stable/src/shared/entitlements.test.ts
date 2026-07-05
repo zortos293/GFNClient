@@ -76,3 +76,29 @@ test("does not derive ultrawide modes larger than the entitlement envelope", () 
     { resolution: "2560x1440", fps: 120 },
   );
 });
+
+test("does not derive modes that exceed entitlement dimensions", () => {
+  const entitlements = [{ width: 1920, height: 1080, fps: 120 }];
+  const expanded = expandEntitledStreamResolutions(entitlements);
+
+  assert.equal(
+    expanded.some(
+      (resolution) =>
+        resolution.width === 1600 &&
+        resolution.height === 1200,
+    ),
+    false,
+  );
+  assert.equal(
+    expanded.some(
+      (resolution) =>
+        resolution.width === 1680 &&
+        resolution.height === 1050,
+    ),
+    true,
+  );
+  assert.deepEqual(
+    resolveEntitledStreamProfile(entitlements, { resolution: "1600x1200", fps: 120 }),
+    { resolution: "1920x1080", fps: 120 },
+  );
+});

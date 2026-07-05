@@ -21,6 +21,7 @@ import {
   DEFAULT_KEYBOARD_LAYOUT,
   DEFAULT_VIDEO_SHADER_SETTINGS,
   getDefaultStreamPreferences,
+  normalizeNativeVideoBackendPreferenceForPlatform,
   normalizeStreamClientModeForPlatform,
   normalizeStreamPreferences,
   normalizeVideoShaderSettings,
@@ -159,7 +160,15 @@ const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
-const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
+const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>([
+  "auto",
+  "d3d11",
+  "d3d12",
+  "vaapi",
+  "v4l2",
+  "vulkan",
+  "software",
+]);
 const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
 
 function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackendPreference {
@@ -355,7 +364,10 @@ export class SettingsManager {
       settings.nativeExternalRenderer = true;
       migrated = true;
     }
-    const nativeVideoBackend = normalizeNativeVideoBackendPreference(settings.nativeVideoBackend);
+    const nativeVideoBackend = normalizeNativeVideoBackendPreferenceForPlatform(
+      normalizeNativeVideoBackendPreference(settings.nativeVideoBackend),
+      process.platform,
+    );
     if (settings.nativeVideoBackend !== nativeVideoBackend) {
       settings.nativeVideoBackend = nativeVideoBackend;
       migrated = true;

@@ -2093,7 +2093,6 @@ export class GfnWebRtcClient {
     this.closeDataChannels();
     this.cleanupAudioRouting();
     this.remoteIceEndpoint = null;
-    this.queuedCandidates = [];
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;
@@ -3102,8 +3101,30 @@ export class GfnWebRtcClient {
       if (!candidate) {
         continue;
       }
-      await this.pc.addIceCandidate(candidate);
+      await this.pc.addIceCandidate(this.rewriteRemoteIceCandidateInit(candidate));
     }
+  }
+
+  private rewriteRemoteIceCandidateInit(candidate: RTCIceCandidateInit): RTCIceCandidateInit {
+    if (!candidate.candidate) {
+      return candidate;
+    }
+
+    const rewritten = rewriteIceCandidateEndpoint(candidate.candidate, this.remoteIceEndpoint);
+    if (!rewritten.rewritten) {
+      return candidate;
+    }
+
+    if (this.remoteIceEndpoint) {
+      this.log(
+        `Rewrote remote ICE candidate endpoint to mediaConnectionInfo ${this.remoteIceEndpoint.ip}:${this.remoteIceEndpoint.port}`,
+      );
+    }
+
+    return {
+      ...candidate,
+      candidate: rewritten.candidate,
+    };
   }
 
   private reliableDropLogged = false;
@@ -5017,17 +5038,11 @@ export class GfnWebRtcClient {
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
     const sdpMLineIndex = candidate.sdpMLineIndex ?? (candidate.sdpMid == null ? 0 : undefined);
-    const rewritten = rewriteIceCandidateEndpoint(candidate.candidate, this.remoteIceEndpoint);
-    if (rewritten.rewritten && this.remoteIceEndpoint) {
-      this.log(
-        `Rewrote remote ICE candidate endpoint to mediaConnectionInfo ${this.remoteIceEndpoint.ip}:${this.remoteIceEndpoint.port}`,
-      );
-    }
     this.log(
-      `Remote ICE candidate received: ${rewritten.candidate} (sdpMid=${candidate.sdpMid}, sdpMLineIndex=${sdpMLineIndex})`,
+      `Remote ICE candidate received: ${candidate.candidate} (sdpMid=${candidate.sdpMid}, sdpMLineIndex=${sdpMLineIndex})`,
     );
     const init: RTCIceCandidateInit = {
-      candidate: rewritten.candidate,
+      candidate: candidate.candidate,
       sdpMid: candidate.sdpMid ?? undefined,
       sdpMLineIndex,
       usernameFragment: candidate.usernameFragment ?? undefined,
@@ -5038,7 +5053,7 @@ export class GfnWebRtcClient {
       return;
     }
 
-    await this.pc.addIceCandidate(init);
+    await this.pc.addIceCandidate(this.rewriteRemoteIceCandidateInit(init));
   }
 
   dispose(): void {

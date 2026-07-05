@@ -456,6 +456,7 @@ export function App(): JSX.Element {
     hideServerSelector: false,
     appAccentColor: "green",
     controllerMode: false,
+    launchInConsoleMode: false,
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,

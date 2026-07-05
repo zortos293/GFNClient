@@ -4125,6 +4125,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
                   <div className="settings-row">
                     <label className="settings-label">
+                      {t("settings.interface.launchInConsoleMode")}
+                      <span className="settings-hint">{t("settings.interface.launchInConsoleModeHint")}</span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.launchInConsoleMode}
+                        onChange={(e) => handleChange("launchInConsoleMode", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+
+                  <div className="settings-row">
+                    <label className="settings-label">
                       {t("settings.interface.escapeExitsFullscreen")}
                       <span className="settings-hint">{t("settings.interface.escapeExitsFullscreenHint")}</span>
                     </label>

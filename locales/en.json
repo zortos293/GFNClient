@@ -633,6 +633,8 @@
       "autoFullScreenHint": "Automatically enter fullscreen when connecting to or starting a session.",
       "controllerMode": "Controller Mode",
       "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "launchInConsoleMode": "Launch in Console Mode",
+      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled on every launch, like GeForce NOW's TV mode (big picture).",
       "escapeExitsFullscreen": "Escape Exits Fullscreen",
       "escapeExitsFullscreenHint": "When enabled, pressing Escape will exit fullscreen. When disabled (default), Escape is forwarded to the game while the mouse is pointer-locked.",
       "discordRichPresence": "Discord Rich Presence",

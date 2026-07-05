@@ -366,6 +366,8 @@ export interface Settings {
   appAccentColor: AppAccentColor;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
+  /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
+  launchInConsoleMode: boolean;
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;

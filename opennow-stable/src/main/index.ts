@@ -417,11 +417,18 @@ async function createMainWindow(): Promise<void> {
 
   const settings = settingsManager.getAll();
 
+  // Console mode (big picture): mirror GeForce NOW's TV mode by launching
+  // fullscreen with the controller-oriented shell enabled.
+  if (settings.launchInConsoleMode && !settings.controllerMode) {
+    settingsManager.set("controllerMode", true);
+  }
+
   mainWindow = new BrowserWindow({
     width: settings.windowWidth || 1400,
     height: settings.windowHeight || 900,
     minWidth: 1024,
     minHeight: 680,
+    fullscreen: settings.launchInConsoleMode,
     autoHideMenuBar: true,
     backgroundColor: "#0f172a",
     webPreferences: {
@@ -1155,9 +1162,10 @@ function registerIpcHandlers(): void {
     settingsManager.set("lastSeenReleaseHighlightsVersion", app.getVersion().replace(/^v/, ""));
   });
 
-  // Save window size when it changes
+  // Save window size when it changes (skip fullscreen so the saved size
+  // stays meaningful for windowed launches, e.g. after console mode)
   mainWindow?.on("resize", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
       const [width, height] = mainWindow.getSize();
       settingsManager.set("windowWidth", width);
       settingsManager.set("windowHeight", height);

@@ -255,8 +255,19 @@ interface ClientOptions {
   onMicStateChange?: (state: MicStateChange) => void;
   onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
   onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
-  /** Optional host callback for Meta/Home button edge presses (button 16). */
+  /** Optional host callback for controller overlay shortcut edge presses. */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
+}
+
+function isPressedGamepadButton(button: GamepadButton | undefined): boolean {
+  return Boolean(button?.pressed || (button?.value ?? 0) > 0.5);
+}
+
+function isControllerOverlayShortcutPressed(gamepad: Gamepad): boolean {
+  const guidePressed = isPressedGamepadButton(gamepad.buttons[16]);
+  const viewPressed = isPressedGamepadButton(gamepad.buttons[8]);
+  const menuPressed = isPressedGamepadButton(gamepad.buttons[9]);
+  return guidePressed || (viewPressed && menuPressed);
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -2178,7 +2189,7 @@ export class GfnWebRtcClient {
     // state forwarding is suppressed inside pollGamepads() when nativeInputActive
     // is true so the native renderer remains the sole source for controller input.
     this.setupGamepadPolling();
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller overlay shortcut detection active, gamepad forwarding handled by native renderer.`);
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2374,7 +2385,8 @@ export class GfnWebRtcClient {
   }
 
   private isStreamInputBlocked(): boolean {
-    return this.inputPaused || this.windowStateInputPaused;
+    const sidebarOpen = typeof document !== "undefined" && document.body?.dataset?.sidebarOpen === "1";
+    return this.inputPaused || this.windowStateInputPaused || sidebarOpen;
   }
 
   private getGamepadPollIntervalMs(): number {
@@ -2389,7 +2401,7 @@ export class GfnWebRtcClient {
     // Poll at reduced rate while input is paused (dashboard open) — fast enough
     // to catch the Meta button release and next press, but not burning CPU at
     // the full 4 ms stream-input rate.
-    return this.inputPaused ? 16 : 4;
+    return this.isStreamInputBlocked() ? 16 : 4;
   }
 
   private shouldPollGamepads(): boolean {
@@ -2432,16 +2444,16 @@ export class GfnWebRtcClient {
       if (gamepad && gamepad.connected) {
         connectedCount++;
         this.updateGamepadBitmap(i, gamepad);
-        const metaPressed = Boolean(gamepad.buttons[16]?.pressed);
-        const prevMetaPressed = this.gamepadMetaPressed.get(i) ?? false;
-        if (metaPressed && !prevMetaPressed) {
+        const overlayShortcutPressed = isControllerOverlayShortcutPressed(gamepad);
+        const prevOverlayShortcutPressed = this.gamepadMetaPressed.get(i) ?? false;
+        if (overlayShortcutPressed && !prevOverlayShortcutPressed) {
           try {
             this.options.onControllerMetaPress?.({ controllerId: i, gamepad });
           } catch {
             // Host callbacks must never break stream input polling.
           }
         }
-        this.gamepadMetaPressed.set(i, metaPressed);
+        this.gamepadMetaPressed.set(i, overlayShortcutPressed);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
@@ -2456,7 +2468,7 @@ export class GfnWebRtcClient {
         // Read and encode gamepad state
         // Skip forwarding to the stream if input is blocked (dashboard open) or
         // the native renderer is handling controller input directly.
-        if (streamInputBlocked || this.nativeInputActive) {
+        if (streamInputBlocked || this.nativeInputActive || overlayShortcutPressed) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);

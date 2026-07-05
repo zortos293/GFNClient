@@ -2772,6 +2772,11 @@ export function App(): JSX.Element {
         onMicStateChange: (state) => {
           console.log(`[App] Mic state: ${state.state}${state.deviceLabel ? ` (${state.deviceLabel})` : ""}`);
         },
+        onControllerMetaPress: () => {
+          if (streamStatusRef.current === "streaming") {
+            dispatchStreamShortcutAction("toggleSidebar");
+          }
+        },
         onIceConnectionStateChange: (iceState) => {
           latestIceConnectionStateRef.current = iceState;
           if (iceDisconnectedRecoveryTimerRef.current !== null) {

@@ -21,6 +21,7 @@ import { formatElapsed } from "../utils/timeFormat";
 import { useTranslation } from "../i18n";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
+const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -704,7 +705,7 @@ export function StreamView({
       shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.recording,
-      isMacClient ? "Meta+G" : "Ctrl+Shift+G",
+      ...(isMacClient ? ["Meta+G"] : ["Ctrl+G", "Ctrl+Shift+G"]),
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => normalizeShortcut(value))
@@ -736,7 +737,7 @@ export function StreamView({
       shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.screenshot,
-      isMacClient ? "Meta+G" : "Ctrl+Shift+G",
+      ...(isMacClient ? ["Meta+G"] : ["Ctrl+G", "Ctrl+Shift+G"]),
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => normalizeShortcut(value))
@@ -750,7 +751,7 @@ export function StreamView({
     return null;
   }, [isMacClient, shortcuts.screenshot, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
 
-  const SIDEBAR_TOGGLE_RAW = isMacClient ? "Meta+G" : "Ctrl+Shift+G";
+  const SIDEBAR_TOGGLE_RAW = isMacClient ? "Meta+G" : "Ctrl+G";
   const sidebarToggleShortcutDisplay = formatShortcutForDisplay(SIDEBAR_TOGGLE_RAW, isMacClient);
 
   const applyScreenshotShortcutFromCapture = useCallback(
@@ -1334,7 +1335,11 @@ export function StreamView({
       }
       void refreshScreenshots();
       void refreshRecordings();
-      return;
+      return () => {
+        try {
+          delete (document.body.dataset as DOMStringMap).sidebarOpen;
+        } catch {}
+      };
     }
     // Sidebar just closed — restore focus to the video so clicks register
     // immediately. Without this, focus stays on the last sidebar element and
@@ -1370,8 +1375,17 @@ export function StreamView({
     });
   }, [onReleasePointerLock]);
 
+  const handleSidebarExitSession = useCallback(() => {
+    setShowSideBar(false);
+    onEndSession();
+  }, [onEndSession]);
+
   useEffect(() => {
     return addStreamShortcutActionListener((action) => {
+      if (action === "toggleSidebar") {
+        handleToggleSideBar();
+        return;
+      }
       if (action === "screenshot") {
         void captureScreenshot();
         return;
@@ -1380,7 +1394,7 @@ export function StreamView({
         void toggleRecording();
       }
     });
-  }, [captureScreenshot, toggleRecording]);
+  }, [captureScreenshot, handleToggleSideBar, toggleRecording]);
 
   useEffect(() => {
     const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
@@ -1432,10 +1446,14 @@ export function StreamView({
       if (isMacClient) {
         if (event.metaKey && !event.ctrlKey && !event.shiftKey && key === "g") {
           event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
           handleToggleSideBar();
         }
-      } else if (event.ctrlKey && event.shiftKey && !event.metaKey && key === "g") {
+      } else if (event.ctrlKey && !event.altKey && !event.metaKey && key === "g") {
         event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
         handleToggleSideBar();
       }
     };
@@ -1522,7 +1540,31 @@ export function StreamView({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={() => setShowSideBar(false)}
           />
-          <SideBar title="Settings" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
+          <SideBar title="Stream Control" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
+            <section className="sidebar-session-card" aria-label="Current stream session">
+              <div className="sidebar-session-card-head">
+                <span className="sidebar-session-kicker">Now streaming</span>
+                <strong className="sidebar-session-title">{gameTitle}</strong>
+                {PlatformIcon && platformName && (
+                  <span className="sidebar-session-platform" title={platformName}>
+                    <span className="sidebar-session-platform-icon"><PlatformIcon /></span>
+                    <span>{platformName}</span>
+                  </span>
+                )}
+              </div>
+              <div className="sidebar-session-shortcuts" aria-label="Open this panel shortcuts">
+                <span className="sidebar-session-shortcut"><kbd>{sidebarToggleShortcutDisplay}</kbd><span>Keyboard</span></span>
+                <span className="sidebar-session-shortcut"><kbd>{CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</kbd><span>Controller</span></span>
+              </div>
+              <button
+                type="button"
+                className="sidebar-exit-session-button"
+                onClick={handleSidebarExitSession}
+              >
+                <LogOut size={15} />
+                <span>Exit session</span>
+              </button>
+            </section>
             <div className="sidebar-stat-line" title="Total remaining playtime from subscription">
               <span className="sidebar-stat-label">Remaining Playtime</span>
               <RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="settings-value-badge" />
@@ -1993,7 +2035,10 @@ export function StreamView({
                   )}
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">Toggle Sidebar</span>
-                    <span className="settings-value-badge">{sidebarToggleShortcutDisplay}</span>
+                    <span className="sidebar-shortcut-stack">
+                      <span className="settings-value-badge">{sidebarToggleShortcutDisplay}</span>
+                      <span className="settings-value-badge">{CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</span>
+                    </span>
                   </div>
                 </section>
               </>
@@ -2215,6 +2260,7 @@ export function StreamView({
           <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
           <div className="sv-hint"><kbd>{shortcuts.toggleFullscreen}</kbd><span>Full screen</span></div>
           <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
+          <div className="sv-hint"><kbd>{CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</kbd><span>Controller menu</span></div>
           {shortcuts.toggleMicrophone && <div className="sv-hint"><kbd>{shortcuts.toggleMicrophone}</kbd><span>Mic</span></div>}
         </div>
       )}

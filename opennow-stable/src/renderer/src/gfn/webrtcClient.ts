@@ -52,8 +52,10 @@ import {
   fixServerIp,
   mungeAnswerSdp,
   preferCodec,
+  rewriteIceCandidateEndpoint,
   rewriteH265LevelIdByProfile,
   rewriteH265TierFlag,
+  rewriteSdpIceCandidateEndpoints,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 
@@ -747,6 +749,7 @@ export class GfnWebRtcClient {
   private controlChannel: RTCDataChannel | null = null;
   private cursorOverlay: GfnCursorOverlayController | null = null;
   private nativeInputActive = false;
+  private remoteIceEndpoint: SessionInfo["mediaConnectionInfo"] | null = null;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioGainNode: GainNode | null = null;
@@ -2089,6 +2092,8 @@ export class GfnWebRtcClient {
     this.detachInputCapture();
     this.closeDataChannels();
     this.cleanupAudioRouting();
+    this.remoteIceEndpoint = null;
+    this.queuedCandidates = [];
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;
@@ -4650,6 +4655,7 @@ export class GfnWebRtcClient {
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
+    this.remoteIceEndpoint = session.mediaConnectionInfo ?? null;
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
@@ -4814,21 +4820,28 @@ export class GfnWebRtcClient {
 
     // --- SDP Processing (matching Rust reference) ---
 
-    // 1. Fix 0.0.0.0 in server's SDP offer with real server IP
-    //    The GFN server sends c=IN IP4 0.0.0.0; replace with actual IP
+    // 1. Match the official client by pointing server ICE candidates at the
+    //    WebRTC media endpoint from CloudMatch when one is present.
     const webRtcMediaConnection =
       session.mediaConnectionInfo?.usage === 2 || session.mediaConnectionInfo?.usage === 17
         ? session.mediaConnectionInfo
         : undefined;
-    const serverIpForSdp = webRtcMediaConnection?.ip ?? "";
     let processedOffer = offerSdp;
-    if (serverIpForSdp) {
+    if (webRtcMediaConnection?.ip) {
+      const serverIpForSdp = webRtcMediaConnection.ip;
       processedOffer = fixServerIp(processedOffer, serverIpForSdp);
       this.log(`Fixed server IP in SDP offer: ${serverIpForSdp}`);
       // Log any remaining 0.0.0.0 references after fix
       const remaining = (processedOffer.match(/0\.0\.0\.0/g) ?? []).length;
       if (remaining > 0) {
         this.log(`Warning: ${remaining} occurrences of 0.0.0.0 still remain in SDP after fix`);
+      }
+      const rewritten = rewriteSdpIceCandidateEndpoints(processedOffer, webRtcMediaConnection);
+      if (rewritten.replacements > 0) {
+        processedOffer = rewritten.sdp;
+        this.log(
+          `Rewrote ${rewritten.replacements} server ICE candidate endpoint(s) to mediaConnectionInfo ${webRtcMediaConnection.ip}:${webRtcMediaConnection.port}`,
+        );
       }
     } else if (session.mediaConnectionInfo) {
       this.log(
@@ -4995,9 +5008,8 @@ export class GfnWebRtcClient {
       }
     }
 
-    // Recent GFN browser runtimes rely on the server-provided trickled ICE
-    // candidate. Injecting mediaConnectionInfo as a higher-priority fallback can
-    // make Chromium pick an RTSPS endpoint that connects but never delivers frames.
+    // Keep using server-provided trickled ICE; when CloudMatch gives a WebRTC
+    // media endpoint, remote candidate IP/port rewriting happens in addRemoteCandidate.
     this.log("Waiting for server-provided ICE candidates");
 
     this.log("=== handleOffer COMPLETE — waiting for ICE connectivity and tracks ===");
@@ -5005,11 +5017,17 @@ export class GfnWebRtcClient {
 
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
     const sdpMLineIndex = candidate.sdpMLineIndex ?? (candidate.sdpMid == null ? 0 : undefined);
+    const rewritten = rewriteIceCandidateEndpoint(candidate.candidate, this.remoteIceEndpoint);
+    if (rewritten.rewritten && this.remoteIceEndpoint) {
+      this.log(
+        `Rewrote remote ICE candidate endpoint to mediaConnectionInfo ${this.remoteIceEndpoint.ip}:${this.remoteIceEndpoint.port}`,
+      );
+    }
     this.log(
-      `Remote ICE candidate received: ${candidate.candidate} (sdpMid=${candidate.sdpMid}, sdpMLineIndex=${sdpMLineIndex})`,
+      `Remote ICE candidate received: ${rewritten.candidate} (sdpMid=${candidate.sdpMid}, sdpMLineIndex=${sdpMLineIndex})`,
     );
     const init: RTCIceCandidateInit = {
-      candidate: candidate.candidate,
+      candidate: rewritten.candidate,
       sdpMid: candidate.sdpMid ?? undefined,
       sdpMLineIndex,
       usernameFragment: candidate.usernameFragment ?? undefined,

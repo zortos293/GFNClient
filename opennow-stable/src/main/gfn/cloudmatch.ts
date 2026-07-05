@@ -10,6 +10,7 @@ import type {
   ColorQuality,
   NegotiatedStreamProfile,
   IceServer,
+  MediaConnectionInfo,
   StreamingFeatures,
   SessionAdAction,
   SessionAdInfo,
@@ -424,7 +425,7 @@ function resolveSignaling(response: CloudMatchResponse): {
   serverIp: string;
   signalingServer: string;
   signalingUrl: string;
-  mediaConnectionInfo?: { ip: string; port: number };
+  mediaConnectionInfo?: MediaConnectionInfo;
 } {
   const connections = response.session.connectionInfo ?? [];
   const signalingConnection =

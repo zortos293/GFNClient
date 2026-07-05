@@ -1,16 +1,24 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence } from "motion/react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Gamepad2, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
+import { Maximize, Minimize, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
 import SideBar from "./SideBar";
+import { SessionStartedSplash } from "./SessionStartedSplash";
+import { StreamStatsHud } from "./StreamStatsHud";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
-import { useStreamDiagnosticsSelector, useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
-import type { StreamLagReason } from "../gfn/webrtcClient";
+import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
+import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
+import { VideoShaderPipeline } from "../gfn/videoShaderPipeline";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
+import { addStreamShortcutActionListener } from "../streamShortcutActions";
+import { useMicMeter } from "../hooks/useMicMeter";
+import { formatElapsed } from "../utils/timeFormat";
+import { useTranslation } from "../i18n";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 
@@ -19,6 +27,9 @@ interface StreamViewProps {
   audioRef: React.Ref<HTMLAudioElement>;
   diagnosticsStore: StreamDiagnosticsStore;
   showStats: boolean;
+  showNativeStats?: boolean;
+  nativeInputCaptureActive?: boolean;
+  gstreamerEnabled: boolean;
   shortcuts: {
     toggleStats: string;
     togglePointerLock: string;
@@ -41,6 +52,8 @@ interface StreamViewProps {
   sessionStartedAtMs: number | null;
   isStreaming: boolean;
   sessionCounterEnabled: boolean;
+  showSessionTimeRemainingInStatsOverlay: boolean;
+  sessionTimeRemainingSeconds: number | null;
   sessionClockShowEveryMinutes: number;
   sessionClockShowDurationSeconds: number;
   streamWarning: {
@@ -52,6 +65,7 @@ interface StreamViewProps {
   isFullscreen: boolean;
   isConnecting: boolean;
   gameTitle: string;
+  recordingBitrateMbps: number | null;
   platformStore?: string;
   onToggleFullscreen: () => void;
   onConfirmExit: () => void;
@@ -68,82 +82,15 @@ interface StreamViewProps {
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
   onRecordingShortcutChange: (value: string) => void;
+  onShowSessionTimeRemainingInStatsOverlayChange: (value: boolean) => void;
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
   className?: string;
   allowEscapeToExitFullscreen?: boolean;
-  /** When true, omit the in-player connecting overlay (controller mode uses ControllerStreamLoading instead). */
-  hideConnectingOverlay?: boolean;
+  videoShader: VideoShaderSettings;
+  onVideoShaderChange: (value: VideoShaderSettings) => void;
 }
 
-function getRttColor(rttMs: number): string {
-  if (rttMs <= 0) return "var(--ink-muted)";
-  if (rttMs < 30) return "var(--success)";
-  if (rttMs < 60) return "var(--warning)";
-  return "var(--error)";
-}
-
-function getPacketLossColor(lossPercent: number): string {
-  if (lossPercent <= 0.15) return "var(--success)";
-  if (lossPercent < 1) return "var(--warning)";
-  return "var(--error)";
-}
-
-function getTimingColor(valueMs: number, goodMax: number, warningMax: number): string {
-  if (valueMs <= 0) return "var(--ink-muted)";
-  if (valueMs <= goodMax) return "var(--success)";
-  if (valueMs <= warningMax) return "var(--warning)";
-  return "var(--error)";
-}
-
-function getInputQueueColor(bufferedBytes: number, dropCount: number): string {
-  if (dropCount > 0 || bufferedBytes >= 65536) return "var(--error)";
-  if (bufferedBytes >= 32768) return "var(--warning)";
-  return "var(--success)";
-}
-
-function getLagReasonLabel(reason: StreamLagReason): string {
-  switch (reason) {
-    case "network":
-      return "Network";
-    case "decoder":
-      return "Decode";
-    case "input_backpressure":
-      return "Input";
-    case "render":
-      return "Render";
-    case "stable":
-      return "Stable";
-    default:
-      return "Unknown";
-  }
-}
-
-function getLagReasonColor(reason: StreamLagReason): string {
-  switch (reason) {
-    case "network":
-    case "decoder":
-      return "var(--error)";
-    case "input_backpressure":
-    case "render":
-      return "var(--warning)";
-    case "stable":
-      return "var(--success)";
-    default:
-      return "var(--ink-muted)";
-  }
-}
-
-function formatElapsed(totalSeconds: number): string {
-  const safe = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(safe / 3600);
-  const minutes = Math.floor((safe % 3600) / 60);
-  const seconds = safe % 60;
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -164,6 +111,13 @@ function formatWarningSeconds(value: number | undefined): string | null {
   return `${seconds}s`;
 }
 
+function formatSessionTimeRemaining(value: number | null): string | null {
+  if (value === null || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return formatElapsed(value);
+}
+
 type MicBadgeState = {
   connectedGamepads: number;
   micState: MicState;
@@ -175,137 +129,6 @@ function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean
     prev.connectedGamepads === next.connectedGamepads &&
     prev.micState === next.micState &&
     prev.micEnabled === next.micEnabled
-  );
-}
-
-function StreamStatsHud({
-  diagnosticsStore,
-  serverRegion,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  serverRegion?: string;
-}): JSX.Element {
-  const stats = useStreamDiagnosticsStore(diagnosticsStore);
-  const bitrateMbps = (stats.bitrateKbps / 1000).toFixed(1);
-  const hasResolution = stats.resolution && stats.resolution !== "";
-  const hasCodec = stats.codec && stats.codec !== "";
-  const regionLabel = stats.serverRegion || serverRegion || "";
-  const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
-  const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
-  const jitterBufferColor = getTimingColor(stats.jitterBufferDelayMs, 10, 24);
-  const lossColor = getPacketLossColor(stats.packetLossPercent);
-  const dText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)}ms` : "--";
-  const rText = stats.renderTimeMs > 0 ? `${stats.renderTimeMs.toFixed(1)}ms` : "--";
-  const jbText = stats.jitterBufferDelayMs > 0 ? `${stats.jitterBufferDelayMs.toFixed(1)}ms` : "--";
-  const inputLive = stats.inputReady && stats.connectionState === "connected";
-  const inputQueueColor = getInputQueueColor(stats.inputQueueBufferedBytes, stats.inputQueueDropCount);
-  const inputQueueText = `${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB`;
-  const partiallyReliableQueueText = `${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`;
-  const mouseResidualText = `${stats.mouseResidualMagnitude.toFixed(2)}px`;
-
-  return (
-    <div className="sv-stats">
-      <div className="sv-stats-head">
-        {hasResolution ? (
-          <span className="sv-stats-primary">{stats.resolution} · {stats.decodeFps}fps</span>
-        ) : (
-          <span className="sv-stats-primary sv-stats-wait">Connecting...</span>
-        )}
-        <span className={`sv-stats-live ${inputLive ? "is-live" : "is-pending"}`}>
-          {inputLive ? "Live" : "Sync"}
-        </span>
-      </div>
-
-      <div className="sv-stats-sub">
-        <span className="sv-stats-sub-left">
-          {hasCodec ? stats.codec : "N/A"}
-          {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
-        </span>
-        <span className="sv-stats-sub-right">{bitrateMbps} Mbps</span>
-      </div>
-
-      <div className="sv-stats-metrics">
-        <span className="sv-stats-chip" title="Round-trip network latency">
-          RTT <span className="sv-stats-chip-val" style={{ color: getRttColor(stats.rttMs) }}>{stats.rttMs > 0 ? `${stats.rttMs.toFixed(0)}ms` : "--"}</span>
-        </span>
-        <span className="sv-stats-chip" title="D = decode time">
-          D <span className="sv-stats-chip-val" style={{ color: decodeColor }}>{dText}</span>
-        </span>
-        <span className="sv-stats-chip" title="R = render time">
-          R <span className="sv-stats-chip-val" style={{ color: renderColor }}>{rText}</span>
-        </span>
-        <span className="sv-stats-chip" title="JB = jitter buffer delay">
-          JB <span className="sv-stats-chip-val" style={{ color: jitterBufferColor }}>{jbText}</span>
-        </span>
-        <span className="sv-stats-chip" title="Packet loss percentage">
-          Loss <span className="sv-stats-chip-val" style={{ color: lossColor }}>{stats.packetLossPercent.toFixed(2)}%</span>
-        </span>
-        <span className="sv-stats-chip" title="Input queue pressure (buffered bytes and delayed flush)">
-          IQ <span className="sv-stats-chip-val" style={{ color: inputQueueColor }}>{inputQueueText}</span>
-        </span>
-        <span className="sv-stats-chip" title="Partially reliable input channel state and queued bytes">
-          PR <span className="sv-stats-chip-val" style={{ color: stats.partiallyReliableInputOpen ? "var(--success)" : "var(--ink-muted)" }}>
-            {stats.partiallyReliableInputOpen ? `${stats.mouseMoveTransport === "partially_reliable" ? "mouse" : "open"} · ${partiallyReliableQueueText}` : "off"}
-          </span>
-        </span>
-        <span className="sv-stats-chip" title="Mouse flush cadence and packet rate">
-          MF <span className="sv-stats-chip-val" style={{ color: stats.mouseAdaptiveFlushActive ? "var(--warning)" : "var(--success)" }}>
-            {stats.mouseFlushIntervalMs.toFixed(0)}ms · {stats.mousePacketsPerSecond}/s
-          </span>
-        </span>
-        {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
-          <span className="sv-stats-chip" title={stats.lagReasonDetail}>
-            Lag <span className="sv-stats-chip-val" style={{ color: getLagReasonColor(stats.lagReason) }}>{getLagReasonLabel(stats.lagReason)}</span>
-          </span>
-        )}
-      </div>
-
-      <div className="sv-stats-foot">
-        Input queue peak {(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · PR peak {(stats.partiallyReliableInputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops {stats.inputQueueDropCount} · sched {stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual {mouseResidualText}
-      </div>
-
-      {(stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) && (
-        <div className="sv-stats-foot">
-          Decoder recovery {stats.decoderPressureActive ? "active" : "idle"} · attempts {stats.decoderRecoveryAttempts} · action {stats.decoderRecoveryAction}
-        </div>
-      )}
-
-      {(stats.gpuType || regionLabel) && (
-        <div className="sv-stats-foot">
-          {[stats.gpuType, regionLabel].filter(Boolean).join(" · ")}
-        </div>
-      )}
-
-      {stats.lagReason !== "stable" && stats.lagReason !== "unknown" && (
-        <div className="sv-stats-foot">
-          Lag source {getLagReasonLabel(stats.lagReason).toLowerCase()} · {stats.lagReasonDetail}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ControllerIndicator({
-  diagnosticsStore,
-  isConnecting,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  isConnecting: boolean;
-}): JSX.Element | null {
-  const connectedGamepads = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.connectedGamepads,
-  );
-
-  if (isConnecting || connectedGamepads <= 0) {
-    return null;
-  }
-
-  return (
-    <div className="sv-ctrl" title={`${connectedGamepads} controller(s) connected`}>
-      <Gamepad2 size={18} />
-      {connectedGamepads > 1 && <span className="sv-ctrl-n">{connectedGamepads}</span>}
-    </div>
   );
 }
 
@@ -364,7 +187,7 @@ function AntiAfkIndicator({
   showAntiAfkIndicator: boolean;
   isConnecting: boolean;
 }): JSX.Element | null {
-  const hasController = useStreamDiagnosticsSelector(
+  const hasGamepad = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => stats.connectedGamepads > 0,
   );
@@ -374,7 +197,7 @@ function AntiAfkIndicator({
   }
 
   return (
-    <div className={`sv-afk${hasController ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
+    <div className={`sv-afk${hasGamepad ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
       <span className="sv-afk-dot" />
       <span className="sv-afk-label">ANTI-AFK ON</span>
     </div>
@@ -441,7 +264,7 @@ function StreamTitleBar({
 }): JSX.Element | null {
   const hasResolution = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.nativeRendererActive || stats.resolution !== "",
   );
 
   if (!hasResolution || !showHints) {
@@ -463,23 +286,64 @@ function StreamTitleBar({
   );
 }
 
+function hasVisibleStreamVideo(stats: {
+  nativeRendererActive: boolean;
+  framesDecoded: number;
+  resolution: string;
+}): boolean {
+  if (stats.nativeRendererActive) {
+    return true;
+  }
+  return stats.framesDecoded > 0;
+}
+
 function StreamEmptyState({
   diagnosticsStore,
 }: {
   diagnosticsStore: StreamDiagnosticsStore;
 }): JSX.Element | null {
-  const hasResolution = useStreamDiagnosticsSelector(
+  const hasVisibleVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => hasVisibleStreamVideo(stats),
   );
 
-  if (hasResolution) {
+  if (hasVisibleVideo) {
     return null;
   }
 
   return (
     <div className="sv-empty">
       <div className="sv-empty-grad" />
+    </div>
+  );
+}
+
+function StreamWaitingForVideo({
+  diagnosticsStore,
+  isConnecting,
+}: {
+  diagnosticsStore: StreamDiagnosticsStore;
+  isConnecting: boolean;
+}): JSX.Element | null {
+  const { t } = useTranslation();
+  const waitingForFirstFrame = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => {
+      if (stats.nativeRendererActive || stats.framesDecoded > 0) {
+        return false;
+      }
+      return stats.connectionState === "connected" || stats.resolution !== "";
+    },
+  );
+
+  if (isConnecting || !waitingForFirstFrame) {
+    return null;
+  }
+
+  return (
+    <div className="sv-warm" role="status" aria-live="polite">
+      <Loader2 className="sv-warm-spin" size={34} />
+      <p className="sv-warm-text">{t("stream.stats.waitingForVideo")}</p>
     </div>
   );
 }
@@ -512,139 +376,24 @@ function VideoFocusOnReady({
   isConnecting: boolean;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }): null {
-  const hasResolution = useStreamDiagnosticsSelector(
+  const shouldFocusVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
-    (stats) => stats.resolution !== "",
+    (stats) => stats.resolution !== "" && !stats.nativeRendererActive,
   );
 
   useEffect(() => {
-    if (!isConnecting && videoRef.current && hasResolution) {
+    if (!isConnecting && videoRef.current && shouldFocusVideo) {
       const timer = window.setTimeout(() => {
         if (videoRef.current && document.activeElement !== videoRef.current) {
-          videoRef.current.focus();
+          videoRef.current.focus({ preventScroll: true });
           console.log("[StreamView] Focused video element");
         }
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [hasResolution, isConnecting, videoRef]);
+  }, [isConnecting, shouldFocusVideo, videoRef]);
 
   return null;
-}
-
-function useMicMeter(
-  canvasRef: React.RefObject<HTMLCanvasElement | null>,
-  track: MediaStreamTrack | null,
-  active: boolean,
-): void {
-  const pendingCloseRef = useRef<Promise<void> | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!active || !track || !canvas) return;
-
-    const ctx2d = canvas.getContext("2d");
-    if (!ctx2d) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(canvas.clientWidth * dpr);
-    canvas.height = Math.round(canvas.clientHeight * dpr);
-    const W = canvas.width;
-    const H = canvas.height;
-    if (W <= 0 || H <= 0) {
-      return;
-    }
-
-    let audioCtx: AudioContext | null = null;
-    let source: MediaStreamAudioSourceNode | null = null;
-    let analyser: AnalyserNode | null = null;
-    let tickTimer: number | null = null;
-    let dead = false;
-
-    const start = async () => {
-      if (pendingCloseRef.current) {
-        try {
-          await pendingCloseRef.current;
-        } catch {
-          // Ignore close errors from previous contexts.
-        }
-      }
-      if (dead) {
-        return;
-      }
-
-      try {
-        audioCtx = new AudioContext();
-        await audioCtx.resume().catch(() => undefined);
-        if (dead) {
-          return;
-        }
-
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.65;
-        source = audioCtx.createMediaStreamSource(new MediaStream([track]));
-        source.connect(analyser);
-
-        const buf = new Uint8Array(analyser.frequencyBinCount);
-        const SEG = 20;
-        const GAP = Math.round(2 * dpr);
-        const bw = (W - GAP * (SEG - 1)) / SEG;
-        const radius = Math.min(3 * dpr, bw / 2);
-        const frameIntervalMs = 33;
-
-        const frame = () => {
-          if (dead || !analyser) return;
-          tickTimer = window.setTimeout(frame, frameIntervalMs);
-          analyser.getByteTimeDomainData(buf);
-
-          let sum = 0;
-          for (let i = 0; i < buf.length; i++) {
-            const v = ((buf[i] ?? 128) - 128) / 128;
-            sum += v * v;
-          }
-          const rms = Math.sqrt(sum / buf.length);
-          const level = Math.min(1, rms * 5.5);
-          const filled = Math.round(level * SEG);
-
-          ctx2d.clearRect(0, 0, W, H);
-          for (let i = 0; i < SEG; i++) {
-            const x = i * (bw + GAP);
-            if (i < filled) {
-              ctx2d.fillStyle =
-                i < SEG * 0.7 ? "#58d98a" : i < SEG * 0.9 ? "#fbbf24" : "#f87171";
-            } else {
-              ctx2d.fillStyle = "rgba(255,255,255,0.07)";
-            }
-            ctx2d.beginPath();
-            ctx2d.roundRect(x, 0, Math.max(1, bw), H, radius);
-            ctx2d.fill();
-          }
-        };
-
-        frame();
-      } catch (e) {
-        console.warn("[MicMeter]", e);
-      }
-    };
-
-    void start();
-
-    return () => {
-      dead = true;
-      if (tickTimer !== null) {
-        window.clearTimeout(tickTimer);
-      }
-      source?.disconnect();
-      analyser?.disconnect();
-      if (audioCtx && audioCtx.state !== "closed") {
-        pendingCloseRef.current = audioCtx
-          .close()
-          .catch(() => undefined)
-          .then(() => undefined);
-      }
-    };
-  }, [track, active, canvasRef]);
 }
 
 export function StreamView({
@@ -652,6 +401,9 @@ export function StreamView({
   audioRef,
   diagnosticsStore,
   showStats,
+  showNativeStats = false,
+  nativeInputCaptureActive = false,
+  gstreamerEnabled,
   shortcuts,
   serverRegion,
   antiAfkEnabled,
@@ -661,12 +413,15 @@ export function StreamView({
   sessionStartedAtMs,
   isStreaming,
   sessionCounterEnabled,
+  showSessionTimeRemainingInStatsOverlay,
+  sessionTimeRemainingSeconds,
   sessionClockShowEveryMinutes,
   sessionClockShowDurationSeconds,
   streamWarning,
   isFullscreen,
   isConnecting,
   gameTitle,
+  recordingBitrateMbps,
   platformStore,
   onToggleFullscreen,
   onConfirmExit,
@@ -683,13 +438,16 @@ export function StreamView({
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
   onRecordingShortcutChange,
+  onShowSessionTimeRemainingInStatsOverlayChange,
   subscriptionInfo,
   micTrack,
   hideStreamButtons = false,
   allowEscapeToExitFullscreen,
-  hideConnectingOverlay = false,
   className,
+  videoShader,
+  onVideoShaderChange,
 }: StreamViewProps): JSX.Element {
+  const { t } = useTranslation();
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [antiAfkToggleAck, setAntiAfkToggleAck] = useState<"on" | "off" | null>(null);
@@ -709,6 +467,66 @@ export function StreamView({
     typeof window.openNow?.listScreenshots === "function" &&
     typeof window.openNow?.deleteScreenshot === "function" &&
     typeof window.openNow?.saveScreenshotAs === "function";
+  const nativeRendererActive = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.nativeRendererActive,
+  );
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const shaderPipelineRef = useRef<VideoShaderPipeline | null>(null);
+  const streamHasVideo = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => hasVisibleStreamVideo(stats),
+  );
+  const [videoElementHasFrame, setVideoElementHasFrame] = useState(false);
+
+  useEffect(() => {
+    if (isConnecting) {
+      setVideoElementHasFrame(false);
+      return undefined;
+    }
+
+    const video = localVideoRef.current;
+    if (!video) {
+      return undefined;
+    }
+
+    const syncVideoFrame = (): void => {
+      setVideoElementHasFrame(video.videoWidth > 0 && video.videoHeight > 0);
+    };
+
+    syncVideoFrame();
+    video.addEventListener("loadeddata", syncVideoFrame);
+    video.addEventListener("playing", syncVideoFrame);
+    video.addEventListener("resize", syncVideoFrame);
+
+    return () => {
+      video.removeEventListener("loadeddata", syncVideoFrame);
+      video.removeEventListener("playing", syncVideoFrame);
+      video.removeEventListener("resize", syncVideoFrame);
+    };
+  }, [isConnecting]);
+
+  const streamVideoReady = streamHasVideo || videoElementHasFrame;
+  const [sessionReadySplashVisible, setSessionReadySplashVisible] = useState(false);
+  const sessionReadySplashShownRef = useRef(false);
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting && !sessionReadySplashVisible;
+
+  useEffect(() => {
+    if (isConnecting) {
+      sessionReadySplashShownRef.current = false;
+      setSessionReadySplashVisible(false);
+      return;
+    }
+    if (nativeRendererActive || !streamVideoReady || sessionReadySplashShownRef.current) {
+      return;
+    }
+    sessionReadySplashShownRef.current = true;
+    setSessionReadySplashVisible(true);
+  }, [isConnecting, nativeRendererActive, streamVideoReady]);
+
+  const handleSessionReadySplashFinished = useCallback(() => {
+    setSessionReadySplashVisible(false);
+  }, []);
 
   // Recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -836,12 +654,13 @@ export function StreamView({
   }, [antiAfkAckNonce, antiAfkEnabled, showAntiAfkIndicator, isConnecting]);
 
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
+  const sessionTimeRemainingText = formatSessionTimeRemaining(sessionTimeRemainingSeconds);
+  const showSessionTimeRemainingInStats =
+    sessionTimeRemainingText !== null && showSessionTimeRemainingInStatsOverlay;
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
   const isMacClient = navigator.platform?.toLowerCase().includes("mac") || navigator.userAgent.includes("Macintosh");
 
-  // Local ref for video element to manage focus
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
   // Local ref for audio element (game audio stream)
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   // AudioContext used during an active recording (torn down on stop/error)
@@ -1232,7 +1051,11 @@ export function StreamView({
     }, 500);
 
     let isFirstChunk = true;
-    const recorder = new MediaRecorder(composed, { mimeType });
+    const recorderOptions: MediaRecorderOptions = { mimeType };
+    if (recordingBitrateMbps !== null) {
+      recorderOptions.videoBitsPerSecond = Math.max(1, Math.min(200, Math.round(recordingBitrateMbps))) * 1_000_000;
+    }
+    const recorder = new MediaRecorder(composed, recorderOptions);
 
     recorder.ondataavailable = (e: BlobEvent) => {
       if (!e.data || e.data.size === 0) return;
@@ -1326,7 +1149,7 @@ export function StreamView({
 
     mediaRecorderRef.current = recorder;
     recorder.start(2000);
-  }, [gameTitle, isRecording, micTrack, recordingApiAvailable]);
+  }, [gameTitle, isRecording, micTrack, recordingApiAvailable, recordingBitrateMbps]);
 
   // Cleanup: abort any active recording on unmount
   useEffect(() => {
@@ -1344,6 +1167,27 @@ export function StreamView({
       audioCtxRef.current?.close().catch(() => undefined);
       audioCtxRef.current = null;
     };
+  }, []);
+
+  // Video shader post-processing pipeline (embedded WebRTC path only; the
+  // native streamer renders outside Chromium so shaders cannot apply there).
+  useEffect(() => {
+    const video = localVideoRef.current;
+    if (!video) return;
+    const effective = gstreamerEnabled || nativeRendererActive
+      ? { ...videoShader, enabled: false }
+      : videoShader;
+    if (!shaderPipelineRef.current) {
+      if (!effective.enabled) return;
+      shaderPipelineRef.current = new VideoShaderPipeline(video, effective);
+    } else {
+      shaderPipelineRef.current.updateSettings(effective);
+    }
+  }, [videoShader, gstreamerEnabled, nativeRendererActive]);
+
+  useEffect(() => () => {
+    shaderPipelineRef.current?.dispose();
+    shaderPipelineRef.current = null;
   }, []);
 
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
@@ -1365,12 +1209,90 @@ export function StreamView({
   }, [audioRef]);
 
   useEffect(() => {
-    const handlePointerLockChange = () => {
-      setIsPointerLocked(document.pointerLockElement === localVideoRef.current);
+    const updateSurface = window.openNow?.updateNativeRenderSurface;
+    if (typeof updateSurface !== "function") {
+      return undefined;
+    }
+
+    let frame = 0;
+    const publish = (): void => {
+      const element = localVideoRef.current;
+      const dpr = window.devicePixelRatio || 1;
+      if (!element || document.visibilityState === "hidden") {
+        updateSurface({ rect: null, visible: false, deviceScaleFactor: dpr });
+        return;
+      }
+
+      const rect = element.getBoundingClientRect();
+      const width = Math.round(rect.width * dpr);
+      const height = Math.round(rect.height * dpr);
+      const visible = width >= 2 && height >= 2;
+      updateSurface({
+        deviceScaleFactor: dpr,
+        visible,
+        showStats: showStats || showNativeStats,
+        rect: visible
+          ? {
+              x: Math.round(rect.left * dpr),
+              y: Math.round(rect.top * dpr),
+              width,
+              height,
+            }
+          : null,
+      });
     };
+
+    const schedule = (): void => {
+      if (frame !== 0) {
+        return;
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        publish();
+      });
+    };
+
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    if (observer && localVideoRef.current) {
+      observer.observe(localVideoRef.current);
+    }
+
+    window.addEventListener("resize", schedule);
+    window.addEventListener("fullscreenchange", schedule);
+    document.addEventListener("visibilitychange", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    schedule();
+
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer?.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("fullscreenchange", schedule);
+      document.removeEventListener("visibilitychange", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+      updateSurface({
+        rect: null,
+        visible: false,
+        deviceScaleFactor: window.devicePixelRatio || 1,
+        showStats: false,
+      });
+    };
+  }, [showNativeStats, showStats]);
+
+  useEffect(() => {
+    const handlePointerLockChange = () => {
+      setIsPointerLocked(
+        document.pointerLockElement === localVideoRef.current || nativeInputCaptureActive,
+      );
+    };
+    handlePointerLockChange();
     document.addEventListener("pointerlockchange", handlePointerLockChange);
     return () => document.removeEventListener("pointerlockchange", handlePointerLockChange);
-  }, []);
+  }, [nativeInputCaptureActive]);
 
   useEffect(() => {
     // Show a transient HUD hint when pointer lock is acquired
@@ -1419,7 +1341,7 @@ export function StreamView({
     // mousedown's preventDefault() blocks the browser from re-focusing on click.
     const timer = window.setTimeout(() => {
       if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-        localVideoRef.current.focus();
+        localVideoRef.current.focus({ preventScroll: true });
       }
     }, 50);
     try {
@@ -1449,8 +1371,21 @@ export function StreamView({
   }, [onReleasePointerLock]);
 
   useEffect(() => {
+    return addStreamShortcutActionListener((action) => {
+      if (action === "screenshot") {
+        void captureScreenshot();
+        return;
+      }
+      if (action === "toggleRecording") {
+        void toggleRecording();
+      }
+    });
+  }, [captureScreenshot, toggleRecording]);
+
+  useEffect(() => {
     const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
     const recordingShortcut = normalizeShortcut(shortcuts.recording);
+
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const isTyping = !!target && (
@@ -1475,6 +1410,23 @@ export function StreamView({
         void toggleRecording();
         return;
       }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [captureScreenshot, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = !!target && (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      );
+      if (isTyping) {
+        return;
+      }
 
       const key = event.key.toLowerCase();
       if (isMacClient) {
@@ -1490,7 +1442,45 @@ export function StreamView({
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [captureScreenshot, handleToggleSideBar, isMacClient, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
+  }, [handleToggleSideBar, isMacClient]);
+
+  useEffect(() => {
+    const blurStreamFocusTarget = (): void => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.closest(".sv")) {
+        active.blur();
+      }
+    };
+
+    const hideFocusRingOnAccessKey = (event: KeyboardEvent): void => {
+      if (event.key === "Alt" && !event.repeat) {
+        blurStreamFocusTarget();
+      }
+    };
+
+    const restoreStreamVideoFocus = (event: PointerEvent): void => {
+      if (showSideBar || isConnecting || exitPrompt.open) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".sv-sidebar, .sv-exit, .sv-shot-modal, button, a, input, textarea, select")) {
+        return;
+      }
+      const video = localVideoRef.current;
+      if (video && document.activeElement !== video) {
+        video.focus({ preventScroll: true });
+      }
+    };
+
+    window.addEventListener("blur", blurStreamFocusTarget);
+    window.addEventListener("keydown", hideFocusRingOnAccessKey, true);
+    window.addEventListener("pointerdown", restoreStreamVideoFocus, true);
+    return () => {
+      window.removeEventListener("blur", blurStreamFocusTarget);
+      window.removeEventListener("keydown", hideFocusRingOnAccessKey, true);
+      window.removeEventListener("pointerdown", restoreStreamVideoFocus, true);
+    };
+  }, [exitPrompt.open, isConnecting, showSideBar]);
 
   return (
     <div className={["sv", className].filter(Boolean).join(" ")}>
@@ -1499,11 +1489,11 @@ export function StreamView({
         autoPlay
         playsInline
         muted
-        tabIndex={0}
+        tabIndex={-1}
         className="sv-video"
         onClick={() => {
           if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-            localVideoRef.current.focus();
+            localVideoRef.current.focus({ preventScroll: true });
           }
         }}
       />
@@ -1537,6 +1527,30 @@ export function StreamView({
               <span className="sidebar-stat-label">Remaining Playtime</span>
               <RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="settings-value-badge" />
             </div>
+            {sessionTimeRemainingText !== null && (
+              <div className="sidebar-stat-line sidebar-stat-line--stacked" title={t("sidebar.sessionTimeRemainingTitle")}>
+                <span className="sidebar-stat-label">{t("sidebar.sessionTimeRemaining")}</span>
+                <div className="sidebar-session-time-controls">
+                  <span className="settings-value-badge sidebar-session-time-left">
+                    <Clock3 size={10} />
+                    <span>{sessionTimeRemainingText}</span>
+                  </span>
+                  <label
+                    className="sidebar-mini-toggle"
+                    title={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showSessionTimeRemainingInStatsOverlay}
+                      aria-label={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
+                      onChange={(event) => onShowSessionTimeRemainingInStatsOverlayChange(event.target.checked)}
+                    />
+                    <span className="sidebar-mini-toggle-track" />
+                    <span>{t("sidebar.statsOverlay")}</span>
+                  </label>
+                </div>
+              </div>
+            )}
             <div className="sidebar-tabs" role="tablist" aria-label="Sidebar sections">
               <button
                 type="button"
@@ -1612,6 +1626,79 @@ export function StreamView({
                 <div className="sidebar-separator" aria-hidden="true" />
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
+                    <span>Video Filters</span>
+                    <span className="sidebar-section-sub">GPU shaders applied to the stream</span>
+                  </div>
+                  {gstreamerEnabled ? (
+                    <span className="sidebar-hint">Video filters are unavailable while the native streamer renders the video.</span>
+                  ) : (
+                    <>
+                      <div className="sidebar-row sidebar-row--aligned">
+                        <span className="sidebar-label">Enable Filters</span>
+                        <label className="sidebar-mini-toggle" title="Enable GPU post-processing filters">
+                          <input
+                            type="checkbox"
+                            checked={videoShader.enabled}
+                            aria-label="Enable video filters"
+                            onChange={(event) => onVideoShaderChange({ ...videoShader, enabled: event.target.checked })}
+                          />
+                          <span className="sidebar-mini-toggle-track" />
+                        </label>
+                      </div>
+                      {videoShader.enabled && (
+                        <>
+                          {([
+                            { key: "sharpen", label: "Sharpen", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%`, hint: "Contrast-adaptive sharpening. Counters stream compression blur." },
+                            { key: "saturation", label: "Saturation", min: 0, max: 200, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "contrast", label: "Contrast", min: 50, max: 150, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "brightness", label: "Brightness", min: 50, max: 150, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "vibrance", label: "Vibrance", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%`, hint: "Boosts muted colors without oversaturating." },
+                            { key: "filmGrain", label: "Film Grain", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%` },
+                          ] as const).map((control) => (
+                            <div key={control.key} className="sidebar-row sidebar-row--column">
+                              <div className="sidebar-row-top">
+                                <span className="sidebar-label">{control.label}</span>
+                                <span className="settings-value-badge">{control.format(videoShader[control.key])}</span>
+                              </div>
+                              <input
+                                type="range"
+                                className="settings-slider"
+                                min={control.min}
+                                max={control.max}
+                                step={1}
+                                value={videoShader[control.key]}
+                                onChange={(event) => {
+                                  const next = Number(event.target.value);
+                                  if (Number.isFinite(next)) {
+                                    onVideoShaderChange({
+                                      ...videoShader,
+                                      [control.key]: Math.max(control.min, Math.min(control.max, Math.round(next))),
+                                    });
+                                  }
+                                }}
+                                onDoubleClick={() => onVideoShaderChange({ ...videoShader, [control.key]: control.neutral })}
+                              />
+                              {"hint" in control && control.hint && <span className="sidebar-hint">{control.hint}</span>}
+                            </div>
+                          ))}
+                          <div className="sidebar-row sidebar-row--aligned">
+                            <span className="sidebar-label">Reset Filters</span>
+                            <button
+                              type="button"
+                              className="sidebar-button"
+                              onClick={() => onVideoShaderChange({ ...DEFAULT_VIDEO_SHADER_SETTINGS, enabled: true })}
+                            >
+                              <span>Reset</span>
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </section>
+                <div className="sidebar-separator" aria-hidden="true" />
+                <section className="sidebar-section">
+                  <div className="sidebar-section-header">
                     <span>Audio</span>
                     <span className="sidebar-section-sub">Microphone handling</span>
                   </div>
@@ -1641,13 +1728,13 @@ export function StreamView({
                   {microphoneMode !== "disabled" && (
                     <div className="sidebar-row sidebar-row--column">
                       <div className="sidebar-row-top">
-                        <span className="sidebar-label">Input Level</span>
+                        <span className="sidebar-label">Send level</span>
                         <SidebarMicMutedBadge diagnosticsStore={diagnosticsStore} micTrack={micTrack} />
                       </div>
                       <canvas
                         ref={micMeterRef}
                         className="mic-meter-canvas"
-                        aria-label="Microphone input level"
+                        aria-label="Microphone send level (what others hear)"
                       />
                       {!micTrack && <span className="sidebar-hint">Mic not active — check mode and permissions.</span>}
                     </div>
@@ -1718,6 +1805,9 @@ export function StreamView({
                   {usedMimeType && (
                     <span className="sidebar-hint sidebar-hint--codec">Codec: {usedMimeType}</span>
                   )}
+                  <span className="sidebar-hint sidebar-hint--codec">
+                    Recording bitrate: {recordingBitrateMbps === null ? "Auto" : `${recordingBitrateMbps} Mbps`}
+                  </span>
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">
                       {isRecording ? `Recording ${formatElapsed(Math.round(recordingDurationMs / 1000))}` : "Record"}
@@ -1965,9 +2055,10 @@ export function StreamView({
 
       {/* Gradient background when no video */}
       <StreamEmptyState diagnosticsStore={diagnosticsStore} />
+      <StreamWaitingForVideo diagnosticsStore={diagnosticsStore} isConnecting={isConnecting} />
 
-      {/* Connecting overlay (desktop / non-controller; controller uses ControllerStreamLoading) */}
-      {isConnecting && !hideConnectingOverlay && (
+      {/* Connecting overlay */}
+      {isConnecting && (
         <div className="sv-connect">
           <div className="sv-connect-inner">
             <Loader2 className="sv-connect-spin" size={44} />
@@ -2015,15 +2106,26 @@ export function StreamView({
         </div>
       )}
 
-      {/* Stats HUD (top-right) */}
-      {showStats && !isConnecting && (
-        <StreamStatsHud diagnosticsStore={diagnosticsStore} serverRegion={serverRegion} />
-      )}
+      <SessionStartedSplash
+        visible={sessionReadySplashVisible && !isConnecting}
+        gameTitle={gameTitle}
+        onFinished={handleSessionReadySplashFinished}
+      />
 
-      {/* Controller indicator (top-left) */}
-      <ControllerIndicator diagnosticsStore={diagnosticsStore} isConnecting={isConnecting} />
+      <AnimatePresence>
+        {showStatsHud && (
+          <StreamStatsHud
+            key="stream-stats-hud"
+            diagnosticsStore={diagnosticsStore}
+            gstreamerEnabled={gstreamerEnabled}
+            serverRegion={serverRegion}
+            sessionTimeRemainingText={showSessionTimeRemainingInStats ? sessionTimeRemainingText : null}
+            hintsVisible={showHints}
+          />
+        )}
+      </AnimatePresence>
 
-      {/* Microphone toggle button (top-left, below controller badge when present) */}
+      {/* Microphone toggle button */}
       <MicrophoneIndicator
         diagnosticsStore={diagnosticsStore}
         showAntiAfkIndicator={antiAfkEnabled && showAntiAfkIndicator}
@@ -2032,7 +2134,7 @@ export function StreamView({
         onToggleMicrophone={onToggleMicrophone}
       />
 
-      {/* Anti-AFK indicator (top-left, below controller badge when present) */}
+      {/* Anti-AFK indicator */}
       <AntiAfkIndicator
         diagnosticsStore={diagnosticsStore}
         antiAfkEnabled={antiAfkEnabled}

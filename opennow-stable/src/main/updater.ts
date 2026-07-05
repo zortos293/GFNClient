@@ -2,13 +2,16 @@ import { app } from "electron";
 import electronUpdater from "electron-updater";
 import type { AppUpdater, ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 
+import { getAppBuildInfo } from "./appBuildInfo";
+import { pickRuntimeGitHubToken } from "./githubRuntimeToken";
+import { getLinuxUpdaterSupport } from "./linuxUpdaterSupport";
+import { writeCacheEntry } from "./releaseHighlights";
 import type { AppUpdaterState } from "@shared/gfn";
 
 const { autoUpdater } = electronUpdater;
 
 const STARTUP_CHECK_DELAY_MS = 12_000;
 const PERIODIC_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const UPDATER_TOKEN_ENV_KEYS = ["OPENNOW_GH_TOKEN", "GH_TOKEN"] as const;
 
 export interface AppUpdaterController {
   initialize(): void;
@@ -29,17 +32,6 @@ interface AppUpdaterControllerOptions {
 
 function isPrereleaseVersion(version: string): boolean {
   return version.includes("-");
-}
-
-function pickRuntimeToken(): string | null {
-  for (const key of UPDATER_TOKEN_ENV_KEYS) {
-    const value = process.env[key]?.trim();
-    if (value) {
-      return value;
-    }
-  }
-
-  return null;
 }
 
 function normalizeErrorMessage(error: unknown): string {
@@ -67,10 +59,16 @@ function normalizeErrorMessage(error: unknown): string {
   return message || "Update check failed.";
 }
 
-function createDisabledState(currentVersion: string, message: string): AppUpdaterState {
+function getUpdateVersion(info: UpdateInfo | UpdateDownloadedEvent | null | undefined): string | undefined {
+  return (info as { version?: string } | null | undefined)?.version;
+}
+
+function createDisabledState(buildInfo: ReturnType<typeof getAppBuildInfo>, message: string): AppUpdaterState {
   return {
     status: "disabled",
-    currentVersion,
+    currentVersion: buildInfo.version,
+    currentDisplayVersion: buildInfo.displayVersion,
+    currentBuildNumber: buildInfo.buildNumber,
     updateSource: "github-releases",
     message,
     canCheck: false,
@@ -81,9 +79,39 @@ function createDisabledState(currentVersion: string, message: string): AppUpdate
 }
 
 export function createAppUpdaterController(options: AppUpdaterControllerOptions): AppUpdaterController {
-  const currentVersion = app.getVersion();
+  const buildInfo = getAppBuildInfo();
+  const currentVersion = buildInfo.version;
   if (!app.isPackaged) {
-    const disabledState = createDisabledState(currentVersion, "Auto-updates are only available in packaged builds.");
+    const disabledState = createDisabledState(buildInfo, "Auto-updates are only available in packaged builds.");
+    return {
+      initialize() {
+        options.onStateChanged(disabledState);
+      },
+      dispose() {},
+      getState() {
+        return disabledState;
+      },
+      setAutomaticChecksEnabled() {
+        return disabledState;
+      },
+      async checkForUpdates() {
+        return disabledState;
+      },
+      async downloadUpdate() {
+        return disabledState;
+      },
+      async quitAndInstall() {
+        return disabledState;
+      },
+    };
+  }
+
+  const linuxUpdaterSupport = getLinuxUpdaterSupport();
+  if (!linuxUpdaterSupport.supported) {
+    const disabledState = createDisabledState(
+      buildInfo,
+      linuxUpdaterSupport.message ?? "Auto-updates are not available for this Linux install.",
+    );
     return {
       initialize() {
         options.onStateChanged(disabledState);
@@ -108,7 +136,7 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   }
 
   const updater: AppUpdater = autoUpdater;
-  const token = pickRuntimeToken();
+  const token = pickRuntimeGitHubToken();
   if (token) {
     updater.requestHeaders = {
       ...updater.requestHeaders,
@@ -130,10 +158,12 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   let downloadInFlight = false;
   let automaticChecksEnabled = options.automaticChecksEnabled;
   let availableUpdateInfo: UpdateInfo | null = null;
-  let downloadedUpdateInfo: UpdateDownloadedEvent | null = null;
+  let downloadedUpdateInfo: UpdateInfo | null = null;
 
-  const baseState: Pick<AppUpdaterState, "currentVersion" | "updateSource" | "isPackaged"> = {
+  const baseState: Pick<AppUpdaterState, "currentVersion" | "currentDisplayVersion" | "currentBuildNumber" | "updateSource" | "isPackaged"> = {
     currentVersion,
+    currentDisplayVersion: buildInfo.displayVersion,
+    currentBuildNumber: buildInfo.buildNumber,
     updateSource: "github-releases",
     isPackaged: true,
   };
@@ -244,12 +274,30 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
 
   updater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
     downloadedUpdateInfo = info;
+    const downloadedVersion = getUpdateVersion(info) ?? availableUpdateInfo?.version;
+
+    // Cache the release notes for offline fallback in the What's New modal
+    const releaseNotesRaw = (info as UpdateDownloadedEvent & { releaseNotes?: unknown }).releaseNotes;
+    if (downloadedVersion && releaseNotesRaw) {
+      let body: string | null = null;
+      if (typeof releaseNotesRaw === "string") {
+        body = releaseNotesRaw;
+      } else if (Array.isArray(releaseNotesRaw)) {
+        body = (releaseNotesRaw as Array<{ note?: string | null }>)
+          .map((entry) => entry?.note ?? "")
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      if (body) {
+        void writeCacheEntry(downloadedVersion.replace(/^v/, ""), body);
+      }
+    }
     updateState({
       status: "downloaded",
-      availableVersion: info.version,
-      downloadedVersion: info.version,
+      availableVersion: downloadedVersion,
+      downloadedVersion,
       progress: undefined,
-      message: `OpenNOW ${info.version} is ready to install. Restart when convenient.`,
+      message: `OpenNOW ${downloadedVersion ?? "update"} is ready to install. Restart when convenient.`,
     });
   });
 

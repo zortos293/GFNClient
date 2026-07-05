@@ -4,10 +4,13 @@ import { scan } from "react-scan";
 
 import { initLogCapture } from "@shared/logger";
 import { App } from "./App";
+import { MotionProvider } from "./components/MotionProvider";
+import { initializeLocale } from "./i18n";
 import "./styles.css";
 
 // Initialize log capture for renderer process
 initLogCapture("renderer");
+void initializeLocale();
 
 if (import.meta.env.DEV) {
   scan();
@@ -15,6 +18,8 @@ if (import.meta.env.DEV) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <MotionProvider>
+      <App />
+    </MotionProvider>
   </React.StrictMode>,
 );

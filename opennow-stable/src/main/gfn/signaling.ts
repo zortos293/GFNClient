@@ -16,8 +16,10 @@ interface SignalingMessage {
   ackid?: number;
   ack?: number;
   hb?: number;
+  error?: string;
   peer_info?: {
     id: number;
+    name?: string;
   };
   peer_msg?: {
     from: number;
@@ -28,7 +30,8 @@ interface SignalingMessage {
 
 export class GfnSignalingClient {
   private ws: WebSocket | null = null;
-  private peerId = 2;
+  private peerId = 0;
+  private remotePeerId = 1;
   private peerName = `peer-${Math.floor(Math.random() * 10_000_000_000)}`;
   private ackCounter = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -53,6 +56,8 @@ export class GfnSignalingClient {
     signInUrl.search = "";
     signInUrl.searchParams.set("peer_id", this.peerName);
     signInUrl.searchParams.set("version", "2");
+    signInUrl.searchParams.set("peer_role", "1");
+    signInUrl.searchParams.set("pairing_id", this.sessionId);
 
     const url = signInUrl.toString();
     console.log("[Signaling] URL:", url, "(server:", this.signalingServer, ", signalingUrl:", this.signalingUrl, ")");
@@ -194,6 +199,13 @@ export class GfnSignalingClient {
       return;
     }
 
+    if (parsed.peer_info) {
+      if (typeof parsed.peer_info.id === "number" && parsed.peer_info.name === this.peerName) {
+        this.peerId = parsed.peer_info.id;
+        console.log(`[Signaling] Local peer id assigned: ${this.peerId}`);
+      }
+    }
+
     if (typeof parsed.ackid === "number") {
       const shouldAck = parsed.peer_info?.id !== this.peerId;
       if (shouldAck) {
@@ -206,13 +218,31 @@ export class GfnSignalingClient {
       return;
     }
 
+    if (parsed.error === "peerRemoved") {
+      console.log("[Signaling] Received peerRemoved signaling error");
+      this.emit({ type: "disconnected", reason: "peerRemoved" });
+      return;
+    }
+
     if (!parsed.peer_msg?.msg) {
+      return;
+    }
+
+    if (typeof parsed.peer_msg.from === "number") {
+      this.remotePeerId = parsed.peer_msg.from;
+      console.log(`[Signaling] Remote peer id: ${this.remotePeerId}`);
+    }
+
+    const peerMessage = parsed.peer_msg.msg.trim();
+    if (peerMessage === "BYE") {
+      console.log("[Signaling] Received BYE peer message");
+      this.emit({ type: "disconnected", reason: "BYE" });
       return;
     }
 
     let peerPayload: Record<string, unknown>;
     try {
-      peerPayload = JSON.parse(parsed.peer_msg.msg) as Record<string, unknown>;
+      peerPayload = JSON.parse(peerMessage) as Record<string, unknown>;
     } catch {
       this.emit({ type: "log", message: "Received non-JSON peer payload" });
       return;
@@ -226,7 +256,13 @@ export class GfnSignalingClient {
     }
 
     if (typeof peerPayload.candidate === "string") {
-      console.log(`[Signaling] Received remote ICE candidate: ${peerPayload.candidate}`);
+      const sdpMLineIndex =
+        typeof peerPayload.sdpMLineIndex === "number" || peerPayload.sdpMLineIndex === null
+          ? peerPayload.sdpMLineIndex
+          : 0;
+      console.log(
+        `[Signaling] Received remote ICE candidate: ${peerPayload.candidate} (sdpMLineIndex=${sdpMLineIndex})`,
+      );
       this.emit({
         type: "remote-ice",
         candidate: {
@@ -235,9 +271,10 @@ export class GfnSignalingClient {
             typeof peerPayload.sdpMid === "string" || peerPayload.sdpMid === null
               ? peerPayload.sdpMid
               : undefined,
-          sdpMLineIndex:
-            typeof peerPayload.sdpMLineIndex === "number" || peerPayload.sdpMLineIndex === null
-              ? peerPayload.sdpMLineIndex
+          sdpMLineIndex,
+          usernameFragment:
+            typeof peerPayload.usernameFragment === "string" || peerPayload.usernameFragment === null
+              ? peerPayload.usernameFragment
               : undefined,
         },
       });
@@ -261,10 +298,11 @@ export class GfnSignalingClient {
       ...(payload.nvstSdp ? { nvstSdp: payload.nvstSdp } : {}),
     };
 
+    console.log(`[Signaling] Sending answer peer_msg from=${this.peerId} to=${this.remotePeerId}`);
     this.sendJson({
       peer_msg: {
         from: this.peerId,
-        to: 1,
+        to: this.remotePeerId,
         msg: JSON.stringify(answer),
       },
       ackid: this.nextAckId(),
@@ -272,15 +310,22 @@ export class GfnSignalingClient {
   }
 
   async sendIceCandidate(candidate: IceCandidatePayload): Promise<void> {
+    if (isTcpIceCandidate(candidate.candidate)) {
+      console.log(`[Signaling] Dropping TCP local ICE candidate: ${candidate.candidate}`);
+      return;
+    }
+
     console.log(`[Signaling] Sending local ICE candidate: ${candidate.candidate} (sdpMid=${candidate.sdpMid})`);
+    console.log(`[Signaling] Sending ICE peer_msg from=${this.peerId} to=${this.remotePeerId}`);
     this.sendJson({
       peer_msg: {
         from: this.peerId,
-        to: 1,
+        to: this.remotePeerId,
         msg: JSON.stringify({
           candidate: candidate.candidate,
           sdpMid: candidate.sdpMid,
           sdpMLineIndex: candidate.sdpMLineIndex,
+          usernameFragment: candidate.usernameFragment,
         }),
       },
       ackid: this.nextAckId(),
@@ -291,7 +336,7 @@ export class GfnSignalingClient {
     this.sendJson({
       peer_msg: {
         from: this.peerId,
-        to: 1,
+        to: this.remotePeerId,
         msg: JSON.stringify({
           type: "request_keyframe",
           reason: payload.reason,
@@ -315,4 +360,9 @@ export class GfnSignalingClient {
       socket.close();
     }
   }
+}
+
+function isTcpIceCandidate(candidate: string): boolean {
+  const parts = candidate.trim().split(/\s+/);
+  return parts[2]?.toLowerCase() === "tcp";
 }

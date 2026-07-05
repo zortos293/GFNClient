@@ -4,6 +4,15 @@ import {
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
 } from "./inputProtocol";
 
+// Match the official web client's 240 FPS profile. Disabling split encode at
+// this frame rate can leave H265 streams smeared because the server/client
+// repair and frame-state assumptions no longer line up.
+const ENABLE_240_FPS_SPLIT_ENCODE = true;
+const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = true;
+const OFFICIAL_MIN_BITRATE_KBPS = 4000;
+const HIGH_RESOLUTION_PIXEL_COUNT = 2764800; // 2560x1080 / 1920x1440 class
+const HIGH_BITRATE_PACING_THRESHOLD_KBPS = 42000;
+
 interface IceCredentials {
   ufrag: string;
   pwd: string;
@@ -34,10 +43,12 @@ export function extractPublicIp(hostOrIp: string): string | null {
 }
 
 /**
- * Fix 0.0.0.0 in the server's SDP offer with the actual server IP.
- * Matches Rust's fix_server_ip() — replaces "c=IN IP4 0.0.0.0" with real IP.
- * Also fixes a=candidate: lines that contain 0.0.0.0 as the candidate IP,
- * since Chrome's WebRTC stack treats those as unreachable and ICE fails.
+ * Fix 0.0.0.0 ICE candidate addresses with the actual server IP.
+ *
+ * The official GFN web client leaves c=IN IP4 0.0.0.0 lines intact and only
+ * rewrites a=candidate lines when an explicit WebRTC media endpoint is present.
+ * Rewriting every c= line to an RTSPS/session host can make DTLS close before
+ * media tracks arrive.
  */
 export function fixServerIp(sdp: string, serverIp: string): string {
   const ip = extractPublicIp(serverIp);
@@ -45,14 +56,8 @@ export function fixServerIp(sdp: string, serverIp: string): string {
     console.log(`[SDP] fixServerIp: could not extract IP from "${serverIp}"`);
     return sdp;
   }
-  // 1. Fix connection lines: c=IN IP4 0.0.0.0
-  const cCount = (sdp.match(/c=IN IP4 0\.0\.0\.0/g) ?? []).length;
-  let fixed = sdp.replace(/c=IN IP4 0\.0\.0\.0/g, `c=IN IP4 ${ip}`);
-  console.log(`[SDP] fixServerIp: replaced ${cCount} c= lines with ${ip}`);
-
-  // 2. Fix ICE candidate lines: a=candidate:... 0.0.0.0 ...
-  //    Format: a=candidate:<foundation> <component> <protocol> <priority> <ip> <port> typ <type>
-  const candidateCount = (fixed.match(/(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)0\.0\.0\.0(\s+)/g) ?? []).length;
+  let fixed = sdp;
+  const candidateCount = (sdp.match(/(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)0\.0\.0\.0(\s+)/g) ?? []).length;
   if (candidateCount > 0) {
     fixed = fixed.replace(
       /(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)0\.0\.0\.0(\s+)/g,
@@ -410,6 +415,7 @@ interface NvstParams {
   hidDeviceMask?: number;
   enablePartiallyReliableTransferGamepad?: number;
   enablePartiallyReliableTransferHid?: number;
+  dynamicSplitEncodeUpdatesEnabled?: boolean;
 }
 
 /**
@@ -456,19 +462,22 @@ export function mungeAnswerSdp(sdp: string, maxBitrateKbps: number): string {
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
   console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);
-  // Adaptive profile:
-  // allow bitrate to scale down under congestion to reduce stutter and input lag.
-  const minBitrate = Math.max(5000, Math.floor(params.maxBitrateKbps * 0.35));
-  const initialBitrate = Math.max(minBitrate, Math.floor(params.maxBitrateKbps * 0.7));
+  const maxBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(params.maxBitrateKbps));
+  const startupBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.round(maxBitrate / 4));
   const isHighFps = params.fps >= 90;
   const is120Fps = params.fps === 120;
   const is240Fps = params.fps >= 240;
   const isAv1 = params.codec === "AV1";
-  const bitDepth = params.colorQuality.startsWith("10bit") ? 10 : 8;
+  const pixelCount = params.width * params.height;
+  const useHighThroughputPacing =
+    pixelCount >= HIGH_RESOLUTION_PIXEL_COUNT || maxBitrate >= HIGH_BITRATE_PACING_THRESHOLD_KBPS;
+  const supportsHighBitDepth = params.codec === "H265" || params.codec === "AV1";
+  const bitDepth = supportsHighBitDepth && params.colorQuality.startsWith("10bit") ? 10 : 8;
   const hidDeviceMask = params.hidDeviceMask ?? PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL;
   const enablePartiallyReliableTransferGamepad = params.enablePartiallyReliableTransferGamepad
     ?? PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL;
   const enablePartiallyReliableTransferHid = params.enablePartiallyReliableTransferHid ?? hidDeviceMask;
+  const dynamicSplitEncodeUpdatesEnabled = params.dynamicSplitEncodeUpdatesEnabled ?? ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES;
 
   const lines: string[] = [
     "v=0",
@@ -483,15 +492,31 @@ export function buildNvstSdp(params: NvstParams): string {
     // FEC settings
     "a=vqos.fec.rateDropWindow:10",
     "a=vqos.fec.minRequiredFecPackets:2",
+    "a=vqos.drc.minRequiredBitrateCheckEnabled:1",
     "a=vqos.fec.repairMinPercent:5",
     "a=vqos.fec.repairPercent:5",
     "a=vqos.fec.repairMaxPercent:35",
-    // DRC — always disabled to allow full bitrate
+    // Official dynamicStreamingMode=0 path disables server resolution/FPS switching.
+    "a=vqos.dynamicStreamingMode:0",
     "a=vqos.drc.enable:0",
   ];
 
-  // Force-disable dynamic frame control to avoid server-side FPS/resolution adaptation.
-  lines.push("a=vqos.dfc.enable:0");
+  if (isHighFps) {
+    lines.push(
+      "a=vqos.dfc.enable:1",
+      "a=vqos.dfc.decodeFpsAdjPercent:85",
+      "a=vqos.dfc.targetDownCooldownMs:250",
+      `a=vqos.dfc.dfcAlgoVersion:${is120Fps || is240Fps ? 2 : 1}`,
+      `a=vqos.dfc.minTargetFps:${is120Fps || is240Fps ? 100 : 60}`,
+      "a=vqos.resControl.dfc.useClientFpsPerf:0",
+      "a=vqos.dfc.adjustResAndFps:0",
+    );
+  } else {
+    lines.push(
+      "a=vqos.dfc.enable:0",
+      "a=vqos.dfc.adjustResAndFps:0",
+    );
+  }
 
   // Video encoder settings
   lines.push(
@@ -505,6 +530,7 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=vqos.drc.bitrateIirFilterFactor:18",
     "a=video.packetSize:1140",
     "a=packetPacing.minNumPacketsPerGroup:15",
+    "a=vqos.bllFec.enable:0",
   );
 
   // High FPS optimizations
@@ -525,12 +551,18 @@ export function buildNvstSdp(params: NvstParams): string {
     lines.push(
       "a=video.enableNextCaptureMode:1",
       "a=vqos.maxStreamFpsEstimate:240",
-      "a=video.videoSplitEncodeStripsPerFrame:3",
-      "a=video.updateSplitEncodeStateDynamically:1",
     );
+    if (ENABLE_240_FPS_SPLIT_ENCODE) {
+      lines.push(
+        "a=video.videoSplitEncodeStripsPerFrame:3",
+        `a=video.updateSplitEncodeStateDynamically:${dynamicSplitEncodeUpdatesEnabled ? 1 : 0}`,
+        "a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535",
+        "a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535",
+      );
+    }
   }
 
-  // Out-of-focus handling + disable ALL dynamic resolution control
+  // Out-of-focus handling + disable CPM-based resolution changes
   lines.push(
     "a=vqos.adjustStreamingFpsDuringOutOfFocus:1",
     "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1",
@@ -542,43 +574,53 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=vqos.resControl.cpmRtc.minResolutionPercent:100",
     // Infinite cooldown to prevent resolution changes
     "a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999",
-    // Packet pacing
-    `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
-    "a=packetPacing.maxDelayUs:1000",
-    "a=packetPacing.minNumPacketsFrame:10",
-    // NACK queue settings
-    "a=video.rtpNackQueueLength:1024",
-    "a=video.rtpNackQueueMaxPackets:512",
-    "a=video.rtpNackMaxPacketCount:25",
-    // Resolution/quality thresholds — high values prevent downscaling
-    "a=vqos.drc.qpMaxResThresholdAdj:4",
-    "a=vqos.grc.qpMaxResThresholdAdj:4",
-    "a=vqos.drc.iirFilterFactor:100",
   );
+
+  if (useHighThroughputPacing) {
+    lines.push(
+      `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
+      "a=packetPacing.maxDelayUs:1000",
+      "a=packetPacing.minNumPacketsFrame:10",
+      // NACK queue settings
+      "a=video.rtpNackQueueLength:1024",
+      "a=video.rtpNackQueueMaxPackets:512",
+      "a=video.rtpNackMaxPacketCount:25",
+      // Resolution/quality thresholds — match the browser client's high-throughput profile.
+      "a=vqos.drc.iirFilterFactor:100",
+    );
+
+    if (!isAv1) {
+      lines.push(
+        "a=vqos.drc.qpMaxResThresholdAdj:4",
+        "a=vqos.dfc.qpMaxResThresholdAdj:4",
+        "a=vqos.grc.qpMaxResThresholdAdj:2",
+      );
+    }
+  }
 
   // AV1-specific DRC/GRC tuning (mirrors official client intent):
   // bias towards QP adaptation before resolution downgrade.
   if (isAv1) {
+    const av1QpMaxResThresholdAdj = useHighThroughputPacing ? 20 : 0;
     lines.push(
       "a=vqos.drc.minQpHeadroom:20",
       "a=vqos.drc.lowerQpThreshold:100",
       "a=vqos.drc.upperQpThreshold:200",
       "a=vqos.drc.minAdaptiveQpThreshold:180",
+      `a=vqos.drc.qpMaxResThresholdAdj:${av1QpMaxResThresholdAdj}`,
       "a=vqos.drc.qpCodecThresholdAdj:0",
-      // official client scales this up for AV1
-      "a=vqos.drc.qpMaxResThresholdAdj:20",
       // mirror to DFC/GRC
       "a=vqos.dfc.minQpHeadroom:20",
       "a=vqos.dfc.qpLowerLimit:100",
       "a=vqos.dfc.qpMaxUpperLimit:200",
       "a=vqos.dfc.qpMinUpperLimit:180",
-      "a=vqos.dfc.qpMaxResThresholdAdj:20",
+      `a=vqos.dfc.qpMaxResThresholdAdj:${av1QpMaxResThresholdAdj}`,
       "a=vqos.dfc.qpCodecThresholdAdj:0",
       "a=vqos.grc.minQpHeadroom:20",
       "a=vqos.grc.lowerQpThreshold:100",
       "a=vqos.grc.upperQpThreshold:200",
       "a=vqos.grc.minAdaptiveQpThreshold:180",
-      "a=vqos.grc.qpMaxResThresholdAdj:20",
+      `a=vqos.grc.qpMaxResThresholdAdj:${av1QpMaxResThresholdAdj}`,
       "a=vqos.grc.qpCodecThresholdAdj:0",
       "a=video.minQp:25",
       // official client can enable this for AV1 depending on resolution class
@@ -591,16 +633,16 @@ export function buildNvstSdp(params: NvstParams): string {
     `a=video.clientViewportWd:${params.width}`,
     `a=video.clientViewportHt:${params.height}`,
     `a=video.maxFPS:${params.fps}`,
-    `a=video.initialBitrateKbps:${initialBitrate}`,
-    `a=video.initialPeakBitrateKbps:${params.maxBitrateKbps}`,
-    `a=vqos.bw.maximumBitrateKbps:${params.maxBitrateKbps}`,
-    `a=vqos.bw.minimumBitrateKbps:${minBitrate}`,
-    `a=vqos.bw.peakBitrateKbps:${params.maxBitrateKbps}`,
-    `a=vqos.bw.serverPeakBitrateKbps:${params.maxBitrateKbps}`,
+    `a=video.initialBitrateKbps:${startupBitrate}`,
+    `a=video.initialPeakBitrateKbps:${startupBitrate}`,
+    `a=vqos.bw.maximumBitrateKbps:${maxBitrate}`,
+    `a=vqos.bw.minimumBitrateKbps:${OFFICIAL_MIN_BITRATE_KBPS}`,
+    `a=vqos.bw.peakBitrateKbps:${maxBitrate}`,
+    `a=vqos.bw.serverPeakBitrateKbps:${maxBitrate}`,
     "a=vqos.bw.enableBandwidthEstimation:1",
     "a=vqos.bw.disableBitrateLimit:0",
     // GRC — disabled
-    `a=vqos.grc.maximumBitrateKbps:${params.maxBitrateKbps}`,
+    `a=vqos.grc.maximumBitrateKbps:${maxBitrate}`,
     "a=vqos.grc.enable:0",
     // Encoder settings
     "a=video.maxNumReferenceFrames:4",

@@ -1,79 +1,112 @@
-name: auto-build
+name: ci
 
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - "opennow-stable/**"
-      - ".github/workflows/auto-build.yml"
-  push:
     branches:
-      - main
       - dev
-    paths:
-      - "opennow-stable/**"
-      - ".github/workflows/auto-build.yml"
+      - main
+  push: {}
 
 concurrency:
-  group: auto-build-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  select-builds:
+    name: select-builds
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Select build matrix
+        id: matrix
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const builds = [
+            {
+              label: "windows-x64",
+              os: "blacksmith-2vcpu-windows-2025",
+              builder_args: "--win nsis portable --x64",
+              artifact_paths: "opennow-stable/dist-release/*-x64.exe\n",
+            },
+            {
+              label: "windows-arm64",
+              os: "blacksmith-2vcpu-windows-2025",
+              builder_args: "--win nsis portable --arm64",
+              artifact_paths: "opennow-stable/dist-release/*-arm64.exe\n",
+            },
+            {
+              label: "macos-x64",
+              os: "blacksmith-6vcpu-macos-15",
+              builder_args: "--mac dmg zip --x64",
+              artifact_paths:
+                "opennow-stable/dist-release/*.dmg\n" +
+                "opennow-stable/dist-release/*-x64.zip\n",
+            },
+            {
+              label: "macos-arm64",
+              os: "blacksmith-6vcpu-macos-15",
+              builder_args: "--mac dmg zip --arm64",
+              artifact_paths:
+                "opennow-stable/dist-release/*.dmg\n" +
+                "opennow-stable/dist-release/*-arm64.zip\n",
+            },
+            {
+              label: "linux-x64",
+              os: "blacksmith-2vcpu-ubuntu-2404",
+              builder_args: "--linux AppImage deb --x64",
+              artifact_paths:
+                "opennow-stable/dist-release/*-x86_64.AppImage\n" +
+                "opennow-stable/dist-release/*-amd64.deb\n",
+            },
+            {
+              label: "linux-arm64",
+              os: "blacksmith-2vcpu-ubuntu-2404-arm",
+              builder_args: "--linux AppImage deb --arm64",
+              artifact_paths:
+                "opennow-stable/dist-release/*-arm64.AppImage\n" +
+                "opennow-stable/dist-release/*-arm64.deb\n",
+            },
+          ];
+
+          const eventName = process.env.GITHUB_EVENT_NAME;
+          const baseRef = process.env.GITHUB_BASE_REF;
+          const isPullRequest = eventName === "pull_request";
+          const isDevValidationPullRequest = isPullRequest && baseRef === "dev";
+          const include = isDevValidationPullRequest
+            ? builds.filter(({ label }) => label === "windows-x64" || label === "linux-x64")
+            : builds;
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          NODE
+
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    needs: select-builds
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - label: windows-x64
-            os: blacksmith-4vcpu-windows-2025
-            builder_args: "--win nsis portable --x64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-x64.exe
-          - label: windows-arm64
-            os: blacksmith-4vcpu-windows-2025
-            builder_args: "--win nsis portable --arm64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-arm64.exe
-          - label: macos-x64
-            os: blacksmith-6vcpu-macos-latest
-            builder_args: "--mac dmg zip --x64"
-            artifact_paths: |
-              opennow-stable/dist-release/*.dmg
-              opennow-stable/dist-release/*-x64.zip
-          - label: macos-arm64
-            os: blacksmith-6vcpu-macos-latest
-            builder_args: "--mac dmg zip --arm64"
-            artifact_paths: |
-              opennow-stable/dist-release/*.dmg
-              opennow-stable/dist-release/*-arm64.zip
-          - label: linux-x64
-            os: blacksmith-4vcpu-ubuntu-2404
-            builder_args: "--linux AppImage deb --x64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-x86_64.AppImage
-              opennow-stable/dist-release/*-amd64.deb
-          - label: linux-arm64
-            os: blacksmith-4vcpu-ubuntu-2404-arm
-            builder_args: "--linux AppImage deb --arm64"
-            artifact_paths: |
-              opennow-stable/dist-release/*-arm64.AppImage
-              opennow-stable/dist-release/*-arm64.deb
+      matrix: ${{ fromJSON(needs.select-builds.outputs.matrix) }}
 
     defaults:
       run:
         working-directory: opennow-stable
 
     env:
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       npm_config_audit: "false"
       npm_config_fund: "false"
-      # Use system fpm on arm64 (no prebuilt binaries available)
-      USE_SYSTEM_FPM: ${{ matrix.label == 'linux-arm64' && 'true' || 'false' }}
 
     steps:
       - name: Checkout
@@ -83,40 +116,53 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: "**/package-lock.json"
 
-      - name: Cache Electron binaries
-        uses: actions/cache@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          path: |
-            ${{ github.workspace }}/.cache/electron
-            ${{ github.workspace }}/.cache/electron-builder
-          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-electron-
-
-      - name: Install Linux packaging tools
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fakeroot rpm
-      - name: Install FPM for arm64 deb builds
-        if: matrix.label == 'linux-arm64'
-        run: sudo apt-get install -y ruby ruby-dev build-essential && sudo gem install fpm
+          bun-version: 1.3.14
 
       - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --progress=false
+        run: bun install --frozen-lockfile
 
-      - name: Build app bundles
-        run: npm run build
+      - name: Lint
+        id: lint
+        run: npm run lint
 
-      - name: Package installers
-        run: npx electron-builder --publish never ${{ matrix.builder_args }}
+      - name: Typecheck
+        id: typecheck
+        run: npm run typecheck
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: opennow-stable-${{ matrix.label }}
-          path: ${{ matrix.artifact_paths }}
-          if-no-files-found: error
+      - name: Test
+        id: test
+        run: npm test
+
+      - name: CI summary
+        if: always()
+        working-directory: .
+        shell: bash
+        run: |
+          status_icon() {
+            case "$1" in
+              success) printf '✅ success' ;;
+              failure) printf '❌ failure' ;;
+              cancelled) printf '❌ cancelled' ;;
+              skipped) printf '⏭️ skipped' ;;
+              *) printf '❌ %s' "$1" ;;
+            esac
+          }
+
+          {
+            echo "## CI Summary"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Format | ⏭️ skipped/not configured |"
+            echo "| Lint | $(status_icon '${{ steps.lint.outcome }}') |"
+            echo "| Typecheck | $(status_icon '${{ steps.typecheck.outcome }}') |"
+            echo "| Test | $(status_icon '${{ steps.test.outcome }}') |"
+            echo "| Browser Test | ⏭️ skipped/not configured |"
+            echo "| Build | ⏭️ release-only / skipped for PR CI |"
+            echo
+            echo "Job summary generated at run-time"
+          } >> "$GITHUB_STEP_SUMMARY"

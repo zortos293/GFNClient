@@ -3,11 +3,16 @@ import electron from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type {
   AuthLoginRequest,
+  AuthDeviceLoginAttemptRequest,
+  AuthDeviceLoginPollRequest,
+  AuthDeviceLoginStartRequest,
   AuthSession,
   AuthSessionRequest,
+  DirectLaunchRequest,
   GamesFetchRequest,
   CatalogBrowseRequest,
   ResolveLaunchIdRequest,
+  ResolveStoreUrlRequest,
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
   OpenNowApi,
@@ -20,6 +25,8 @@ import type {
   SignalingConnectRequest,
   SendAnswerRequest,
   IceCandidatePayload,
+  NativeInputPacket,
+  NativeRenderSurfaceUpdate,
   KeyframeRequest,
   Settings,
   SubscriptionFetchRequest,
@@ -39,6 +46,11 @@ import type {
   PrintedWasteServerMapping,
   ThankYouDataResult,
   AppUpdaterState,
+  PersistentStorageLocationsFetchRequest,
+  PersistentStorageResetRequest,
+  GameAccountOperationRequest,
+  GameAccountConnectionsResult,
+  GameAccountOperationResult,
 } from "@shared/gfn";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
@@ -64,6 +76,14 @@ const api: OpenNowApi = {
   getLoginProviders: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_PROVIDERS),
   getRegions: (input: RegionsFetchRequest = {}) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_REGIONS, input),
   login: (input: AuthLoginRequest) => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGIN, input),
+  startDeviceLogin: (input: AuthDeviceLoginStartRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_START, input),
+  pollDeviceLogin: (input: AuthDeviceLoginPollRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_POLL, input),
+  completeDeviceLogin: (input: AuthDeviceLoginAttemptRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_COMPLETE, input),
+  cancelDeviceLogin: (input: AuthDeviceLoginAttemptRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_DEVICE_LOGIN_CANCEL, input),
   logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
   logoutAll: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_ALL),
   getSavedAccounts: (): Promise<SavedAccount[]> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS),
@@ -72,13 +92,41 @@ const api: OpenNowApi = {
   removeAccount: (userId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, userId),
   fetchSubscription: (input: SubscriptionFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.SUBSCRIPTION_FETCH, input),
+  fetchPersistentStorageLocations: (input: PersistentStorageLocationsFetchRequest = {}) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_LOCATIONS_FETCH, input),
+  resetPersistentStorage: (input: PersistentStorageResetRequest = {}) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PERSISTENT_STORAGE_RESET, input),
+  fetchGameAccountConnections: (): Promise<GameAccountConnectionsResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNTS_FETCH),
+  linkGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_LINK, input),
+  unlinkGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_UNLINK, input),
+  resyncGameAccount: (input: GameAccountOperationRequest): Promise<GameAccountOperationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAME_ACCOUNT_RESYNC, input),
   fetchMainGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_MAIN, input),
+  fetchStorePanels: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_STORE_PANELS, input),
+  fetchFeaturedGames: (input: GamesFetchRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_FEATURED, input),
   fetchLibraryGames: (input: GamesFetchRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_LIBRARY, input),
   browseCatalog: (input: CatalogBrowseRequest) => ipcRenderer.invoke(IPC_CHANNELS.GAMES_BROWSE_CATALOG, input),
   fetchPublicGames: () => ipcRenderer.invoke(IPC_CHANNELS.GAMES_FETCH_PUBLIC),
   resolveLaunchAppId: (input: ResolveLaunchIdRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
+  resolveStoreUrl: (input: ResolveStoreUrlRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_STORE_URL, input),
+  getPendingDirectLaunchRequest: (): Promise<DirectLaunchRequest | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DIRECT_LAUNCH_GET_PENDING),
+  onDirectLaunchRequest: (listener: (request: DirectLaunchRequest) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: DirectLaunchRequest) => {
+      listener(payload);
+    };
+
+    ipcRenderer.on(IPC_CHANNELS.DIRECT_LAUNCH_REQUEST, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.DIRECT_LAUNCH_REQUEST, wrapped);
+    };
+  },
   createSession: (input: SessionCreateRequest) => invokeSessionChannel(IPC_CHANNELS.CREATE_SESSION, input),
   pollSession: (input: SessionPollRequest) => invokeSessionChannel(IPC_CHANNELS.POLL_SESSION, input),
   reportSessionAd: (input: SessionAdReportRequest) => invokeSessionChannel(IPC_CHANNELS.REPORT_SESSION_AD, input),
@@ -93,6 +141,15 @@ const api: OpenNowApi = {
   sendAnswer: (input: SendAnswerRequest) => ipcRenderer.invoke(IPC_CHANNELS.SEND_ANSWER, input),
   sendIceCandidate: (input: IceCandidatePayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.SEND_ICE_CANDIDATE, input),
+  sendNativeInput: (input: NativeInputPacket) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT, input);
+  },
+  updateNativeRenderSurface: (input: NativeRenderSurfaceUpdate) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_RENDER_SURFACE, input);
+  },
+  updateNativeShortcuts: (shortcuts) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_UPDATE_SHORTCUTS, shortcuts);
+  },
   requestKeyframe: (input: KeyframeRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.REQUEST_KEYFRAME, input),
   onSignalingEvent: (listener: (event: MainToRendererSignalingEvent) => void) => {
@@ -134,13 +191,20 @@ const api: OpenNowApi = {
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
-  notifyPointerLockChange: (active: boolean) => ipcRenderer.send(IPC_CHANNELS.POINTER_LOCK_CHANGE, active),
+  selectNativeStreamerExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE),
+  getNativeStreamerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_STREAMER_STATUS),
+  getNativeCloudGsyncCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_CLOUD_GSYNC_CAPABILITIES),
+  notifyPointerLockChange: (active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
+    ipcRenderer.send(IPC_CHANNELS.POINTER_LOCK_CHANGE, active, suppressEscapeFullscreenGrace);
+  },
   onExternalEscape: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
     return () => ipcRenderer.off(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
   },
+  openExternalUrl: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, url),
   getMicrophonePermission: () => ipcRenderer.invoke(IPC_CHANNELS.MICROPHONE_PERMISSION_GET),
+  readClipboardText: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_READ_TEXT),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
   pingRegions: (regions: StreamRegion[]) => ipcRenderer.invoke(IPC_CHANNELS.PING_REGIONS, regions),
   saveScreenshot: (input: ScreenshotSaveRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_SAVE, input),
@@ -173,6 +237,12 @@ const api: OpenNowApi = {
   getMediaThumbnail: (input: { filePath: string }) => ipcRenderer.invoke(IPC_CHANNELS.MEDIA_THUMBNAIL, input),
   showMediaInFolder: (input: { filePath: string }): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.MEDIA_SHOW_IN_FOLDER, input),
+  getMediaPlaybackUrl: (input: { filePath: string }): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_PLAYBACK_URL, input),
+  deleteMediaFile: (input: { filePath: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_DELETE_FILE, input),
+  regenMediaThumbnail: (input: { filePath: string }): Promise<{ ok: boolean; thumbnailDataUrl: string | null }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEDIA_REGEN_THUMBNAIL, input),
   deleteCache: (): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.CACHE_DELETE_ALL),
   fetchPrintedWasteQueue: (): Promise<PrintedWasteQueueData> =>
@@ -181,6 +251,18 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH),
   getThanksData: (): Promise<ThankYouDataResult> => ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_GET_THANKS),
   clearDiscordActivity: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY),
+  getReleaseHighlights: (version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET, version),
+  ackReleaseHighlights: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RELEASE_HIGHLIGHTS_ACK),
+  onReleaseHighlightsShow: (listener: (payload: import("@shared/gfn").ReleaseHighlightsPayload) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: import("@shared/gfn").ReleaseHighlightsPayload) => {
+      listener(payload);
+    };
+    ipcRenderer.on(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, wrapped);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

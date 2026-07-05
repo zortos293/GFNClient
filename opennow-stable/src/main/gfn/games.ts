@@ -3,31 +3,180 @@ import type {
   CatalogBrowseResult,
   CatalogFilterGroup,
   CatalogSortOption,
+  GameCatalogSkuStrings,
   GameInfo,
+  GamePanelResult,
   GameVariant,
 } from "@shared/gfn";
-import { isOwnedLibraryStatus } from "@shared/gfn";
+import { createHash } from "node:crypto";
+import { isOwnedLibraryStatus, normalizeGameStore } from "@shared/gfn";
 import { cacheManager } from "../services/cacheManager";
+import { appendPublicGameSearchMatches, fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
+import {
+  buildGfnGraphQlHeaders,
+  buildGfnLcarsHeaders,
+} from "./clientHeaders";
+import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
+import { fetchWithOptionalProxy } from "./proxyFetch";
+import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
 const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
-const APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7";
+const MARQUEE_QUERY_HASH = "dd4bddfdef4707dfe340cc2040d6bb9c4c45f706976fca15b2ef33221c385d7f";
+const APP_METADATA_QUERY_HASH = "cf8b620dfd03617017ba7c858cee65197e1ace5180e41be194b39227227ced63";
 const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f";
 const DEFAULT_LOCALE = "en_US";
-const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
-const GFN_CLIENT_VERSION = "2.0.80.173";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
+const LIBRARY_FETCH_COUNT = 200;
+const MAX_LIBRARY_PAGES = 25;
 const DEFAULT_SORT_ID = "relevance";
+const DEFAULT_LIBRARY_SORT = "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC";
+const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
+const CATALOG_GAMES_CACHE_SCOPE = "catalog";
+const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
+const DEFAULT_CLOUDMATCH_BASE_URL = "https://prod.cloudmatchbeta.nvidiagrid.net/";
+const LIBRARY_APPS_FILTER = {
+  variants: {
+    gfn: {
+      library: {
+        status: {
+          notEquals: "NOT_OWNED",
+        },
+      },
+    },
+  },
+} satisfies Record<string, unknown>;
 
-const GFN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
+function addProxyCacheScope(hash: ReturnType<typeof createHash>, proxyUrl?: string): void {
+  const proxyCachePart = sessionProxyCacheKeyPart(proxyUrl);
+  if (proxyCachePart) {
+    hash.update("\0").update(proxyCachePart);
+  }
+}
+
+function publicGamesCacheKey(proxyUrl?: string): string {
+  const proxyCachePart = sessionProxyCacheKeyPart(proxyUrl);
+  return proxyCachePart ? `${PUBLIC_GAMES_CACHE_KEY}:${proxyCachePart}` : PUBLIC_GAMES_CACHE_KEY;
+}
+
+function shouldBypassGamesCache(proxyUrl?: string): boolean {
+  return sessionProxyHasCredentials(proxyUrl);
+}
+
+function accountScopedGamesCacheKey(scope: string, accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): string {
+  const hash = createHash("sha256")
+    .update(accountId)
+    .update("\0")
+    .update(providerStreamingBaseUrl ?? "");
+  addProxyCacheScope(hash, proxyUrl);
+  const digest = hash.digest("hex").slice(0, 16);
+  return `games:${scope}:${digest}`;
+}
+
+function legacyTokenScopedGamesCacheKey(scope: string, token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): string {
+  const hash = createHash("sha256")
+    .update(token)
+    .update("\0")
+    .update(providerStreamingBaseUrl ?? "");
+  addProxyCacheScope(hash, proxyUrl);
+  const digest = hash.digest("hex").slice(0, 16);
+  return `games:${scope}:${digest}`;
+}
+
+function resolveAccountCacheId(accountId: string | undefined, token: string): string {
+  return accountId?.trim() || token;
+}
+
+async function loadAccountScopedFromCache<T>(
+  scope: string,
+  accountId: string | undefined,
+  token: string,
+  providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
+): Promise<Awaited<ReturnType<typeof cacheManager.loadFromCache<T>>>> {
+  if (shouldBypassGamesCache(proxyUrl)) {
+    return null;
+  }
+
+  const resolvedAccountId = resolveAccountCacheId(accountId, token);
+  const primaryKey = accountScopedGamesCacheKey(scope, resolvedAccountId, providerStreamingBaseUrl, proxyUrl);
+  const cached = await cacheManager.loadFromCache<T>(primaryKey);
+  if (cached) {
+    return cached;
+  }
+
+  if (resolvedAccountId !== token) {
+    const legacyKey = legacyTokenScopedGamesCacheKey(scope, token, providerStreamingBaseUrl, proxyUrl);
+    if (legacyKey !== primaryKey) {
+      const legacy = await cacheManager.loadFromCache<T>(legacyKey);
+      if (legacy) {
+        void cacheManager.saveToCache(primaryKey, legacy.data);
+        void cacheManager.invalidateCache(legacyKey);
+        return legacy;
+      }
+    }
+  }
+
+  return null;
+}
+
+function catalogBrowseCacheKey(input: CatalogBrowseRequest, accountId: string): string {
+  const queryDigest = createHash("sha256")
+    .update(input.searchQuery?.trim() ?? "")
+    .update("\0")
+    .update(input.sortId ?? "")
+    .update("\0")
+    .update((input.filterIds ?? []).join(","))
+    .update("\0")
+    .update(String(input.fetchCount ?? ""))
+    .digest("hex")
+    .slice(0, 12);
+  return `${getAccountCatalogGamesCachePrefix(accountId, input.providerStreamingBaseUrl, input.proxyUrl)}:${queryDigest}`;
+}
+
+export function getAccountCatalogGamesCachePrefix(
+  accountId: string,
+  providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
+): string {
+  return accountScopedGamesCacheKey(CATALOG_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl);
+}
+
+export function getAccountGamesCacheKeys(accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
+  main: string;
+  library: string;
+  catalogPrefix: string;
+  public: string;
+} {
+  return {
+    main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl, proxyUrl),
+    library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl),
+    catalogPrefix: getAccountCatalogGamesCachePrefix(accountId, providerStreamingBaseUrl, proxyUrl),
+    public: publicGamesCacheKey(proxyUrl),
+  };
+}
+
+export function getLegacyTokenScopedAccountGamesCacheKeys(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
+  main: string;
+  library: string;
+  catalogPrefix: string;
+} {
+  return {
+    main: legacyTokenScopedGamesCacheKey("main", token, providerStreamingBaseUrl, proxyUrl),
+    library: legacyTokenScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
+    catalogPrefix: legacyTokenScopedGamesCacheKey(CATALOG_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
+  };
+}
 
 interface GraphQlResponse {
   data?: {
     panels: Array<{
+      id?: string;
       name: string;
       sections: Array<{
+        id?: string;
+        title?: string;
         items: Array<{
           __typename: string;
           app?: AppData;
@@ -75,6 +224,8 @@ interface AppsSearchResponse {
   errors?: Array<{ message: string }>;
 }
 
+type AppsPage = AppsPageResponse<AppData>;
+
 interface GraphQlFilterGroup {
   id: string;
   label: string;
@@ -88,24 +239,26 @@ interface GraphQlFilterGroup {
 interface AppData {
   id: string;
   title: string;
+  shortName?: string;
   description?: string;
   longDescription?: string;
+  developerName?: string;
   features?: unknown[];
   gameFeatures?: unknown[];
   appFeatures?: unknown[];
   genres?: unknown[];
   tags?: unknown[];
-  images?: {
-    GAME_BOX_ART?: string;
-    TV_BANNER?: string;
-    HERO_IMAGE?: string;
-    KEY_ART?: string;
-  };
+  supportedControls?: unknown[];
+  nvidiaTech?: unknown[];
+  maxLocalPlayers?: number;
+  maxOnlinePlayers?: number;
+  images?: Record<string, string | string[] | undefined>;
   publisherName?: string;
   contentRatings?: unknown[];
   variants?: Array<{
     id: string;
     appStore: string;
+    storeUrl?: string;
     supportedControls?: string[];
     gfn?: {
       status?: string;
@@ -120,9 +273,7 @@ interface AppData {
     playType?: string;
     playabilityState?: string;
     minimumMembershipTierLabel?: string;
-    catalogSkuStrings?: {
-      SKU_BASED_TAG?: string[];
-    };
+    catalogSkuStrings?: GameCatalogSkuStrings;
   };
   itemMetadata?: {
     campaignIds?: string[];
@@ -133,13 +284,6 @@ interface ServerInfoResponse {
   requestStatus?: {
     serverId?: string;
   };
-}
-
-interface RawPublicGame {
-  id?: string | number;
-  title?: string;
-  steamUrl?: string;
-  status?: string;
 }
 
 interface AppResolution {
@@ -156,11 +300,36 @@ interface CatalogDefinitions {
   filterPayloadById: Record<string, unknown>;
 }
 
-function optimizeImage(url: string): string {
+const LANDSCAPE_IMAGE_KEYS = ["MARQUEE_HERO_IMAGE", "HERO_IMAGE", "TV_BANNER", "FEATURE_IMAGE", "KEY_IMAGE", "KEY_ART"] as const;
+const POSTER_IMAGE_KEYS = ["GAME_BOX_ART", "KEY_IMAGE", "KEY_ART"] as const;
+
+function optimizeImage(url: string, width = 272): string {
   if (url.includes("img.nvidiagrid.net")) {
-    return `${url};f=webp;w=272`;
+    return `${url};f=webp;w=${width}`;
   }
   return url;
+}
+
+function normalizeImageValues(value: string | string[] | undefined, width: number): string[] {
+  const values = Array.isArray(value) ? value : value ? [value] : [];
+  return [...new Set(values.map((url) => url.trim()).filter(Boolean).map((url) => optimizeImage(url, width)))];
+}
+
+function getFirstImage(images: AppData["images"], keys: readonly string[], width: number): string | undefined {
+  if (!images) return undefined;
+  for (const key of keys) {
+    const value = normalizeImageValues(images[key], width)[0];
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function getImageUrlsByType(images: AppData["images"]): Record<string, string[]> | undefined {
+  if (!images) return undefined;
+  const entries = Object.entries(images)
+    .map(([key, value]) => [key, normalizeImageValues(value, 1200)] as const)
+    .filter(([, urls]) => urls.length > 0);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function isNumericId(value: string | undefined): value is string {
@@ -174,32 +343,17 @@ function randomHuId(): string {
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
-function buildHeaders(token?: string): HeadersInit {
-  return {
-    Accept: "application/json, text/plain, */*",
-    "Content-Type": "application/json",
-    Origin: "https://play.geforcenow.com",
-    Referer: "https://play.geforcenow.com/",
-    ...(token ? { Authorization: `GFNJWT ${token}` } : {}),
-    "nv-client-id": LCARS_CLIENT_ID,
-    "nv-client-type": "NATIVE",
-    "nv-client-version": GFN_CLIENT_VERSION,
-    "nv-client-streamer": "NVIDIA-CLASSIC",
-    "nv-device-os": "WINDOWS",
-    "nv-device-type": "DESKTOP",
-    "nv-device-make": "UNKNOWN",
-    "nv-device-model": "UNKNOWN",
-    "nv-browser-type": "CHROME",
-    "User-Agent": GFN_USER_AGENT,
-  };
-}
-
-async function postGraphQl<T>(query: string, variables: Record<string, unknown>, token?: string): Promise<T> {
-  const response = await fetch(GRAPHQL_URL, {
+async function postGraphQl<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  token?: string,
+  proxyUrl?: string,
+): Promise<T> {
+  const response = await fetchWithOptionalProxy(GRAPHQL_URL, {
     method: "POST",
-    headers: buildHeaders(token),
+    headers: buildGfnGraphQlHeaders(token),
     body: JSON.stringify({ query, variables }),
-  });
+  }, proxyUrl);
 
   if (!response.ok) {
     const text = await response.text();
@@ -209,23 +363,38 @@ async function postGraphQl<T>(query: string, variables: Record<string, unknown>,
   return (await response.json()) as T;
 }
 
-async function getVpcId(token: string, providerStreamingBaseUrl?: string): Promise<string> {
-  const base = providerStreamingBaseUrl?.trim() || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-  const normalizedBase = base.endsWith("/") ? base : `${base}/`;
+async function getVpcId(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): Promise<string> {
+  let validatedBaseUrl: URL;
+  try {
+    const candidate = new URL(providerStreamingBaseUrl?.trim() || DEFAULT_CLOUDMATCH_BASE_URL);
+    const hostname = candidate.hostname.toLowerCase();
+    if (
+      candidate.protocol !== "https:" ||
+      (
+        hostname !== "prod.cloudmatchbeta.nvidiagrid.net" &&
+        hostname !== "img.nvidiagrid.net" &&
+        !hostname.endsWith(".geforcenow.nvidiagrid.net")
+      )
+    ) {
+      validatedBaseUrl = new URL(DEFAULT_CLOUDMATCH_BASE_URL);
+    } else {
+      validatedBaseUrl = candidate;
+    }
+  } catch {
+    validatedBaseUrl = new URL(DEFAULT_CLOUDMATCH_BASE_URL);
+  }
 
-  const response = await fetch(`${normalizedBase}v2/serverInfo`, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `GFNJWT ${token}`,
-      "nv-client-id": LCARS_CLIENT_ID,
-      "nv-client-type": "NATIVE",
-      "nv-client-version": GFN_CLIENT_VERSION,
-      "nv-client-streamer": "NVIDIA-CLASSIC",
-      "nv-device-os": "WINDOWS",
-      "nv-device-type": "DESKTOP",
-      "User-Agent": GFN_USER_AGENT,
-    },
-  });
+  const serverInfoUrl = new URL("v2/serverInfo", validatedBaseUrl);
+
+  const response = await fetchWithOptionalProxy(serverInfoUrl.toString(), {
+    headers: buildGfnLcarsHeaders({
+      token,
+      clientType: "NATIVE",
+      clientStreamer: "NVIDIA-CLASSIC",
+      includeUserAgent: true,
+      includeEmptyTokenAuthorization: true,
+    }),
+  }, proxyUrl);
 
   if (!response.ok) {
     return "GFN-PC";
@@ -314,9 +483,16 @@ function extractContentRatings(app: AppData): string[] {
   return [...new Set(labels)];
 }
 
-function buildSearchText(title: string, variants: GameVariant[], genres: string[], featureLabels: string[], publisherName?: string): string {
+function extractStringValues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((entry) => typeof entry === "string" ? entry.trim() : parseFeatureLabel(entry))
+    .filter((entry): entry is string => typeof entry === "string" && entry.length > 0))];
+}
+
+function buildSearchText(title: string, variants: GameVariant[], genres: string[], featureLabels: string[], publisherName?: string, developerName?: string): string {
   const stores = variants.map((variant) => variant.store);
-  return [title, publisherName, ...stores, ...genres, ...featureLabels]
+  return [title, publisherName, developerName, ...stores, ...genres, ...featureLabels]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join(" ")
     .toLowerCase();
@@ -349,8 +525,10 @@ function appToVariants(app: AppData): GameVariant[] {
   return app.variants?.map((variant) => ({
     id: variant.id,
     store: variant.appStore,
+    storeUrl: variant.storeUrl,
     supportedControls: variant.supportedControls ?? [],
     librarySelected: variant.gfn?.library?.selected,
+    inLibrary: variant.gfn?.library?.selected === true,
     libraryStatus: variant.gfn?.library?.status,
     lastPlayedDate: variant.gfn?.library?.lastPlayedDate,
     gfnStatus: variant.gfn?.status,
@@ -360,28 +538,43 @@ function appToVariants(app: AppData): GameVariant[] {
 function appToGame(app: AppData): GameInfo {
   const variants = appToVariants(app);
   const resolution = resolveAppData(app);
-  const imageUrl =
-    app.images?.KEY_ART ?? app.images?.GAME_BOX_ART ?? app.images?.TV_BANNER ?? app.images?.HERO_IMAGE ?? undefined;
+  const heroImageUrl = getFirstImage(app.images, LANDSCAPE_IMAGE_KEYS, 1200);
+  const posterImageUrl = getFirstImage(app.images, POSTER_IMAGE_KEYS, 900);
+  const imageUrl = heroImageUrl ?? posterImageUrl;
+  const screenshotUrls = normalizeImageValues(app.images?.SCREENSHOTS, 720);
   const genres = extractGenres(app);
   const featureLabels = extractFeatureLabels(app);
+  const supportedControls = extractStringValues(app.supportedControls);
+  const nvidiaTech = extractStringValues(app.nvidiaTech);
 
   return {
     id: app.id,
     uuid: app.id,
     launchAppId: resolution.numericAppId,
     title: app.title,
+    shortName: app.shortName,
     description: app.description,
     longDescription: app.longDescription,
+    developerName: app.developerName,
+    maxLocalPlayers: app.maxLocalPlayers,
+    maxOnlinePlayers: app.maxOnlinePlayers,
     featureLabels,
     genres,
-    imageUrl: imageUrl ? optimizeImage(imageUrl) : undefined,
+    supportedControls: supportedControls.length > 0 ? supportedControls : undefined,
+    nvidiaTech: nvidiaTech.length > 0 ? nvidiaTech : undefined,
+    imageUrl,
+    heroImageUrl,
+    screenshotUrl: screenshotUrls[0],
+    screenshotUrls: screenshotUrls.length > 0 ? screenshotUrls : undefined,
+    imageUrlsByType: getImageUrlsByType(app.images),
     playType: app.gfn?.playType,
     membershipTierLabel: app.gfn?.minimumMembershipTierLabel,
+    catalogSkuStrings: app.gfn?.catalogSkuStrings,
     publisherName: app.publisherName,
     contentRatings: extractContentRatings(app),
     playabilityState: app.gfn?.playabilityState,
     availableStores: [...new Set(variants.map((variant) => variant.store).filter(Boolean))],
-    searchText: buildSearchText(app.title, variants, genres, featureLabels, app.publisherName),
+    searchText: buildSearchText(app.title, variants, genres, featureLabels, app.publisherName, app.developerName),
     lastPlayed: resolution.lastPlayed,
     isInLibrary: resolution.isInLibrary,
     selectedVariantIndex: Math.max(0, Math.min(resolution.selectedVariantIndex, Math.max(variants.length - 1, 0))),
@@ -392,14 +585,27 @@ function appToGame(app: AppData): GameInfo {
 function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo {
   const merged = appToGame(app);
   const selectedVariantId = game.variants[game.selectedVariantIndex]?.id;
+  const variants = merged.variants.map((variant) => {
+    const existing = game.variants.find((candidate) => candidate.id === variant.id);
+    return {
+      ...variant,
+      librarySelected: variant.librarySelected ?? existing?.librarySelected,
+      inLibrary: variant.inLibrary ?? existing?.inLibrary,
+      libraryStatus: variant.libraryStatus ?? existing?.libraryStatus,
+      lastPlayedDate: variant.lastPlayedDate ?? existing?.lastPlayedDate,
+    };
+  });
   const selectedVariantIndex = selectedVariantId
-    ? merged.variants.findIndex((variant) => variant.id === selectedVariantId)
+    ? variants.findIndex((variant) => variant.id === selectedVariantId)
     : -1;
 
   return {
     ...game,
     ...merged,
     id: game.id,
+    isInLibrary: merged.isInLibrary || game.isInLibrary,
+    lastPlayed: merged.lastPlayed ?? game.lastPlayed,
+    variants,
     selectedVariantIndex: selectedVariantIndex >= 0 ? selectedVariantIndex : merged.selectedVariantIndex,
   };
 }
@@ -426,11 +632,23 @@ function dedupeGames(games: GameInfo[]): GameInfo[] {
       uuid: existing.uuid ?? game.uuid,
       launchAppId: existing.launchAppId ?? game.launchAppId,
       title: existing.title || game.title,
+      shortName: existing.shortName ?? game.shortName,
       description: existing.description ?? game.description,
       longDescription: existing.longDescription ?? game.longDescription,
+      developerName: existing.developerName ?? game.developerName,
+      maxLocalPlayers: existing.maxLocalPlayers ?? game.maxLocalPlayers,
+      maxOnlinePlayers: existing.maxOnlinePlayers ?? game.maxOnlinePlayers,
       imageUrl: existing.imageUrl ?? game.imageUrl,
+      heroImageUrl: existing.heroImageUrl ?? game.heroImageUrl,
+      screenshotUrl: existing.screenshotUrl ?? game.screenshotUrl,
+      screenshotUrls: [...new Set([...(existing.screenshotUrls ?? []), ...(game.screenshotUrls ?? [])])],
+      imageUrlsByType: {
+        ...(game.imageUrlsByType ?? {}),
+        ...(existing.imageUrlsByType ?? {}),
+      },
       playType: existing.playType ?? game.playType,
       membershipTierLabel: existing.membershipTierLabel ?? game.membershipTierLabel,
+      catalogSkuStrings: existing.catalogSkuStrings ?? game.catalogSkuStrings,
       publisherName: existing.publisherName ?? game.publisherName,
       playabilityState: existing.playabilityState ?? game.playabilityState,
       lastPlayed: existing.lastPlayed ?? game.lastPlayed,
@@ -438,6 +656,8 @@ function dedupeGames(games: GameInfo[]): GameInfo[] {
       variants: [...mergedVariants.values()],
       genres: [...new Set([...(existing.genres ?? []), ...(game.genres ?? [])])],
       featureLabels: [...new Set([...(existing.featureLabels ?? []), ...(game.featureLabels ?? [])])],
+      supportedControls: [...new Set([...(existing.supportedControls ?? []), ...(game.supportedControls ?? [])])],
+      nvidiaTech: [...new Set([...(existing.nvidiaTech ?? []), ...(game.nvidiaTech ?? [])])],
       contentRatings: [...new Set([...(existing.contentRatings ?? []), ...(game.contentRatings ?? [])])],
       availableStores: [...new Set([...(existing.availableStores ?? []), ...(game.availableStores ?? [])])],
       searchText: [existing.searchText, game.searchText].filter(Boolean).join(" ").trim() || undefined,
@@ -456,6 +676,7 @@ async function fetchAppMetaData(
   token: string,
   appIds: string[],
   vpcId: string,
+  proxyUrl?: string,
 ): Promise<AppMetaDataResponse> {
   const normalizedIds = [...new Set(appIds.map((id) => id.trim()).filter((id) => id.length > 0))];
   if (normalizedIds.length === 0) {
@@ -481,12 +702,12 @@ async function fetchAppMetaData(
     variables,
   });
 
-  const response = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
+  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
     headers: {
-      ...buildHeaders(token),
+      ...buildGfnGraphQlHeaders(token),
       "Content-Type": "application/graphql",
     },
-  });
+  }, proxyUrl);
 
   if (!response.ok) {
     const text = await response.text();
@@ -496,7 +717,7 @@ async function fetchAppMetaData(
   return (await response.json()) as AppMetaDataResponse;
 }
 
-async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[]): Promise<GameInfo[]> {
+async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[], proxyUrl?: string): Promise<GameInfo[]> {
   const uuids = [...new Set(games.map((game) => game.uuid).filter((uuid): uuid is string => !!uuid))];
 
   if (uuids.length === 0) {
@@ -508,7 +729,7 @@ async function enrichGamesWithMetadata(token: string, vpcId: string, games: Game
 
   for (let index = 0; index < uuids.length; index += chunkSize) {
     const chunk = uuids.slice(index, index + chunkSize);
-    const payload = await fetchAppMetaData(token, chunk, vpcId);
+    const payload = await fetchAppMetaData(token, chunk, vpcId, proxyUrl);
     if (payload.errors?.length) {
       throw new Error(payload.errors.map((error) => error.message).join(", "));
     }
@@ -531,6 +752,7 @@ async function fetchPanels(
   panelNames: string[],
   vpcId: string,
   options?: { withLibraryTime?: boolean },
+  proxyUrl?: string,
 ): Promise<GraphQlResponse> {
   const variables = JSON.stringify({
     vpcId,
@@ -540,11 +762,19 @@ async function fetchPanels(
 
   const extensions = JSON.stringify({
     persistedQuery: {
-      sha256Hash: options?.withLibraryTime ? LIBRARY_WITH_TIME_QUERY_HASH : PANELS_QUERY_HASH,
+      sha256Hash: panelNames.includes("MARQUEE")
+        ? MARQUEE_QUERY_HASH
+        : options?.withLibraryTime
+          ? LIBRARY_WITH_TIME_QUERY_HASH
+          : PANELS_QUERY_HASH,
     },
   });
 
-  const requestType = panelNames.includes("LIBRARY") ? "panels/Library" : "panels/MainV2";
+  const requestType = panelNames.includes("MARQUEE")
+    ? "panels/Marquee"
+    : panelNames.includes("LIBRARY")
+      ? "panels/Library"
+      : "panels/MainV2";
   const params = new URLSearchParams({
     requestType,
     extensions,
@@ -552,12 +782,12 @@ async function fetchPanels(
     variables,
   });
 
-  const response = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
+  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
     headers: {
-      ...buildHeaders(token),
+      ...buildGfnGraphQlHeaders(token),
       "Content-Type": "application/graphql",
     },
-  });
+  }, proxyUrl);
 
   if (!response.ok) {
     const text = await response.text();
@@ -565,6 +795,48 @@ async function fetchPanels(
   }
 
   return (await response.json()) as GraphQlResponse;
+}
+
+function panelTextMatchesFeatured(value: string | undefined): boolean {
+  return value?.toLowerCase().includes("featured") ?? false;
+}
+
+function getFeaturedGameIdentity(game: GameInfo): string {
+  return game.id || game.uuid || game.launchAppId || game.title;
+}
+
+function featuredGamesFromPanels(payload: GraphQlResponse): GameInfo[] {
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message).join(", "));
+  }
+
+  const explicitGames: GameInfo[] = [];
+  const explicitIds = new Set<string>();
+  const curatedGames: GameInfo[] = [];
+  const curatedIds = new Set<string>();
+
+  const appendUnique = (target: GameInfo[], seen: Set<string>, game: GameInfo): void => {
+    const identity = getFeaturedGameIdentity(game);
+    if (!identity || seen.has(identity)) return;
+    seen.add(identity);
+    target.push(game);
+  };
+
+  for (const panel of payload.data?.panels ?? []) {
+    const panelFeatured = panelTextMatchesFeatured(panel.name) || panelTextMatchesFeatured(panel.id);
+    for (const section of panel.sections ?? []) {
+      const sectionFeatured = panelFeatured || panelTextMatchesFeatured(section.title) || panelTextMatchesFeatured(section.id);
+      for (const item of section.items ?? []) {
+        if (item.__typename !== "GameItem" || !item.app) continue;
+        const game = appToGame(item.app);
+        if (!game.id || !game.title || game.variants.length === 0) continue;
+        appendUnique(curatedGames, curatedIds, game);
+        if (sectionFeatured) appendUnique(explicitGames, explicitIds, game);
+      }
+    }
+  }
+
+  return explicitGames.length > 0 ? explicitGames : curatedGames;
 }
 
 function flattenPanels(payload: GraphQlResponse): GameInfo[] {
@@ -587,7 +859,36 @@ function flattenPanels(payload: GraphQlResponse): GameInfo[] {
   return dedupeGames(games);
 }
 
-async function fetchFilterAndSortDefinitions(token?: string): Promise<CatalogDefinitions> {
+function parsePanelResults(payload: GraphQlResponse): GamePanelResult[] {
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message).join(", "));
+  }
+
+  const panels: GamePanelResult[] = [];
+  for (const panel of payload.data?.panels ?? []) {
+    const sections = (panel.sections ?? [])
+      .map((section) => ({
+        id: section.id ?? section.title ?? "",
+        title: section.title ?? "",
+        games: (section.items ?? [])
+          .filter((item) => item.__typename === "GameItem" && item.app)
+          .map((item) => appToGame(item.app as AppData))
+          .filter((game) => game.id && game.title && game.variants.length > 0),
+      }))
+      .filter((section) => section.games.length > 0);
+
+    if (sections.length > 0) {
+      panels.push({
+        id: panel.id ?? panel.name,
+        title: panel.name,
+        sections,
+      });
+    }
+  }
+  return panels;
+}
+
+async function fetchFilterAndSortDefinitions(token?: string, proxyUrl?: string): Promise<CatalogDefinitions> {
   const query = `query GetFilterGroupAndSortOrderDefinitions($locale: String!) {
     filterGroupDefinitions(language: $locale) {
       id
@@ -605,7 +906,7 @@ async function fetchFilterAndSortDefinitions(token?: string): Promise<CatalogDef
     }
   }`;
 
-  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale: DEFAULT_LOCALE }, token);
+  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale: DEFAULT_LOCALE }, token, proxyUrl);
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
   }
@@ -671,8 +972,8 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
     throw new Error("Catalog browsing requires an authenticated token");
   }
 
-  const vpcId = await getVpcId(token, input.providerStreamingBaseUrl);
-  const definitions = await fetchFilterAndSortDefinitions(token);
+  const vpcId = await getVpcId(token, input.providerStreamingBaseUrl, input.proxyUrl);
+  const definitions = await fetchFilterAndSortDefinitions(token, input.proxyUrl);
   const normalizedFilterIds = (input.filterIds ?? []).filter((id) => id in definitions.filterPayloadById);
   const selectedSort = definitions.sortOptions.find((option) => option.id === input.sortId)
     ?? definitions.sortOptions.find((option) => option.id === DEFAULT_SORT_ID)
@@ -689,10 +990,11 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
       items {
         id
         title
-        images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
+        images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
         variants {
           id
           appStore
+          storeUrl
           supportedControls
           gfn {
             status
@@ -702,7 +1004,13 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
         gfn {
           playabilityState
           minimumMembershipTierLabel
-          catalogSkuStrings { SKU_BASED_TAG }
+          catalogSkuStrings {
+            SKU_BASED_TAG
+            SKU_BASED_PLAYABILITY_TEXT
+            SKU_BASED_UNPLAYABLE_DIALOG_HEADER
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED
+          }
         }
         itemMetadata { campaignIds }
       }
@@ -780,6 +1088,7 @@ ${appFields}
             filters,
           },
       token,
+      input.proxyUrl,
     );
 
     if (payload.errors?.length) {
@@ -802,13 +1111,19 @@ ${appFields}
     cursor = endCursor;
   }
 
-  const games = dedupeGames(collectedApps.map(appToGame));
+  let games = dedupeGames(await enrichGamesWithMetadata(token, vpcId, collectedApps.map(appToGame), input.proxyUrl));
+  const publicGames = await fetchPublicGames(input.proxyUrl);
+  const gamesWithPublicVariants = appendPublicGameSearchMatches(
+    mergePublicGameVariants(games, publicGames),
+    publicGames,
+    searchQuery,
+  );
 
   return {
-    games,
+    games: gamesWithPublicVariants,
     numberReturned,
-    numberSupported: Math.max(numberSupported, games.length),
-    totalCount: Math.max(totalCount, games.length),
+    numberSupported: Math.max(numberSupported, gamesWithPublicVariants.length),
+    totalCount: Math.max(totalCount, gamesWithPublicVariants.length),
     hasNextPage,
     endCursor: endCursor || undefined,
     searchQuery,
@@ -820,119 +1135,268 @@ ${appFields}
 }
 
 export async function browseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult> {
-  return browseCatalogUncached(input);
-}
-
-export async function fetchMainGames(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:main");
-  if (cached) {
-    return cached.data;
+  const token = input.token;
+  if (!token) {
+    throw new Error("Catalog browsing requires an authenticated token");
   }
 
-  const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache("games:main", games);
+  const cached = await peekCachedBrowseCatalog(input);
+  if (cached) {
+    return cached;
+  }
+
+  const result = await browseCatalogUncached(input);
+  const accountId = resolveAccountCacheId(input.userId, token);
+  if (!shouldBypassGamesCache(input.proxyUrl)) {
+    const cacheKey = catalogBrowseCacheKey(input, accountId);
+    await cacheManager.saveToCache(cacheKey, result);
+  }
+  return result;
+}
+
+export async function peekCachedBrowseCatalog(input: CatalogBrowseRequest): Promise<CatalogBrowseResult | null> {
+  const token = input.token;
+  if (!token) {
+    return null;
+  }
+  if (shouldBypassGamesCache(input.proxyUrl)) {
+    return null;
+  }
+
+  const accountId = resolveAccountCacheId(input.userId, token);
+  const cacheKey = catalogBrowseCacheKey(input, accountId);
+  const cached = await cacheManager.loadFromCache<CatalogBrowseResult>(cacheKey);
+  return cached?.data ?? null;
+}
+
+export async function peekCachedLibraryGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[] | null> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl, proxyUrl);
+  return cached?.data ?? null;
+}
+
+export async function fetchLibraryGamesFromCache(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[] | null> {
+  const cached = await peekCachedLibraryGames(token, providerStreamingBaseUrl, accountId, proxyUrl);
+  if (!cached) {
+    return null;
+  }
+  return mergePublicGameVariants(cached, await fetchPublicGames(proxyUrl));
+}
+
+export async function fetchMainGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[]> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("main", accountId, token, providerStreamingBaseUrl, proxyUrl);
+  if (cached) {
+    return mergePublicGameVariants(cached.data, await fetchPublicGames(proxyUrl));
+  }
+
+  const games = await fetchMainGamesUncached(token, providerStreamingBaseUrl, proxyUrl);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("main", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
-async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: string): Promise<GameInfo[]> {
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const payload = await fetchPanels(token, ["MAIN"], vpcId);
+export async function fetchFeaturedGames(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GameInfo[]> {
+  const cached = await loadAccountScopedFromCache<GameInfo[]>("featured", accountId, token, providerStreamingBaseUrl, proxyUrl);
+  if (cached) return cached.data;
+
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const games = featuredGamesFromPanels(await fetchPanels(token, ["MARQUEE"], vpcId, undefined, proxyUrl)).slice(0, 6);
+
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("featured", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
+  return games;
+}
+
+export async function fetchStorePanels(
+  token: string,
+  providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
+): Promise<GamePanelResult[]> {
+  const cached = await loadAccountScopedFromCache<GamePanelResult[]>("store-panels", accountId, token, providerStreamingBaseUrl, proxyUrl);
+  if (cached) return cached.data;
+
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const panels = parsePanelResults(await fetchPanels(token, ["MAIN"], vpcId, undefined, proxyUrl));
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey("store-panels", resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, panels);
+  }
+  return panels;
+}
+
+async function fetchMainGamesUncached(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): Promise<GameInfo[]> {
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const payload = await fetchPanels(token, ["MAIN"], vpcId, undefined, proxyUrl);
   const games = flattenPanels(payload);
-  return enrichGamesWithMetadata(token, vpcId, games);
+  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
 }
 
 export async function fetchLibraryGames(
   token: string,
   providerStreamingBaseUrl?: string,
+  accountId?: string,
+  proxyUrl?: string,
 ): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:library");
+  const cached = await loadAccountScopedFromCache<GameInfo[]>(LIBRARY_GAMES_CACHE_SCOPE, accountId, token, providerStreamingBaseUrl, proxyUrl);
   if (cached) {
-    return cached.data;
+    return mergePublicGameVariants(cached.data, await fetchPublicGames(proxyUrl));
   }
 
-  const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl);
-  await cacheManager.saveToCache("games:library", games);
+  const games = await fetchLibraryGamesUncached(token, providerStreamingBaseUrl, proxyUrl);
+  if (!shouldBypassGamesCache(proxyUrl)) {
+    const cacheKey = accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, resolveAccountCacheId(accountId, token), providerStreamingBaseUrl, proxyUrl);
+    await cacheManager.saveToCache(cacheKey, games);
+  }
   return games;
 }
 
 async function fetchLibraryGamesUncached(
   token: string,
   providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
 ): Promise<GameInfo[]> {
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  try {
+    const apps = await fetchPaginatedLibraryApps(token, vpcId, proxyUrl);
+    const games = dedupeGames(apps.map(appToGame));
+    return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
+  } catch (error) {
+    console.warn("Paginated library query failed, falling back to library panel:", error);
+  }
+
   let payload: GraphQlResponse;
 
   try {
-    payload = await fetchPanels(token, ["LIBRARY"], vpcId, { withLibraryTime: true });
+    payload = await fetchPanels(token, ["LIBRARY"], vpcId, { withLibraryTime: true }, proxyUrl);
   } catch {
-    payload = await fetchPanels(token, ["LIBRARY"], vpcId);
+    payload = await fetchPanels(token, ["LIBRARY"], vpcId, undefined, proxyUrl);
   }
 
   const games = flattenPanels(payload);
-  return enrichGamesWithMetadata(token, vpcId, games);
+  return mergePublicGameVariants(await enrichGamesWithMetadata(token, vpcId, games, proxyUrl), await fetchPublicGames(proxyUrl));
 }
 
-export async function fetchPublicGames(): Promise<GameInfo[]> {
-  const cached = await cacheManager.loadFromCache<GameInfo[]>("games:public");
+async function fetchPaginatedLibraryApps(token: string, vpcId: string, proxyUrl?: string): Promise<AppData[]> {
+  const query = `query GetLibraryApps(
+    $vpcId: String!,
+    $locale: String!,
+    $sortString: String!,
+    $fetchCount: Int!,
+    $cursor: String!,
+    $filters: AppFilterFields!
+  ) {
+    apps(
+      vpcId: $vpcId,
+      language: $locale,
+      orderBy: $sortString,
+      first: $fetchCount,
+      after: $cursor,
+      filters: $filters
+    ) {
+      numberReturned
+      numberSupported
+      pageInfo { hasNextPage endCursor totalCount }
+      items {
+        id
+        title
+        images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
+        variants {
+          id
+          appStore
+          storeUrl
+          supportedControls
+          gfn {
+            status
+            library { status selected lastPlayedDate }
+          }
+        }
+        gfn {
+          playabilityState
+          minimumMembershipTierLabel
+          catalogSkuStrings {
+            SKU_BASED_TAG
+            SKU_BASED_PLAYABILITY_TEXT
+            SKU_BASED_UNPLAYABLE_DIALOG_HEADER
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE
+            SKU_BASED_UNPLAYABLE_DIALOG_BODY_UPGRADE_ECOMM_RESTRICTED
+          }
+        }
+        itemMetadata { campaignIds }
+      }
+    }
+  }`;
+
+  const result = await fetchAllAppsPages<AppData>(
+    (cursor) => postGraphQl<AppsPage>(
+      query,
+      {
+        vpcId,
+        locale: DEFAULT_LOCALE,
+        sortString: DEFAULT_LIBRARY_SORT,
+        fetchCount: LIBRARY_FETCH_COUNT,
+        cursor,
+        filters: LIBRARY_APPS_FILTER,
+      },
+      token,
+      proxyUrl,
+    ),
+    { maxPages: MAX_LIBRARY_PAGES },
+  );
+  return result.items;
+}
+
+export async function fetchPublicGames(proxyUrl?: string): Promise<GameInfo[]> {
+  if (shouldBypassGamesCache(proxyUrl)) {
+    return fetchPublicGamesUncached(proxyUrl);
+  }
+
+  const cacheKey = publicGamesCacheKey(proxyUrl);
+  const cached = await cacheManager.loadFromCache<GameInfo[]>(cacheKey);
   if (cached) {
     return cached.data;
   }
 
-  const games = await fetchPublicGamesUncached();
-  await cacheManager.saveToCache("games:public", games);
+  const games = await fetchPublicGamesUncached(proxyUrl);
+  await cacheManager.saveToCache(cacheKey, games);
   return games;
-}
-
-async function fetchPublicGamesUncached(): Promise<GameInfo[]> {
-  const response = await fetch(
-    "https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json",
-    {
-      headers: {
-        "User-Agent": GFN_USER_AGENT,
-      },
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Public games fetch failed (${response.status})`);
-  }
-
-  const payload = (await response.json()) as RawPublicGame[];
-  return payload
-    .filter((item) => item.status === "AVAILABLE" && item.title)
-    .map((item) => {
-      const id = String(item.id ?? item.title ?? "unknown");
-      const steamAppId = item.steamUrl?.split("/app/")[1]?.split("/")[0];
-      const imageUrl = steamAppId
-        ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/library_600x900.jpg`
-        : undefined;
-
-      return {
-        id,
-        uuid: id,
-        launchAppId: isNumericId(id) ? id : undefined,
-        title: item.title ?? id,
-        searchText: (item.title ?? id).toLowerCase(),
-        selectedVariantIndex: 0,
-        variants: [{ id, store: "Unknown", supportedControls: [] }],
-        imageUrl,
-        availableStores: ["Unknown"],
-        isInLibrary: false,
-      } as GameInfo;
-    });
 }
 
 export async function resolveLaunchAppId(
   token: string,
   appIdOrUuid: string,
   providerStreamingBaseUrl?: string,
+  proxyUrl?: string,
 ): Promise<string | null> {
   if (isNumericId(appIdOrUuid)) {
     return appIdOrUuid;
   }
 
-  const vpcId = await getVpcId(token, providerStreamingBaseUrl);
-  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId);
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, proxyUrl);
+  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId, proxyUrl);
 
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
@@ -944,6 +1408,35 @@ export async function resolveLaunchAppId(
   }
 
   return resolveAppData(app).numericAppId ?? null;
+}
+
+export async function resolveStoreUrl(
+  token: string,
+  appIdOrUuid: string,
+  providerStreamingBaseUrl?: string,
+  options: { variantId?: string; store?: string; proxyUrl?: string } = {},
+): Promise<string | null> {
+  const vpcId = await getVpcId(token, providerStreamingBaseUrl, options.proxyUrl);
+  const payload = await fetchAppMetaData(token, [appIdOrUuid], vpcId, options.proxyUrl);
+
+  if (payload.errors?.length) {
+    throw new Error(payload.errors.map((error) => error.message).join(", "));
+  }
+
+  const app = payload.data?.apps.items?.[0];
+  const variants = app?.variants ?? [];
+  const selectedVariant = options.variantId
+    ? variants.find((variant) => variant.id === options.variantId)
+    : undefined;
+  if (selectedVariant?.storeUrl) return selectedVariant.storeUrl;
+
+  const storeKey = options.store ? normalizeGameStore(options.store) : undefined;
+  const matchingStoreVariant = storeKey
+    ? variants.find((variant) => normalizeGameStore(variant.appStore) === storeKey && variant.storeUrl)
+    : undefined;
+  if (matchingStoreVariant?.storeUrl) return matchingStoreVariant.storeUrl;
+
+  return variants.find((variant) => variant.storeUrl)?.storeUrl ?? null;
 }
 
 export {

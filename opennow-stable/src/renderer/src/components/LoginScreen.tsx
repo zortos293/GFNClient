@@ -1,17 +1,24 @@
 import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
-import { LogIn, ChevronDown, Zap } from "lucide-react";
-import type { LoginProvider } from "@shared/gfn";
+import QRCode from "qrcode";
+import { LogIn, ChevronDown, QrCode } from "lucide-react";
+import type { AuthDeviceLoginChallenge, LoginProvider } from "@shared/gfn";
+import { useTranslation } from "../i18n";
+import { OpenNowLogoMark } from "./OpenNowLogoMark";
 
 export interface LoginScreenProps {
   providers: LoginProvider[];
   selectedProviderId: string;
   onProviderChange: (id: string) => void;
   onLogin: () => void;
+  onQrLogin: () => void;
+  onCancelQrLogin: () => void;
   isLoading: boolean;
   error: string | null;
   isInitializing?: boolean;
   statusMessage?: string;
+  qrLoginChallenge?: AuthDeviceLoginChallenge | null;
+  isQrLoginPending?: boolean;
 }
 
 export function LoginScreen({
@@ -19,17 +26,24 @@ export function LoginScreen({
   selectedProviderId,
   onProviderChange,
   onLogin,
+  onQrLogin,
+  onCancelQrLogin,
   isLoading,
   error,
   isInitializing = false,
   statusMessage,
+  qrLoginChallenge,
+  isQrLoginPending = false,
 }: LoginScreenProps): JSX.Element {
+  const { t } = useTranslation();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const selectedProvider = providers.find((p) => p.idpId === selectedProviderId);
-  const title = isInitializing ? "Restoring session" : "Sign in";
-  const subtitle = isInitializing ? "Checking saved accounts." : "Cloud gaming, open source.";
+  const title = isInitializing ? t("auth.title.restoringSession") : t("auth.title.signIn");
+  const subtitle = isInitializing ? t("auth.subtitle.checkingSavedAccounts") : t("app.description");
+  const isQrLoginActive = Boolean(qrLoginChallenge) || isQrLoginPending;
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -40,6 +54,39 @@ export function LoginScreen({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setQrCodeDataUrl(null);
+
+    if (!qrLoginChallenge) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    QRCode.toDataURL(qrLoginChallenge.verificationUriComplete, {
+      errorCorrectionLevel: "M",
+      margin: 1,
+      scale: 8,
+      color: {
+        dark: "#07111f",
+        light: "#ffffff",
+      },
+    }).then((dataUrl) => {
+      if (!cancelled) {
+        setQrCodeDataUrl(dataUrl);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setQrCodeDataUrl(null);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [qrLoginChallenge]);
 
   const handleProviderSelect = (providerId: string) => {
     onProviderChange(providerId);
@@ -59,7 +106,7 @@ export function LoginScreen({
         {/* Brand */}
         <div className="login-brand">
           <div className="login-brand-mark">
-            <Zap size={20} strokeWidth={2.5} />
+            <OpenNowLogoMark className="opennow-logo-mark" />
           </div>
           <span className="login-brand-name">OpenNOW</span>
         </div>
@@ -86,17 +133,17 @@ export function LoginScreen({
           )}
 
           <div className="login-field" ref={dropdownRef}>
-            <label className="login-label">Provider</label>
+            <label className="login-label">{t("auth.provider.label")}</label>
             <button
               className={`login-select ${isDropdownOpen ? "open" : ""}`}
               onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-              disabled={isLoading || isInitializing}
+              disabled={isLoading || isInitializing || isQrLoginActive}
               type="button"
             >
               <span className="login-select-text">
                 {isInitializing
-                  ? "Loading..."
-                  : selectedProvider?.displayName ?? "Select provider"}
+                  ? t("auth.provider.loading")
+                  : selectedProvider?.displayName ?? t("auth.provider.select")}
               </span>
               <ChevronDown
                 size={16}
@@ -125,27 +172,66 @@ export function LoginScreen({
             )}
           </div>
 
-          <button
-            className={`login-button ${isLoading || isInitializing ? "loading" : ""}`}
-            onClick={onLogin}
-            disabled={isLoading || isInitializing || !selectedProviderId}
-            type="button"
-          >
-            {isLoading || isInitializing ? (
-              <>
-                <span className="login-spinner" />
-                <span>{isInitializing ? "Restoring Session..." : "Connecting..."}</span>
-              </>
-            ) : (
-              <>
-                <LogIn size={18} />
-                <span>Sign In</span>
-              </>
-            )}
-          </button>
+          {isQrLoginActive && (
+            <div className="login-qr-panel" role="status" aria-live="polite">
+              <div className="login-qr-code">
+                {qrLoginChallenge && qrCodeDataUrl ? (
+                  <img src={qrCodeDataUrl} alt={t("auth.qr.alt")} />
+                ) : (
+                  <span className="login-spinner" />
+                )}
+              </div>
+              <div className="login-qr-copy">
+                <div className="login-qr-title">
+                  {qrLoginChallenge ? t("auth.qr.title") : t("auth.qr.preparing")}
+                </div>
+                <p>
+                  {qrLoginChallenge ? t("auth.qr.description") : t("auth.qr.preparingDescription")}
+                </p>
+                {qrLoginChallenge && <code>{qrLoginChallenge.userCode}</code>}
+              </div>
+              <button
+                className="login-secondary-button"
+                onClick={onCancelQrLogin}
+                type="button"
+              >
+                {t("auth.actions.cancelQrLogin")}
+              </button>
+            </div>
+          )}
+
+          <div className="login-actions">
+            <button
+              className={`login-button ${isLoading || isInitializing ? "loading" : ""}`}
+              onClick={onLogin}
+              disabled={isLoading || isInitializing || isQrLoginActive || !selectedProviderId}
+              type="button"
+            >
+              {isLoading || isInitializing ? (
+                <>
+                  <span className="login-spinner" />
+                  <span>{isInitializing ? t("auth.actions.restoringSession") : t("auth.actions.connecting")}</span>
+                </>
+              ) : (
+                <>
+                  <LogIn size={18} />
+                  <span>{t("auth.actions.signIn")}</span>
+                </>
+              )}
+            </button>
+            <button
+              className={`login-secondary-button ${isLoading && !isQrLoginActive ? "disabled" : ""}`}
+              onClick={onQrLogin}
+              disabled={isLoading || isInitializing || isQrLoginActive || !selectedProviderId}
+              type="button"
+            >
+              <QrCode size={18} />
+              <span>{t("auth.actions.signInWithQr")}</span>
+            </button>
+          </div>
         </div>
 
-        <p className="login-footer">Open-source cloud gaming client</p>
+        <p className="login-footer">{t("app.tagline")}</p>
       </div>
     </div>
   );

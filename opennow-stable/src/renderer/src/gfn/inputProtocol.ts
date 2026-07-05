@@ -1,12 +1,124 @@
+import type { KeyboardLayout } from "@shared/gfn";
+
 export const INPUT_HEARTBEAT = 2;
 export const INPUT_KEY_DOWN = 3;
 export const INPUT_KEY_UP = 4;
+/** Lock-key state sync (Caps/Num/Scroll), matches official GFN Cc()/Ic() type 19. */
+export const INPUT_LOCK_KEYS_SYNC = 19;
 export const INPUT_MOUSE_REL = 7;
 export const INPUT_MOUSE_BUTTON_DOWN = 8;
 export const INPUT_MOUSE_BUTTON_UP = 9;
 export const INPUT_MOUSE_WHEEL = 10;
 export const INPUT_GAMEPAD = 12;
 export const INPUT_HAPTICS_ENABLED = 13;
+export const INPUT_TEXT = 23;
+
+const TEXT_INPUT_CHUNK_MAX_BYTES = 1016;
+const TEXT_INPUT_HEADER_BYTES = 5;
+
+export const WRAPPER_VERSION_MARKER = 0x23;
+export const WRAPPER_SINGLE_INPUT = 0x22;
+const WRAPPER_VERSION_HEADER_BYTES = 9;
+const WRAPPER_SINGLE_BODY_OFFSET = WRAPPER_VERSION_HEADER_BYTES + 1;
+
+let inputSessionStartedAtMs = 0;
+
+/** Reset session-relative input clock when the input handshake completes. */
+export function startInputSessionClock(nowMs: number = performance.now()): void {
+  inputSessionStartedAtMs = nowMs;
+}
+
+/** Session-relative capture timestamp for inner event payloads (official GFN Or()). */
+export function captureTimestampUs(sourceTimestampMs?: number): bigint {
+  const baseMs =
+    typeof sourceTimestampMs === "number" && Number.isFinite(sourceTimestampMs) && sourceTimestampMs >= 0
+      ? sourceTimestampMs - inputSessionStartedAtMs
+      : performance.now() - inputSessionStartedAtMs;
+  return BigInt(Math.max(0, Math.floor(baseMs * 1000)));
+}
+
+/** Send-time session clock for v3 outer headers (official GFN ed()). */
+export function sendTimestampUs(nowMs: number = performance.now()): bigint {
+  return captureTimestampUs(nowMs);
+}
+
+function writeSessionTimestamp(view: DataView, offset: number, timestampUs: bigint): void {
+  const clamped = timestampUs < 0n ? 0n : timestampUs;
+  const lo = Number(clamped & 0xFFFFFFFFn);
+  const hi = Number(clamped >> 32n);
+  view.setUint32(offset, hi, false);
+  view.setUint32(offset + 4, lo, false);
+}
+
+/** Rewrite the protocol v3 `[0x23][timestamp]` header to the send-time session clock. */
+export function restampProtocolV3OuterTimestamp(packet: Uint8Array, timestampUs: bigint): boolean {
+  if (packet.length < WRAPPER_VERSION_HEADER_BYTES || packet[0] !== WRAPPER_VERSION_MARKER) {
+    return false;
+  }
+  writeSessionTimestamp(new DataView(packet.buffer, packet.byteOffset, packet.byteLength), 1, timestampUs);
+  return true;
+}
+
+/**
+ * Coalesce protocol v3 single-input packets into one datachannel payload.
+ * Official GFN batches multiple `[0x22][body]` frames under one `[0x23][timestamp]`
+ * header stamped with the send-time session clock (`ed()`).
+ */
+export function combineSingleInputPackets(
+  payloads: readonly Uint8Array[],
+  sendTimestampUsValue: bigint,
+): Uint8Array | null {
+  if (payloads.length === 0) {
+    return null;
+  }
+  if (payloads.length === 1) {
+    const packet = payloads[0].slice();
+    restampProtocolV3OuterTimestamp(packet, sendTimestampUsValue);
+    return packet;
+  }
+
+  const combinedBodies: number[] = [];
+  for (const payload of payloads) {
+    if (
+      payload.length >= WRAPPER_SINGLE_BODY_OFFSET
+      && payload[0] === WRAPPER_VERSION_MARKER
+      && payload[WRAPPER_VERSION_HEADER_BYTES] === WRAPPER_SINGLE_INPUT
+    ) {
+      combinedBodies.push(WRAPPER_SINGLE_INPUT);
+      combinedBodies.push(...payload.subarray(WRAPPER_SINGLE_BODY_OFFSET));
+      continue;
+    }
+    return null;
+  }
+
+  const bytes = new Uint8Array(WRAPPER_VERSION_HEADER_BYTES + combinedBodies.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = WRAPPER_VERSION_MARKER;
+  writeSessionTimestamp(view, 1, sendTimestampUsValue);
+  bytes.set(combinedBodies, WRAPPER_VERSION_HEADER_BYTES);
+  return bytes;
+}
+
+/** Finalize reliable keyboard/button packets, coalescing and restamping v3 headers at send time. */
+export function finalizeReliableSingleInputPackets(
+  payloads: readonly Uint8Array[],
+  sendTimestampUsValue: bigint,
+): Uint8Array[] {
+  if (payloads.length === 0) {
+    return [];
+  }
+
+  const combined = combineSingleInputPackets(payloads, sendTimestampUsValue);
+  if (combined) {
+    return [combined];
+  }
+
+  return payloads.map((payload) => {
+    const packet = payload.slice();
+    restampProtocolV3OuterTimestamp(packet, sendTimestampUsValue);
+    return packet;
+  });
+}
 
 // Mouse button constants (1-based for GFN protocol)
 // GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
@@ -236,8 +348,8 @@ const specialVirtualKeyByCode: Record<string, number> = {
   BracketRight: 0xdd,
   Backslash: 0xdc,
   IntlBackslash: 0xe2,
-  IntlRo: 0xc1,
-  IntlYen: 0xdc,
+  IntlRo: 0xc2,
+  IntlYen: 0xc1,
   Semicolon: 0xba,
   Quote: 0xde,
   Backquote: 0xc0,
@@ -264,10 +376,19 @@ const specialVirtualKeyByCode: Record<string, number> = {
   End: 0x23,
   PageUp: 0x21,
   PageDown: 0x22,
-  PrintScreen: 0x2c,
+  PrintScreen: 0x2a,
   ScrollLock: 0x91,
   Pause: 0x13,
   ContextMenu: 0x5d,
+  OSLeft: 0x5b,
+  OSRight: 0x5c,
+  KanaMode: 0xe9,
+  Lang1: 0x15,
+  Lang2: 0x19,
+  Convert: 0xea,
+  NonConvert: 0xeb,
+  NumpadClear: 0x0c,
+  NumpadClearEntry: 0x0c,
   NumpadAdd: 0x6b,
   NumpadSubtract: 0x6d,
   NumpadMultiply: 0x6a,
@@ -333,6 +454,64 @@ const shiftedCharCodeMap: Record<string, string> = {
   "<": "Comma",
   ">": "Period",
   "?": "Slash",
+};
+
+const germanBaseCharCodeMap: Record<string, string> = {
+  " ": "Space",
+  "\n": "Enter",
+  "\r": "Enter",
+  "\t": "Tab",
+  "0": "Digit0",
+  "1": "Digit1",
+  "2": "Digit2",
+  "3": "Digit3",
+  "4": "Digit4",
+  "5": "Digit5",
+  "6": "Digit6",
+  "7": "Digit7",
+  "8": "Digit8",
+  "9": "Digit9",
+  "y": "KeyZ",
+  "z": "KeyY",
+  "ß": "Minus",
+  "´": "Equal",
+  "ü": "BracketLeft",
+  "+": "BracketRight",
+  "#": "Backslash",
+  "ö": "Semicolon",
+  "ä": "Quote",
+  ",": "Comma",
+  ".": "Period",
+  "^": "Backquote",
+  "-": "Slash",
+  "<": "IntlBackslash",
+};
+
+const germanShiftedCharCodeMap: Record<string, string> = {
+  "!": "Digit1",
+  '"': "Digit2",
+  "§": "Digit3",
+  "$": "Digit4",
+  "%": "Digit5",
+  "&": "Digit6",
+  "/": "Digit7",
+  "(": "Digit8",
+  ")": "Digit9",
+  "=": "Digit0",
+  "Y": "KeyZ",
+  "Z": "KeyY",
+  "?": "Minus",
+  "`": "Equal",
+  "Ü": "BracketLeft",
+  "*": "BracketRight",
+  "'": "Backslash",
+  "Ö": "Semicolon",
+  "Ä": "Quote",
+  "°": "Backquote",
+  ";": "Comma",
+  ":": "Period",
+  "_": "Slash",
+  ">": "IntlBackslash",
 };
 
 function defaultVirtualKeyFromCode(code: string): number | null {
@@ -463,11 +642,18 @@ function virtualKeyFromKeyValue(key: string): number | null {
 }
 
 function virtualKeyFromEvent(event: KeyLike): number | null {
-  if (event.code.startsWith("Key") || event.code.startsWith("Digit")) {
-    return defaultVirtualKeyFromCode(event.code);
+  if (event.code) {
+    const codeVk = defaultVirtualKeyFromCode(event.code);
+    if (codeVk !== null) {
+      return codeVk;
+    }
   }
 
-  return virtualKeyFromKeyCode(event) ?? virtualKeyFromKeyValue(event.key) ?? defaultVirtualKeyFromCode(event.code);
+  return (
+    virtualKeyFromKeyCode(event)
+    ?? virtualKeyFromKeyValue(event.key)
+    ?? defaultVirtualKeyFromCode(event.code)
+  );
 }
 
 function textKeySpecFromCode(code: string, shift: boolean = false): TextKeySpec | null {
@@ -478,13 +664,16 @@ function textKeySpecFromCode(code: string, shift: boolean = false): TextKeySpec 
   return shift ? { ...mapped, shift: true } : mapped;
 }
 
-export function mapTextCharToKeySpec(char: string): TextKeySpec | null {
-  const baseCode = baseCharCodeMap[char];
+export function mapTextCharToKeySpec(char: string, layout?: KeyboardLayout): TextKeySpec | null {
+  const baseMap = layout === "de-DE" ? germanBaseCharCodeMap : baseCharCodeMap;
+  const shiftedMap = layout === "de-DE" ? germanShiftedCharCodeMap : shiftedCharCodeMap;
+
+  const baseCode = baseMap[char];
   if (baseCode) {
     return textKeySpecFromCode(baseCode);
   }
 
-  const shiftedCode = shiftedCharCodeMap[char];
+  const shiftedCode = shiftedMap[char];
   if (shiftedCode) {
     return textKeySpecFromCode(shiftedCode, true);
   }
@@ -501,15 +690,11 @@ export function mapTextCharToKeySpec(char: string): TextKeySpec | null {
 }
 
 /**
- * Write an 8-byte big-endian timestamp (performance.now() * 1000 = microseconds)
- * into a DataView at the given offset. Matches official GFN client's _r() function.
+ * Write an 8-byte big-endian session-relative timestamp into a DataView.
+ * Outer v3 headers are restamped again at send time via restampProtocolV3OuterTimestamp().
  */
 function writeTimestamp(view: DataView, offset: number): void {
-  const tsUs = performance.now() * 1000;
-  const lo = Math.floor(tsUs) & 0xFFFFFFFF;
-  const hi = Math.floor(tsUs / 4294967296);
-  view.setUint32(offset, hi, false);     // high 32 bits, big-endian
-  view.setUint32(offset + 4, lo, false); // low 32 bits, big-endian
+  writeSessionTimestamp(view, offset, sendTimestampUs());
 }
 
 /**
@@ -640,6 +825,14 @@ export class InputEncoder {
     this.gamepadSequence.clear();
   }
 
+  encodeLockKeysSync(state: number): Uint8Array {
+    const bytes = new Uint8Array(5);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, INPUT_LOCK_KEYS_SYNC, true);
+    view.setUint8(4, state & 0xff);
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
   encodeHeartbeat(): Uint8Array {
     // Heartbeat is sent RAW — no v3 wrapper.
     // Official GFN client's Jc() sends [u32 LE = 2] directly, no 0x23/0x22 prefix.
@@ -697,6 +890,28 @@ export class InputEncoder {
     view.setUint32(0, INPUT_HAPTICS_ENABLED, true);
     view.setUint16(4, enabled ? 1 : 0, false);
     return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
+  encodeTextInput(text: string): Uint8Array[] {
+    const utf8 = new TextEncoder().encode(text);
+    const chunks: Uint8Array[] = [];
+
+    for (let offset = 0; offset < utf8.byteLength;) {
+      const chunkLength = textInputChunkLength(utf8, offset);
+      if (chunkLength <= 0) {
+        break;
+      }
+
+      const bytes = new Uint8Array(TEXT_INPUT_HEADER_BYTES + chunkLength);
+      const view = new DataView(bytes.buffer);
+      bytes[0] = 0x22;
+      view.setUint32(1, INPUT_TEXT, true);
+      bytes.set(utf8.subarray(offset, offset + chunkLength), TEXT_INPUT_HEADER_BYTES);
+      chunks.push(bytes);
+      offset += chunkLength;
+    }
+
+    return chunks;
   }
 
   encodeGamepadState(payload: GamepadInput, bitmap: number, usePartiallyReliable: boolean): Uint8Array {
@@ -793,42 +1008,75 @@ export class InputEncoder {
   }
 }
 
-export function modifierFlags(event: KeyboardEvent): number {
+function textInputChunkLength(bytes: Uint8Array, offset: number): number {
+  const remaining = bytes.byteLength - offset;
+  if (remaining <= TEXT_INPUT_CHUNK_MAX_BYTES) {
+    return remaining;
+  }
+
+  let end = offset + TEXT_INPUT_CHUNK_MAX_BYTES;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if ((bytes[end] & 0xc0) !== 0x80) {
+      return end - offset;
+    }
+    end--;
+  }
+
+  return 0;
+}
+
+function isMacKeyboardLayout(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+/** Shift bit for per-key modifier byte (official GFN xb()). */
+export function shiftModifierByte(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
+  if (isMacLayout && event.key.length === 1) {
+    if ("!@#$%^&*()~_+{}|:\"<>?".includes(event.key)) {
+      return 1;
+    }
+    if ("1234567890`-=[]\\;',./".includes(event.key)) {
+      return 0;
+    }
+  }
+  if (event.shiftKey && !event.code.startsWith("Shift")) {
+    return 1;
+  }
+  return 0;
+}
+
+/** Per-key modifier byte (official GFN Cb(): ctrl/alt/meta + xb shift). */
+export function modifierFlags(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
   let flags = 0;
-  // Basic modifiers (match Rust implementation)
-  if (event.shiftKey) flags |= 0x01; // SHIFT
-  if (event.ctrlKey) flags |= 0x02;  // CTRL
-  if (event.altKey) flags |= 0x04;   // ALT
-  if (event.metaKey) flags |= 0x08;  // META
-  // Lock keys (match Rust modifier flags)
-  if (event.getModifierState("CapsLock")) flags |= 0x10; // CAPS_LOCK
-  if (event.getModifierState("NumLock")) flags |= 0x20;  // NUM_LOCK
+  if (event.ctrlKey && !event.code.startsWith("Control")) flags |= 0x02;
+  if (event.altKey && !event.code.startsWith("Alt")) flags |= 0x04;
+  if (event.metaKey && !event.code.startsWith("Meta")) flags |= 0x08;
+  flags |= shiftModifierByte(event, isMacLayout);
   return flags;
 }
 
-export function mapKeyboardEvent(event: KeyboardEvent): KeyMapping | null {
-  // The official GFN web client appears to forward the raw DOM key event into a lower-level
-  // virtual input controller instead of keeping a large JS `{ code -> { vk, scancode } }` table.
-  // Electron does not expose that downstream native translation layer to this renderer, so the
-  // closest behavior we can reproduce here is:
-  // 1. derive the Windows virtual-key from the DOM event itself (`keyCode`, `key`, `location`)
-  // 2. keep only a DOM `code -> scancode` lookup for the protocol field that Chromium does not expose
-  // This preserves physical-key behavior across layouts while minimizing JS-side policy.
-  const scancode =
-    (event.code ? scancodeByCode[event.code] : undefined)
-    ?? keyFallbackMap[event.key]?.scancode
-    ?? (event.key.length === 1 ? mapTextCharToKeySpec(event.key)?.scancode : undefined);
+/**
+ * Lock-key bitmask for INPUT_LOCK_KEYS_SYNC (official GFN iS() on Windows/desktop).
+ * Caps/Num/Scroll are not stuffed into per-key modifier bytes.
+ */
+export function lockKeysStateFromEvent(event: KeyboardEvent): number {
+  let state = 0x10;
+  if (event.getModifierState("CapsLock")) state |= 0x01;
+  state |= 0x20;
+  state |= 0x40;
+  if (event.getModifierState("NumLock")) state |= 0x02;
+  if (event.getModifierState("ScrollLock")) state |= 0x04;
+  return state;
+}
 
-  if (scancode === undefined) {
-    return null;
-  }
-
+export function mapKeyboardEvent(event: KeyboardEvent, _layout?: KeyboardLayout): KeyMapping | null {
   const vk = virtualKeyFromEvent(event);
-  if (vk === null) {
+  if (vk === null || vk === 0) {
     return null;
   }
 
-  return { vk, scancode };
+  // Official GFN Zc() always sends scancode 0; the server uses layout + VK instead.
+  return { vk, scancode: 0 };
 }
 
 /**

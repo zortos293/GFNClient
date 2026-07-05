@@ -9,10 +9,22 @@ import type {
   GameLanguage,
   AspectRatio,
   KeyboardLayout,
-  ControllerThemeRgb,
-  ControllerThemeStyle,
+  StreamClientMode,
+  NativeStreamerBackendPreference,
+  NativeVideoBackendPreference,
+  NativeStreamerFeatureMode,
+  NativeTransitionDiagnostics,
+  AppAccentColor,
+  VideoShaderSettings,
 } from "@shared/gfn";
-import { DEFAULT_KEYBOARD_LAYOUT, getDefaultStreamPreferences, normalizeStreamPreferences } from "@shared/gfn";
+import {
+  DEFAULT_KEYBOARD_LAYOUT,
+  DEFAULT_VIDEO_SHADER_SETTINGS,
+  getDefaultStreamPreferences,
+  normalizeStreamClientModeForPlatform,
+  normalizeStreamPreferences,
+  normalizeVideoShaderSettings,
+} from "@shared/gfn";
 
 export interface Settings {
   /** Video resolution (e.g., "1920x1080") */
@@ -25,6 +37,24 @@ export interface Settings {
   fps: number;
   /** Maximum bitrate in Mbps (cap at 150) */
   maxBitrateMbps: number;
+  /** Recording video bitrate in Mbps (null = MediaRecorder auto, cap at 200) */
+  recordingBitrateMbps: number | null;
+  /** Stream client implementation to use for new sessions */
+  streamClientMode: StreamClientMode;
+  /** Native streamer backend preference for new native sessions */
+  nativeStreamerBackend: NativeStreamerBackendPreference;
+  /** Native GStreamer video backend preference for Windows DirectX paths */
+  nativeVideoBackend: NativeVideoBackendPreference;
+  /** Optional path to a custom native streamer executable */
+  nativeStreamerExecutablePath: string;
+  /** Native-only override for Cloud G-Sync / VRR display detection */
+  nativeCloudGsyncMode: NativeStreamerFeatureMode;
+  /** Native D3D sink fullscreen presentation override */
+  nativeD3dFullscreenMode: NativeStreamerFeatureMode;
+  /** Use the native GStreamer renderer window instead of Electron HWND embedding */
+  nativeExternalRenderer: boolean;
+  /** Show the native streamer's own stats overlay while native streaming */
+  showNativeStreamerStats: boolean;
   /** Preferred video codec */
   codec: VideoCodec;
   /** Preferred video decode acceleration mode */
@@ -35,8 +65,18 @@ export interface Settings {
   colorQuality: ColorQuality;
   /** Preferred region URL (empty = auto) */
   region: string;
+  /** Enable the optional proxy for Nvidia games catalog, session creation, and queue polling */
+  sessionProxyEnabled: boolean;
+  /** Optional proxy used for Nvidia games catalog, session creation, and queue polling */
+  sessionProxyUrl: string;
   /** Enable clipboard paste into stream */
   clipboardPaste: boolean;
+  /** Enable experimental gyroscope controller input mapping */
+  enableGyroscopeControls: boolean;
+  /** macOS-only workaround that restores Chromium's older HID path for Steam Controller compatibility */
+  steamControllerCompatibilityMode: boolean;
+  /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream */
+  nativeCursorOverlay: boolean;
   /** Mouse sensitivity multiplier */
   mouseSensitivity: number;
   /** Software mouse acceleration strength percentage (1-150) */
@@ -73,23 +113,17 @@ export interface Settings {
   showStatsOnLaunch: boolean;
   /** Skip the free-tier queue server selection modal and launch with default routing */
   hideServerSelector: boolean;
-  /** Enable controller-first media bar layout for library browsing */
+  /** Desktop UI accent preset */
+  appAccentColor: AppAccentColor;
+  /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
-  /** Play subtle sounds in controller library mode */
-  controllerUiSounds: boolean;
-  /** Enable animated background visuals for controller-mode loading screens */
-  controllerBackgroundAnimations: boolean;
-  /** Controller-mode library background visual preset */
-  controllerThemeStyle: ControllerThemeStyle;
-  /** Controller-mode library background tint */
-  controllerThemeColor: ControllerThemeRgb;
-  /** Auto-load controller library at startup when controller mode is enabled */
-  autoLoadControllerLibrary: boolean;
-  /** Automatically enter fullscreen when controller-mode triggers it */
+  /** Automatically enter fullscreen when launching a stream */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   /** Enable the live elapsed session counter */
   sessionCounterEnabled: boolean;
+  /** Also show the session-limit countdown in the stats overlay while streaming */
+  showSessionTimeRemainingInStatsOverlay: boolean;
   /** Window width */
   windowWidth: number;
   /** Window height */
@@ -102,12 +136,18 @@ export interface Settings {
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
+  /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes */
+  nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
   /** Show the currently streaming game as Discord Rich Presence activity */
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /** Last version for which the release highlights modal was acknowledged (empty = never) */
+  lastSeenReleaseHighlightsVersion: string;
+  /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
+  videoShader: VideoShaderSettings;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -117,26 +157,28 @@ const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
-const CONTROLLER_THEME_STYLES_SET = new Set<ControllerThemeStyle>(["aurora", "nebula", "grid", "minimal", "pulse"]);
+const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
+const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
 
-function clampThemeByte(value: unknown): number {
-  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : NaN;
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(255, n));
+function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackendPreference {
+  return NATIVE_VIDEO_BACKEND_PREFERENCES.has(raw as NativeVideoBackendPreference)
+    ? (raw as NativeVideoBackendPreference)
+    : "auto";
 }
 
-function normalizeControllerThemeColor(raw: unknown, fallback: ControllerThemeRgb): ControllerThemeRgb {
-  if (!raw || typeof raw !== "object") return { ...fallback };
-  const o = raw as Record<string, unknown>;
-  return {
-    r: clampThemeByte(o.r),
-    g: clampThemeByte(o.g),
-    b: clampThemeByte(o.b),
-  };
+function normalizeAppAccentColor(raw: unknown): AppAccentColor {
+  return APP_ACCENT_COLORS.has(raw as AppAccentColor) ? (raw as AppAccentColor) : "green";
 }
 
-function normalizeControllerThemeStyle(raw: unknown): ControllerThemeStyle {
-  return CONTROLLER_THEME_STYLES_SET.has(raw as ControllerThemeStyle) ? (raw as ControllerThemeStyle) : "aurora";
+function normalizeRecordingBitrateMbps(raw: unknown): number | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(1, Math.min(200, Math.round(value)));
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -145,12 +187,26 @@ const DEFAULT_SETTINGS: Settings = {
   posterSizeScale: 1,
   fps: 60,
   maxBitrateMbps: 75,
+  recordingBitrateMbps: null,
+  streamClientMode: "web",
+  nativeStreamerBackend: "gstreamer",
+  nativeVideoBackend: "auto",
+  nativeStreamerExecutablePath: "",
+  nativeCloudGsyncMode: "auto",
+  nativeD3dFullscreenMode: "auto",
+  nativeExternalRenderer: true,
+  showNativeStreamerStats: false,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
   encoderPreference: "auto",
   colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
   region: "",
+  sessionProxyEnabled: false,
+  sessionProxyUrl: "",
   clipboardPaste: false,
+  enableGyroscopeControls: false,
+  steamControllerCompatibilityMode: false,
+  nativeCursorOverlay: true,
   mouseSensitivity: 1,
   mouseAcceleration: 1,
   shortcutToggleStats: "F3",
@@ -167,15 +223,12 @@ const DEFAULT_SETTINGS: Settings = {
   showAntiAfkIndicator: true,
   showStatsOnLaunch: false,
   hideServerSelector: false,
+  appAccentColor: "green",
   controllerMode: false,
-  controllerUiSounds: false,
-  controllerBackgroundAnimations: false,
-  controllerThemeStyle: "aurora",
-  controllerThemeColor: { r: 124, g: 241, b: 177 },
-  autoLoadControllerLibrary: false,
   autoFullScreen: false,
   favoriteGameIds: [],
   sessionCounterEnabled: false,
+  showSessionTimeRemainingInStatsOverlay: false,
   sessionClockShowEveryMinutes: 60,
   sessionClockShowDurationSeconds: 30,
   windowWidth: 1400,
@@ -184,9 +237,12 @@ const DEFAULT_SETTINGS: Settings = {
   gameLanguage: "en_US",
   enableL4S: false,
   enableCloudGsync: false,
+  nativeTransitionDiagnostics: undefined,
   discordRichPresence: false,
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,
+  lastSeenReleaseHighlightsVersion: "",
+  videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
 };
 
 export class SettingsManager {
@@ -210,27 +266,27 @@ export class SettingsManager {
       }
 
       const content = readFileSync(this.settingsPath, "utf-8");
-      const parsed = JSON.parse(content) as Partial<Settings>;
+      type PersistedSettings = Partial<Settings> & {
+        sessionTimeRemainingDisplay?: unknown;
+      };
+      const parsed = JSON.parse(content) as PersistedSettings;
+      const {
+        sessionTimeRemainingDisplay: legacySessionTimeDisplay,
+        ...parsedSettings
+      } = parsed;
 
       // Merge with defaults to ensure all fields exist
       const merged: Settings = {
         ...DEFAULT_SETTINGS,
-        ...parsed,
+        ...parsedSettings,
       };
 
       let migrated = this.migrateLegacyShortcutDefaults(merged);
       migrated = this.enforceCompatibility(merged) || migrated;
 
-      const themeStyleBefore = merged.controllerThemeStyle;
-      const themeColorBefore = { ...merged.controllerThemeColor };
-      merged.controllerThemeStyle = normalizeControllerThemeStyle(merged.controllerThemeStyle);
-      merged.controllerThemeColor = normalizeControllerThemeColor(merged.controllerThemeColor, DEFAULT_SETTINGS.controllerThemeColor);
-      if (
-        merged.controllerThemeStyle !== themeStyleBefore ||
-        merged.controllerThemeColor.r !== themeColorBefore.r ||
-        merged.controllerThemeColor.g !== themeColorBefore.g ||
-        merged.controllerThemeColor.b !== themeColorBefore.b
-      ) {
+      const accentColorBefore = merged.appAccentColor;
+      merged.appAccentColor = normalizeAppAccentColor(merged.appAccentColor);
+      if (merged.appAccentColor !== accentColorBefore) {
         migrated = true;
       }
 
@@ -240,7 +296,18 @@ export class SettingsManager {
         migrated = true;
       }
 
+      // Migrate a short-lived prerelease display enum while keeping the old key out of saved settings.
+      if (legacySessionTimeDisplay === "stats" || legacySessionTimeDisplay === "both") {
+        merged.showSessionTimeRemainingInStatsOverlay = true;
+        migrated = true;
+      }
+
       merged.mouseAcceleration = Math.max(1, Math.min(150, Math.round(merged.mouseAcceleration)));
+      const recordingBitrateBefore = merged.recordingBitrateMbps;
+      merged.recordingBitrateMbps = normalizeRecordingBitrateMbps(merged.recordingBitrateMbps);
+      if (merged.recordingBitrateMbps !== recordingBitrateBefore) {
+        migrated = true;
+      }
       if (migrated) {
         writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2), "utf-8");
       }
@@ -255,17 +322,60 @@ export class SettingsManager {
   }
 
   private enforceCompatibility(settings: Settings): boolean {
+    let migrated = false;
     const normalized = normalizeStreamPreferences(settings.codec, settings.colorQuality);
-    if (!normalized.migrated) {
-      return false;
+    if (normalized.migrated) {
+      console.warn(
+        `[Settings] Migrating unsupported stream settings codec="${settings.codec}" colorQuality="${settings.colorQuality}" to ${normalized.codec}/${normalized.colorQuality}`,
+      );
+      settings.codec = normalized.codec;
+      settings.colorQuality = normalized.colorQuality;
+      migrated = true;
     }
 
-    console.warn(
-      `[Settings] Migrating unsupported stream settings codec="${settings.codec}" colorQuality="${settings.colorQuality}" to ${normalized.codec}/${normalized.colorQuality}`,
-    );
-    settings.codec = normalized.codec;
-    settings.colorQuality = normalized.colorQuality;
-    return true;
+    const streamClientMode = normalizeStreamClientModeForPlatform(settings.streamClientMode, process.platform);
+    if (settings.streamClientMode !== streamClientMode) {
+      settings.streamClientMode = streamClientMode;
+      migrated = true;
+    }
+
+    if (settings.nativeStreamerBackend !== "gstreamer") {
+      settings.nativeStreamerBackend = "gstreamer";
+      migrated = true;
+    }
+    const appAccentColor = normalizeAppAccentColor(settings.appAccentColor);
+    if (settings.appAccentColor !== appAccentColor) {
+      settings.appAccentColor = appAccentColor;
+      migrated = true;
+    }
+    if (!settings.nativeExternalRenderer) {
+      settings.nativeExternalRenderer = true;
+      migrated = true;
+    }
+    const nativeVideoBackend = normalizeNativeVideoBackendPreference(settings.nativeVideoBackend);
+    if (settings.nativeVideoBackend !== nativeVideoBackend) {
+      settings.nativeVideoBackend = nativeVideoBackend;
+      migrated = true;
+    }
+
+    const recordingBitrate = normalizeRecordingBitrateMbps(settings.recordingBitrateMbps);
+    if (settings.recordingBitrateMbps !== recordingBitrate) {
+      settings.recordingBitrateMbps = recordingBitrate;
+      migrated = true;
+    }
+
+    if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
+      settings.steamControllerCompatibilityMode = false;
+      migrated = true;
+    }
+
+    const videoShader = normalizeVideoShaderSettings(settings.videoShader);
+    if (JSON.stringify(settings.videoShader) !== JSON.stringify(videoShader)) {
+      settings.videoShader = videoShader;
+      migrated = true;
+    }
+
+    return migrated;
   }
 
   private migrateLegacyShortcutDefaults(settings: Settings): boolean {

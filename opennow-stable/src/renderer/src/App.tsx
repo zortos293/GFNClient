@@ -758,15 +758,19 @@ export function App(): JSX.Element {
       nativeStreamerBackend: "gstreamer",
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
+      appLaunchMode:
+        settings.controllerMode || settings.launchInConsoleMode ? "gamepadFriendly" : "default",
     };
   }, [
     settings.codec,
     settings.colorQuality,
+    settings.controllerMode,
     settings.enableCloudGsync,
     settings.enableL4S,
     settings.fps,
     settings.gameLanguage,
     settings.keyboardLayout,
+    settings.launchInConsoleMode,
     settings.maxBitrateMbps,
     settings.nativeCloudGsyncMode,
     settings.nativeTransitionDiagnostics,

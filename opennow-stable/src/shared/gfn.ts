@@ -3,6 +3,12 @@ import type { NativeCloudGsyncCapabilities, CloudGsyncResolution } from "./cloud
 export type VideoCodec = "H264" | "H265" | "AV1";
 export type VideoAccelerationPreference = "auto" | "hardware" | "software";
 export type StreamClientMode = "web" | "native";
+/**
+ * How the server-side session should present launched games.
+ * Mirrors the official client's AppLaunchMode: TV/console clients request
+ * "gamepadFriendly" so launchers (e.g. Steam) start in big picture mode.
+ */
+export type AppLaunchMode = "default" | "gamepadFriendly" | "touchFriendly";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
@@ -939,6 +945,8 @@ export interface StreamSettings {
   cloudGsyncResolution?: CloudGsyncResolution;
   /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes. */
   nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
+  /** Requested session app launch mode; "gamepadFriendly" asks NVIDIA to launch games big-picture style. */
+  appLaunchMode?: AppLaunchMode;
 }
 
 export interface SessionCreateRequest {

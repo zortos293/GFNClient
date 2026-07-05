@@ -570,7 +570,7 @@
       "decode": "Decode",
       "encode": "Encode",
       "profiles": "Profiles:",
-      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's VA-API/WebRTC capability report. OpenNOW now enables NVIDIA VA-API flags on restart, but proprietary NVIDIA systems still need distro codecs plus libva-nvidia-driver/nvidia-vaapi-driver; if H.265 or GPU stays missing, check your distro's VA-API setup rather than installing more AppImage files."
+      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's WebRTC/MediaCapabilities report. Hardware decode depends on the Chromium build plus your distro GPU/video stack: x64 systems may need VA-API/NVIDIA VA-API drivers, while ARM V4L2 support depends on Chromium/Electron exposing that decoder."
     },
     "colorQuality": {
       "mostCompatible": "Most compatible",

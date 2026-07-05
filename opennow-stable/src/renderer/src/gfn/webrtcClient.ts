@@ -3529,19 +3529,17 @@ export class GfnWebRtcClient {
       const batchTimestampUs = this.pendingMouseTimestampUs ?? timestampUs();
       let sentAny = false;
 
-      if (this.pendingMouseAbs !== null) {
-        const abs = this.pendingMouseAbs;
-        this.pendingMouseAbs = null;
-        const payload = this.inputEncoder.encodeMouseAbsolute({
-          ...abs,
-          timestampUs: batchTimestampUs,
-        });
-        this.sendInputPacket(payload, INPUT_MOUSE_ABS);
-        this.mousePacketsSentInWindow += 1;
-        markServerCursorAt(abs);
-        sentAny = true;
-      }
-
+      // Compute the relative part first (without consuming it) so a mixed
+      // abs+rel pair can be detected up front. The partially reliable channel
+      // is unordered, so a dependent pair must travel on the ordered reliable
+      // channel or the relative delta could arrive before the absolute pin
+      // and be overwritten by it.
+      let relPart: {
+        dxServer: number;
+        dyServer: number;
+        residualX: number;
+        residualY: number;
+      } | null = null;
       if (
         Math.abs(this.pendingMouseDxFloat) >= 0.5
         || Math.abs(this.pendingMouseDyFloat) >= 0.5
@@ -3552,23 +3550,54 @@ export class GfnWebRtcClient {
         const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
         const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
         if (dxServer !== 0 || dyServer !== 0) {
-          this.pendingMouseDxFloat = dxQuantized.residual;
-          this.pendingMouseDyFloat = dyQuantized.residual;
-
-          const payload = this.inputEncoder.encodeMouseMove({
-            dx: dxServer,
-            dy: dyServer,
-            timestampUs: batchTimestampUs,
-          });
-          this.sendInputPacket(payload, INPUT_MOUSE_REL);
-          this.mousePacketsSentInWindow += 1;
-
-          if (simulatedAbsX !== null && simulatedAbsY !== null) {
-            simulatedAbsX += dxServer;
-            simulatedAbsY += dyServer;
-          }
-          sentAny = true;
+          relPart = {
+            dxServer,
+            dyServer,
+            residualX: dxQuantized.residual,
+            residualY: dyQuantized.residual,
+          };
         }
+      }
+      const mixedBatch = this.pendingMouseAbs !== null && relPart !== null;
+
+      if (this.pendingMouseAbs !== null) {
+        const abs = this.pendingMouseAbs;
+        this.pendingMouseAbs = null;
+        const payload = this.inputEncoder.encodeMouseAbsolute({
+          ...abs,
+          timestampUs: batchTimestampUs,
+        });
+        if (mixedBatch) {
+          this.sendReliable(payload);
+        } else {
+          this.sendInputPacket(payload, INPUT_MOUSE_ABS);
+        }
+        this.mousePacketsSentInWindow += 1;
+        markServerCursorAt(abs);
+        sentAny = true;
+      }
+
+      if (relPart !== null) {
+        this.pendingMouseDxFloat = relPart.residualX;
+        this.pendingMouseDyFloat = relPart.residualY;
+
+        const payload = this.inputEncoder.encodeMouseMove({
+          dx: relPart.dxServer,
+          dy: relPart.dyServer,
+          timestampUs: batchTimestampUs,
+        });
+        if (mixedBatch) {
+          this.sendReliable(payload);
+        } else {
+          this.sendInputPacket(payload, INPUT_MOUSE_REL);
+        }
+        this.mousePacketsSentInWindow += 1;
+
+        if (simulatedAbsX !== null && simulatedAbsY !== null) {
+          simulatedAbsX += relPart.dxServer;
+          simulatedAbsY += relPart.dyServer;
+        }
+        sentAny = true;
       }
 
       if (!sentAny) {

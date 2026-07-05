@@ -13,6 +13,7 @@ import {
 import {
   appLaunchModeWireValue,
   buildRequestedStreamingFeatures,
+  claimSession,
   createSession,
   extractServerInfoRegionBases,
   getActiveSessions,
@@ -296,4 +297,81 @@ test("CloudMatch appLaunchMode maps to official wire values", () => {
   assert.equal(appLaunchModeWireValue("default"), 1);
   assert.equal(appLaunchModeWireValue("gamepadFriendly"), 2);
   assert.equal(appLaunchModeWireValue("touchFriendly"), 3);
+});
+
+test("CloudMatch claim keeps the session-stable appLaunchMode over live settings", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const originalLog = console.log;
+  console.warn = () => {};
+  console.log = () => {};
+
+  const claimBodies: Array<{ sessionRequestData: { appLaunchMode?: number } }> = [];
+
+  const readySessionResponse = JSON.stringify({
+    requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
+    session: {
+      sessionId: "sess-1",
+      status: 3,
+      sessionControlInfo: { ip: "203.0.113.10" },
+      connectionInfo: [
+        { ip: "203.0.113.10", port: 443, usage: 14, resourcePath: "/nvst/" },
+        { ip: "203.0.113.10", port: 49006, usage: 2 },
+      ],
+      iceServerConfiguration: {
+        iceServers: [{ urls: "stun:127.0.0.1:19302" }],
+      },
+      sessionRequestData: {},
+    },
+  });
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    if (url.startsWith("https://203.0.113.10/v2/session/sess-1")) {
+      if (init?.method === "PUT") {
+        claimBodies.push(JSON.parse(String(init.body)));
+      }
+      return new Response(readySessionResponse, { status: 200 });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    // Session created as gamepad-friendly (wire 2) must stay gamepad-friendly on
+    // resume even if the live settings toggles now say "default".
+    await claimSession({
+      token: "token",
+      sessionId: "sess-1",
+      serverIp: "203.0.113.10",
+      appId: "1001",
+      appLaunchMode: 2,
+      settings: makeSettings(),
+    });
+
+    // Without a session-stable value the claim falls back to the settings-derived mode.
+    await claimSession({
+      token: "token",
+      sessionId: "sess-1",
+      serverIp: "203.0.113.10",
+      appId: "1001",
+      settings: makeSettings({ appLaunchMode: "gamepadFriendly" }),
+    });
+
+    await claimSession({
+      token: "token",
+      sessionId: "sess-1",
+      serverIp: "203.0.113.10",
+      appId: "1001",
+      settings: makeSettings(),
+    });
+
+    assert.equal(claimBodies.length, 3);
+    assert.equal(claimBodies[0].sessionRequestData.appLaunchMode, 2);
+    assert.equal(claimBodies[1].sessionRequestData.appLaunchMode, 2);
+    assert.equal(claimBodies[2].sessionRequestData.appLaunchMode, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+    console.log = originalLog;
+  }
 });

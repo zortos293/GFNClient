@@ -2510,6 +2510,7 @@ export function App(): JSX.Element {
           sessionId: existingSession.sessionId,
           ...resolveResumeIdentity(existingSession.sessionId),
           appId: resolveSessionClaimAppId(existingSession),
+          appLaunchMode: existingSession.appLaunchMode,
           settings: streamSettings,
         });
 
@@ -2662,6 +2663,7 @@ export function App(): JSX.Element {
             ...resolveResumeIdentity(candidate.sessionId),
             recoveryMode: true,
             appId: resolveSessionClaimAppId(candidate),
+            appLaunchMode: candidate.appLaunchMode,
             settings: recoveryStreamSettings,
           });
           if (!isRecoveryGenerationCurrent(recoveryGeneration)) {

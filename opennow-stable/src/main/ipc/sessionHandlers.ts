@@ -97,6 +97,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
               sessionId: readyCandidate.sessionId,
               serverIp: readyCandidate.serverIp!,
               appId: resolvedPayload.appId,
+              appLaunchMode: readyCandidate.appLaunchMode,
               settings: resolvedPayload.settings,
             });
           }

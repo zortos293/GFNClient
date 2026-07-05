@@ -1402,6 +1402,14 @@ async function fetchActiveSessionsFromBase(
       // Extract appId from sessionRequestData
       const appId = s.sessionRequestData?.appId ? Number(s.sessionRequestData.appId) : 0;
 
+      // The server echoes the appLaunchMode the session was created with; keep it
+      // so claim/resume requests can stay session-stable.
+      const rawAppLaunchMode = s.sessionRequestData?.appLaunchMode;
+      const appLaunchMode =
+        typeof rawAppLaunchMode === "number" && Number.isFinite(rawAppLaunchMode)
+          ? rawAppLaunchMode
+          : undefined;
+
       // Prefer the real server IP from connectionInfo[usage=14] — this is the actual game server,
       // not the zone load balancer. sessionControlInfo.ip is the zone LB hostname and cannot
       // accept claim (PUT) requests, which causes HTTP 400.
@@ -1430,6 +1438,7 @@ async function fetchActiveSessionsFromBase(
       return {
         sessionId: s.sessionId,
         appId,
+        appLaunchMode,
         gpuType: s.gpuType,
         status: s.status,
         streamingBaseUrl: base,
@@ -1454,7 +1463,12 @@ function formatErrorForLog(error: unknown): string {
 /**
  * Build claim/resume request payload
  */
-function buildClaimRequestBody(sessionId: string, appId: string, settings: StreamSettings): unknown {
+function buildClaimRequestBody(
+  sessionId: string,
+  appId: string,
+  settings: StreamSettings,
+  sessionAppLaunchMode?: number,
+): unknown {
   // For RESUME claims, we must NOT attempt to renegotiate streaming parameters.
   // The session is already configured on the server side. Sending different fps, resolution,
   // codec, etc. causes HTTP 400 from the server because those parameters are immutable for
@@ -1491,7 +1505,9 @@ function buildClaimRequestBody(sessionId: string, appId: string, settings: Strea
       parentSessionId: null,
       appId: parseInt(appId, 10),
       streamerVersion: 1,
-      appLaunchMode: appLaunchModeWireValue(settings.appLaunchMode),
+      // Resume must not renegotiate session parameters: prefer the wire value the
+      // session was created with over whatever the UI toggles currently say.
+      appLaunchMode: sessionAppLaunchMode ?? appLaunchModeWireValue(settings.appLaunchMode),
       sdkVersion: "1.0",
       enhancedStreamMode: 1,
       useOps: true,
@@ -1613,7 +1629,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   // Only send the RESUME claim PUT if the session is in a paused state (status 2 or 3).
   // For status=1 (still launching) we bypass the claim and fall through to the polling loop.
   if (preClaimStatus !== 1 && shouldSendResumeClaim) {
-    const payload = buildClaimRequestBody(input.sessionId, appId, settings);
+    const payload = buildClaimRequestBody(input.sessionId, appId, settings, input.appLaunchMode);
 
     const headers = buildGfnCloudMatchClaimHeaders({ token: input.token, clientId, deviceId });
 

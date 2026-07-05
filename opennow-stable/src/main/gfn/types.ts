@@ -190,6 +190,7 @@ export interface SessionEntry {
   gpuType?: string;
   sessionRequestData?: {
     appId?: string;
+    appLaunchMode?: number;
     [key: string]: unknown;
   };
   sessionControlInfo?: {

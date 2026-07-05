@@ -1132,6 +1132,8 @@ export interface SessionInfo {
 export interface ActiveSessionInfo {
   sessionId: string;
   appId: number;
+  /** Wire appLaunchMode the session was created with, as echoed by the server */
+  appLaunchMode?: number;
   gpuType?: string;
   status: number;
   streamingBaseUrl?: string;
@@ -1150,6 +1152,8 @@ export interface SessionClaimRequest {
   clientId?: string;
   deviceId?: string;
   appId?: string;
+  /** Session-stable wire appLaunchMode captured when the session was created */
+  appLaunchMode?: number;
   settings?: StreamSettings;
   /** True when claim is triggered by automatic reconnect recovery logic */
   recoveryMode?: boolean;

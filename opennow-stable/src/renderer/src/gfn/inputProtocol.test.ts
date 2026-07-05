@@ -21,6 +21,7 @@ import {
   INPUT_KEY_UP,
   INPUT_LOCK_KEYS_SYNC,
   INPUT_MOUSE_BUTTON_DOWN,
+  INPUT_MOUSE_ABS,
   INPUT_MOUSE_REL,
   INPUT_MOUSE_WHEEL,
   INPUT_TEXT,
@@ -261,6 +262,48 @@ test("encodes mouse move with v3 cursor wrapper and inner payload", () => {
   assert.equal(payload.getBigUint64(14, false), 99n);
 });
 
+test("encodes absolute mouse position matching the official 26-byte layout", () => {
+  const encoder = new InputEncoder();
+  const bytes = encoder.encodeMouseAbsolute({
+    x: 321.4,
+    y: 179.6,
+    width: 1280,
+    height: 720,
+    timestampUs: 77n,
+  });
+  assert.equal(bytes.byteLength, 26);
+  const payload = view(bytes);
+
+  assert.equal(payload.getUint32(0, true), INPUT_MOUSE_ABS);
+  assert.equal(payload.getUint16(4, false), 321);
+  assert.equal(payload.getUint16(6, false), 180);
+  assert.equal(payload.getUint16(8, false), 0);
+  assert.equal(payload.getUint16(10, false), 1280);
+  assert.equal(payload.getUint16(12, false), 720);
+  assert.equal(payload.getUint32(14, false), 0);
+  assert.equal(payload.getBigUint64(18, false), 77n);
+});
+
+test("encodes absolute mouse position with v3 cursor wrapper and clamped coords", () => {
+  const encoder = new InputEncoder();
+  encoder.setProtocolVersion(3);
+  const bytes = encoder.encodeMouseAbsolute({
+    x: -5,
+    y: 99999,
+    width: 1920,
+    height: 1080,
+    timestampUs: 42n,
+  });
+  const payload = assertV3BatchWrapper(bytes, 0x21, 10, 12, 26);
+
+  assert.equal(payload.getUint32(0, true), INPUT_MOUSE_ABS);
+  assert.equal(payload.getUint16(4, false), 0);
+  assert.equal(payload.getUint16(6, false), 65535);
+  assert.equal(payload.getUint16(10, false), 1920);
+  assert.equal(payload.getUint16(12, false), 1080);
+  assert.equal(payload.getBigUint64(18, false), 42n);
+});
+
 test("encodes mouse button and wheel with v3 single-event wrapper", () => {
   const encoder = new InputEncoder();
   encoder.setProtocolVersion(3);
@@ -379,11 +422,12 @@ test("encodes gamepad state with reliable and partially reliable v3 wrappers", (
   }
 });
 
-test("partially reliable HID helpers only mark mouse-relative input eligible", () => {
+test("partially reliable HID helpers only mark mouse move input eligible", () => {
   assert.equal(partiallyReliableHidMaskForInputType(INPUT_MOUSE_REL), 1 << INPUT_MOUSE_REL);
   assert.equal(partiallyReliableHidMaskForInputType(-1), 0);
   assert.equal(partiallyReliableHidMaskForInputType(32), 0);
   assert.equal(isPartiallyReliableHidTransferEligible(INPUT_MOUSE_REL), true);
+  assert.equal(isPartiallyReliableHidTransferEligible(INPUT_MOUSE_ABS), true);
   assert.equal(isPartiallyReliableHidTransferEligible(INPUT_MOUSE_BUTTON_DOWN), false);
   assert.equal(isPartiallyReliableHidTransferEligible(INPUT_GAMEPAD), false);
 });

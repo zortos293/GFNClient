@@ -629,6 +629,15 @@ function webRtcSessionMetadata(width: number, height: number): Array<{ key: stri
   ];
 }
 
+export function shouldEnableInGameSettingsPersistence(
+  input: Pick<SessionCreateRequest, "enablePersistingInGameSettings" | "supportsInGameSettingsPersistence">,
+): boolean {
+  return (
+    input.enablePersistingInGameSettings === true &&
+    input.supportsInGameSettingsPersistence === true
+  );
+}
+
 function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: string): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
@@ -696,9 +705,7 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
       secureRTSPSupported: false,
       partnerCustomData: "",
       accountLinked,
-      enablePersistingInGameSettings:
-        input.enablePersistingInGameSettings === true &&
-        input.supportsInGameSettingsPersistence === true,
+      enablePersistingInGameSettings: shouldEnableInGameSettingsPersistence(input),
       userAge: 26,
       requestedStreamingFeatures: buildRequestedStreamingFeatures(
         input.settings,
@@ -1146,6 +1153,11 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const deviceId = getStableDeviceId();
 
   const body = buildSessionRequestBody(input, deviceId);
+  console.log(
+    `[CloudMatch] createSession in-game settings persistence: user=${input.enablePersistingInGameSettings === true}, ` +
+    `gameSupport=${input.supportsInGameSettingsPersistence === true}, ` +
+    `sent=${body.sessionRequestData.enablePersistingInGameSettings}`,
+  );
 
   const requestedBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   const base = await resolveCreateSessionBase(

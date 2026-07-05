@@ -8360,6 +8360,14 @@ button.game-card-store-chip.owned.active:hover {
   color: #f8b4b4;
 }
 
+.sload-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* Cancel */
 .sload-cancel {
   display: flex;
@@ -8386,6 +8394,17 @@ button.game-card-store-chip.owned.active:hover {
 
 .sload-cancel:active {
   transform: translateY(0);
+}
+
+.sload-cancel--primary {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-c));
+  color: var(--ink);
+}
+
+.sload-cancel--primary:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-c));
 }
 
 

@@ -55,6 +55,7 @@ interface SettingsPageProps {
   onRunCodecTest: () => Promise<void>;
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onClose: () => void;
+  focusSection?: SettingsSectionId;
   /** Called when the user clicks "What's new" in the About section */
   onOpenWhatsNew?: () => void;
 }
@@ -701,7 +702,7 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose, onOpenWhatsNew }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose, focusSection, onOpenWhatsNew }: SettingsPageProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
@@ -812,6 +813,13 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [resolutionDropdownOpen, setResolutionDropdownOpen] = useState(false);
   const resolutionDropdownRef = useRef<HTMLDivElement | null>(null);
   const [settingsSearch, setSettingsSearch] = useState("");
+
+  useEffect(() => {
+    if (!focusSection) return;
+    setActiveSection(focusSection);
+    setSettingsSearch("");
+  }, [focusSection]);
+
   const [codecAdvancedOpen, setCodecAdvancedOpen] = useState(false);
   const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
   const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);

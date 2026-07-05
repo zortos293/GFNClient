@@ -73,7 +73,7 @@ import {
   parseNumericId,
   sortLibraryGames,
 } from "./lib/gameCatalog";
-import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./lib/launchOwnership";
+import { chooseAccountLinked, getEpicOwnershipLaunchError, resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
 import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
 import {
   mergePolledSessionState,
@@ -1141,6 +1141,39 @@ export function App(): JSX.Element {
       return null;
     }
   }, [authSession, effectiveStreamingBaseUrl, subscriptionInfo]);
+
+  const resolveInstallToPlayStreamingBaseUrl = useCallback(async (
+    game: GameInfo,
+    subscription: SubscriptionInfo | null,
+    token: string | undefined,
+  ): Promise<string | undefined> => {
+    let availableRegions: StreamRegion[] = regions;
+    if (availableRegions.length === 0) {
+      try {
+        availableRegions = await window.openNow.getRegions({ token });
+        if (availableRegions.length > 0) {
+          setRegions(availableRegions);
+        }
+      } catch (error) {
+        console.warn("[I2P] Failed to load regions for persistent storage routing:", error);
+      }
+    }
+
+    const storageRegionUrl = resolveInstallToPlayStorageRegionUrl(game, subscription, availableRegions);
+    if (storageRegionUrl) {
+      console.log("[I2P] Routing install-to-play launch to persistent storage region", {
+        title: game.title,
+        storageRegion: subscription?.storageAddon?.regionName,
+        storageRegionUrl,
+      });
+    } else if (game.playType === "INSTALL_TO_PLAY") {
+      console.warn("[I2P] No matching persistent storage region found; using selected/default region", {
+        title: game.title,
+        storageRegion: subscription?.storageAddon?.regionName,
+      });
+    }
+    return storageRegionUrl ?? undefined;
+  }, [regions]);
 
   const {
     activeQueueAd,
@@ -3380,12 +3413,20 @@ export function App(): JSX.Element {
       setStreamingGame(matchedGameContext.game);
       setStreamingStore(launchVariant?.store ?? null);
 
+      const launchSubscription = await resolveSubscriptionInfoForLaunch();
+      const streamSettings = buildCurrentStreamSettings(launchSubscription);
+      const i2pStorageRegionBaseUrl = await resolveInstallToPlayStreamingBaseUrl(
+        matchedGameContext.game,
+        launchSubscription,
+        token || undefined,
+      );
+      const launchStreamingBaseUrl = i2pStorageRegionBaseUrl ?? options?.streamingBaseUrl ?? effectiveStreamingBaseUrl;
       let existingSessionStrategy: ExistingSessionStrategy | undefined;
 
       // Check for active sessions first
       if (token) {
         try {
-          const activeSessions = await window.openNow.getActiveSessions(token, effectiveStreamingBaseUrl);
+          const activeSessions = await window.openNow.getActiveSessions(token, launchStreamingBaseUrl);
           if (activeSessions.length > 0) {
             // Only claim sessions that are already paused/ready (status 2 or 3).
             // Status=1 sessions are still in queue/setup; sending a RESUME claim
@@ -3423,13 +3464,11 @@ export function App(): JSX.Element {
       }
 
       const sessionProxyUrl = activeSessionProxyUrl;
-      const launchSubscription = await resolveSubscriptionInfoForLaunch();
-      const streamSettings = buildCurrentStreamSettings(launchSubscription);
 
       // Create new session
       const newSession = await window.openNow.createSession({
         token: token || undefined,
-        streamingBaseUrl: options?.streamingBaseUrl || effectiveStreamingBaseUrl,
+        streamingBaseUrl: launchStreamingBaseUrl,
         appId,
         internalTitle: game.title,
         accountLinked: chooseAccountLinked(game, selectedVariant),
@@ -3589,6 +3628,7 @@ export function App(): JSX.Element {
     resetSignalingRecoveryState,
     resetLaunchRuntime,
     resetStatsOverlayToPreference,
+    resolveInstallToPlayStreamingBaseUrl,
     resolveSubscriptionInfoForLaunch,
     selectedProvider,
     settings.enablePersistingInGameSettings,

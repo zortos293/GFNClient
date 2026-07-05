@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { GameInfo, GameVariant } from "@shared/gfn";
-import { chooseAccountLinked, getEpicOwnershipLaunchError } from "./launchOwnership";
+import { chooseAccountLinked, getEpicOwnershipLaunchError, resolveInstallToPlayStorageRegionUrl } from "./launchOwnership";
 
 function makeVariant(overrides: Partial<GameVariant> = {}): GameVariant {
   return {
@@ -76,5 +76,28 @@ test("never marks install-to-play titles as account linked", () => {
       makeVariant({ store: "Steam", libraryStatus: "IN_LIBRARY" }),
     ),
     false,
+  );
+});
+
+test("routes install-to-play launches to the persistent storage metro region", () => {
+  assert.equal(
+    resolveInstallToPlayStorageRegionUrl(
+      makeGame([], { playType: "INSTALL_TO_PLAY" }),
+      { storageAddon: { type: "PERMANENT_STORAGE", regionName: "Netherlands North" } },
+      [
+        { name: "Netherlands South", url: "https://eu-netherlands-south.cloudmatchbeta.nvidiagrid.net/" },
+        { name: "Netherlands North", url: "https://eu-netherlands-north.cloudmatchbeta.nvidiagrid.net/" },
+      ],
+    ),
+    "https://eu-netherlands-north.cloudmatchbeta.nvidiagrid.net/",
+  );
+
+  assert.equal(
+    resolveInstallToPlayStorageRegionUrl(
+      makeGame([], { playType: "READY_TO_PLAY" }),
+      { storageAddon: { type: "PERMANENT_STORAGE", regionName: "Netherlands North" } },
+      [{ name: "Netherlands North", url: "https://eu-netherlands-north.cloudmatchbeta.nvidiagrid.net/" }],
+    ),
+    null,
   );
 });

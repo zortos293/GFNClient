@@ -903,8 +903,29 @@ export interface GameVariant {
 
 export const OWNED_LIBRARY_STATUSES = ["MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"] as const;
 
+const GAME_STORE_ALIASES: Record<string, string> = {
+  BATTLE_NET: "BATTLE_NET",
+  BATTLENET: "BATTLE_NET",
+  EA: "EA_APP",
+  EGS: "EPIC_GAMES_STORE",
+  EPIC: "EPIC_GAMES_STORE",
+  GAIJIN_NET: "GAIJIN",
+  GOG_COM: "GOG",
+  MICROSOFT: "XBOX",
+  MICROSOFT_STORE: "XBOX",
+  ORIGIN: "EA_APP",
+  UBISOFT: "UPLAY",
+  UBISOFT_CONNECT: "UPLAY",
+  XBOX_GAME_PASS: "XBOX",
+};
+
 export function normalizeGameStore(store: string): string {
-  return store.toUpperCase().replace(/[\s-]+/g, "_");
+  const key = store
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return GAME_STORE_ALIASES[key] ?? key;
 }
 
 export function isOwnedLibraryStatus(status?: string): boolean {
@@ -964,7 +985,7 @@ export function isGameInLibrary(game: Pick<GameInfo, "variants">): boolean {
 
 export function isEpicStore(store: string): boolean {
   const key = normalizeGameStore(store);
-  return key === "EPIC_GAMES_STORE" || key === "EPIC" || key === "EGS";
+  return key === "EPIC_GAMES_STORE";
 }
 
 export interface CatalogFilterOption {

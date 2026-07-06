@@ -76,7 +76,7 @@ test("keeps active and owned states separate for the selected store", () => {
     "epic",
   );
 
-  const epicOption = options.find((option) => option.storeKey === "EGS");
+  const epicOption = options.find((option) => option.storeKey === "EPIC_GAMES_STORE");
   const steamOption = options.find((option) => option.storeKey === "STEAM");
 
   assert.ok(epicOption);
@@ -85,6 +85,31 @@ test("keeps active and owned states separate for the selected store", () => {
   assert.equal(epicOption.isOwned, false);
   assert.equal(steamOption.isActive, false);
   assert.equal(steamOption.isOwned, true);
+});
+
+test("collapses store aliases that render as the same store", () => {
+  const options = getStoreOptions(
+    makeGame([
+      makeVariant({ id: "epic", store: "EPIC", libraryStatus: "NOT_OWNED" }),
+      makeVariant({ id: "egs", store: "EGS", libraryStatus: "PLATFORM_SYNC" }),
+      makeVariant({ id: "epic-games-store", store: "Epic Games Store", libraryStatus: "NOT_OWNED" }),
+      makeVariant({ id: "steam", store: "Steam", libraryStatus: "NOT_OWNED" }),
+    ]),
+    "epic-games-store",
+  );
+
+  assert.deepEqual(
+    options.map((option) => ({
+      storeKey: option.storeKey,
+      variantId: option.variantId,
+      isOwned: option.isOwned,
+      isActive: option.isActive,
+    })),
+    [
+      { storeKey: "EPIC_GAMES_STORE", variantId: "epic-games-store", isOwned: true, isActive: true },
+      { storeKey: "STEAM", variantId: "steam", isOwned: false, isActive: false },
+    ],
+  );
 });
 
 test("keeps unknown and third-party stores selectable for default icon fallback", () => {

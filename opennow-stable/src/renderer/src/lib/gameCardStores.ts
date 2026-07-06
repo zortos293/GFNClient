@@ -1,5 +1,6 @@
 import type { GameInfo, GameVariant } from "@shared/gfn";
 import { isOwnedVariant, normalizeGameStore } from "@shared/gfn";
+import { getResolvedSelectedVariantId } from "./gameCardVariants";
 
 export interface StoreOption {
   storeKey: string;
@@ -17,14 +18,6 @@ function normalizeStoreOptionKey(store: string): string | null {
 
   const key = normalizeGameStore(trimmed);
   return key === "NONE" ? null : key;
-}
-
-function getResolvedSelectedVariantId(game: GameInfo, selectedVariantId?: string): string | undefined {
-  if (selectedVariantId && game.variants.some((variant) => variant.id === selectedVariantId)) {
-    return selectedVariantId;
-  }
-
-  return game.variants[game.selectedVariantIndex]?.id ?? game.variants[0]?.id;
 }
 
 function getVariantForStore(variants: GameVariant[], activeVariantId?: string): GameVariant | undefined {

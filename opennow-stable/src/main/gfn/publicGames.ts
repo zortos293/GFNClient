@@ -14,14 +14,11 @@ export interface RawPublicGame {
 
 const PRIMARY_CATALOG_STORE_KEYS = new Set([
   "STEAM",
-  "EPIC",
   "EPIC_GAMES_STORE",
-  "EGS",
   "XBOX",
-  "XBOX_GAME_PASS",
-  "MICROSOFT",
-  "MICROSOFT_STORE",
 ]);
+
+const PUBLIC_PLACEHOLDER_STORE_KEYS = new Set(["UNKNOWN"]);
 
 export function inferPublicGameStore(item: RawPublicGame): string {
   const explicitStore = item.store?.trim();
@@ -95,9 +92,13 @@ function mergeSearchText(left?: string, right?: string): string | undefined {
 
 function getSupplementalPublicVariants(game: GameInfo, publicGame: GameInfo): GameVariant[] {
   const existingStores = new Set(game.variants.map((variant) => normalizeGameStore(variant.store)));
+  const hasCatalogStoreVariant = game.variants.some((variant) => variant.store.trim().length > 0);
 
   return publicGame.variants.filter((variant) => {
     const storeKey = normalizeGameStore(variant.store);
+    if (hasCatalogStoreVariant && PUBLIC_PLACEHOLDER_STORE_KEYS.has(storeKey)) {
+      return false;
+    }
     return !PRIMARY_CATALOG_STORE_KEYS.has(storeKey) && !existingStores.has(storeKey);
   });
 }

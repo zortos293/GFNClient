@@ -87,6 +87,35 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun streamRendererAspectRatioIgnoresStartupPlaceholderResolution() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9")
+
+        assertEquals(1680f / 720f, streamRendererAspectRatio(settings, "2x2"), 0.0001f)
+    }
+
+    @Test
+    fun streamRendererAspectRatioKeepsRequestedAspectForUnexpectedFallbackStats() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9")
+
+        assertEquals(1680f / 720f, streamRendererAspectRatio(settings, "1366x768"), 0.0001f)
+    }
+
+    @Test
+    fun streamRendererAspectRatioUsesServerNegotiatedFallbackResolution() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9")
+
+        assertEquals(
+            1366f / 768f,
+            streamRendererAspectRatio(
+                settings = settings,
+                decodedResolution = "1366x768",
+                serverNegotiatedResolution = "1366x768",
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test
     fun streamResolutionPixelsMaps1080pTierToUltrawideMode() {
         val settings = StreamSettings(resolution = "1920x1080", aspectRatio = "21:9")
 

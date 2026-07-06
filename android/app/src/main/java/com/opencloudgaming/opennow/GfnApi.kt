@@ -121,8 +121,6 @@ private const val CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000L
 private val READY_SESSION_STATUSES = setOf(2, 3)
 private const val INVALID_SESSION_PROXY_MESSAGE =
     "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port."
-private const val DEFAULT_REMOTE_CONTROLLERS_BITMAP = 1
-private const val DEFAULT_SUPPORTED_CONTROLLER_TYPE = 2
 
 internal class SessionClaimNotReadyException(
     val latestSession: SessionInfo?,
@@ -282,12 +280,10 @@ internal fun buildMinimalClaimRequestBody(appId: String, deviceId: String, setti
         put("data", "RESUME")
         putJsonObject("sessionRequestData") {
             put("audioMode", 2)
-            put("remoteControllersBitmap", DEFAULT_REMOTE_CONTROLLERS_BITMAP)
+            put("remoteControllersBitmap", 0)
             put("sdrHdrMode", if (profile?.hdrEnabled == true) 1 else 0)
             put("networkTestSessionId", JsonNull)
-            putJsonArray("availableSupportedControllers") {
-                add(JsonPrimitive(DEFAULT_SUPPORTED_CONTROLLER_TYPE))
-            }
+            putJsonArray("availableSupportedControllers") {}
             put("clientVersion", "30.0")
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
@@ -2332,9 +2328,7 @@ class GfnSessionRepository(
             putJsonObject("sessionRequestData") {
                 put("appId", appId)
                 if (internalTitle.isBlank()) put("internalTitle", JsonNull) else put("internalTitle", internalTitle)
-                putJsonArray("availableSupportedControllers") {
-                    add(JsonPrimitive(DEFAULT_SUPPORTED_CONTROLLER_TYPE))
-                }
+                putJsonArray("availableSupportedControllers") {}
                 put("networkTestSessionId", JsonNull)
                 put("parentSessionId", JsonNull)
                 put("clientIdentification", "GFN-PC")
@@ -2352,7 +2346,7 @@ class GfnSessionRepository(
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)
-                put("remoteControllersBitmap", DEFAULT_REMOTE_CONTROLLERS_BITMAP)
+                put("remoteControllersBitmap", 0)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
                 put("enhancedStreamMode", 1)
                 put("appLaunchMode", 1)

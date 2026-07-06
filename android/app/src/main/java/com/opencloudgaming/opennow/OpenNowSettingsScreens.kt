@@ -85,7 +85,7 @@ private enum class SettingsCategory(
     Input("Input", "Mouse, keyboard, touch controls, rumble", R.drawable.ic_tab_library),
     Interface("Interface", "Color, cards, stats, controller UI", R.drawable.ic_tab_store),
     Account("Account", "Sign-in, storage, connected stores", R.drawable.ic_tab_store),
-    Advanced("Advanced", "Diagnostics, debug logs, nerd tools", R.drawable.ic_search),
+    Advanced("Advanced", "Diagnostics, debug logs, advanced tools", R.drawable.ic_search),
     About("About", "Version, credits, and support", R.drawable.ic_tab_settings),
 }
 
@@ -166,7 +166,7 @@ internal fun SettingsScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val showSearch = searchRequested || searchQuery.isNotBlank()
-    val categories = remember(state.settings.nerdMode) { settingsCategories(state.settings.nerdMode) }
+    val categories = remember { settingsCategories() }
     LaunchedEffect(searchRequested) {
         if (searchRequested) {
             delay(90)
@@ -175,7 +175,7 @@ internal fun SettingsScreen(
         }
     }
     LaunchedEffect(categories) {
-        if (selectedCategory != null && selectedCategory !in settingsDetailCategories(state.settings.nerdMode)) {
+        if (selectedCategory != null && selectedCategory !in settingsDetailCategories()) {
             selectedCategory = null
         }
     }
@@ -615,14 +615,12 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.Account, searchQuery, "Account", "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription") {
                 AccountSettingsPanel(state = state, viewModel = viewModel)
             }
-    if (settings.nerdMode) {
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
                     CodecDiagnosticsPanel(state.codecReport)
                 }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Debug Logs", "debug", "logs", "logcat", "events", "export", "json", "cloudmatch", "queue", "stream") {
                     DebugLogsPanel(state = state, viewModel = viewModel)
                 }
-    }
     CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
                 AppVersionPanel()
                 OpenNowGitHubPanel()
@@ -845,14 +843,14 @@ private fun CategorySettingsSection(
     }
 }
 
-private fun settingsCategories(nerdMode: Boolean): List<SettingsCategory> =
+private fun settingsCategories(): List<SettingsCategory> =
     buildList {
         add(SettingsCategory.General)
         add(SettingsCategory.Stream)
         add(SettingsCategory.Input)
         add(SettingsCategory.Interface)
-        if (nerdMode) add(SettingsCategory.Advanced)
+        add(SettingsCategory.Advanced)
     }
 
-private fun settingsDetailCategories(nerdMode: Boolean): List<SettingsCategory> =
-    settingsCategories(nerdMode) + SettingsCategory.Account
+private fun settingsDetailCategories(): List<SettingsCategory> =
+    settingsCategories() + SettingsCategory.Account

@@ -39,7 +39,7 @@ internal class AndroidNerdAudioController(context: Context) {
         if (!enabled) return
 
         val descriptor = runCatching {
-            appContext.resources.openRawResourceFd(R.raw.nerd_stream_intro)
+            appContext.resources.openRawResourceFd(musicCueResource(purpose))
         }.getOrNull() ?: return
 
         val player = MediaPlayer()
@@ -147,6 +147,12 @@ internal class AndroidNerdAudioController(context: Context) {
         Intro,
         QueueReady,
     }
+
+    private fun musicCueResource(purpose: MusicCuePurpose): Int =
+        when (purpose) {
+            MusicCuePurpose.Intro -> R.raw.nerd_stream_intro
+            MusicCuePurpose.QueueReady -> R.raw.nerd_queue_ready
+        }
 
     private companion object {
         private const val MUSIC_CUE_VOLUME = 0.20f

@@ -41,8 +41,6 @@ class GfnApiTest {
 
         assertEquals(2, body.getValue("action").jsonPrimitive.int)
         assertEquals(123, sessionRequestData.getValue("appId").jsonPrimitive.int)
-        assertEquals(1, sessionRequestData.getValue("remoteControllersBitmap").jsonPrimitive.int)
-        assertEquals(2, sessionRequestData.getValue("availableSupportedControllers").jsonArray.single().jsonPrimitive.int)
         assertFalse(sessionRequestData.containsKey("clientRequestMonitorSettings"))
         assertFalse(sessionRequestData.containsKey("requestedStreamingFeatures"))
         assertTrue(metadata.none { item ->
@@ -84,8 +82,6 @@ class GfnApiTest {
             }?.let { OpenNowJson.parseToJsonElement(it).jsonObject }
 
             assertEquals(streamSettingsSessionSignature(settings), signature)
-            assertEquals(1, sessionRequestData.getValue("remoteControllersBitmap").jsonPrimitive.int)
-            assertEquals(2, sessionRequestData.getValue("availableSupportedControllers").jsonArray.single().jsonPrimitive.int)
             assertEquals(pixels.first, monitor.getValue("widthInPixels").jsonPrimitive.int)
             assertEquals(pixels.second, monitor.getValue("heightInPixels").jsonPrimitive.int)
             assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)

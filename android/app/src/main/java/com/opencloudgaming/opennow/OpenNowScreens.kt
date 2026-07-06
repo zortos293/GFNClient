@@ -204,6 +204,7 @@ import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 import java.net.URL
+import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.floor
 import kotlin.math.roundToInt
@@ -2952,6 +2953,7 @@ private fun GameDetailsLandscapeContent(
     val description = gameDescriptionForDetails(game)
     val context = LocalContext.current
     val sideScrollState = rememberScrollState()
+    val detailsSpacing = if (shortHeight) 8.dp else 10.dp
     Row(
         Modifier
             .fillMaxSize()
@@ -3009,21 +3011,36 @@ private fun GameDetailsLandscapeContent(
         Column(
             Modifier
                 .weight(1.08f)
-                .fillMaxHeight()
-                .then(if (imageActionsOverlay) Modifier.verticalScroll(sideScrollState) else Modifier),
-            verticalArrangement = Arrangement.spacedBy(if (shortHeight) 8.dp else 10.dp),
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(detailsSpacing),
         ) {
-            OwnershipStatusRow(game = game, compact = true)
-            GameGenreChips(game = game, compact = true)
-            GameDescriptionDisclosure(description = description, compact = true)
-            CompactDetailRows(game)
-            LaunchOptionsList(
-                game = game,
-                defaultVariantId = defaultVariantId,
-                compact = true,
-            )
-            if (!imageActionsOverlay) {
-                Spacer(Modifier.weight(1f))
+            if (imageActionsOverlay) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(sideScrollState),
+                    verticalArrangement = Arrangement.spacedBy(detailsSpacing),
+                ) {
+                    GameDetailsCompactInfoContent(
+                        game = game,
+                        defaultVariantId = defaultVariantId,
+                        description = description,
+                    )
+                }
+            } else {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(sideScrollState),
+                    verticalArrangement = Arrangement.spacedBy(detailsSpacing),
+                ) {
+                    GameDetailsCompactInfoContent(
+                        game = game,
+                        defaultVariantId = defaultVariantId,
+                        description = description,
+                    )
+                }
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -3049,6 +3066,23 @@ private fun GameDetailsLandscapeContent(
             }
         }
     }
+}
+
+@Composable
+private fun GameDetailsCompactInfoContent(
+    game: GameInfo,
+    defaultVariantId: String?,
+    description: String?,
+) {
+    OwnershipStatusRow(game = game, compact = true)
+    GameGenreChips(game = game, compact = true)
+    GameDescriptionDisclosure(description = description, compact = true)
+    CompactDetailRows(game)
+    LaunchOptionsList(
+        game = game,
+        defaultVariantId = defaultVariantId,
+        compact = true,
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -4151,6 +4185,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 client = client,
                 settings = streamSettings,
                 decodedResolution = streamStats.resolution,
+                serverNegotiatedResolution = session.negotiatedStreamProfile?.resolution,
                 hideExternalMousePointer = externalMousePassthroughActive,
                 touchMouseEnabled = state.settings.androidTouch.mousePad,
                 externalMouseRoot = activity?.window?.decorView,
@@ -4449,6 +4484,7 @@ private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
     decodedResolution: String?,
+    serverNegotiatedResolution: String?,
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
     externalMouseRoot: android.view.View?,
@@ -4463,8 +4499,8 @@ private fun StreamVideoSurface(
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var zoomOffset by remember { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
-    val streamAspectRatio = remember(decodedResolution, settings.resolution, settings.aspectRatio) {
-        streamRendererAspectRatio(settings, decodedResolution)
+    val streamAspectRatio = remember(decodedResolution, serverNegotiatedResolution, settings.resolution, settings.aspectRatio) {
+        streamRendererAspectRatio(settings, decodedResolution, serverNegotiatedResolution)
     }
     val viewportAspectRatio = remember(viewportSize) {
         if (viewportSize.width > 0 && viewportSize.height > 0) {
@@ -4589,12 +4625,47 @@ private fun StreamVideoSurface(
     }
 }
 
-private fun streamRendererAspectRatio(settings: StreamSettings, decodedResolution: String?): Float {
-    val (width, height) = parseResolutionPixelsOrNull(decodedResolution)
-        ?: streamResolutionPixels(settings)
+internal fun streamRendererAspectRatio(
+    settings: StreamSettings,
+    decodedResolution: String?,
+    serverNegotiatedResolution: String? = null,
+): Float {
+    val expectedPixels = streamResolutionPixels(settings)
+    val expectedAspectRatio = streamAspectRatioForPixels(expectedPixels)
+    val decodedPixels = parseResolutionPixelsOrNull(decodedResolution)
+        ?.takeIf(::isStableDecodedStreamResolution)
+        ?: return expectedAspectRatio
+    val decodedAspectRatio = streamAspectRatioForPixels(decodedPixels)
+    val negotiatedPixels = parseResolutionPixelsOrNull(serverNegotiatedResolution)
+    return if (
+        decodedPixels == expectedPixels ||
+        decodedPixels == negotiatedPixels ||
+        streamAspectRatiosClose(decodedAspectRatio, expectedAspectRatio)
+    ) {
+        decodedAspectRatio
+    } else {
+        expectedAspectRatio
+    }
+}
+
+private fun streamAspectRatioForPixels(pixels: Pair<Int, Int>): Float {
+    val (width, height) = pixels
     if (width <= 0 || height <= 0) return 16f / 9f
     return width.toFloat() / height.toFloat()
 }
+
+private fun isStableDecodedStreamResolution(pixels: Pair<Int, Int>): Boolean =
+    pixels.first >= MIN_STABLE_DECODED_STREAM_WIDTH_PX &&
+        pixels.second >= MIN_STABLE_DECODED_STREAM_HEIGHT_PX
+
+private fun streamAspectRatiosClose(first: Float, second: Float): Boolean {
+    val baseline = maxOf(second, 0.001f)
+    return abs(first - second) / baseline <= STREAM_RENDERER_ASPECT_TOLERANCE
+}
+
+private const val MIN_STABLE_DECODED_STREAM_WIDTH_PX = 320
+private const val MIN_STABLE_DECODED_STREAM_HEIGHT_PX = 180
+private const val STREAM_RENDERER_ASPECT_TOLERANCE = 0.08f
 
 private fun clampStreamZoomOffset(offset: Offset, zoomScale: Float, viewportSize: IntSize): Offset {
     if (zoomScale <= 1.001f || viewportSize.width <= 0 || viewportSize.height <= 0) return Offset.Zero

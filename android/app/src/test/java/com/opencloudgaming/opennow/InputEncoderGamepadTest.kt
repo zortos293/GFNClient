@@ -38,6 +38,10 @@ class InputEncoderGamepadTest {
         assertEquals(GamepadButtonMapping.GUIDE, GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_BUTTON_MODE))
         assertEquals(GamepadButtonMapping.START, GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_BUTTON_START))
         assertEquals(GamepadButtonMapping.BACK, GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_BUTTON_SELECT))
+        assertEquals(GamepadButtonMapping.START, GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_MENU, controllerActivation = true))
+        assertEquals(GamepadButtonMapping.BACK, GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_BACK, controllerActivation = true))
+        assertNull(GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_MENU))
+        assertNull(GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_BACK))
         assertEquals(GamepadButtonMapping.LEFT_THUMB, GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_BUTTON_THUMBL))
         assertEquals(GamepadButtonMapping.RIGHT_THUMB, GamepadButtonMapping.maskForKeyCode(KeyEvent.KEYCODE_BUTTON_THUMBR))
     }
@@ -109,25 +113,6 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun mapsControllerMouseAssistFromRightStick() {
-        val delta = requireNotNull(AndroidControllerMouseAssist.mouseDelta(0.75f, -0.5f))
-
-        assertTrue(delta.dx > 0)
-        assertTrue(delta.dy < 0)
-        assertNull(AndroidControllerMouseAssist.mouseDelta(0f, 0f))
-    }
-
-    @Test
-    fun mapsControllerMouseAssistButtons() {
-        assertTrue(AndroidControllerMouseAssist.togglesAssist(GamepadButtonMapping.RIGHT_THUMB, pressed = true))
-        assertFalse(AndroidControllerMouseAssist.togglesAssist(GamepadButtonMapping.RIGHT_THUMB, pressed = false))
-        assertEquals(1, AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.A))
-        assertNull(AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.B))
-        assertEquals(2, AndroidControllerMouseAssist.mouseButtonForTrigger(left = true))
-        assertEquals(1, AndroidControllerMouseAssist.mouseButtonForTrigger(left = false))
-    }
-
-    @Test
     fun mapsControllerActivationKeysToPrimaryGamepadButtonOnlyForControllers() {
         assertEquals(
             GamepadButtonMapping.A,
@@ -156,6 +141,45 @@ class InputEncoderGamepadTest {
                 keyCode = KeyEvent.KEYCODE_BUTTON_B,
                 controllerSource = false,
                 streamUiActive = false,
+            ),
+        )
+    }
+
+    @Test
+    fun reservesOnlyNonControllerMenuForStreamControls() {
+        assertTrue(NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(KeyEvent.KEYCODE_MENU, controllerInputDevice = false))
+        assertFalse(NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(KeyEvent.KEYCODE_MENU, controllerInputDevice = true))
+        assertFalse(NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(KeyEvent.KEYCODE_BUTTON_START, controllerInputDevice = true))
+    }
+
+    @Test
+    fun doesNotReserveControllerButtonsAsStreamExitShortcuts() {
+        assertTrue(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BACK,
+                controllerInputDevice = false,
+                hardwareKeyboardSource = false,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BACK,
+                controllerInputDevice = true,
+                hardwareKeyboardSource = false,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BUTTON_SELECT,
+                controllerInputDevice = false,
+                hardwareKeyboardSource = false,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BUTTON_B,
+                controllerInputDevice = false,
+                hardwareKeyboardSource = false,
             ),
         )
     }

@@ -48,7 +48,7 @@
     <string name="store_selector_play_long_press">Long press Play to choose a store</string>
     <string name="settings_section_stream">Stream</string>
     <string name="settings_section_interface">Interface</string>
-    <string name="settings_section_nerd_tools">Nerd tools</string>
+    <string name="settings_section_nerd_tools">Advanced tools</string>
     <string name="settings_section_thanks">Thanks</string>
     <string name="settings_resolution">Resolution</string>
     <string name="settings_aspect_ratio">Aspect ratio</string>
@@ -76,15 +76,15 @@
     <string name="settings_dynamic_color">Use system colors</string>
     <string name="settings_accent">Accent</string>
     <string name="settings_disable_update_checking">Disable update checking</string>
-    <string name="settings_nerd_mode">Nerd mode</string>
-    <string name="settings_nerd_mode_desc">Shows experimental diagnostics and extra visual/audio options that are useful for tuning or debugging.</string>
+    <string name="settings_nerd_mode">Enable advanced mode</string>
+    <string name="settings_nerd_mode_desc">Shows experimental tuning options. The Advanced diagnostics tab is always available.</string>
     <string name="settings_expressive_ui">Expressive card styling</string>
     <string name="settings_expressive_ui_desc">Uses brighter card surfaces and softer corners. Turn it off for a flatter, quieter Material style.</string>
     <string name="settings_handheld_landscape_four_columns">4-column handheld landscape grid</string>
     <string name="settings_handheld_landscape_four_columns_desc">Uses four wider game cards per row on sideways phones and handhelds.</string>
     <string name="settings_handheld_landscape_square_cards">Square handheld landscape thumbnails</string>
     <string name="settings_handheld_landscape_square_cards_desc">Shows square game thumbnails in horizontal handheld mode instead of poster-shaped cards.</string>
-    <string name="settings_nerd_catalog_background">Nerd catalog background</string>
+    <string name="settings_nerd_catalog_background">Cave catalog background</string>
     <string name="settings_nerd_catalog_background_desc">Adds the cave wallpaper behind Store and Library in handheld landscape mode.</string>
     <string name="settings_compact_cards">Compact game cards</string>
     <string name="settings_show_store_labels">Show store labels</string>

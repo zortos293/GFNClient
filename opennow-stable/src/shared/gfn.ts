@@ -136,6 +136,7 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 }
 
 export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
+export type AppTheme = "light" | "dark" | "auto";
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type RuntimePlatform =
@@ -370,6 +371,10 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** UI Theme */
+  appTheme: AppTheme;
+  /** Use translucent overlays for settings and navbars */
+  translucentUI: boolean;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
   /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */

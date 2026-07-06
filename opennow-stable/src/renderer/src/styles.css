@@ -3907,6 +3907,43 @@ body,
   pointer-events: auto;
 }
 
+.game-card-status-badge {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 18, 17, 0.72);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.66rem;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+
+.game-card-status-badge.maintenance {
+  color: #ffefc2;
+  background: color-mix(in srgb, var(--warning) 20%, rgba(15, 18, 17, 0.76));
+  border-color: color-mix(in srgb, var(--warning) 44%, transparent);
+}
+
+.game-card-status-badge.updating {
+  color: #d8f7ff;
+  background: color-mix(in srgb, var(--accent) 22%, rgba(15, 18, 17, 0.76));
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.game-card-status-badge.unavailable {
+  color: rgba(255, 255, 255, 0.84);
+  background: rgba(107, 114, 128, 0.34);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
 .game-card-title {
   margin: 0;
   font-size: 0.8rem;

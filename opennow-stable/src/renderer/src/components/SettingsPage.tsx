@@ -46,6 +46,7 @@ import {
   loadStoredRegionPingResults,
   saveStoredRegionPingResults,
 } from "../utils/pingResultsStorage";
+import { SelectDropdown } from "./ui/SelectDropdown";
 
 interface SettingsPageProps {
   settings: Settings;
@@ -813,6 +814,12 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [resolutionDropdownOpen, setResolutionDropdownOpen] = useState(false);
   const resolutionDropdownRef = useRef<HTMLDivElement | null>(null);
   const [settingsSearch, setSettingsSearch] = useState("");
+  const settingsSearchShowsAll = settingsSearch.trim().length > 0;
+  const settingsContentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    settingsContentRef.current?.scrollTo({ top: 0 });
+  }, [activeSection, settingsSearchShowsAll]);
 
   useEffect(() => {
     if (!focusSection) return;
@@ -2188,7 +2195,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
 
   const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
-  const showAll = normalizedSettingsSearch.length > 0;
+  const showAll = settingsSearchShowsAll;
   const tokenMatchesWord = (token: string, word: string): boolean => token === word || word.startsWith(token);
   const scopeMatchesSearch = (scopeId: SettingsSearchScopeId): boolean => {
     if (!showAll) {
@@ -2348,7 +2355,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       </nav>
 
       {/* ── Content ───────────────────────────────────────── */}
-      <div className="settings-content">
+      <div ref={settingsContentRef} className="settings-content">
         {showAll && !hasAnySearchMatches ? (
           <section className="settings-section">
             <div className="settings-thanks-state settings-thanks-state--muted">
@@ -2433,14 +2440,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       <span>{t("settings.persistentStorage.locationTitle")}</span>
                       <span>{storageResetTargetHint}</span>
                     </label>
-                    <select
+                    <SelectDropdown
                       id="persistent-storage-reset-region"
-                      className="settings-storage-select"
-                      defaultValue=""
+                      className="settings-storage-select-dropdown"
+                      value=""
+                      options={[{ value: "", label: currentStorageLocationOptionLabel }]}
+                      onChange={() => {}}
                       disabled
-                    >
-                      <option value="">{currentStorageLocationOptionLabel}</option>
-                    </select>
+                      ariaLabel={t("settings.persistentStorage.locationTitle")}
+                    />
                   </div>
 
                   <div className="settings-storage-footer">
@@ -4320,6 +4328,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </div>
             <div className="settings-rows">
               <div className="settings-row">
+                <label className="settings-label">
+                  {t("settings.about.whatsNew")}
+                  <span className="settings-hint">{t("settings.about.whatsNewHint")}</span>
+                </label>
+                <button
+                  type="button"
+                  className="settings-export-logs-btn"
+                  onClick={() => onOpenWhatsNew?.()}
+                >
+                  <Info size={16} />
+                  {t("settings.about.whatsNew")}
+                </button>
+              </div>
+
+              <div className="settings-row">
                 <label className="settings-label settings-label--wrap">
                   <span className="settings-label-title">
                     {t("settings.about.applicationUpdates")}
@@ -4482,20 +4505,6 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 	                </button>
               </div>
 
-              <div className="settings-row">
-                <label className="settings-label">
-                  {t("settings.about.whatsNew")}
-                  <span className="settings-hint">{t("settings.about.whatsNewHint")}</span>
-                </label>
-                <button
-                  type="button"
-                  className="settings-export-logs-btn"
-                  onClick={() => onOpenWhatsNew?.()}
-                >
-                  <Info size={16} />
-                  {t("settings.about.whatsNew")}
-                </button>
-              </div>
             </div>
           </section>
                 )}

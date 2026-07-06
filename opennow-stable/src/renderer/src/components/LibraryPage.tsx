@@ -10,6 +10,7 @@ import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
+import { SelectDropdown } from "./ui/SelectDropdown";
 
 const CONTROLLER_HERO_ROTATION_MS = 8000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -1139,16 +1140,17 @@ export const LibraryPage = memo(function LibraryPage({
           </details>
         )}
 
-        <label className="library-sort">
-          <ArrowUpDown size={14} />
-          <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)}>
-            {sortOptions.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {sortOptions.length > 0 && (
+          <div className="library-sort">
+            <ArrowUpDown size={14} />
+            <SelectDropdown
+              value={selectedSortId}
+              options={sortOptions.map((option) => ({ value: option.id, label: option.label }))}
+              onChange={onSortChange}
+              ariaLabel={t("library.sortAriaLabel")}
+            />
+          </div>
+        )}
 
         <span className="library-count">{libraryCountLabel}</span>
       </header>

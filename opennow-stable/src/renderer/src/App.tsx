@@ -698,6 +698,7 @@ export function App(): JSX.Element {
   /** Joins concurrent claim/resume calls for the same Cloud session id (single CloudMatch RESUME + signaling). */
   const claimResumePromisesRef = useRef<Map<string, Promise<void>>>(new Map());
   const launchAbortRef = useRef(false);
+  const discordStreamingActivitySessionRef = useRef<string | null>(null);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const nativeInputProtocolVersionRef = useRef<number | null>(null);
   const stableRecoveryResetTimerRef = useRef<number | null>(null);
@@ -784,6 +785,7 @@ export function App(): JSX.Element {
     hasConfirmedRemoteIceRef.current = false;
     latestIceConnectionStateRef.current = "new";
     pendingControlledDisconnectsRef.current = 0;
+    discordStreamingActivitySessionRef.current = null;
     signalingRecoveryRef.current.attemptCount = 0;
     signalingRecoveryRef.current.inFlight = null;
     signalingRecoveryRef.current.appId = null;
@@ -813,6 +815,26 @@ export function App(): JSX.Element {
     runtimeSnapshotRef.current = null;
     clearRuntimeSnapshot();
   }, [diagnosticsStore, resetStatsOverlayToPreference, settings.discordRichPresence]);
+
+  const markDiscordStreamStarted = useCallback((): void => {
+    if (!settings.discordRichPresence) {
+      return;
+    }
+
+    const activeSession = sessionRef.current;
+    if (!activeSession || discordStreamingActivitySessionRef.current === activeSession.sessionId) {
+      return;
+    }
+
+    const gameName = (streamingGameRef.current?.title || activeSession.appId || "Game").trim();
+    discordStreamingActivitySessionRef.current = activeSession.sessionId;
+    void window.openNow.setDiscordActivity({
+      gameName,
+      kind: "streaming",
+      appId: activeSession.appId,
+      startTimestampMs: Date.now(),
+    });
+  }, [settings.discordRichPresence]);
 
   // Console shell is active when the user enabled Controller Mode or the app was
   // launched with a direct-launch argument (frontend / big picture usage).
@@ -3038,6 +3060,7 @@ export function App(): JSX.Element {
       });
       setLaunchError(null);
       setStreamStatus("streaming");
+      markDiscordStreamStarted();
       scheduleStableRecoveryReset(activeSession.sessionId);
     };
 
@@ -3106,6 +3129,7 @@ export function App(): JSX.Element {
             });
             setLaunchError(null);
             setStreamStatus("streaming");
+            markDiscordStreamStarted();
             scheduleStableRecoveryReset(activeSession.sessionId);
             console.log(
               "[Stream] Offer applied; use [WebRTC] logs for ICE/video dimensions. signalingServer=%s media=%s",
@@ -3315,7 +3339,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, markDiscordStreamStarted, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {

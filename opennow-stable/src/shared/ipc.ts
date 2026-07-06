@@ -96,6 +96,7 @@ export const IPC_CHANNELS = {
   PRINTEDWASTE_QUEUE_FETCH: "printedwaste:queue-fetch",
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
   // Discord Rich Presence
+  DISCORD_SET_ACTIVITY: "discord:set-activity",
   DISCORD_CLEAR_ACTIVITY: "discord:clear-activity",
   // Release highlights (What's new)
   RELEASE_HIGHLIGHTS_GET: "release-highlights:get",

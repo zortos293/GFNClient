@@ -190,6 +190,17 @@ export interface CloudMatchResponse {
 export interface SessionEntry {
   sessionId: string;
   status: number;
+  queuePosition?: number;
+  seatSetupInfo?: {
+    seatSetupStep?: number;
+    queuePosition?: number;
+  };
+  sessionProgress?: {
+    queuePosition?: number;
+  };
+  progressInfo?: {
+    queuePosition?: number;
+  };
   gpuType?: string;
   sessionRequestData?: {
     appId?: string;

@@ -981,13 +981,13 @@ function toOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
-  const direct = toPositiveInt(payload.session.queuePosition);
+function extractSessionQueuePosition(session: CloudMatchResponse["session"] | GetSessionsResponse["sessions"][number]): number | undefined {
+  const direct = toPositiveInt(session.queuePosition);
   if (direct !== undefined) {
     return direct;
   }
 
-  const seatSetup = payload.session.seatSetupInfo;
+  const seatSetup = session.seatSetupInfo;
   if (seatSetup) {
     const nested = toPositiveInt(seatSetup.queuePosition);
     if (nested !== undefined) {
@@ -995,7 +995,7 @@ function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
     }
   }
 
-  const nestedSessionProgress = payload.session.sessionProgress;
+  const nestedSessionProgress = session.sessionProgress;
   if (nestedSessionProgress) {
     const nested = toPositiveInt(nestedSessionProgress.queuePosition);
     if (nested !== undefined) {
@@ -1003,7 +1003,7 @@ function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
     }
   }
 
-  const nestedProgressInfo = payload.session.progressInfo;
+  const nestedProgressInfo = session.progressInfo;
   if (nestedProgressInfo) {
     const nested = toPositiveInt(nestedProgressInfo.queuePosition);
     if (nested !== undefined) {
@@ -1014,12 +1014,20 @@ function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
   return undefined;
 }
 
-function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
-  const raw = payload.session.seatSetupInfo?.seatSetupStep;
+function extractQueuePosition(payload: CloudMatchResponse): number | undefined {
+  return extractSessionQueuePosition(payload.session);
+}
+
+function extractSessionSeatSetupStep(session: CloudMatchResponse["session"] | GetSessionsResponse["sessions"][number]): number | undefined {
+  const raw = session.seatSetupInfo?.seatSetupStep;
   if (typeof raw === "number" && Number.isFinite(raw)) {
     return Math.trunc(raw);
   }
   return undefined;
+}
+
+function extractSeatSetupStep(payload: CloudMatchResponse): number | undefined {
+  return extractSessionSeatSetupStep(payload.session);
 }
 
 function normalizeSessionAdInfo(ad: NonNullable<CloudMatchResponse["session"]["sessionAds"]>[number], index: number): SessionAdInfo | null {
@@ -1262,6 +1270,7 @@ interface ToSessionInfoOptions {
   payload: CloudMatchResponse;
   clientId?: string;
   deviceId?: string;
+  fallbackAppId?: string;
   /** Wire appLaunchMode sent with the request, used when the server does not echo it */
   fallbackAppLaunchMode?: number;
 }
@@ -1314,6 +1323,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
 
   return {
     sessionId: payload.session.sessionId,
+    appId: payload.session.sessionRequestData?.appId ?? options.fallbackAppId,
     status: payload.session.status,
     seatSetupStep,
     queuePosition,
@@ -1389,6 +1399,7 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
     payload,
     clientId,
     deviceId,
+    fallbackAppId: input.appId,
     fallbackAppLaunchMode: appLaunchModeWireValue(input.settings.appLaunchMode),
   });
 }
@@ -1688,6 +1699,8 @@ async function fetchActiveSessionsFromBase(
         enablePersistingInGameSettings,
         gpuType: s.gpuType,
         status: s.status,
+        queuePosition: extractSessionQueuePosition(s),
+        seatSetupStep: extractSessionSeatSetupStep(s),
         streamingBaseUrl: base,
         serverIp,
         signalingUrl,
@@ -1959,6 +1972,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
       return {
         sessionId: sessionData.sessionId,
+        appId: input.appId,
         status: sessionData.status,
         queuePosition,
         zone: "", // Zone not applicable for claimed sessions

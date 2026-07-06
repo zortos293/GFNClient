@@ -1,4 +1,9 @@
-import type { GameInfo, SessionInfo } from "@shared/gfn";
+import {
+  isGfnSessionInQueue,
+  isSessionReadyForConnectStatus,
+  type GameInfo,
+  type SessionInfo,
+} from "@shared/gfn";
 
 import type { LaunchErrorState, StreamLoadingStatus, StreamStatus } from "./appTypes";
 
@@ -10,16 +15,11 @@ const GFN_USER_STORAGE_NOT_AVAILABLE_CODE = 3237093721;
 const GFN_STORAGE_NOT_AVAILABLE_CODE = 3237093722;
 
 export function isSessionReadyForConnect(status: number): boolean {
-  return status === 2 || status === 3;
+  return isSessionReadyForConnectStatus(status);
 }
 
 export function isSessionInQueue(session: SessionInfo): boolean {
-  // Official client treats seat setup step 1 as queue state even when queuePosition reaches 1.
-  // Fallback to queuePosition-based inference for payloads that do not expose seatSetupStep.
-  if (session.seatSetupStep === 1) {
-    return true;
-  }
-  return (session.queuePosition ?? 0) > 1;
+  return isGfnSessionInQueue(session);
 }
 
 export function isSessionLimitError(error: unknown): boolean {

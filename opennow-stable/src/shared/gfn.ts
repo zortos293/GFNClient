@@ -1210,6 +1210,7 @@ export function getSessionAdDurationMs(ad: SessionAdInfo | undefined): number | 
 
 export interface SessionInfo {
   sessionId: string;
+  appId?: string;
   status: number;
   queuePosition?: number;
   seatSetupStep?: number;
@@ -1243,11 +1244,30 @@ export interface ActiveSessionInfo {
   enablePersistingInGameSettings?: boolean;
   gpuType?: string;
   status: number;
+  queuePosition?: number;
+  seatSetupStep?: number;
   streamingBaseUrl?: string;
   serverIp?: string;
   signalingUrl?: string;
   resolution?: string;
   fps?: number;
+}
+
+export interface GfnSessionQueueState {
+  status: number;
+  queuePosition?: number;
+  seatSetupStep?: number;
+}
+
+export function isSessionReadyForConnectStatus(status: number): boolean {
+  return status === 2 || status === 3;
+}
+
+export function isGfnSessionInQueue(session: GfnSessionQueueState): boolean {
+  if (session.seatSetupStep === 1) {
+    return true;
+  }
+  return (session.queuePosition ?? 0) > 1;
 }
 
 /** Request to claim/resume an existing session */
@@ -1633,6 +1653,8 @@ export interface OpenNowApi {
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
   fetchPrintedWasteServerMapping(): Promise<PrintedWasteServerMapping>;
   getThanksData(): Promise<ThankYouDataResult>;
+  /** Set Discord rich presence activity */
+  setDiscordActivity(input: import("./discord").DiscordActivityUpdate): Promise<void>;
   /** Clear Discord rich presence activity */
   clearDiscordActivity(): Promise<void>;
 

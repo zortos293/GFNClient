@@ -68,6 +68,19 @@ try {
     fs.copyFileSync(iconToCopy, path.join(appDir, 'icon.png'));
   }
 
+  // Copy largeIcon: prefer the ~152x152 iOS app icon
+  const preferredLargeIconPath = path.join(repoRoot, 'ios', 'OpenNOWiOS', 'OpenNOWiOS', 'Assets.xcassets', 'AppIcon.appiconset', 'ipad-76@2x.png');
+  let largeIconToCopy = fallbackIconPath;
+  if (fs.existsSync(preferredLargeIconPath)) {
+    largeIconToCopy = preferredLargeIconPath;
+    console.log(`Using preferred large icon from iOS assets.`);
+  } else {
+    console.warn(`Warning: preferred large icon not found at ${preferredLargeIconPath}. Using fallback logo.png.`);
+  }
+  if (fs.existsSync(largeIconToCopy)) {
+    fs.copyFileSync(largeIconToCopy, path.join(appDir, 'largeIcon.png'));
+  }
+
   // Copy and inject webOS browser bridge
   const bridgeSrcPath = path.join(pkgRoot, 'webos', 'webos-bridge.js');
   if (fs.existsSync(bridgeSrcPath)) {

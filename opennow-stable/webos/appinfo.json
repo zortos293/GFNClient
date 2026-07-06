@@ -5,6 +5,7 @@
   "main": "index.html",
   "title": "OpenNOW",
   "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
   "iconColor": "#0f172a",
   "splashColor": "#0f172a",
   "cloudgame_active": true,

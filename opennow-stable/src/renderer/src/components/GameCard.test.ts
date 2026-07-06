@@ -106,8 +106,30 @@ test("collapses store aliases that render as the same store", () => {
       isActive: option.isActive,
     })),
     [
-      { storeKey: "EPIC_GAMES_STORE", variantId: "epic-games-store", isOwned: true, isActive: true },
+      { storeKey: "EPIC_GAMES_STORE", variantId: "egs", isOwned: true, isActive: true },
       { storeKey: "STEAM", variantId: "steam", isOwned: false, isActive: false },
+    ],
+  );
+});
+
+test("prefers an owned alias variant id while preserving active chip state", () => {
+  const options = getStoreOptions(
+    makeGame([
+      makeVariant({ id: "selected-epic", store: "EPIC", libraryStatus: "NOT_OWNED" }),
+      makeVariant({ id: "owned-egs", store: "EGS", libraryStatus: "PLATFORM_SYNC" }),
+    ]),
+    "selected-epic",
+  );
+
+  assert.deepEqual(
+    options.map((option) => ({
+      storeKey: option.storeKey,
+      variantId: option.variantId,
+      isOwned: option.isOwned,
+      isActive: option.isActive,
+    })),
+    [
+      { storeKey: "EPIC_GAMES_STORE", variantId: "owned-egs", isOwned: true, isActive: true },
     ],
   );
 });

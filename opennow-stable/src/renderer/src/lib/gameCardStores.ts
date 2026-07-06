@@ -21,11 +21,17 @@ function normalizeStoreOptionKey(store: string): string | null {
 }
 
 function getVariantForStore(variants: GameVariant[], activeVariantId?: string): GameVariant | undefined {
+  const ownedVariant = variants.find((variant) => isOwnedVariant(variant));
+
   if (activeVariantId) {
-    return variants.find((variant) => variant.id === activeVariantId) ?? variants[0];
+    const activeVariant = variants.find((variant) => variant.id === activeVariantId);
+    if (activeVariant && (isOwnedVariant(activeVariant) || !ownedVariant)) {
+      return activeVariant;
+    }
+    return ownedVariant ?? activeVariant ?? variants[0];
   }
 
-  return variants.find((variant) => isOwnedVariant(variant)) ?? variants[0];
+  return ownedVariant ?? variants[0];
 }
 
 export function getStoreOptions(game: GameInfo, selectedVariantId?: string): StoreOption[] {

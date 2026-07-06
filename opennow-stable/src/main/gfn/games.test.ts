@@ -254,6 +254,40 @@ test("does not add Unknown public variants when catalog stores already exist", (
   assert.deepEqual(game?.availableStores, ["GAIJIN", "STEAM"]);
 });
 
+test("adds Unknown public variants when catalog only has a None placeholder store", () => {
+  const [game] = mergePublicGameVariants(
+    [
+      {
+        id: "launcher-only-game",
+        title: "Launcher Only Game",
+        selectedVariantIndex: 0,
+        variants: [{ id: "placeholder", store: "None", supportedControls: [] }],
+        availableStores: ["None"],
+      },
+    ],
+    [
+      publicGameToGameInfo({
+        id: 123456,
+        title: "Launcher Only Game",
+        steamUrl: "",
+        publisher: "Standalone Publisher",
+        store: "",
+        status: "AVAILABLE",
+      }),
+    ],
+  );
+
+  assert.deepEqual(
+    game?.variants.map((variant) => ({ id: variant.id, store: variant.store })),
+    [
+      { id: "placeholder", store: "None" },
+      { id: "123456", store: "Unknown" },
+    ],
+  );
+  assert.equal(game?.uuid, "123456");
+  assert.equal(game?.launchAppId, "123456");
+});
+
 test("appends public-only games that match catalog search", () => {
   const games = appendPublicGameSearchMatches(
     [

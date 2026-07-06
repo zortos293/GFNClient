@@ -92,7 +92,10 @@ function mergeSearchText(left?: string, right?: string): string | undefined {
 
 function getSupplementalPublicVariants(game: GameInfo, publicGame: GameInfo): GameVariant[] {
   const existingStores = new Set(game.variants.map((variant) => normalizeGameStore(variant.store)));
-  const hasCatalogStoreVariant = game.variants.some((variant) => variant.store.trim().length > 0);
+  const hasCatalogStoreVariant = game.variants.some((variant) => {
+    const storeKey = normalizeGameStore(variant.store);
+    return storeKey.length > 0 && storeKey !== "NONE";
+  });
 
   return publicGame.variants.filter((variant) => {
     const storeKey = normalizeGameStore(variant.store);

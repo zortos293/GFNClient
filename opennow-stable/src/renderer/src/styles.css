@@ -387,12 +387,16 @@ body,
   align-items: center;
   justify-content: flex-start;
   padding: 0 16px;
-  background: color-mix(in srgb, var(--bg-a) 90%, transparent);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: var(--bg-a);
   border-bottom: 1px solid var(--panel-border);
   z-index: 1000;
   will-change: transform;
+}
+
+[data-translucent="true"] .navbar {
+  background: color-mix(in srgb, var(--bg-a) 90%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .navbar-left {
@@ -1157,6 +1161,17 @@ body,
   font-size: 0.69rem;
 }
 
+/* Light theme overrides for logout confirmation dialog */
+[data-theme="light"] .logout-confirm-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.99)),
+    rgba(255, 255, 255, 0.98);
+}
+
+[data-theme="light"] .logout-confirm-kicker {
+  color: #991b1b;
+}
+
 .navbar-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1539,6 +1554,24 @@ body,
     min-width: 56px;
     justify-content: center;
   }
+}
+
+/* Light theme overrides for controller navbar (bg is always dark) */
+[data-theme="light"] .navbar--controller .navbar-link {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+[data-theme="light"] .navbar--controller .navbar-link:hover {
+  color: #fff;
+}
+
+[data-theme="light"] .navbar--controller .navbar-avatar,
+[data-theme="light"] .navbar--controller .navbar-avatar-fallback {
+  border-color: rgba(255, 255, 255, 0.72);
+}
+
+[data-theme="light"] .navbar--controller .navbar-tier {
+  color: rgba(255, 255, 255, 0.66);
 }
 
 

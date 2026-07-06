@@ -21,13 +21,9 @@ import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
 import { fetchWithOptionalProxy } from "./proxyFetch";
 import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
 import { supportsInGameSettingsPersistence } from "./gameFeatures";
-import { postLcarsGraphQl } from "./lcarsGraphql";
+import { fetchLcarsGraphQl, postLcarsMutation } from "./lcarsGraphql";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
-const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
-const MARQUEE_QUERY_HASH = "dd4bddfdef4707dfe340cc2040d6bb9c4c45f706976fca15b2ef33221c385d7f";
-const APP_METADATA_QUERY_HASH = "cf8b620dfd03617017ba7c858cee65197e1ace5180e41be194b39227227ced63";
-const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f";
 const DEFAULT_LOCALE = "en_US";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
@@ -50,13 +46,6 @@ const GFN_FEATURE_FIELDS = `
                 values
               }
 `;
-const ADD_OWNED_VARIANT_MUTATION = `mutation AddOwnedVariant($cmsId: String!, $locale: String!) {
-  addOwnedVariant(language: $locale, variantId: $cmsId) {
-    app {
-      id
-    }
-  }
-}`;
 const LIBRARY_APPS_FILTER = {
   variants: {
     gfn: {
@@ -428,10 +417,6 @@ function isNumericId(value: string | undefined): value is string {
   return /^\d+$/.test(value);
 }
 
-function randomHuId(): string {
-  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
-}
-
 async function postGraphQl<T>(
   query: string,
   variables: Record<string, unknown>,
@@ -776,38 +761,17 @@ async function fetchAppMetaData(
     return { data: { apps: { items: [] } } };
   }
 
-  const variables = JSON.stringify({
-    vpcId,
-    locale: DEFAULT_LOCALE,
-    appIds: normalizedIds,
-  });
-
-  const extensions = JSON.stringify({
-    persistedQuery: {
-      sha256Hash: APP_METADATA_QUERY_HASH,
+  return await fetchLcarsGraphQl<AppMetaDataResponse>(
+    "AppDataForAppId",
+    {
+      vpcId,
+      locale: DEFAULT_LOCALE,
+      appIds: normalizedIds,
     },
-  });
-
-  const params = new URLSearchParams({
-    requestType: "appMetaData",
-    extensions,
-    huId: randomHuId(),
-    variables,
-  });
-
-  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
-    headers: {
-      ...buildGfnGraphQlHeaders(token),
-      "Content-Type": "application/graphql",
-    },
-  }, proxyUrl);
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`App metadata failed (${response.status}): ${text.slice(0, 400)}`);
-  }
-
-  return (await response.json()) as AppMetaDataResponse;
+    token,
+    proxyUrl,
+    { context: "App metadata failed" },
+  );
 }
 
 async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[], proxyUrl?: string): Promise<GameInfo[]> {
@@ -847,47 +811,23 @@ async function fetchPanels(
   options?: { withLibraryTime?: boolean },
   proxyUrl?: string,
 ): Promise<GraphQlResponse> {
-  const variables = JSON.stringify({
-    vpcId,
-    locale: DEFAULT_LOCALE,
-    panelNames,
-  });
-
-  const extensions = JSON.stringify({
-    persistedQuery: {
-      sha256Hash: panelNames.includes("MARQUEE")
-        ? MARQUEE_QUERY_HASH
-        : options?.withLibraryTime
-          ? LIBRARY_WITH_TIME_QUERY_HASH
-          : PANELS_QUERY_HASH,
-    },
-  });
-
-  const requestType = panelNames.includes("MARQUEE")
-    ? "panels/Marquee"
+  const queryName = panelNames.includes("MARQUEE")
+    ? "Marquee"
     : panelNames.includes("LIBRARY")
-      ? "panels/Library"
-      : "panels/MainV2";
-  const params = new URLSearchParams({
-    requestType,
-    extensions,
-    huId: randomHuId(),
-    variables,
-  });
+      ? options?.withLibraryTime === true ? "LibrarySectionWithTime" : "LibrarySection"
+      : "Main";
 
-  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
-    headers: {
-      ...buildGfnGraphQlHeaders(token),
-      "Content-Type": "application/graphql",
+  return await fetchLcarsGraphQl<GraphQlResponse>(
+    queryName,
+    {
+      vpcId,
+      locale: DEFAULT_LOCALE,
+      panelNames,
     },
-  }, proxyUrl);
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Games GraphQL failed (${response.status}): ${text.slice(0, 400)}`);
-  }
-
-  return (await response.json()) as GraphQlResponse;
+    token,
+    proxyUrl,
+    { context: "Games GraphQL failed" },
+  );
 }
 
 function panelTextMatchesFeatured(value: string | undefined): boolean {
@@ -982,24 +922,12 @@ function parsePanelResults(payload: GraphQlResponse): GamePanelResult[] {
 }
 
 async function fetchFilterAndSortDefinitions(token?: string, proxyUrl?: string): Promise<CatalogDefinitions> {
-  const query = `query GetFilterGroupAndSortOrderDefinitions($locale: String!) {
-    filterGroupDefinitions(language: $locale) {
-      id
-      label
-      filters {
-        id
-        label
-        filters
-      }
-    }
-    sortOrderDefinitions(language: $locale) {
-      id
-      label
-      orderBy
-    }
-  }`;
-
-  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale: DEFAULT_LOCALE }, token, proxyUrl);
+  const payload = await fetchLcarsGraphQl<FilterSortDefinitionsResponse>(
+    "FilterGroupAndSortOrderDefinitions",
+    { locale: DEFAULT_LOCALE },
+    token,
+    proxyUrl,
+  );
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
   }
@@ -1163,28 +1091,33 @@ ${appFields}
   let cursor = "";
 
   for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-    const payload = await postGraphQl<AppsSearchResponse>(
-      query,
-      searchQuery.length > 0
-        ? {
-            vpcId,
-            locale: DEFAULT_LOCALE,
-            sortString: selectedSort.orderBy,
-            fetchCount,
-            cursor,
-            searchString: searchQuery,
-            filters,
-          }
-        : {
-            vpcId,
-            locale: DEFAULT_LOCALE,
-            sortString: selectedSort.orderBy,
-            fetchCount,
-            cursor,
-            filters,
-          },
+    const variables = searchQuery.length > 0
+      ? {
+          vpcId,
+          locale: DEFAULT_LOCALE,
+          sortString: selectedSort.orderBy,
+          fetchCount,
+          cursor,
+          searchString: searchQuery,
+          filters,
+        }
+      : {
+          vpcId,
+          locale: DEFAULT_LOCALE,
+          sortString: selectedSort.orderBy,
+          fetchCount,
+          cursor,
+          filters,
+        };
+    const payload = await fetchLcarsGraphQl<AppsSearchResponse>(
+      searchQuery.length > 0 ? "AppsWithSearch" : "AppsWithoutSearch",
+      variables,
       token,
       input.proxyUrl,
+      {
+        context: "GFN catalog query failed",
+        fallbackQuery: query,
+      },
     );
 
     if (payload.errors?.length) {
@@ -1544,8 +1477,8 @@ export async function markGameOwned(input: MarkGameOwnedInput): Promise<MarkGame
     throw new Error("Cannot mark game as owned without a variant ID");
   }
 
-  const payload = await postLcarsGraphQl<AddOwnedVariantResponse>(
-    ADD_OWNED_VARIANT_MUTATION,
+  const payload = await postLcarsMutation<AddOwnedVariantResponse>(
+    "AddOwnedVariant",
     {
       cmsId: variantId,
       locale: DEFAULT_LOCALE,

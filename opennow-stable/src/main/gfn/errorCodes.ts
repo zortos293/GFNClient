@@ -114,6 +114,7 @@ export enum GfnErrorCode {
   InvalidTransportRequest = 3237093720, // statusCode 88
   UserStorageNotAvailable = 3237093721, // statusCode 89
   GfnStorageNotAvailable = 3237093722, // statusCode 90
+  AppNotAllowedToStream = 3237093723, // statusCode 91
   SessionServerErrorEnd = 3237093887,
 
   // Session setup cancelled
@@ -537,6 +538,13 @@ export const ERROR_MESSAGES: Map<number, ErrorMessageEntry> = new Map([
     {
       title: "Storage Error",
       description: "Service storage is not available.",
+    },
+  ],
+  [
+    3237093723,
+    {
+      title: "Streaming Not Allowed",
+      description: "This app is not allowed to stream on your current GeForce NOW account or region.",
     },
   ],
 

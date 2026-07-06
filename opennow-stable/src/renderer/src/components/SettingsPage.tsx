@@ -1,4 +1,4 @@
-import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive } from "lucide-react";
+import { Globe, Check, Search, X, Loader, Zap, Mic, FileDown, Wifi, Trash2, Heart, Users, ExternalLink, Monitor, Keyboard, Download, RefreshCcw, Info, Cpu, AlertTriangle, MapPin, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive, Sparkles } from "lucide-react";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import type { JSX } from "react";
 
@@ -26,9 +26,11 @@ import type {
 } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
+  DEFAULT_VIDEO_SHADER_SETTINGS,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
+  expandEntitledStreamResolutions,
   getSafeFallbackEntitledResolutions,
   keyboardLayoutOptions,
   resolveEntitledStreamProfile,
@@ -44,6 +46,7 @@ import {
   loadStoredRegionPingResults,
   saveStoredRegionPingResults,
 } from "../utils/pingResultsStorage";
+import { SelectDropdown } from "./ui/SelectDropdown";
 
 interface SettingsPageProps {
   settings: Settings;
@@ -53,6 +56,9 @@ interface SettingsPageProps {
   onRunCodecTest: () => Promise<void>;
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onClose: () => void;
+  focusSection?: SettingsSectionId;
+  /** Called when the user clicks "What's new" in the About section */
+  onOpenWhatsNew?: () => void;
 }
 
 type SettingsNavItem = {
@@ -140,7 +146,22 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "aspect ratio",
     "l4s",
     "cloud gsync",
+    "console mode",
+    "tv mode",
+    "big picture",
+    "gamepad friendly",
     "video acceleration",
+    "filters",
+    "shader",
+    "shaders",
+    "sharpen",
+    "sharpening",
+    "saturation",
+    "contrast",
+    "brightness",
+    "vibrance",
+    "film grain",
+    "post processing",
   ],
   "stream-codec-diagnostics": [
     "stream",
@@ -175,7 +196,7 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "report",
     "bug",
   ],
-  game: ["game", "language", "keyboard layout", "store", "launch"],
+  game: ["game", "language", "keyboard layout", "store", "launch", "graphics settings", "in-game settings", "persistence"],
   audio: ["audio", "microphone", "mic", "push to talk", "voice activity"],
   input: [
     "input",
@@ -189,6 +210,13 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "gamepad",
     "gyro",
     "gyroscope",
+    "steam",
+    "steam controller",
+    "xbox",
+    "compatibility",
+    "gamecontroller",
+    "hid",
+    "macos",
     "motion controls",
     "anti afk",
     "pointer lock",
@@ -405,7 +433,8 @@ const shortcutDefaults = {
 } as const;
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
-const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+Shift+G";
+const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+G";
+const SIDEBAR_TOGGLE_SHORTCUT_ALIASES = isMac ? [SIDEBAR_TOGGLE_SHORTCUT_RAW] : [SIDEBAR_TOGGLE_SHORTCUT_RAW, "Ctrl+Shift+G"];
 const NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS = 160;
 
 type ShortcutSettingKey = keyof typeof shortcutDefaults;
@@ -417,8 +446,11 @@ function getShortcutConflictMessage(
   candidateCanonical: string,
   currentSettings: Settings,
 ): string | null {
-  const sidebarParsed = normalizeShortcut(SIDEBAR_TOGGLE_SHORTCUT_RAW);
-  if (sidebarParsed.valid && candidateCanonical === sidebarParsed.canonical) {
+  const sidebarShortcuts = SIDEBAR_TOGGLE_SHORTCUT_ALIASES
+    .map((value) => normalizeShortcut(value))
+    .filter((parsed) => parsed.valid)
+    .map((parsed) => parsed.canonical);
+  if (sidebarShortcuts.includes(candidateCanonical)) {
     return "Shortcut conflicts with the settings sidebar toggle.";
   }
   for (const key of SHORTCUT_SETTING_KEYS) {
@@ -671,7 +703,7 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose }: SettingsPageProps): JSX.Element {
+export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose, focusSection, onOpenWhatsNew }: SettingsPageProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
@@ -782,6 +814,19 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const [resolutionDropdownOpen, setResolutionDropdownOpen] = useState(false);
   const resolutionDropdownRef = useRef<HTMLDivElement | null>(null);
   const [settingsSearch, setSettingsSearch] = useState("");
+  const settingsSearchShowsAll = settingsSearch.trim().length > 0;
+  const settingsContentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    settingsContentRef.current?.scrollTo({ top: 0 });
+  }, [activeSection, settingsSearchShowsAll]);
+
+  useEffect(() => {
+    if (!focusSection) return;
+    setActiveSection(focusSection);
+    setSettingsSearch("");
+  }, [focusSection]);
+
   const [codecAdvancedOpen, setCodecAdvancedOpen] = useState(false);
   const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
   const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
@@ -990,11 +1035,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   }, [t]);
 
   const effectiveEntitledResolutions = useMemo(
-    () => entitledResolutions.length > 0
-      ? entitledResolutions
-      : subscriptionInfo
-        ? getSafeFallbackEntitledResolutions()
-        : [],
+    () => {
+      const baseResolutions = entitledResolutions.length > 0
+        ? entitledResolutions
+        : subscriptionInfo
+          ? getSafeFallbackEntitledResolutions()
+          : [];
+      return expandEntitledStreamResolutions(baseResolutions);
+    },
     [entitledResolutions, subscriptionInfo],
   );
   const useEntitledStreamOptions = effectiveEntitledResolutions.length > 0;
@@ -2147,7 +2195,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
 
   const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
-  const showAll = normalizedSettingsSearch.length > 0;
+  const showAll = settingsSearchShowsAll;
   const tokenMatchesWord = (token: string, word: string): boolean => token === word || word.startsWith(token);
   const scopeMatchesSearch = (scopeId: SettingsSearchScopeId): boolean => {
     if (!showAll) {
@@ -2307,7 +2355,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       </nav>
 
       {/* ── Content ───────────────────────────────────────── */}
-      <div className="settings-content">
+      <div ref={settingsContentRef} className="settings-content">
         {showAll && !hasAnySearchMatches ? (
           <section className="settings-section">
             <div className="settings-thanks-state settings-thanks-state--muted">
@@ -2392,14 +2440,15 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                       <span>{t("settings.persistentStorage.locationTitle")}</span>
                       <span>{storageResetTargetHint}</span>
                     </label>
-                    <select
+                    <SelectDropdown
                       id="persistent-storage-reset-region"
-                      className="settings-storage-select"
-                      defaultValue=""
+                      className="settings-storage-select-dropdown"
+                      value=""
+                      options={[{ value: "", label: currentStorageLocationOptionLabel }]}
+                      onChange={() => {}}
                       disabled
-                    >
-                      <option value="">{currentStorageLocationOptionLabel}</option>
-                    </select>
+                      ariaLabel={t("settings.persistentStorage.locationTitle")}
+                    />
                   </div>
 
                   <div className="settings-storage-footer">
@@ -2896,6 +2945,95 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     {t("settings.video.experimentalL4SRequestHint")}
                   </span>
                 </div>
+
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        {t("settings.video.launchInConsoleMode")}
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.launchInConsoleMode}
+                        onChange={(e) => handleChange("launchInConsoleMode", e.target.checked)}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    {t("settings.video.launchInConsoleModeHint")}
+                  </span>
+                </div>
+
+                {/* Video filters (client-side GPU shaders) */}
+                <div className="settings-row settings-row--column">
+                  <div className="settings-row-top settings-row-top--compact">
+                    <label className="settings-label settings-label--wrap">
+                      <span className="settings-label-title">
+                        <Sparkles size={15} className="settings-label-icon" />
+                        {t("settings.videoFilters.title")}
+                        <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+                      </span>
+                    </label>
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={settings.videoShader.enabled}
+                        onChange={(e) => handleChange("videoShader", { ...settings.videoShader, enabled: e.target.checked })}
+                      />
+                      <span className="settings-toggle-track" />
+                    </label>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    {settings.streamClientMode === "native"
+                      ? t("settings.videoFilters.nativeUnavailable")
+                      : t("settings.videoFilters.hint")}
+                  </span>
+                  {settings.videoShader.enabled && (
+                    <>
+                      {([
+                        { key: "sharpen", labelKey: "settings.videoFilters.sharpen", min: 0, max: 100 },
+                        { key: "saturation", labelKey: "settings.videoFilters.saturation", min: 0, max: 200 },
+                        { key: "contrast", labelKey: "settings.videoFilters.contrast", min: 50, max: 150 },
+                        { key: "brightness", labelKey: "settings.videoFilters.brightness", min: 50, max: 150 },
+                        { key: "vibrance", labelKey: "settings.videoFilters.vibrance", min: 0, max: 100 },
+                        { key: "filmGrain", labelKey: "settings.videoFilters.filmGrain", min: 0, max: 100 },
+                      ] as const).map((control) => (
+                        <div key={control.key} className="settings-row settings-row--column">
+                          <div className="settings-row-top">
+                            <label className="settings-label">{t(control.labelKey)}</label>
+                            <span className="settings-value-badge">{settings.videoShader[control.key]}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            className="settings-slider"
+                            min={control.min}
+                            max={control.max}
+                            step={1}
+                            value={settings.videoShader[control.key]}
+                            onChange={(e) => {
+                              const next = parseInt(e.target.value, 10);
+                              if (Number.isFinite(next)) {
+                                handleChange("videoShader", { ...settings.videoShader, [control.key]: next });
+                              }
+                            }}
+                          />
+                        </div>
+                      ))}
+                      <div className="settings-chip-row">
+                        <button
+                          type="button"
+                          className="settings-chip"
+                          onClick={() => handleChange("videoShader", { ...DEFAULT_VIDEO_SHADER_SETTINGS, enabled: true })}
+                        >
+                          <span>{t("settings.videoFilters.reset")}</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             </section>
 
@@ -3312,6 +3450,26 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   )}
                 </div>
               </div>
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap">
+                    <span className="settings-label-title">
+                      {t("settings.game.persistInGameSettings")}
+                    </span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.enablePersistingInGameSettings}
+                      onChange={(e) => handleChange("enablePersistingInGameSettings", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+                <span className="settings-subtle-hint">
+                  {t("settings.game.persistInGameSettingsHint")}
+                </span>
+              </div>
             </div>
           </section>
         )}
@@ -3472,6 +3630,28 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   </div>
                   <span className="settings-subtle-hint">{t("settings.input.gyroscopeControlsHint")}</span>
                 </div>
+
+                {isMac && (
+                  <div className="settings-row settings-row--column">
+                    <div className="settings-row-top settings-row-top--compact">
+                      <label className="settings-label settings-label--wrap">
+                        <span className="settings-label-title">
+                          {t("settings.input.steamControllerCompatibilityMode")}
+                          <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+                        </span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.steamControllerCompatibilityMode}
+                          onChange={(e) => handleChange("steamControllerCompatibilityMode", e.target.checked)}
+                        />
+                        <span className="settings-toggle-track" />
+                      </label>
+                    </div>
+                    <span className="settings-subtle-hint">{t("settings.input.steamControllerCompatibilityModeHint")}</span>
+                  </div>
+                )}
 
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top settings-row-top--compact">
@@ -4148,6 +4328,21 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </div>
             <div className="settings-rows">
               <div className="settings-row">
+                <label className="settings-label">
+                  {t("settings.about.whatsNew")}
+                  <span className="settings-hint">{t("settings.about.whatsNewHint")}</span>
+                </label>
+                <button
+                  type="button"
+                  className="settings-export-logs-btn"
+                  onClick={() => onOpenWhatsNew?.()}
+                >
+                  <Info size={16} />
+                  {t("settings.about.whatsNew")}
+                </button>
+              </div>
+
+              <div className="settings-row">
                 <label className="settings-label settings-label--wrap">
                   <span className="settings-label-title">
                     {t("settings.about.applicationUpdates")}
@@ -4309,6 +4504,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 	                  {t("settings.about.deleteCache")}
 	                </button>
               </div>
+
             </div>
           </section>
                 )}

@@ -13,6 +13,7 @@ import type {
 import {
   InputEncoder,
   INPUT_MOUSE_REL,
+  INPUT_MOUSE_ABS,
   PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
   partiallyReliableHidMaskForInputType,
@@ -36,13 +37,25 @@ import {
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "./keyboardLock";
 import { GfnCursorOverlayController } from "./cursorChannel";
 import {
+  buildClipboardControlMessage,
+  CLIPBOARD_CLIENT_ADDED_DATA,
+  CLIPBOARD_CLIENT_DATA_RESPONSE,
+  CLIPBOARD_CLIENT_REMOVED_DATA,
+  isClipboardServerDataRequest,
+  parseClipboardControlMessage,
+  validateClipboardText,
+  type ClipboardTracingData,
+} from "./clipboardProtocol";
+import {
   buildNvstSdp,
   extractIceCredentials,
   fixServerIp,
   mungeAnswerSdp,
   preferCodec,
+  rewriteIceCandidateEndpoint,
   rewriteH265LevelIdByProfile,
   rewriteH265TierFlag,
+  rewriteSdpIceCandidateEndpoints,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 
@@ -93,6 +106,8 @@ interface ConnectedRumbleGamepad {
   gamepad: Gamepad;
   api: GamepadRumbleApi | null;
 }
+
+const DEFAULT_CLIPBOARD_MAX_BYTES = 1024 * 1024;
 
 function hevcPreferredProfileId(colorQuality: ColorQuality): 1 | 2 {
   // 10-bit modes should prefer HEVC Main10 profile-id=2.
@@ -230,14 +245,98 @@ interface ClientOptions {
   mouseAcceleration?: number;
   /** Selected GFN keyboard layout for remote physical OEM key mapping. */
   keyboardLayout?: KeyboardLayout;
+  /** Enable official GFN clipboard custom-message paste support. */
+  clipboardPaste?: boolean;
+  /** Host clipboard reader used for server paste requests. */
+  readClipboardText?: () => Promise<string>;
+  /** Maximum UTF-8 clipboard bytes to advertise/send. */
+  clipboardMaxBytes?: number;
   onLog: (line: string) => void;
   onStats?: (stats: StreamDiagnostics) => void;
   onTimeWarning?: (warning: StreamTimeWarning) => void;
   onMicStateChange?: (state: MicStateChange) => void;
   onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
   onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
-  /** Optional host callback for Meta/Home button edge presses (button 16). */
+  /** Optional host callback for controller overlay shortcut edge presses. */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
+}
+
+function isPressedGamepadButton(button: GamepadButton | undefined): boolean {
+  return Boolean(button?.pressed || (button?.value ?? 0) > 0.5);
+}
+
+type ControllerOverlayChordHalf = "view" | "menu";
+
+export interface ControllerOverlayChordState {
+  pendingHalf: ControllerOverlayChordHalf;
+  pendingSinceMs: number;
+  disqualified: boolean;
+}
+
+export interface ControllerOverlayShortcutGate {
+  overlayPressed: boolean;
+  preemptInput: boolean;
+  nextState: ControllerOverlayChordState | null;
+}
+
+const CONTROLLER_OVERLAY_CHORD_GRACE_MS = 120;
+
+export function evaluateControllerOverlayShortcutGate(
+  gamepad: Pick<Gamepad, "buttons">,
+  state: ControllerOverlayChordState | null,
+  nowMs: number,
+  graceMs: number = CONTROLLER_OVERLAY_CHORD_GRACE_MS,
+): ControllerOverlayShortcutGate {
+  const guidePressed = isPressedGamepadButton(gamepad.buttons[16]);
+  const viewPressed = isPressedGamepadButton(gamepad.buttons[8]);
+  const menuPressed = isPressedGamepadButton(gamepad.buttons[9]);
+  const pressedHalf: ControllerOverlayChordHalf | null = viewPressed === menuPressed
+    ? null
+    : viewPressed
+      ? "view"
+      : "menu";
+
+  if (guidePressed) {
+    return { overlayPressed: true, preemptInput: true, nextState: null };
+  }
+
+  if (viewPressed && menuPressed) {
+    if (state?.disqualified) {
+      return { overlayPressed: false, preemptInput: false, nextState: state };
+    }
+
+    return { overlayPressed: true, preemptInput: true, nextState: null };
+  }
+
+  if (!pressedHalf) {
+    return { overlayPressed: false, preemptInput: false, nextState: null };
+  }
+
+  if (state?.disqualified) {
+    return {
+      overlayPressed: false,
+      preemptInput: false,
+      nextState: state.pendingHalf === pressedHalf
+        ? state
+        : { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: true },
+    };
+  }
+
+  if (!state || state.pendingHalf !== pressedHalf) {
+    return {
+      overlayPressed: false,
+      preemptInput: true,
+      nextState: { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: false },
+    };
+  }
+
+  const disqualified = nowMs - state.pendingSinceMs >= graceMs;
+  const nextState = { ...state, disqualified };
+  return {
+    overlayPressed: false,
+    preemptInput: !disqualified,
+    nextState,
+  };
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -354,7 +453,7 @@ export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecis
   return boundedCurrent;
 }
 
-/** Subsample coalesced pointer samples like official GFN wm() when bursts are large. */
+/** Coalesce pointer samples like official GFN wm() when bursts are large. */
 export function subsampleCoalescedPointerEvents<T extends { movementX: number; movementY: number }>(
   samples: readonly T[],
   pendingBatchEntries: number,
@@ -374,7 +473,18 @@ export function subsampleCoalescedPointerEvents<T extends { movementX: number; m
   const stride = Math.ceil(samples.length / budget);
   const events: T[] = [];
   for (let index = 0; index < samples.length; index += stride) {
-    events.push(samples[index]!);
+    const end = Math.min(index + stride, samples.length);
+    let movementX = 0;
+    let movementY = 0;
+    for (let sampleIndex = index; sampleIndex < end; sampleIndex += 1) {
+      movementX += samples[sampleIndex]!.movementX;
+      movementY += samples[sampleIndex]!.movementY;
+    }
+    events.push({
+      ...samples[end - 1]!,
+      movementX,
+      movementY,
+    } as T);
   }
   return { events, stride };
 }
@@ -717,6 +827,7 @@ export class GfnWebRtcClient {
   private controlChannel: RTCDataChannel | null = null;
   private cursorOverlay: GfnCursorOverlayController | null = null;
   private nativeInputActive = false;
+  private remoteIceEndpoint: SessionInfo["mediaConnectionInfo"] | null = null;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioGainNode: GainNode | null = null;
@@ -736,6 +847,14 @@ export class GfnWebRtcClient {
   private gamepadPollTimer: number | null = null;
   private pendingMouseDxFloat = 0;
   private pendingMouseDyFloat = 0;
+  /**
+   * Latest overlay cursor position awaiting an absolute mouse packet (input
+   * type 5). Used while the cursor_channel overlay cursor is visible so the
+   * server cursor is pinned to the overlay position instead of drifting on
+   * accumulated relative deltas. Latest position wins, like the official
+   * client's batch coalescing.
+   */
+  private pendingMouseAbs: { x: number; y: number; width: number; height: number } | null = null;
   private inputCleanup: Array<() => void> = [];
   private queuedCandidates: RTCIceCandidateInit[] = [];
 
@@ -793,6 +912,7 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private gamepadMetaPressed: Map<number, boolean> = new Map();
+  private gamepadOverlayChordStates: Map<number, ControllerOverlayChordState> = new Map();
   private lastEmittedDiagnostics: StreamDiagnostics | null = null;
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private lastRumbleWeak: number[] = [0, 0, 0, 0];
@@ -833,6 +953,9 @@ export class GfnWebRtcClient {
   private mouseAccelerationPercent = 1;
   private keyboardLayout?: KeyboardLayout;
   private autoFullScreenEnabled = true;
+  private clipboardPasteEnabled = false;
+  private clipboardMaxBytes = DEFAULT_CLIPBOARD_MAX_BYTES;
+  private lastAdvertisedClipboardAvailable: boolean | null = null;
 
   private partialReliableThresholdMs = GfnWebRtcClient.DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS;
   private riInputCapabilities: RiInputCapabilities = {
@@ -940,6 +1063,8 @@ export class GfnWebRtcClient {
     this.mouseAccelerationPercent = Math.max(1, Math.min(150, Math.round(options.mouseAcceleration ?? 1)));
     this.keyboardLayout = options.keyboardLayout;
     this.autoFullScreenEnabled = options.autoFullScreen !== false;
+    this.clipboardPasteEnabled = Boolean(options.clipboardPaste);
+    this.clipboardMaxBytes = Math.max(0, Math.trunc(options.clipboardMaxBytes ?? DEFAULT_CLIPBOARD_MAX_BYTES));
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -968,6 +1093,40 @@ export class GfnWebRtcClient {
 
   private isNativeCursorOverlayEnabled(): boolean {
     return this.options.nativeCursorOverlay !== false;
+  }
+
+  public setNativeCursorOverlayEnabled(value: boolean): void {
+    const enabled = Boolean(value);
+    if (this.isNativeCursorOverlayEnabled() === enabled) {
+      return;
+    }
+
+    this.options.nativeCursorOverlay = enabled;
+    if (!enabled) {
+      this.cursorOverlay?.dispose();
+      this.cursorOverlay = null;
+      this.closeCursorChannel();
+      this.log("Native cursor overlay disabled");
+      return;
+    }
+
+    if (!this.cursorOverlay) {
+      this.cursorOverlay = new GfnCursorOverlayController(this.options.videoElement);
+      this.cursorOverlay.setFallbackResolution(parseResolution(this.currentResolution));
+      const lockElement = document.pointerLockElement;
+      const pointerLockTarget = this.options.videoElement.parentElement;
+      this.cursorOverlay.setPointerLocked(
+        lockElement === this.options.videoElement || lockElement === pointerLockTarget,
+      );
+    }
+    if (this.pc && !this.cursorChannel) {
+      try {
+        this.createCursorChannel(this.pc);
+      } catch (error) {
+        this.log(`Failed to open cursor channel: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    this.log("Native cursor overlay enabled");
   }
 
   private shouldAutoFullscreen(): boolean {
@@ -1015,6 +1174,83 @@ export class GfnWebRtcClient {
   public setAutoFullScreen(value: boolean): void {
     this.autoFullScreenEnabled = Boolean(value);
     this.log(`Auto fullscreen ${this.autoFullScreenEnabled ? "enabled" : "disabled"}`);
+  }
+
+  public setClipboardPasteEnabled(value: boolean): void {
+    const enabled = Boolean(value);
+    if (this.clipboardPasteEnabled === enabled) {
+      return;
+    }
+    this.clipboardPasteEnabled = enabled;
+    this.lastAdvertisedClipboardAvailable = null;
+    void this.refreshClipboardAvailability();
+  }
+
+  public async refreshClipboardAvailability(): Promise<boolean> {
+    if (this.controlChannel?.readyState !== "open") {
+      return false;
+    }
+
+    const text = this.clipboardPasteEnabled ? await this.readClipboardTextForPaste() : null;
+    const available = Boolean(text);
+    if (this.lastAdvertisedClipboardAvailable === available) {
+      return available;
+    }
+
+    this.sendClipboardControlMessage(available ? CLIPBOARD_CLIENT_ADDED_DATA : CLIPBOARD_CLIENT_REMOVED_DATA);
+    this.lastAdvertisedClipboardAvailable = available;
+    return available;
+  }
+
+  public async pasteClipboardText(): Promise<boolean> {
+    if (!this.inputReady || this.controlChannel?.readyState !== "open") {
+      return false;
+    }
+
+    const available = await this.refreshClipboardAvailability();
+    if (!available) {
+      // Official GFN treats empty/oversized/unreadable clipboard data as a handled no-op.
+      // Do not synthesize Ctrl+V here, or the server can paste stale remote clipboard data.
+      return true;
+    }
+    return this.sendPasteShortcut(false);
+  }
+
+  private async readClipboardTextForPaste(): Promise<string | null> {
+    if (!this.clipboardPasteEnabled || !this.options.readClipboardText) {
+      return null;
+    }
+
+    try {
+      const text = await this.options.readClipboardText();
+      return validateClipboardText(text, this.clipboardMaxBytes);
+    } catch (error) {
+      this.log(`Clipboard read failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  private sendClipboardControlMessage(
+    pasteType: typeof CLIPBOARD_CLIENT_ADDED_DATA | typeof CLIPBOARD_CLIENT_REMOVED_DATA | typeof CLIPBOARD_CLIENT_DATA_RESPONSE,
+    text?: string | null,
+    tracingData?: ClipboardTracingData,
+  ): boolean {
+    if (this.controlChannel?.readyState !== "open") {
+      return false;
+    }
+
+    this.controlChannel.send(JSON.stringify(buildClipboardControlMessage(pasteType, { text, tracingData })));
+    return true;
+  }
+
+  private async handleClipboardServerRequest(tracingData?: ClipboardTracingData): Promise<void> {
+    const text = await this.readClipboardTextForPaste();
+    this.sendClipboardControlMessage(
+      text ? CLIPBOARD_CLIENT_DATA_RESPONSE : CLIPBOARD_CLIENT_REMOVED_DATA,
+      text,
+      tracingData,
+    );
+    this.lastAdvertisedClipboardAvailable = Boolean(text);
   }
 
   public suppressNextSyntheticEscapeOnPointerLockLoss(durationMs = 1000): void {
@@ -1331,19 +1567,24 @@ export class GfnWebRtcClient {
       this.controlChannel.onclose = null;
       this.controlChannel.onerror = null;
     }
-    if (this.cursorChannel) {
-      this.cursorChannel.onmessage = null;
-      this.cursorChannel.onclose = null;
-      this.cursorChannel.onerror = null;
-    }
     this.reliableInputChannel?.close();
     this.partiallyReliableInputChannel?.close();
-    this.cursorChannel?.close();
+    this.closeCursorChannel();
     this.controlChannel?.close();
     this.reliableInputChannel = null;
     this.partiallyReliableInputChannel = null;
-    this.cursorChannel = null;
     this.controlChannel = null;
+  }
+
+  private closeCursorChannel(): void {
+    if (!this.cursorChannel) {
+      return;
+    }
+    this.cursorChannel.onmessage = null;
+    this.cursorChannel.onclose = null;
+    this.cursorChannel.onerror = null;
+    this.cursorChannel.close();
+    this.cursorChannel = null;
   }
 
   private clearTimers(): void {
@@ -1930,6 +2171,7 @@ export class GfnWebRtcClient {
     this.detachInputCapture();
     this.closeDataChannels();
     this.cleanupAudioRouting();
+    this.remoteIceEndpoint = null;
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;
@@ -1950,6 +2192,8 @@ export class GfnWebRtcClient {
     this.resetInputState();
     this.resetDiagnostics();
     this.connectedGamepads.clear();
+    this.gamepadMetaPressed.clear();
+    this.gamepadOverlayChordStates.clear();
     this.previousGamepadStates.clear();
     this.gamepadSendCount = 0;
     this.lastGamepadSendMs = 0;
@@ -1957,6 +2201,7 @@ export class GfnWebRtcClient {
     this.gamepadBitmap = 0;
     this.pendingMouseDxFloat = 0;
     this.pendingMouseDyFloat = 0;
+    this.pendingMouseAbs = null;
     this.pendingMouseTimestampUs = null;
     this.mouseDeltaFilter.reset();
     this.mouseFlushLastSendMs = 0;
@@ -2018,7 +2263,7 @@ export class GfnWebRtcClient {
     // state forwarding is suppressed inside pollGamepads() when nativeInputActive
     // is true so the native renderer remains the sole source for controller input.
     this.setupGamepadPolling();
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller overlay shortcut detection active, gamepad forwarding handled by native renderer.`);
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2214,7 +2459,8 @@ export class GfnWebRtcClient {
   }
 
   private isStreamInputBlocked(): boolean {
-    return this.inputPaused || this.windowStateInputPaused;
+    const sidebarOpen = typeof document !== "undefined" && document.body?.dataset?.sidebarOpen === "1";
+    return this.inputPaused || this.windowStateInputPaused || sidebarOpen;
   }
 
   private getGamepadPollIntervalMs(): number {
@@ -2229,7 +2475,7 @@ export class GfnWebRtcClient {
     // Poll at reduced rate while input is paused (dashboard open) — fast enough
     // to catch the Meta button release and next press, but not burning CPU at
     // the full 4 ms stream-input rate.
-    return this.inputPaused ? 16 : 4;
+    return this.isStreamInputBlocked() ? 16 : 4;
   }
 
   private shouldPollGamepads(): boolean {
@@ -2272,16 +2518,26 @@ export class GfnWebRtcClient {
       if (gamepad && gamepad.connected) {
         connectedCount++;
         this.updateGamepadBitmap(i, gamepad);
-        const metaPressed = Boolean(gamepad.buttons[16]?.pressed);
-        const prevMetaPressed = this.gamepadMetaPressed.get(i) ?? false;
-        if (metaPressed && !prevMetaPressed) {
+        const overlayShortcutGate = evaluateControllerOverlayShortcutGate(
+          gamepad,
+          this.gamepadOverlayChordStates.get(i) ?? null,
+          nowMs,
+        );
+        if (overlayShortcutGate.nextState) {
+          this.gamepadOverlayChordStates.set(i, overlayShortcutGate.nextState);
+        } else {
+          this.gamepadOverlayChordStates.delete(i);
+        }
+        const overlayShortcutPressed = overlayShortcutGate.overlayPressed;
+        const prevOverlayShortcutPressed = this.gamepadMetaPressed.get(i) ?? false;
+        if (overlayShortcutPressed && !prevOverlayShortcutPressed) {
           try {
             this.options.onControllerMetaPress?.({ controllerId: i, gamepad });
           } catch {
             // Host callbacks must never break stream input polling.
           }
         }
-        this.gamepadMetaPressed.set(i, metaPressed);
+        this.gamepadMetaPressed.set(i, overlayShortcutPressed);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
@@ -2296,7 +2552,7 @@ export class GfnWebRtcClient {
         // Read and encode gamepad state
         // Skip forwarding to the stream if input is blocked (dashboard open) or
         // the native renderer is handling controller input directly.
-        if (streamInputBlocked || this.nativeInputActive) {
+        if (streamInputBlocked || this.nativeInputActive || overlayShortcutGate.preemptInput) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);
@@ -2335,6 +2591,7 @@ export class GfnWebRtcClient {
         this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
         this.gamepadMetaPressed.delete(i);
+        this.gamepadOverlayChordStates.delete(i);
         this.previousGamepadStates.delete(i);
         this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
@@ -2832,6 +3089,14 @@ export class GfnWebRtcClient {
       return;
     }
 
+    this.createCursorChannel(pc);
+  }
+
+  private createCursorChannel(pc: RTCPeerConnection): void {
+    if (this.cursorChannel) {
+      return;
+    }
+
     this.cursorChannel = pc.createDataChannel("cursor_channel", {
       ordered: true,
     });
@@ -2886,6 +3151,12 @@ export class GfnWebRtcClient {
       return;
     }
 
+    const clipboardPayload = parseClipboardControlMessage(parsed);
+    if (isClipboardServerDataRequest(clipboardPayload)) {
+      void this.handleClipboardServerRequest(clipboardPayload?.tracingData);
+      return;
+    }
+
     if (!parsed || typeof parsed !== "object" || !("timerNotification" in parsed)) {
       return;
     }
@@ -2923,8 +3194,30 @@ export class GfnWebRtcClient {
       if (!candidate) {
         continue;
       }
-      await this.pc.addIceCandidate(candidate);
+      await this.pc.addIceCandidate(this.rewriteRemoteIceCandidateInit(candidate));
     }
+  }
+
+  private rewriteRemoteIceCandidateInit(candidate: RTCIceCandidateInit): RTCIceCandidateInit {
+    if (!candidate.candidate) {
+      return candidate;
+    }
+
+    const rewritten = rewriteIceCandidateEndpoint(candidate.candidate, this.remoteIceEndpoint);
+    if (!rewritten.rewritten) {
+      return candidate;
+    }
+
+    if (this.remoteIceEndpoint) {
+      this.log(
+        `Rewrote remote ICE candidate endpoint to mediaConnectionInfo ${this.remoteIceEndpoint.ip}:${this.remoteIceEndpoint.port}`,
+      );
+    }
+
+    return {
+      ...candidate,
+      candidate: rewritten.candidate,
+    };
   }
 
   private reliableDropLogged = false;
@@ -3262,6 +3555,7 @@ export class GfnWebRtcClient {
     this.mouseCoalescedBatchEntries = 0;
     this.pendingMouseDxFloat = 0;
     this.pendingMouseDyFloat = 0;
+    this.pendingMouseAbs = null;
     this.pendingMouseTimestampUs = null;
     this.mousePacketsPerSecond = 0;
     this.mousePacketsSentInWindow = 0;
@@ -3328,51 +3622,117 @@ export class GfnWebRtcClient {
     let lastPointerClientY = Number.NaN;
 
     const hasPendingMouseMovement = (): boolean =>
-      Math.abs(this.pendingMouseDxFloat) >= 0.5 || Math.abs(this.pendingMouseDyFloat) >= 0.5;
+      this.pendingMouseAbs !== null
+      || Math.abs(this.pendingMouseDxFloat) >= 0.5
+      || Math.abs(this.pendingMouseDyFloat) >= 0.5;
 
-    const flushMouse = (): boolean => {
+    const markServerCursorAt = (abs: { x: number; y: number; width: number; height: number }): void => {
+      // An absolute packet pins the server cursor exactly; keep the simulated
+      // server-pixel baseline in sync for the pointer-lock entry alignment path.
+      const { serverWidth, serverHeight } = getPointerScale();
+      simulatedAbsX = Math.round((abs.x / abs.width) * serverWidth);
+      simulatedAbsY = Math.round((abs.y / abs.height) * serverHeight);
+    };
+
+    const flushMouse = (forceReliable = false): boolean => {
       const tickNow = performance.now();
       if (!this.inputReady || !hasPendingMouseMovement()) {
         return false;
       }
 
-      const { scaleX, scaleY } = getPointerScale();
-      const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
-      const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
-      const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
-      const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
-      if (dxServer === 0 && dyServer === 0) {
+      // A batch can hold both an absolute position (queued while the overlay
+      // cursor was visible) and relative deltas accumulated after the cursor
+      // was hidden mid-batch. Send the absolute packet first, then the
+      // relative deltas, preserving event order like the official client's
+      // mixed batch encoding — never discard queued relative movement.
+      const batchTimestampUs = this.pendingMouseTimestampUs ?? timestampUs();
+      let sentAny = false;
+
+      // Compute the relative part first (without consuming it) so a mixed
+      // abs+rel pair can be detected up front. The partially reliable channel
+      // is unordered, so a dependent pair must travel on the ordered reliable
+      // channel or the relative delta could arrive before the absolute pin
+      // and be overwritten by it.
+      let relPart: {
+        dxServer: number;
+        dyServer: number;
+        residualX: number;
+        residualY: number;
+      } | null = null;
+      if (
+        Math.abs(this.pendingMouseDxFloat) >= 0.5
+        || Math.abs(this.pendingMouseDyFloat) >= 0.5
+      ) {
+        const { scaleX, scaleY } = getPointerScale();
+        const dxQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDxFloat);
+        const dyQuantized = quantizeMouseDeltaWithResidual(this.pendingMouseDyFloat);
+        const dxServer = Math.max(-32768, Math.min(32767, Math.round(dxQuantized.send * scaleX)));
+        const dyServer = Math.max(-32768, Math.min(32767, Math.round(dyQuantized.send * scaleY)));
+        if (dxServer !== 0 || dyServer !== 0) {
+          relPart = {
+            dxServer,
+            dyServer,
+            residualX: dxQuantized.residual,
+            residualY: dyQuantized.residual,
+          };
+        }
+      }
+      const mixedBatch = this.pendingMouseAbs !== null && relPart !== null;
+
+      if (this.pendingMouseAbs !== null) {
+        const abs = this.pendingMouseAbs;
+        this.pendingMouseAbs = null;
+        const payload = this.inputEncoder.encodeMouseAbsolute({
+          ...abs,
+          timestampUs: batchTimestampUs,
+        });
+        if (mixedBatch || forceReliable) {
+          this.sendReliable(payload);
+        } else {
+          this.sendInputPacket(payload, INPUT_MOUSE_ABS);
+        }
+        this.mousePacketsSentInWindow += 1;
+        markServerCursorAt(abs);
+        sentAny = true;
+      }
+
+      if (relPart !== null) {
+        this.pendingMouseDxFloat = relPart.residualX;
+        this.pendingMouseDyFloat = relPart.residualY;
+
+        const payload = this.inputEncoder.encodeMouseMove({
+          dx: relPart.dxServer,
+          dy: relPart.dyServer,
+          timestampUs: batchTimestampUs,
+        });
+        if (mixedBatch || forceReliable) {
+          this.sendReliable(payload);
+        } else {
+          this.sendInputPacket(payload, INPUT_MOUSE_REL);
+        }
+        this.mousePacketsSentInWindow += 1;
+
+        if (simulatedAbsX !== null && simulatedAbsY !== null) {
+          simulatedAbsX += relPart.dxServer;
+          simulatedAbsY += relPart.dyServer;
+        }
+        sentAny = true;
+      }
+
+      if (!sentAny) {
         return false;
       }
 
       const expectedSendAt = this.mouseFlushLastSendMs + this.mouseFlushIntervalMs;
-      const schedulingDelay = Math.max(0, tickNow - expectedSendAt);
       this.inputQueueMaxSchedulingDelayMsWindow = Math.max(
         this.inputQueueMaxSchedulingDelayMsWindow,
-        schedulingDelay,
+        Math.max(0, tickNow - expectedSendAt),
       );
-
-      this.pendingMouseDxFloat = dxQuantized.residual;
-      this.pendingMouseDyFloat = dyQuantized.residual;
-
-      const payload = this.inputEncoder.encodeMouseMove({
-        dx: dxServer,
-        dy: dyServer,
-        timestampUs: this.pendingMouseTimestampUs ?? timestampUs(),
-      });
-
       this.pendingMouseTimestampUs = null;
       this.mouseCoalescedBatchEntries = 0;
-      this.sendInputPacket(payload, INPUT_MOUSE_REL);
-      this.mousePacketsSentInWindow += 1;
       this.mouseFlushLastSendMs = tickNow;
       updateMousePacketRate();
       this.mouseAdaptiveFlushActive = false;
-
-      if (simulatedAbsX !== null && simulatedAbsY !== null) {
-        simulatedAbsX += dxServer;
-        simulatedAbsY += dyServer;
-      }
       return true;
     };
 
@@ -3454,43 +3814,57 @@ export class GfnWebRtcClient {
         if (typeof targetAbsX === "number" && typeof targetAbsY === "number") {
           const targetRect = pointerLockTarget.getBoundingClientRect();
           this.cursorOverlay?.setClientPosition(targetRect.left + targetAbsX, targetRect.top + targetAbsY);
+          const overlayAbs = this.cursorOverlay?.isCursorVisible()
+            ? this.cursorOverlay.getAbsolutePosition()
+            : null;
           const { scaleX, scaleY, serverWidth, serverHeight } = getPointerScale();
 
-          // Translate the element-local target into server pixels.
-          const targetServerX = Math.round(targetAbsX * scaleX);
-          const targetServerY = Math.round(targetAbsY * scaleY);
-
-          if (simulatedAbsX === null || simulatedAbsY === null) {
-            // No baseline known: assume server cursor is centered and move from
-            // center -> target in server pixels so remote cursor matches HW cursor.
-            const baselineXServer = Math.round(serverWidth / 2);
-            const baselineYServer = Math.round(serverHeight / 2);
-            const dx = Math.round(targetServerX - baselineXServer);
-            const dy = Math.round(targetServerY - baselineYServer);
-            if (dx !== 0 || dy !== 0) {
-              const movePayload = this.inputEncoder.encodeMouseMove({
-                dx: Math.max(-32768, Math.min(32767, dx)),
-                dy: Math.max(-32768, Math.min(32767, dy)),
-                timestampUs: timestampUs(),
-              });
-              this.sendReliable(movePayload);
-            }
-            // Record simulated baseline in server pixels.
-            simulatedAbsX = targetServerX;
-            simulatedAbsY = targetServerY;
+          if (overlayAbs) {
+            // Overlay cursor is visible: pin the server cursor with one
+            // absolute packet instead of simulating relative moves.
+            const movePayload = this.inputEncoder.encodeMouseAbsolute({
+              ...overlayAbs,
+              timestampUs: timestampUs(),
+            });
+            this.sendReliable(movePayload);
+            markServerCursorAt(overlayAbs);
           } else {
-            // sim values are stored in server pixels now; compute server delta.
-            const dx = Math.round(targetServerX - simulatedAbsX);
-            const dy = Math.round(targetServerY - simulatedAbsY);
-            if (dx !== 0 || dy !== 0) {
-              const movePayload = this.inputEncoder.encodeMouseMove({
-                dx: Math.max(-32768, Math.min(32767, dx)),
-                dy: Math.max(-32768, Math.min(32767, dy)),
-                timestampUs: timestampUs(),
-              });
-              this.sendReliable(movePayload);
-              simulatedAbsX += dx;
-              simulatedAbsY += dy;
+            // Translate the element-local target into server pixels.
+            const targetServerX = Math.round(targetAbsX * scaleX);
+            const targetServerY = Math.round(targetAbsY * scaleY);
+
+            if (simulatedAbsX === null || simulatedAbsY === null) {
+              // No baseline known: assume server cursor is centered and move from
+              // center -> target in server pixels so remote cursor matches HW cursor.
+              const baselineXServer = Math.round(serverWidth / 2);
+              const baselineYServer = Math.round(serverHeight / 2);
+              const dx = Math.round(targetServerX - baselineXServer);
+              const dy = Math.round(targetServerY - baselineYServer);
+              if (dx !== 0 || dy !== 0) {
+                const movePayload = this.inputEncoder.encodeMouseMove({
+                  dx: Math.max(-32768, Math.min(32767, dx)),
+                  dy: Math.max(-32768, Math.min(32767, dy)),
+                  timestampUs: timestampUs(),
+                });
+                this.sendReliable(movePayload);
+              }
+              // Record simulated baseline in server pixels.
+              simulatedAbsX = targetServerX;
+              simulatedAbsY = targetServerY;
+            } else {
+              // sim values are stored in server pixels now; compute server delta.
+              const dx = Math.round(targetServerX - simulatedAbsX);
+              const dy = Math.round(targetServerY - simulatedAbsY);
+              if (dx !== 0 || dy !== 0) {
+                const movePayload = this.inputEncoder.encodeMouseMove({
+                  dx: Math.max(-32768, Math.min(32767, dx)),
+                  dy: Math.max(-32768, Math.min(32767, dy)),
+                  timestampUs: timestampUs(),
+                });
+                this.sendReliable(movePayload);
+                simulatedAbsX += dx;
+                simulatedAbsY += dy;
+              }
             }
           }
         }
@@ -3528,6 +3902,35 @@ export class GfnWebRtcClient {
       }
 
       this.cursorOverlay?.moveBy(adjustedDx, adjustedDy);
+
+      // Official GFN local-cursor mode: while the client-rendered cursor is
+      // visible, send absolute positions (type 5) that mirror the clamped
+      // overlay position so the server cursor cannot drift from the overlay.
+      // Relative deltas (type 7) remain for hidden-cursor/raw-input games.
+      if (this.cursorOverlay?.isCursorVisible()) {
+        const abs = this.cursorOverlay.getAbsolutePosition();
+        if (abs) {
+          // Deliver raw-input deltas queued before the cursor became
+          // visible ahead of the absolute pin, in order, on the reliable
+          // channel — never after it, where they would shift the server
+          // cursor off the overlay.
+          if (
+            Math.abs(this.pendingMouseDxFloat) >= 0.5
+            || Math.abs(this.pendingMouseDyFloat) >= 0.5
+          ) {
+            flushMouse(true);
+          }
+          this.pendingMouseDxFloat = 0;
+          this.pendingMouseDyFloat = 0;
+          this.pendingMouseAbs = abs;
+          if (this.pendingMouseTimestampUs === null) {
+            this.pendingMouseTimestampUs = timestampUs(eventTimestampMs);
+          }
+          this.mouseCoalescedBatchEntries += 1;
+          return;
+        }
+      }
+
       this.pendingMouseDxFloat += adjustedDx;
       this.pendingMouseDyFloat += adjustedDy;
       if (this.pendingMouseTimestampUs === null) {
@@ -3686,6 +4089,16 @@ export class GfnWebRtcClient {
 
       if (isCapsLockToggle) {
         // Official GFN gg(): CapsLock keyup sends synthetic keydown then keyup (vk 160).
+        if (mapped && this.pressedKeys.has(mapped.vk)) {
+          this.pressedKeys.delete(mapped.vk);
+          this.sendReliableSingleInput(this.inputEncoder.encodeKeyUp({
+            keycode: mapped.vk,
+            scancode: mapped.scancode,
+            modifiers,
+            timestampUs: eventTimestampUs,
+          }));
+        }
+
         const capsVk = 0xa0;
         this.sendReliableSingleInput(this.inputEncoder.encodeKeyDown({
           keycode: capsVk,
@@ -3950,6 +4363,7 @@ export class GfnWebRtcClient {
       lastAbsX = null;
       lastAbsY = null;
       focusPointerLockTarget();
+      void this.refreshClipboardAvailability();
       // Auto-lock: acquire pointer lock when the user switches back to the app.
       tryAutoLock();
     };
@@ -4146,6 +4560,7 @@ export class GfnWebRtcClient {
       this.releasePressedKeys("input cleanup");
       this.pendingMouseDxFloat = 0;
       this.pendingMouseDyFloat = 0;
+      this.pendingMouseAbs = null;
       this.pendingMouseTimestampUs = null;
       this.mouseDeltaFilter.reset();
       this.pointerLockTarget = null;
@@ -4354,6 +4769,7 @@ export class GfnWebRtcClient {
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
+    this.remoteIceEndpoint = session.mediaConnectionInfo ?? null;
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
@@ -4464,6 +4880,11 @@ export class GfnWebRtcClient {
 
       this.controlChannel = channel;
       this.controlChannel.binaryType = "arraybuffer";
+      this.controlChannel.onopen = () => {
+        this.log("Control channel open");
+        this.lastAdvertisedClipboardAvailable = null;
+        void this.refreshClipboardAvailability();
+      };
       this.controlChannel.onmessage = (msgEvent) => {
         void this.onControlChannelMessage(msgEvent.data as string | Blob | ArrayBuffer);
       };
@@ -4471,11 +4892,15 @@ export class GfnWebRtcClient {
         this.log("Control channel closed");
         if (this.controlChannel === channel) {
           this.controlChannel = null;
+          this.lastAdvertisedClipboardAvailable = null;
         }
       };
       this.controlChannel.onerror = () => {
         this.log("Control channel error");
       };
+      if (channel.readyState === "open") {
+        this.controlChannel.onopen?.call(channel, new Event("open"));
+      }
     };
 
     pc.onicecandidateerror = (event: Event) => {
@@ -4509,21 +4934,28 @@ export class GfnWebRtcClient {
 
     // --- SDP Processing (matching Rust reference) ---
 
-    // 1. Fix 0.0.0.0 in server's SDP offer with real server IP
-    //    The GFN server sends c=IN IP4 0.0.0.0; replace with actual IP
+    // 1. Match the official client by pointing server ICE candidates at the
+    //    WebRTC media endpoint from CloudMatch when one is present.
     const webRtcMediaConnection =
       session.mediaConnectionInfo?.usage === 2 || session.mediaConnectionInfo?.usage === 17
         ? session.mediaConnectionInfo
         : undefined;
-    const serverIpForSdp = webRtcMediaConnection?.ip ?? "";
     let processedOffer = offerSdp;
-    if (serverIpForSdp) {
+    if (webRtcMediaConnection?.ip) {
+      const serverIpForSdp = webRtcMediaConnection.ip;
       processedOffer = fixServerIp(processedOffer, serverIpForSdp);
       this.log(`Fixed server IP in SDP offer: ${serverIpForSdp}`);
       // Log any remaining 0.0.0.0 references after fix
       const remaining = (processedOffer.match(/0\.0\.0\.0/g) ?? []).length;
       if (remaining > 0) {
         this.log(`Warning: ${remaining} occurrences of 0.0.0.0 still remain in SDP after fix`);
+      }
+      const rewritten = rewriteSdpIceCandidateEndpoints(processedOffer, webRtcMediaConnection);
+      if (rewritten.replacements > 0) {
+        processedOffer = rewritten.sdp;
+        this.log(
+          `Rewrote ${rewritten.replacements} server ICE candidate endpoint(s) to mediaConnectionInfo ${webRtcMediaConnection.ip}:${webRtcMediaConnection.port}`,
+        );
       }
     } else if (session.mediaConnectionInfo) {
       this.log(
@@ -4690,9 +5122,8 @@ export class GfnWebRtcClient {
       }
     }
 
-    // Recent GFN browser runtimes rely on the server-provided trickled ICE
-    // candidate. Injecting mediaConnectionInfo as a higher-priority fallback can
-    // make Chromium pick an RTSPS endpoint that connects but never delivers frames.
+    // Keep using server-provided trickled ICE; when CloudMatch gives a WebRTC
+    // media endpoint, remote candidate IP/port rewriting happens in addRemoteCandidate.
     this.log("Waiting for server-provided ICE candidates");
 
     this.log("=== handleOffer COMPLETE — waiting for ICE connectivity and tracks ===");
@@ -4715,7 +5146,7 @@ export class GfnWebRtcClient {
       return;
     }
 
-    await this.pc.addIceCandidate(init);
+    await this.pc.addIceCandidate(this.rewriteRemoteIceCandidateInit(init));
   }
 
   dispose(): void {

@@ -15,12 +15,15 @@ import type {
   NativeStreamerFeatureMode,
   NativeTransitionDiagnostics,
   AppAccentColor,
+  VideoShaderSettings,
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
+  DEFAULT_VIDEO_SHADER_SETTINGS,
   getDefaultStreamPreferences,
   normalizeStreamClientModeForPlatform,
   normalizeStreamPreferences,
+  normalizeVideoShaderSettings,
 } from "@shared/gfn";
 
 export interface Settings {
@@ -70,6 +73,8 @@ export interface Settings {
   clipboardPaste: boolean;
   /** Enable experimental gyroscope controller input mapping */
   enableGyroscopeControls: boolean;
+  /** macOS-only workaround that restores Chromium's older HID path for Steam Controller compatibility */
+  steamControllerCompatibilityMode: boolean;
   /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream */
   nativeCursorOverlay: boolean;
   /** Mouse sensitivity multiplier */
@@ -112,6 +117,8 @@ export interface Settings {
   appAccentColor: AppAccentColor;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
+  /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
+  launchInConsoleMode: boolean;
   /** Automatically enter fullscreen when launching a stream */
   autoFullScreen: boolean;
   favoriteGameIds: string[];
@@ -127,6 +134,8 @@ export interface Settings {
   keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** User opt-in for NVIDIA's per-game in-game graphics/settings persistence */
+  enablePersistingInGameSettings: boolean;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
@@ -139,6 +148,10 @@ export interface Settings {
   autoCheckForUpdates: boolean;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
+  /** Last version for which the release highlights modal was acknowledged (empty = never) */
+  lastSeenReleaseHighlightsVersion: string;
+  /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
+  videoShader: VideoShaderSettings;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -196,6 +209,7 @@ const DEFAULT_SETTINGS: Settings = {
   sessionProxyUrl: "",
   clipboardPaste: false,
   enableGyroscopeControls: false,
+  steamControllerCompatibilityMode: false,
   nativeCursorOverlay: true,
   mouseSensitivity: 1,
   mouseAcceleration: 1,
@@ -215,6 +229,7 @@ const DEFAULT_SETTINGS: Settings = {
   hideServerSelector: false,
   appAccentColor: "green",
   controllerMode: false,
+  launchInConsoleMode: false,
   autoFullScreen: false,
   favoriteGameIds: [],
   sessionCounterEnabled: false,
@@ -225,13 +240,70 @@ const DEFAULT_SETTINGS: Settings = {
   windowHeight: 900,
   keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
   gameLanguage: "en_US",
+  enablePersistingInGameSettings: false,
   enableL4S: false,
   enableCloudGsync: false,
   nativeTransitionDiagnostics: undefined,
   discordRichPresence: false,
   autoCheckForUpdates: true,
   allowEscapeToExitFullscreen: false,
+  lastSeenReleaseHighlightsVersion: "",
+  videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
 };
+
+const SHORTCUT_SETTING_KEYS = [
+  "shortcutToggleStats",
+  "shortcutTogglePointerLock",
+  "shortcutToggleFullscreen",
+  "shortcutStopStream",
+  "shortcutToggleAntiAfk",
+  "shortcutToggleMicrophone",
+  "shortcutScreenshot",
+  "shortcutToggleRecording",
+] as const satisfies readonly (keyof Settings)[];
+
+type ShortcutSettingKey = typeof SHORTCUT_SETTING_KEYS[number];
+
+const SIDEBAR_RESERVED_SHORTCUTS_NON_MAC = new Set(["CTRL+G", "CTRL+SHIFT+G"]);
+const SIDEBAR_RESERVED_SHORTCUTS_MAC = new Set(["META+G", "CMD+G", "COMMAND+G"]);
+const SIDEBAR_RESERVED_SHORTCUT_FALLBACKS: Record<ShortcutSettingKey, readonly string[]> = {
+  shortcutToggleStats: ["F3", "Ctrl+Shift+F3", "Ctrl+Alt+F3"],
+  shortcutTogglePointerLock: ["F8", "Ctrl+Shift+F8", "Ctrl+Alt+F8"],
+  shortcutToggleFullscreen: ["F10", "Ctrl+Shift+F10", "Ctrl+Alt+F10"],
+  shortcutStopStream: [defaultStopShortcut, "Ctrl+Alt+Q", "Ctrl+Alt+Shift+Q"],
+  shortcutToggleAntiAfk: [defaultAntiAfkShortcut, "Ctrl+Alt+K", "Ctrl+Alt+Shift+K"],
+  shortcutToggleMicrophone: [defaultMicShortcut, "Ctrl+Alt+M", "Ctrl+Alt+Shift+M"],
+  shortcutScreenshot: ["F11", "Ctrl+Shift+S", "Ctrl+Alt+S", "Ctrl+Shift+F11", "Ctrl+Alt+Shift+S"],
+  shortcutToggleRecording: ["F12", "Ctrl+Shift+R", "Ctrl+Alt+R", "Ctrl+Shift+F12", "Ctrl+Alt+Shift+R"],
+};
+
+function normalizeShortcutForComparison(value: string): string {
+  return value.replace(/\s+/g, "").toUpperCase();
+}
+
+function isSidebarReservedShortcut(value: string): boolean {
+  const normalized = normalizeShortcutForComparison(value);
+  const reserved = process.platform === "darwin"
+    ? SIDEBAR_RESERVED_SHORTCUTS_MAC
+    : SIDEBAR_RESERVED_SHORTCUTS_NON_MAC;
+  return reserved.has(normalized);
+}
+
+function isShortcutAvailable(
+  settings: Settings,
+  key: ShortcutSettingKey,
+  candidate: string,
+): boolean {
+  const normalizedCandidate = normalizeShortcutForComparison(candidate);
+  if (isSidebarReservedShortcut(candidate)) {
+    return false;
+  }
+
+  return SHORTCUT_SETTING_KEYS.every((otherKey) => (
+    otherKey === key ||
+    normalizeShortcutForComparison(settings[otherKey]) !== normalizedCandidate
+  ));
+}
 
 export class SettingsManager {
   private settings: Settings;
@@ -352,6 +424,17 @@ export class SettingsManager {
       migrated = true;
     }
 
+    if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
+      settings.steamControllerCompatibilityMode = false;
+      migrated = true;
+    }
+
+    const videoShader = normalizeVideoShaderSettings(settings.videoShader);
+    if (JSON.stringify(settings.videoShader) !== JSON.stringify(videoShader)) {
+      settings.videoShader = videoShader;
+      migrated = true;
+    }
+
     return migrated;
   }
 
@@ -369,6 +452,18 @@ export class SettingsManager {
 
     if (LEGACY_ANTI_AFK_SHORTCUTS.has(antiAfkShortcut)) {
       settings.shortcutToggleAntiAfk = defaultAntiAfkShortcut;
+      migrated = true;
+    }
+
+    for (const key of SHORTCUT_SETTING_KEYS) {
+      if (!isSidebarReservedShortcut(settings[key])) {
+        continue;
+      }
+
+      const fallback = SIDEBAR_RESERVED_SHORTCUT_FALLBACKS[key].find((candidate) =>
+        isShortcutAvailable(settings, key, candidate),
+      ) ?? DEFAULT_SETTINGS[key];
+      settings[key] = fallback;
       migrated = true;
     }
 

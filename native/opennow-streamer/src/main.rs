@@ -95,6 +95,9 @@ fn handle_command(
         "input" => {
             return write_reply(backend.send_input(command));
         }
+        "input-paused" => {
+            return write_reply(backend.set_input_paused(command));
+        }
         "surface" => {
             return write_reply(backend.update_render_surface(command));
         }

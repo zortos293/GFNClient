@@ -83,6 +83,57 @@ pub fn fix_server_ip(sdp: &str, server_ip: &str) -> String {
         .into_owned()
 }
 
+pub fn rewrite_ice_candidate_endpoint(
+    candidate: &str,
+    ip: &str,
+    port: u16,
+) -> (String, bool) {
+    let ip = ip.trim();
+    if ip.is_empty() || port == 0 {
+        return (candidate.to_owned(), false);
+    }
+
+    let mut parts: Vec<String> = candidate.split_whitespace().map(ToOwned::to_owned).collect();
+    if parts.len() < 6
+        || !(parts[0].starts_with("candidate:") || parts[0].starts_with("a=candidate:"))
+    {
+        return (candidate.to_owned(), false);
+    }
+
+    if parts[4] == ip && parts[5] == port.to_string() {
+        return (candidate.to_owned(), false);
+    }
+
+    parts[4] = ip.to_owned();
+    parts[5] = port.to_string();
+    let rewritten = parts.join(" ");
+    (rewritten, true)
+}
+
+pub fn rewrite_sdp_ice_candidate_endpoints(
+    sdp: &str,
+    ip: &str,
+    port: u16,
+) -> (String, usize) {
+    let ending = line_ending(sdp);
+    let mut replacements = 0usize;
+    let lines = split_lines_lossless(sdp)
+        .into_iter()
+        .map(|line| {
+            if !line.starts_with("a=candidate:") {
+                return line.to_owned();
+            }
+            let (rewritten, changed) = rewrite_ice_candidate_endpoint(line, ip, port);
+            if changed {
+                replacements += 1;
+            }
+            rewritten
+        })
+        .collect::<Vec<_>>();
+
+    (lines.join(ending), replacements)
+}
+
 pub fn duplicate_session_webrtc_attributes_to_media(sdp: &str) -> String {
     let ending = line_ending(sdp);
     let lines = split_lines_lossless(sdp);
@@ -841,6 +892,43 @@ mod tests {
         let fixed = fix_server_ip(offer, "80-250-97-40.cloudmatchbeta.nvidiagrid.net");
         assert!(fixed.contains("c=IN IP4 80.250.97.40"));
         assert!(fixed.contains("a=candidate:1 1 udp 1 80.250.97.40 49000 typ host"));
+    }
+
+    #[test]
+    fn rewrites_sdp_ice_candidate_endpoints() {
+        let offer = [
+            "v=0",
+            "c=IN IP4 0.0.0.0",
+            "a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host",
+            "a=candidate:2 1 tcp 1518214911 203.0.113.10 9 typ host tcptype active",
+        ]
+        .join("\r\n");
+
+        let (rewritten, replacements) =
+            rewrite_sdp_ice_candidate_endpoints(&offer, "198.51.100.55", 18784);
+
+        assert_eq!(replacements, 2);
+        assert!(rewritten
+            .contains("a=candidate:1 1 udp 2122260223 198.51.100.55 18784 typ host"));
+        assert!(rewritten.contains(
+            "a=candidate:2 1 tcp 1518214911 198.51.100.55 18784 typ host tcptype active"
+        ));
+        assert!(rewritten.contains("c=IN IP4 0.0.0.0"));
+        assert!(rewritten.contains("\r\n"));
+    }
+
+    #[test]
+    fn rewrites_trickled_ice_candidate_endpoint() {
+        let candidate = "candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host";
+
+        let (rewritten, changed) =
+            rewrite_ice_candidate_endpoint(candidate, "198.51.100.55", 18784);
+
+        assert!(changed);
+        assert_eq!(
+            rewritten,
+            "candidate:1 1 udp 2122260223 198.51.100.55 18784 typ host"
+        );
     }
 
     #[test]

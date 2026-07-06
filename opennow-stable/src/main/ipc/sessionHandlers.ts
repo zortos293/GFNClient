@@ -17,6 +17,7 @@ import {
   getActiveSessions,
   pollSession,
   reportSessionAd,
+  shouldEnableInGameSettingsPersistence,
   stopSession,
 } from "../gfn/cloudmatch";
 import { SessionError } from "../gfn/errorCodes";
@@ -72,6 +73,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
         ...payload,
         settings: resolvedSettings,
       };
+      const requestedPersistence = shouldEnableInGameSettingsPersistence(resolvedPayload);
 
       const tryClaimExisting = async (): Promise<SessionInfo | null> => {
         if (!token) return null;
@@ -97,6 +99,8 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
               sessionId: readyCandidate.sessionId,
               serverIp: readyCandidate.serverIp!,
               appId: resolvedPayload.appId,
+              appLaunchMode: readyCandidate.appLaunchMode,
+              enablePersistingInGameSettings: readyCandidate.enablePersistingInGameSettings,
               settings: resolvedPayload.settings,
             });
           }
@@ -106,6 +110,24 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
             numericAppId,
           );
           if (launchingCandidate) {
+            const candidatePersistence = launchingCandidate.enablePersistingInGameSettings;
+            if (
+              typeof candidatePersistence === "boolean" &&
+              candidatePersistence !== requestedPersistence
+            ) {
+              console.log(
+                `[CreateSession] Stopping launching session ${launchingCandidate.sessionId} because in-game settings persistence changed ` +
+                  `(session=${candidatePersistence}, requested=${requestedPersistence}); creating a fresh session.`,
+              );
+              await stopSession({
+                token,
+                streamingBaseUrl,
+                serverIp: launchingCandidate.serverIp!,
+                zone: resolvedPayload.zone,
+                sessionId: launchingCandidate.sessionId,
+              });
+              return null;
+            }
             console.log(
               `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
             );

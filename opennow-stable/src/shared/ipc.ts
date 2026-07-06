@@ -28,6 +28,7 @@ export const IPC_CHANNELS = {
   GAMES_FETCH_PUBLIC: "games:fetch-public",
   GAMES_RESOLVE_LAUNCH_ID: "games:resolve-launch-id",
   GAMES_RESOLVE_STORE_URL: "games:resolve-store-url",
+  GAMES_MARK_OWNED: "games:mark-owned",
   CREATE_SESSION: "gfn:create-session",
   POLL_SESSION: "gfn:poll-session",
   REPORT_SESSION_AD: "gfn:report-session-ad",
@@ -40,6 +41,7 @@ export const IPC_CHANNELS = {
   SEND_ANSWER: "gfn:send-answer",
   SEND_ICE_CANDIDATE: "gfn:send-ice-candidate",
   NATIVE_INPUT: "gfn:native-input",
+  NATIVE_INPUT_PAUSED: "gfn:native-input-paused",
   NATIVE_RENDER_SURFACE: "gfn:native-render-surface",
   NATIVE_UPDATE_SHORTCUTS: "gfn:native-update-shortcuts",
   REQUEST_KEYFRAME: "gfn:request-keyframe",
@@ -95,6 +97,10 @@ export const IPC_CHANNELS = {
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
   // Discord Rich Presence
   DISCORD_CLEAR_ACTIVITY: "discord:clear-activity",
+  // Release highlights (What's new)
+  RELEASE_HIGHLIGHTS_GET: "release-highlights:get",
+  RELEASE_HIGHLIGHTS_ACK: "release-highlights:ack",
+  RELEASE_HIGHLIGHTS_SHOW: "release-highlights:show",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

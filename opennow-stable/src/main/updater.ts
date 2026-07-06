@@ -3,14 +3,15 @@ import electronUpdater from "electron-updater";
 import type { AppUpdater, ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 
 import { getAppBuildInfo } from "./appBuildInfo";
+import { pickRuntimeGitHubToken } from "./githubRuntimeToken";
 import { getLinuxUpdaterSupport } from "./linuxUpdaterSupport";
+import { writeCacheEntry } from "./releaseHighlights";
 import type { AppUpdaterState } from "@shared/gfn";
 
 const { autoUpdater } = electronUpdater;
 
 const STARTUP_CHECK_DELAY_MS = 12_000;
 const PERIODIC_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const UPDATER_TOKEN_ENV_KEYS = ["OPENNOW_GH_TOKEN", "GH_TOKEN"] as const;
 
 export interface AppUpdaterController {
   initialize(): void;
@@ -31,17 +32,6 @@ interface AppUpdaterControllerOptions {
 
 function isPrereleaseVersion(version: string): boolean {
   return version.includes("-");
-}
-
-function pickRuntimeToken(): string | null {
-  for (const key of UPDATER_TOKEN_ENV_KEYS) {
-    const value = process.env[key]?.trim();
-    if (value) {
-      return value;
-    }
-  }
-
-  return null;
 }
 
 function normalizeErrorMessage(error: unknown): string {
@@ -146,7 +136,7 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   }
 
   const updater: AppUpdater = autoUpdater;
-  const token = pickRuntimeToken();
+  const token = pickRuntimeGitHubToken();
   if (token) {
     updater.requestHeaders = {
       ...updater.requestHeaders,
@@ -285,6 +275,23 @@ export function createAppUpdaterController(options: AppUpdaterControllerOptions)
   updater.on("update-downloaded", (info: UpdateDownloadedEvent) => {
     downloadedUpdateInfo = info;
     const downloadedVersion = getUpdateVersion(info) ?? availableUpdateInfo?.version;
+
+    // Cache the release notes for offline fallback in the What's New modal
+    const releaseNotesRaw = (info as UpdateDownloadedEvent & { releaseNotes?: unknown }).releaseNotes;
+    if (downloadedVersion && releaseNotesRaw) {
+      let body: string | null = null;
+      if (typeof releaseNotesRaw === "string") {
+        body = releaseNotesRaw;
+      } else if (Array.isArray(releaseNotesRaw)) {
+        body = (releaseNotesRaw as Array<{ note?: string | null }>)
+          .map((entry) => entry?.note ?? "")
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      if (body) {
+        void writeCacheEntry(downloadedVersion.replace(/^v/, ""), body);
+      }
+    }
     updateState({
       status: "downloaded",
       availableVersion: downloadedVersion,

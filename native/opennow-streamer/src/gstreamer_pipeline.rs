@@ -18,7 +18,8 @@ use crate::gstreamer_liveness::{
 };
 use crate::gstreamer_platform::{
     apply_render_surface_to_video_sink, primary_display_refresh_hz,
-    start_external_renderer_window_guard, update_external_renderer_surface,
+    release_native_input_capture, start_external_renderer_window_guard,
+    update_external_renderer_surface,
 };
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
 use crate::protocol::{
@@ -733,7 +734,9 @@ impl GstreamerPipeline {
     }
 
     pub(crate) fn send_input_packet(&self, payload: &[u8], partially_reliable: bool) -> bool {
-        if !self.input_state.ready.load(Ordering::SeqCst) {
+        if !self.input_state.ready.load(Ordering::SeqCst)
+            || self.input_state.paused.load(Ordering::SeqCst)
+        {
             return false;
         }
 
@@ -742,6 +745,13 @@ impl GstreamerPipeline {
         };
 
         input_channels.send_packet(payload, partially_reliable)
+    }
+
+    pub(crate) fn set_input_paused(&self, paused: bool) {
+        self.input_state.paused.store(paused, Ordering::SeqCst);
+        if paused {
+            release_native_input_capture();
+        }
     }
 
     pub(crate) fn update_render_surface(&self, surface: NativeRenderSurface) {

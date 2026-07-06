@@ -13,6 +13,9 @@ const translations: Record<string, string> = {
   "errors.insufficientPlayabilityTierDescription": "This game requires {{tier}} on GeForce NOW. Upgrade your membership to play it.",
   "errors.launchFailedTitle": "Launch Failed",
   "errors.launchUnknown": "The game could not start. Please try again.",
+  "errors.userStorageUnavailableTitle": "Persistent Storage Unavailable",
+  "errors.userStorageUnavailableDescription": "NVIDIA reported that Persistent Storage is unavailable for this account or storage location. Open Settings → Account → Persistent Storage, then use NVIDIA Storage Manager to reset or move the storage location. If it still fails, check NVIDIA server status.",
+  "errors.userStorageUnavailableAction": "Open Storage Settings",
 };
 
 function t(key: string, values: Record<string, string | number | boolean | null | undefined> = {}): string {
@@ -53,3 +56,18 @@ test("launch error state still treats session limit as duplicate session", () =>
   assert.equal(state.description, "Another session is already running.");
 });
 
+test("launch error state treats NVIDIA user storage failures as persistent storage recovery", () => {
+  const state = toLaunchErrorState(t, {
+    gfnErrorCode: 3237093721,
+    statusCode: 89,
+    statusDescription: "USER_STORAGE_NOT_AVAILABLE CA8C3011",
+    title: "Storage Unavailable",
+    description: "User storage is not available.",
+  }, "setup");
+
+  assert.equal(state.title, "Persistent Storage Unavailable");
+  assert.match(state.description, /NVIDIA Storage Manager/i);
+  assert.equal(state.codeLabel, "UserStorageNotAvailable (3237093721)");
+  assert.equal(state.action, "persistent-storage-settings");
+  assert.equal(state.actionLabel, "Open Storage Settings");
+});

@@ -9,7 +9,7 @@ import {
   session,
   protocol,
 } from "electron";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -78,64 +78,56 @@ import {
 } from "./services/printedWaste";
 import { pingRegions } from "./services/regionPing";
 import {
-  buildVideoAccelerationCommandLine,
-  isAccelerationPreference,
-  type BootstrapVideoPreferences,
-} from "./videoAcceleration";
+  buildChromiumCommandLine,
+  normalizeBootstrapChromiumPreferences,
+  type BootstrapChromiumPreferences,
+} from "./chromiumCommandLine";
 import {
   nextPointerLockEscapeCaptureUntilMs,
   shouldCaptureEscapeFullscreenInput,
 } from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
+import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowReleaseHighlights } from "./releaseHighlights";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Configure Chromium video and WebRTC behavior before app.whenReady().
+// Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
-function loadBootstrapVideoPreferences(): BootstrapVideoPreferences {
-  const defaults: BootstrapVideoPreferences = {
-    decoderPreference: "auto",
-    encoderPreference: "auto",
-  };
+function loadBootstrapChromiumPreferences(): BootstrapChromiumPreferences {
   try {
     const settingsPath = join(app.getPath("userData"), "settings.json");
     if (!existsSync(settingsPath)) {
-      return defaults;
+      return normalizeBootstrapChromiumPreferences(null);
     }
-    const parsed = JSON.parse(
-      readFileSync(settingsPath, "utf-8"),
-    ) as Partial<BootstrapVideoPreferences>;
-    return {
-      decoderPreference: isAccelerationPreference(parsed.decoderPreference)
-        ? parsed.decoderPreference
-        : defaults.decoderPreference,
-      encoderPreference: isAccelerationPreference(parsed.encoderPreference)
-        ? parsed.encoderPreference
-        : defaults.encoderPreference,
-    };
+    return normalizeBootstrapChromiumPreferences(
+      JSON.parse(readFileSync(settingsPath, "utf-8")),
+    );
   } catch {
-    return defaults;
+    return normalizeBootstrapChromiumPreferences(null);
   }
 }
 
-const bootstrapVideoPrefs = loadBootstrapVideoPreferences();
+const bootstrapChromiumPrefs = loadBootstrapChromiumPreferences();
 console.log(
-  `[Main] Video acceleration preference: decode=${bootstrapVideoPrefs.decoderPreference}, encode=${bootstrapVideoPrefs.encoderPreference}`,
+  `[Main] Video acceleration preference: decode=${bootstrapChromiumPrefs.decoderPreference}, encode=${bootstrapChromiumPrefs.encoderPreference}`,
 );
 
-const videoAccelerationCommandLine = buildVideoAccelerationCommandLine(
-  bootstrapVideoPrefs,
+const chromiumCommandLine = buildChromiumCommandLine(
+  bootstrapChromiumPrefs,
   process.platform,
   process.arch,
 );
 
 app.commandLine.appendSwitch(
   "enable-features",
-  videoAccelerationCommandLine.enableFeatures.join(","),
+  chromiumCommandLine.enableFeatures.join(","),
 );
 
-app.commandLine.appendSwitch("disable-features", videoAccelerationCommandLine.disableFeatures.join(","));
+app.commandLine.appendSwitch(
+  "disable-features",
+  chromiumCommandLine.disableFeatures.join(","),
+);
 
 app.commandLine.appendSwitch(
   "force-fieldtrials",
@@ -145,7 +137,7 @@ app.commandLine.appendSwitch(
   ].join("/"),
 );
 
-for (const [name, value] of Object.entries(videoAccelerationCommandLine.switches)) {
+for (const [name, value] of Object.entries(chromiumCommandLine.switches)) {
   if (value === true) {
     app.commandLine.appendSwitch(name);
   } else {
@@ -225,6 +217,10 @@ function emitDirectLaunchRequest(request: DirectLaunchRequest): void {
 function enqueueDirectLaunchRequest(request: DirectLaunchRequest): void {
   pendingDirectLaunchRequest = request;
   focusMainWindow();
+  // Argument launches always run as a fullscreen console session.
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(true);
+  }
   emitDirectLaunchRequest(request);
 }
 
@@ -416,6 +412,30 @@ function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
   }
 }
 
+function parseExternalHttpUrl(url: string): URL {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Only HTTP(S) external URLs can be opened.");
+  }
+  return parsed;
+}
+
+function isAppNavigationUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (process.env.ELECTRON_RENDERER_URL) {
+      return parsed.origin === new URL(process.env.ELECTRON_RENDERER_URL).origin;
+    }
+    return parsed.toString() === pathToFileURL(join(__dirname, "../../dist/index.html")).toString();
+  } catch {
+    return false;
+  }
+}
+
+async function openExternalHttpUrl(url: string): Promise<void> {
+  await shell.openExternal(parseExternalHttpUrl(url).toString());
+}
+
 async function createMainWindow(): Promise<void> {
   const preloadMjsPath = join(__dirname, "../preload/index.mjs");
   const preloadJsPath = join(__dirname, "../preload/index.js");
@@ -425,11 +445,23 @@ async function createMainWindow(): Promise<void> {
 
   const settings = settingsManager.getAll();
 
+  // Console mode (big picture): mirror GeForce NOW's TV mode by launching
+  // fullscreen with the controller-oriented shell enabled.
+  if (settings.launchInConsoleMode && !settings.controllerMode) {
+    settingsManager.set("controllerMode", true);
+  }
+
+  // Direct-launch arguments always start fullscreen; the renderer applies the
+  // console shell for the run without persisting the Controller Mode setting.
+  const startFullscreen =
+    settings.launchInConsoleMode || pendingDirectLaunchRequest !== null;
+
   mainWindow = new BrowserWindow({
     width: settings.windowWidth || 1400,
     height: settings.windowHeight || 900,
     minWidth: 1024,
     minHeight: 680,
+    fullscreen: startFullscreen,
     autoHideMenuBar: true,
     backgroundColor: "#0f172a",
     webPreferences: {
@@ -438,6 +470,24 @@ async function createMainWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openExternalHttpUrl(url).catch((error) => {
+      console.warn("Blocked non-external window open:", error instanceof Error ? error.message : error);
+    });
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isAppNavigationUrl(url)) {
+      return;
+    }
+
+    event.preventDefault();
+    void openExternalHttpUrl(url).catch((error) => {
+      console.warn("Blocked app window navigation:", error instanceof Error ? error.message : error);
+    });
   });
 
   if (process.platform === "win32") {
@@ -870,11 +920,7 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: string): Promise<void> => {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      throw new Error("Only HTTP(S) external URLs can be opened.");
-    }
-    await shell.openExternal(parsed.toString());
+    await openExternalHttpUrl(url);
   });
 
   ipcMain.handle(
@@ -1149,9 +1195,24 @@ function registerIpcHandlers(): void {
     return fetchPrintedWasteServerMapping(app.getVersion());
   });
 
-  // Save window size when it changes
+  // Release highlights IPC handlers
+  ipcMain.handle(
+    IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET,
+    async (_event, version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> => {
+      const appVersion = normalizeReleaseVersion(app.getVersion()) ?? "0.0.0";
+      const targetVersion = normalizeReleaseVersion(version ?? appVersion) ?? appVersion;
+      return getReleaseHighlightsPayload(targetVersion);
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.RELEASE_HIGHLIGHTS_ACK, async (): Promise<void> => {
+    settingsManager.set("lastSeenReleaseHighlightsVersion", app.getVersion().replace(/^v/, ""));
+  });
+
+  // Save window size when it changes (skip fullscreen so the saved size
+  // stays meaningful for windowed launches, e.g. after console mode)
   mainWindow?.on("resize", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
       const [width, height] = mainWindow.getSize();
       settingsManager.set("windowWidth", width);
       settingsManager.set("windowHeight", height);
@@ -1283,6 +1344,33 @@ app.whenReady().then(async () => {
 
   await createMainWindow();
   appUpdater.initialize();
+
+  // Fire-and-forget: check if we should show release highlights after the window loads
+  void (async () => {
+    try {
+      if (!app.isPackaged) return;
+      const current = app.getVersion().replace(/^v/, "");
+      const lastSeen = settingsManager.get("lastSeenReleaseHighlightsVersion") ?? "";
+      if (!shouldShowReleaseHighlights(current, lastSeen)) return;
+
+      // Fetch payload (may take up to 8s for GitHub, graceful fallback if offline)
+      const payload = await getReleaseHighlightsPayload(current);
+
+      // Wait for the renderer to finish loading before sending
+      const win = mainWindow;
+      if (!win || win.isDestroyed()) return;
+
+      if (win.webContents.isLoading()) {
+        await new Promise<void>((resolve) => win.webContents.once("did-finish-load", resolve));
+      }
+
+      if (!win.isDestroyed()) {
+        win.webContents.send(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, payload);
+      }
+    } catch (error) {
+      console.warn("[ReleaseHighlights] Startup check failed:", error);
+    }
+  })();
 
   app.on("activate", async () => {
     if (isShutdownRequested) {

@@ -153,6 +153,9 @@ export interface CloudMatchResponse {
       }>;
     };
     sessionRequestData?: {
+      appId?: string;
+      appLaunchMode?: number;
+      enablePersistingInGameSettings?: boolean;
       clientRequestMonitorSettings?: Array<{
         widthInPixels?: number;
         heightInPixels?: number;
@@ -190,6 +193,7 @@ export interface SessionEntry {
   gpuType?: string;
   sessionRequestData?: {
     appId?: string;
+    appLaunchMode?: number;
     [key: string]: unknown;
   };
   sessionControlInfo?: {

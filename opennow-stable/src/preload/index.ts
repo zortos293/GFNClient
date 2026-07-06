@@ -15,6 +15,8 @@ import type {
   ResolveStoreUrlRequest,
   RegionsFetchRequest,
   MainToRendererSignalingEvent,
+  MarkGameOwnedRequest,
+  MarkGameOwnedResult,
   OpenNowApi,
   SavedAccount,
   SessionAdReportRequest,
@@ -115,6 +117,8 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_LAUNCH_ID, input),
   resolveStoreUrl: (input: ResolveStoreUrlRequest) =>
     ipcRenderer.invoke(IPC_CHANNELS.GAMES_RESOLVE_STORE_URL, input),
+  markGameOwned: (input: MarkGameOwnedRequest): Promise<MarkGameOwnedResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GAMES_MARK_OWNED, input),
   getPendingDirectLaunchRequest: (): Promise<DirectLaunchRequest | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.DIRECT_LAUNCH_GET_PENDING),
   onDirectLaunchRequest: (listener: (request: DirectLaunchRequest) => void) => {
@@ -143,6 +147,9 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.SEND_ICE_CANDIDATE, input),
   sendNativeInput: (input: NativeInputPacket) => {
     ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT, input);
+  },
+  setNativeInputPaused: (paused: boolean) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT_PAUSED, paused);
   },
   updateNativeRenderSurface: (input: NativeRenderSurfaceUpdate) => {
     ipcRenderer.send(IPC_CHANNELS.NATIVE_RENDER_SURFACE, input);
@@ -251,6 +258,18 @@ const api: OpenNowApi = {
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH),
   getThanksData: (): Promise<ThankYouDataResult> => ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_GET_THANKS),
   clearDiscordActivity: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY),
+  getReleaseHighlights: (version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> =>
+    ipcRenderer.invoke(IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET, version),
+  ackReleaseHighlights: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.RELEASE_HIGHLIGHTS_ACK),
+  onReleaseHighlightsShow: (listener: (payload: import("@shared/gfn").ReleaseHighlightsPayload) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: import("@shared/gfn").ReleaseHighlightsPayload) => {
+      listener(payload);
+    };
+    ipcRenderer.on(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.RELEASE_HIGHLIGHTS_SHOW, wrapped);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld("openNow", api);

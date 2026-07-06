@@ -10,11 +10,10 @@ import type {
   GameAccountConnectionsResult,
   GameAccountOperationResult,
 } from "@shared/gfn";
-import { cacheManager } from "../services/cacheManager";
-import { getAccountGamesCacheKeys, getLegacyTokenScopedAccountGamesCacheKeys } from "./games";
+import { invalidateAccountGameCaches as invalidateGameCachesForAccount } from "./games";
 import { buildGfnGraphQlHeaders, GFN_PLAY_ORIGIN, GFN_PLAY_REFERER, GFN_USER_AGENT } from "./clientHeaders";
+import { LCARS_GRAPHQL_URL, throwGraphQlErrors } from "./lcarsGraphql";
 
-const LCARS_GRAPHQL_URL = "https://apps.gxn.nvidia.com/graphql";
 const STATIC_APP_DATA_QUERY_HASH = "d4117df5319f644c984945715ded9574bb074107eb02e97be17605b5f14c33ba";
 const USER_ACCOUNT_QUERY_HASH = "39fa5dbf8c14ac4c873857fd510f337cdc8710d5614038a0625487d41f98986b";
 
@@ -208,12 +207,6 @@ function buildLcarsHeaders(token?: string): Record<string, string> {
     ...buildGfnGraphQlHeaders(token),
     "Content-Type": "application/graphql",
   };
-}
-
-function throwGraphQlErrors(errors: Array<{ message?: string }> | undefined, context: string): void {
-  if (errors?.length) {
-    throw new Error(`${context}: ${errors.map((error) => error.message ?? "Unknown error").join(", ")}`);
-  }
 }
 
 async function fetchStaticAccountProviderDefinitions(): Promise<AppStoreDefinition[]> {
@@ -583,31 +576,13 @@ async function deleteProviderLink(provider: string, token: string): Promise<void
 }
 
 async function invalidateAccountGameCaches(session: AuthSession, proxyUrl?: string): Promise<void> {
-  const cacheKeySets: Array<{ main: string; library: string; catalogPrefix: string }> = [
-    getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl),
-  ];
-  const legacyTokens = [...new Set([session.tokens.idToken, session.tokens.accessToken].filter((token): token is string => Boolean(token)))];
-  cacheKeySets.push(
-    ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, session.provider.streamingServiceUrl)),
-  );
-  if (proxyUrl?.trim()) {
-    try {
-      cacheKeySets.push(getAccountGamesCacheKeys(session.user.userId, session.provider.streamingServiceUrl, proxyUrl));
-      cacheKeySets.push(
-        ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, session.provider.streamingServiceUrl, proxyUrl)),
-      );
-    } catch (error) {
-      console.warn("[AccountConnections] Skipping proxy-scoped game cache invalidation:", error);
-    }
-  }
-
-  const invalidations = new Map<string, Promise<void>>();
-  for (const keys of cacheKeySets) {
-    invalidations.set(keys.main, cacheManager.invalidateCache(keys.main));
-    invalidations.set(keys.library, cacheManager.invalidateCache(keys.library));
-    invalidations.set(keys.catalogPrefix, cacheManager.invalidateCachesByPrefix(keys.catalogPrefix));
-  }
-  await Promise.allSettled(invalidations.values());
+  await invalidateGameCachesForAccount({
+    userId: session.user.userId,
+    providerStreamingBaseUrl: session.provider.streamingServiceUrl,
+    tokens: [session.tokens.idToken, session.tokens.accessToken],
+    proxyUrl,
+    logPrefix: "[AccountConnections]",
+  });
 }
 
 function mergeLoginResult(

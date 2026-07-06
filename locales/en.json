@@ -16,6 +16,7 @@
       "open": "Open",
       "play": "Play",
       "buy": "Buy",
+      "markAsOwned": "Mark as Owned",
       "refresh": "Refresh",
       "remove": "Remove",
       "reset": "Reset",
@@ -38,6 +39,7 @@
       "failed": "Failed",
       "idle": "Idle",
       "loading": "Loading...",
+      "markingOwned": "Marking as owned...",
       "ready": "Ready",
       "saved": "Saved",
       "testing": "Testing...",
@@ -150,6 +152,7 @@
   "home": {
     "searchPlaceholder": "Search games...",
     "filters": "Filters",
+    "sortAriaLabel": "Sort games",
     "count": {
       "loading": "Loading...",
       "shown": "{{shown}} shown",
@@ -186,7 +189,13 @@
     "searchPlaceholder": "Search your library...",
     "gameCount": "{{count}} game",
     "gameCount_plural": "{{count}} games",
+    "filteredGameCount": "{{shown}} of {{total}} games",
     "filter": "Filter",
+    "filters": "Filters",
+    "sortAriaLabel": "Sort library",
+    "activeFilters": "Active filters",
+    "clearFilters": "Clear",
+    "removeFilter": "Remove {{filter}} filter",
     "allStores": "All Stores",
     "storeFilter": "Store Filter",
     "chooseStore": "Choose a Store",
@@ -203,6 +212,21 @@
     "nvidiaTech": "NVIDIA Tech: {{tech}}",
     "genres": "Genres: {{genres}}",
     "rating": "Rating: {{rating}}",
+    "filterGroups": {
+      "playType": "Play Type",
+      "platform": "Platform",
+      "controls": "Controls",
+      "activity": "Activity"
+    },
+    "filterOptions": {
+      "installToPlay": "Install to Play",
+      "cloudLaunch": "Cloud Launch",
+      "keyboardMouse": "Keyboard & Mouse",
+      "controller": "Controller",
+      "touch": "Touch",
+      "played": "Played",
+      "neverPlayed": "Never Played"
+    },
     "lastPlayed": {
       "never": "Never played",
       "justNow": "Just now",
@@ -216,7 +240,9 @@
       "libraryEmpty": "Your library is empty",
       "ownedGamesAppearHere": "Games you own will appear here. Browse the catalog to find games.",
       "noGamesFound": "No games found",
-      "noGamesMatch": "No games match \"{{query}}\""
+      "noGamesMatch": "No games match \"{{query}}\"",
+      "noFilteredGames": "No games match those filters",
+      "tryAdjustingFilters": "Try clearing a filter or changing your search."
     }
   },
   "gameCard": {
@@ -310,6 +336,9 @@
     "sessionStarted": {
       "kicker": "Ready",
       "title": "Session started"
+    },
+    "connectedBadge": {
+      "title": "Connected"
     },
     "stats": {
       "overlayLabel": "Stream statistics",
@@ -516,7 +545,21 @@
       "sessionProxy": "Session proxy",
       "sessionProxyHint": "Used for Nvidia games catalog, session creation, and queue polling. Streaming/signaling traffic is not proxied. Zortos provides a proxy for GitHub Sponsors/supporters.",
       "experimentalL4SRequest": "Experimental L4S Request",
-      "experimentalL4SRequestHint": "Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path."
+      "experimentalL4SRequestHint": "Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.",
+      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
+      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+    },
+    "videoFilters": {
+      "title": "Video Filters",
+      "hint": "GPU post-processing shaders applied to the decoded stream: sharpening, color grading, and film grain. Can also be adjusted live from the in-stream sidebar.",
+      "nativeUnavailable": "Video filters do not apply while native streaming renders the video outside the app window.",
+      "sharpen": "Sharpen",
+      "saturation": "Saturation",
+      "contrast": "Contrast",
+      "brightness": "Brightness",
+      "vibrance": "Vibrance",
+      "filmGrain": "Film Grain",
+      "reset": "Reset to defaults"
     },
     "codecDiagnostics": {
       "advanced": "Advanced - Codec Diagnostics",
@@ -529,7 +572,7 @@
       "decode": "Decode",
       "encode": "Encode",
       "profiles": "Profiles:",
-      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's VA-API/WebRTC capability report. OpenNOW now enables NVIDIA VA-API flags on restart, but proprietary NVIDIA systems still need distro codecs plus libva-nvidia-driver/nvidia-vaapi-driver; if H.265 or GPU stays missing, check your distro's VA-API setup rather than installing more AppImage files."
+      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's WebRTC/MediaCapabilities report. Hardware decode depends on the Chromium build plus your distro GPU/video stack: x64 systems may need VA-API/NVIDIA VA-API drivers, while ARM V4L2 support depends on Chromium/Electron exposing that decoder."
     },
     "colorQuality": {
       "mostCompatible": "Most compatible",
@@ -542,6 +585,8 @@
       "title": "Game",
       "language": "Language",
       "inGameLanguageHint": "Language for in-game menus, subtitles, and audio (where supported)",
+      "persistInGameSettings": "Save in-game graphics settings",
+      "persistInGameSettingsHint": "Lets supported games keep graphics options changed inside the stream. Sent only for games that advertise NVIDIA in-game settings persistence support.",
       "keyboardLayout": "Keyboard Layout",
       "preferredStore": "Preferred Store",
       "launchBehavior": "Launch Behavior"
@@ -571,6 +616,8 @@
       "clipboardPaste": "Clipboard Paste",
       "gyroscopeControls": "Gyroscope Controls",
       "gyroscopeControlsHint": "Expose controller motion sensors for gyro aiming when the input backend supports it.",
+      "steamControllerCompatibilityMode": "Steam Controller Compatibility Mode",
+      "steamControllerCompatibilityModeHint": "macOS only. Restores Chromium's older HID gamepad path for Steam Controller, but may reduce Xbox controller compatibility. Applies after app restart.",
       "nativeCursorOverlay": "Native Cursor Overlay",
       "nativeCursorOverlayHint": "WebRTC only. Uses NVIDIA's cursor_channel for a local cursor overlay; turn this off to leave cursor rendering to the server-side stream.",
       "keyboardLayoutHint": "Controls how your physical keyboard is mapped inside the remote session. Separate from the in-game language setting.",
@@ -660,6 +707,8 @@
       "deleteCacheConfirm": "Are you sure you want to delete all cached data? This will clear all game metadata, images, and library information.",
       "cacheCleared": "Cache cleared successfully. The app will refresh on next startup.",
       "deleteCacheFailed": "Failed to delete cache. Please try again.",
+      "whatsNew": "What's new",
+      "whatsNewHint": "View the release notes for the current version of OpenNOW.",
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
         "checking": "Checking",
@@ -764,6 +813,11 @@
       "notAvailable": "N/A"
     }
   },
+  "games": {
+    "markOwned": {
+      "success": "Marked {{title}} as owned."
+    }
+  },
   "errors": {
     "launchUnknown": "The game could not start. Please try again.",
     "launchFailedTitle": "Launch Failed",
@@ -774,7 +828,14 @@
     "insufficientPlayabilityTitle": "Membership Upgrade Required",
     "insufficientPlayabilityDescription": "Your current GeForce NOW membership is not high enough to play this game. Upgrade to a higher tier and try again.",
     "insufficientPlayabilityTierDescription": "This game requires {{tier}} on GeForce NOW. Upgrade your membership to play it.",
+    "userStorageUnavailableTitle": "Persistent Storage Unavailable",
+    "userStorageUnavailableDescription": "NVIDIA reported that Persistent Storage is unavailable for this account or storage location. Open Settings → Account → Persistent Storage, then use NVIDIA Storage Manager to reset or move the storage location. If it still fails, check NVIDIA server status.",
+    "userStorageUnavailableAction": "Open Storage Settings",
     "loginFailed": "Login failed",
+    "markOwnedFailed": "Failed to mark game as owned.",
+    "markOwnedFailedWithReason": "Failed to mark game as owned: {{reason}}",
+    "markOwnedMissingVariant": "Select a store variant before marking it owned.",
+    "markOwnedSignInRequired": "Sign in before marking games as owned.",
     "switchAccountFailed": "Failed to switch account",
     "nativeStreamerStoppedTitle": "Native Streamer Stopped",
     "nativeStreamerStoppedDescription": "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",
@@ -785,5 +846,13 @@
     "queueAdPlayTimeout": "Ad play timeout",
     "queueAdVideoStuck": "Ad video is stuck",
     "queueAdUrlLoad": "Error loading url"
+  },
+  "releaseHighlights": {
+    "kicker": "What's new",
+    "title": "OpenNOW {{version}}",
+    "gotIt": "Got it",
+    "viewOnGitHub": "View full release on GitHub",
+    "unavailable": "Release notes couldn't be loaded right now.",
+    "settingsLink": "What's new"
   }
 }

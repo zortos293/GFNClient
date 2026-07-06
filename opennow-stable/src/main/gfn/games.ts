@@ -7,6 +7,7 @@ import type {
   GameInfo,
   GamePanelResult,
   GameVariant,
+  MarkGameOwnedResult,
 } from "@shared/gfn";
 import { createHash } from "node:crypto";
 import { isOwnedLibraryStatus, normalizeGameStore } from "@shared/gfn";
@@ -19,12 +20,10 @@ import {
 import { fetchAllAppsPages, type AppsPageResponse } from "./paginatedApps";
 import { fetchWithOptionalProxy } from "./proxyFetch";
 import { sessionProxyCacheKeyPart, sessionProxyHasCredentials } from "./proxyUrl";
+import { supportsInGameSettingsPersistence } from "./gameFeatures";
+import { fetchLcarsGraphQl, postLcarsMutation } from "./lcarsGraphql";
 
 const GRAPHQL_URL = "https://games.geforce.com/graphql";
-const PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0";
-const MARQUEE_QUERY_HASH = "dd4bddfdef4707dfe340cc2040d6bb9c4c45f706976fca15b2ef33221c385d7f";
-const APP_METADATA_QUERY_HASH = "cf8b620dfd03617017ba7c858cee65197e1ace5180e41be194b39227227ced63";
-const LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f";
 const DEFAULT_LOCALE = "en_US";
 const DEFAULT_CATALOG_FETCH_COUNT = 120;
 const MAX_CATALOG_PAGES = 3;
@@ -36,6 +35,17 @@ const LIBRARY_GAMES_CACHE_SCOPE = "library:v2";
 const CATALOG_GAMES_CACHE_SCOPE = "catalog";
 const PUBLIC_GAMES_CACHE_KEY = "games:public:v2";
 const DEFAULT_CLOUDMATCH_BASE_URL = "https://prod.cloudmatchbeta.nvidiagrid.net/";
+const GFN_FEATURE_FIELDS = `
+              __typename
+              ... on GfnSubscriptionFeatureValue {
+                key
+                value
+              }
+              ... on GfnSubscriptionFeatureValueList {
+                key
+                values
+              }
+`;
 const LIBRARY_APPS_FILTER = {
   variants: {
     gfn: {
@@ -145,12 +155,16 @@ export function getAccountCatalogGamesCachePrefix(
 
 export function getAccountGamesCacheKeys(accountId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
   main: string;
+  featured: string;
+  storePanels: string;
   library: string;
   catalogPrefix: string;
   public: string;
 } {
   return {
     main: accountScopedGamesCacheKey("main", accountId, providerStreamingBaseUrl, proxyUrl),
+    featured: accountScopedGamesCacheKey("featured", accountId, providerStreamingBaseUrl, proxyUrl),
+    storePanels: accountScopedGamesCacheKey("store-panels", accountId, providerStreamingBaseUrl, proxyUrl),
     library: accountScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, accountId, providerStreamingBaseUrl, proxyUrl),
     catalogPrefix: getAccountCatalogGamesCachePrefix(accountId, providerStreamingBaseUrl, proxyUrl),
     public: publicGamesCacheKey(proxyUrl),
@@ -159,14 +173,66 @@ export function getAccountGamesCacheKeys(accountId: string, providerStreamingBas
 
 export function getLegacyTokenScopedAccountGamesCacheKeys(token: string, providerStreamingBaseUrl?: string, proxyUrl?: string): {
   main: string;
+  featured: string;
+  storePanels: string;
   library: string;
   catalogPrefix: string;
 } {
   return {
     main: legacyTokenScopedGamesCacheKey("main", token, providerStreamingBaseUrl, proxyUrl),
+    featured: legacyTokenScopedGamesCacheKey("featured", token, providerStreamingBaseUrl, proxyUrl),
+    storePanels: legacyTokenScopedGamesCacheKey("store-panels", token, providerStreamingBaseUrl, proxyUrl),
     library: legacyTokenScopedGamesCacheKey(LIBRARY_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
     catalogPrefix: legacyTokenScopedGamesCacheKey(CATALOG_GAMES_CACHE_SCOPE, token, providerStreamingBaseUrl, proxyUrl),
   };
+}
+
+export interface AccountGameCacheInvalidationInput {
+  userId: string;
+  providerStreamingBaseUrl?: string;
+  tokens?: Array<string | undefined>;
+  proxyUrl?: string;
+  logPrefix?: string;
+}
+
+export async function invalidateAccountGameCaches(input: AccountGameCacheInvalidationInput): Promise<void> {
+  const cacheKeySets: Array<{ main: string; featured: string; storePanels: string; library: string; catalogPrefix: string }> = [
+    getAccountGamesCacheKeys(input.userId, input.providerStreamingBaseUrl),
+  ];
+  const legacyTokens = [...new Set((input.tokens ?? []).filter((token): token is string => Boolean(token)))];
+  cacheKeySets.push(
+    ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, input.providerStreamingBaseUrl)),
+  );
+
+  if (input.proxyUrl?.trim()) {
+    try {
+      cacheKeySets.push(getAccountGamesCacheKeys(input.userId, input.providerStreamingBaseUrl, input.proxyUrl));
+      cacheKeySets.push(
+        ...legacyTokens.map((token) => getLegacyTokenScopedAccountGamesCacheKeys(token, input.providerStreamingBaseUrl, input.proxyUrl)),
+      );
+    } catch (error) {
+      console.warn(`${input.logPrefix ?? "[Games]"} Skipping proxy-scoped game cache invalidation:`, error);
+    }
+  }
+
+  const invalidations = new Map<string, Promise<void>>();
+  for (const keys of cacheKeySets) {
+    invalidations.set(keys.main, cacheManager.invalidateCache(keys.main));
+    invalidations.set(keys.featured, cacheManager.invalidateCache(keys.featured));
+    invalidations.set(keys.storePanels, cacheManager.invalidateCache(keys.storePanels));
+    invalidations.set(keys.library, cacheManager.invalidateCache(keys.library));
+    invalidations.set(keys.catalogPrefix, cacheManager.invalidateCachesByPrefix(keys.catalogPrefix));
+  }
+  await Promise.allSettled(invalidations.values());
+}
+
+export interface MarkGameOwnedInput {
+  token: string;
+  userId: string;
+  variantId: string;
+  providerStreamingBaseUrl?: string;
+  proxyUrl?: string;
+  tokens?: Array<string | undefined>;
 }
 
 interface GraphQlResponse {
@@ -224,6 +290,17 @@ interface AppsSearchResponse {
   errors?: Array<{ message: string }>;
 }
 
+interface AddOwnedVariantResponse {
+  data?: {
+    addOwnedVariant?: {
+      app?: {
+        id?: string;
+      };
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
+
 type AppsPage = AppsPageResponse<AppData>;
 
 interface GraphQlFilterGroup {
@@ -262,6 +339,7 @@ interface AppData {
     supportedControls?: string[];
     gfn?: {
       status?: string;
+      features?: unknown;
       library?: {
         status?: string;
         selected?: boolean;
@@ -337,10 +415,6 @@ function isNumericId(value: string | undefined): value is string {
     return false;
   }
   return /^\d+$/.test(value);
-}
-
-function randomHuId(): string {
-  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
 async function postGraphQl<T>(
@@ -522,17 +596,21 @@ function resolveAppData(app: AppData): AppResolution {
 }
 
 function appToVariants(app: AppData): GameVariant[] {
-  return app.variants?.map((variant) => ({
-    id: variant.id,
-    store: variant.appStore,
-    storeUrl: variant.storeUrl,
-    supportedControls: variant.supportedControls ?? [],
-    librarySelected: variant.gfn?.library?.selected,
-    inLibrary: variant.gfn?.library?.selected === true,
-    libraryStatus: variant.gfn?.library?.status,
-    lastPlayedDate: variant.gfn?.library?.lastPlayedDate,
-    gfnStatus: variant.gfn?.status,
-  })) ?? [];
+  return app.variants?.map((variant) => {
+    const supportsPersistence = supportsInGameSettingsPersistence(variant);
+    return {
+      id: variant.id,
+      store: variant.appStore,
+      storeUrl: variant.storeUrl,
+      supportedControls: variant.supportedControls ?? [],
+      ...(supportsPersistence ? { supportsInGameSettingsPersistence: true } : {}),
+      librarySelected: variant.gfn?.library?.selected,
+      inLibrary: variant.gfn?.library?.selected === true,
+      libraryStatus: variant.gfn?.library?.status,
+      lastPlayedDate: variant.gfn?.library?.lastPlayedDate,
+      gfnStatus: variant.gfn?.status,
+    };
+  }) ?? [];
 }
 
 function appToGame(app: AppData): GameInfo {
@@ -683,38 +761,17 @@ async function fetchAppMetaData(
     return { data: { apps: { items: [] } } };
   }
 
-  const variables = JSON.stringify({
-    vpcId,
-    locale: DEFAULT_LOCALE,
-    appIds: normalizedIds,
-  });
-
-  const extensions = JSON.stringify({
-    persistedQuery: {
-      sha256Hash: APP_METADATA_QUERY_HASH,
+  return await fetchLcarsGraphQl<AppMetaDataResponse>(
+    "AppDataForAppId",
+    {
+      vpcId,
+      locale: DEFAULT_LOCALE,
+      appIds: normalizedIds,
     },
-  });
-
-  const params = new URLSearchParams({
-    requestType: "appMetaData",
-    extensions,
-    huId: randomHuId(),
-    variables,
-  });
-
-  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
-    headers: {
-      ...buildGfnGraphQlHeaders(token),
-      "Content-Type": "application/graphql",
-    },
-  }, proxyUrl);
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`App metadata failed (${response.status}): ${text.slice(0, 400)}`);
-  }
-
-  return (await response.json()) as AppMetaDataResponse;
+    token,
+    proxyUrl,
+    { context: "App metadata failed" },
+  );
 }
 
 async function enrichGamesWithMetadata(token: string, vpcId: string, games: GameInfo[], proxyUrl?: string): Promise<GameInfo[]> {
@@ -754,47 +811,23 @@ async function fetchPanels(
   options?: { withLibraryTime?: boolean },
   proxyUrl?: string,
 ): Promise<GraphQlResponse> {
-  const variables = JSON.stringify({
-    vpcId,
-    locale: DEFAULT_LOCALE,
-    panelNames,
-  });
-
-  const extensions = JSON.stringify({
-    persistedQuery: {
-      sha256Hash: panelNames.includes("MARQUEE")
-        ? MARQUEE_QUERY_HASH
-        : options?.withLibraryTime
-          ? LIBRARY_WITH_TIME_QUERY_HASH
-          : PANELS_QUERY_HASH,
-    },
-  });
-
-  const requestType = panelNames.includes("MARQUEE")
-    ? "panels/Marquee"
+  const queryName = panelNames.includes("MARQUEE")
+    ? "Marquee"
     : panelNames.includes("LIBRARY")
-      ? "panels/Library"
-      : "panels/MainV2";
-  const params = new URLSearchParams({
-    requestType,
-    extensions,
-    huId: randomHuId(),
-    variables,
-  });
+      ? options?.withLibraryTime === true ? "LibrarySectionWithTime" : "LibrarySection"
+      : "Main";
 
-  const response = await fetchWithOptionalProxy(`${GRAPHQL_URL}?${params.toString()}`, {
-    headers: {
-      ...buildGfnGraphQlHeaders(token),
-      "Content-Type": "application/graphql",
+  return await fetchLcarsGraphQl<GraphQlResponse>(
+    queryName,
+    {
+      vpcId,
+      locale: DEFAULT_LOCALE,
+      panelNames,
     },
-  }, proxyUrl);
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Games GraphQL failed (${response.status}): ${text.slice(0, 400)}`);
-  }
-
-  return (await response.json()) as GraphQlResponse;
+    token,
+    proxyUrl,
+    { context: "Games GraphQL failed" },
+  );
 }
 
 function panelTextMatchesFeatured(value: string | undefined): boolean {
@@ -889,24 +922,12 @@ function parsePanelResults(payload: GraphQlResponse): GamePanelResult[] {
 }
 
 async function fetchFilterAndSortDefinitions(token?: string, proxyUrl?: string): Promise<CatalogDefinitions> {
-  const query = `query GetFilterGroupAndSortOrderDefinitions($locale: String!) {
-    filterGroupDefinitions(language: $locale) {
-      id
-      label
-      filters {
-        id
-        label
-        filters
-      }
-    }
-    sortOrderDefinitions(language: $locale) {
-      id
-      label
-      orderBy
-    }
-  }`;
-
-  const payload = await postGraphQl<FilterSortDefinitionsResponse>(query, { locale: DEFAULT_LOCALE }, token, proxyUrl);
+  const payload = await fetchLcarsGraphQl<FilterSortDefinitionsResponse>(
+    "FilterGroupAndSortOrderDefinitions",
+    { locale: DEFAULT_LOCALE },
+    token,
+    proxyUrl,
+  );
   if (payload.errors?.length) {
     throw new Error(payload.errors.map((error) => error.message).join(", "));
   }
@@ -998,6 +1019,9 @@ async function browseCatalogUncached(input: CatalogBrowseRequest): Promise<Catal
           supportedControls
           gfn {
             status
+            features {
+${GFN_FEATURE_FIELDS}
+            }
             library { status selected }
           }
         }
@@ -1067,28 +1091,33 @@ ${appFields}
   let cursor = "";
 
   for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
-    const payload = await postGraphQl<AppsSearchResponse>(
-      query,
-      searchQuery.length > 0
-        ? {
-            vpcId,
-            locale: DEFAULT_LOCALE,
-            sortString: selectedSort.orderBy,
-            fetchCount,
-            cursor,
-            searchString: searchQuery,
-            filters,
-          }
-        : {
-            vpcId,
-            locale: DEFAULT_LOCALE,
-            sortString: selectedSort.orderBy,
-            fetchCount,
-            cursor,
-            filters,
-          },
+    const variables = searchQuery.length > 0
+      ? {
+          vpcId,
+          locale: DEFAULT_LOCALE,
+          sortString: selectedSort.orderBy,
+          fetchCount,
+          cursor,
+          searchString: searchQuery,
+          filters,
+        }
+      : {
+          vpcId,
+          locale: DEFAULT_LOCALE,
+          sortString: selectedSort.orderBy,
+          fetchCount,
+          cursor,
+          filters,
+        };
+    const payload = await fetchLcarsGraphQl<AppsSearchResponse>(
+      searchQuery.length > 0 ? "AppsWithSearch" : "AppsWithoutSearch",
+      variables,
       token,
       input.proxyUrl,
+      {
+        context: "GFN catalog query failed",
+        fallbackQuery: query,
+      },
     );
 
     if (payload.errors?.length) {
@@ -1331,6 +1360,9 @@ async function fetchPaginatedLibraryApps(token: string, vpcId: string, proxyUrl?
           supportedControls
           gfn {
             status
+            features {
+${GFN_FEATURE_FIELDS}
+            }
             library { status selected lastPlayedDate }
           }
         }
@@ -1437,6 +1469,40 @@ export async function resolveStoreUrl(
   if (matchingStoreVariant?.storeUrl) return matchingStoreVariant.storeUrl;
 
   return variants.find((variant) => variant.storeUrl)?.storeUrl ?? null;
+}
+
+export async function markGameOwned(input: MarkGameOwnedInput): Promise<MarkGameOwnedResult> {
+  const variantId = input.variantId.trim();
+  if (!variantId) {
+    throw new Error("Cannot mark game as owned without a variant ID");
+  }
+
+  const payload = await postLcarsMutation<AddOwnedVariantResponse>(
+    "AddOwnedVariant",
+    {
+      cmsId: variantId,
+      locale: DEFAULT_LOCALE,
+    },
+    input.token,
+    input.proxyUrl,
+  );
+
+  if (!payload.data?.addOwnedVariant?.app?.id) {
+    throw new Error("GFN library mutation failed: missing AddOwnedVariant response");
+  }
+
+  await invalidateAccountGameCaches({
+    userId: input.userId,
+    providerStreamingBaseUrl: input.providerStreamingBaseUrl,
+    tokens: [input.token, ...(input.tokens ?? [])],
+    proxyUrl: input.proxyUrl,
+  });
+
+  return {
+    ok: true,
+    variantId,
+    libraryStatus: "MANUAL",
+  };
 }
 
 export {

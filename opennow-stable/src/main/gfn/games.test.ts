@@ -9,6 +9,10 @@ import {
   mergePublicGameVariants,
   publicGameToGameInfo,
 } from "./publicGames";
+import {
+  isGfnVariantFeatureSupported,
+  supportsInGameSettingsPersistence,
+} from "./gameFeatures";
 
 test("infers NCSoft as the public catalog store for Guild Wars 2", () => {
   assert.equal(
@@ -58,6 +62,44 @@ test("maps Guild Wars 2 public catalog data to an NCSoft default-icon variant", 
   assert.deepEqual(game.variants, [{ id: "17940711", store: "NCSoft", supportedControls: [] }]);
   assert.deepEqual(game.availableStores, ["NCSoft"]);
   assert.equal(game.searchText, "guild wars 2 ncsoft corp.");
+});
+
+test("detects official per-variant in-game settings persistence metadata", () => {
+  assert.equal(
+    supportsInGameSettingsPersistence({
+      gfn: {
+        features: [
+          { key: "IN_GAME_SETTINGS_PERSISTENCE_ENABLED", value: "true" },
+        ],
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    supportsInGameSettingsPersistence({
+      gfn: {
+        features: [
+          { key: "IN_GAME_SETTINGS_PERSISTENCE_ENABLED", value: "false" },
+        ],
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    isGfnVariantFeatureSupported(
+      {
+        gfn: {
+          features: {
+            key: "SUPPORTED_HDR_VERSION",
+            values: ["HDR10_PLUS_GAMING"],
+          },
+        },
+      },
+      "SUPPORTED_HDR_VERSION",
+      "HDR10_PLUS_GAMING",
+    ),
+    true,
+  );
 });
 
 test("merges supplemental public launcher variants into catalog games by title", () => {

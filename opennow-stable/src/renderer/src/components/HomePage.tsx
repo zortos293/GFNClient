@@ -9,6 +9,7 @@ import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
+import { SelectDropdown } from "./ui/SelectDropdown";
 
 const CONTROLLER_STORE_HERO_ROTATION_MS = 7000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -55,6 +56,8 @@ export interface HomePageProps {
   storeHeroGames?: GameInfo[];
   activeSessionAppIds?: number[];
   onBuyGame?: (game: GameInfo, selectedVariantId?: string) => void;
+  onMarkGameOwned?: (game: GameInfo, selectedVariantId?: string) => void;
+  markOwnedInFlightByVariantId?: Record<string, boolean>;
   onPreviousControllerPage?: () => void;
   onNextControllerPage?: () => void;
 }
@@ -158,15 +161,17 @@ function ControllerStoreTile({
   selectedVariantId,
   focused,
   onFocus,
-  onBuy,
+  onMarkOwned,
   onPlay,
+  isMarkingOwned,
 }: {
   game: GameInfo;
   selectedVariantId?: string;
   focused: boolean;
   onFocus: () => void;
-  onBuy: () => void;
+  onMarkOwned: () => void;
   onPlay: () => void;
+  isMarkingOwned: boolean;
 }): JSX.Element {
   const { t } = useTranslation();
   const imageUrl = getControllerStoreImageCandidates(game, false)[0];
@@ -183,7 +188,7 @@ function ControllerStoreTile({
       onClick={onFocus}
       onDoubleClick={() => {
         if (needsPurchase) {
-          onBuy();
+          onMarkOwned();
           return;
         }
         onPlay();
@@ -218,13 +223,14 @@ function ControllerStoreTile({
           event.stopPropagation();
           onFocus();
           if (needsPurchase) {
-            onBuy();
+            onMarkOwned();
             return;
           }
           onPlay();
         }}
+        disabled={isMarkingOwned}
       >
-        {needsPurchase ? t("app.actions.buy") : t("app.actions.play")}
+        {needsPurchase ? (isMarkingOwned ? t("app.status.markingOwned") : t("app.actions.markAsOwned")) : t("app.actions.play")}
       </button>
     </m.div>
   );
@@ -253,6 +259,8 @@ export const HomePage = memo(function HomePage({
   storeHeroGames = [],
   activeSessionAppIds: _activeSessionAppIds = [],
   onBuyGame,
+  onMarkGameOwned,
+  markOwnedInFlightByVariantId = {},
   onPreviousControllerPage,
   onNextControllerPage,
 }: HomePageProps): JSX.Element {
@@ -308,7 +316,7 @@ export const HomePage = memo(function HomePage({
   const launchGame = (game: GameInfo): void => {
     const selectedVariantId = selectedVariantByGameId[game.id];
     if (gameNeedsPurchase(game, selectedVariantId)) {
-      onBuyGame?.(game, selectedVariantId);
+      (onMarkGameOwned ?? onBuyGame)?.(game, selectedVariantId);
       return;
     }
     onPlayGame(game);
@@ -513,6 +521,9 @@ export const HomePage = memo(function HomePage({
     const heroImageUrl = heroGame ? getControllerStoreImageCandidates(heroGame, true)[0] : undefined;
     const heroLogoUrl = heroGame ? getControllerStoreLogoUrl(heroGame) : undefined;
     const heroSelectedVariantId = heroGame ? selectedVariantByGameId[heroGame.id] : undefined;
+    const heroSelectedVariant = heroGame ? getSelectedVariant(heroGame, heroSelectedVariantId) : undefined;
+    const heroNeedsOwnership = heroGame ? gameNeedsPurchase(heroGame, heroSelectedVariantId) : false;
+    const heroMarkingOwned = Boolean(heroNeedsOwnership && heroSelectedVariant?.id && markOwnedInFlightByVariantId[heroSelectedVariant.id]);
     const heroDotCount = Math.min(Math.max(controllerHeroGames.length, 1), 6);
     const activeHeroDotIndex = controllerHeroGames.length > 0 ? Math.min(controllerHeroIndex % heroDotCount, heroDotCount - 1) : 0;
 
@@ -569,8 +580,21 @@ export const HomePage = memo(function HomePage({
                     {heroLogoUrl ? <img src={heroLogoUrl} alt={heroGame.title} className="controller-hero-logo" /> : <h1>{heroGame.title}</h1>}
                     <p className="controller-store-hero-meta">{getPrimaryStoreName(heroGame, heroSelectedVariantId)} / {getPrimaryGenre(heroGame)}</p>
                     <div className="controller-hero-actions">
-                      <button type="button" className="controller-primary-action" onClick={() => onBuyGame?.(heroGame, heroSelectedVariantId)}>
-                        {t("app.actions.buy")}
+                      <button
+                        type="button"
+                        className="controller-primary-action"
+                        onClick={() => {
+                          if (heroNeedsOwnership) {
+                            (onMarkGameOwned ?? onBuyGame)?.(heroGame, heroSelectedVariantId);
+                            return;
+                          }
+                          onPlayGame(heroGame);
+                        }}
+                        disabled={heroMarkingOwned}
+                      >
+                        {heroNeedsOwnership
+                          ? (heroMarkingOwned ? t("app.status.markingOwned") : t("app.actions.markAsOwned"))
+                          : t("app.actions.play")}
                       </button>
                       <span className="controller-store-hero-pill">{getPrimaryStoreName(heroGame, heroSelectedVariantId)}</span>
                     </div>
@@ -602,17 +626,20 @@ export const HomePage = memo(function HomePage({
                   >
                     {section.games.slice(0, 18).map((game, columnIndex) => {
                       const focused = rowIndex === focusedRowIndex && columnIndex === focusedColumnIndex;
+                      const selectedVariantId = selectedVariantByGameId[game.id];
+                      const selectedVariant = getSelectedVariant(game, selectedVariantId);
                       return (
                         <div key={game.id} className="controller-store-card" data-controller-store-column={columnIndex}>
                           <ControllerStoreTile
                             game={game}
-                            selectedVariantId={selectedVariantByGameId[game.id]}
+                            selectedVariantId={selectedVariantId}
+                            isMarkingOwned={Boolean(selectedVariant?.id && markOwnedInFlightByVariantId[selectedVariant.id])}
                             focused={focused}
                             onFocus={() => {
                               focusTile(rowIndex, columnIndex);
-                              if (game.variants.length > 0) onSelectGameVariant(game.id, selectedVariantByGameId[game.id] ?? game.variants[game.selectedVariantIndex]?.id ?? game.variants[0].id);
+                              if (game.variants.length > 0) onSelectGameVariant(game.id, selectedVariantId ?? game.variants[game.selectedVariantIndex]?.id ?? game.variants[0].id);
                             }}
-                            onBuy={() => onBuyGame?.(game, selectedVariantByGameId[game.id])}
+                            onMarkOwned={() => (onMarkGameOwned ?? onBuyGame)?.(game, selectedVariantId)}
                             onPlay={() => onPlayGame(game)}
                           />
                         </div>
@@ -732,16 +759,18 @@ export const HomePage = memo(function HomePage({
           </details>
         )}
 
-        <label className="home-sort">
-          <ArrowUpDown size={14} />
-          <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)} disabled={showInitialLoading}>
-            {sortOptions.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {sortOptions.length > 0 && (
+          <div className="home-sort">
+            <ArrowUpDown size={14} />
+            <SelectDropdown
+              value={selectedSortId}
+              options={sortOptions.map((option) => ({ value: option.id, label: option.label }))}
+              onChange={onSortChange}
+              disabled={showInitialLoading}
+              ariaLabel={t("home.sortAriaLabel")}
+            />
+          </div>
+        )}
 
         <span className="home-count">
           {countLabel}

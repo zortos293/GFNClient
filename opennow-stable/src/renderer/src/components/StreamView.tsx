@@ -11,7 +11,9 @@ import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo } from "@shared/gfn";
+import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
+import { VideoShaderPipeline } from "../gfn/videoShaderPipeline";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { addStreamShortcutActionListener } from "../streamShortcutActions";
 import { useMicMeter } from "../hooks/useMicMeter";
@@ -19,6 +21,7 @@ import { formatElapsed } from "../utils/timeFormat";
 import { useTranslation } from "../i18n";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
+const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -76,6 +79,7 @@ interface StreamViewProps {
   onMouseAccelerationChange: (value: number) => void;
   onRequestPointerLock?: () => void;
   onReleasePointerLock?: () => void;
+  onNativeInputPaused?: (paused: boolean) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
@@ -85,6 +89,8 @@ interface StreamViewProps {
   micTrack?: MediaStreamTrack | null;
   className?: string;
   allowEscapeToExitFullscreen?: boolean;
+  videoShader: VideoShaderSettings;
+  onVideoShaderChange: (value: VideoShaderSettings) => void;
 }
 
 
@@ -430,6 +436,7 @@ export function StreamView({
   onMouseAccelerationChange,
   onRequestPointerLock,
   onReleasePointerLock,
+  onNativeInputPaused,
   microphoneMode,
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
@@ -440,6 +447,8 @@ export function StreamView({
   hideStreamButtons = false,
   allowEscapeToExitFullscreen,
   className,
+  videoShader,
+  onVideoShaderChange,
 }: StreamViewProps): JSX.Element {
   const { t } = useTranslation();
   const [showHints, setShowHints] = useState(true);
@@ -466,6 +475,7 @@ export function StreamView({
     (stats) => stats.nativeRendererActive,
   );
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const shaderPipelineRef = useRef<VideoShaderPipeline | null>(null);
   const streamHasVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => hasVisibleStreamVideo(stats),
@@ -502,7 +512,7 @@ export function StreamView({
   const streamVideoReady = streamHasVideo || videoElementHasFrame;
   const [sessionReadySplashVisible, setSessionReadySplashVisible] = useState(false);
   const sessionReadySplashShownRef = useRef(false);
-  const showStatsHud = showStats && !nativeRendererActive && !isConnecting && !sessionReadySplashVisible;
+  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
 
   useEffect(() => {
     if (isConnecting) {
@@ -697,7 +707,7 @@ export function StreamView({
       shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.recording,
-      isMacClient ? "Meta+G" : "Ctrl+Shift+G",
+      ...(isMacClient ? ["Meta+G"] : ["Ctrl+G", "Ctrl+Shift+G"]),
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => normalizeShortcut(value))
@@ -729,7 +739,7 @@ export function StreamView({
       shortcuts.toggleAntiAfk,
       shortcuts.toggleMicrophone,
       shortcuts.screenshot,
-      isMacClient ? "Meta+G" : "Ctrl+Shift+G",
+      ...(isMacClient ? ["Meta+G"] : ["Ctrl+G", "Ctrl+Shift+G"]),
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => normalizeShortcut(value))
@@ -743,7 +753,7 @@ export function StreamView({
     return null;
   }, [isMacClient, shortcuts.screenshot, shortcuts.stopStream, shortcuts.toggleAntiAfk, shortcuts.toggleMicrophone, shortcuts.togglePointerLock, shortcuts.toggleStats]);
 
-  const SIDEBAR_TOGGLE_RAW = isMacClient ? "Meta+G" : "Ctrl+Shift+G";
+  const SIDEBAR_TOGGLE_RAW = isMacClient ? "Meta+G" : "Ctrl+G";
   const sidebarToggleShortcutDisplay = formatShortcutForDisplay(SIDEBAR_TOGGLE_RAW, isMacClient);
 
   const applyScreenshotShortcutFromCapture = useCallback(
@@ -1162,6 +1172,27 @@ export function StreamView({
     };
   }, []);
 
+  // Video shader post-processing pipeline (embedded WebRTC path only; the
+  // native streamer renders outside Chromium so shaders cannot apply there).
+  useEffect(() => {
+    const video = localVideoRef.current;
+    if (!video) return;
+    const effective = gstreamerEnabled || nativeRendererActive
+      ? { ...videoShader, enabled: false }
+      : videoShader;
+    if (!shaderPipelineRef.current) {
+      if (!effective.enabled) return;
+      shaderPipelineRef.current = new VideoShaderPipeline(video, effective);
+    } else {
+      shaderPipelineRef.current.updateSettings(effective);
+    }
+  }, [videoShader, gstreamerEnabled, nativeRendererActive]);
+
+  useEffect(() => () => {
+    shaderPipelineRef.current?.dispose();
+    shaderPipelineRef.current = null;
+  }, []);
+
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {
     localVideoRef.current = element;
     if (typeof videoRef === "function") {
@@ -1293,6 +1324,15 @@ export function StreamView({
   }, [isPointerLocked]);
 
   useEffect(() => {
+    onNativeInputPaused?.(showSideBar);
+    return () => {
+      if (showSideBar) {
+        onNativeInputPaused?.(false);
+      }
+    };
+  }, [onNativeInputPaused, showSideBar]);
+
+  useEffect(() => {
     if (showSideBar) {
       // Mark sidebar open so input auto-lock code can avoid re-requesting.
       try {
@@ -1306,7 +1346,11 @@ export function StreamView({
       }
       void refreshScreenshots();
       void refreshRecordings();
-      return;
+      return () => {
+        try {
+          delete (document.body.dataset as DOMStringMap).sidebarOpen;
+        } catch {}
+      };
     }
     // Sidebar just closed — restore focus to the video so clicks register
     // immediately. Without this, focus stays on the last sidebar element and
@@ -1342,8 +1386,17 @@ export function StreamView({
     });
   }, [onReleasePointerLock]);
 
+  const handleSidebarExitSession = useCallback(() => {
+    setShowSideBar(false);
+    onEndSession();
+  }, [onEndSession]);
+
   useEffect(() => {
     return addStreamShortcutActionListener((action) => {
+      if (action === "toggleSidebar") {
+        handleToggleSideBar();
+        return;
+      }
       if (action === "screenshot") {
         void captureScreenshot();
         return;
@@ -1352,7 +1405,7 @@ export function StreamView({
         void toggleRecording();
       }
     });
-  }, [captureScreenshot, toggleRecording]);
+  }, [captureScreenshot, handleToggleSideBar, toggleRecording]);
 
   useEffect(() => {
     const screenshotShortcut = normalizeShortcut(shortcuts.screenshot);
@@ -1366,6 +1419,14 @@ export function StreamView({
         target.isContentEditable
       );
       if (isTyping) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const isSidebarShortcut = isMacClient
+        ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === "g"
+        : event.ctrlKey && !event.altKey && !event.metaKey && key === "g";
+      if (isSidebarShortcut) {
         return;
       }
 
@@ -1386,7 +1447,7 @@ export function StreamView({
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [captureScreenshot, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
+  }, [captureScreenshot, isMacClient, shortcuts.screenshot, shortcuts.recording, toggleRecording]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1404,10 +1465,14 @@ export function StreamView({
       if (isMacClient) {
         if (event.metaKey && !event.ctrlKey && !event.shiftKey && key === "g") {
           event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
           handleToggleSideBar();
         }
-      } else if (event.ctrlKey && event.shiftKey && !event.metaKey && key === "g") {
+      } else if (event.ctrlKey && !event.altKey && !event.metaKey && key === "g") {
         event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
         handleToggleSideBar();
       }
     };
@@ -1494,7 +1559,31 @@ export function StreamView({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={() => setShowSideBar(false)}
           />
-          <SideBar title="Settings" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
+          <SideBar title="Stream Control" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
+            <section className="sidebar-session-card" aria-label="Current stream session">
+              <div className="sidebar-session-card-head">
+                <span className="sidebar-session-kicker">Now streaming</span>
+                <strong className="sidebar-session-title">{gameTitle}</strong>
+                {PlatformIcon && platformName && (
+                  <span className="sidebar-session-platform" title={platformName}>
+                    <span className="sidebar-session-platform-icon"><PlatformIcon /></span>
+                    <span>{platformName}</span>
+                  </span>
+                )}
+              </div>
+              <div className="sidebar-session-shortcuts" aria-label="Open this panel shortcuts">
+                <span className="sidebar-session-shortcut"><kbd>{sidebarToggleShortcutDisplay}</kbd><span>Keyboard</span></span>
+                <span className="sidebar-session-shortcut"><kbd>{CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</kbd><span>Controller</span></span>
+              </div>
+              <button
+                type="button"
+                className="sidebar-exit-session-button"
+                onClick={handleSidebarExitSession}
+              >
+                <LogOut size={15} />
+                <span>Exit session</span>
+              </button>
+            </section>
             <div className="sidebar-stat-line" title="Total remaining playtime from subscription">
               <span className="sidebar-stat-label">Remaining Playtime</span>
               <RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="settings-value-badge" />
@@ -1594,6 +1683,79 @@ export function StreamView({
                     />
                     <span className="sidebar-hint">Dynamic turn boost strength (1% = off-like, 150% = strongest).</span>
                   </div>
+                </section>
+                <div className="sidebar-separator" aria-hidden="true" />
+                <section className="sidebar-section">
+                  <div className="sidebar-section-header">
+                    <span>Video Filters</span>
+                    <span className="sidebar-section-sub">GPU shaders applied to the stream</span>
+                  </div>
+                  {gstreamerEnabled ? (
+                    <span className="sidebar-hint">Video filters are unavailable while the native streamer renders the video.</span>
+                  ) : (
+                    <>
+                      <div className="sidebar-row sidebar-row--aligned">
+                        <span className="sidebar-label">Enable Filters</span>
+                        <label className="sidebar-mini-toggle" title="Enable GPU post-processing filters">
+                          <input
+                            type="checkbox"
+                            checked={videoShader.enabled}
+                            aria-label="Enable video filters"
+                            onChange={(event) => onVideoShaderChange({ ...videoShader, enabled: event.target.checked })}
+                          />
+                          <span className="sidebar-mini-toggle-track" />
+                        </label>
+                      </div>
+                      {videoShader.enabled && (
+                        <>
+                          {([
+                            { key: "sharpen", label: "Sharpen", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%`, hint: "Contrast-adaptive sharpening. Counters stream compression blur." },
+                            { key: "saturation", label: "Saturation", min: 0, max: 200, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "contrast", label: "Contrast", min: 50, max: 150, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "brightness", label: "Brightness", min: 50, max: 150, neutral: 100, format: (v: number) => `${v}%` },
+                            { key: "vibrance", label: "Vibrance", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%`, hint: "Boosts muted colors without oversaturating." },
+                            { key: "filmGrain", label: "Film Grain", min: 0, max: 100, neutral: 0, format: (v: number) => `${v}%` },
+                          ] as const).map((control) => (
+                            <div key={control.key} className="sidebar-row sidebar-row--column">
+                              <div className="sidebar-row-top">
+                                <span className="sidebar-label">{control.label}</span>
+                                <span className="settings-value-badge">{control.format(videoShader[control.key])}</span>
+                              </div>
+                              <input
+                                type="range"
+                                className="settings-slider"
+                                min={control.min}
+                                max={control.max}
+                                step={1}
+                                value={videoShader[control.key]}
+                                onChange={(event) => {
+                                  const next = Number(event.target.value);
+                                  if (Number.isFinite(next)) {
+                                    onVideoShaderChange({
+                                      ...videoShader,
+                                      [control.key]: Math.max(control.min, Math.min(control.max, Math.round(next))),
+                                    });
+                                  }
+                                }}
+                                onDoubleClick={() => onVideoShaderChange({ ...videoShader, [control.key]: control.neutral })}
+                              />
+                              {"hint" in control && control.hint && <span className="sidebar-hint">{control.hint}</span>}
+                            </div>
+                          ))}
+                          <div className="sidebar-row sidebar-row--aligned">
+                            <span className="sidebar-label">Reset Filters</span>
+                            <button
+                              type="button"
+                              className="sidebar-button"
+                              onClick={() => onVideoShaderChange({ ...DEFAULT_VIDEO_SHADER_SETTINGS, enabled: true })}
+                            >
+                              <span>Reset</span>
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
                 </section>
                 <div className="sidebar-separator" aria-hidden="true" />
                 <section className="sidebar-section">
@@ -1892,7 +2054,10 @@ export function StreamView({
                   )}
                   <div className="sidebar-row sidebar-row--aligned">
                     <span className="sidebar-label">Toggle Sidebar</span>
-                    <span className="settings-value-badge">{sidebarToggleShortcutDisplay}</span>
+                    <span className="sidebar-shortcut-stack">
+                      <span className="settings-value-badge">{sidebarToggleShortcutDisplay}</span>
+                      <span className="settings-value-badge">{CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</span>
+                    </span>
                   </div>
                 </section>
               </>
@@ -2114,6 +2279,7 @@ export function StreamView({
           <div className="sv-hint"><kbd>{shortcuts.togglePointerLock}</kbd><span>Mouse lock</span></div>
           <div className="sv-hint"><kbd>{shortcuts.toggleFullscreen}</kbd><span>Full screen</span></div>
           <div className="sv-hint"><kbd>{shortcuts.stopStream}</kbd><span>Stop</span></div>
+          <div className="sv-hint"><kbd>{CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</kbd><span>Controller menu</span></div>
           {shortcuts.toggleMicrophone && <div className="sv-hint"><kbd>{shortcuts.toggleMicrophone}</kbd><span>Mic</span></div>}
         </div>
       )}

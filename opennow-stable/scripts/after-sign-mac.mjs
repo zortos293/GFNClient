@@ -12,7 +12,7 @@ export default async function afterSign({ appOutDir, packager }) {
     "--force",
     "--deep",
     "--sign", "-",
-    "--requirements", `designated => identifier "${bundleId}"`,
+    "--requirements", `=designated => identifier "${bundleId}"`,
     appPath,
   ]);
 }

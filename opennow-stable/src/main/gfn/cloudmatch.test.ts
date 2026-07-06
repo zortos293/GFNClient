@@ -145,6 +145,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
   const calls: string[] = [];
   type CapturedSessionRequestBody = {
     sessionRequestData: {
+      networkTestSessionId?: string | null;
       appLaunchMode?: number;
       enablePersistingInGameSettings?: boolean;
       requestedStreamingFeatures: {
@@ -173,6 +174,17 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
           { key: "US West", value: "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/" },
           { key: "US East", value: "https://np-ash-01.cloudmatchbeta.nvidiagrid.net/" },
         ],
+      }), { status: 200 });
+    }
+
+    if (url === "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession") {
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
+        netTestSession: {
+          sessionId: "nettest-1",
+          connectionInfo: [{ ip: "127.0.0.1", port: 443, appLevelProtocol: 5 }],
+          netTestThresholds: {},
+        },
       }), { status: 200 });
     }
 
@@ -220,6 +232,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     assert.equal(session.enablePersistingInGameSettings, false);
     assert.deepEqual(calls, [
       "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
+      "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession",
       expectedSessionUrl,
     ]);
     const capturedRequestBody = requestBody as CapturedSessionRequestBody | null;
@@ -228,9 +241,104 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 1);
     assert.equal(capturedRequestBody.sessionRequestData.appLaunchMode, 2);
     assert.equal(capturedRequestBody.sessionRequestData.enablePersistingInGameSettings, false);
+    assert.equal(capturedRequestBody.sessionRequestData.networkTestSessionId, "nettest-1");
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
+  }
+});
+
+test("CloudMatch retries transient serverInfo failures before creating a session", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const originalLog = console.log;
+  const calls: string[] = [];
+  const expectedSessionUrl = `https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?${new URLSearchParams({
+    keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
+    languageCode: "en_US",
+  }).toString()}`;
+
+  console.warn = () => {};
+  console.log = () => {};
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+
+    if (url === "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo") {
+      if (calls.filter((entry) => entry === url).length === 1) {
+        return new Response("temporary", { status: 503 });
+      }
+
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
+        metaData: [
+          { key: "local-region", value: "US West" },
+          { key: "gfn-regions", value: "US West" },
+          { key: "US West", value: "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/" },
+        ],
+      }), { status: 200 });
+    }
+
+    if (url === "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession") {
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
+        netTestSession: {
+          sessionId: "nettest-retry",
+          connectionInfo: [{ ip: "127.0.0.1", port: 443, appLevelProtocol: 5 }],
+          netTestThresholds: {},
+        },
+      }), { status: 200 });
+    }
+
+    if (url === expectedSessionUrl) {
+      const body = JSON.parse(String(init?.body)) as {
+        sessionRequestData: {
+          requestedStreamingFeatures?: unknown;
+        };
+      };
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
+        session: {
+          sessionId: "session-1",
+          status: 1,
+          seatSetupInfo: { seatSetupStep: 0 },
+          sessionControlInfo: { ip: "np-lax-01.cloudmatchbeta.nvidiagrid.net" },
+          connectionInfo: [],
+          iceServerConfiguration: {
+            iceServers: [{ urls: "stun:127.0.0.1:19302" }],
+          },
+          sessionRequestData: {
+            requestedStreamingFeatures: body.sessionRequestData.requestedStreamingFeatures,
+          },
+        },
+      }), { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const session = await createSession({
+      token: "token",
+      streamingBaseUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/",
+      appId: "1001",
+      internalTitle: "Test Game",
+      accountLinked: true,
+      zone: "prod",
+      settings: makeSettings({ fps: 120 }),
+    });
+
+    assert.equal(session.streamingBaseUrl, "https://np-lax-01.cloudmatchbeta.nvidiagrid.net");
+    assert.deepEqual(calls, [
+      "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
+      "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
+      "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession",
+      expectedSessionUrl,
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+    console.log = originalLog;
   }
 });
 
@@ -252,6 +360,17 @@ test("CloudMatch only sends in-game settings persistence when user opt-in and ga
 
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
+    if (url === "https://np-test.example.test/v2/nettestsession") {
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-TEST" },
+        netTestSession: {
+          sessionId: "nettest-persistence",
+          connectionInfo: [{ ip: "127.0.0.1", port: 443, appLevelProtocol: 5 }],
+          netTestThresholds: {},
+        },
+      }), { status: 200 });
+    }
+
     if (url !== expectedSessionUrl) {
       throw new Error(`Unexpected fetch: ${url}`);
     }

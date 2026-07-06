@@ -19,3 +19,15 @@ test("SessionError explains insufficient playability as a membership upgrade req
   assert.equal(error.isSessionConflict(), false);
 });
 
+test("SessionError maps CloudMatch status 91 to app streaming denied", () => {
+  const error = SessionError.fromResponse(200, JSON.stringify({
+    requestStatus: {
+      statusCode: 91,
+      statusDescription: "APP_NOT_ALLOWED_TO_STREAM",
+    },
+  }));
+
+  assert.equal(error.gfnErrorCode, GfnErrorCode.AppNotAllowedToStream);
+  assert.equal(error.title, "Streaming Not Allowed");
+  assert.match(error.message, /not allowed to stream/i);
+});

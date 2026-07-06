@@ -3,6 +3,7 @@ import dns from "node:dns";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 
 import type {
   ActiveSessionInfo,
@@ -47,8 +48,15 @@ import {
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
 const READY_SESSION_STATUSES = new Set([2, 3]);
 const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
+const CLOUDMATCH_REQUEST_TIMEOUT_MS = 30_000;
+const CLOUDMATCH_GET_RETRIES = 2;
+const CLOUDMATCH_RETRY_DELAYS_MS = [250, 750];
+const CLOUDMATCH_RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const NETWORK_TEST_SESSION_TIMEOUT_MS = 8_000;
+const NETWORK_TEST_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
 
 let cachedStableDeviceId: string | null = null;
+const networkTestSessionCache = new Map<string, { sessionId: string; expiresAt: number }>();
 const require = createRequire(import.meta.url);
 
 interface CloudMatchServerInfoResponse {
@@ -56,6 +64,83 @@ interface CloudMatchServerInfoResponse {
     key: string;
     value: string;
   }>;
+}
+
+interface NetworkTestSessionResponse {
+  requestStatus?: {
+    statusCode?: number;
+    statusDescription?: string;
+    serverId?: string;
+  };
+  netTestSession?: {
+    sessionId?: string;
+    connectionInfo?: Array<{
+      ip?: string;
+      port?: number;
+      appLevelProtocol?: number;
+    }>;
+    netTestThresholds?: {
+      recommendedBandwidthMBPS?: number;
+      requiredBandwidthMBPS?: number;
+      recommendedLatencyMS?: number;
+      requiredLatencyMS?: number;
+      recommendedPacketLossPct?: number;
+      requiredPacketLossPct?: number;
+    };
+    serverId?: string;
+  };
+}
+
+interface CloudMatchFetchOptions {
+  proxyUrl?: string;
+  timeoutMs?: number;
+  retries?: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchCloudMatch(
+  input: string,
+  init: RequestInit,
+  options: CloudMatchFetchOptions = {},
+): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const retries = options.retries ?? (method === "GET" ? CLOUDMATCH_GET_RETRIES : 0);
+  const timeoutMs = options.timeoutMs ?? CLOUDMATCH_REQUEST_TIMEOUT_MS;
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetchWithOptionalProxy(input, {
+        ...init,
+        signal: controller.signal,
+      }, options.proxyUrl);
+      clearTimeout(timeout);
+
+      if (attempt < retries && CLOUDMATCH_RETRY_STATUSES.has(response.status)) {
+        await sleep(CLOUDMATCH_RETRY_DELAYS_MS[Math.min(attempt, CLOUDMATCH_RETRY_DELAYS_MS.length - 1)] ?? 0);
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error;
+      if (attempt >= retries) {
+        throw error;
+      }
+
+      const retryDelay = CLOUDMATCH_RETRY_DELAYS_MS[Math.min(attempt, CLOUDMATCH_RETRY_DELAYS_MS.length - 1)];
+      await sleep(retryDelay ?? 0);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function normalizeCloudMatchBaseUrl(url: string): string {
@@ -116,10 +201,10 @@ async function resolveCreateSessionBase(
   }
 
   try {
-    const response = await fetchWithOptionalProxy(`${base}/v2/serverInfo`, {
+    const response = await fetchCloudMatch(`${base}/v2/serverInfo`, {
       method: "GET",
       headers: buildGfnCloudMatchHeaders({ token, clientId, deviceId, includeOrigin: false }),
-    }, proxyUrl);
+    }, { proxyUrl });
     if (!response.ok) {
       return base;
     }
@@ -610,6 +695,114 @@ function parseResolution(input: string): { width: number; height: number } {
   return { width, height };
 }
 
+function networkTestSessionCacheKey(base: string, settings: StreamSettings, token: string, proxyUrl?: string): string {
+  const { width, height } = parseResolution(settings.resolution);
+  const identityHash = createHash("sha256")
+    .update(token)
+    .update("\0")
+    .update(proxyUrl ?? "")
+    .digest("hex")
+    .slice(0, 16);
+  return `${base}\0${width}x${height}@${settings.fps}\0${identityHash}`;
+}
+
+function getCachedNetworkTestSessionId(base: string, settings: StreamSettings, token: string, proxyUrl?: string): string | null {
+  const cacheKey = networkTestSessionCacheKey(base, settings, token, proxyUrl);
+  const cached = networkTestSessionCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    networkTestSessionCache.delete(cacheKey);
+    return null;
+  }
+
+  return cached.sessionId;
+}
+
+function cacheNetworkTestSessionId(
+  base: string,
+  settings: StreamSettings,
+  token: string,
+  sessionId: string,
+  proxyUrl?: string,
+): void {
+  networkTestSessionCache.set(networkTestSessionCacheKey(base, settings, token, proxyUrl), {
+    sessionId,
+    expiresAt: Date.now() + NETWORK_TEST_SESSION_CACHE_TTL_MS,
+  });
+}
+
+async function createNetworkTestSession(input: {
+  base: string;
+  token: string;
+  clientId: string;
+  deviceId: string;
+  settings: StreamSettings;
+  proxyUrl?: string;
+}): Promise<string | null> {
+  const cached = getCachedNetworkTestSessionId(input.base, input.settings, input.token, input.proxyUrl);
+  if (cached) {
+    return cached;
+  }
+
+  const { width, height } = parseResolution(input.settings.resolution);
+  const body = {
+    netTestRequestData: {
+      clientPlatformName: "windows",
+      netTestProfile: {
+        widthInPixels: width,
+        heightInPixels: height,
+        framesPerSecond: input.settings.fps,
+      },
+    },
+  };
+
+  try {
+    const response = await fetchCloudMatch(`${input.base}/v2/nettestsession`, {
+      method: "POST",
+      headers: buildGfnCloudMatchHeaders({
+        token: input.token,
+        clientId: input.clientId,
+        deviceId: input.deviceId,
+        includeOrigin: true,
+      }),
+      body: JSON.stringify(body),
+    }, {
+      proxyUrl: input.proxyUrl,
+      timeoutMs: NETWORK_TEST_SESSION_TIMEOUT_MS,
+      retries: 0,
+    });
+
+    if (!response.ok) {
+      console.warn(`[CloudMatch] nettestsession failed HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+      return null;
+    }
+
+    const payload = (await response.json()) as NetworkTestSessionResponse;
+    if (payload.requestStatus?.statusCode !== 1) {
+      console.warn(
+        `[CloudMatch] nettestsession API error: ${payload.requestStatus?.statusCode ?? "unknown"} ` +
+        `${payload.requestStatus?.statusDescription ?? ""}`.trim(),
+      );
+      return null;
+    }
+
+    const sessionId = payload.netTestSession?.sessionId?.trim();
+    if (!sessionId) {
+      console.warn("[CloudMatch] nettestsession response did not include a sessionId");
+      return null;
+    }
+
+    cacheNetworkTestSessionId(input.base, input.settings, input.token, sessionId, input.proxyUrl);
+    return sessionId;
+  } catch (error) {
+    console.warn(`[CloudMatch] nettestsession creation failed: ${formatErrorForLog(error)}`);
+    return null;
+  }
+}
+
 function timezoneOffsetMs(): number {
   return -new Date().getTimezoneOffset() * 60 * 1000;
 }
@@ -638,7 +831,11 @@ export function shouldEnableInGameSettingsPersistence(
   );
 }
 
-function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: string): CloudMatchRequest {
+function buildSessionRequestBody(
+  input: SessionCreateRequest,
+  deviceHashId: string,
+  networkTestSessionId: string | null = null,
+): CloudMatchRequest {
   const { width, height } = parseResolution(input.settings.resolution);
   const cq = input.settings.colorQuality;
   // IMPORTANT: hdrEnabled is a SEPARATE toggle from color quality.
@@ -656,7 +853,7 @@ function buildSessionRequestBody(input: SessionCreateRequest, deviceHashId: stri
       appId: input.appId,
       internalTitle: input.internalTitle || null,
       availableSupportedControllers: [],
-      networkTestSessionId: null,
+      networkTestSessionId,
       parentSessionId: null,
       clientIdentification: "GFN-PC",
       // Keep device identity stable across create -> reconnect/resume flows.
@@ -1152,13 +1349,6 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   const clientId = crypto.randomUUID();
   const deviceId = getStableDeviceId();
 
-  const body = buildSessionRequestBody(input, deviceId);
-  console.log(
-    `[CloudMatch] createSession in-game settings persistence: user=${input.enablePersistingInGameSettings === true}, ` +
-    `gameSupport=${input.supportsInGameSettingsPersistence === true}, ` +
-    `sent=${body.sessionRequestData.enablePersistingInGameSettings}`,
-  );
-
   const requestedBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   const base = await resolveCreateSessionBase(
     requestedBase,
@@ -1167,14 +1357,30 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
     deviceId,
     input.proxyUrl,
   );
+  const networkTestSessionId = await createNetworkTestSession({
+    base,
+    token: input.token,
+    clientId,
+    deviceId,
+    settings: input.settings,
+    proxyUrl: input.proxyUrl,
+  });
+  const body = buildSessionRequestBody(input, deviceId, networkTestSessionId);
+  console.log(
+    `[CloudMatch] createSession in-game settings persistence: user=${input.enablePersistingInGameSettings === true}, ` +
+    `gameSupport=${input.supportsInGameSettingsPersistence === true}, ` +
+    `sent=${body.sessionRequestData.enablePersistingInGameSettings}, ` +
+    `networkTestSessionId=${networkTestSessionId ?? "none"}`,
+  );
+
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = input.settings.gameLanguage ?? "en_US";
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
-  const response = await fetchWithOptionalProxy(url, {
+  const response = await fetchCloudMatch(url, {
     method: "POST",
     headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
     body: JSON.stringify(body),
-  }, input.proxyUrl);
+  }, { proxyUrl: input.proxyUrl });
 
   const { payload } = await readCloudMatchJson<CloudMatchResponse>(response);
   return await toSessionInfo({
@@ -1202,10 +1408,10 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   const url = `${base}/v2/session/${input.sessionId}`;
   // Polling should NOT include Origin/Referer headers (matches claimSession polling pattern)
   const headers = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
-  const response = await fetchWithOptionalProxy(url, {
+  const response = await fetchCloudMatch(url, {
     method: "GET",
     headers,
-  }, pollProxyUrl);
+  }, { proxyUrl: pollProxyUrl });
 
   const { payload } = await readCloudMatchJson<CloudMatchResponse>(response);
 
@@ -1231,7 +1437,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
     const directUrl = `${directBase}/v2/session/${input.sessionId}`;
     try {
       // The ready-session direct real-IP re-poll intentionally bypasses the session proxy.
-      const directResponse = await fetch(directUrl, {
+      const directResponse = await fetchCloudMatch(directUrl, {
         method: "GET",
         headers,
       });
@@ -1285,7 +1491,7 @@ export async function reportSessionAd(input: SessionAdReportRequest): Promise<Se
       `cancelReason=${input.cancelReason ?? "n/a"}, errorInfo=${input.errorInfo ?? "n/a"}`,
   );
 
-  const response = await fetch(url, {
+  const response = await fetchCloudMatch(url, {
     method: "PUT",
     // Official browser requests include Origin/Referer on cross-origin ad updates.
     headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
@@ -1329,7 +1535,7 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const url = `${base}/v2/session/${input.sessionId}`;
-  const response = await fetch(url, {
+  const response = await fetchCloudMatch(url, {
     method: "DELETE",
     headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false }),
   });
@@ -1378,7 +1584,7 @@ async function discoverActiveSessionFallbackBases(
   headers: Record<string, string>,
 ): Promise<string[]> {
   try {
-    const response = await fetch(`${base}/v2/serverInfo`, {
+    const response = await fetchCloudMatch(`${base}/v2/serverInfo`, {
       method: "GET",
       headers,
     });
@@ -1400,10 +1606,10 @@ async function fetchActiveSessionsFromBase(
 
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetchCloudMatch(url, {
       method: "GET",
       headers,
-    });
+    }, { retries: 0 });
   } catch (error) {
     console.warn(`[CloudMatch] getActiveSessions fetch failed for ${base}: ${formatErrorForLog(error)}`);
     return null;
@@ -1607,7 +1813,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     console.log(`[CloudMatch] claimSession: pre-flight query ${prefetchUrl}`);
     const prefetchHeaders = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
     try {
-      const prefetchResp = await fetch(prefetchUrl, { method: "GET", headers: prefetchHeaders });
+      const prefetchResp = await fetchCloudMatch(prefetchUrl, { method: "GET", headers: prefetchHeaders });
       console.log(`[CloudMatch] claimSession: pre-flight response status=${prefetchResp.status}`);
       if (prefetchResp.ok) {
         const prefetchPayload = JSON.parse(await prefetchResp.text()) as CloudMatchResponse;
@@ -1637,7 +1843,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   try {
     const validationUrl = `https://${effectiveServerIp}/v2/session/${input.sessionId}`;
     const validationHeaders = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
-    const validationResp = await fetch(validationUrl, { method: "GET", headers: validationHeaders });
+    const validationResp = await fetchCloudMatch(validationUrl, { method: "GET", headers: validationHeaders });
     if (validationResp.ok) {
       const validationText = await validationResp.text();
       const validationPayload = JSON.parse(validationText) as CloudMatchResponse;
@@ -1683,7 +1889,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
     console.log(`[CloudMatch] claimSession PUT ${claimUrl}`);
     console.log(`[CloudMatch] claimSession body: ${JSON.stringify(payload)}`);
-    const response = await fetch(claimUrl, {
+    const response = await fetchCloudMatch(claimUrl, {
       method: "PUT",
       headers,
       body: JSON.stringify(payload),
@@ -1712,7 +1918,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
     const pollHeaders = buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false });
 
-    const pollResponse = await fetch(getUrl, {
+    const pollResponse = await fetchCloudMatch(getUrl, {
       method: "GET",
       headers: pollHeaders,
     });

@@ -55,6 +55,11 @@ import {
   getCurrentActivity,
   isDiscordRpcConnected,
 } from "./discordRpc";
+import type { DiscordActivityUpdate } from "@shared/discord";
+import {
+  discordActivityFromSession,
+  isSameDiscordActivity,
+} from "./discordPresence";
 import {
   createAppUpdaterController,
   type AppUpdaterController,
@@ -386,11 +391,18 @@ class DiscordStatusMonitor {
 
       if (activeSession) {
         const sessionAppId = activeSession.appId.toString();
+        const nextActivity = discordActivityFromSession(activeSession, sessionAppId);
 
-        if (!currentActivity || currentActivity.appId !== sessionAppId) {
-          const title = sessionAppId;
-          const startTime = new Date();
-          void setActivity(title, startTime, sessionAppId);
+        if (nextActivity) {
+          if (!isSameDiscordActivity(currentActivity, nextActivity)) {
+            void setActivity({
+              ...nextActivity,
+              startTimestamp: nextActivity.startTimestampMs ? new Date(nextActivity.startTimestampMs) : undefined,
+            });
+          }
+        } else if (currentActivity?.appId === sessionAppId) {
+          console.log("[DiscordRPC] Monitor clearing non-streaming ready-session status.");
+          void clearActivity();
         }
       } else if (currentActivity) {
         console.log("[DiscordRPC] Monitor clearing stale status.");
@@ -836,6 +848,17 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY, async () => {
     void clearActivity();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DISCORD_SET_ACTIVITY, async (_event, activity: DiscordActivityUpdate) => {
+    if (!settingsManager.get("discordRichPresence")) {
+      return;
+    }
+
+    void setActivity({
+      ...activity,
+      startTimestamp: activity.startTimestampMs ? new Date(activity.startTimestampMs) : undefined,
+    });
   });
 
   // Toggle fullscreen via IPC (for completeness)

@@ -9,6 +9,7 @@ import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
+import { SelectDropdown } from "./ui/SelectDropdown";
 
 const CONTROLLER_STORE_HERO_ROTATION_MS = 7000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -758,16 +759,18 @@ export const HomePage = memo(function HomePage({
           </details>
         )}
 
-        <label className="home-sort">
-          <ArrowUpDown size={14} />
-          <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)} disabled={showInitialLoading}>
-            {sortOptions.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {sortOptions.length > 0 && (
+          <div className="home-sort">
+            <ArrowUpDown size={14} />
+            <SelectDropdown
+              value={selectedSortId}
+              options={sortOptions.map((option) => ({ value: option.id, label: option.label }))}
+              onChange={onSortChange}
+              disabled={showInitialLoading}
+              ariaLabel={t("home.sortAriaLabel")}
+            />
+          </div>
+        )}
 
         <span className="home-count">
           {countLabel}

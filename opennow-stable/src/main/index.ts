@@ -9,7 +9,7 @@ import {
   session,
   protocol,
 } from "electron";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -412,6 +412,30 @@ function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
   }
 }
 
+function parseExternalHttpUrl(url: string): URL {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Only HTTP(S) external URLs can be opened.");
+  }
+  return parsed;
+}
+
+function isAppNavigationUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (process.env.ELECTRON_RENDERER_URL) {
+      return parsed.origin === new URL(process.env.ELECTRON_RENDERER_URL).origin;
+    }
+    return parsed.toString() === pathToFileURL(join(__dirname, "../../dist/index.html")).toString();
+  } catch {
+    return false;
+  }
+}
+
+async function openExternalHttpUrl(url: string): Promise<void> {
+  await shell.openExternal(parseExternalHttpUrl(url).toString());
+}
+
 async function createMainWindow(): Promise<void> {
   const preloadMjsPath = join(__dirname, "../preload/index.mjs");
   const preloadJsPath = join(__dirname, "../preload/index.js");
@@ -446,6 +470,24 @@ async function createMainWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openExternalHttpUrl(url).catch((error) => {
+      console.warn("Blocked non-external window open:", error instanceof Error ? error.message : error);
+    });
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isAppNavigationUrl(url)) {
+      return;
+    }
+
+    event.preventDefault();
+    void openExternalHttpUrl(url).catch((error) => {
+      console.warn("Blocked app window navigation:", error instanceof Error ? error.message : error);
+    });
   });
 
   if (process.platform === "win32") {
@@ -878,11 +920,7 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: string): Promise<void> => {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      throw new Error("Only HTTP(S) external URLs can be opened.");
-    }
-    await shell.openExternal(parsed.toString());
+    await openExternalHttpUrl(url);
   });
 
   ipcMain.handle(

@@ -152,6 +152,7 @@
   "home": {
     "searchPlaceholder": "Search games...",
     "filters": "Filters",
+    "sortAriaLabel": "Sort games",
     "count": {
       "loading": "Loading...",
       "shown": "{{shown}} shown",
@@ -191,6 +192,7 @@
     "filteredGameCount": "{{shown}} of {{total}} games",
     "filter": "Filter",
     "filters": "Filters",
+    "sortAriaLabel": "Sort library",
     "activeFilters": "Active filters",
     "clearFilters": "Clear",
     "removeFilter": "Remove {{filter}} filter",

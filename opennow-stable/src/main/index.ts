@@ -57,8 +57,7 @@ import {
 } from "./discordRpc";
 import type { DiscordActivityUpdate } from "@shared/discord";
 import {
-  discordActivityFromSession,
-  isSameDiscordActivity,
+  discordMonitorActivityDecision,
 } from "./discordPresence";
 import {
   createAppUpdaterController,
@@ -388,23 +387,14 @@ class DiscordStatusMonitor {
         [1, 2, 3].includes(s.status),
       );
       const currentActivity = getCurrentActivity();
+      const decision = discordMonitorActivityDecision(currentActivity, activeSession ?? null);
 
-      if (activeSession) {
-        const sessionAppId = activeSession.appId.toString();
-        const nextActivity = discordActivityFromSession(activeSession, sessionAppId);
-
-        if (nextActivity) {
-          if (!isSameDiscordActivity(currentActivity, nextActivity)) {
-            void setActivity({
-              ...nextActivity,
-              startTimestamp: nextActivity.startTimestampMs ? new Date(nextActivity.startTimestampMs) : undefined,
-            });
-          }
-        } else if (currentActivity?.appId === sessionAppId) {
-          console.log("[DiscordRPC] Monitor clearing non-streaming ready-session status.");
-          void clearActivity();
-        }
-      } else if (currentActivity) {
+      if (decision.action === "set") {
+        void setActivity({
+          ...decision.activity,
+          startTimestamp: decision.startTimestamp,
+        });
+      } else if (decision.action === "clear") {
         console.log("[DiscordRPC] Monitor clearing stale status.");
         void clearActivity();
       }

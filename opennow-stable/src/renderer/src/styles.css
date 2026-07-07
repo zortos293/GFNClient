@@ -5463,6 +5463,13 @@ button.game-card-store-chip.owned.active:hover {
     color var(--t-fast);
 }
 
+.native-streamer-warning-btn--with-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 .native-streamer-warning-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-surface);
@@ -5509,6 +5516,26 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--ink-soft);
   font-size: 0.68rem;
   font-family: inherit;
+}
+
+.settings-community-proxy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.settings-community-proxy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-community-proxy-error {
+  margin: 0;
+  color: #ff8a8a;
+  font-size: 0.92rem;
+  line-height: 1.45;
 }
 
 @media (max-width: 560px) {

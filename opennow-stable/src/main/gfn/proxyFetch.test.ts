@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 
 import {
   normalizeSessionProxyUrl,
+  parseSessionProxyForElectron,
   sessionProxyCacheKeyPart,
   sessionProxyHasCredentials,
   sessionProxyPartitionForUrl,
@@ -53,4 +54,19 @@ test("detects session proxy credentials without requiring them", () => {
   assert.equal(sessionProxyHasCredentials("proxy.example.com:8080"), false);
   assert.equal(sessionProxyHasCredentials("http://user@proxy.example.com:8080"), true);
   assert.equal(sessionProxyHasCredentials("http://user:secret@proxy.example.com:8080"), true);
+});
+
+test("builds Electron proxy rules without embedded credentials", () => {
+  const config = parseSessionProxyForElectron("http://user:secret@217.76.50.166:3128");
+  assert.ok(config);
+  assert.equal(config.normalizedUrl, "http://user:secret@217.76.50.166:3128");
+  assert.equal(config.proxyRules, "http=217.76.50.166:3128;https=217.76.50.166:3128");
+  assert.deepEqual(config.credentials, { username: "user", password: "secret" });
+});
+
+test("builds Electron proxy rules for unauthenticated proxies", () => {
+  const config = parseSessionProxyForElectron("http://127.0.0.1:8080");
+  assert.ok(config);
+  assert.equal(config.proxyRules, "http=127.0.0.1:8080;https=127.0.0.1:8080");
+  assert.equal(config.credentials, null);
 });

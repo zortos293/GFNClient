@@ -85,6 +85,7 @@ export const IPC_CHANNELS = {
   CACHE_STATUS_UPDATE: "cache:status-update",
   CACHE_DELETE_ALL: "cache:delete-all",
   COMMUNITY_GET_THANKS: "community:get-thanks",
+  COMMUNITY_PROVISION_SESSION_PROXY: "community:provision-session-proxy",
   // Media browsing
   MEDIA_LIST_BY_GAME: "media:list-by-game",
   MEDIA_THUMBNAIL: "media:thumbnail",

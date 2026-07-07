@@ -37,6 +37,7 @@ import {
   USER_FACING_COLOR_QUALITY_OPTIONS,
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
+import { isZortosCommunityProxyUrl, ZORTOS_GITHUB_SPONSORS_URL } from "@shared/communityProxy";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { getCodecDecodeBadgeState, shouldShowLinuxHardwareCodecHint, type CodecTestResult } from "../lib/codecDiagnostics";
 import { getAccentColorOption, getAccentColorOptions } from "../lib/uiCustomization";
@@ -162,6 +163,9 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
     "vibrance",
     "film grain",
     "post processing",
+    "session proxy",
+    "community proxy",
+    "zortos",
   ],
   "stream-codec-diagnostics": [
     "stream",
@@ -436,6 +440,15 @@ const shortcutDefaults = {
 const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+G";
 const SIDEBAR_TOGGLE_SHORTCUT_ALIASES = isMac ? [SIDEBAR_TOGGLE_SHORTCUT_RAW] : [SIDEBAR_TOGGLE_SHORTCUT_RAW, "Ctrl+Shift+G"];
 const NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS = 160;
+
+function extractRemoteInvokeErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof Error) || !error.message.trim()) {
+    return fallback;
+  }
+
+  const ipcMatch = error.message.match(/^Error invoking remote method '[^']+': (?:(?:Error|TypeError|RangeError): )?([\s\S]+)$/);
+  return ipcMatch?.[1]?.trim() || error.message.trim();
+}
 
 type ShortcutSettingKey = keyof typeof shortcutDefaults;
 
@@ -838,6 +851,20 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
   const nativeStreamerEnablePromptCloseTimerRef = useRef<number | null>(null);
   const nativeStreamerEnablePromptVisible =
     nativeStreamerEnablePromptOpen || nativeStreamerEnablePromptClosing;
+  const [zortosCommunityProxyPromptOpen, setZortosCommunityProxyPromptOpen] = useState(false);
+  const [zortosCommunityProxyPromptClosing, setZortosCommunityProxyPromptClosing] = useState(false);
+  const [zortosCommunityProxyProvisioning, setZortosCommunityProxyProvisioning] = useState(false);
+  const [zortosCommunityProxyError, setZortosCommunityProxyError] = useState<string | null>(null);
+  const zortosCommunityProxyPromptRef = useRef<HTMLDivElement | null>(null);
+  const zortosCommunityProxyPromptContinueRef = useRef<HTMLButtonElement | null>(null);
+  const zortosCommunityProxyPromptPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const zortosCommunityProxyPromptCloseTimerRef = useRef<number | null>(null);
+  const zortosCommunityProxyPromptVisible =
+    zortosCommunityProxyPromptOpen || zortosCommunityProxyPromptClosing;
+  const isUsingZortosCommunityProxy = useMemo(
+    () => settings.sessionProxyEnabled && isZortosCommunityProxyUrl(settings.sessionProxyUrl),
+    [settings.sessionProxyEnabled, settings.sessionProxyUrl],
+  );
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
     currentVersion: "0.0.0",
@@ -1280,11 +1307,71 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     openNativeStreamerEnablePrompt();
   }, [handleChange, openNativeStreamerEnablePrompt, settings.streamClientMode]);
 
+  const openZortosCommunityProxyPrompt = useCallback((): void => {
+    if (zortosCommunityProxyPromptCloseTimerRef.current !== null) {
+      window.clearTimeout(zortosCommunityProxyPromptCloseTimerRef.current);
+      zortosCommunityProxyPromptCloseTimerRef.current = null;
+    }
+
+    setZortosCommunityProxyError(null);
+    setZortosCommunityProxyProvisioning(false);
+    setZortosCommunityProxyPromptClosing(false);
+    setZortosCommunityProxyPromptOpen(true);
+  }, []);
+
+  const closeZortosCommunityProxyPrompt = useCallback((): void => {
+    if (zortosCommunityProxyPromptCloseTimerRef.current !== null || zortosCommunityProxyProvisioning) {
+      return;
+    }
+
+    setZortosCommunityProxyPromptOpen(false);
+    setZortosCommunityProxyPromptClosing(true);
+    zortosCommunityProxyPromptCloseTimerRef.current = window.setTimeout(() => {
+      zortosCommunityProxyPromptCloseTimerRef.current = null;
+      setZortosCommunityProxyPromptClosing(false);
+      setZortosCommunityProxyError(null);
+    }, NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS);
+  }, [zortosCommunityProxyProvisioning]);
+
+  const handleOpenZortosSponsors = useCallback((): void => {
+    void window.openNow.openExternalUrl(ZORTOS_GITHUB_SPONSORS_URL).catch((error) => {
+      console.error("[Settings] Failed to open GitHub Sponsors:", error);
+    });
+  }, []);
+
+  const confirmZortosCommunityProxyPrompt = useCallback(async (): Promise<void> => {
+    if (zortosCommunityProxyProvisioning) {
+      return;
+    }
+
+    setZortosCommunityProxyProvisioning(true);
+    setZortosCommunityProxyError(null);
+
+    try {
+      const result = await window.openNow.provisionZortosCommunityProxy();
+      handleChange("sessionProxyUrl", result.proxyUrl);
+      handleChange("sessionProxyEnabled", true);
+      setZortosCommunityProxyProvisioning(false);
+      closeZortosCommunityProxyPrompt();
+    } catch (error) {
+      console.error("[Settings] Failed to provision Zortos community proxy:", error);
+      setZortosCommunityProxyError(
+        extractRemoteInvokeErrorMessage(error, t("settings.video.zortosCommunityProxy.provisionFailed")),
+      );
+    } finally {
+      setZortosCommunityProxyProvisioning(false);
+    }
+  }, [closeZortosCommunityProxyPrompt, handleChange, t, zortosCommunityProxyProvisioning]);
+
   useEffect(() => {
     return () => {
       if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
         window.clearTimeout(nativeStreamerEnablePromptCloseTimerRef.current);
         nativeStreamerEnablePromptCloseTimerRef.current = null;
+      }
+      if (zortosCommunityProxyPromptCloseTimerRef.current !== null) {
+        window.clearTimeout(zortosCommunityProxyPromptCloseTimerRef.current);
+        zortosCommunityProxyPromptCloseTimerRef.current = null;
       }
     };
   }, []);
@@ -1369,6 +1456,37 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       }
     };
   }, [closeNativeStreamerEnablePrompt, nativeStreamerEnablePromptVisible]);
+
+  useEffect(() => {
+    if (!zortosCommunityProxyPromptVisible) {
+      return;
+    }
+
+    zortosCommunityProxyPromptPreviousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape" && !zortosCommunityProxyProvisioning) {
+        event.preventDefault();
+        closeZortosCommunityProxyPrompt();
+      }
+    };
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      zortosCommunityProxyPromptContinueRef.current?.focus({ preventScroll: true });
+    });
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      const previousFocus = zortosCommunityProxyPromptPreviousFocusRef.current;
+      zortosCommunityProxyPromptPreviousFocusRef.current = null;
+      if (previousFocus?.isConnected) {
+        previousFocus.focus({ preventScroll: true });
+      }
+    };
+  }, [closeZortosCommunityProxyPrompt, zortosCommunityProxyPromptVisible, zortosCommunityProxyProvisioning]);
 
   const handleAppLanguageChange = useCallback((nextLocale: string): void => {
     setAppLanguageDropdownOpen(false);
@@ -2278,7 +2396,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !nativeStreamerEnablePromptVisible) {
+      if (event.key === "Escape" && !nativeStreamerEnablePromptVisible && !zortosCommunityProxyPromptVisible) {
         event.preventDefault();
         onClose();
       }
@@ -2292,7 +2410,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
       window.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = previousOverflow;
     };
-  }, [nativeStreamerEnablePromptVisible, onClose]);
+  }, [nativeStreamerEnablePromptVisible, onClose, zortosCommunityProxyPromptVisible]);
 
   return (
     <>
@@ -2913,6 +3031,22 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                   <span className="settings-subtle-hint">
                     {t("settings.video.sessionProxyHint")}
                   </span>
+                  <div className="settings-community-proxy-row">
+                    {isUsingZortosCommunityProxy ? (
+                      <span className="settings-inline-badge settings-inline-badge--beta">
+                        {t("settings.video.zortosCommunityProxy.enabledBadge")}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="settings-chip settings-community-proxy-btn"
+                        onClick={openZortosCommunityProxyPrompt}
+                      >
+                        <Heart size={14} />
+                        <span>{t("settings.video.zortosCommunityProxy.useButton")}</span>
+                      </button>
+                    )}
+                  </div>
                   {settings.sessionProxyEnabled && (
                     <input
                       type="text"
@@ -4578,6 +4712,70 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
             </div>
             <div className="native-streamer-warning-hint">
               <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
+            </div>
+          </div>
+        </div>
+      )}
+      {zortosCommunityProxyPromptVisible && (
+        <div
+          className={`native-streamer-warning ${zortosCommunityProxyPromptClosing ? "native-streamer-warning--closing" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="zortos-community-proxy-title"
+          aria-describedby="zortos-community-proxy-copy"
+        >
+          <button
+            type="button"
+            className="native-streamer-warning-backdrop"
+            aria-label={t("app.actions.cancel")}
+            aria-hidden="true"
+            tabIndex={-1}
+            disabled={zortosCommunityProxyProvisioning}
+            onClick={closeZortosCommunityProxyPrompt}
+          />
+          <div ref={zortosCommunityProxyPromptRef} className="native-streamer-warning-card" tabIndex={-1}>
+            <div className="native-streamer-warning-kicker">
+              <Heart size={14} />
+              {t("settings.video.zortosCommunityProxy.enablePromptKicker")}
+            </div>
+            <h3 id="zortos-community-proxy-title" className="native-streamer-warning-title">
+              {t("settings.video.zortosCommunityProxy.enablePromptTitle")}
+            </h3>
+            <p id="zortos-community-proxy-copy" className="native-streamer-warning-text">
+              {t("settings.video.zortosCommunityProxy.enablePromptBody")}
+            </p>
+            <p className="native-streamer-warning-text">
+              {t("settings.video.zortosCommunityProxy.enablePromptCostHint")}
+            </p>
+            {zortosCommunityProxyError && (
+              <p className="settings-community-proxy-error">{zortosCommunityProxyError}</p>
+            )}
+            <div className="native-streamer-warning-actions">
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--primary native-streamer-warning-btn--with-icon"
+                onClick={handleOpenZortosSponsors}
+              >
+                <Heart size={15} />
+                {t("settings.video.zortosCommunityProxy.enablePromptDonate")}
+              </button>
+              <button
+                type="button"
+                className="native-streamer-warning-btn native-streamer-warning-btn--secondary"
+                onClick={() => {
+                  void confirmZortosCommunityProxyPrompt();
+                }}
+                ref={zortosCommunityProxyPromptContinueRef}
+                disabled={zortosCommunityProxyProvisioning}
+                autoFocus
+              >
+                {zortosCommunityProxyProvisioning
+                  ? t("settings.video.zortosCommunityProxy.provisioning")
+                  : t("settings.video.zortosCommunityProxy.enablePromptContinue")}
+              </button>
+            </div>
+            <div className="native-streamer-warning-hint">
+              <kbd>Esc</kbd> {t("settings.video.zortosCommunityProxy.enablePromptEsc")}
             </div>
           </div>
         </div>

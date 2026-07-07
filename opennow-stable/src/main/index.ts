@@ -20,6 +20,8 @@ import { existsSync, readFileSync } from "node:fs";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
+import type { CommunityProxyProvisionResult } from "@shared/communityProxy";
+import { provisionZortosCommunityProxy } from "./community/provisionSessionProxy";
 import { registerOpenNowMediaProtocol } from "./mediaPaths";
 import { initLogCapture, exportLogs } from "@shared/logger";
 import { cacheManager } from "./services/cacheManager";
@@ -47,6 +49,7 @@ import { getSettingsManager, type SettingsManager } from "./settings";
 
 import { getActiveSessions } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
+import { initSessionProxyAuth } from "./gfn/proxyFetch";
 import {
   connectDiscordRpc,
   setActivity,
@@ -1193,6 +1196,13 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.COMMUNITY_PROVISION_SESSION_PROXY,
+    async (): Promise<CommunityProxyProvisionResult> => {
+      return provisionZortosCommunityProxy();
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.PING_REGIONS,
     async (_event, regions: StreamRegion[]): Promise<PingResult[]> => {
       return pingRegions(regions);
@@ -1252,6 +1262,7 @@ if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
   // Initialize log capture first to capture all console output
   initLogCapture("main");
+  initSessionProxyAuth();
 
   await cacheManager.initialize();
 

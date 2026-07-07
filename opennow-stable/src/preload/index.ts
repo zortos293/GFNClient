@@ -258,6 +258,8 @@ const api: OpenNowApi = {
   fetchPrintedWasteServerMapping: (): Promise<PrintedWasteServerMapping> =>
     ipcRenderer.invoke(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH),
   getThanksData: (): Promise<ThankYouDataResult> => ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_GET_THANKS),
+  provisionZortosCommunityProxy: (): Promise<import("@shared/communityProxy").CommunityProxyProvisionResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.COMMUNITY_PROVISION_SESSION_PROXY),
   setDiscordActivity: (input: DiscordActivityUpdate): Promise<void> =>
     ipcRenderer.invoke(IPC_CHANNELS.DISCORD_SET_ACTIVITY, input),
   clearDiscordActivity: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY),

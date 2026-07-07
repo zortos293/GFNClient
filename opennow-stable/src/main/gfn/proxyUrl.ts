@@ -29,6 +29,50 @@ export function sessionProxyHasCredentials(raw?: string): boolean {
   return parsed.username.length > 0 || parsed.password.length > 0;
 }
 
+export interface SessionProxyElectronConfig {
+  normalizedUrl: string;
+  proxyRules: string;
+  credentials: { username: string; password: string } | null;
+}
+
+export function sessionProxyEndpointKey(host: string, port: number | string): string {
+  return `${host.toLowerCase()}:${port}`;
+}
+
+export function parseSessionProxyForElectron(raw?: string): SessionProxyElectronConfig | null {
+  const normalizedUrl = normalizeSessionProxyUrl(raw);
+  if (!normalizedUrl) {
+    return null;
+  }
+
+  const parsed = new URL(normalizedUrl);
+  let proxyRules: string;
+  switch (parsed.protocol) {
+    case "http:":
+    case "https:":
+      proxyRules = `http=${parsed.host};https=${parsed.host}`;
+      break;
+    case "socks4:":
+      proxyRules = `socks4=${parsed.host}`;
+      break;
+    case "socks5:":
+      proxyRules = `socks5=${parsed.host}`;
+      break;
+    default:
+      throw new Error(INVALID_PROXY_MESSAGE);
+  }
+
+  const username = parsed.username ? decodeURIComponent(parsed.username) : "";
+  const password = parsed.password ? decodeURIComponent(parsed.password) : "";
+  const credentials = username ? { username, password } : null;
+
+  return {
+    normalizedUrl,
+    proxyRules,
+    credentials,
+  };
+}
+
 export function normalizeSessionProxyUrl(raw?: string): string | null {
   const trimmed = raw?.trim() ?? "";
   if (!trimmed) return null;

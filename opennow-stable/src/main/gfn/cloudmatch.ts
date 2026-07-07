@@ -1,7 +1,5 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 
@@ -39,6 +37,7 @@ import {
   buildGfnCloudMatchClaimHeaders,
   buildGfnCloudMatchHeaders,
 } from "./clientHeaders";
+import { getStableDeviceId } from "./deviceId";
 import { fetchWithOptionalProxy } from "./proxyFetch";
 import {
   readCloudMatchJson,
@@ -47,7 +46,6 @@ import {
 
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
 const READY_SESSION_STATUSES = new Set([2, 3]);
-const GFN_DEVICE_ID_FILENAME = "gfn-device-id.json";
 const CLOUDMATCH_REQUEST_TIMEOUT_MS = 30_000;
 const CLOUDMATCH_GET_RETRIES = 2;
 const CLOUDMATCH_RETRY_DELAYS_MS = [250, 750];
@@ -55,7 +53,6 @@ const CLOUDMATCH_RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const NETWORK_TEST_SESSION_TIMEOUT_MS = 8_000;
 const NETWORK_TEST_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
 
-let cachedStableDeviceId: string | null = null;
 const networkTestSessionCache = new Map<string, { sessionId: string; expiresAt: number }>();
 const require = createRequire(import.meta.url);
 
@@ -224,14 +221,6 @@ async function resolveCreateSessionBase(
   }
 }
 
-function getElectronApp(): Electron.App | null {
-  try {
-    return require("electron").app ?? null;
-  } catch {
-    return null;
-  }
-}
-
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
   pause: 2,
@@ -301,38 +290,6 @@ export function shouldRequestReflex(settings: StreamSettings): boolean {
 
 function isReadySessionStatus(status: number): boolean {
   return READY_SESSION_STATUSES.has(status);
-}
-
-function getStableDeviceId(): string {
-  if (cachedStableDeviceId) {
-    return cachedStableDeviceId;
-  }
-
-  try {
-    const electronApp = getElectronApp();
-    if (!electronApp) {
-      throw new Error("Electron app is unavailable outside the main process.");
-    }
-    const path = join(electronApp.getPath("userData"), GFN_DEVICE_ID_FILENAME);
-    if (existsSync(path)) {
-      const parsed = JSON.parse(readFileSync(path, "utf-8")) as { deviceId?: unknown };
-      if (typeof parsed.deviceId === "string" && parsed.deviceId.length > 0) {
-        cachedStableDeviceId = parsed.deviceId;
-        return parsed.deviceId;
-      }
-    }
-
-    const deviceId = crypto.randomUUID();
-    writeFileSync(path, JSON.stringify({ deviceId }, null, 2), "utf-8");
-    cachedStableDeviceId = deviceId;
-    return deviceId;
-  } catch (error) {
-    // Fallback to in-memory UUID if disk read/write fails.
-    const fallback = crypto.randomUUID();
-    cachedStableDeviceId = fallback;
-    console.warn("[CloudMatch] Failed to load persisted device ID, using in-memory fallback:", error);
-    return fallback;
-  }
 }
 
 async function resolveHostnameWithFallback(hostname: string): Promise<string | null> {

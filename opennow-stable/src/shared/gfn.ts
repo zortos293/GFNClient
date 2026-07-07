@@ -1674,6 +1674,7 @@ export interface OpenNowApi {
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
   fetchPrintedWasteServerMapping(): Promise<PrintedWasteServerMapping>;
   getThanksData(): Promise<ThankYouDataResult>;
+  provisionZortosCommunityProxy(): Promise<import("@shared/communityProxy").CommunityProxyProvisionResult>;
   /** Set Discord rich presence activity */
   setDiscordActivity(input: import("./discord").DiscordActivityUpdate): Promise<void>;
   /** Clear Discord rich presence activity */

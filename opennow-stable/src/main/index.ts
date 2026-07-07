@@ -55,6 +55,10 @@ import {
   getCurrentActivity,
   isDiscordRpcConnected,
 } from "./discordRpc";
+import type { DiscordActivityUpdate } from "@shared/discord";
+import {
+  discordMonitorActivityDecision,
+} from "./discordPresence";
 import {
   createAppUpdaterController,
   type AppUpdaterController,
@@ -383,16 +387,14 @@ class DiscordStatusMonitor {
         [1, 2, 3].includes(s.status),
       );
       const currentActivity = getCurrentActivity();
+      const decision = discordMonitorActivityDecision(currentActivity, activeSession ?? null);
 
-      if (activeSession) {
-        const sessionAppId = activeSession.appId.toString();
-
-        if (!currentActivity || currentActivity.appId !== sessionAppId) {
-          const title = sessionAppId;
-          const startTime = new Date();
-          void setActivity(title, startTime, sessionAppId);
-        }
-      } else if (currentActivity) {
+      if (decision.action === "set") {
+        void setActivity({
+          ...decision.activity,
+          startTimestamp: decision.startTimestamp,
+        });
+      } else if (decision.action === "clear") {
         console.log("[DiscordRPC] Monitor clearing stale status.");
         void clearActivity();
       }
@@ -878,6 +880,17 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY, async () => {
     void clearActivity();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.DISCORD_SET_ACTIVITY, async (_event, activity: DiscordActivityUpdate) => {
+    if (!settingsManager.get("discordRichPresence")) {
+      return;
+    }
+
+    void setActivity({
+      ...activity,
+      startTimestamp: activity.startTimestampMs ? new Date(activity.startTimestampMs) : undefined,
+    });
   });
 
   // Toggle fullscreen via IPC (for completeness)

@@ -3,6 +3,7 @@ import { memo, useCallback, useMemo, useState } from "react";
 import type { JSX } from "react";
 import { normalizeGameStore } from "@shared/gfn";
 import type { GameInfo } from "@shared/gfn";
+import { getActiveGameAvailabilityBadge } from "../lib/gameCardStatus";
 import { getStoreOptions as getGameCardStoreOptions } from "../lib/gameCardStores";
 import { useTranslation } from "../i18n";
 
@@ -86,43 +87,21 @@ function DefaultStoreIcon(): JSX.Element {
 const STORE_ICON_MAP: Record<string, () => JSX.Element> = {
   STEAM: SteamIcon,
   EPIC_GAMES_STORE: EpicIcon,
-  EPIC: EpicIcon,
-  EGS: EpicIcon,
   UPLAY: UbisoftIcon,
-  UBISOFT: UbisoftIcon,
-  UBISOFT_CONNECT: UbisoftIcon,
   EA_APP: EaIcon,
-  EA: EaIcon,
-  ORIGIN: EaIcon,
-  GOG_COM: GogIcon,
   GOG: GogIcon,
-  XBOX_GAME_PASS: XboxIcon,
   XBOX: XboxIcon,
-  MICROSOFT_STORE: XboxIcon,
-  MICROSOFT: XboxIcon,
   BATTLE_NET: BattleNetIcon,
-  BATTLENET: BattleNetIcon,
 };
 
 const STORE_DISPLAY_NAME: Record<string, string> = {
   STEAM: "Steam",
   EPIC_GAMES_STORE: "Epic",
-  EPIC: "Epic",
-  EGS: "Epic",
   UPLAY: "Ubisoft",
-  UBISOFT: "Ubisoft",
-  UBISOFT_CONNECT: "Ubisoft",
   EA_APP: "EA",
-  EA: "EA",
-  ORIGIN: "EA",
-  GOG_COM: "GOG",
   GOG: "GOG",
-  XBOX_GAME_PASS: "Xbox",
   XBOX: "Xbox",
-  MICROSOFT_STORE: "Xbox",
-  MICROSOFT: "Xbox",
   BATTLE_NET: "Battle.net",
-  BATTLENET: "Battle.net",
 };
 
 /** Normalize an appStore value to the uppercase key used by the icon/name maps. */
@@ -181,6 +160,10 @@ export const GameCard = memo(function GameCard({
     [game, selectedVariantId],
   );
   const activeStoreOption = storeOptions.find((option) => option.isActive) ?? storeOptions[0];
+  const availabilityBadge = useMemo(
+    () => getActiveGameAvailabilityBadge(game, selectedVariantId),
+    [game, selectedVariantId],
+  );
 
   const [aspectPct, setAspectPct] = useState<number | undefined>(undefined);
 
@@ -255,6 +238,11 @@ export const GameCard = memo(function GameCard({
         </div>
 
         <div className="game-card-info">
+          {availabilityBadge && (
+            <span className={`game-card-status-badge ${availabilityBadge.kind}`} title={availabilityBadge.status}>
+              {t(availabilityBadge.labelKey)}
+            </span>
+          )}
           {activeStoreOption && (
             <p className="game-card-platform" title={activeStoreOption.displayName}>
               {activeStoreOption.displayName}

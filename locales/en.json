@@ -250,7 +250,12 @@
     "playGame": "Play {{title}}",
     "store": "{{store}} store",
     "owned": "Owned",
-    "available": "Available"
+    "available": "Available",
+    "status": {
+      "maintenance": "Under maintenance",
+      "updating": "Updating",
+      "unavailable": "Unavailable"
+    }
   },
   "streamLoading": {
     "labels": {

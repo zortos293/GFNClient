@@ -49,6 +49,7 @@ static NATIVE_INPUT_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 pub(crate) struct GstreamerInputState {
     encoder: Arc<Mutex<InputEncoder>>,
     pub(crate) ready: Arc<AtomicBool>,
+    pub(crate) paused: Arc<AtomicBool>,
     heartbeat_stop: Arc<AtomicBool>,
     heartbeat_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
@@ -58,6 +59,7 @@ impl std::fmt::Debug for GstreamerInputState {
         formatter
             .debug_struct("GstreamerInputState")
             .field("ready", &self.ready.load(Ordering::SeqCst))
+            .field("paused", &self.paused.load(Ordering::SeqCst))
             .finish_non_exhaustive()
     }
 }
@@ -67,6 +69,7 @@ impl Default for GstreamerInputState {
         Self {
             encoder: Arc::new(Mutex::new(InputEncoder::default())),
             ready: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
             heartbeat_stop: Arc::new(AtomicBool::new(false)),
             heartbeat_thread: Arc::new(Mutex::new(None)),
         }
@@ -76,6 +79,7 @@ impl Default for GstreamerInputState {
 impl GstreamerInputState {
     pub(crate) fn reset(&self) {
         self.ready.store(false, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
         if let Ok(mut encoder) = self.encoder.lock() {
             encoder.set_protocol_version(2);
             encoder.reset_gamepad_sequences();
@@ -437,9 +441,15 @@ fn send_native_window_input_events(
         }
     }
 
-    // Only process non-shortcut events if input is ready
+    // Only process non-shortcut events if input is ready.
     if other_events.is_empty() || !input_state.ready.load(Ordering::SeqCst) {
         return;
+    }
+    if input_state.paused.load(Ordering::SeqCst) {
+        other_events.retain(is_native_input_release_event);
+        if other_events.is_empty() {
+            return;
+        }
     }
 
     let mut pending_mouse_move: Option<(i32, i32, u64)> = None;
@@ -519,6 +529,15 @@ fn send_native_window_input_events(
             }
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn is_native_input_release_event(event: &NativeWindowInputEvent) -> bool {
+    matches!(
+        event,
+        NativeWindowInputEvent::Key { pressed: false, .. }
+            | NativeWindowInputEvent::MouseButton { pressed: false, .. }
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -673,6 +692,16 @@ impl NativeGamepadSnapshot {
             right_stick_y: snapshot.right_stick_y,
         }
     }
+
+    fn is_neutral(self) -> bool {
+        self.buttons == 0
+            && self.left_trigger == 0
+            && self.right_trigger == 0
+            && self.left_stick_x == 0
+            && self.left_stick_y == 0
+            && self.right_stick_x == 0
+            && self.right_stick_y == 0
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -700,22 +729,52 @@ fn spawn_native_gamepad_thread(
 
         let mut previous = [NativeGamepadSnapshot::default(); GAMEPAD_MAX_CONTROLLERS as usize];
         let mut last_sent = [Instant::now(); GAMEPAD_MAX_CONTROLLERS as usize];
+        let mut suppress_until_neutral = [false; GAMEPAD_MAX_CONTROLLERS as usize];
+        let mut was_paused = false;
 
         while !stop.load(Ordering::SeqCst) {
             if input_state.ready.load(Ordering::SeqCst) {
-                let mut snapshots =
-                    [NativeGamepadSnapshot::default(); GAMEPAD_MAX_CONTROLLERS as usize];
-                let mut bitmap = 0u16;
+                let (snapshots, bitmap) = poll_xinput_gamepads(xinput);
 
-                for controller_id in 0..GAMEPAD_MAX_CONTROLLERS as usize {
-                    if let Some(snapshot) = unsafe { xinput.get_state(controller_id as u32) } {
-                        snapshots[controller_id] = NativeGamepadSnapshot::from_xinput(snapshot);
-                        bitmap |= 1 << controller_id;
+                if input_state.paused.load(Ordering::SeqCst) {
+                    if !was_paused {
+                        send_neutral_gamepad_snapshots_for_pause(
+                            &input_state,
+                            &input_channels,
+                            &previous,
+                            &snapshots,
+                        );
+                    }
+                    previous = snapshots;
+                    for controller_id in 0..GAMEPAD_MAX_CONTROLLERS as usize {
+                        last_sent[controller_id] = Instant::now();
+                    }
+                    was_paused = true;
+                    thread::sleep(NATIVE_GAMEPAD_POLL_INTERVAL);
+                    continue;
+                }
+
+                if was_paused {
+                    for controller_id in 0..GAMEPAD_MAX_CONTROLLERS as usize {
+                        let snapshot = snapshots[controller_id];
+                        suppress_until_neutral[controller_id] =
+                            snapshot.connected && !snapshot.is_neutral();
+                        previous[controller_id] = snapshot;
+                        last_sent[controller_id] = Instant::now();
                     }
                 }
+                was_paused = false;
 
                 for controller_id in 0..GAMEPAD_MAX_CONTROLLERS as usize {
                     let snapshot = snapshots[controller_id];
+                    if suppress_until_neutral[controller_id] {
+                        previous[controller_id] = snapshot;
+                        last_sent[controller_id] = Instant::now();
+                        if !snapshot.connected || snapshot.is_neutral() {
+                            suppress_until_neutral[controller_id] = false;
+                        }
+                        continue;
+                    }
                     let state_changed = snapshot != previous[controller_id];
                     let keepalive_due = snapshot.connected
                         && last_sent[controller_id].elapsed() >= NATIVE_GAMEPAD_KEEPALIVE_INTERVAL;
@@ -748,11 +807,71 @@ fn spawn_native_gamepad_thread(
 
                     previous[controller_id] = snapshot;
                 }
+            } else {
+                was_paused = false;
             }
 
             thread::sleep(NATIVE_GAMEPAD_POLL_INTERVAL);
         }
     })
+}
+
+#[cfg(target_os = "windows")]
+fn poll_xinput_gamepads(
+    xinput: win32_xinput::XInput,
+) -> ([NativeGamepadSnapshot; GAMEPAD_MAX_CONTROLLERS as usize], u16) {
+    let mut snapshots = [NativeGamepadSnapshot::default(); GAMEPAD_MAX_CONTROLLERS as usize];
+    let mut bitmap = 0u16;
+
+    for controller_id in 0..GAMEPAD_MAX_CONTROLLERS as usize {
+        if let Some(snapshot) = unsafe { xinput.get_state(controller_id as u32) } {
+            snapshots[controller_id] = NativeGamepadSnapshot::from_xinput(snapshot);
+            bitmap |= 1 << controller_id;
+        }
+    }
+
+    (snapshots, bitmap)
+}
+
+#[cfg(target_os = "windows")]
+fn send_neutral_gamepad_snapshots_for_pause(
+    input_state: &GstreamerInputState,
+    input_channels: &GstreamerInputChannels,
+    previous: &[NativeGamepadSnapshot; GAMEPAD_MAX_CONTROLLERS as usize],
+    current: &[NativeGamepadSnapshot; GAMEPAD_MAX_CONTROLLERS as usize],
+) {
+    let bitmap = previous
+        .iter()
+        .zip(current.iter())
+        .enumerate()
+        .fold(0u16, |bitmap, (controller_id, (previous, current))| {
+            if previous.connected || current.connected {
+                bitmap | (1 << controller_id)
+            } else {
+                bitmap
+            }
+        });
+
+    if bitmap == 0 {
+        return;
+    }
+
+    for controller_id in 0..GAMEPAD_MAX_CONTROLLERS as usize {
+        if (bitmap & (1 << controller_id)) == 0 {
+            continue;
+        }
+
+        send_native_gamepad_snapshot(
+            input_state,
+            input_channels,
+            controller_id as u8,
+            bitmap,
+            NativeGamepadSnapshot {
+                connected: true,
+                ..NativeGamepadSnapshot::default()
+            },
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]

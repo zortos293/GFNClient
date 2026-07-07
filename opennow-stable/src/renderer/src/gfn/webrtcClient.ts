@@ -52,8 +52,10 @@ import {
   fixServerIp,
   mungeAnswerSdp,
   preferCodec,
+  rewriteIceCandidateEndpoint,
   rewriteH265LevelIdByProfile,
   rewriteH265TierFlag,
+  rewriteSdpIceCandidateEndpoints,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
 
@@ -255,8 +257,86 @@ interface ClientOptions {
   onMicStateChange?: (state: MicStateChange) => void;
   onIceConnectionStateChange?: (state: RTCIceConnectionState) => void;
   onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
-  /** Optional host callback for Meta/Home button edge presses (button 16). */
+  /** Optional host callback for controller overlay shortcut edge presses. */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
+}
+
+function isPressedGamepadButton(button: GamepadButton | undefined): boolean {
+  return Boolean(button?.pressed || (button?.value ?? 0) > 0.5);
+}
+
+type ControllerOverlayChordHalf = "view" | "menu";
+
+export interface ControllerOverlayChordState {
+  pendingHalf: ControllerOverlayChordHalf;
+  pendingSinceMs: number;
+  disqualified: boolean;
+}
+
+export interface ControllerOverlayShortcutGate {
+  overlayPressed: boolean;
+  preemptInput: boolean;
+  nextState: ControllerOverlayChordState | null;
+}
+
+const CONTROLLER_OVERLAY_CHORD_GRACE_MS = 120;
+
+export function evaluateControllerOverlayShortcutGate(
+  gamepad: Pick<Gamepad, "buttons">,
+  state: ControllerOverlayChordState | null,
+  nowMs: number,
+  graceMs: number = CONTROLLER_OVERLAY_CHORD_GRACE_MS,
+): ControllerOverlayShortcutGate {
+  const guidePressed = isPressedGamepadButton(gamepad.buttons[16]);
+  const viewPressed = isPressedGamepadButton(gamepad.buttons[8]);
+  const menuPressed = isPressedGamepadButton(gamepad.buttons[9]);
+  const pressedHalf: ControllerOverlayChordHalf | null = viewPressed === menuPressed
+    ? null
+    : viewPressed
+      ? "view"
+      : "menu";
+
+  if (guidePressed) {
+    return { overlayPressed: true, preemptInput: true, nextState: null };
+  }
+
+  if (viewPressed && menuPressed) {
+    if (state?.disqualified) {
+      return { overlayPressed: false, preemptInput: false, nextState: state };
+    }
+
+    return { overlayPressed: true, preemptInput: true, nextState: null };
+  }
+
+  if (!pressedHalf) {
+    return { overlayPressed: false, preemptInput: false, nextState: null };
+  }
+
+  if (state?.disqualified) {
+    return {
+      overlayPressed: false,
+      preemptInput: false,
+      nextState: state.pendingHalf === pressedHalf
+        ? state
+        : { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: true },
+    };
+  }
+
+  if (!state || state.pendingHalf !== pressedHalf) {
+    return {
+      overlayPressed: false,
+      preemptInput: true,
+      nextState: { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: false },
+    };
+  }
+
+  const disqualified = nowMs - state.pendingSinceMs >= graceMs;
+  const nextState = { ...state, disqualified };
+  return {
+    overlayPressed: false,
+    preemptInput: !disqualified,
+    nextState,
+  };
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -747,6 +827,7 @@ export class GfnWebRtcClient {
   private controlChannel: RTCDataChannel | null = null;
   private cursorOverlay: GfnCursorOverlayController | null = null;
   private nativeInputActive = false;
+  private remoteIceEndpoint: SessionInfo["mediaConnectionInfo"] | null = null;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioGainNode: GainNode | null = null;
@@ -831,6 +912,7 @@ export class GfnWebRtcClient {
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private connectedGamepads: Set<number> = new Set();
   private gamepadMetaPressed: Map<number, boolean> = new Map();
+  private gamepadOverlayChordStates: Map<number, ControllerOverlayChordState> = new Map();
   private lastEmittedDiagnostics: StreamDiagnostics | null = null;
   private previousGamepadStates: Map<number, GamepadInput> = new Map();
   private lastRumbleWeak: number[] = [0, 0, 0, 0];
@@ -2089,6 +2171,7 @@ export class GfnWebRtcClient {
     this.detachInputCapture();
     this.closeDataChannels();
     this.cleanupAudioRouting();
+    this.remoteIceEndpoint = null;
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.ontrack = null;
@@ -2109,6 +2192,8 @@ export class GfnWebRtcClient {
     this.resetInputState();
     this.resetDiagnostics();
     this.connectedGamepads.clear();
+    this.gamepadMetaPressed.clear();
+    this.gamepadOverlayChordStates.clear();
     this.previousGamepadStates.clear();
     this.gamepadSendCount = 0;
     this.lastGamepadSendMs = 0;
@@ -2178,7 +2263,7 @@ export class GfnWebRtcClient {
     // state forwarding is suppressed inside pollGamepads() when nativeInputActive
     // is true so the native renderer remains the sole source for controller input.
     this.setupGamepadPolling();
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller meta detection active, gamepad forwarding handled by native renderer.`);
+    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller overlay shortcut detection active, gamepad forwarding handled by native renderer.`);
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2374,7 +2459,8 @@ export class GfnWebRtcClient {
   }
 
   private isStreamInputBlocked(): boolean {
-    return this.inputPaused || this.windowStateInputPaused;
+    const sidebarOpen = typeof document !== "undefined" && document.body?.dataset?.sidebarOpen === "1";
+    return this.inputPaused || this.windowStateInputPaused || sidebarOpen;
   }
 
   private getGamepadPollIntervalMs(): number {
@@ -2389,7 +2475,7 @@ export class GfnWebRtcClient {
     // Poll at reduced rate while input is paused (dashboard open) — fast enough
     // to catch the Meta button release and next press, but not burning CPU at
     // the full 4 ms stream-input rate.
-    return this.inputPaused ? 16 : 4;
+    return this.isStreamInputBlocked() ? 16 : 4;
   }
 
   private shouldPollGamepads(): boolean {
@@ -2432,16 +2518,26 @@ export class GfnWebRtcClient {
       if (gamepad && gamepad.connected) {
         connectedCount++;
         this.updateGamepadBitmap(i, gamepad);
-        const metaPressed = Boolean(gamepad.buttons[16]?.pressed);
-        const prevMetaPressed = this.gamepadMetaPressed.get(i) ?? false;
-        if (metaPressed && !prevMetaPressed) {
+        const overlayShortcutGate = evaluateControllerOverlayShortcutGate(
+          gamepad,
+          this.gamepadOverlayChordStates.get(i) ?? null,
+          nowMs,
+        );
+        if (overlayShortcutGate.nextState) {
+          this.gamepadOverlayChordStates.set(i, overlayShortcutGate.nextState);
+        } else {
+          this.gamepadOverlayChordStates.delete(i);
+        }
+        const overlayShortcutPressed = overlayShortcutGate.overlayPressed;
+        const prevOverlayShortcutPressed = this.gamepadMetaPressed.get(i) ?? false;
+        if (overlayShortcutPressed && !prevOverlayShortcutPressed) {
           try {
             this.options.onControllerMetaPress?.({ controllerId: i, gamepad });
           } catch {
             // Host callbacks must never break stream input polling.
           }
         }
-        this.gamepadMetaPressed.set(i, metaPressed);
+        this.gamepadMetaPressed.set(i, overlayShortcutPressed);
 
         // Track connected gamepads and update bitmap
         if (!this.connectedGamepads.has(i)) {
@@ -2456,7 +2552,7 @@ export class GfnWebRtcClient {
         // Read and encode gamepad state
         // Skip forwarding to the stream if input is blocked (dashboard open) or
         // the native renderer is handling controller input directly.
-        if (streamInputBlocked || this.nativeInputActive) {
+        if (streamInputBlocked || this.nativeInputActive || overlayShortcutGate.preemptInput) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);
@@ -2495,6 +2591,7 @@ export class GfnWebRtcClient {
         this.stopGamepadRumble(i, gamepad ?? undefined);
         this.connectedGamepads.delete(i);
         this.gamepadMetaPressed.delete(i);
+        this.gamepadOverlayChordStates.delete(i);
         this.previousGamepadStates.delete(i);
         this.clearGamepadBitmap(i);
         this.log(`Gamepad ${i} disconnected, bitmap now: 0x${this.gamepadBitmap.toString(16)}`);
@@ -3097,8 +3194,30 @@ export class GfnWebRtcClient {
       if (!candidate) {
         continue;
       }
-      await this.pc.addIceCandidate(candidate);
+      await this.pc.addIceCandidate(this.rewriteRemoteIceCandidateInit(candidate));
     }
+  }
+
+  private rewriteRemoteIceCandidateInit(candidate: RTCIceCandidateInit): RTCIceCandidateInit {
+    if (!candidate.candidate) {
+      return candidate;
+    }
+
+    const rewritten = rewriteIceCandidateEndpoint(candidate.candidate, this.remoteIceEndpoint);
+    if (!rewritten.rewritten) {
+      return candidate;
+    }
+
+    if (this.remoteIceEndpoint) {
+      this.log(
+        `Rewrote remote ICE candidate endpoint to mediaConnectionInfo ${this.remoteIceEndpoint.ip}:${this.remoteIceEndpoint.port}`,
+      );
+    }
+
+    return {
+      ...candidate,
+      candidate: rewritten.candidate,
+    };
   }
 
   private reliableDropLogged = false;
@@ -4650,6 +4769,7 @@ export class GfnWebRtcClient {
 
   async handleOffer(offerSdp: string, session: SessionInfo, settings: OfferSettings): Promise<void> {
     this.cleanupPeerConnection();
+    this.remoteIceEndpoint = session.mediaConnectionInfo ?? null;
     this.log("=== handleOffer START ===");
     this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
     this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
@@ -4814,21 +4934,28 @@ export class GfnWebRtcClient {
 
     // --- SDP Processing (matching Rust reference) ---
 
-    // 1. Fix 0.0.0.0 in server's SDP offer with real server IP
-    //    The GFN server sends c=IN IP4 0.0.0.0; replace with actual IP
+    // 1. Match the official client by pointing server ICE candidates at the
+    //    WebRTC media endpoint from CloudMatch when one is present.
     const webRtcMediaConnection =
       session.mediaConnectionInfo?.usage === 2 || session.mediaConnectionInfo?.usage === 17
         ? session.mediaConnectionInfo
         : undefined;
-    const serverIpForSdp = webRtcMediaConnection?.ip ?? "";
     let processedOffer = offerSdp;
-    if (serverIpForSdp) {
+    if (webRtcMediaConnection?.ip) {
+      const serverIpForSdp = webRtcMediaConnection.ip;
       processedOffer = fixServerIp(processedOffer, serverIpForSdp);
       this.log(`Fixed server IP in SDP offer: ${serverIpForSdp}`);
       // Log any remaining 0.0.0.0 references after fix
       const remaining = (processedOffer.match(/0\.0\.0\.0/g) ?? []).length;
       if (remaining > 0) {
         this.log(`Warning: ${remaining} occurrences of 0.0.0.0 still remain in SDP after fix`);
+      }
+      const rewritten = rewriteSdpIceCandidateEndpoints(processedOffer, webRtcMediaConnection);
+      if (rewritten.replacements > 0) {
+        processedOffer = rewritten.sdp;
+        this.log(
+          `Rewrote ${rewritten.replacements} server ICE candidate endpoint(s) to mediaConnectionInfo ${webRtcMediaConnection.ip}:${webRtcMediaConnection.port}`,
+        );
       }
     } else if (session.mediaConnectionInfo) {
       this.log(
@@ -4995,9 +5122,8 @@ export class GfnWebRtcClient {
       }
     }
 
-    // Recent GFN browser runtimes rely on the server-provided trickled ICE
-    // candidate. Injecting mediaConnectionInfo as a higher-priority fallback can
-    // make Chromium pick an RTSPS endpoint that connects but never delivers frames.
+    // Keep using server-provided trickled ICE; when CloudMatch gives a WebRTC
+    // media endpoint, remote candidate IP/port rewriting happens in addRemoteCandidate.
     this.log("Waiting for server-provided ICE candidates");
 
     this.log("=== handleOffer COMPLETE — waiting for ICE connectivity and tracks ===");
@@ -5020,7 +5146,7 @@ export class GfnWebRtcClient {
       return;
     }
 
-    await this.pc.addIceCandidate(init);
+    await this.pc.addIceCandidate(this.rewriteRemoteIceCandidateInit(init));
   }
 
   dispose(): void {

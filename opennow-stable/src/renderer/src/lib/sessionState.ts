@@ -1,27 +1,32 @@
-import type { GameInfo, SessionInfo } from "@shared/gfn";
+import {
+  isGfnSessionInQueue,
+  isSessionReadyForConnectStatus,
+  type GameInfo,
+  type SessionInfo,
+} from "@shared/gfn";
 
 import type { LaunchErrorState, StreamLoadingStatus, StreamStatus } from "./appTypes";
 
 type TranslateFunction = typeof import("../i18n").t;
 
+const GFN_SESSION_LIMIT_EXCEEDED_CODE = 3237093643;
+const GFN_INSUFFICIENT_PLAYABILITY_CODE = 3237093718;
+const GFN_USER_STORAGE_NOT_AVAILABLE_CODE = 3237093721;
+const GFN_STORAGE_NOT_AVAILABLE_CODE = 3237093722;
+
 export function isSessionReadyForConnect(status: number): boolean {
-  return status === 2 || status === 3;
+  return isSessionReadyForConnectStatus(status);
 }
 
 export function isSessionInQueue(session: SessionInfo): boolean {
-  // Official client treats seat setup step 1 as queue state even when queuePosition reaches 1.
-  // Fallback to queuePosition-based inference for payloads that do not expose seatSetupStep.
-  if (session.seatSetupStep === 1) {
-    return true;
-  }
-  return (session.queuePosition ?? 0) > 1;
+  return isGfnSessionInQueue(session);
 }
 
 export function isSessionLimitError(error: unknown): boolean {
   if (error && typeof error === "object" && "gfnErrorCode" in error) {
     const candidate = error.gfnErrorCode;
     if (typeof candidate === "number") {
-      return candidate === 3237093643;
+      return candidate === GFN_SESSION_LIMIT_EXCEEDED_CODE;
     }
   }
   if (error instanceof Error) {
@@ -35,11 +40,33 @@ export function isInsufficientPlayabilityError(error: unknown): boolean {
   if (error && typeof error === "object" && "gfnErrorCode" in error) {
     const candidate = error.gfnErrorCode;
     if (typeof candidate === "number") {
-      return candidate === 3237093718;
+      return candidate === GFN_INSUFFICIENT_PLAYABILITY_CODE;
     }
   }
   if (error instanceof Error) {
     return error.message.toUpperCase().includes("INSUFFICIENT_PLAYABILITY");
+  }
+  return false;
+}
+
+export function isPersistentStorageUnavailableError(error: unknown): boolean {
+  if (error && typeof error === "object") {
+    if ("gfnErrorCode" in error) {
+      const candidate = error.gfnErrorCode;
+      if (candidate === GFN_USER_STORAGE_NOT_AVAILABLE_CODE || candidate === GFN_STORAGE_NOT_AVAILABLE_CODE) {
+        return true;
+      }
+    }
+    if ("statusCode" in error) {
+      const statusCode = error.statusCode;
+      if (statusCode === 89 || statusCode === 90) {
+        return true;
+      }
+    }
+  }
+  if (error instanceof Error) {
+    const msg = error.message.toUpperCase();
+    return msg.includes("USER_STORAGE_NOT_AVAILABLE") || msg.includes("GFN_STORAGE_NOT_AVAILABLE");
   }
   return false;
 }
@@ -58,8 +85,10 @@ export function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
 
 export function toCodeLabel(code: number | undefined): string | undefined {
   if (code === undefined) return undefined;
-  if (code === 3237093643) return `SessionLimitExceeded (${code})`;
-  if (code === 3237093718) return `SessionInsufficientPlayabilityLevel (${code})`;
+  if (code === GFN_SESSION_LIMIT_EXCEEDED_CODE) return `SessionLimitExceeded (${code})`;
+  if (code === GFN_INSUFFICIENT_PLAYABILITY_CODE) return `SessionInsufficientPlayabilityLevel (${code})`;
+  if (code === GFN_USER_STORAGE_NOT_AVAILABLE_CODE) return `UserStorageNotAvailable (${code})`;
+  if (code === GFN_STORAGE_NOT_AVAILABLE_CODE) return `GfnStorageNotAvailable (${code})`;
   return `GFN Error ${code}`;
 }
 
@@ -148,6 +177,21 @@ export function toLaunchErrorState(
 
   if (isInsufficientPlayabilityError(error) || combined.includes("INSUFFICIENT_PLAYABILITY")) {
     return toInsufficientPlayabilityState(t, stage, code, game);
+  }
+
+  if (
+    isPersistentStorageUnavailableError(error) ||
+    combined.includes("USER_STORAGE_NOT_AVAILABLE") ||
+    combined.includes("GFN_STORAGE_NOT_AVAILABLE")
+  ) {
+    return {
+      stage,
+      title: t("errors.userStorageUnavailableTitle"),
+      description: t("errors.userStorageUnavailableDescription"),
+      codeLabel: toCodeLabel(code),
+      action: "persistent-storage-settings",
+      actionLabel: t("errors.userStorageUnavailableAction"),
+    };
   }
 
   if (

@@ -1,4 +1,5 @@
 import { Client } from "discord-rpc";
+import type { DiscordActivityUpdate } from "@shared/discord";
 
 /**
  * Discord Application ID for OpenNOW.
@@ -9,8 +10,12 @@ const DISCORD_CLIENT_ID = "1479944467112001669";
 
 let rpcClient: Client | null = null;
 let connected = false;
-let lastActivity: { gameName: string; startTimestamp: Date; appId?: string } | null = null;
-let pendingActivity: { gameName: string; startTimestamp: Date; appId?: string } | null = null;
+type DiscordRpcActivity = Omit<DiscordActivityUpdate, "startTimestampMs"> & {
+  startTimestamp?: Date;
+};
+
+let lastActivity: DiscordRpcActivity | null = null;
+let pendingActivity: DiscordRpcActivity | null = null;
 
 /**
  * Initialise and connect the Discord RPC client.
@@ -35,11 +40,11 @@ export async function connectDiscordRpc(): Promise<void> {
     console.log("[DiscordRPC] Connected.");
 
     if (pendingActivity) {
-      await setActivity(pendingActivity.gameName, pendingActivity.startTimestamp, pendingActivity.appId);
+      await setActivity(pendingActivity);
       // Consume reconnect replay so failed attempts are not reprocessed forever.
       pendingActivity = null;
     } else if (lastActivity) {
-      await setActivity(lastActivity.gameName, lastActivity.startTimestamp, lastActivity.appId);
+      await setActivity(lastActivity);
     } else {
       // Upon app start/connection, explicitly clear any stale status from previous runs
       await client.clearActivity().catch(() => {});
@@ -54,7 +59,7 @@ export async function connectDiscordRpc(): Promise<void> {
 /**
  * Get the currently active game name and start timestamp.
  */
-export function getCurrentActivity(): { gameName: string; startTimestamp: Date; appId?: string } | null {
+export function getCurrentActivity(): DiscordRpcActivity | null {
   return lastActivity;
 }
 
@@ -69,19 +74,33 @@ export function isDiscordRpcConnected(): boolean {
  * Update the Discord "Now Playing" activity to show the given game name and
  * how long the user has been playing.
  */
-export async function setActivity(gameName: string, startTimestamp: Date, appId?: string): Promise<void> {
-  pendingActivity = { gameName, startTimestamp, appId };
+function activityState(activity: DiscordRpcActivity): string {
+  switch (activity.kind) {
+    case "queued":
+      return activity.queuePosition ? `In queue (#${activity.queuePosition})` : "In queue";
+    case "starting":
+      return "Starting stream";
+    case "streaming":
+      return "Streaming via OpenNow";
+  }
+}
+
+export async function setActivity(activity: DiscordRpcActivity): Promise<void> {
+  pendingActivity = activity;
 
   if (!connected || !rpcClient) {
     return;
   }
 
   try {
-    await rpcClient.setActivity({
-      details: gameName,
-      state: "Streaming via OpenNow",
-      startTimestamp,
+    const rpcActivity = {
+      details: activity.gameName,
+      state: activityState(activity),
+      ...(activity.startTimestamp ? { startTimestamp: activity.startTimestamp } : {}),
       instance: false,
+    };
+    await rpcClient.setActivity({
+      ...rpcActivity,
     });
     lastActivity = pendingActivity;
     pendingActivity = null;

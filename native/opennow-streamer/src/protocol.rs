@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 
-pub const PROTOCOL_VERSION: u64 = 3;
+pub const PROTOCOL_VERSION: u64 = 4;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +21,8 @@ pub struct CommandEnvelope {
     pub candidate: Option<IceCandidatePayload>,
     #[serde(default)]
     pub input: Option<NativeInputPacket>,
+    #[serde(default)]
+    pub paused: Option<bool>,
     #[serde(default)]
     pub surface: Option<NativeRenderSurface>,
     #[serde(default)]
@@ -62,6 +64,8 @@ pub struct SessionInfo {
 pub struct MediaConnectionInfo {
     pub ip: String,
     pub port: u16,
+    #[serde(default)]
+    pub usage: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

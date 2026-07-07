@@ -56,3 +56,4 @@ result
 .deriveddata/
 .deriveddata-device/
 .opencode
+vendor/

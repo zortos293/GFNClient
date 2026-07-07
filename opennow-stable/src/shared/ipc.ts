@@ -28,6 +28,7 @@ export const IPC_CHANNELS = {
   GAMES_FETCH_PUBLIC: "games:fetch-public",
   GAMES_RESOLVE_LAUNCH_ID: "games:resolve-launch-id",
   GAMES_RESOLVE_STORE_URL: "games:resolve-store-url",
+  GAMES_MARK_OWNED: "games:mark-owned",
   CREATE_SESSION: "gfn:create-session",
   POLL_SESSION: "gfn:poll-session",
   REPORT_SESSION_AD: "gfn:report-session-ad",
@@ -40,6 +41,7 @@ export const IPC_CHANNELS = {
   SEND_ANSWER: "gfn:send-answer",
   SEND_ICE_CANDIDATE: "gfn:send-ice-candidate",
   NATIVE_INPUT: "gfn:native-input",
+  NATIVE_INPUT_PAUSED: "gfn:native-input-paused",
   NATIVE_RENDER_SURFACE: "gfn:native-render-surface",
   NATIVE_UPDATE_SHORTCUTS: "gfn:native-update-shortcuts",
   REQUEST_KEYFRAME: "gfn:request-keyframe",
@@ -83,6 +85,7 @@ export const IPC_CHANNELS = {
   CACHE_STATUS_UPDATE: "cache:status-update",
   CACHE_DELETE_ALL: "cache:delete-all",
   COMMUNITY_GET_THANKS: "community:get-thanks",
+  COMMUNITY_PROVISION_SESSION_PROXY: "community:provision-session-proxy",
   // Media browsing
   MEDIA_LIST_BY_GAME: "media:list-by-game",
   MEDIA_THUMBNAIL: "media:thumbnail",
@@ -94,6 +97,7 @@ export const IPC_CHANNELS = {
   PRINTEDWASTE_QUEUE_FETCH: "printedwaste:queue-fetch",
   PRINTEDWASTE_SERVER_MAPPING_FETCH: "printedwaste:server-mapping-fetch",
   // Discord Rich Presence
+  DISCORD_SET_ACTIVITY: "discord:set-activity",
   DISCORD_CLEAR_ACTIVITY: "discord:clear-activity",
   // Release highlights (What's new)
   RELEASE_HIGHLIGHTS_GET: "release-highlights:get",

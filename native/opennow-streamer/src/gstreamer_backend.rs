@@ -1,6 +1,7 @@
 use crate::backend::{
     normalize_bitrate_kbps, prepare_native_offer, prepared_offer_events,
     update_context_bitrate_limit, BackendReply, NativeStreamerBackend,
+    web_rtc_media_connection_info,
 };
 use crate::gstreamer_config::{
     resolve_d3d_fullscreen_sink, resolve_present_max_fps, NATIVE_D3D_FULLSCREEN_ENV,
@@ -15,7 +16,10 @@ use crate::protocol::{
     NativeStreamerCapabilities, NativeStreamerSessionContext, NativeVideoBackendCapability,
     Response, SendAnswerRequest, PROTOCOL_VERSION,
 };
-use crate::sdp::{build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp};
+use crate::sdp::{
+    build_nvst_sdp_for_answer, extract_negotiated_video_codec, munge_answer_sdp,
+    rewrite_ice_candidate_endpoint,
+};
 use std::sync::mpsc::Sender;
 
 pub(crate) fn send_log(event_sender: &Option<Sender<Event>>, level: &'static str, message: String) {
@@ -65,6 +69,36 @@ impl GstreamerBackend {
             }
         }
         events
+    }
+
+    fn rewrite_remote_ice_candidate(&self, candidate: IceCandidatePayload) -> IceCandidatePayload {
+        let Some(context) = self.active_context.as_ref() else {
+            return candidate;
+        };
+        let Some(media_connection_info) = web_rtc_media_connection_info(context) else {
+            return candidate;
+        };
+        let (rewritten, changed) = rewrite_ice_candidate_endpoint(
+            &candidate.candidate,
+            &media_connection_info.ip,
+            media_connection_info.port,
+        );
+        if changed {
+            send_log(
+                &self.event_sender,
+                "info",
+                format!(
+                    "Rewrote remote ICE candidate endpoint to GFN media connection hint {}:{}.",
+                    media_connection_info.ip, media_connection_info.port
+                ),
+            );
+            IceCandidatePayload {
+                candidate: rewritten,
+                ..candidate
+            }
+        } else {
+            candidate
+        }
     }
 }
 
@@ -304,6 +338,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         let Some(candidate) = command.candidate else {
             return BackendReply::response(missing_field(&command.id, "candidate"));
         };
+        let candidate = self.rewrite_remote_ice_candidate(candidate);
 
         if self.remote_description_set {
             if let Some(pipeline) = self.pipeline.as_mut() {
@@ -341,6 +376,18 @@ impl NativeStreamerBackend for GstreamerBackend {
         }
 
         BackendReply::continue_without_response()
+    }
+
+    fn set_input_paused(&mut self, command: CommandEnvelope) -> BackendReply {
+        let Some(paused) = command.paused else {
+            return BackendReply::response(missing_field(&command.id, "paused"));
+        };
+
+        if let Some(pipeline) = self.pipeline.as_ref() {
+            pipeline.set_input_paused(paused);
+        }
+
+        BackendReply::response(Response::Ok { id: command.id })
     }
 
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply {

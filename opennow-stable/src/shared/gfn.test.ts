@@ -15,6 +15,7 @@ import {
   isOwnedVariant,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   getDefaultStreamPreferences,
+  normalizeGameStore,
   normalizeStreamPreferences,
   normalizeStreamClientModeForPlatform,
 } from "./gfn";
@@ -92,6 +93,15 @@ test("matches Epic store aliases only", () => {
   assert.equal(isEpicStore("EPIC"), true);
   assert.equal(isEpicStore("EGS"), true);
   assert.equal(isEpicStore("Steam"), false);
+});
+
+test("normalizes equivalent store spellings to one canonical key", () => {
+  assert.equal(normalizeGameStore("Epic"), "EPIC_GAMES_STORE");
+  assert.equal(normalizeGameStore("EGS"), "EPIC_GAMES_STORE");
+  assert.equal(normalizeGameStore("GOG.com"), "GOG");
+  assert.equal(normalizeGameStore("Battle.net"), "BATTLE_NET");
+  assert.equal(normalizeGameStore("Gaijin.net"), "GAIJIN");
+  assert.equal(normalizeGameStore("Microsoft Store"), "XBOX");
 });
 
 test("buildNativeStreamerSessionContext forwards requested/finalized streaming features", () => {

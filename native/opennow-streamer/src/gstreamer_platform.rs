@@ -118,6 +118,16 @@ pub(crate) fn clear_native_shortcut_bindings() {
 pub(crate) fn clear_native_shortcut_bindings() {}
 
 #[cfg(target_os = "windows")]
+pub(crate) fn release_native_input_capture() {
+    unsafe {
+        win32_renderer_window::release_current_input_capture();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn release_native_input_capture() {}
+
+#[cfg(target_os = "windows")]
 pub(crate) fn update_external_renderer_surface(surface: &NativeRenderSurface) {
     let target = surface
         .window_handle

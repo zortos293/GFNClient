@@ -1,4 +1,4 @@
-import type { AppAccentColor } from "@shared/gfn";
+import type { AppAccentColor, AppTheme } from "@shared/gfn";
 
 export interface AccentColorOption {
   value: AppAccentColor;
@@ -101,4 +101,19 @@ export function applyAccentColor(accentColor: AppAccentColor, root: HTMLElement 
   target.style.setProperty("--accent-surface", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.08)`);
   target.style.setProperty("--accent-surface-strong", `rgba(${baseRgb.r}, ${baseRgb.g}, ${baseRgb.b}, 0.14)`);
   target.style.setProperty("--accent-on", getContrastColor(baseRgb));
+}
+
+export function applyTheme(theme: AppTheme, root: HTMLElement | null = null): void {
+  const target = root ?? document.documentElement;
+  if (theme === "auto") {
+    const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    target.dataset.theme = isDark ? "dark" : "light";
+  } else {
+    target.dataset.theme = theme;
+  }
+}
+
+export function applyTranslucentUI(enabled: boolean, root: HTMLElement | null = null): void {
+  const target = root ?? document.documentElement;
+  target.dataset.translucent = enabled ? "true" : "false";
 }

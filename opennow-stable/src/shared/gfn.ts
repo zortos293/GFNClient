@@ -3,6 +3,12 @@ import type { NativeCloudGsyncCapabilities, CloudGsyncResolution } from "./cloud
 export type VideoCodec = "H264" | "H265" | "AV1";
 export type VideoAccelerationPreference = "auto" | "hardware" | "software";
 export type StreamClientMode = "web" | "native";
+/**
+ * How the server-side session should present launched games.
+ * Mirrors the official client's AppLaunchMode: TV/console clients request
+ * "gamepadFriendly" so launchers (e.g. Steam) start in big picture mode.
+ */
+export type AppLaunchMode = "default" | "gamepadFriendly" | "touchFriendly";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
@@ -130,6 +136,7 @@ export function colorQualityIs10Bit(cq: ColorQuality): boolean {
 }
 
 export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
+export type AppTheme = "light" | "dark" | "auto";
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type RuntimePlatform =
@@ -245,6 +252,76 @@ export interface NativeTransitionDiagnostics {
   disableTransitionFlushEscalation?: boolean;
 }
 
+/**
+ * Client-side GPU post-processing applied to the decoded stream (web client mode only).
+ * All values use UI-facing ranges; the renderer normalizes them for the shader.
+ */
+export interface VideoShaderSettings {
+  /** Master toggle for the WebGL post-processing pipeline */
+  enabled: boolean;
+  /** Contrast-adaptive sharpening strength, 0-100 (0 = off) */
+  sharpen: number;
+  /** Color saturation percentage, 0-200 (100 = neutral) */
+  saturation: number;
+  /** Contrast percentage, 50-150 (100 = neutral) */
+  contrast: number;
+  /** Brightness percentage, 50-150 (100 = neutral) */
+  brightness: number;
+  /** Vibrance boost for muted colors, 0-100 (0 = off) */
+  vibrance: number;
+  /** Animated film grain amount, 0-100 (0 = off) */
+  filmGrain: number;
+}
+
+export const DEFAULT_VIDEO_SHADER_SETTINGS: Readonly<VideoShaderSettings> = Object.freeze({
+  enabled: false,
+  sharpen: 40,
+  saturation: 100,
+  contrast: 100,
+  brightness: 100,
+  vibrance: 0,
+  filmGrain: 0,
+});
+
+function clampShaderValue(raw: unknown, min: number, max: number, fallback: number): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+/** Normalize persisted/user-provided shader settings into safe UI ranges. */
+export function normalizeVideoShaderSettings(raw: unknown): VideoShaderSettings {
+  const defaults = DEFAULT_VIDEO_SHADER_SETTINGS;
+  if (typeof raw !== "object" || raw === null) {
+    return { ...defaults };
+  }
+  const candidate = raw as Partial<Record<keyof VideoShaderSettings, unknown>>;
+  return {
+    enabled: candidate.enabled === true,
+    sharpen: clampShaderValue(candidate.sharpen, 0, 100, defaults.sharpen),
+    saturation: clampShaderValue(candidate.saturation, 0, 200, defaults.saturation),
+    contrast: clampShaderValue(candidate.contrast, 50, 150, defaults.contrast),
+    brightness: clampShaderValue(candidate.brightness, 50, 150, defaults.brightness),
+    vibrance: clampShaderValue(candidate.vibrance, 0, 100, defaults.vibrance),
+    filmGrain: clampShaderValue(candidate.filmGrain, 0, 100, defaults.filmGrain),
+  };
+}
+
+/** True when the shader pipeline would visibly change the image. */
+export function videoShaderHasVisibleEffect(settings: VideoShaderSettings): boolean {
+  return (
+    settings.enabled &&
+    (settings.sharpen > 0 ||
+      settings.saturation !== 100 ||
+      settings.contrast !== 100 ||
+      settings.brightness !== 100 ||
+      settings.vibrance > 0 ||
+      settings.filmGrain > 0)
+  );
+}
+
 export interface Settings {
   resolution: string;
   aspectRatio: AspectRatio;
@@ -294,8 +371,14 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** UI Theme */
+  appTheme: AppTheme;
+  /** Use translucent overlays for settings and navbars */
+  translucentUI: boolean;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
+  /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
+  launchInConsoleMode: boolean;
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;
@@ -309,6 +392,8 @@ export interface Settings {
   keyboardLayout: KeyboardLayout;
   /** In-game language setting (sent to GFN servers via languageCode parameter) */
   gameLanguage: GameLanguage;
+  /** User opt-in for NVIDIA's per-game in-game graphics/settings persistence. */
+  enablePersistingInGameSettings: boolean;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
@@ -323,6 +408,8 @@ export interface Settings {
   allowEscapeToExitFullscreen?: boolean;
   /** Last version for which the release highlights modal was acknowledged (empty = never) */
   lastSeenReleaseHighlightsVersion: string;
+  /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
+  videoShader: VideoShaderSettings;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
@@ -379,6 +466,35 @@ export interface EntitledStreamProfile {
   fps: number;
 }
 
+const STREAM_MODE_PRESETS: ReadonlyArray<Readonly<{
+  width: number;
+  height: number;
+  fps: readonly number[];
+}>> = Object.freeze([
+  { width: 3840, height: 2160, fps: [120, 60, 30] },
+  { width: 3456, height: 2160, fps: [120, 60, 30] },
+  { width: 3840, height: 1600, fps: [120, 60, 30] },
+  { width: 3440, height: 1440, fps: [120, 60, 30] },
+  { width: 3840, height: 1080, fps: [120, 60, 30] },
+  { width: 2560, height: 1600, fps: [120, 60, 30] },
+  { width: 2560, height: 1440, fps: [120, 60, 30] },
+  { width: 2560, height: 1080, fps: [120, 60, 30] },
+  { width: 1920, height: 1200, fps: [240, 120, 60, 30] },
+  { width: 1920, height: 1080, fps: [240, 120, 60, 30] },
+  { width: 1600, height: 1200, fps: [120, 60, 30] },
+  { width: 1680, height: 1050, fps: [120, 60, 30] },
+  { width: 1600, height: 900, fps: [120, 60, 30] },
+  { width: 1280, height: 1024, fps: [120, 60, 30] },
+  { width: 1440, height: 900, fps: [120, 60, 30] },
+  { width: 1680, height: 720, fps: [120, 60, 30] },
+  { width: 1366, height: 768, fps: [120, 60, 30] },
+  { width: 1280, height: 800, fps: [120, 60, 30] },
+  { width: 1112, height: 834, fps: [120, 60, 30] },
+  { width: 1280, height: 720, fps: [120, 60, 30] },
+  { width: 1376, height: 640, fps: [120, 60, 30] },
+  { width: 1024, height: 768, fps: [120, 60, 30] },
+]);
+
 export const SAFE_FALLBACK_STREAM_PROFILE: Readonly<EntitledStreamProfile> = Object.freeze({
   resolution: "1920x1080",
   fps: 60,
@@ -414,11 +530,63 @@ function compareEntitledResolutionDescending(a: EntitledResolution, b: EntitledR
   return b.fps - a.fps;
 }
 
+function normalizeEntitledResolution(resolution: EntitledResolution): EntitledResolution {
+  return {
+    width: Math.trunc(resolution.width),
+    height: Math.trunc(resolution.height),
+    fps: Math.trunc(resolution.fps),
+  };
+}
+
+function isModeCoveredByEntitlement(
+  entitlements: readonly EntitledResolution[],
+  width: number,
+  height: number,
+  fps: number,
+): boolean {
+  return entitlements.some(
+    (entitlement) =>
+      entitlement.width >= width &&
+      entitlement.height >= height &&
+      entitlement.fps >= fps,
+  );
+}
+
+export function expandEntitledStreamResolutions(
+  entitledResolutions: readonly EntitledResolution[],
+): EntitledResolution[] {
+  const validEntitlements = entitledResolutions
+    .filter(isValidEntitledResolution)
+    .map(normalizeEntitledResolution);
+  const byKey = new Map<string, EntitledResolution>();
+
+  const addResolution = (resolution: EntitledResolution): void => {
+    byKey.set(
+      `${resolution.width}x${resolution.height}@${resolution.fps}`,
+      resolution,
+    );
+  };
+
+  for (const resolution of validEntitlements) {
+    addResolution(resolution);
+  }
+
+  for (const mode of STREAM_MODE_PRESETS) {
+    for (const fps of mode.fps) {
+      if (isModeCoveredByEntitlement(validEntitlements, mode.width, mode.height, fps)) {
+        addResolution({ width: mode.width, height: mode.height, fps });
+      }
+    }
+  }
+
+  return [...byKey.values()].sort(compareEntitledResolutionDescending);
+}
+
 export function resolveEntitledStreamProfile(
   entitledResolutions: readonly EntitledResolution[],
   requested: EntitledStreamProfile,
 ): EntitledStreamProfile | null {
-  const validEntitlements = entitledResolutions.filter(isValidEntitledResolution);
+  const validEntitlements = expandEntitledStreamResolutions(entitledResolutions);
   if (validEntitlements.length === 0) {
     return null;
   }
@@ -640,6 +808,16 @@ export interface ResolveStoreUrlRequest {
   store?: string;
 }
 
+export interface MarkGameOwnedRequest extends GamesFetchRequest {
+  variantId: string;
+}
+
+export interface MarkGameOwnedResult {
+  ok: true;
+  variantId: string;
+  libraryStatus: "MANUAL";
+}
+
 export interface SubscriptionFetchRequest {
   token?: string;
   providerStreamingBaseUrl?: string;
@@ -720,6 +898,7 @@ export interface GameVariant {
   store: string;
   storeUrl?: string;
   supportedControls: string[];
+  supportsInGameSettingsPersistence?: boolean;
   librarySelected?: boolean;
   inLibrary?: boolean;
   libraryStatus?: string;
@@ -729,8 +908,29 @@ export interface GameVariant {
 
 export const OWNED_LIBRARY_STATUSES = ["MANUAL", "PLATFORM_SYNC", "IN_LIBRARY"] as const;
 
+const GAME_STORE_ALIASES: Record<string, string> = {
+  BATTLE_NET: "BATTLE_NET",
+  BATTLENET: "BATTLE_NET",
+  EA: "EA_APP",
+  EGS: "EPIC_GAMES_STORE",
+  EPIC: "EPIC_GAMES_STORE",
+  GAIJIN_NET: "GAIJIN",
+  GOG_COM: "GOG",
+  MICROSOFT: "XBOX",
+  MICROSOFT_STORE: "XBOX",
+  ORIGIN: "EA_APP",
+  UBISOFT: "UPLAY",
+  UBISOFT_CONNECT: "UPLAY",
+  XBOX_GAME_PASS: "XBOX",
+};
+
 export function normalizeGameStore(store: string): string {
-  return store.toUpperCase().replace(/[\s-]+/g, "_");
+  const key = store
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return GAME_STORE_ALIASES[key] ?? key;
 }
 
 export function isOwnedLibraryStatus(status?: string): boolean {
@@ -790,7 +990,7 @@ export function isGameInLibrary(game: Pick<GameInfo, "variants">): boolean {
 
 export function isEpicStore(store: string): boolean {
   const key = normalizeGameStore(store);
-  return key === "EPIC_GAMES_STORE" || key === "EPIC" || key === "EGS";
+  return key === "EPIC_GAMES_STORE";
 }
 
 export interface CatalogFilterOption {
@@ -865,6 +1065,8 @@ export interface StreamSettings {
   cloudGsyncResolution?: CloudGsyncResolution;
   /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes. */
   nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
+  /** Requested session app launch mode; "gamepadFriendly" asks NVIDIA to launch games big-picture style. */
+  appLaunchMode?: AppLaunchMode;
 }
 
 export interface SessionCreateRequest {
@@ -873,6 +1075,13 @@ export interface SessionCreateRequest {
   appId: string;
   internalTitle: string;
   accountLinked?: boolean;
+  /**
+   * Official clients only enable server-side in-game graphics/settings persistence
+   * when the user is entitled and has opted in. Leave disabled by default.
+   */
+  enablePersistingInGameSettings?: boolean;
+  /** Selected game variant must advertise IN_GAME_SETTINGS_PERSISTENCE_ENABLED. */
+  supportsInGameSettingsPersistence?: boolean;
   existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
@@ -1027,6 +1236,7 @@ export function getSessionAdDurationMs(ad: SessionAdInfo | undefined): number | 
 
 export interface SessionInfo {
   sessionId: string;
+  appId?: string;
   status: number;
   queuePosition?: number;
   seatSetupStep?: number;
@@ -1037,6 +1247,10 @@ export interface SessionInfo {
   signalingServer: string;
   signalingUrl: string;
   gpuType?: string;
+  /** Wire appLaunchMode the session runs with, kept session-stable for resumes */
+  appLaunchMode?: number;
+  /** Wire in-game settings persistence value the session was created with, kept session-stable for resumes */
+  enablePersistingInGameSettings?: boolean;
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
   negotiatedStreamProfile?: NegotiatedStreamProfile;
@@ -1050,13 +1264,36 @@ export interface SessionInfo {
 export interface ActiveSessionInfo {
   sessionId: string;
   appId: number;
+  /** Wire appLaunchMode the session was created with, as echoed by the server */
+  appLaunchMode?: number;
+  /** Wire in-game settings persistence value the session was created with, when echoed by the server */
+  enablePersistingInGameSettings?: boolean;
   gpuType?: string;
   status: number;
+  queuePosition?: number;
+  seatSetupStep?: number;
   streamingBaseUrl?: string;
   serverIp?: string;
   signalingUrl?: string;
   resolution?: string;
   fps?: number;
+}
+
+export interface GfnSessionQueueState {
+  status: number;
+  queuePosition?: number;
+  seatSetupStep?: number;
+}
+
+export function isSessionReadyForConnectStatus(status: number): boolean {
+  return status === 2 || status === 3;
+}
+
+export function isGfnSessionInQueue(session: GfnSessionQueueState): boolean {
+  if (session.seatSetupStep === 1) {
+    return true;
+  }
+  return (session.queuePosition ?? 0) > 1;
 }
 
 /** Request to claim/resume an existing session */
@@ -1068,6 +1305,10 @@ export interface SessionClaimRequest {
   clientId?: string;
   deviceId?: string;
   appId?: string;
+  /** Session-stable wire appLaunchMode captured when the session was created */
+  appLaunchMode?: number;
+  /** In-game settings persistence value to send with the resume claim. Defaults to false. */
+  enablePersistingInGameSettings?: boolean;
   settings?: StreamSettings;
   /** True when claim is triggered by automatic reconnect recovery logic */
   recoveryMode?: boolean;
@@ -1321,6 +1562,7 @@ export interface OpenNowApi {
   fetchPublicGames(): Promise<GameInfo[]>;
   resolveLaunchAppId(input: ResolveLaunchIdRequest): Promise<string | null>;
   resolveStoreUrl(input: ResolveStoreUrlRequest): Promise<string | null>;
+  markGameOwned(input: MarkGameOwnedRequest): Promise<MarkGameOwnedResult>;
   getPendingDirectLaunchRequest(): Promise<DirectLaunchRequest | null>;
   onDirectLaunchRequest(listener: (request: DirectLaunchRequest) => void): () => void;
   createSession(input: SessionCreateRequest): Promise<SessionInfo>;
@@ -1340,6 +1582,7 @@ export interface OpenNowApi {
   sendAnswer(input: SendAnswerRequest): Promise<void>;
   sendIceCandidate(input: IceCandidatePayload): Promise<void>;
   sendNativeInput(input: NativeInputPacket): void;
+  setNativeInputPaused(paused: boolean): void;
   updateNativeRenderSurface(input: NativeRenderSurfaceUpdate): void;
   updateNativeShortcuts(shortcuts: NativeStreamerShortcutBindings): void;
   requestKeyframe(input: KeyframeRequest): Promise<void>;
@@ -1436,6 +1679,9 @@ export interface OpenNowApi {
   /** Fetch PrintedWaste server mapping metadata (includes nuked status) */
   fetchPrintedWasteServerMapping(): Promise<PrintedWasteServerMapping>;
   getThanksData(): Promise<ThankYouDataResult>;
+  provisionZortosCommunityProxy(): Promise<import("@shared/communityProxy").CommunityProxyProvisionResult>;
+  /** Set Discord rich presence activity */
+  setDiscordActivity(input: import("./discord").DiscordActivityUpdate): Promise<void>;
   /** Clear Discord rich presence activity */
   clearDiscordActivity(): Promise<void>;
 

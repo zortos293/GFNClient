@@ -748,6 +748,19 @@ export class NativeStreamerManager {
     });
   }
 
+  setInputPaused(paused: boolean): void {
+    if (!this.child || !this.activeSessionId) {
+      return;
+    }
+
+    void this.request({
+      type: "input-paused",
+      paused,
+    }, CONTROL_TIMEOUT_MS).catch((error) => {
+      console.warn("[NativeStreamer] Failed to update native input pause state:", error);
+    });
+  }
+
   updateShortcuts(shortcuts: NativeStreamerShortcutBindings): void {
     if (!this.child || !this.activeSessionId) {
       return;

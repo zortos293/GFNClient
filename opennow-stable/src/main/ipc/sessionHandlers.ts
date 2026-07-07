@@ -17,6 +17,7 @@ import {
   getActiveSessions,
   pollSession,
   reportSessionAd,
+  shouldEnableInGameSettingsPersistence,
   stopSession,
 } from "../gfn/cloudmatch";
 import { SessionError } from "../gfn/errorCodes";
@@ -35,13 +36,15 @@ import {
   selectLaunchingSession,
   selectReadySessionToClaim,
 } from "../session/sessionSelection";
+import { discordActivityFromSession } from "../discordPresence";
+import type { DiscordActivityUpdate } from "@shared/discord";
 
 export interface SessionIpcHandlerDeps extends SessionConflictDialogDeps {
   ipcMain: IpcMain;
   authService: AuthService;
   settingsManager: SettingsManager;
   resolveJwt(token?: string): Promise<string>;
-  setActivity(gameName: string, startTimestamp: Date, appId?: string): Promise<void>;
+  setActivity(activity: Omit<DiscordActivityUpdate, "startTimestampMs"> & { startTimestamp?: Date }): Promise<void>;
   clearActivity(): Promise<void>;
 }
 
@@ -54,6 +57,19 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
     setActivity,
     clearActivity,
   } = deps;
+
+  const setLaunchPresence = (session: SessionInfo, gameName: string): void => {
+    const activity = discordActivityFromSession(session, gameName);
+    if (!settingsManager.get("discordRichPresence") || !activity) {
+      return;
+    }
+
+    void setActivity({
+      ...activity,
+      kind: activity.kind === "streaming" ? "starting" : activity.kind,
+      startTimestamp: undefined,
+    });
+  };
 
   ipcMain.handle(
     IPC_CHANNELS.CREATE_SESSION,
@@ -72,6 +88,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
         ...payload,
         settings: resolvedSettings,
       };
+      const requestedPersistence = shouldEnableInGameSettingsPersistence(resolvedPayload);
 
       const tryClaimExisting = async (): Promise<SessionInfo | null> => {
         if (!token) return null;
@@ -97,6 +114,8 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
               sessionId: readyCandidate.sessionId,
               serverIp: readyCandidate.serverIp!,
               appId: resolvedPayload.appId,
+              appLaunchMode: readyCandidate.appLaunchMode,
+              enablePersistingInGameSettings: readyCandidate.enablePersistingInGameSettings,
               settings: resolvedPayload.settings,
             });
           }
@@ -106,6 +125,24 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
             numericAppId,
           );
           if (launchingCandidate) {
+            const candidatePersistence = launchingCandidate.enablePersistingInGameSettings;
+            if (
+              typeof candidatePersistence === "boolean" &&
+              candidatePersistence !== requestedPersistence
+            ) {
+              console.log(
+                `[CreateSession] Stopping launching session ${launchingCandidate.sessionId} because in-game settings persistence changed ` +
+                  `(session=${candidatePersistence}, requested=${requestedPersistence}); creating a fresh session.`,
+              );
+              await stopSession({
+                token,
+                streamingBaseUrl,
+                serverIp: launchingCandidate.serverIp!,
+                zone: resolvedPayload.zone,
+                sessionId: launchingCandidate.sessionId,
+              });
+              return null;
+            }
             console.log(
               `[CreateSession] Found launching session (id=${launchingCandidate.sessionId}, appId=${launchingCandidate.appId}, status=1); returning for renderer queue/ad polling.`,
             );
@@ -124,6 +161,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
               );
               return {
                 sessionId: launchingCandidate.sessionId,
+                appId: launchingCandidate.appId.toString(),
                 status: 1,
                 zone: resolvedPayload.zone,
                 streamingBaseUrl,
@@ -149,13 +187,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
       if (!forceNewSession) {
         const preChecked = await tryClaimExisting();
         if (preChecked) {
-          if (settingsManager.get("discordRichPresence")) {
-            void setActivity(
-              payload.internalTitle || payload.appId,
-              new Date(),
-              payload.appId,
-            );
-          }
+          setLaunchPresence(preChecked, payload.internalTitle || payload.appId);
           return preChecked;
         }
       }
@@ -174,13 +206,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
           token,
           streamingBaseUrl,
         });
-        if (settingsManager.get("discordRichPresence")) {
-          void setActivity(
-            payload.internalTitle || payload.appId,
-            new Date(),
-            payload.appId,
-          );
-        }
+        setLaunchPresence(sessionResult, payload.internalTitle || payload.appId);
         return sessionResult;
       } catch (error) {
         if (
@@ -193,13 +219,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
           );
           const fallback = await tryClaimExisting();
           if (fallback) {
-            if (settingsManager.get("discordRichPresence")) {
-              void setActivity(
-                payload.internalTitle || payload.appId,
-                new Date(),
-                payload.appId,
-              );
-            }
+            setLaunchPresence(fallback, payload.internalTitle || payload.appId);
             return fallback;
           }
         }

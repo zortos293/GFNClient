@@ -1,4 +1,4 @@
-import type { ColorQuality, VideoCodec } from "@shared/gfn";
+import type { ColorQuality, MediaConnectionInfo, VideoCodec } from "@shared/gfn";
 import {
   PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL,
   PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL,
@@ -67,6 +67,77 @@ export function fixServerIp(sdp: string, serverIp: string): string {
   }
 
   return fixed;
+}
+
+function normalizeWebRtcMediaConnectionInfo(
+  mediaConnectionInfo: MediaConnectionInfo | null | undefined,
+): { ip: string; port: number } | null {
+  if (!mediaConnectionInfo) {
+    return null;
+  }
+  if (mediaConnectionInfo.usage !== 2 && mediaConnectionInfo.usage !== 17) {
+    return null;
+  }
+  const ip = mediaConnectionInfo.ip.trim();
+  const port = Math.round(mediaConnectionInfo.port);
+  if (!ip || !Number.isFinite(port) || port <= 0 || port > 65535) {
+    return null;
+  }
+  return { ip, port };
+}
+
+export function rewriteIceCandidateEndpoint(
+  candidate: string,
+  mediaConnectionInfo: MediaConnectionInfo | null | undefined,
+): { candidate: string; rewritten: boolean } {
+  const endpoint = normalizeWebRtcMediaConnectionInfo(mediaConnectionInfo);
+  if (!endpoint) {
+    return { candidate, rewritten: false };
+  }
+
+  const match = candidate.match(
+    /^(a=candidate:\S+\s+\d+\s+\S+\s+\d+\s+|candidate:\S+\s+\d+\s+\S+\s+\d+\s+)(\S+)(\s+)(\d+)(?=\s|$)/,
+  );
+  if (!match) {
+    return { candidate, rewritten: false };
+  }
+
+  const [, prefix = "", oldIp = "", separator = " ", oldPort = ""] = match;
+  if (oldIp === endpoint.ip && Number.parseInt(oldPort, 10) === endpoint.port) {
+    return { candidate, rewritten: false };
+  }
+
+  return {
+    candidate: candidate.replace(
+      match[0],
+      `${prefix}${endpoint.ip}${separator}${endpoint.port}`,
+    ),
+    rewritten: true,
+  };
+}
+
+export function rewriteSdpIceCandidateEndpoints(
+  sdp: string,
+  mediaConnectionInfo: MediaConnectionInfo | null | undefined,
+): { sdp: string; replacements: number } {
+  if (!normalizeWebRtcMediaConnectionInfo(mediaConnectionInfo)) {
+    return { sdp, replacements: 0 };
+  }
+
+  const lineEnding = sdp.includes("\r\n") ? "\r\n" : "\n";
+  let replacements = 0;
+  const rewritten = sdp.split(/\r?\n/).map((line) => {
+    if (!line.startsWith("a=candidate:")) {
+      return line;
+    }
+    const result = rewriteIceCandidateEndpoint(line, mediaConnectionInfo);
+    if (result.rewritten) {
+      replacements += 1;
+    }
+    return result.candidate;
+  });
+
+  return { sdp: rewritten.join(lineEnding), replacements };
 }
 
 /**

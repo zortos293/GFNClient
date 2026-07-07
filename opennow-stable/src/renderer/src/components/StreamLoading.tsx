@@ -30,9 +30,11 @@ export interface StreamLoadingProps {
     title: string;
     description: string;
     code?: string;
+    actionLabel?: string;
   };
   onAdPlaybackEvent?: (event: QueueAdPlaybackEvent, adId: string) => void;
   adPreviewRef?: Ref<QueueAdPreviewHandle>;
+  onErrorAction?: () => void;
   onCancel: () => void;
 }
 
@@ -113,6 +115,7 @@ export function StreamLoading({
   error,
   onAdPlaybackEvent,
   adPreviewRef,
+  onErrorAction,
   onCancel,
 }: StreamLoadingProps): JSX.Element {
   const { t } = useTranslation();
@@ -228,11 +231,17 @@ export function StreamLoading({
           </div>
         </div>
 
-        {/* Cancel */}
-        <button className="sload-cancel" onClick={onCancel} aria-label={t("streamLoading.actions.cancelLoading")}>
-          <X size={16} />
-          <span>{hasError ? t("app.actions.close") : t("app.actions.cancel")}</span>
-        </button>
+        <div className="sload-actions">
+          {hasError && error?.actionLabel && onErrorAction && (
+            <button className="sload-cancel sload-cancel--primary" onClick={onErrorAction}>
+              <span>{error.actionLabel}</span>
+            </button>
+          )}
+          <button className="sload-cancel" onClick={onCancel} aria-label={t("streamLoading.actions.cancelLoading")}>
+            <X size={16} />
+            <span>{hasError ? t("app.actions.close") : t("app.actions.cancel")}</span>
+          </button>
+        </div>
       </div>
     </div>
   );

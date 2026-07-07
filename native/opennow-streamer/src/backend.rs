@@ -6,8 +6,9 @@ use crate::protocol::{
 };
 use crate::sdp::{
     duplicate_session_webrtc_attributes_to_media, extract_ice_credentials, fix_server_ip,
-    parse_resolution, prefer_codec, sanitize_ice_pwd_for_gstreamer,
-    summarize_media_transport_attributes, NvstParams, PreferCodecOptions,
+    parse_resolution, prefer_codec, rewrite_sdp_ice_candidate_endpoints,
+    sanitize_ice_pwd_for_gstreamer, summarize_media_transport_attributes, NvstParams,
+    PreferCodecOptions,
 };
 use std::env;
 use std::sync::mpsc::Sender;
@@ -18,6 +19,7 @@ pub trait NativeStreamerBackend {
     fn handle_offer(&mut self, command: CommandEnvelope) -> BackendReply;
     fn add_remote_ice(&mut self, command: CommandEnvelope) -> BackendReply;
     fn send_input(&mut self, command: CommandEnvelope) -> BackendReply;
+    fn set_input_paused(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_bitrate_limit(&mut self, command: CommandEnvelope) -> BackendReply;
     fn update_shortcuts(&mut self, command: CommandEnvelope) -> BackendReply;
@@ -116,6 +118,7 @@ pub struct PreparedNativeOffer {
     pub gstreamer_offer_sdp: String,
     pub gstreamer_ice_pwd_replacements: usize,
     pub gstreamer_framerate_adjusted: bool,
+    pub media_connection_ice_replacements: usize,
     pub nvst_params: NvstParams,
     pub media_connection_info: Option<MediaConnectionInfo>,
 }
@@ -147,10 +150,18 @@ pub fn prepare_native_offer(
         });
     };
 
-    let fixed_offer_sdp = duplicate_session_webrtc_attributes_to_media(&fix_server_ip(
-        offer_sdp,
-        &context.session.server_ip,
-    ));
+    let fixed_offer_sdp = fix_server_ip(offer_sdp, &context.session.server_ip);
+    let (fixed_offer_sdp, media_connection_ice_replacements) =
+        if let Some(media_connection_info) = web_rtc_media_connection_info(context) {
+            rewrite_sdp_ice_candidate_endpoints(
+                &fixed_offer_sdp,
+                &media_connection_info.ip,
+                media_connection_info.port,
+            )
+        } else {
+            (fixed_offer_sdp, 0)
+        };
+    let fixed_offer_sdp = duplicate_session_webrtc_attributes_to_media(&fixed_offer_sdp);
     let codec = resolve_native_codec(context.settings.codec);
     let fixed_offer_sdp = prefer_codec(
         &fixed_offer_sdp,
@@ -184,9 +195,24 @@ pub fn prepare_native_offer(
         gstreamer_offer_sdp,
         gstreamer_ice_pwd_replacements,
         gstreamer_framerate_adjusted,
+        media_connection_ice_replacements,
         nvst_params,
         media_connection_info: context.session.media_connection_info.clone(),
     })
+}
+
+pub(crate) fn web_rtc_media_connection_info(
+    context: &NativeStreamerSessionContext,
+) -> Option<&MediaConnectionInfo> {
+    let media_connection_info = context.session.media_connection_info.as_ref()?;
+    if matches!(media_connection_info.usage, Some(2 | 17))
+        && !media_connection_info.ip.trim().is_empty()
+        && media_connection_info.port > 0
+    {
+        Some(media_connection_info)
+    } else {
+        None
+    }
 }
 
 fn align_video_sdp_framerate_for_gstreamer(sdp: &str, fps: u32) -> (String, bool) {
@@ -288,10 +314,28 @@ pub fn prepared_offer_events(prepared: &PreparedNativeOffer) -> Vec<Event> {
         events.push(Event::Log {
             level: "debug",
             message: format!(
-                "GFN media connection hint {}:{}.",
-                media_connection_info.ip, media_connection_info.port
+                "GFN media connection hint {}:{} (usage={}).",
+                media_connection_info.ip,
+                media_connection_info.port,
+                media_connection_info
+                    .usage
+                    .map(|usage| usage.to_string())
+                    .unwrap_or_else(|| "unknown".to_owned())
             ),
         });
+    }
+    if prepared.media_connection_ice_replacements > 0 {
+        if let Some(media_connection_info) = &prepared.media_connection_info {
+            events.push(Event::Log {
+                level: "info",
+                message: format!(
+                    "Rewrote {} remote ICE candidate endpoint(s) to GFN media connection hint {}:{}.",
+                    prepared.media_connection_ice_replacements,
+                    media_connection_info.ip,
+                    media_connection_info.port
+                ),
+            });
+        }
     }
     events.push(Event::Log {
         level: "debug",
@@ -433,6 +477,14 @@ impl NativeStreamerBackend for StubBackend {
         BackendReply::continue_without_response()
     }
 
+    fn set_input_paused(&mut self, command: CommandEnvelope) -> BackendReply {
+        if command.paused.is_none() {
+            return BackendReply::response(missing_field(&command.id, "paused"));
+        }
+
+        BackendReply::response(Response::Ok { id: command.id })
+    }
+
     fn update_render_surface(&mut self, command: CommandEnvelope) -> BackendReply {
         if command.surface.is_none() {
             return BackendReply::response(missing_field(&command.id, "surface"));
@@ -508,6 +560,7 @@ mod tests {
                 media_connection_info: Some(MediaConnectionInfo {
                     ip: "10.0.0.7".to_owned(),
                     port: 49003,
+                    usage: Some(2),
                 }),
                 negotiated_stream_profile: None,
                 requested_streaming_features: None,
@@ -547,6 +600,58 @@ mod tests {
                 .map(|info| info.port),
             Some(49003),
         );
+    }
+
+    #[test]
+    fn prepares_offer_rewrites_server_ice_candidates_to_media_connection_info() {
+        let offer = [
+            "v=0",
+            "a=ice-ufrag:user",
+            "a=ice-pwd:pass",
+            "a=fingerprint:sha-256 AA:BB",
+            "m=audio 47998 UDP/TLS/RTP/SAVPF 111",
+            "a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host",
+            "m=video 47998 UDP/TLS/RTP/SAVPF 96",
+            "a=candidate:2 1 udp 2122260223 203.0.113.10 47998 typ host",
+            "a=rtpmap:96 H265/90000",
+        ]
+        .join("\n");
+
+        let prepared = prepare_native_offer(&context("1920x1080"), &offer).expect("valid offer");
+
+        assert_eq!(prepared.media_connection_ice_replacements, 2);
+        assert!(prepared
+            .fixed_offer_sdp
+            .contains("a=candidate:1 1 udp 2122260223 10.0.0.7 49003 typ host"));
+        assert!(prepared
+            .fixed_offer_sdp
+            .contains("a=candidate:2 1 udp 2122260223 10.0.0.7 49003 typ host"));
+    }
+
+    #[test]
+    fn prepares_offer_skips_non_webrtc_media_connection_info() {
+        let mut context = context("1920x1080");
+        context
+            .session
+            .media_connection_info
+            .as_mut()
+            .expect("media connection")
+            .usage = Some(14);
+        let offer = [
+            "v=0",
+            "a=ice-ufrag:user",
+            "a=ice-pwd:pass",
+            "a=fingerprint:sha-256 AA:BB",
+            "a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host",
+        ]
+        .join("\n");
+
+        let prepared = prepare_native_offer(&context, &offer).expect("valid offer");
+
+        assert_eq!(prepared.media_connection_ice_replacements, 0);
+        assert!(prepared
+            .fixed_offer_sdp
+            .contains("a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host"));
     }
 
     #[test]

@@ -9,7 +9,7 @@ import {
   session,
   protocol,
 } from "electron";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -20,6 +20,8 @@ import { existsSync, readFileSync } from "node:fs";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
+import type { CommunityProxyProvisionResult } from "@shared/communityProxy";
+import { provisionZortosCommunityProxy } from "./community/provisionSessionProxy";
 import { registerOpenNowMediaProtocol } from "./mediaPaths";
 import { initLogCapture, exportLogs } from "@shared/logger";
 import { cacheManager } from "./services/cacheManager";
@@ -47,6 +49,7 @@ import { getSettingsManager, type SettingsManager } from "./settings";
 
 import { getActiveSessions } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
+import { initSessionProxyAuth } from "./gfn/proxyFetch";
 import {
   connectDiscordRpc,
   setActivity,
@@ -55,6 +58,10 @@ import {
   getCurrentActivity,
   isDiscordRpcConnected,
 } from "./discordRpc";
+import type { DiscordActivityUpdate } from "@shared/discord";
+import {
+  discordMonitorActivityDecision,
+} from "./discordPresence";
 import {
   createAppUpdaterController,
   type AppUpdaterController,
@@ -217,6 +224,10 @@ function emitDirectLaunchRequest(request: DirectLaunchRequest): void {
 function enqueueDirectLaunchRequest(request: DirectLaunchRequest): void {
   pendingDirectLaunchRequest = request;
   focusMainWindow();
+  // Argument launches always run as a fullscreen console session.
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(true);
+  }
   emitDirectLaunchRequest(request);
 }
 
@@ -379,16 +390,14 @@ class DiscordStatusMonitor {
         [1, 2, 3].includes(s.status),
       );
       const currentActivity = getCurrentActivity();
+      const decision = discordMonitorActivityDecision(currentActivity, activeSession ?? null);
 
-      if (activeSession) {
-        const sessionAppId = activeSession.appId.toString();
-
-        if (!currentActivity || currentActivity.appId !== sessionAppId) {
-          const title = sessionAppId;
-          const startTime = new Date();
-          void setActivity(title, startTime, sessionAppId);
-        }
-      } else if (currentActivity) {
+      if (decision.action === "set") {
+        void setActivity({
+          ...decision.activity,
+          startTimestamp: decision.startTimestamp,
+        });
+      } else if (decision.action === "clear") {
         console.log("[DiscordRPC] Monitor clearing stale status.");
         void clearActivity();
       }
@@ -408,6 +417,30 @@ function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
   }
 }
 
+function parseExternalHttpUrl(url: string): URL {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Only HTTP(S) external URLs can be opened.");
+  }
+  return parsed;
+}
+
+function isAppNavigationUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (process.env.ELECTRON_RENDERER_URL) {
+      return parsed.origin === new URL(process.env.ELECTRON_RENDERER_URL).origin;
+    }
+    return parsed.toString() === pathToFileURL(join(__dirname, "../../dist/index.html")).toString();
+  } catch {
+    return false;
+  }
+}
+
+async function openExternalHttpUrl(url: string): Promise<void> {
+  await shell.openExternal(parseExternalHttpUrl(url).toString());
+}
+
 async function createMainWindow(): Promise<void> {
   const preloadMjsPath = join(__dirname, "../preload/index.mjs");
   const preloadJsPath = join(__dirname, "../preload/index.js");
@@ -417,11 +450,23 @@ async function createMainWindow(): Promise<void> {
 
   const settings = settingsManager.getAll();
 
+  // Console mode (big picture): mirror GeForce NOW's TV mode by launching
+  // fullscreen with the controller-oriented shell enabled.
+  if (settings.launchInConsoleMode && !settings.controllerMode) {
+    settingsManager.set("controllerMode", true);
+  }
+
+  // Direct-launch arguments always start fullscreen; the renderer applies the
+  // console shell for the run without persisting the Controller Mode setting.
+  const startFullscreen =
+    settings.launchInConsoleMode || pendingDirectLaunchRequest !== null;
+
   mainWindow = new BrowserWindow({
     width: settings.windowWidth || 1400,
     height: settings.windowHeight || 900,
     minWidth: 1024,
     minHeight: 680,
+    fullscreen: startFullscreen,
     autoHideMenuBar: true,
     backgroundColor: "#0f172a",
     webPreferences: {
@@ -430,6 +475,24 @@ async function createMainWindow(): Promise<void> {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openExternalHttpUrl(url).catch((error) => {
+      console.warn("Blocked non-external window open:", error instanceof Error ? error.message : error);
+    });
+    return { action: "deny" };
+  });
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isAppNavigationUrl(url)) {
+      return;
+    }
+
+    event.preventDefault();
+    void openExternalHttpUrl(url).catch((error) => {
+      console.warn("Blocked app window navigation:", error instanceof Error ? error.message : error);
+    });
   });
 
   if (process.platform === "win32") {
@@ -822,6 +885,17 @@ function registerIpcHandlers(): void {
     void clearActivity();
   });
 
+  ipcMain.handle(IPC_CHANNELS.DISCORD_SET_ACTIVITY, async (_event, activity: DiscordActivityUpdate) => {
+    if (!settingsManager.get("discordRichPresence")) {
+      return;
+    }
+
+    void setActivity({
+      ...activity,
+      startTimestamp: activity.startTimestampMs ? new Date(activity.startTimestampMs) : undefined,
+    });
+  });
+
   // Toggle fullscreen via IPC (for completeness)
   ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -862,11 +936,7 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: string): Promise<void> => {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      throw new Error("Only HTTP(S) external URLs can be opened.");
-    }
-    await shell.openExternal(parsed.toString());
+    await openExternalHttpUrl(url);
   });
 
   ipcMain.handle(
@@ -1126,6 +1196,13 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.COMMUNITY_PROVISION_SESSION_PROXY,
+    async (): Promise<CommunityProxyProvisionResult> => {
+      return provisionZortosCommunityProxy();
+    },
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.PING_REGIONS,
     async (_event, regions: StreamRegion[]): Promise<PingResult[]> => {
       return pingRegions(regions);
@@ -1155,9 +1232,10 @@ function registerIpcHandlers(): void {
     settingsManager.set("lastSeenReleaseHighlightsVersion", app.getVersion().replace(/^v/, ""));
   });
 
-  // Save window size when it changes
+  // Save window size when it changes (skip fullscreen so the saved size
+  // stays meaningful for windowed launches, e.g. after console mode)
   mainWindow?.on("resize", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
       const [width, height] = mainWindow.getSize();
       settingsManager.set("windowWidth", width);
       settingsManager.set("windowHeight", height);
@@ -1184,6 +1262,7 @@ if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
   // Initialize log capture first to capture all console output
   initLogCapture("main");
+  initSessionProxyAuth();
 
   await cacheManager.initialize();
 

@@ -20,4 +20,6 @@ export type LaunchErrorState = {
   title: string;
   description: string;
   codeLabel?: string;
+  action?: "persistent-storage-settings";
+  actionLabel?: string;
 };

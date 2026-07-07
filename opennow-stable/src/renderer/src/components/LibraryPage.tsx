@@ -1,14 +1,16 @@
-import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown, MoreHorizontal, Menu } from "lucide-react";
+import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown, MoreHorizontal, Menu, Filter, ChevronDown, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
-import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import { getStoreDisplayName, getStoreIconComponent, normalizeStoreKey } from "./GameCard";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
+import type { PlaytimeData } from "../lib/gameCatalog";
 import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
+import { SelectDropdown } from "./ui/SelectDropdown";
 
 const CONTROLLER_HERO_ROTATION_MS = 8000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -28,8 +30,24 @@ interface ControllerStoreFilterItem {
   title: string;
 }
 
+interface LibraryFilterOption {
+  id: string;
+  label: string;
+  count: number;
+}
+
+interface LibraryFilterGroup {
+  id: string;
+  label: string;
+  options: LibraryFilterOption[];
+}
+
+type LibraryTranslation = (key: string, values?: Record<string, string | number | boolean | null | undefined>) => string;
+
 export interface LibraryPageProps {
   games: GameInfo[];
+  allGames: GameInfo[];
+  playtimeData: PlaytimeData;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onPlayGame: (game: GameInfo) => void;
@@ -121,6 +139,213 @@ function gameMatchesStoreFilter(game: GameInfo, filterId: string): boolean {
   return game.variants.some((variant) => variant.store === store) || (game.availableStores ?? []).includes(store);
 }
 
+function normalizeLibraryFilterValue(value: string | undefined): string {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function formatLibraryFilterLabel(value: string): string {
+  return value
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function getGameCatalogSkuText(game: GameInfo): string {
+  const values = Object.values(game.catalogSkuStrings ?? {});
+  const parts: string[] = [];
+  for (const value of values) {
+    if (typeof value === "string") {
+      parts.push(value);
+    } else if (Array.isArray(value)) {
+      parts.push(...value.filter((item): item is string => typeof item === "string"));
+    }
+  }
+  return parts.join(" ");
+}
+
+function gameRequiresInstallToPlay(game: GameInfo): boolean {
+  const haystack = [
+    game.playType,
+    game.playabilityState,
+    ...(game.featureLabels ?? []),
+    getGameCatalogSkuText(game),
+  ].join(" ").toLowerCase();
+  return haystack.includes("install");
+}
+
+function getGamePlayTypeFilter(game: GameInfo, t: LibraryTranslation): LibraryFilterOption | null {
+  if (gameRequiresInstallToPlay(game)) {
+    return { id: "play:install-to-play", label: t("library.filterOptions.installToPlay"), count: 0 };
+  }
+  if (!game.playType?.trim()) return null;
+  const normalized = normalizeLibraryFilterValue(game.playType);
+  if (!normalized) return null;
+  if (normalized.includes("instant") || normalized.includes("stream") || normalized.includes("cloud")) {
+    return { id: "play:cloud-launch", label: t("library.filterOptions.cloudLaunch"), count: 0 };
+  }
+  const label = formatLibraryFilterLabel(game.playType);
+  const key = normalizeLibraryFilterValue(label);
+  return key ? { id: `play:${key}`, label, count: 0 } : null;
+}
+
+function getGameStoreFilters(game: GameInfo): Array<{ id: string; label: string }> {
+  const stores = game.availableStores?.length ? game.availableStores : game.variants.map((variant) => variant.store);
+  const seen = new Set<string>();
+  const filters: Array<{ id: string; label: string }> = [];
+  for (const store of stores) {
+    if (!store.trim()) continue;
+    const key = normalizeStoreKey(store);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    filters.push({ id: `platform:${key}`, label: getStoreDisplayName(store) });
+  }
+  return filters;
+}
+
+function getControlFilter(control: string, t: LibraryTranslation): { id: string; label: string } | null {
+  const normalized = normalizeLibraryFilterValue(control);
+  if (!normalized) return null;
+  if (normalized.includes("keyboard") || normalized.includes("mouse")) {
+    return { id: "controls:keyboard-mouse", label: t("library.filterOptions.keyboardMouse") };
+  }
+  if (normalized.includes("gamepad") || normalized.includes("controller")) {
+    return { id: "controls:controller", label: t("library.filterOptions.controller") };
+  }
+  if (normalized.includes("touch")) {
+    return { id: "controls:touch", label: t("library.filterOptions.touch") };
+  }
+  const label = formatLibraryFilterLabel(control);
+  const key = normalizeLibraryFilterValue(label);
+  return key ? { id: `controls:${key}`, label } : null;
+}
+
+function getGameControlFilters(game: GameInfo, t: LibraryTranslation): Array<{ id: string; label: string }> {
+  const controls = [
+    ...(game.supportedControls ?? []),
+    ...game.variants.flatMap((variant) => variant.supportedControls),
+  ];
+  const seen = new Set<string>();
+  const filters: Array<{ id: string; label: string }> = [];
+  for (const control of controls) {
+    const filter = getControlFilter(control, t);
+    if (!filter || seen.has(filter.id)) continue;
+    seen.add(filter.id);
+    filters.push(filter);
+  }
+  return filters;
+}
+
+function upsertLibraryFilterOption(options: Map<string, LibraryFilterOption>, id: string, label: string): void {
+  const existing = options.get(id);
+  if (existing) {
+    existing.count += 1;
+    return;
+  }
+  options.set(id, { id, label, count: 1 });
+}
+
+function mapLibraryFilterOptions(options: Map<string, LibraryFilterOption>): LibraryFilterOption[] {
+  return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function gameHasLibraryActivity(game: GameInfo, playtimeData: PlaytimeData): boolean {
+  if (game.lastPlayed) return true;
+  const record = playtimeData[game.id];
+  if (!record) return false;
+  return Boolean(record.lastPlayedAt) || (record.totalSeconds ?? 0) > 0 || (record.sessionCount ?? 0) > 0;
+}
+
+function getLibraryFilterGroups(games: GameInfo[], playtimeData: PlaytimeData, t: LibraryTranslation): LibraryFilterGroup[] {
+  const playTypeOptions = new Map<string, LibraryFilterOption>();
+  const platformOptions = new Map<string, LibraryFilterOption>();
+  const controlOptions = new Map<string, LibraryFilterOption>();
+  const activityOptions = new Map<string, LibraryFilterOption>();
+
+  for (const game of games) {
+    const playTypeOption = getGamePlayTypeFilter(game, t);
+    if (playTypeOption) upsertLibraryFilterOption(playTypeOptions, playTypeOption.id, playTypeOption.label);
+
+    for (const option of getGameStoreFilters(game)) {
+      upsertLibraryFilterOption(platformOptions, option.id, option.label);
+    }
+
+    for (const option of getGameControlFilters(game, t)) {
+      upsertLibraryFilterOption(controlOptions, option.id, option.label);
+    }
+
+    const hasActivity = gameHasLibraryActivity(game, playtimeData);
+    upsertLibraryFilterOption(
+      activityOptions,
+      hasActivity ? "activity:played" : "activity:never-played",
+      hasActivity ? t("library.filterOptions.played") : t("library.filterOptions.neverPlayed"),
+    );
+  }
+
+  return [
+    { id: "play", label: t("library.filterGroups.playType"), options: mapLibraryFilterOptions(playTypeOptions) },
+    { id: "platform", label: t("library.filterGroups.platform"), options: mapLibraryFilterOptions(platformOptions) },
+    { id: "controls", label: t("library.filterGroups.controls"), options: mapLibraryFilterOptions(controlOptions) },
+    { id: "activity", label: t("library.filterGroups.activity"), options: mapLibraryFilterOptions(activityOptions) },
+  ].filter((group) => group.options.length > 0);
+}
+
+function getLibraryFilterGroupId(filterId: string): string {
+  const separatorIndex = filterId.indexOf(":");
+  return separatorIndex >= 0 ? filterId.slice(0, separatorIndex) : filterId;
+}
+
+function gameMatchesLibraryFilter(game: GameInfo, filterId: string, playtimeData: PlaytimeData, t: LibraryTranslation): boolean {
+  const [groupId, value] = filterId.split(":");
+  if (!value) return true;
+
+  if (groupId === "play") {
+    return getGamePlayTypeFilter(game, t)?.id === filterId;
+  }
+
+  if (groupId === "platform") {
+    return getGameStoreFilters(game).some((option) => option.id === filterId);
+  }
+
+  if (groupId === "controls") {
+    return getGameControlFilters(game, t).some((option) => option.id === filterId);
+  }
+
+  if (groupId === "activity") {
+    const hasActivity = gameHasLibraryActivity(game, playtimeData);
+    return value === "played" ? hasActivity : !hasActivity;
+  }
+
+  return true;
+}
+
+function gameMatchesLibraryFilters(game: GameInfo, selectedFilterIds: string[], playtimeData: PlaytimeData, t: LibraryTranslation): boolean {
+  if (selectedFilterIds.length === 0) return true;
+  const selectedByGroup = new Map<string, string[]>();
+  for (const filterId of selectedFilterIds) {
+    const groupId = getLibraryFilterGroupId(filterId);
+    selectedByGroup.set(groupId, [...(selectedByGroup.get(groupId) ?? []), filterId]);
+  }
+  for (const groupFilterIds of selectedByGroup.values()) {
+    if (!groupFilterIds.some((filterId) => gameMatchesLibraryFilter(game, filterId, playtimeData, t))) return false;
+  }
+  return true;
+}
+
+function getLibraryFilterOptionById(groups: LibraryFilterGroup[], id: string): LibraryFilterOption | undefined {
+  for (const group of groups) {
+    const option = group.options.find((candidate) => candidate.id === id);
+    if (option) return option;
+  }
+  return undefined;
+}
+
 function getControllerStoreFilterItems(games: GameInfo[], allStoresLabel: string): ControllerStoreFilterItem[] {
   const stores = new Set<string>();
   for (const game of games) {
@@ -185,6 +410,8 @@ function ControllerGameCard({
 
 export const LibraryPage = memo(function LibraryPage({
   games,
+  allGames,
+  playtimeData,
   searchQuery,
   onSearchChange,
   onPlayGame,
@@ -216,6 +443,7 @@ export const LibraryPage = memo(function LibraryPage({
   const [controllerStoreFilterOpen, setControllerStoreFilterOpen] = useState(false);
   const [controllerSearchOpen, setControllerSearchOpen] = useState(false);
   const [focusedControllerStoreFilterIndex, setFocusedControllerStoreFilterIndex] = useState(0);
+  const [selectedLibraryFilterIds, setSelectedLibraryFilterIds] = useState<string[]>([]);
   const controllerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const gamepadPreviousButtonsRef = useRef(0);
   const gamepadLastMoveAtRef = useRef(0);
@@ -243,6 +471,52 @@ export const LibraryPage = memo(function LibraryPage({
     if (!controllerMode || !controllerSearchOpen) return;
     controllerSearchInputRef.current?.focus();
   }, [controllerMode, controllerSearchOpen]);
+
+  const librarySearchHasQuery = searchQuery.trim().length > 0;
+  const libraryFilterGroups = useMemo(
+    () => getLibraryFilterGroups(allGames, playtimeData, t),
+    [allGames, playtimeData, t],
+  );
+  const visibleLibraryGames = useMemo(
+    () => games.filter((game) => gameMatchesLibraryFilters(game, selectedLibraryFilterIds, playtimeData, t)),
+    [games, playtimeData, selectedLibraryFilterIds, t],
+  );
+  const activeLibraryFilterOptions = useMemo(
+    () => selectedLibraryFilterIds
+      .map((filterId) => getLibraryFilterOptionById(libraryFilterGroups, filterId))
+      .filter((option): option is LibraryFilterOption => Boolean(option)),
+    [libraryFilterGroups, selectedLibraryFilterIds],
+  );
+  const hasActiveLibraryFilters = activeLibraryFilterOptions.length > 0;
+  const libraryCountLabel = hasActiveLibraryFilters || librarySearchHasQuery
+    ? t("library.filteredGameCount", { shown: visibleLibraryGames.length, total: libraryCount, count: libraryCount })
+    : t("library.gameCount", { count: libraryCount });
+
+  useEffect(() => {
+    const availableFilterIds = new Set(libraryFilterGroups.flatMap((group) => group.options.map((option) => option.id)));
+    setSelectedLibraryFilterIds((previous) => {
+      const next = previous.filter((filterId) => availableFilterIds.has(filterId));
+      return next.length === previous.length ? previous : next;
+    });
+  }, [libraryFilterGroups]);
+
+  useEffect(() => {
+    if (controllerMode || visibleLibraryGames.length === 0) return;
+    if (visibleLibraryGames.some((game) => game.id === selectedGameId)) return;
+    onSelectGame(visibleLibraryGames[0].id);
+  }, [controllerMode, onSelectGame, selectedGameId, visibleLibraryGames]);
+
+  const toggleLibraryFilter = (filterId: string): void => {
+    setSelectedLibraryFilterIds((previous) => (
+      previous.includes(filterId)
+        ? previous.filter((selectedFilterId) => selectedFilterId !== filterId)
+        : [...previous, filterId]
+    ));
+  };
+
+  const clearLibraryFilters = (): void => {
+    setSelectedLibraryFilterIds([]);
+  };
 
   const controllerStoreFilterItems = useMemo(
     () => getControllerStoreFilterItems(games, t("library.allStores")),
@@ -539,7 +813,7 @@ export const LibraryPage = memo(function LibraryPage({
   }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
 
   const libraryGridItems = useMemo(
-    () => games.map((game) => (
+    () => visibleLibraryGames.map((game) => (
       <div key={game.id} className="library-game-wrapper">
         <GameCardListItem
           game={game}
@@ -555,7 +829,7 @@ export const LibraryPage = memo(function LibraryPage({
         )}
       </div>
     )),
-    [catalogActionsRef, games, selectedGameId, selectedVariantByGameId, t],
+    [catalogActionsRef, selectedGameId, selectedVariantByGameId, t, visibleLibraryGames],
   );
 
   if (controllerMode) {
@@ -829,19 +1103,86 @@ export const LibraryPage = memo(function LibraryPage({
           />
         </div>
 
-        <label className="library-sort">
-          <ArrowUpDown size={14} />
-          <select value={selectedSortId} onChange={(e) => onSortChange(e.target.value)}>
-            {sortOptions.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {libraryFilterGroups.length > 0 && (
+          <details className="library-filter-dropdown">
+            <summary className="library-filter-dropdown-trigger">
+              <span className="library-filter-dropdown-label">
+                <Filter size={14} />
+                {t("library.filters")}
+              </span>
+              {selectedLibraryFilterIds.length > 0 && <span className="library-filter-dropdown-count">{selectedLibraryFilterIds.length}</span>}
+              <ChevronDown size={14} className="library-filter-dropdown-chevron" />
+            </summary>
+            <div className="library-filter-dropdown-menu">
+              {libraryFilterGroups.map((group) => (
+                <div key={group.id} className="library-filter-dropdown-group">
+                  <div className="library-filter-group-label">{group.label}</div>
+                  <div className="library-filter-chips">
+                    {group.options.map((option) => {
+                      const active = selectedLibraryFilterIds.includes(option.id);
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={`library-filter-chip ${active ? "active" : ""}`}
+                          onClick={() => toggleLibraryFilter(option.id)}
+                          aria-pressed={active}
+                        >
+                          <span>{option.label}</span>
+                          <span className="library-filter-chip-count">{option.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
 
-        <span className="library-count">{t("library.gameCount", { count: libraryCount })}</span>
+        {sortOptions.length > 0 && (
+          <div className="library-sort">
+            <ArrowUpDown size={14} />
+            <SelectDropdown
+              value={selectedSortId}
+              options={sortOptions.map((option) => ({ value: option.id, label: option.label }))}
+              onChange={onSortChange}
+              ariaLabel={t("library.sortAriaLabel")}
+            />
+          </div>
+        )}
+
+        <span className="library-count">{libraryCountLabel}</span>
       </header>
+
+      <AnimatePresence initial={false}>
+        {activeLibraryFilterOptions.length > 0 && (
+          <m.div
+            className="library-active-filters"
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={pageTransition}
+          >
+            <span className="library-active-filter-label">{t("library.activeFilters")}</span>
+            {activeLibraryFilterOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className="library-active-filter-chip"
+                onClick={() => toggleLibraryFilter(option.id)}
+                aria-label={t("library.removeFilter", { filter: option.label })}
+              >
+                <span>{option.label}</span>
+                <X size={12} />
+              </button>
+            ))}
+            <button type="button" className="library-clear-filters" onClick={clearLibraryFilters}>
+              {t("library.clearFilters")}
+            </button>
+          </m.div>
+        )}
+      </AnimatePresence>
 
       <div className="library-grid-area">
         {isLoading ? (
@@ -855,11 +1196,17 @@ export const LibraryPage = memo(function LibraryPage({
             <h3>{t("library.empty.libraryEmpty")}</h3>
             <p>{t("library.empty.ownedGamesAppearHere")}</p>
           </div>
-        ) : games.length === 0 ? (
+        ) : visibleLibraryGames.length === 0 ? (
           <div className="library-empty-state">
             <Search className="library-empty-icon" size={44} />
-            <h3>{t("library.empty.noGamesFound")}</h3>
-            <p>{t("library.empty.noGamesMatch", { query: searchQuery })}</p>
+            <h3>{hasActiveLibraryFilters && !librarySearchHasQuery ? t("library.empty.noFilteredGames") : t("library.empty.noGamesFound")}</h3>
+            <p>
+              {librarySearchHasQuery
+                ? t("library.empty.noGamesMatch", { query: searchQuery })
+                : hasActiveLibraryFilters
+                  ? t("library.empty.tryAdjustingFilters")
+                : t("library.empty.noGamesMatch", { query: searchQuery })}
+            </p>
           </div>
         ) : (
           <div className="game-grid">

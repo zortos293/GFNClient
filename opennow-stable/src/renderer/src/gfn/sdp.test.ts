@@ -8,8 +8,10 @@ import {
   fixServerIp,
   mungeAnswerSdp,
   preferCodec,
+  rewriteIceCandidateEndpoint,
   rewriteH265LevelIdByProfile,
   rewriteH265TierFlag,
+  rewriteSdpIceCandidateEndpoints,
 } from "./sdp";
 
 test("fixServerIp replaces 0.0.0.0 candidate IPs without changing connection lines", () => {
@@ -26,6 +28,43 @@ test("fixServerIp replaces 0.0.0.0 candidate IPs without changing connection lin
   assert.match(fixed, /a=candidate:1 1 udp 2130706431 161\.248\.11\.132 47998 typ host/);
   assert.match(fixed, /a=candidate:2 1 tcp 1 192\.168\.1\.5 9 typ host/);
   assert.equal(fixServerIp(sdp, "unparseable.example.com"), sdp);
+});
+
+test("rewriteSdpIceCandidateEndpoints points server candidates at WebRTC mediaConnectionInfo", () => {
+  const sdp = [
+    "v=0",
+    "c=IN IP4 0.0.0.0",
+    "a=candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host",
+    "a=candidate:2 1 tcp 1518214911 203.0.113.10 9 typ host tcptype active",
+  ].join("\r\n");
+
+  const rewritten = rewriteSdpIceCandidateEndpoints(sdp, {
+    ip: "198.51.100.55",
+    port: 18784,
+    usage: 2,
+  });
+
+  assert.equal(rewritten.replacements, 2);
+  assert.match(rewritten.sdp, /a=candidate:1 1 udp 2122260223 198\.51\.100\.55 18784 typ host/);
+  assert.match(rewritten.sdp, /a=candidate:2 1 tcp 1518214911 198\.51\.100\.55 18784 typ host tcptype active/);
+  assert.match(rewritten.sdp, /c=IN IP4 0\.0\.0\.0/);
+  assert.match(rewritten.sdp, /\r\n/);
+});
+
+test("rewriteIceCandidateEndpoint skips non-WebRTC mediaConnectionInfo usages", () => {
+  const candidate = "candidate:1 1 udp 2122260223 203.0.113.10 47998 typ host";
+
+  assert.deepEqual(
+    rewriteIceCandidateEndpoint(candidate, { ip: "198.51.100.55", port: 18784, usage: 14 }),
+    { candidate, rewritten: false },
+  );
+  assert.deepEqual(
+    rewriteIceCandidateEndpoint(candidate, { ip: "198.51.100.55", port: 18784, usage: 17 }),
+    {
+      candidate: "candidate:1 1 udp 2122260223 198.51.100.55 18784 typ host",
+      rewritten: true,
+    },
+  );
 });
 
 test("preferCodec keeps selected video payloads and RTX apt payloads while leaving audio untouched", () => {

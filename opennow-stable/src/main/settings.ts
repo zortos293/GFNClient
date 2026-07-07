@@ -15,6 +15,7 @@ import type {
   NativeStreamerFeatureMode,
   NativeTransitionDiagnostics,
   AppAccentColor,
+  AppTheme,
   VideoShaderSettings,
 } from "@shared/gfn";
 import {
@@ -115,6 +116,10 @@ export interface Settings {
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
   appAccentColor: AppAccentColor;
+  /** UI Theme */
+  appTheme: AppTheme;
+  /** Use translucent overlays for settings and navbars */
+  translucentUI: boolean;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
   /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
@@ -163,6 +168,7 @@ const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
 const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
 const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
+const APP_THEMES = new Set<AppTheme>(["light", "dark", "auto"]);
 
 function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackendPreference {
   return NATIVE_VIDEO_BACKEND_PREFERENCES.has(raw as NativeVideoBackendPreference)
@@ -172,6 +178,10 @@ function normalizeNativeVideoBackendPreference(raw: unknown): NativeVideoBackend
 
 function normalizeAppAccentColor(raw: unknown): AppAccentColor {
   return APP_ACCENT_COLORS.has(raw as AppAccentColor) ? (raw as AppAccentColor) : "green";
+}
+
+function normalizeAppTheme(raw: unknown): AppTheme {
+  return APP_THEMES.has(raw as AppTheme) ? (raw as AppTheme) : "auto";
 }
 
 function normalizeRecordingBitrateMbps(raw: unknown): number | null {
@@ -228,6 +238,8 @@ const DEFAULT_SETTINGS: Settings = {
   showStatsOnLaunch: false,
   hideServerSelector: false,
   appAccentColor: "green",
+  appTheme: "auto",
+  translucentUI: false,
   controllerMode: false,
   launchInConsoleMode: false,
   autoFullScreen: false,
@@ -350,6 +362,12 @@ export class SettingsManager {
         migrated = true;
       }
 
+      const themeBefore = merged.appTheme;
+      merged.appTheme = normalizeAppTheme(merged.appTheme);
+      if (merged.appTheme !== themeBefore) {
+        migrated = true;
+      }
+
       // Migrate legacy boolean accelerator setting to percentage slider.
       if (typeof (parsed as { mouseAcceleration?: unknown }).mouseAcceleration === "boolean") {
         merged.mouseAcceleration = (parsed as { mouseAcceleration?: boolean }).mouseAcceleration ? 100 : 1;
@@ -406,6 +424,15 @@ export class SettingsManager {
     const appAccentColor = normalizeAppAccentColor(settings.appAccentColor);
     if (settings.appAccentColor !== appAccentColor) {
       settings.appAccentColor = appAccentColor;
+      migrated = true;
+    }
+    const appTheme = normalizeAppTheme(settings.appTheme);
+    if (settings.appTheme !== appTheme) {
+      settings.appTheme = appTheme;
+      migrated = true;
+    }
+    if (typeof settings.translucentUI !== "boolean") {
+      settings.translucentUI = false;
       migrated = true;
     }
     if (!settings.nativeExternalRenderer) {

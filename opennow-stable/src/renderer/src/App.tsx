@@ -97,7 +97,7 @@ import {
   toLoadingStatus,
 } from "./lib/sessionState";
 import { defaultDiagnostics, mergeNativeStreamStats } from "./lib/streamDiagnostics";
-import { applyAccentColor } from "./lib/uiCustomization";
+import { applyAccentColor, applyTheme, applyTranslucentUI } from "./lib/uiCustomization";
 import { useTranslation } from "./i18n";
 
 // UI Components
@@ -527,6 +527,8 @@ export function App(): JSX.Element {
     showStatsOnLaunch: false,
     hideServerSelector: false,
     appAccentColor: "green",
+    appTheme: "auto",
+    translucentUI: false,
     controllerMode: false,
     launchInConsoleMode: false,
     autoFullScreen: false,
@@ -1695,6 +1697,21 @@ export function App(): JSX.Element {
   useEffect(() => {
     applyAccentColor(settings.appAccentColor);
   }, [settings.appAccentColor]);
+
+  useEffect(() => {
+    applyTheme(settings.appTheme);
+
+    if (settings.appTheme === "auto") {
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const handler = () => applyTheme("auto");
+      mediaQuery.addEventListener("change", handler);
+      return () => mediaQuery.removeEventListener("change", handler);
+    }
+  }, [settings.appTheme]);
+
+  useEffect(() => {
+    applyTranslucentUI(settings.translucentUI);
+  }, [settings.translucentUI]);
 
   useEffect(() => {
     if (!catalogActionNotice) return;

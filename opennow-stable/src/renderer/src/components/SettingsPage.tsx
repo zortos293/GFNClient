@@ -4170,6 +4170,39 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                 </div>
 
                 <div className="settings-row">
+                  <label className="settings-label" htmlFor="appTheme">
+                    {t("settings.interface.theme") || "Theme"}
+                    <span className="settings-hint">{t("settings.interface.themeHint") || "Choose a light, dark, or system-matching theme."}</span>
+                  </label>
+                  <SelectDropdown
+                    id="appTheme"
+                    value={settings.appTheme}
+                    options={[
+                      { value: "auto", label: t("settings.interface.themeAuto") || "Auto" },
+                      { value: "light", label: t("settings.interface.themeLight") || "Light" },
+                      { value: "dark", label: t("settings.interface.themeDark") || "Dark" },
+                    ]}
+                    onChange={(value) => handleChange("appTheme", value as any)}
+                    ariaLabel={t("settings.interface.theme") || "Theme"}
+                  />
+                </div>
+
+                <div className="settings-row">
+                  <label className="settings-label">
+                    {t("settings.interface.translucentUI") || "Translucent UI"}
+                    <span className="settings-hint">{t("settings.interface.translucentUIHint") || "Enable glassmorphism and translucent overlays."}</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      type="checkbox"
+                      checked={settings.translucentUI}
+                      onChange={(e) => handleChange("translucentUI", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+
+                <div className="settings-row">
                   <label className="settings-label">
                     {t("settings.interface.accentColor")}
                     <span className="settings-hint">{t("settings.interface.accentColorHint")}</span>

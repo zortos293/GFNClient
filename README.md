@@ -69,7 +69,7 @@ OpenNOW is a community-built Electron app for playing GeForce NOW from an open-s
 Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
 
 - iOS beta: [join TestFlight](https://testflight.apple.com/join/u1XPJKH2). The SwiftUI prototype currently lives on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS) under `ios/OpenNOWiOS/`; that folder is not present on this branch.
-- Android builds: download current test builds from [Discord](https://discord.gg/8EJYaJcNfD). iOS and Android are being migrated into their own repositories soon so this desktop repo can stay focused.
+- Android: download from [Google Play](https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow).
 - Nintendo Switch: a homebrew port is coming soon in [OpenCloudGaming/Opennow-homebrew](https://github.com/OpenCloudGaming/Opennow-homebrew), built on top of Moonlight.
 
 For macOS users looking for a more performant OpenNOW version, Jayian1890 maintains the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) repository.

@@ -39,6 +39,79 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun av1DropsChroma444BeforeLaunch() {
+        val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.EightBit444)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.AV1,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
+
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+    }
+
+    @Test
+    fun av1HdrDropsChroma444ButKeepsTenBit() {
+        val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit444, hdrEnabled = true)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.AV1,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
+
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+    }
+
+    @Test
+    fun streamPresetsApplyExpectedAndroidProfiles() {
+        val base = StreamSettings(aspectRatio = "21:9", resolution = "1680x720", codec = VideoCodec.AV1, colorQuality = ColorQuality.EightBit444)
+
+        val low = base.applyingStreamPreset(StreamPreset.LowDataSaver)
+        assertEquals("1680x720", low.resolution)
+        assertEquals("21:9", low.aspectRatio)
+        assertEquals(30, low.fps)
+        assertEquals(12, low.maxBitrateMbps)
+        assertEquals(VideoCodec.AV1, low.codec)
+        assertEquals(ColorQuality.EightBit420, low.colorQuality)
+
+        val medium = base.applyingStreamPreset(StreamPreset.Medium)
+        assertEquals("2560x1080", medium.resolution)
+        assertEquals(60, medium.fps)
+        assertEquals(35, medium.maxBitrateMbps)
+
+        val high = base.applyingStreamPreset(StreamPreset.High)
+        assertEquals("3440x1440", high.resolution)
+        assertEquals(360, high.fps)
+        assertEquals(75, high.maxBitrateMbps)
+    }
+
+    @Test
+    fun preservesUltimate360FpsForStableAndroidProfile() {
+        val adjusted = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 360, codec = VideoCodec.AV1)
+            .adjustedForDevice(
+                codecReport(
+                    VideoCodec.AV1,
+                    hardwareDecoder = true,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                ),
+            )
+
+        assertEquals(360, adjusted.fps)
+    }
+
+    @Test
     fun preservesTenBitWhenHdrIsEnabled() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, hdrEnabled = true)
             .adjustedForDevice(
@@ -274,6 +347,7 @@ class StreamSettingsDeviceAdjustmentTest {
             colorQuality = ColorQuality.TenBit420,
             hdrEnabled = true,
             enableCloudGsync = true,
+            streamSharpeningEnabled = true,
         ).androidSafeVideoFallback()
 
         assertEquals("1920x1080", fallback.resolution)
@@ -284,6 +358,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(ColorQuality.EightBit420, fallback.colorQuality)
         assertEquals(false, fallback.hdrEnabled)
         assertEquals(false, fallback.enableCloudGsync)
+        assertEquals(false, fallback.streamSharpeningEnabled)
     }
 
     @Test
@@ -314,6 +389,7 @@ class StreamSettingsDeviceAdjustmentTest {
             maxBitrateMbps = 90,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
+            streamSharpeningEnabled = true,
         ).adjustedForDevice(codecReport(VideoCodec.H265, hardwareDecoder = true, realtimeSafe = true, lowPower = true, tv = true))
 
         assertEquals(VideoCodec.H264, adjusted.codec)
@@ -322,6 +398,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("16:9", adjusted.aspectRatio)
         assertEquals(60, adjusted.fps)
         assertEquals(25, adjusted.maxBitrateMbps)
+        assertEquals(false, adjusted.streamSharpeningEnabled)
     }
 
     @Test
@@ -337,6 +414,28 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
         assertEquals("1680x720", adjusted.resolution)
         assertEquals("21:9", adjusted.aspectRatio)
+    }
+
+    @Test
+    fun disablesRendererSharpeningForAndroidTvLaunchProfiles() {
+        val adjusted = StreamSettings(
+            codec = VideoCodec.AV1,
+            maxBitrateMbps = 75,
+            streamSharpeningEnabled = true,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.AV1,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                tv = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+            ),
+        )
+
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+        assertEquals(35, adjusted.maxBitrateMbps)
+        assertEquals(false, adjusted.streamSharpeningEnabled)
     }
 
     @Test

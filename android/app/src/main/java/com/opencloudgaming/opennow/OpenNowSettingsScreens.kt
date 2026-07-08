@@ -1,6 +1,10 @@
 package com.opencloudgaming.opennow
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -23,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,12 +37,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -47,7 +55,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.roundToInt
 
 internal val SettingsBackground = Color(0xff090b0d)
@@ -60,6 +72,7 @@ internal val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 internal val APP_NAV_RAIL_WIDTH = 80.dp
 internal const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
 internal const val PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT = 2.0f
+private const val CATALOG_BACKGROUND_IMAGE_FILE = "catalog_background_image"
 
 internal data class SettingsChoiceOption(val value: String, val label: String)
 internal data class ChoiceMenuOption(
@@ -80,7 +93,7 @@ private enum class SettingsCategory(
     val summary: String,
     val iconRes: Int,
 ) {
-    General("General", "Updates, privacy, cache, and reset", R.drawable.ic_tab_settings),
+    General("General", "Updates, privacy, advanced options, reset", R.drawable.ic_tab_settings),
     Stream("Stream", "Resolution, FPS, codec, HDR, proxy", R.drawable.ic_tab_stream),
     Input("Input", "Mouse, keyboard, touch controls, rumble", R.drawable.ic_tab_library),
     Interface("Interface", "Color, cards, stats, controller UI", R.drawable.ic_tab_store),
@@ -352,13 +365,28 @@ private fun SettingsContent(
                 }
                 AndroidUpdatePanel(state = state, viewModel = viewModel)
             }
+    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, stringResource(R.string.settings_nerd_mode), "advanced", "advanced options", "nerd", "experimental", "diagnostics", "catalog", "cave", "background", "wallpaper", "image", "custom") {
+                AdvancedOptionsSettings(settings = settings, viewModel = viewModel)
+            }
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "Privacy", "privacy", "analytics", "telemetry", "posthog", "usage", "tracking", "opt out") {
                 SettingSwitch("Share usage analytics", !settings.analyticsOptOut) { enabled ->
                     viewModel.updateSettings(settings.copy(analyticsOptOut = !enabled))
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr") {
                 val fallbackMembershipTier = state.authSession?.user?.membershipTier
+                ChoiceMenuRow(
+                    label = stringResource(R.string.settings_stream_preset),
+                    options = StreamPreset.entries.map { preset ->
+                        ChoiceMenuOption(
+                            value = preset.name,
+                            label = streamPresetLabel(preset),
+                        )
+                    },
+                    selectedLabel = streamPresetLabel(settings.streamPreset),
+                ) { value ->
+                    viewModel.applyStreamPreset(StreamPreset.valueOf(value))
+                }
                 val resolutionChoices = streamResolutionChoicesForAspect(settings.stream.aspectRatio).ifEmpty {
                     streamResolutionChoicesForAspect("16:9")
                 }
@@ -412,8 +440,10 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToFill) { enabled ->
                     viewModel.updateSettings(settings.copy(stretchStreamToFill = enabled))
                 }
-                NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.toFloat(), 30f, 240f, 30f) {
-                    viewModel.updateStreamSettings { s -> s.copy(fps = it.roundToInt()) }
+                val maxFps = maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
+                NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.coerceAtMost(maxFps).toFloat(), 30f, maxFps.toFloat(), 30f) {
+                    val fps = it.roundToInt().coerceIn(30, maxFps)
+                    viewModel.updateStreamSettings { s -> s.copy(fps = fps) }
                 }
                 NumberSlider(stringResource(R.string.settings_bitrate), settings.stream.maxBitrateMbps.toFloat(), 1f, 150f, 1f) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
@@ -440,10 +470,31 @@ private fun SettingsContent(
                         "${settings.stream.codec.name} -> ${effectiveCodec.name}"
                     },
                 ) {
-                    viewModel.updateStreamSettings { s -> s.copy(codec = VideoCodec.valueOf(it)) }
+                    viewModel.updateStreamSettings { s ->
+                        s.copy(codec = VideoCodec.valueOf(it)).withCodecColorCompatibility()
+                    }
                 }
-                ChoiceRow(stringResource(R.string.settings_color), ColorQuality.entries.map { it.label }, settings.stream.colorQuality.label) { label ->
-                    viewModel.updateStreamSettings { s -> s.copy(colorQuality = ColorQuality.entries.first { it.label == label }) }
+                val effectiveColorQuality = settings.stream.withCodecColorCompatibility().colorQuality
+                ChoiceMenuRow(
+                    label = stringResource(R.string.settings_color),
+                    options = ColorQuality.entries.map { quality ->
+                        val available = quality.availableForCodec(settings.stream.codec)
+                        ChoiceMenuOption(
+                            value = quality.name,
+                            label = quality.label,
+                            enabled = available,
+                            badge = if (available) null else "Not for AV1",
+                        )
+                    },
+                    selectedLabel = if (effectiveColorQuality == settings.stream.colorQuality) {
+                        settings.stream.colorQuality.label
+                    } else {
+                        "${settings.stream.colorQuality.label} -> ${effectiveColorQuality.label}"
+                    },
+                ) { value ->
+                    viewModel.updateStreamSettings { s ->
+                        s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()
+                    }
                 }
                 val hdrAvailable = hasUltimateStreamingPlan(state.subscriptionInfo, fallbackMembershipTier)
                 SettingSwitch(
@@ -455,7 +506,7 @@ private fun SettingsContent(
                         s.copy(
                             hdrEnabled = enabled,
                             colorQuality = if (enabled && !s.colorQuality.name.startsWith("TenBit")) ColorQuality.TenBit420 else s.colorQuality,
-                        )
+                        ).withCodecColorCompatibility()
                     }
                 }
                 SettingSwitch("Stream sharpening", settings.stream.streamSharpeningEnabled) {
@@ -535,20 +586,13 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "server selector", "controller", "sounds", "button", "tone", "animations", "backdrop", "auto-load", "library", "session counter", "intro", "music", "queue", "stretch", "fill") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "position", "server selector", "controller", "sounds", "button", "tone", "animations", "backdrop", "tv", "safe area", "screen padding", "overscan", "auto-load", "library", "session counter", "intro", "music", "queue", "stretch", "fill") {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
                     accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
                     }
-                }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_nerd_mode),
-                    checked = settings.nerdMode,
-                    description = stringResource(R.string.settings_nerd_mode_desc),
-                ) {
-                    viewModel.updateSettings(settings.copy(nerdMode = it))
                 }
                 SettingSwitch(
                     label = stringResource(R.string.settings_expressive_ui),
@@ -558,35 +602,20 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(expressiveUi = it))
                 }
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_handheld_landscape_four_columns),
-                    checked = settings.handheldLandscapeFourColumnGrid,
-                    description = stringResource(R.string.settings_handheld_landscape_four_columns_desc),
-                ) {
-                    viewModel.updateSettings(settings.copy(handheldLandscapeFourColumnGrid = it))
-                }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_handheld_landscape_square_cards),
-                    checked = settings.handheldLandscapeSquareCards,
-                    description = stringResource(R.string.settings_handheld_landscape_square_cards_desc),
-                ) {
-                    viewModel.updateSettings(settings.copy(handheldLandscapeSquareCards = it))
-                }
-                if (settings.nerdMode) {
-                    SettingSwitch(
-                        label = stringResource(R.string.settings_nerd_catalog_background),
-                        checked = settings.nerdCatalogBackground,
-                        description = stringResource(R.string.settings_nerd_catalog_background_desc),
-                    ) {
-                        viewModel.updateSettings(settings.copy(nerdCatalogBackground = it))
-                    }
-                }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
                 NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, 0.82f, 1.08f, 0.02f) { value -> viewModel.updateSettings(settings.copy(posterSizeScale = value)) }
+                NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f) { value ->
+                    viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
+                }
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
                 ChoiceRow("Stats overlay style", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
                     StreamStatsStyle.entries.firstOrNull { it.label == label }?.let { style ->
                         viewModel.updateSettings(settings.copy(streamStatsStyle = style))
+                    }
+                }
+                ChoiceRow(stringResource(R.string.settings_stats_position), StreamStatsPosition.entries.map { it.label }, settings.streamStatsPosition.label) { label ->
+                    StreamStatsPosition.entries.firstOrNull { it.label == label }?.let { position ->
+                        viewModel.updateSettings(settings.copy(streamStatsPosition = position))
                     }
                 }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
@@ -676,6 +705,162 @@ private fun SettingsCategoryLanding(
 }
 
 @Composable
+private fun AdvancedOptionsSettings(settings: AppSettings, viewModel: OpenNowViewModel) {
+    SettingSwitch(
+        label = stringResource(R.string.settings_nerd_mode),
+        checked = settings.nerdMode,
+        description = stringResource(R.string.settings_nerd_mode_desc),
+    ) {
+        viewModel.updateSettings(settings.copy(nerdMode = it))
+    }
+    SettingSwitch(
+        label = stringResource(R.string.settings_nerd_catalog_background),
+        checked = settings.nerdCatalogBackground,
+        description = stringResource(R.string.settings_nerd_catalog_background_desc),
+    ) {
+        viewModel.updateSettings(settings.copy(nerdCatalogBackground = it))
+    }
+    if (settings.nerdCatalogBackground) {
+        CatalogBackgroundImageSetting(settings = settings, viewModel = viewModel)
+    }
+}
+
+@Composable
+private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: OpenNowViewModel) {
+    val context = LocalContext.current
+    val appContext = context.applicationContext
+    val currentSettings by rememberUpdatedState(settings)
+    val scope = rememberCoroutineScope()
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        takePersistableImageReadPermission(context, uri)
+        scope.launch {
+            val newUri = withContext(Dispatchers.IO) {
+                persistCatalogBackgroundImage(appContext, uri)
+            }
+            if (newUri != uri.toString()) {
+                releasePersistableImageReadPermission(context, uri.toString())
+            }
+            currentSettings.nerdCatalogBackgroundUri
+                ?.takeIf { it.isNotBlank() && it != newUri }
+                ?.let { releasePersistableImageReadPermission(context, it) }
+            viewModel.updateSettings(
+                currentSettings.copy(
+                    nerdCatalogBackground = true,
+                    nerdCatalogBackgroundUri = newUri,
+                ),
+            )
+        }
+    }
+    val customBackgroundUri = settings.nerdCatalogBackgroundUri?.takeIf { it.isNotBlank() }
+    val hasCustomBackground = customBackgroundUri != null
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        stringResource(R.string.settings_catalog_background_image),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (hasCustomBackground) {
+                            stringResource(R.string.settings_catalog_background_image_custom)
+                        } else {
+                            stringResource(R.string.settings_catalog_background_image_default)
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { picker.launch(arrayOf("image/*")) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResource(R.string.action_choose_image), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (hasCustomBackground) {
+                    OutlinedButton(
+                        onClick = {
+                            releasePersistableImageReadPermission(context, customBackgroundUri)
+                            deleteStoredCatalogBackgroundImage(appContext)
+                            viewModel.updateSettings(settings.copy(nerdCatalogBackgroundUri = null))
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.action_use_default), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun takePersistableImageReadPermission(context: android.content.Context, uri: Uri) {
+    runCatching {
+        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+}
+
+private fun persistCatalogBackgroundImage(context: android.content.Context, uri: Uri): String =
+    runCatching {
+        val target = File(context.filesDir, CATALOG_BACKGROUND_IMAGE_FILE)
+        val temp = File(context.cacheDir, "$CATALOG_BACKGROUND_IMAGE_FILE.tmp")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            temp.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        } ?: return uri.toString()
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+        Uri.fromFile(target).toString()
+    }.getOrElse {
+        uri.toString()
+    }
+
+private fun deleteStoredCatalogBackgroundImage(context: android.content.Context) {
+    runCatching {
+        File(context.filesDir, CATALOG_BACKGROUND_IMAGE_FILE).delete()
+        File(context.cacheDir, "$CATALOG_BACKGROUND_IMAGE_FILE.tmp").delete()
+    }
+}
+
+private fun releasePersistableImageReadPermission(context: android.content.Context, uriString: String) {
+    val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return
+    runCatching {
+        context.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+}
+
+@Composable
+private fun streamPresetLabel(preset: StreamPreset): String =
+    when (preset) {
+        StreamPreset.Custom -> stringResource(R.string.stream_preset_custom)
+        StreamPreset.LowDataSaver -> stringResource(R.string.stream_preset_low_data_saver)
+        StreamPreset.Medium -> stringResource(R.string.stream_preset_medium)
+        StreamPreset.High -> stringResource(R.string.stream_preset_high)
+    }
+
+@Composable
 private fun SettingsAccountCard(state: OpenNowUiState, onClick: () -> Unit) {
     val account = state.savedAccounts.firstOrNull { it.userId == state.authSession?.user?.userId }
         ?: state.savedAccounts.firstOrNull()
@@ -685,8 +870,8 @@ private fun SettingsAccountCard(state: OpenNowUiState, onClick: () -> Unit) {
     val email = account?.email?.takeIf { it.isNotBlank() }
         ?: state.authSession?.user?.email?.takeIf { it.isNotBlank() }
     val tier = state.subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() }
-        ?: account?.membershipTier?.takeIf { it.isNotBlank() }
         ?: state.authSession?.user?.membershipTier?.takeIf { it.isNotBlank() }
+        ?: account?.membershipTier?.takeIf { it.isNotBlank() }
     val detail = listOfNotNull(email, tier).joinToString(" - ").ifBlank {
         if (state.authSession == null && account == null) "Sign in to sync your GeForce NOW account" else "Manage account"
     }

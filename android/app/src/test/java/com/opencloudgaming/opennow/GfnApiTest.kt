@@ -93,6 +93,69 @@ class GfnApiTest {
     }
 
     @Test
+    fun claimRequestCarriesRequested120FpsMonitorSetting() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            aspectRatio = "16:9",
+            fps = 120,
+            maxBitrateMbps = 75,
+            codec = VideoCodec.H264,
+            colorQuality = ColorQuality.EightBit420,
+        )
+
+        val body = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
+        val monitor = body
+            .getValue("sessionRequestData").jsonObject
+            .getValue("clientRequestMonitorSettings").jsonArray
+            .single().jsonObject
+
+        assertEquals(120, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+    }
+
+    @Test
+    fun claimRequestCarriesRequested360FpsMonitorSetting() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            aspectRatio = "16:9",
+            fps = 360,
+            maxBitrateMbps = 75,
+            codec = VideoCodec.AV1,
+            colorQuality = ColorQuality.EightBit420,
+        )
+
+        val body = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
+        val monitor = body
+            .getValue("sessionRequestData").jsonObject
+            .getValue("clientRequestMonitorSettings").jsonArray
+            .single().jsonObject
+
+        assertEquals(360, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+    }
+
+    @Test
+    fun claimRequestDoesNotAdvertiseAv1Chroma444() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            aspectRatio = "16:9",
+            fps = 60,
+            codec = VideoCodec.AV1,
+            colorQuality = ColorQuality.EightBit444,
+        )
+
+        val body = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+        val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
+        val signature = sessionRequestData.getValue("metaData").jsonArray.firstNotNullOfOrNull { item ->
+            item.jsonObject.takeIf {
+                it["key"]?.jsonPrimitive?.contentOrNull == OPENNOW_STREAM_SETTINGS_METADATA_KEY
+            }?.get("value")?.jsonPrimitive?.contentOrNull
+        }
+
+        assertEquals(0, features.getValue("chromaFormat").jsonPrimitive.int)
+        assertTrue(signature?.contains("color=EightBit420") == true)
+    }
+
+    @Test
     fun activeSessionMonitorSettingsPreferActualTopLevelMonitor() {
         val session = OpenNowJson.parseToJsonElement(
             """

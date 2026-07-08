@@ -1,14 +1,17 @@
 package com.opencloudgaming.opennow
 
 import android.Manifest
+import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.util.Rational
 import android.view.Display
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -21,7 +24,9 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -40,9 +45,12 @@ class MainActivity : ComponentActivity() {
     private var lastStreamSystemUiInputReapplyMs = 0L
     private var defaultRequestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
     private var phoneStreamOrientationLocked = false
+    private var streamPictureInPictureReady = false
+    private var streamPictureInPictureAspectRatio = Rational(16, 9)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         defaultRequestedOrientation = requestedOrientation
         volumeControlStream = AudioManager.STREAM_MUSIC
         setContent {
@@ -55,6 +63,12 @@ class MainActivity : ComponentActivity() {
                 val streamActive = state.page == AppPage.Stream && state.streamStatus != "idle"
                 applyPhoneStreamOrientationLock(
                     shouldLockPhoneStreamLandscape(state, resources.configuration.smallestScreenWidthDp),
+                )
+                updateStreamPictureInPicture(
+                    ready = state.page == AppPage.Stream &&
+                        state.streamStatus == "streaming" &&
+                        state.streamSession?.isReadyForStream() == true,
+                    settings = state.activeStreamSettings ?: state.settings.stream,
                 )
                 applyStreamSystemUi(streamActive)
                 applyStreamDisplayRefreshRate(streamActive, state.activeStreamSettings?.fps ?: state.settings.stream.fps)
@@ -71,6 +85,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
         if (streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
             applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
@@ -105,6 +120,16 @@ class MainActivity : ComponentActivity() {
             return dispatchSyntheticStreamUiKey(normalizedAppUiKeyCode, event)
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        enterStreamPictureInPictureIfReady()
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
     }
 
     private fun KeyEvent.isAndroidVolumeKey(): Boolean =
@@ -195,7 +220,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(!active)
+            WindowCompat.setDecorFitsSystemWindows(window, false)
             window.insetsController?.let { controller ->
                 if (active) {
                     controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -216,6 +241,50 @@ class MainActivity : ComponentActivity() {
             } else {
                 0
             }
+        }
+    }
+
+    private fun updateStreamPictureInPicture(ready: Boolean, settings: StreamSettings) {
+        streamPictureInPictureReady = ready
+        streamPictureInPictureAspectRatio = pictureInPictureAspectRatioFor(settings)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && ready) {
+            runCatching {
+                setPictureInPictureParams(buildStreamPictureInPictureParams())
+            }.onFailure { error ->
+                Log.w(MAIN_ACTIVITY_LOG_TAG, "Unable to update stream picture-in-picture params", error)
+            }
+        }
+    }
+
+    private fun enterStreamPictureInPictureIfReady() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (!streamPictureInPictureReady || isInPictureInPictureMode) return
+        runCatching {
+            enterPictureInPictureMode(buildStreamPictureInPictureParams())
+        }.onFailure { error ->
+            Log.w(MAIN_ACTIVITY_LOG_TAG, "Unable to enter stream picture-in-picture", error)
+        }
+    }
+
+    private fun buildStreamPictureInPictureParams(): PictureInPictureParams =
+        PictureInPictureParams.Builder()
+            .setAspectRatio(streamPictureInPictureAspectRatio)
+            .apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    setAutoEnterEnabled(streamPictureInPictureReady)
+                    setSeamlessResizeEnabled(true)
+                }
+            }
+            .build()
+
+    private fun pictureInPictureAspectRatioFor(settings: StreamSettings): Rational {
+        val (width, height) = streamResolutionPixels(settings)
+        if (width <= 0 || height <= 0) return Rational(16, 9)
+        val ratio = width.toFloat() / height.toFloat()
+        return if (ratio in MIN_PIP_ASPECT_RATIO..MAX_PIP_ASPECT_RATIO) {
+            Rational(width, height)
+        } else {
+            Rational(16, 9)
         }
     }
 
@@ -270,13 +339,27 @@ class MainActivity : ComponentActivity() {
     private fun applyStreamDisplayRefreshRate(active: Boolean, requestedFps: Int, force: Boolean = false) {
         streamDisplayRefreshActive = active
         streamDisplayRefreshFps = requestedFps
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            DisplayRefreshDiagnostics.update(
+                active = active,
+                requestedFps = requestedFps,
+                currentMode = null,
+                selectedMode = null,
+                supportedModes = emptyList(),
+                preferredModeId = 0,
+                preferredRefreshRate = 0f,
+                applied = false,
+            )
+            return
+        }
 
         val display = window.decorView.display
+        val supportedModes = display?.supportedModes.orEmpty().map { it.toDisplayRefreshMode() }
+        val currentMode = display?.mode?.toDisplayRefreshMode()
         val selectedMode = if (active) {
             selectStreamDisplayMode(
-                supportedModes = display?.supportedModes.orEmpty().map { it.toDisplayRefreshMode() },
-                currentMode = display?.mode?.toDisplayRefreshMode(),
+                supportedModes = supportedModes,
+                currentMode = currentMode,
                 requestedFps = requestedFps,
             )
         } else {
@@ -289,16 +372,41 @@ class MainActivity : ComponentActivity() {
             attributes.preferredDisplayModeId == preferredModeId &&
             kotlin.math.abs(attributes.preferredRefreshRate - preferredRefreshRate) < 0.01f
         ) {
+            DisplayRefreshDiagnostics.update(
+                active = active,
+                requestedFps = requestedFps,
+                currentMode = currentMode,
+                selectedMode = selectedMode,
+                supportedModes = supportedModes,
+                preferredModeId = preferredModeId,
+                preferredRefreshRate = preferredRefreshRate,
+                applied = true,
+            )
             return
         }
+        var applied = false
+        var failure: Throwable? = null
         runCatching {
             window.attributes = attributes.apply {
                 preferredDisplayModeId = preferredModeId
                 this.preferredRefreshRate = preferredRefreshRate
             }
+            applied = true
         }.onFailure { error ->
+            failure = error
             Log.w(MAIN_ACTIVITY_LOG_TAG, "Unable to apply stream display refresh preference", error)
         }
+        DisplayRefreshDiagnostics.update(
+            active = active,
+            requestedFps = requestedFps,
+            currentMode = currentMode,
+            selectedMode = selectedMode,
+            supportedModes = supportedModes,
+            preferredModeId = preferredModeId,
+            preferredRefreshRate = preferredRefreshRate,
+            applied = applied,
+            error = failure,
+        )
     }
 
     private fun Display.Mode.toDisplayRefreshMode(): DisplayRefreshMode =
@@ -423,5 +531,7 @@ class MainActivity : ComponentActivity() {
         private const val MAIN_ACTIVITY_LOG_TAG = "OpenNOWMainActivity"
         private const val STREAM_SYSTEM_UI_ENFORCE_INTERVAL_MS = 500L
         private const val STREAM_SYSTEM_UI_INPUT_REAPPLY_MS = 250L
+        private const val MIN_PIP_ASPECT_RATIO = 1f / 2.39f
+        private const val MAX_PIP_ASPECT_RATIO = 2.39f
     }
 }

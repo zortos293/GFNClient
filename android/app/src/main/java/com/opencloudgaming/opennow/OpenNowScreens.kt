@@ -4,15 +4,13 @@ import android.app.Activity
 import android.content.Context
 import android.content.res.Configuration
 import android.content.Intent
-import android.graphics.Color as AndroidColor
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.hardware.input.InputManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.speech.RecognizerIntent
-import android.util.LruCache
+import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
@@ -75,9 +73,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -150,11 +150,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -194,16 +192,13 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
-import kotlinx.coroutines.Dispatchers
+import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
-import java.net.URL
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.floor
@@ -218,7 +213,8 @@ private val PanelAlt = Color(0xff171d22)
 private val TextPrimary = Color(0xffeef3f5)
 private val TextMuted = Color(0xff98a4aa)
 private val ChromeScrim = Color.Black.copy(alpha = 0.16f)
-private const val HANDHELD_CATALOG_WALLPAPER_URL = "https://wallpapercave.com/wp/wp9464307.jpg"
+private val TopBarCompactControlHeight = 30.dp
+private const val COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS = 5_000L
 private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
 private val UiAccent.color: Color
     get() = when (this) {
@@ -276,7 +272,11 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     val context = LocalContext.current
     val launchAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     val playIntroOnAppLaunch = remember { state.settings.streamIntroMusic }
+    val musicControlsEnabled = state.settings.streamIntroMusic || state.settings.queueReadyMusic
+    val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
     var launchIntroStarted by remember { mutableStateOf(false) }
+    var launchMusicMuted by remember { mutableStateOf(false) }
+    var launchMusicPlaying by remember { mutableStateOf(false) }
     var previousStreamStatus by remember { mutableStateOf(state.streamStatus) }
     var queuedForStartCue by remember { mutableStateOf(false) }
     var lastStartCueSessionId by remember { mutableStateOf<String?>(null) }
@@ -295,6 +295,7 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         playIntroOnAppLaunch,
         state.settings.streamIntroMusic,
         state.settings.queueReadyMusic,
+        launchMusicMuted,
         state.page,
         state.streamStatus,
         state.launchPhase,
@@ -303,7 +304,6 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         state.streamSession?.queuePosition,
         state.streamSession?.seatSetupStep,
     ) {
-        val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
         val sessionId = state.streamSession?.sessionId
         val queueReadyForStream =
             previousStreamStatus == "queue" &&
@@ -317,37 +317,82 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                 state.launchPhase.equals("Queue", ignoreCase = true)
         }
 
+        if (!musicControlsEnabled) {
+            launchIntroStarted = false
+            launchMusicMuted = false
+            launchAudioController.stopAll { launchMusicPlaying = it }
+            if (state.streamStatus == "idle") {
+                queuedForStartCue = false
+            }
+            return@LaunchedEffect
+        }
+        if (launchMusicMuted) {
+            launchAudioController.stopAll { launchMusicPlaying = it }
+            if (state.streamStatus == "idle") {
+                queuedForStartCue = false
+            }
+            return@LaunchedEffect
+        }
+
         if (!state.settings.streamIntroMusic) {
-            launchAudioController.stopIntro()
+            launchAudioController.stopIntro { launchMusicPlaying = it }
         }
         if (!state.settings.queueReadyMusic) {
-            launchAudioController.stopQueueReadyReminder()
+            launchAudioController.stopQueueReadyReminder { launchMusicPlaying = it }
         }
 
         if (!state.settings.streamIntroMusic && !state.settings.queueReadyMusic) {
-            launchAudioController.stopAll()
+            launchAudioController.stopAll { launchMusicPlaying = it }
         } else if (queueReadyForStream && queuedForStartCue) {
             lastStartCueSessionId = sessionId
             queuedForStartCue = false
-            launchAudioController.startQueueReadyReminder(enabled = state.settings.queueReadyMusic)
+            launchAudioController.startQueueReadyReminder(enabled = state.settings.queueReadyMusic) { launchMusicPlaying = it }
         } else if (playIntroOnAppLaunch && state.settings.streamIntroMusic && !streamActive) {
             if (!launchIntroStarted) {
                 launchIntroStarted = true
-                launchAudioController.startIntro(enabled = true) {}
+                launchAudioController.startIntro(enabled = true) { launchMusicPlaying = it }
             }
         } else {
-            launchAudioController.stopIntro()
+            launchAudioController.stopIntro { launchMusicPlaying = it }
         }
         if (state.streamStatus == "idle") {
             queuedForStartCue = false
         }
     }
+    val musicControl = TopBarMusicControl(
+        visible = musicControlsEnabled,
+        playing = launchMusicPlaying,
+        muted = launchMusicMuted,
+        onToggle = {
+            when {
+                launchMusicMuted -> {
+                    launchMusicMuted = false
+                    if (state.settings.streamIntroMusic && !streamActive) {
+                        launchIntroStarted = true
+                        launchAudioController.startIntro(enabled = true) { launchMusicPlaying = it }
+                    }
+                }
+                launchMusicPlaying -> {
+                    launchMusicMuted = true
+                    launchAudioController.stopAll { launchMusicPlaying = it }
+                }
+                state.settings.streamIntroMusic && !streamActive -> {
+                    launchIntroStarted = true
+                    launchAudioController.startIntro(enabled = true) { launchMusicPlaying = it }
+                }
+                else -> {
+                    launchMusicMuted = true
+                    launchAudioController.stopAll { launchMusicPlaying = it }
+                }
+            }
+        },
+    )
 
     OpenNowTheme(state.settings) {
         Box(Modifier.fillMaxSize()) {
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 when {
-                    state.authSession != null -> MainShell(state, viewModel)
+                    state.authSession != null -> MainShell(state, viewModel, musicControl)
                     else -> LoginScreen(state, viewModel)
                 }
             }
@@ -729,32 +774,93 @@ private fun isPhonePortrait(width: androidx.compose.ui.unit.Dp, height: androidx
     height >= width && minOf(width, height) < PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH
 
 @Composable
+private fun rememberPhysicalControllerConnected(enabled: Boolean): Boolean {
+    val context = LocalContext.current.applicationContext
+    var connected by remember { mutableStateOf(enabled && hasConnectedPhysicalController()) }
+    DisposableEffect(context, enabled) {
+        fun refresh() {
+            connected = enabled && hasConnectedPhysicalController()
+        }
+        refresh()
+        if (!enabled) {
+            onDispose {}
+        } else {
+            val inputManager = context.getSystemService(Context.INPUT_SERVICE) as? InputManager
+            val listener = object : InputManager.InputDeviceListener {
+                override fun onInputDeviceAdded(deviceId: Int) = refresh()
+                override fun onInputDeviceRemoved(deviceId: Int) = refresh()
+                override fun onInputDeviceChanged(deviceId: Int) = refresh()
+            }
+            inputManager?.registerInputDeviceListener(listener, null)
+            onDispose {
+                inputManager?.unregisterInputDeviceListener(listener)
+            }
+        }
+    }
+    return connected
+}
+
+private fun hasConnectedPhysicalController(): Boolean =
+    InputDevice.getDeviceIds().any { deviceId ->
+        AndroidControllerInput.isControllerDevice(InputDevice.getDevice(deviceId))
+    }
+
+@Composable
 private fun CatalogWallpaperBackdrop(
     settings: AppSettings,
     tvProfile: Boolean,
     width: Dp,
     height: Dp,
 ) {
-    if (!settings.nerdMode || !settings.nerdCatalogBackground || tvProfile || width <= height) {
+    val showBackdrop = settings.nerdCatalogBackground || tvProfile
+    if (!showBackdrop) {
         return
     }
+    val wallpaperSource = settings.nerdCatalogBackgroundUri?.takeIf { it.isNotBlank() }
+    val imageAlpha = when {
+        tvProfile -> 0.48f
+        width > height -> 0.72f
+        else -> 0.62f
+    }
+    val scrimAlpha = when {
+        tvProfile -> 0.48f
+        width > height -> 0.28f
+        else -> 0.36f
+    }
     Box(Modifier.fillMaxSize().clipToBounds()) {
-        UrlImage(
-            HANDHELD_CATALOG_WALLPAPER_URL,
-            Modifier
-                .matchParentSize()
-                .graphicsLayer(alpha = 0.72f),
-        )
+        CatalogDefaultWallpaperBackdrop(Modifier.matchParentSize())
+        if (wallpaperSource != null) {
+            UrlImage(
+                wallpaperSource,
+                Modifier
+                    .matchParentSize()
+                    .graphicsLayer(alpha = imageAlpha),
+            )
+        }
         Box(
             Modifier
                 .matchParentSize()
-                .background(Color.Black.copy(alpha = 0.28f)),
+                .background(Color.Black.copy(alpha = scrimAlpha)),
         )
     }
 }
 
 @Composable
-private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+private fun CatalogDefaultWallpaperBackdrop(modifier: Modifier = Modifier) {
+    Image(
+        painter = painterResource(R.drawable.catalog_default_background),
+        contentDescription = null,
+        modifier = modifier.background(Color(0xff07100b)),
+        contentScale = ContentScale.Crop,
+    )
+}
+
+@Composable
+private fun MainShell(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    musicControl: TopBarMusicControl,
+) {
     val context = LocalContext.current
     val inStream = state.page == AppPage.Stream
     val streamingActive = inStream && state.streamStatus != "idle"
@@ -806,6 +912,9 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         val portraitChrome = !inStream && maxHeight >= maxWidth
         val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
         val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
+        val storeControlsInTopBar = phoneLandscapeChrome && state.page == AppPage.Home
+        val libraryControlsInTopBar = phoneLandscapeChrome && state.page == AppPage.Library
+        val tvSafeAreaPadding = if (tvProfile && !inStream) state.settings.tvSafeAreaPaddingDp.dp else 0.dp
         LaunchedEffect(phoneLandscapeChrome, scrollChromePage) {
             if (!phoneLandscapeChrome || !scrollChromePage) {
                 phoneLandscapeScrollChromeHidden = false
@@ -880,6 +989,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 Modifier
                     .fillMaxSize()
                     .padding(padding)
+                    .padding(tvSafeAreaPadding)
                     .onPreviewKeyEvent { event ->
                         if (isNavigationToneKey(event)) {
                             navAudioController.playButtonTone(navigationToneEnabled)
@@ -915,8 +1025,42 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                 TopStatusBar(
                                     state = state,
                                     onResumeActiveSession = viewModel::resumeActiveSession,
+                                    musicControl = musicControl,
                                     showLogo = portraitChrome,
-                                )
+                                ) {
+                                    if (storeControlsInTopBar) {
+                                        StoreCatalogToolbar(
+                                            state = state,
+                                            onSortChange = viewModel::setCatalogSort,
+                                            onFilterToggle = viewModel::toggleCatalogFilter,
+                                            modifier = Modifier.widthIn(max = 220.dp),
+                                            compact = true,
+                                        )
+                                    } else if (libraryControlsInTopBar) {
+                                        val orderedLibraryGames = remember(state.libraryGames, state.settings.favoriteGameIds) {
+                                            favoriteOrderedGames(state.libraryGames, state.settings.favoriteGameIds)
+                                        }
+                                        val visibleLibraryGames = remember(orderedLibraryGames, state.librarySearch, state.libraryFilterIds) {
+                                            orderedLibraryGames.filter { game ->
+                                                gameMatchesSearch(game, state.librarySearch) &&
+                                                    gameMatchesLibraryFilters(game, state.libraryFilterIds)
+                                            }
+                                        }
+                                        val libraryFilterOptions = remember(orderedLibraryGames) {
+                                            libraryStoreFilterOptions(orderedLibraryGames)
+                                        }
+                                        LibraryFilterControls(
+                                            gameCount = visibleLibraryGames.size,
+                                            totalCount = state.libraryGames.size,
+                                            options = libraryFilterOptions,
+                                            selectedIds = state.libraryFilterIds,
+                                            onToggle = viewModel::toggleLibraryFilter,
+                                            modifier = Modifier.widthIn(max = 190.dp),
+                                            compact = true,
+                                            showSelectedChips = false,
+                                        )
+                                    }
+                                }
                             }
                         }
                         Box(
@@ -930,6 +1074,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                     viewModel = viewModel,
                                     tvProfile = tvProfile,
                                     hideChromeWhenScrolled = phoneLandscapeChrome,
+                                    controlsInTopBar = storeControlsInTopBar,
                                     searchRequested = visibleSearchTarget == SearchTarget.Store,
                                     onSearchDismissed = {
                                         if (visibleSearchTarget == SearchTarget.Store) visibleSearchTarget = null
@@ -941,6 +1086,7 @@ private fun MainShell(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                     viewModel = viewModel,
                                     tvProfile = tvProfile,
                                     hideChromeWhenScrolled = phoneLandscapeChrome,
+                                    controlsInTopBar = libraryControlsInTopBar,
                                     searchRequested = visibleSearchTarget == SearchTarget.Library,
                                     onSearchDismissed = {
                                         if (visibleSearchTarget == SearchTarget.Library) visibleSearchTarget = null
@@ -1024,6 +1170,7 @@ private fun AppNavigationRail(
     onSearch: (SearchTarget) -> Unit,
     onSettingsBack: () -> Unit,
 ) {
+    val compactAppIconHeader = showAppIcon && showSettingsBack
     Box(
         modifier = Modifier
             .width(APP_NAV_RAIL_WIDTH)
@@ -1044,16 +1191,27 @@ private fun AppNavigationRail(
                             .align(Alignment.TopCenter)
                             .fillMaxWidth()
                             .clickable { onNavigate(AppPage.Home) }
-                            .padding(top = 12.dp, bottom = 8.dp),
+                            .padding(
+                                top = if (compactAppIconHeader) 4.dp else 12.dp,
+                                bottom = if (compactAppIconHeader) 2.dp else 8.dp,
+                            ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        OpenNowAppIcon(if (largeIcons) 44.dp else 34.dp)
+                        OpenNowAppIcon(
+                            when {
+                                compactAppIconHeader && largeIcons -> 34.dp
+                                compactAppIconHeader -> 28.dp
+                                largeIcons -> 44.dp
+                                else -> 34.dp
+                            },
+                        )
                     }
                 }
                 Column(
                     modifier = Modifier
-                        .align(Alignment.Center)
-                        .fillMaxWidth(),
+                        .align(if (showSettingsBack) Alignment.BottomCenter else Alignment.Center)
+                        .fillMaxWidth()
+                        .padding(bottom = if (showSettingsBack) 8.dp else 0.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     if (!showAppIcon) {
@@ -1136,6 +1294,13 @@ private fun AppNavigationRailItem(selected: Boolean, onClick: () -> Unit, iconRe
     )
 }
 
+private data class TopBarMusicControl(
+    val visible: Boolean,
+    val playing: Boolean,
+    val muted: Boolean,
+    val onToggle: () -> Unit,
+)
+
 @Composable
 private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String) {
     NavigationBarItem(
@@ -1163,38 +1328,60 @@ private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconR
 private fun TopStatusBar(
     state: OpenNowUiState,
     onResumeActiveSession: () -> Unit,
+    musicControl: TopBarMusicControl,
     showLogo: Boolean = true,
+    content: @Composable RowScope.() -> Unit = {},
 ) {
+    val displayName = state.authSession?.user?.displayName ?: "OpenNOW"
+    val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
+    val barScrim = if (showLogo) ChromeScrim else Color.Transparent
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 6.dp),
+            .padding(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 5.dp),
         shape = RoundedCornerShape(24.dp),
-        color = ChromeScrim,
+        color = barScrim,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp,
     ) {
         Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (showLogo) {
-                OpenNowMark(34.dp)
-                Spacer(Modifier.width(10.dp))
+                OpenNowMark(30.dp)
+                Spacer(Modifier.width(8.dp))
             }
-            Column(Modifier.weight(1f)) {
-                Text(state.authSession?.user?.displayName ?: "OpenNOW", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
-                Text("$tier ${state.activeSession?.let { "  Active session ${it.sessionId.take(8)}" } ?: ""}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    listOf(displayName, tier).filter { it.isNotBlank() }.joinToString(" • "),
+                    color = TextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                content()
+                if (state.settings.nerdMode) {
+                    TopStatusDetails(state)
+                }
             }
-            if (state.settings.nerdMode) {
+            if (musicControl.visible) {
                 Spacer(Modifier.width(6.dp))
-                TopStatusDetails(state)
+                TopBarMusicButton(musicControl)
             }
             if (state.activeSession != null) {
                 Spacer(Modifier.width(6.dp))
-                ElevatedButton(onClick = onResumeActiveSession) {
-                    Text(stringResource(R.string.action_resume))
+                ElevatedButton(
+                    onClick = onResumeActiveSession,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                ) {
+                    Text(stringResource(R.string.action_resume), style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -1210,17 +1397,85 @@ private fun TopStatusDetails(state: OpenNowUiState) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Surface(
+            modifier = Modifier.height(TopBarCompactControlHeight),
             shape = RoundedCornerShape(999.dp),
-            color = PanelAlt.copy(alpha = 0.78f),
+            color = PanelAlt.copy(alpha = 0.9f),
             tonalElevation = 0.dp,
         ) {
-            Text(
-                summary,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                color = TextMuted,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            Box(Modifier.fillMaxHeight().padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    summary,
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TopBarMusicButton(control: TopBarMusicControl) {
+    val description = when {
+        control.muted -> "Music muted"
+        control.playing -> "Music playing"
+        else -> "Music ready"
+    }
+    Surface(
+        modifier = Modifier
+            .width(38.dp)
+            .height(TopBarCompactControlHeight)
+            .semantics { contentDescription = description }
+            .clickable(onClick = control.onToggle),
+        shape = RoundedCornerShape(999.dp),
+        color = if (control.muted) Color(0xff33181c).copy(alpha = 0.92f) else PanelAlt.copy(alpha = 0.78f),
+        tonalElevation = 0.dp,
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (control.muted) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_volume_off),
+                    contentDescription = null,
+                    tint = Color(0xffffb8bf),
+                    modifier = Modifier.size(17.dp),
+                )
+            } else {
+                MusicBars(playing = control.playing)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MusicBars(playing: Boolean, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "top-bar-music-bars")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 820, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "top-bar-music-bars-phase",
+    )
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(modifier.size(width = 18.dp, height = 16.dp)) {
+        val barWidth = size.width / 5.8f
+        val gap = (size.width - barWidth * 3f) / 2f
+        repeat(3) { index ->
+            val wave = if (playing) {
+                ((sin((phase.toDouble() * 6.283185307179586) + index * 1.35) + 1.0) / 2.0).toFloat()
+            } else {
+                0.36f + index * 0.12f
+            }
+            val barHeight = size.height * (0.32f + wave * 0.58f)
+            val left = index * (barWidth + gap)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(left, size.height - barHeight),
+                size = Size(barWidth, barHeight),
+                cornerRadius = CornerRadius(barWidth, barWidth),
             )
         }
     }
@@ -1396,6 +1651,7 @@ private fun HomeScreen(
     viewModel: OpenNowViewModel,
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
+    controlsInTopBar: Boolean,
     searchRequested: Boolean,
     onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
@@ -1434,7 +1690,12 @@ private fun HomeScreen(
             Column(
                 Modifier
                     .fillMaxSize()
-                    .padding(12.dp),
+                    .padding(
+                        start = 12.dp,
+                        top = if (controlsInTopBar) 4.dp else 12.dp,
+                        end = 12.dp,
+                        bottom = 12.dp,
+                    ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 AnimatedVisibility(visible = showSearch) {
@@ -1472,6 +1733,7 @@ private fun HomeScreen(
                                 state = state,
                                 onSortChange = viewModel::setCatalogSort,
                                 onFilterToggle = viewModel::toggleCatalogFilter,
+                                showToolbar = !controlsInTopBar,
                             )
                             RefreshingGamesPlaceholder(
                                 settings = state.settings,
@@ -1499,6 +1761,7 @@ private fun HomeScreen(
                             },
                             onClearFilters = viewModel::clearCatalogFilters,
                             gridState = gridState,
+                            showToolbar = !controlsInTopBar,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -1523,27 +1786,52 @@ private fun StoreScrollableControls(
     state: OpenNowUiState,
     onSortChange: (String) -> Unit,
     onFilterToggle: (String) -> Unit,
+    showToolbar: Boolean = true,
 ) {
     val filterGroups = catalogVisibleFilterGroups(state.catalogResult.filterGroups)
     val filterOptions = catalogFilterOptions(filterGroups)
+    val hasSelectedFilters = state.catalogFilterIds.isNotEmpty()
+    val hasError = !state.error.isNullOrBlank()
+    if (!showToolbar && !hasSelectedFilters && !hasError) return
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SortPicker(
-                options = state.catalogResult.sortOptions,
-                selected = state.catalogSortId,
-                onSelect = onSortChange,
-                modifier = Modifier.weight(1f),
+        if (showToolbar) {
+            StoreCatalogToolbar(
+                state = state,
+                onSortChange = onSortChange,
+                onFilterToggle = onFilterToggle,
+                modifier = Modifier.fillMaxWidth(),
             )
-            if (filterOptions.isNotEmpty()) {
-                FilterMenu(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
-            }
         }
         SelectedFilterChips(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle)
         InlineErrorNotice(error = state.error)
+    }
+}
+
+@Composable
+private fun StoreCatalogToolbar(
+    state: OpenNowUiState,
+    onSortChange: (String) -> Unit,
+    onFilterToggle: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
+    val filterGroups = catalogVisibleFilterGroups(state.catalogResult.filterGroups)
+    val filterOptions = catalogFilterOptions(filterGroups)
+    Row(
+        modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SortPicker(
+            options = state.catalogResult.sortOptions,
+            selected = state.catalogSortId,
+            onSelect = onSortChange,
+            modifier = Modifier.width(if (compact) 118.dp else 172.dp),
+            compact = compact,
+        )
+        if (filterOptions.isNotEmpty()) {
+            FilterMenu(options = filterOptions, selectedIds = state.catalogFilterIds, onToggle = onFilterToggle, compact = compact)
+        }
     }
 }
 
@@ -1614,6 +1902,7 @@ private fun LibraryScreen(
     viewModel: OpenNowViewModel,
     tvProfile: Boolean,
     hideChromeWhenScrolled: Boolean,
+    controlsInTopBar: Boolean,
     searchRequested: Boolean,
     onSearchDismissed: () -> Unit,
     onScrollChromeHiddenChange: (Boolean) -> Unit,
@@ -1654,7 +1943,17 @@ private fun LibraryScreen(
         modifier = Modifier.fillMaxSize(),
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(
+                        start = 12.dp,
+                        top = if (controlsInTopBar) 4.dp else 12.dp,
+                        end = 12.dp,
+                        bottom = 12.dp,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
                         modifier = Modifier.fillMaxWidth(),
@@ -1673,6 +1972,7 @@ private fun LibraryScreen(
                     options = filterOptions,
                     selectedIds = state.libraryFilterIds,
                     onToggle = viewModel::toggleLibraryFilter,
+                    showToolbar = !controlsInTopBar,
                 )
                 if (state.loadingGames && state.libraryGames.isEmpty()) {
                     RefreshingGamesPlaceholder(
@@ -1735,30 +2035,41 @@ private fun LibraryFilterControls(
     options: List<CatalogFilterOption>,
     selectedIds: List<String>,
     onToggle: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    showToolbar: Boolean = true,
+    showSelectedChips: Boolean = true,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = if (gameCount == totalCount) {
-                    stringResource(R.string.library_count, totalCount)
-                } else {
-                    "$gameCount / ${stringResource(R.string.library_count, totalCount)}"
-                },
-                color = TextMuted,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (options.isNotEmpty()) {
-                FilterMenu(options = options, selectedIds = selectedIds, onToggle = onToggle)
+    if (!showToolbar && (!showSelectedChips || selectedIds.isEmpty())) return
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (showToolbar) {
+            Row(
+                if (compact) Modifier else Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val countModifier = if (compact) Modifier else Modifier.weight(1f)
+                Text(
+                    text = if (gameCount == totalCount) {
+                        stringResource(R.string.library_count, totalCount)
+                    } else {
+                        "$gameCount / ${stringResource(R.string.library_count, totalCount)}"
+                    },
+                    color = TextMuted,
+                    style = if (compact) MaterialTheme.typography.labelSmall else MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Start,
+                    modifier = countModifier,
+                )
+                if (options.isNotEmpty()) {
+                    FilterMenu(options = options, selectedIds = selectedIds, onToggle = onToggle, compact = compact)
+                }
             }
         }
-        SelectedFilterChips(options = options, selectedIds = selectedIds, onToggle = onToggle)
+        if (showSelectedChips) {
+            SelectedFilterChips(options = options, selectedIds = selectedIds, onToggle = onToggle)
+        }
     }
 }
 
@@ -2257,11 +2568,12 @@ private fun StoreGameGrid(
     onClearSearch: () -> Unit,
     onClearFilters: () -> Unit,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    showToolbar: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     if (games.isEmpty()) {
         Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            StoreScrollableControls(state, onSortChange, onFilterToggle)
+            StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 val hasSearch = state.catalogSearch.isNotBlank()
                 val hasFilters = state.catalogFilterIds.isNotEmpty()
@@ -2286,6 +2598,7 @@ private fun StoreGameGrid(
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         LazyVerticalGrid(
@@ -2296,8 +2609,10 @@ private fun StoreGameGrid(
             horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
             verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
         ) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                StoreScrollableControls(state, onSortChange, onFilterToggle)
+            if (showControlsHeader) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
+                }
             }
             item(span = { GridItemSpan(maxLineSpan) }) {
                 StoreStartRails(
@@ -2606,26 +2921,24 @@ private fun gameGridSpec(
     settings: AppSettings,
     handheldLayout: Boolean,
 ): GameGridSpec {
-    val handheldFourColumn = landscapeLayout && handheldLayout && settings.handheldLandscapeFourColumnGrid
     val minimumPortraitColumns = if (!landscapeLayout && handheldLayout) 3 else 2
     val compactHorizontalSpacing = if (compact) 8.dp else 10.dp
     val compactVerticalSpacing = if (compact) 10.dp else 12.dp
-    val landscapeHorizontalSpacing = if (handheldFourColumn) 14.dp else compactHorizontalSpacing
-    val landscapeContentHorizontalPadding = if (handheldFourColumn) 8.dp else 4.dp
+    val landscapeHorizontalSpacing = if (handheldLayout) 10.dp else compactHorizontalSpacing
+    val landscapeContentHorizontalPadding = 4.dp
     return when {
         landscapeLayout -> GameGridSpec(
             columns = landscapePosterColumnCount(
                 maxWidth = maxWidth,
-                forceFourColumns = handheldFourColumn,
                 horizontalSpacing = landscapeHorizontalSpacing,
                 horizontalContentPadding = landscapeContentHorizontalPadding,
                 handheldLayout = handheldLayout,
             ),
             cardHeight = if (compact) 188.dp else 214.dp,
             horizontalSpacing = landscapeHorizontalSpacing,
-            verticalSpacing = if (handheldFourColumn) 16.dp else compactVerticalSpacing,
+            verticalSpacing = if (handheldLayout) 16.dp else compactVerticalSpacing,
             contentPadding = PaddingValues(horizontal = landscapeContentHorizontalPadding, vertical = 4.dp),
-            squareCards = handheldLayout && settings.handheldLandscapeSquareCards,
+            squareCards = handheldLayout,
         )
         compact -> GameGridSpec(
             columns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
@@ -2648,24 +2961,23 @@ private fun gameGridSpec(
 
 private fun landscapePosterColumnCount(
     maxWidth: androidx.compose.ui.unit.Dp,
-    forceFourColumns: Boolean,
     horizontalSpacing: Dp,
     horizontalContentPadding: Dp,
     handheldLayout: Boolean,
 ): Int {
     val minCardWidth = when {
-        forceFourColumns -> 118.dp
-        handheldLayout -> 136.dp
+        handheldLayout -> 96.dp
         else -> 150.dp
     }
     val preferredColumns = when {
-        forceFourColumns -> 4
+        handheldLayout && maxWidth >= 520.dp -> 6
+        handheldLayout -> 5
         maxWidth >= 1440.dp -> 8
         maxWidth >= 1050.dp -> 7
         maxWidth >= 520.dp -> 6
         else -> 5
     }
-    val minimumColumns = 3
+    val minimumColumns = if (handheldLayout) 4 else 3
     for (columns in preferredColumns downTo minimumColumns) {
         if (landscapeCardWidth(maxWidth, columns, horizontalSpacing, horizontalContentPadding) >= minCardWidth) {
             return columns
@@ -3972,6 +4284,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     val streamReady = session?.isReadyForStream() == true
+    val tvProfile = state.codecReport?.androidTvProfile == true
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile && streamReady)
+    val touchInputEnabled = !state.androidPictureInPictureActive
+    val touchControlsVisible = touchInputEnabled && state.settings.androidTouch.enabled && !(tvProfile && physicalControllerConnected)
     val sessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
     var timerNowMs by remember(session?.sessionId) { mutableStateOf(System.currentTimeMillis()) }
     val smartSessionLimit = smartSessionLimitFor(state.subscriptionInfo, state.authSession?.user?.membershipTier)
@@ -3984,9 +4300,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val streamSettings = launchStreamSettings.copy(
         mouseSensitivity = state.settings.stream.mouseSensitivity,
         mouseAcceleration = state.settings.stream.mouseAcceleration,
-        streamSharpeningEnabled = state.settings.stream.streamSharpeningEnabled,
+        streamSharpeningEnabled = launchStreamSettings.streamSharpeningEnabled && state.settings.stream.streamSharpeningEnabled,
         streamSharpeningAmount = state.settings.stream.streamSharpeningAmount,
     )
+    val statsAlignment = when (state.settings.streamStatsPosition) {
+        StreamStatsPosition.Left -> Alignment.TopStart
+        StreamStatsPosition.Right -> Alignment.TopEnd
+    }
     var resolutionMismatchStats by remember(session?.sessionId, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) { mutableStateOf(0) }
     var resolutionMismatchRestartRequested by remember(session?.sessionId, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) { mutableStateOf(false) }
     val dismissStreamGuide = {
@@ -4029,21 +4349,17 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 streamState = it
                 viewModel.recoverStreamSession(it)
             },
-            onStats = { streamStats = it },
+            onStats = {
+                streamStats = it
+                viewModel.updateStreamRuntimeStats(it)
+            },
         )
     }
 
     DisposableEffect(Unit) {
-        val window = activity?.window
         val decor = activity?.window?.decorView
-        val oldStatusBarColor = window?.statusBarColor
-        val oldNavigationBarColor = window?.navigationBarColor
-        window?.statusBarColor = AndroidColor.BLACK
-        window?.navigationBarColor = AndroidColor.BLACK
         NativeStreamInputRouter.attach(client)
         onDispose {
-            if (oldStatusBarColor != null) window.statusBarColor = oldStatusBarColor
-            if (oldNavigationBarColor != null) window.navigationBarColor = oldNavigationBarColor
             if (Build.VERSION.SDK_INT >= 26) {
                 decor?.releasePointerCapture()
             }
@@ -4104,12 +4420,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, state.settings.androidTouch.mousePad) {
-        NativeStreamInputRouter.setTouchMouseEnabled(streamReady && state.settings.androidTouch.mousePad)
+    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad) {
+        NativeStreamInputRouter.setTouchMouseEnabled(streamReady && touchInputEnabled && state.settings.androidTouch.mousePad)
     }
-    LaunchedEffect(streamReady, state.settings.androidTouch.mousePad, controlsOpen, exitConfirmOpen, keyboardOpen, streamGuideOpen, state.settings.androidTouch.enabled) {
+    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad, controlsOpen, exitConfirmOpen, keyboardOpen, streamGuideOpen, touchControlsVisible) {
         NativeStreamInputRouter.setCaptureAllTouch(
             streamReady &&
+                touchInputEnabled &&
                 state.settings.androidTouch.mousePad &&
                 !controlsOpen &&
                 !exitConfirmOpen &&
@@ -4124,6 +4441,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     }
     LaunchedEffect(state.settings.phoneRumbleFallback) {
         client.updateHapticsSettings(state.settings.phoneRumbleFallback)
+    }
+    LaunchedEffect(streamReady, tvProfile, session?.sessionId) {
+        client.updateControllerMouseAssistAutoArm(streamReady && tvProfile)
     }
     LaunchedEffect(session?.sessionId, session?.status, launchStreamSettings) {
         if (session != null && streamReady) {
@@ -4187,7 +4507,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 decodedResolution = streamStats.resolution,
                 serverNegotiatedResolution = session.negotiatedStreamProfile?.resolution,
                 hideExternalMousePointer = externalMousePassthroughActive,
-                touchMouseEnabled = state.settings.androidTouch.mousePad,
+                touchMouseEnabled = touchInputEnabled && state.settings.androidTouch.mousePad,
                 externalMouseRoot = activity?.window?.decorView,
                 onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
                 stretchToFill = stretchToFill,
@@ -4195,17 +4515,16 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             if (statsVisible) {
                 StreamStatsPill(
                     gameTitle = game?.title ?: "Stream",
-                    status = streamState,
                     streamStats = streamStats,
-                    audioMuted = audioMuted,
+                    streamSettings = launchStreamSettings,
                     style = state.settings.streamStatsStyle,
-                    modifier = Modifier.align(Alignment.TopStart),
+                    modifier = Modifier.align(statsAlignment),
                 )
             }
-            if (state.settings.androidTouch.enabled) {
+            if (touchControlsVisible) {
                 TouchOverlay(
                     client = client,
-                    touch = state.settings.androidTouch,
+                    touch = state.settings.androidTouch.copy(enabled = true),
                     onButtonTone = playButtonTone,
                     layoutEditing = touchLayoutEditing,
                     onLeftOffsetChange = { x, y ->
@@ -4229,7 +4548,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
                     StreamFirstLaunchGuide(
                         gameTitle = game?.title ?: "your game",
-                        touchControlsEnabled = state.settings.androidTouch.enabled,
+                        touchControlsEnabled = touchControlsVisible,
                         onOpenControls = {
                             playButtonTone()
                             dismissStreamGuide()
@@ -4269,6 +4588,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                     onStatsStyleCycle = {
                         viewModel.updateSettings(state.settings.copy(streamStatsStyle = state.settings.streamStatsStyle.next()))
+                    },
+                    onStatsPositionCycle = {
+                        viewModel.updateSettings(state.settings.copy(streamStatsPosition = state.settings.streamStatsPosition.next()))
                     },
                     onPhoneRumbleFallbackToggle = {
                         viewModel.updateSettings(state.settings.copy(phoneRumbleFallback = !state.settings.phoneRumbleFallback))
@@ -5028,6 +5350,7 @@ private fun StreamControlsPanel(
     onAudioToggle: () -> Unit,
     onStatsToggle: () -> Unit,
     onStatsStyleCycle: () -> Unit,
+    onStatsPositionCycle: () -> Unit,
     onPhoneRumbleFallbackToggle: () -> Unit,
     onTouchLayoutEditingToggle: () -> Unit,
     onKeyboardOpen: () -> Unit,
@@ -5146,6 +5469,10 @@ private fun StreamControlsPanel(
                     StreamControlAction("Stats style", settings.streamStatsStyle.label) {
                         onButtonTone()
                         onStatsStyleCycle()
+                    }
+                    StreamControlAction("Stats position", settings.streamStatsPosition.label) {
+                        onButtonTone()
+                        onStatsPositionCycle()
                     }
                     StreamControlSwitch("Stream sharpening", if (settings.stream.streamSharpeningEnabled) "On" else "Off", settings.stream.streamSharpeningEnabled) {
                         onButtonTone()
@@ -5371,13 +5698,13 @@ private fun StreamKeyboardBar(
 @Composable
 private fun StreamStatsPill(
     gameTitle: String,
-    status: String,
     streamStats: StreamRuntimeStats,
-    audioMuted: Boolean,
+    streamSettings: StreamSettings,
     style: StreamStatsStyle,
     modifier: Modifier = Modifier,
 ) {
     if (style == StreamStatsStyle.Compact) {
+        val deviceStatus = rememberCompactStreamDeviceStatus()
         Surface(
             modifier = modifier.padding(8.dp),
             shape = RoundedCornerShape(999.dp),
@@ -5391,50 +5718,189 @@ private fun StreamStatsPill(
             ) {
                 Text("FPS ${streamStats.fps?.toString() ?: "--"}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 Text("Ping ${streamStats.pingMs?.let { "${it}ms" } ?: "--"}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                Text("BW ${formatRuntimeBitrate(streamStats.bitrateKbps)}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                StreamBatteryIndicator(deviceStatus)
+                StreamNetworkIndicator(deviceStatus)
             }
         }
         return
     }
     Surface(
-        modifier = modifier.padding(10.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = Panel.copy(alpha = 0.8f),
-        tonalElevation = 4.dp,
+        modifier = modifier.padding(8.dp).widthIn(max = 560.dp),
+        shape = RoundedCornerShape(999.dp),
+        color = Panel.copy(alpha = 0.56f),
+        tonalElevation = 0.dp,
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            val statusParts = listOfNotNull(
-                status.takeUnless(::shouldHideStreamStatusText),
-                if (audioMuted) "audio muted" else "audio on",
-            )
-            Text(gameTitle, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                listOf(
-                    "FPS ${streamStats.fps?.toString() ?: "--"}",
-                    "Bitrate ${formatRuntimeBitrate(streamStats.bitrateKbps)}",
-                    "Ping ${streamStats.pingMs?.let { "${it}ms" } ?: "--"}",
-                    "Codec ${streamStats.codec ?: "--"}",
-                ).joinToString(" · "),
-                color = TextMuted,
-                style = MaterialTheme.typography.labelSmall,
-            )
-            streamStats.resolution?.let { resolution ->
-                Text(
-                    resolution,
-                    color = TextMuted,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Text(
-                statusParts.joinToString(" · "),
-                color = TextMuted,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        Text(
+            streamStatsDetailedLine(gameTitle, streamStats, streamSettings),
+            color = TextPrimary,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+        )
+    }
+}
+
+private data class CompactStreamDeviceStatus(
+    val batteryPercent: Int? = null,
+    val batteryCharging: Boolean = false,
+    val networkKind: AndroidNetworkKind = AndroidNetworkKind.Unknown,
+    val networkBars: Int? = null,
+)
+
+@Composable
+private fun rememberCompactStreamDeviceStatus(): CompactStreamDeviceStatus {
+    val context = LocalContext.current
+    val appContext = remember(context) { context.applicationContext }
+    var status by remember(appContext) { mutableStateOf(readCompactStreamDeviceStatus(appContext)) }
+    LaunchedEffect(appContext) {
+        while (true) {
+            status = readCompactStreamDeviceStatus(appContext)
+            delay(COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS)
+        }
+    }
+    return status
+}
+
+private fun readCompactStreamDeviceStatus(context: Context): CompactStreamDeviceStatus {
+    val diagnostics = AndroidRuntimeDiagnostics.snapshot(context)
+    return CompactStreamDeviceStatus(
+        batteryPercent = diagnostics.batteryPercent,
+        batteryCharging = diagnostics.batteryCharging,
+        networkKind = diagnostics.networkKind,
+        networkBars = diagnostics.networkSignalBars,
+    )
+}
+
+@Composable
+private fun StreamBatteryIndicator(status: CompactStreamDeviceStatus) {
+    val description = status.batteryPercent?.let { percent ->
+        "Battery $percent percent${if (status.batteryCharging) ", charging" else ""}"
+    } ?: "Battery unknown"
+    Row(
+        modifier = Modifier.semantics { contentDescription = description },
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CompactBatteryGlyph(status.batteryPercent, status.batteryCharging)
+        Text(
+            status.batteryPercent?.let { "$it%" } ?: "--%",
+            color = compactBatteryColor(status.batteryPercent, status.batteryCharging),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun CompactBatteryGlyph(percent: Int?, charging: Boolean) {
+    val fillColor = compactBatteryColor(percent, charging)
+    Canvas(Modifier.size(width = 22.dp, height = 12.dp)) {
+        val capGap = size.width * 0.03f
+        val capWidth = size.width * 0.08f
+        val bodyWidth = size.width - capGap - capWidth
+        val cornerRadius = size.height * 0.22f
+        drawRoundRect(
+            color = TextPrimary.copy(alpha = 0.24f),
+            topLeft = Offset.Zero,
+            size = Size(bodyWidth, size.height),
+            cornerRadius = CornerRadius(cornerRadius, cornerRadius),
+        )
+        val inset = size.height * 0.18f
+        val fillWidth = (bodyWidth - inset * 2f) * ((percent ?: 0).coerceIn(0, 100) / 100f)
+        if (fillWidth > 0f) {
+            drawRoundRect(
+                color = fillColor,
+                topLeft = Offset(inset, inset),
+                size = Size(fillWidth, size.height - inset * 2f),
+                cornerRadius = CornerRadius(cornerRadius * 0.7f, cornerRadius * 0.7f),
             )
         }
+        drawRoundRect(
+            color = TextPrimary.copy(alpha = 0.58f),
+            topLeft = Offset(bodyWidth + capGap, size.height * 0.32f),
+            size = Size(capWidth, size.height * 0.36f),
+            cornerRadius = CornerRadius(capWidth, capWidth),
+        )
+    }
+}
+
+private fun compactBatteryColor(percent: Int?, charging: Boolean): Color = when {
+    charging -> Green
+    percent == null -> TextMuted
+    percent <= 15 -> Color(0xffff8d8d)
+    percent <= 30 -> Color(0xffffc95a)
+    else -> TextPrimary
+}
+
+@Composable
+private fun StreamNetworkIndicator(status: CompactStreamDeviceStatus) {
+    val bars = status.networkBars?.coerceIn(0, 4)
+    val description = "${status.networkKind.label} signal ${bars?.toString() ?: "unknown"} bars"
+    Row(
+        modifier = Modifier.semantics { contentDescription = description },
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Text(
+            status.networkKind.label,
+            color = if (status.networkKind == AndroidNetworkKind.None) TextMuted else TextPrimary,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+        CompactSignalBars(bars)
+    }
+}
+
+@Composable
+private fun CompactSignalBars(bars: Int?) {
+    val activeBars = bars?.coerceIn(0, 4) ?: 0
+    Canvas(Modifier.size(width = 18.dp, height = 14.dp)) {
+        val gap = size.width * 0.1f
+        val barWidth = (size.width - gap * 3f) / 4f
+        repeat(4) { index ->
+            val barHeight = size.height * (0.32f + index * 0.16f)
+            val x = index * (barWidth + gap)
+            val y = size.height - barHeight
+            drawRoundRect(
+                color = if (index < activeBars) TextPrimary else TextPrimary.copy(alpha = 0.22f),
+                topLeft = Offset(x, y),
+                size = Size(barWidth, barHeight),
+                cornerRadius = CornerRadius(barWidth * 0.45f, barWidth * 0.45f),
+            )
+        }
+    }
+}
+
+private fun streamStatsDetailedLine(
+    gameTitle: String,
+    streamStats: StreamRuntimeStats,
+    streamSettings: StreamSettings,
+): String {
+    val fps = streamStats.fps?.let { "$it Fps" } ?: "${streamSettings.fps} Fps"
+    val bitrate = formatRuntimeBitrate(streamStats.bitrateKbps)
+    val resolution = streamStats.resolution
+        ?.let(::formatRuntimeResolution)
+        ?: formatRuntimeResolution(normalizeStreamResolutionForAspect(streamSettings.resolution, streamSettings.aspectRatio))
+    val codec = streamStats.codec?.takeIf { it.isNotBlank() } ?: streamSettings.codec.name
+    val ping = streamStats.pingMs?.let { "Ping ${it}ms" } ?: "Ping --"
+    return listOf(
+        gameTitle.ifBlank { "Game" },
+        "$fps @ $bitrate",
+        resolution,
+        streamSettings.aspectRatio,
+        codec,
+        ping,
+    ).joinToString(" • ")
+}
+
+private fun formatRuntimeResolution(resolution: String): String {
+    val parts = resolution.lowercase(Locale.US).split("x", limit = 2)
+    return if (parts.size == 2 && parts.all { it.trim().isNotBlank() }) {
+        "${parts[0].trim()}x${parts[1].trim()}"
+    } else {
+        resolution
     }
 }
 
@@ -7125,7 +7591,13 @@ private fun GamepadPillButton(
 }
 
 @Composable
-private fun SortPicker(options: List<CatalogSortOption>, selected: String, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun SortPicker(
+    options: List<CatalogSortOption>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
     val labels = options.ifEmpty { listOf(CatalogSortOption("relevance", "Relevance", "")) }
     val selectedLabel = labels.firstOrNull { it.id == selected }?.label ?: labels.first().label
     var expanded by remember { mutableStateOf(false) }
@@ -7134,15 +7606,20 @@ private fun SortPicker(options: List<CatalogSortOption>, selected: String, onSel
     Box(modifier) {
         OutlinedButton(
             onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth().height(40.dp),
+            modifier = Modifier.fillMaxWidth().height(if (compact) TopBarCompactControlHeight else 40.dp),
             shape = controlShape,
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = controlColor,
                 contentColor = TextPrimary,
             ),
-            contentPadding = PaddingValues(horizontal = 12.dp),
+            contentPadding = PaddingValues(horizontal = if (compact) 8.dp else 12.dp),
         ) {
-            Text("Sort: $selectedLabel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "Sort: $selectedLabel",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+            )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             labels.forEach { option ->
@@ -7185,55 +7662,40 @@ private fun catalogFilterOptions(groups: List<CatalogFilterGroup>): List<Catalog
     groups.flatMap { group -> group.options.take(if (group.id == "genre") 10 else group.options.size) }
 
 @Composable
-private fun FilterMenu(options: List<CatalogFilterOption>, selectedIds: List<String>, onToggle: (String) -> Unit) {
+private fun FilterMenu(
+    options: List<CatalogFilterOption>,
+    selectedIds: List<String>,
+    onToggle: (String) -> Unit,
+    compact: Boolean = false,
+) {
     var expanded by remember { mutableStateOf(false) }
     val filterControlShape = RoundedCornerShape(999.dp)
     val filterControlColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f)
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box {
-            OutlinedButton(
-                onClick = { expanded = true },
-                modifier = Modifier.height(40.dp),
-                shape = filterControlShape,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = filterControlColor,
-                    contentColor = TextPrimary,
-                ),
-                contentPadding = PaddingValues(horizontal = 12.dp),
-            ) {
-                Text(if (selectedIds.isEmpty()) "Filters" else "Filters (${selectedIds.size})", maxLines = 1)
-            }
-            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                options.forEach { option ->
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(if (option.id in selectedIds) "✓" else "", modifier = Modifier.width(24.dp))
-                                Text(option.label)
-                            }
-                        },
-                        onClick = { onToggle(option.id) },
-                    )
-                }
-            }
-        }
-        Box(
-            Modifier
-                .height(40.dp)
-                .clip(filterControlShape)
-                .background(filterControlColor)
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.Center,
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.height(if (compact) TopBarCompactControlHeight else 36.dp),
+            shape = filterControlShape,
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = filterControlColor,
+                contentColor = TextPrimary,
+            ),
+            contentPadding = PaddingValues(horizontal = 10.dp),
         ) {
-            Text(
-                "${options.size} available",
-                color = TextMuted,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-            )
+            Text(if (selectedIds.isEmpty()) "Filters" else "Filters ${selectedIds.size}", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(if (option.id in selectedIds) "✓" else "", modifier = Modifier.width(24.dp))
+                            Text(option.label)
+                        }
+                    },
+                    onClick = { onToggle(option.id) },
+                )
+            }
         }
     }
 }
@@ -7402,6 +7864,21 @@ private fun PrintedWasteOptionsColumn(
     onLaunch: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val zoneListState = rememberLazyListState()
+    val zoneListFocusRequester = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    fun selectZoneAt(index: Int) {
+        val next = zones.getOrNull(index) ?: return
+        onSelectZone(next.zoneId)
+        scope.launch {
+            zoneListState.animateScrollToItem(index)
+        }
+    }
+    LaunchedEffect(state.printedWasteLoading, state.printedWasteError, zones.size) {
+        if (!state.printedWasteLoading && state.printedWasteError == null && zones.isNotEmpty()) {
+            runCatching { zoneListFocusRequester.requestFocus() }
+        }
+    }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (state.printedWasteLoading) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -7424,7 +7901,44 @@ private fun PrintedWasteOptionsColumn(
                 }
             }
             LazyColumn(
-                modifier = Modifier.weight(1f),
+                state = zoneListState,
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(zoneListFocusRequester)
+                    .onPreviewKeyEvent { event ->
+                        if (isTvActivateKey(event)) {
+                            if (selectedZone != null) {
+                                onLaunch()
+                                true
+                            } else {
+                                false
+                            }
+                        } else if (event.type == KeyEventType.KeyDown) {
+                            val selectedIndex = zones.indexOfFirst { it.zoneId == selectedZoneId }.let { if (it >= 0) it else 0 }
+                            when (event.key) {
+                                Key.DirectionUp -> {
+                                    if (selectedIndex > 0) {
+                                        selectZoneAt(selectedIndex - 1)
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                Key.DirectionDown -> {
+                                    if (selectedIndex < zones.lastIndex) {
+                                        selectZoneAt(selectedIndex + 1)
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                }
+                                else -> false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    .focusable(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(zones, key = { it.zoneId }) { zoneOption ->
@@ -7592,72 +8106,70 @@ private sealed interface UrlImageState {
     data object Empty : UrlImageState
     data object Loading : UrlImageState
     data object Failed : UrlImageState
-    data class Loaded(val bitmap: ImageBitmap) : UrlImageState
+    data object Loaded : UrlImageState
 }
 
-private object UrlImageLoader {
-    private const val CACHE_SIZE_KB = 24 * 1024
-    private const val IMAGE_CONNECT_TIMEOUT_MS = 4_500
-    private const val IMAGE_READ_TIMEOUT_MS = 9_000
-    private val cache = object : LruCache<String, ImageBitmap>(CACHE_SIZE_KB) {
-        override fun sizeOf(key: String, value: ImageBitmap): Int =
-            ((value.width * value.height * 4) / 1024).coerceAtLeast(1)
-    }
-    private val semaphore = Semaphore(6)
-
-    suspend fun load(url: String): UrlImageState {
-        cached(url)?.let { return UrlImageState.Loaded(it) }
-        return semaphore.withPermit {
-            cached(url)?.let { return@withPermit UrlImageState.Loaded(it) }
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val connection = URL(url).openConnection().apply {
-                        connectTimeout = IMAGE_CONNECT_TIMEOUT_MS
-                        readTimeout = IMAGE_READ_TIMEOUT_MS
-                        useCaches = true
-                    }
-                    connection.getInputStream().buffered().use { stream ->
-                        val options = BitmapFactory.Options().apply {
-                            inPreferredConfig = Bitmap.Config.RGB_565
-                        }
-                        BitmapFactory.decodeStream(stream, null, options)?.asImageBitmap()
-                    }
-                }.getOrNull()?.also { bitmap ->
-                    put(url, bitmap)
-                }?.let(UrlImageState::Loaded) ?: UrlImageState.Failed
-            }
-        }
-    }
-
-    private fun cached(url: String): ImageBitmap? =
-        synchronized(cache) { cache.get(url) }
-
-    private fun put(url: String, bitmap: ImageBitmap) {
-        synchronized(cache) { cache.put(url, bitmap) }
+private fun imageDataForSource(source: String): Any? {
+    val key = source.trim()
+    if (key.isBlank()) return null
+    val uri = runCatching { Uri.parse(key) }.getOrNull() ?: return null
+    val scheme = uri.scheme.orEmpty().lowercase(Locale.US)
+    return when {
+        scheme == "http" || scheme == "https" -> key
+        scheme == "content" || scheme == "android.resource" -> uri
+        scheme == "file" -> uri.path?.let(::File)?.takeIf { it.isFile && it.canRead() } ?: uri
+        scheme.isBlank() && key.startsWith("/") -> File(key).takeIf { it.isFile && it.canRead() }
+        else -> uri
     }
 }
 
 @Composable
-internal fun UrlImage(url: String?, modifier: Modifier = Modifier) {
-    val imageState by produceState<UrlImageState>(
-        initialValue = if (url.isNullOrBlank()) UrlImageState.Empty else UrlImageState.Loading,
-        key1 = url,
-    ) {
-        value = if (url.isNullOrBlank()) {
-            UrlImageState.Empty
-        } else {
-            UrlImageLoader.load(url)
+internal fun UrlImage(url: String?, modifier: Modifier = Modifier, fallbackUrl: String? = null) {
+    val source = url?.trim().orEmpty()
+    val fallbackSource = fallbackUrl?.trim()?.takeIf { it.isNotBlank() && it != source }
+    var activeSource by remember(source, fallbackSource) {
+        mutableStateOf(source.takeIf { it.isNotBlank() } ?: fallbackSource)
+    }
+    var imageState by remember(source, fallbackSource) {
+        mutableStateOf(if (activeSource == null) UrlImageState.Empty else UrlImageState.Loading)
+    }
+    val imageData = remember(activeSource) { activeSource?.let(::imageDataForSource) }
+    LaunchedEffect(activeSource, imageData, fallbackSource, source) {
+        if (activeSource == null) {
+            imageState = UrlImageState.Empty
+        } else if (imageData == null) {
+            if (activeSource == source && fallbackSource != null) {
+                activeSource = fallbackSource
+                imageState = UrlImageState.Loading
+            } else {
+                imageState = UrlImageState.Failed
+            }
         }
     }
     Box(modifier.background(Color(0xff102015)), contentAlignment = Alignment.Center) {
-        when (val state = imageState) {
+        if (imageData != null) {
+            key(activeSource) {
+                AsyncImage(
+                    model = imageData,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    onLoading = { imageState = UrlImageState.Loading },
+                    onSuccess = { imageState = UrlImageState.Loaded },
+                    onError = {
+                        if (activeSource == source && fallbackSource != null) {
+                            activeSource = fallbackSource
+                            imageState = UrlImageState.Loading
+                        } else {
+                            imageState = UrlImageState.Failed
+                        }
+                    },
+                )
+            }
+        }
+        when (imageState) {
             UrlImageState.Loading -> LoadingShimmer(Modifier.fillMaxSize())
-            is UrlImageState.Loaded -> Image(
-                bitmap = state.bitmap,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
+            UrlImageState.Loaded -> Unit
             UrlImageState.Empty,
             UrlImageState.Failed,
             -> OpenNowMark(42.dp)

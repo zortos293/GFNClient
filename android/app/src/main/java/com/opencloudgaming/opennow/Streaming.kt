@@ -1168,6 +1168,39 @@ internal object AndroidControllerInput {
     private fun Int.hasSource(source: Int): Boolean = (this and source) == source
 }
 
+internal data class ControllerMouseDelta(
+    val dx: Int,
+    val dy: Int,
+)
+
+internal object AndroidControllerMouseAssist {
+    fun mouseDelta(stickX: Float, stickY: Float): ControllerMouseDelta? {
+        val x = stickX.coerceIn(-1f, 1f)
+        val y = stickY.coerceIn(-1f, 1f)
+        val magnitude = sqrt(x * x + y * y).coerceIn(0f, 1f)
+        if (magnitude < 0.001f) return null
+        val speed = CONTROLLER_MOUSE_BASE_DELTA_PX + CONTROLLER_MOUSE_ACCEL_DELTA_PX * magnitude * magnitude
+        val dx = (x * speed).roundToInt()
+        val dy = (y * speed).roundToInt()
+        return if (dx != 0 || dy != 0) ControllerMouseDelta(dx, dy) else null
+    }
+
+    fun togglesAssist(buttonMask: Int, pressed: Boolean): Boolean =
+        pressed && buttonMask == GamepadButtonMapping.RIGHT_THUMB
+
+    fun mouseButtonForGamepad(buttonMask: Int): Int? =
+        when (buttonMask) {
+            GamepadButtonMapping.A -> 1
+            else -> null
+        }
+
+    fun mouseButtonForTrigger(left: Boolean): Int =
+        if (left) 2 else 1
+
+    private const val CONTROLLER_MOUSE_BASE_DELTA_PX = 7f
+    private const val CONTROLLER_MOUSE_ACCEL_DELTA_PX = 34f
+}
+
 internal data class AndroidGamepadRawAxes(
     val x: Float = 0f,
     val y: Float = 0f,
@@ -1918,6 +1951,12 @@ class NativeStreamClient(
     private var lastLeftStickY = 0
     private var lastRightStickX = 0
     private var lastRightStickY = 0
+    private var controllerMouseAutoArmOnStart = false
+    private var controllerMouseAssistActive = false
+    private var controllerMouseAssistAutoArmed = false
+    private var controllerMouseMoveLogged = false
+    private var controllerMouseLeftButtonDown = false
+    private var controllerMouseRightButtonDown = false
     private var mouseLastDeviceId = Int.MIN_VALUE
     private var mouseLastSource = 0
     private var mouseLastX = 0f
@@ -2032,6 +2071,13 @@ class NativeStreamClient(
         updateHapticsAdvertisement(force = true)
     }
 
+    fun updateControllerMouseAssistAutoArm(enabled: Boolean) {
+        controllerMouseAutoArmOnStart = enabled
+        if (!enabled) {
+            setControllerMouseAssistActive(false)
+        }
+    }
+
     fun start(session: SessionInfo, settings: StreamSettings) {
         this.session = session
         this.settings = settings
@@ -2044,6 +2090,7 @@ class NativeStreamClient(
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
         closeTransport(clearInputState = false)
+        armControllerMouseAssistForSession()
         recordStreamDiagnostic(
             "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps}",
         )
@@ -2096,6 +2143,11 @@ class NativeStreamClient(
         lastLeftStickY = 0
         lastRightStickX = 0
         lastRightStickY = 0
+        controllerMouseAssistActive = false
+        controllerMouseAssistAutoArmed = false
+        controllerMouseMoveLogged = false
+        controllerMouseLeftButtonDown = false
+        controllerMouseRightButtonDown = false
         activeControllerId = 0
         controllerSlots.clear()
         mousePositionValid = false
@@ -2341,16 +2393,67 @@ class NativeStreamClient(
     }
 
     fun setTouchMouseButton(pressed: Boolean): Boolean {
+        return sendMouseButton(button = 1, pressed = pressed, source = "touch mouse")
+    }
+
+    private fun sendMouseButton(button: Int, pressed: Boolean, source: String): Boolean {
         val packet = inputEncoder.encodeMouseButton(
             if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
-            1,
+            button,
         )
         val reliableSent = sendInput(packet, partiallyReliable = false)
         val partialSent = sendInput(packet, partiallyReliable = true)
         NativeInputDiagnostics.add(
-            "touch mouse button ${if (pressed) "down" else "up"} reliableSent=$reliableSent partialSent=$partialSent reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+            "$source button=$button ${if (pressed) "down" else "up"} reliableSent=$reliableSent partialSent=$partialSent reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
         )
         return reliableSent || partialSent
+    }
+
+    private fun armControllerMouseAssistForSession() {
+        if (!controllerMouseAutoArmOnStart) return
+        controllerMouseAssistActive = true
+        controllerMouseAssistAutoArmed = true
+        controllerMouseMoveLogged = false
+        NativeInputDiagnostics.add("controller mouse assist auto-armed for Android TV")
+    }
+
+    private fun setControllerMouseAssistActive(active: Boolean, autoArmed: Boolean = false) {
+        if (controllerMouseAssistActive == active && controllerMouseAssistAutoArmed == (autoArmed && active)) return
+        if (!active) releaseControllerMouseButtons()
+        controllerMouseAssistActive = active
+        controllerMouseAssistAutoArmed = autoArmed && active
+        controllerMouseMoveLogged = false
+        NativeInputDiagnostics.add("controller mouse assist ${if (active) "enabled" else "disabled"} auto=$controllerMouseAssistAutoArmed")
+    }
+
+    private fun releaseControllerMouseButtons() {
+        if (controllerMouseLeftButtonDown) {
+            controllerMouseLeftButtonDown = false
+            sendMouseButton(button = 1, pressed = false, source = "controller mouse")
+        }
+        if (controllerMouseRightButtonDown) {
+            controllerMouseRightButtonDown = false
+            sendMouseButton(button = 2, pressed = false, source = "controller mouse")
+        }
+    }
+
+    private fun setControllerMouseButton(button: Int, pressed: Boolean): Boolean {
+        when (button) {
+            1 -> {
+                if (controllerMouseLeftButtonDown == pressed) return true
+                controllerMouseLeftButtonDown = pressed
+            }
+            2 -> {
+                if (controllerMouseRightButtonDown == pressed) return true
+                controllerMouseRightButtonDown = pressed
+            }
+            else -> return false
+        }
+        val sent = sendMouseButton(button = button, pressed = pressed, source = "controller mouse")
+        if (!pressed && controllerMouseAssistAutoArmed && button == 1) {
+            setControllerMouseAssistActive(false)
+        }
+        return sent
     }
 
     fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
@@ -3148,7 +3251,8 @@ class NativeStreamClient(
         lastLeftStickY = normalizeToInt16(-left.second)
         lastRightStickX = normalizeToInt16(right.first)
         lastRightStickY = normalizeToInt16(-right.second)
-        return sendCurrentGamepadState(controllerId = controllerId)
+        val mouseSent = sendControllerMouseMove(right.first, right.second)
+        return sendCurrentGamepadState(controllerId = controllerId) || mouseSent
     }
 
     private fun dispatchGamepadKey(event: KeyEvent): Boolean {
@@ -3166,10 +3270,11 @@ class NativeStreamClient(
             }
             physicalControllerConnected = true
             physicalControllerActive = true
+            val mouseSent = handleControllerMouseButton(mask, pressed)
             physicalButtons = if (pressed) physicalButtons or mask else physicalButtons and mask.inv()
             val sent = sendCurrentGamepadState(controllerId = activeControllerId)
             updateGuideAutoRelease(mask, pressed, activeControllerId)
-            return sent
+            return sent || mouseSent
         }
         when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L2 -> {
@@ -3181,7 +3286,8 @@ class NativeStreamClient(
                 physicalControllerActive = true
                 physicalLeftTriggerButtonPressed = pressed
                 lastLeftTrigger = if (pressed) 255 else 0
-                return sendCurrentGamepadState(controllerId = activeControllerId)
+                val mouseSent = handleControllerMouseTrigger(left = true, pressed = pressed)
+                return sendCurrentGamepadState(controllerId = activeControllerId) || mouseSent
             }
             KeyEvent.KEYCODE_BUTTON_R2 -> {
                 activeControllerId = controllerIdFor(event)
@@ -3192,10 +3298,37 @@ class NativeStreamClient(
                 physicalControllerActive = true
                 physicalRightTriggerButtonPressed = pressed
                 lastRightTrigger = if (pressed) 255 else 0
-                return sendCurrentGamepadState(controllerId = activeControllerId)
+                val mouseSent = handleControllerMouseTrigger(left = false, pressed = pressed)
+                return sendCurrentGamepadState(controllerId = activeControllerId) || mouseSent
             }
         }
         return false
+    }
+
+    private fun sendControllerMouseMove(stickX: Float, stickY: Float): Boolean {
+        if (!controllerMouseAssistActive) return false
+        val delta = AndroidControllerMouseAssist.mouseDelta(stickX, stickY) ?: return false
+        val sent = sendTouchMouseMove(delta.dx, delta.dy)
+        if (sent && !controllerMouseMoveLogged) {
+            controllerMouseMoveLogged = true
+            NativeInputDiagnostics.add("controller mouse move sent dx=${delta.dx} dy=${delta.dy} auto=$controllerMouseAssistAutoArmed")
+        }
+        return sent
+    }
+
+    private fun handleControllerMouseButton(buttonMask: Int, pressed: Boolean): Boolean {
+        if (AndroidControllerMouseAssist.togglesAssist(buttonMask, pressed)) {
+            setControllerMouseAssistActive(!controllerMouseAssistActive)
+            return true
+        }
+        if (!controllerMouseAssistActive) return false
+        val mouseButton = AndroidControllerMouseAssist.mouseButtonForGamepad(buttonMask) ?: return false
+        return setControllerMouseButton(mouseButton, pressed)
+    }
+
+    private fun handleControllerMouseTrigger(left: Boolean, pressed: Boolean): Boolean {
+        if (!controllerMouseAssistActive) return false
+        return setControllerMouseButton(AndroidControllerMouseAssist.mouseButtonForTrigger(left), pressed)
     }
 
     private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
@@ -3339,13 +3472,17 @@ class NativeStreamClient(
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
         if (reliableInput?.state() != DataChannel.State.OPEN) return
-        val enabled = hapticsOutputAvailable()
         val now = SystemClock.elapsedRealtime()
+        if (!force && hapticsAdvertised != null && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
+        val enabled = hapticsOutputAvailable()
+        val changed = hapticsAdvertised != enabled
         if (!force && hapticsAdvertised == enabled && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
         if (sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))) {
             hapticsAdvertised = enabled
             lastHapticsAdvertisementAtMs = now
-            NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled force=$force")
+            if (force || changed) {
+                NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled force=$force")
+            }
         }
     }
 
@@ -4006,7 +4143,7 @@ object SdpTools {
             }
             if (is240Fps) {
                 add("a=video.enableNextCaptureMode:1")
-                add("a=vqos.maxStreamFpsEstimate:240")
+                add("a=vqos.maxStreamFpsEstimate:${settings.fps}")
                 add("a=video.videoSplitEncodeStripsPerFrame:3")
                 add("a=video.updateSplitEncodeStateDynamically:1")
                 add("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535")

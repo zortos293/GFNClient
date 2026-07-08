@@ -186,14 +186,15 @@ private data class StreamRequestProfile(
 )
 
 private fun StreamSettings.requestProfile(): StreamRequestProfile {
-    val (width, height) = streamResolutionPixels(this)
-    val hdrEnabled = hdrEnabled
+    val compatible = withCodecColorCompatibility()
+    val (width, height) = streamResolutionPixels(compatible)
+    val hdrEnabled = compatible.hdrEnabled
     return StreamRequestProfile(
         width = width,
         height = height,
         hdrEnabled = hdrEnabled,
-        bitDepth = if (hdrEnabled || colorQuality.name.startsWith("TenBit")) 10 else 0,
-        chroma = if (colorQuality == ColorQuality.EightBit444 || colorQuality == ColorQuality.TenBit444) 2 else 0,
+        bitDepth = if (hdrEnabled || compatible.colorQuality.name.startsWith("TenBit")) 10 else 0,
+        chroma = if (compatible.colorQuality == ColorQuality.EightBit444 || compatible.colorQuality == ColorQuality.TenBit444) 2 else 0,
     )
 }
 

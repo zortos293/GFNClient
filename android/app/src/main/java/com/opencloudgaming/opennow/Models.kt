@@ -28,6 +28,21 @@ enum class ColorQuality {
 }
 
 @Serializable
+enum class StreamPreset {
+    @kotlinx.serialization.SerialName("custom")
+    Custom,
+
+    @kotlinx.serialization.SerialName("low_data_saver")
+    LowDataSaver,
+
+    @kotlinx.serialization.SerialName("medium")
+    Medium,
+
+    @kotlinx.serialization.SerialName("high")
+    High,
+}
+
+@Serializable
 enum class MicrophoneMode {
     @kotlinx.serialization.SerialName("disabled")
     Disabled,
@@ -53,6 +68,12 @@ enum class UiAccent {
 enum class StreamStatsStyle {
     Compact,
     Detailed,
+}
+
+@Serializable
+enum class StreamStatsPosition {
+    Left,
+    Right,
 }
 
 enum class SessionTimerMode {
@@ -132,11 +153,14 @@ data class AndroidTouchSettings(
 @Serializable
 data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
+    val streamPreset: StreamPreset = StreamPreset.Custom,
     val posterSizeScale: Float = 1f,
     val compactGameCards: Boolean = true,
     val handheldLandscapeFourColumnGrid: Boolean = false,
     val handheldLandscapeSquareCards: Boolean = false,
     val nerdCatalogBackground: Boolean = false,
+    val nerdCatalogBackgroundUri: String? = null,
+    val tvSafeAreaPaddingDp: Float = 24f,
     val showGameStoreLabels: Boolean = true,
     val expressiveUi: Boolean = true,
     val dynamicColor: Boolean = false,
@@ -146,6 +170,7 @@ data class AppSettings(
     val showAntiAfkIndicator: Boolean = true,
     val showStatsOnLaunch: Boolean = false,
     val streamStatsStyle: StreamStatsStyle = StreamStatsStyle.Compact,
+    val streamStatsPosition: StreamStatsPosition = StreamStatsPosition.Right,
     val phoneRumbleFallback: Boolean = true,
     val hideServerSelector: Boolean = false,
     val controllerMode: Boolean = false,
@@ -280,19 +305,20 @@ internal fun parseResolutionPixels(value: String): Pair<Int, Int> {
 }
 
 internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
-    val (width, height) = streamResolutionPixels(settings)
+    val compatible = settings.withCodecColorCompatibility()
+    val (width, height) = streamResolutionPixels(compatible)
     return listOf(
         "opennow-android-stream-v1",
         "res=${width}x$height",
-        "fps=${settings.fps}",
-        "bitrate=${settings.maxBitrateMbps}",
-        "codec=${settings.codec.name}",
-        "color=${settings.colorQuality.name}",
-        "hdr=${if (settings.hdrEnabled) 1 else 0}",
-        "l4s=${if (settings.enableL4S) 1 else 0}",
-        "gsync=${if (settings.enableCloudGsync) 1 else 0}",
-        "keyboard=${settings.keyboardLayout.trim()}",
-        "language=${settings.gameLanguage.trim()}",
+        "fps=${compatible.fps}",
+        "bitrate=${compatible.maxBitrateMbps}",
+        "codec=${compatible.codec.name}",
+        "color=${compatible.colorQuality.name}",
+        "hdr=${if (compatible.hdrEnabled) 1 else 0}",
+        "l4s=${if (compatible.enableL4S) 1 else 0}",
+        "gsync=${if (compatible.enableCloudGsync) 1 else 0}",
+        "keyboard=${compatible.keyboardLayout.trim()}",
+        "language=${compatible.gameLanguage.trim()}",
     ).joinToString(";")
 }
 
@@ -347,6 +373,15 @@ internal fun hasUltimateStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallb
     streamResolutionPlanRank(planForMembershipTier(subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier)) >=
         streamResolutionPlanRank(StreamResolutionPlan.Ultimate)
 
+internal fun maxStreamFpsFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Int =
+    if (hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) 360 else 60
+
+internal fun StreamSettings.withFpsAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
+    val maxFps = maxStreamFpsFor(subscriptionInfo, fallbackMembershipTier)
+    val allowedFps = fps.coerceIn(30, maxFps)
+    return if (allowedFps == fps) this else copy(fps = allowedFps)
+}
+
 internal fun smartSessionLimitFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): SmartSessionLimit {
     val tier = subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier
     return when (planForMembershipTier(tier)) {
@@ -375,7 +410,33 @@ internal fun monthlyHoursRemainingFor(subscriptionInfo: SubscriptionInfo?, fallb
 }
 
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
-    if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false) else this
+    if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
+
+internal fun ColorQuality.availableForCodec(codec: VideoCodec): Boolean =
+    codec != VideoCodec.AV1 || !isChroma444()
+
+internal fun StreamSettings.withCodecColorCompatibility(): StreamSettings {
+    val compatibleColor = when {
+        codec == VideoCodec.AV1 && colorQuality.isChroma444() -> colorQuality.asChroma420()
+        hdrEnabled && !colorQuality.isTenBit() -> ColorQuality.TenBit420
+        else -> colorQuality
+    }
+    return if (compatibleColor == colorQuality) this else copy(colorQuality = compatibleColor)
+}
+
+internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSettings {
+    if (preset == StreamPreset.Custom) return this
+    val target = streamPresetTargetForAspect(preset, aspectRatio)
+    return copy(
+        resolution = target.resolution,
+        aspectRatio = target.aspectRatio,
+        fps = target.fps,
+        maxBitrateMbps = target.maxBitrateMbps,
+        colorQuality = ColorQuality.EightBit420,
+        hdrEnabled = false,
+        enableCloudGsync = false,
+    ).withCodecColorCompatibility()
+}
 
 internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
     val customResolution = parseResolutionPixelsOrNull(resolution)?.takeUnless { isKnownStreamResolution(resolution) }
@@ -451,6 +512,51 @@ private val PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT = mapOf(
     "2160" to mapOf("16:9" to "3840x2160", "16:10" to "3456x2160", "21:9" to "5120x2160"),
     "2880" to mapOf("16:9" to "5120x2880"),
 )
+
+private data class StreamPresetTarget(
+    val resolution: String,
+    val aspectRatio: String,
+    val fps: Int,
+    val maxBitrateMbps: Int,
+)
+
+private fun streamPresetTargetForAspect(preset: StreamPreset, aspectRatio: String): StreamPresetTarget {
+    val normalizedAspect = aspectRatio.takeIf { streamResolutionOptionsForAspect(it).isNotEmpty() } ?: "16:9"
+    val maxHeight = when (preset) {
+        StreamPreset.Custom -> Int.MAX_VALUE
+        StreamPreset.LowDataSaver -> 800
+        StreamPreset.Medium -> 1200
+        StreamPreset.High -> 1600
+    }
+    val options = STREAM_RESOLUTION_OPTIONS
+        .filter { it.aspectRatio == normalizedAspect }
+        .sortedBy { it.pixelCount() }
+    val resolution = options
+        .filter { parseResolutionPixels(it.value).second <= maxHeight }
+        .maxByOrNull { it.pixelCount() }
+        ?: options.firstOrNull()
+        ?: StreamResolutionOption("1280x720", "16:9", "720")
+
+    return when (preset) {
+        StreamPreset.Custom -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 60, 75)
+        StreamPreset.LowDataSaver -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 30, 12)
+        StreamPreset.Medium -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 60, 35)
+        StreamPreset.High -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 360, 75)
+    }
+}
+
+private fun ColorQuality.isChroma444(): Boolean =
+    this == ColorQuality.EightBit444 || this == ColorQuality.TenBit444
+
+private fun ColorQuality.isTenBit(): Boolean =
+    this == ColorQuality.TenBit420 || this == ColorQuality.TenBit444
+
+private fun ColorQuality.asChroma420(): ColorQuality =
+    when (this) {
+        ColorQuality.TenBit444 -> ColorQuality.TenBit420
+        ColorQuality.EightBit444 -> ColorQuality.EightBit420
+        else -> this
+    }
 
 private fun resolutionTierForHeight(height: Int): String =
     when {
@@ -1088,6 +1194,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
             fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
         ).cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT)
             .withStableAndroidCloudMatchProfile()
+            .withoutAndroidTvSharpening(report)
     }
 
     val capability = report?.capabilities?.firstOrNull { it.codec == codec }
@@ -1102,7 +1209,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         else -> 75
     }
 
-    val adjusted = if (effectiveCodec == codec) this else copy(codec = effectiveCodec)
+    val adjusted = (if (effectiveCodec == codec) this else copy(codec = effectiveCodec)).withCodecColorCompatibility()
     return when (effectiveCodec) {
         VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap))
         VideoCodec.H265,
@@ -1111,6 +1218,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
             maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap),
         )
     }.withStableAndroidCloudMatchProfile()
+        .withoutAndroidTvSharpening(report)
 }
 
 internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
@@ -1121,19 +1229,21 @@ internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
         enableCloudGsync = false,
+        streamSharpeningEnabled = false,
     ).cappedResolution(SAFE_VIDEO_FALLBACK_MAX_WIDTH, SAFE_VIDEO_FALLBACK_MAX_HEIGHT)
 
 private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
-    if (hdrEnabled) return when (colorQuality) {
+    val compatible = withCodecColorCompatibility()
+    if (compatible.hdrEnabled) return when (compatible.colorQuality) {
         ColorQuality.TenBit420,
         ColorQuality.TenBit444,
-        -> colorQuality
+        -> compatible.colorQuality
         else -> ColorQuality.TenBit420
     }
-    return when (colorQuality) {
+    return when (compatible.colorQuality) {
         ColorQuality.EightBit420,
         ColorQuality.EightBit444,
-        -> colorQuality
+        -> compatible.colorQuality
         else -> ColorQuality.EightBit420
     }
 }
@@ -1141,13 +1251,20 @@ private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
 private fun StreamSettings.withStableAndroidCloudMatchProfile(): StreamSettings {
     val (width, height) = streamResolutionPixels(this)
     val pixels = width * height
-    val maxFps = if (pixels > ANDROID_1440P_PIXEL_BUDGET) 120 else 240
+    val maxFps = if (pixels > ANDROID_1440P_PIXEL_BUDGET) 120 else 360
     return copy(
         fps = minOf(fps, maxFps),
         hdrEnabled = hdrEnabled && codec != VideoCodec.H264,
         enableCloudGsync = enableCloudGsync && codec != VideoCodec.H264,
     )
 }
+
+private fun StreamSettings.withoutAndroidTvSharpening(report: RuntimeCodecReport?): StreamSettings =
+    if (report?.androidTvProfile == true && streamSharpeningEnabled) {
+        copy(streamSharpeningEnabled = false)
+    } else {
+        this
+    }
 
 private fun StreamSettings.cappedResolution(maxWidth: Int, maxHeight: Int): StreamSettings {
     val normalized = normalizeStreamResolutionForAspect(resolution, aspectRatio)

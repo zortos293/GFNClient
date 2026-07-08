@@ -1,11 +1,42 @@
 package com.opencloudgaming.opennow
 
+import kotlin.math.roundToInt
+
 internal data class DisplayRefreshMode(
     val id: Int,
     val refreshRate: Float,
     val physicalWidth: Int,
     val physicalHeight: Int,
 )
+
+internal object DisplayRefreshDiagnostics {
+    @Volatile
+    private var latestSnapshot = "display.refresh=unavailable"
+
+    fun update(
+        active: Boolean,
+        requestedFps: Int,
+        currentMode: DisplayRefreshMode?,
+        selectedMode: DisplayRefreshMode?,
+        supportedModes: List<DisplayRefreshMode>,
+        preferredModeId: Int,
+        preferredRefreshRate: Float,
+        applied: Boolean,
+        error: Throwable? = null,
+    ) {
+        latestSnapshot = buildString {
+            appendLine("display.refresh.active=$active requestedFps=$requestedFps applied=$applied")
+            appendLine("display.refresh.current=${currentMode.debugLabel()} selected=${selectedMode.debugLabel()}")
+            appendLine("display.refresh.preferredModeId=$preferredModeId preferredRefreshRate=${preferredRefreshRate.formatRefreshRate()}")
+            appendLine("display.refresh.supported=${supportedModes.supportedModesLabel()}")
+            error?.let {
+                appendLine("display.refresh.error=${it.javaClass.simpleName}:${it.message.orEmpty().take(120)}")
+            }
+        }.trimEnd()
+    }
+
+    fun snapshot(): String = latestSnapshot
+}
 
 internal fun selectStreamDisplayMode(
     supportedModes: List<DisplayRefreshMode>,
@@ -36,6 +67,22 @@ internal fun selectStreamDisplayMode(
 
 internal fun normalizedStreamDisplayFps(requestedFps: Int): Float =
     requestedFps.coerceIn(MIN_STREAM_DISPLAY_FPS, MAX_STREAM_DISPLAY_FPS).toFloat()
+
+private fun List<DisplayRefreshMode>.supportedModesLabel(): String =
+    if (isEmpty()) {
+        "[]"
+    } else {
+        sortedWith(compareBy<DisplayRefreshMode> { it.physicalWidth * it.physicalHeight }.thenBy { it.refreshRate }.thenBy { it.id })
+            .joinToString(prefix = "[", postfix = "]") { it.debugLabel() }
+    }
+
+private fun DisplayRefreshMode?.debugLabel(): String =
+    this?.let { "id=${it.id}:${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate.formatRefreshRate()}Hz" } ?: "none"
+
+private fun Float.formatRefreshRate(): String {
+    val rounded = (this * 100f).roundToInt() / 100f
+    return if (rounded % 1f == 0f) rounded.toInt().toString() else rounded.toString()
+}
 
 private const val MIN_STREAM_DISPLAY_FPS = 30
 private const val MAX_STREAM_DISPLAY_FPS = 240

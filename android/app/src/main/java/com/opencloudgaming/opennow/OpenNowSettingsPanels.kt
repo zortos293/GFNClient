@@ -453,7 +453,8 @@ private fun formatUpdateBytes(bytes: Long): String {
 
 @Composable
 internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
-    val currentUserId = state.authSession?.user?.userId
+    val currentSession = state.authSession
+    val currentUserId = currentSession?.user?.userId
     val context = LocalContext.current
     var addAccountPromptOpen by remember { mutableStateOf(false) }
     val addAccountProviders = remember(state.providers, state.selectedProvider) {
@@ -476,6 +477,13 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
             state.authSession?.toSavedAccount()?.let { listOf(it) } ?: emptyList()
         }.forEach { account ->
             val selected = account.userId == currentUserId
+            val membershipTier = if (selected) {
+                state.subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() }
+                    ?: currentSession.user.membershipTier.takeIf { it.isNotBlank() }
+                    ?: account.membershipTier
+            } else {
+                account.membershipTier
+            }
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -489,7 +497,7 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
                     Column(Modifier.weight(1f)) {
                         Text(account.displayName.ifBlank { "NVIDIA Account" }, color = SettingsText, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            listOfNotNull(account.email?.takeIf { it.isNotBlank() }, account.providerCode, account.membershipTier).joinToString(" - "),
+                            listOfNotNull(account.email?.takeIf { it.isNotBlank() }, account.providerCode, membershipTier).joinToString(" - "),
                             color = SettingsTextMuted,
                             style = MaterialTheme.typography.bodySmall,
                             maxLines = 1,
@@ -1240,13 +1248,25 @@ private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
 internal val StreamStatsStyle.label: String
     get() = when (this) {
         StreamStatsStyle.Compact -> "Compact line"
-        StreamStatsStyle.Detailed -> "Detailed card"
+        StreamStatsStyle.Detailed -> "Detailed line"
     }
 
 internal fun StreamStatsStyle.next(): StreamStatsStyle =
     when (this) {
         StreamStatsStyle.Compact -> StreamStatsStyle.Detailed
         StreamStatsStyle.Detailed -> StreamStatsStyle.Compact
+    }
+
+internal val StreamStatsPosition.label: String
+    get() = when (this) {
+        StreamStatsPosition.Left -> "Left"
+        StreamStatsPosition.Right -> "Right"
+    }
+
+internal fun StreamStatsPosition.next(): StreamStatsPosition =
+    when (this) {
+        StreamStatsPosition.Left -> StreamStatsPosition.Right
+        StreamStatsPosition.Right -> StreamStatsPosition.Left
     }
 
 @Composable

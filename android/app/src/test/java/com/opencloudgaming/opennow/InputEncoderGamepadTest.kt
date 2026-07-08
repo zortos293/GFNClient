@@ -113,6 +113,25 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun mapsControllerMouseAssistFromRightStick() {
+        val delta = requireNotNull(AndroidControllerMouseAssist.mouseDelta(0.75f, -0.5f))
+
+        assertTrue(delta.dx > 0)
+        assertTrue(delta.dy < 0)
+        assertNull(AndroidControllerMouseAssist.mouseDelta(0f, 0f))
+    }
+
+    @Test
+    fun mapsControllerMouseAssistButtons() {
+        assertTrue(AndroidControllerMouseAssist.togglesAssist(GamepadButtonMapping.RIGHT_THUMB, pressed = true))
+        assertFalse(AndroidControllerMouseAssist.togglesAssist(GamepadButtonMapping.RIGHT_THUMB, pressed = false))
+        assertEquals(1, AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.A))
+        assertNull(AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.B))
+        assertEquals(2, AndroidControllerMouseAssist.mouseButtonForTrigger(left = true))
+        assertEquals(1, AndroidControllerMouseAssist.mouseButtonForTrigger(left = false))
+    }
+
+    @Test
     fun mapsControllerActivationKeysToPrimaryGamepadButtonOnlyForControllers() {
         assertEquals(
             GamepadButtonMapping.A,

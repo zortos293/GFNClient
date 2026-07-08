@@ -187,6 +187,22 @@ class SdpToolsTest {
         assertFalse(nvst.contains("a=video.clientViewportWd:1920"))
     }
 
+    @Test
+    fun nvstSdpCarriesRequested360FpsEstimate() {
+        val nvst = SdpTools.buildNvstSdp(
+            offerSdp = "a=ri.partialReliableThresholdMs:42",
+            settings = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 360, codec = VideoCodec.AV1),
+            localAnswer = """
+                a=ice-ufrag:testUfrag
+                a=ice-pwd:testPassword
+                a=fingerprint:sha-256 11:22:33
+            """.trimIndent(),
+        )
+
+        assertTrue(nvst.contains("a=video.maxFPS:360"))
+        assertTrue(nvst.contains("a=vqos.maxStreamFpsEstimate:360"))
+    }
+
     private fun h265Offer(): String =
         """
         m=video 9 UDP/TLS/RTP/SAVPF 96 97 98

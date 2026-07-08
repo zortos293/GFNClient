@@ -45,6 +45,7 @@ private const val ANDROID_UPDATE_STREAMING_RETRY_DELAY_MS = 30_000L
 private const val DEBUG_EVENT_LIMIT = 400
 private const val DEBUG_EVENT_MESSAGE_LIMIT = 640
 private const val DEBUG_PAYLOAD_LIMIT = 80
+private const val STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS = 30_000L
 
 private data class DebugLogEvent(
     val timestampMs: Long,
@@ -60,6 +61,12 @@ private data class DebugPayloadEvent(
     val statusCode: Int,
     val requestBody: String,
     val body: String,
+)
+
+private data class TimedStreamRuntimeStats(
+    val capturedAtMs: Long,
+    val sessionId: String?,
+    val stats: StreamRuntimeStats,
 )
 
 data class OpenNowUiState(
@@ -110,6 +117,7 @@ data class OpenNowUiState(
     val printedWasteError: String? = null,
     val androidUpdate: AndroidUpdateState = AndroidUpdateState(),
     val dismissedAndroidUpdateNoticeKey: String? = null,
+    val androidPictureInPictureActive: Boolean = false,
 )
 
 internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
@@ -140,6 +148,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val debugPayloadsLock = Any()
     private val debugPayloads = ArrayDeque<DebugPayloadEvent>()
     private val authRestoreMutex = Mutex()
+    @Volatile
+    private var latestStreamRuntimeStats: TimedStreamRuntimeStats? = null
+    private var lastRuntimeStatsEventAtMs: Long = 0L
 
     private val initialAuthSession = authStore.activeSession()
     private val _state = MutableStateFlow(
@@ -798,10 +809,18 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 runCatching { fetchDynamicRegions(http, token, session.provider.streamingServiceUrl).first }
                     .getOrDefault(emptyList())
             }
+            val fetchedSubscription = subscription.await()
+            val enrichedSession = persistSubscriptionTier(session, fetchedSubscription)
+            val fetchedRegions = regions.await()
             _state.update { current ->
                 current.copy(
-                    subscriptionInfo = subscription.await() ?: current.subscriptionInfo,
-                    regions = regions.await().ifEmpty { current.regions },
+                    authSession = current.authSession
+                        ?.takeIf { it.user.userId == enrichedSession.user.userId }
+                        ?.let { enrichedSession }
+                        ?: current.authSession,
+                    savedAccounts = savedAccountsSnapshot(),
+                    subscriptionInfo = fetchedSubscription ?: current.subscriptionInfo,
+                    regions = fetchedRegions.ifEmpty { current.regions },
                 )
             }
         }
@@ -862,7 +881,27 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updateStreamSettings(transform: (StreamSettings) -> StreamSettings) {
-        settingsStore.update { it.copy(stream = transform(it.stream)) }
+        val snapshot = state.value
+        settingsStore.update {
+            it.copy(
+                stream = transform(it.stream)
+                    .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier),
+                streamPreset = StreamPreset.Custom,
+            )
+        }
+    }
+
+    fun applyStreamPreset(preset: StreamPreset) {
+        val snapshot = state.value
+        settingsStore.update { settings ->
+            settings.copy(
+                streamPreset = preset,
+                stream = settings.stream
+                    .applyingStreamPreset(preset)
+                    .withResolutionAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
+                    .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier),
+            )
+        }
     }
 
     fun updateFavorites(gameId: String) {
@@ -1319,7 +1358,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val snapshot = state.value
         return snapshot.settings.stream
             .withResolutionAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
+            .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
             .withHdrAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
+            .withCodecColorCompatibility()
     }
 
     private suspend fun resolveFallbackLaunchAppId(
@@ -1462,6 +1503,29 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             ),
         )
         _state.update { it.copy(streamStatus = "streaming", launchPhase = "") }
+    }
+
+    fun setAndroidPictureInPictureActive(active: Boolean) {
+        _state.update { current ->
+            if (current.androidPictureInPictureActive == active) current else current.copy(androidPictureInPictureActive = active)
+        }
+    }
+
+    fun updateStreamRuntimeStats(stats: StreamRuntimeStats) {
+        if (!stats.hasDebugValues()) return
+        val now = System.currentTimeMillis()
+        latestStreamRuntimeStats = TimedStreamRuntimeStats(
+            capturedAtMs = now,
+            sessionId = state.value.streamSession?.sessionId,
+            stats = stats,
+        )
+        if (now - lastRuntimeStatsEventAtMs >= STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS) {
+            lastRuntimeStatsEventAtMs = now
+            recordDebugEvent(
+                "runtime",
+                "stats ${stats.debugSummary()} device=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}",
+            )
+        }
     }
 
     fun markStreamError(message: String) {
@@ -1901,9 +1965,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} touch=${snapshot.settings.androidTouch}")
             appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} tv=${codecReport?.androidTvProfile}")
+            appendLine("device.runtime=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}")
+            appendLine("stream.runtime.latest=${latestStreamRuntimeStats?.debugSummary(System.currentTimeMillis()) ?: "empty"}")
             codecReport?.capabilities?.forEach { cap ->
                 appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} nativeAvailable=${cap.nativeDecoderAvailable ?: "unknown"} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")
             }
+            appendLine(DisplayRefreshDiagnostics.snapshot())
             appendLine(NativeInputDiagnostics.snapshot())
             appendLine(OpenNowHttpDiagnostics.snapshot())
             snapshot.error?.let { appendLine("error=$it") }
@@ -1975,7 +2042,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val vpcId = catalogRepository.getVpcId(token, session.provider.streamingServiceUrl)
                 subscriptionRepository.fetchSubscription(token, session.user.userId, vpcId)
             }.getOrNull()
-            _state.update { it.copy(subscriptionInfo = sub) }
+            val enrichedSession = persistSubscriptionTier(session, sub)
+            _state.update { current ->
+                current.copy(
+                    authSession = current.authSession
+                        ?.takeIf { it.user.userId == enrichedSession.user.userId }
+                        ?.let { enrichedSession }
+                        ?: current.authSession,
+                    savedAccounts = savedAccountsSnapshot(),
+                    subscriptionInfo = sub,
+                )
+            }
         }
         val accountConnectorsJob = viewModelScope.launch {
             _state.update { it.copy(loadingAccountConnectors = true) }
@@ -2429,6 +2506,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             membershipTier = user.membershipTier,
             providerCode = provider.code,
         )
+
+    private fun AuthSession.withSubscriptionTier(subscription: SubscriptionInfo?): AuthSession {
+        val tier = subscription?.membershipTier?.takeIf { it.isNotBlank() } ?: return this
+        return if (user.membershipTier == tier) this else copy(user = user.copy(membershipTier = tier))
+    }
+
+    private fun persistSubscriptionTier(session: AuthSession, subscription: SubscriptionInfo?): AuthSession {
+        val enriched = session.withSubscriptionTier(subscription)
+        if (enriched != session) authStore.upsertSession(enriched)
+        return enriched
+    }
+
+    private fun savedAccountsSnapshot(): List<SavedAccount> =
+        authStore.state.value.sessions.map { session -> session.toSavedAccount() }
 }
 
 internal fun externalLaunchIdFromParts(
@@ -2497,6 +2588,22 @@ private fun Throwable.debugMessage(): String {
 
 private fun StreamSettings.debugSummary(): String =
     "res=$resolution aspect=$aspectRatio fps=$fps bitrate=$maxBitrateMbps codec=$codec color=${colorQuality.name} hdr=$hdrEnabled l4s=$enableL4S gsync=$enableCloudGsync sharp=$streamSharpeningEnabled"
+
+private fun StreamRuntimeStats.hasDebugValues(): Boolean =
+    bitrateKbps != null ||
+        pingMs != null ||
+        fps != null ||
+        !resolution.isNullOrBlank() ||
+        !codec.isNullOrBlank()
+
+private fun StreamRuntimeStats.debugSummary(): String =
+    "bitrateKbps=${bitrateKbps ?: 0} pingMs=${pingMs ?: -1} fps=${fps ?: 0} resolution=${resolution.orEmpty()} codec=${codec.orEmpty()}"
+
+private fun TimedStreamRuntimeStats.debugSummary(nowMs: Long): String {
+    val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)
+    val ageMs = (nowMs - capturedAtMs).coerceAtLeast(0L)
+    return "capturedAt=${formatter.format(Date(capturedAtMs))} ageMs=$ageMs session=${shortDebugId(sessionId)} ${stats.debugSummary()}"
+}
 
 private fun SessionInfo.shortDebugId(): String = shortDebugId(sessionId)
 

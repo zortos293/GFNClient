@@ -51,17 +51,13 @@ class SettingsStore(context: Context) {
     }
 
     private fun AppSettings.normalizedForAndroid(): AppSettings {
-        val lowPowerSafe = stream.copy(
-            codec = stream.codec,
-            colorQuality = if (stream.hdrEnabled && !stream.colorQuality.name.startsWith("TenBit")) {
-                ColorQuality.TenBit420
-            } else {
-                stream.colorQuality
-            },
+        val compatibleStream = stream.withCodecColorCompatibility()
+        val lowPowerSafe = compatibleStream.copy(
+            codec = compatibleStream.codec,
             sessionProxyUrl = stream.sessionProxyUrl.trim(),
-            maxBitrateMbps = stream.maxBitrateMbps.coerceIn(1, 150),
-            fps = stream.fps.coerceIn(30, 240),
-            streamSharpeningAmount = stream.streamSharpeningAmount.coerceIn(0f, 1f),
+            maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
+            fps = compatibleStream.fps.coerceIn(30, 360),
+            streamSharpeningAmount = compatibleStream.streamSharpeningAmount.coerceIn(0f, 1f),
         )
         return copy(
             stream = lowPowerSafe,
@@ -81,6 +77,8 @@ class SettingsStore(context: Context) {
             streamIntroMusic = streamIntroMusic,
             queueReadyMusic = queueReadyMusic,
             stretchStreamToFill = stretchStreamToFill,
+            nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
+            tvSafeAreaPaddingDp = tvSafeAreaPaddingDp.coerceIn(0f, 72f),
             controllerUiSounds = controllerUiSounds,
             autoFullScreen = true,
         )

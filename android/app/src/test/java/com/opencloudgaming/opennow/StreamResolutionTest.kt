@@ -246,6 +246,16 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun streamFpsCapsFollowMembershipPlan() {
+        val requested = StreamSettings(fps = 360)
+
+        assertEquals(60, requested.withFpsAllowed(SubscriptionInfo(membershipTier = "FREE"), null).fps)
+        assertEquals(60, requested.withFpsAllowed(SubscriptionInfo(membershipTier = "PERFORMANCE"), null).fps)
+        assertEquals(360, requested.withFpsAllowed(SubscriptionInfo(membershipTier = "ULTIMATE"), null).fps)
+        assertEquals(360, maxStreamFpsFor(null, "ULTIMATE"))
+    }
+
+    @Test
     fun entitledResolutionDoesNotBypassMembershipPlanGate() {
         val subscription = SubscriptionInfo(
             membershipTier = "FREE",

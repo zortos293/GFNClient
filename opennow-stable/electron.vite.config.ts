@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
+import legacy from "@vitejs/plugin-legacy";
 
 function readBuildMetadata(): Record<string, string> {
   return {
@@ -47,7 +48,12 @@ export default defineConfig({
     build: {
       outDir: "dist",
     },
-    plugins: [react()],
+    plugins: [
+      react(),
+      legacy({
+        targets: ["chrome >= 38"],
+      }),
+    ],
     resolve: {
       alias: {
         "@shared": resolve("src/shared"),

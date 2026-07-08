@@ -30,29 +30,29 @@ export function startInputSessionClock(nowMs: number = performance.now()): void 
 }
 
 /** Session-relative capture timestamp for inner event payloads (official GFN Or()). */
-export function captureTimestampUs(sourceTimestampMs?: number): bigint {
+export function captureTimestampUs(sourceTimestampMs?: number): number {
   const baseMs =
     typeof sourceTimestampMs === "number" && Number.isFinite(sourceTimestampMs) && sourceTimestampMs >= 0
       ? sourceTimestampMs - inputSessionStartedAtMs
       : performance.now() - inputSessionStartedAtMs;
-  return BigInt(Math.max(0, Math.floor(baseMs * 1000)));
+  return Math.max(0, Math.floor(baseMs * 1000));
 }
 
 /** Send-time session clock for v3 outer headers (official GFN ed()). */
-export function sendTimestampUs(nowMs: number = performance.now()): bigint {
+export function sendTimestampUs(nowMs: number = performance.now()): number {
   return captureTimestampUs(nowMs);
 }
 
-function writeSessionTimestamp(view: DataView, offset: number, timestampUs: bigint): void {
-  const clamped = timestampUs < 0n ? 0n : timestampUs;
-  const lo = Number(clamped & 0xFFFFFFFFn);
-  const hi = Number(clamped >> 32n);
+function writeSessionTimestamp(view: DataView, offset: number, timestampUs: number): void {
+  const clamped = timestampUs < 0 ? 0 : timestampUs;
+  const hi = Math.floor(clamped / 0x100000000);
+  const lo = clamped % 0x100000000;
   view.setUint32(offset, hi, false);
   view.setUint32(offset + 4, lo, false);
 }
 
 /** Rewrite the protocol v3 `[0x23][timestamp]` header to the send-time session clock. */
-export function restampProtocolV3OuterTimestamp(packet: Uint8Array, timestampUs: bigint): boolean {
+export function restampProtocolV3OuterTimestamp(packet: Uint8Array, timestampUs: number): boolean {
   if (packet.length < WRAPPER_VERSION_HEADER_BYTES || packet[0] !== WRAPPER_VERSION_MARKER) {
     return false;
   }
@@ -67,7 +67,7 @@ export function restampProtocolV3OuterTimestamp(packet: Uint8Array, timestampUs:
  */
 export function combineSingleInputPackets(
   payloads: readonly Uint8Array[],
-  sendTimestampUsValue: bigint,
+  sendTimestampUsValue: number,
 ): Uint8Array | null {
   if (payloads.length === 0) {
     return null;
@@ -103,7 +103,7 @@ export function combineSingleInputPackets(
 /** Finalize reliable keyboard/button packets, coalescing and restamping v3 headers at send time. */
 export function finalizeReliableSingleInputPackets(
   payloads: readonly Uint8Array[],
-  sendTimestampUsValue: bigint,
+  sendTimestampUsValue: number,
 ): Uint8Array[] {
   if (payloads.length === 0) {
     return [];
@@ -165,13 +165,13 @@ export interface KeyboardPayload {
   keycode: number;
   scancode: number;
   modifiers: number;
-  timestampUs: bigint;
+  timestampUs: number;
 }
 
 export interface MouseMovePayload {
   dx: number;
   dy: number;
-  timestampUs: bigint;
+  timestampUs: number;
 }
 
 /**
@@ -184,17 +184,17 @@ export interface MouseAbsolutePayload {
   y: number;
   width: number;
   height: number;
-  timestampUs: bigint;
+  timestampUs: number;
 }
 
 export interface MouseButtonPayload {
   button: number;
-  timestampUs: bigint;
+  timestampUs: number;
 }
 
 export interface MouseWheelPayload {
   delta: number;
-  timestampUs: bigint;
+  timestampUs: number;
 }
 
 export interface GamepadInput {
@@ -207,7 +207,7 @@ export interface GamepadInput {
   rightStickX: number; // -32768 to 32767
   rightStickY: number; // -32768 to 32767 (inverted in XInput)
   connected: boolean; // true = connected, false = disconnected
-  timestampUs: bigint;
+  timestampUs: number;
 }
 
 export function partiallyReliableHidMaskForInputType(inputType: number): number {
@@ -538,14 +538,14 @@ function defaultVirtualKeyFromCode(code: string): number | null {
   }
 
   if (code.startsWith("F")) {
-    const index = Number.parseInt(code.slice(1), 10);
+    const index = parseInt(code.slice(1), 10);
     if (index >= 1 && index <= 24) {
       return 0x70 + index - 1;
     }
   }
 
   if (code.startsWith("Numpad") && code.length === 7) {
-    const digit = Number.parseInt(code.slice(6), 10);
+    const digit = parseInt(code.slice(6), 10);
     if (digit >= 0 && digit <= 9) {
       return 0x60 + digit;
     }
@@ -873,7 +873,7 @@ export class InputEncoder {
     view.setInt16(6, payload.dy, false);              // dy: BE
     view.setUint16(8, 0, false);                      // reserved: BE
     view.setUint32(10, 0, false);                     // reserved: BE
-    view.setBigUint64(14, payload.timestampUs, false); // timestamp: BE
+    writeSessionTimestamp(view, 14, payload.timestampUs); // timestamp: BE
     return wrapMouseMoveEvent(bytes, this.protocolVersion);
   }
 
@@ -889,7 +889,7 @@ export class InputEncoder {
     view.setUint16(10, clampU16(payload.width), false);    // extent width: BE
     view.setUint16(12, clampU16(payload.height), false);   // extent height: BE
     view.setUint32(14, 0, false);                          // reserved: BE
-    view.setBigUint64(18, payload.timestampUs, false);     // timestamp: BE
+    writeSessionTimestamp(view, 18, payload.timestampUs);     // timestamp: BE
     return wrapMouseMoveEvent(bytes, this.protocolVersion);
   }
 
@@ -910,7 +910,7 @@ export class InputEncoder {
     view.setInt16(6, payload.delta, false);              // vertical: BE
     view.setUint16(8, 0, false);                         // reserved: BE
     view.setUint32(10, 0, false);                        // reserved: BE
-    view.setBigUint64(14, payload.timestampUs, false);   // timestamp: BE
+    writeSessionTimestamp(view, 14, payload.timestampUs);   // timestamp: BE
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
 
@@ -999,7 +999,11 @@ export class InputEncoder {
     view.setUint16(28, 0, true);
     
     // Offset 0x1E: Timestamp (u64 LE)
-    view.setBigUint64(30, payload.timestampUs, true);
+    const gpClamped = payload.timestampUs < 0 ? 0 : payload.timestampUs;
+    const gpHi = Math.floor(gpClamped / 0x100000000);
+    const gpLo = gpClamped % 0x100000000;
+    view.setUint32(30, gpLo, true);
+    view.setUint32(34, gpHi, true);
 
     // Gamepad packets ARE wrapped in protocol v3+ — the official client's yc() function
     // applies the 0x23 wrapper for ALL channels (the v2+ check does NOT exclude PR).
@@ -1021,7 +1025,7 @@ export class InputEncoder {
     view.setUint16(4, payload.keycode, false);            // keycode: BE
     view.setUint16(6, payload.modifiers, false);          // modifiers: BE
     view.setUint16(8, payload.scancode, false);           // scancode: BE
-    view.setBigUint64(10, payload.timestampUs, false);    // timestamp: BE
+    writeSessionTimestamp(view, 10, payload.timestampUs);    // timestamp: BE
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
 
@@ -1033,7 +1037,7 @@ export class InputEncoder {
     view.setUint8(4, payload.button);
     view.setUint8(5, 0);
     view.setUint32(6, 0, false);                          // reserved: BE
-    view.setBigUint64(10, payload.timestampUs, false);    // timestamp: BE
+    writeSessionTimestamp(view, 10, payload.timestampUs);    // timestamp: BE
     return wrapSingleEvent(bytes, this.protocolVersion);
   }
 }

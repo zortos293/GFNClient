@@ -87,13 +87,25 @@ try {
     fs.copyFileSync(bridgeSrcPath, path.join(appDir, 'webos-bridge.js'));
     console.log(`Staged webos-bridge.js.`);
 
-    // Inject bridge script into index.html right before </head>
+    // Inject bridge and convert index.html to be purely legacy compatibility mode
     const indexPath = path.join(appDir, 'index.html');
     if (fs.existsSync(indexPath)) {
       let indexHtml = fs.readFileSync(indexPath, 'utf8');
+
+      // 1. Remove all type="module" script tags (both inline and referencing src)
+      indexHtml = indexHtml.replace(/<script\s+type="module"[^>]*>([\s\S]*?)<\/script>/gi, '');
+
+      // 2. Remove all <script nomodule> tags that do detection/fallback routing
+      indexHtml = indexHtml.replace(/<script\s+nomodule>([\s\S]*?)<\/script>/gi, '');
+
+      // 3. Strip the "nomodule" attribute from the polyfill and legacy entry scripts to force them to run on all browsers
+      indexHtml = indexHtml.replace(/\bnomodule\b/g, '');
+
+      // 4. Inject the webos-bridge.js script tag right before </head>
       indexHtml = indexHtml.replace('</head>', '<script src="webos-bridge.js"></script></head>');
+
       fs.writeFileSync(indexPath, indexHtml, 'utf8');
-      console.log(`Injected webos-bridge.js script tag into index.html.`);
+      console.log(`Converted index.html to purely legacy mode and injected webos-bridge.js.`);
     } else {
       console.warn(`Warning: index.html not found in dist. Bridge script tag not injected.`);
     }

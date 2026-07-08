@@ -218,8 +218,8 @@ export function rewriteH265LevelIdByProfile(
       return line;
     }
 
-    const profileNum = Number.parseInt(profileMatch[1], 10) as 1 | 2;
-    const offeredLevel = Number.parseInt(levelMatch[1], 10);
+    const profileNum = parseInt(profileMatch[1], 10) as 1 | 2;
+    const offeredLevel = parseInt(levelMatch[1], 10);
     const maxLevel = maxLevelByProfile[profileNum];
     if (!Number.isFinite(offeredLevel) || !maxLevel || offeredLevel <= maxLevel) {
       return line;

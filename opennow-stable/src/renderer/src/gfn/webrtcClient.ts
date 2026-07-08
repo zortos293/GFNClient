@@ -259,7 +259,7 @@ interface ClientOptions {
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
 }
 
-function timestampUs(sourceTimestampMs?: number): bigint {
+function timestampUs(sourceTimestampMs?: number): number {
   return captureTimestampUs(sourceTimestampMs);
 }
 
@@ -268,7 +268,7 @@ function parsePartialReliableThresholdMs(sdp: string): number | null {
   if (!match?.[1]) {
     return null;
   }
-  const parsed = Number.parseInt(match[1], 10);
+  const parsed = parseInt(match[1], 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return null;
   }
@@ -284,8 +284,8 @@ function parseRiIntegerAttribute(sdp: string, attribute: string, fallback: numbe
   }
   const normalized = raw.toLowerCase();
   const parsed = normalized.startsWith("0x")
-    ? Number.parseInt(normalized.slice(2), 16)
-    : Number.parseInt(normalized, 10);
+    ? parseInt(normalized.slice(2), 16)
+    : parseInt(normalized, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
@@ -635,8 +635,8 @@ class MouseDeltaFilter {
 
 function parseResolution(resolution: string): { width: number; height: number } {
   const [rawWidth, rawHeight] = resolution.split("x");
-  const width = Number.parseInt(rawWidth ?? "", 10);
-  const height = Number.parseInt(rawHeight ?? "", 10);
+  const width = parseInt(rawWidth ?? "", 10);
+  const height = parseInt(rawHeight ?? "", 10);
 
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     return { width: 1920, height: 1080 };
@@ -865,7 +865,7 @@ export class GfnWebRtcClient {
   private mouseFlushIntervalMs = GfnWebRtcClient.MOUSE_FLUSH_NORMAL_MS;
   private mouseFlushLastSendMs = 0;
   private mouseCoalescedBatchEntries = 0;
-  private pendingMouseTimestampUs: bigint | null = null;
+  private pendingMouseTimestampUs: number | null = null;
   private mouseDeltaFilter = new MouseDeltaFilter();
   private mouseSensitivity = 1;
   private mouseAccelerationPercent = 1;
@@ -4518,8 +4518,8 @@ export class GfnWebRtcClient {
           continue;
         }
 
-        const profile = Number.parseInt(profileMatch[1], 10) as 1 | 2;
-        const level = Number.parseInt(levelMatch[1], 10);
+        const profile = parseInt(profileMatch[1], 10) as 1 | 2;
+        const level = parseInt(levelMatch[1], 10);
         if (!Number.isFinite(level) || (profile !== 1 && profile !== 2)) {
           continue;
         }

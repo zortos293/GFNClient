@@ -500,8 +500,8 @@ export function getSafeFallbackEntitledResolutions(): EntitledResolution[] {
 
 function parseResolutionValue(resolution: string): { width: number; height: number } | null {
   const [widthText, heightText] = resolution.split("x");
-  const width = Number.parseInt(widthText ?? "", 10);
-  const height = Number.parseInt(heightText ?? "", 10);
+  const width = parseInt(widthText ?? "", 10);
+  const height = parseInt(heightText ?? "", 10);
   return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
     ? { width, height }
     : null;

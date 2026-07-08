@@ -214,7 +214,7 @@ test("encodes lock keys sync payload", () => {
 
 test("encodes raw v2 key down and key up payload layout", () => {
   const encoder = new InputEncoder();
-  const payload = { keycode: 0x41, modifiers: 0x02, scancode: 0, timestampUs: 0x0102030405060708n };
+  const payload = { keycode: 0x41, modifiers: 0x02, scancode: 0, timestampUs: 0x0002030405060708 };
 
   for (const [bytes, type] of [[encoder.encodeKeyDown(payload), INPUT_KEY_DOWN], [encoder.encodeKeyUp(payload), INPUT_KEY_UP]] as const) {
     const data = view(bytes);
@@ -223,7 +223,7 @@ test("encodes raw v2 key down and key up payload layout", () => {
     assert.equal(data.getUint16(4, false), 0x41);
     assert.equal(data.getUint16(6, false), 0x02);
     assert.equal(data.getUint16(8, false), 0);
-    assert.equal(data.getBigUint64(10, false), payload.timestampUs);
+    assert.equal(data.getBigUint64(10, false), BigInt(payload.timestampUs));
   }
 });
 
@@ -234,7 +234,7 @@ test("wraps protocol v3 keyboard as single input", () => {
     keycode: 0x0041,
     scancode: 0,
     modifiers: 0,
-    timestampUs: 7n,
+    timestampUs: 7,
   });
 
   assert.equal(payload.length, 28);
@@ -253,7 +253,7 @@ test("maps browser mouse buttons to GFN buttons", () => {
 test("encodes mouse move with v3 cursor wrapper and inner payload", () => {
   const encoder = new InputEncoder();
   encoder.setProtocolVersion(3);
-  const bytes = encoder.encodeMouseMove({ dx: -12, dy: 34, timestampUs: 99n });
+  const bytes = encoder.encodeMouseMove({ dx: -12, dy: 34, timestampUs: 99 });
   const payload = assertV3BatchWrapper(bytes, 0x21, 10, 12, 22);
 
   assert.equal(payload.getUint32(0, true), INPUT_MOUSE_REL);
@@ -269,7 +269,7 @@ test("encodes absolute mouse position matching the official 26-byte layout", () 
     y: 179.6,
     width: 1280,
     height: 720,
-    timestampUs: 77n,
+    timestampUs: 77,
   });
   assert.equal(bytes.byteLength, 26);
   const payload = view(bytes);
@@ -292,7 +292,7 @@ test("encodes absolute mouse position with v3 cursor wrapper and clamped coords"
     y: 99999,
     width: 1920,
     height: 1080,
-    timestampUs: 42n,
+    timestampUs: 42,
   });
   const payload = assertV3BatchWrapper(bytes, 0x21, 10, 12, 26);
 
@@ -308,7 +308,7 @@ test("encodes mouse button and wheel with v3 single-event wrapper", () => {
   const encoder = new InputEncoder();
   encoder.setProtocolVersion(3);
 
-  const buttonBytes = encoder.encodeMouseButtonDown({ button: 5, timestampUs: 123n });
+  const buttonBytes = encoder.encodeMouseButtonDown({ button: 5, timestampUs: 123 });
   assert.equal(buttonBytes[0], 0x23);
   assert.equal(buttonBytes[9], 0x22);
   const buttonPayload = new DataView(buttonBytes.buffer, buttonBytes.byteOffset + 10, 18);
@@ -316,7 +316,7 @@ test("encodes mouse button and wheel with v3 single-event wrapper", () => {
   assert.equal(buttonPayload.getUint8(4), 5);
   assert.equal(buttonPayload.getBigUint64(10, false), 123n);
 
-  const wheelBytes = encoder.encodeMouseWheel({ delta: -120, timestampUs: 456n });
+  const wheelBytes = encoder.encodeMouseWheel({ delta: -120, timestampUs: 456 });
   assert.equal(wheelBytes[0], 0x23);
   assert.equal(wheelBytes[9], 0x22);
   const wheelPayload = new DataView(wheelBytes.buffer, wheelBytes.byteOffset + 10, 22);
@@ -395,7 +395,7 @@ test("encodes gamepad state with reliable and partially reliable v3 wrappers", (
     rightStickX: -300,
     rightStickY: 400,
     connected: true,
-    timestampUs: 0x0102030405060708n,
+    timestampUs: 0x0002030405060708,
   };
 
   const reliablePayload = assertV3BatchWrapper(encoder.encodeGamepadState(payload, 0x0104, false), 0x21, 10, 12, GAMEPAD_PACKET_SIZE);
@@ -406,7 +406,7 @@ test("encodes gamepad state with reliable and partially reliable v3 wrappers", (
   assert.equal(reliablePayload.getUint16(12, true), GAMEPAD_A);
   assert.equal(reliablePayload.getUint16(14, true), 0x140a);
   assert.equal(reliablePayload.getInt16(16, true), -100);
-  assert.equal(reliablePayload.getBigUint64(30, true), payload.timestampUs);
+  assert.equal(reliablePayload.getBigUint64(30, true), BigInt(payload.timestampUs));
 
   const first = encoder.encodeGamepadState(payload, 0x0104, true);
   const second = encoder.encodeGamepadState(payload, 0x0104, true);
@@ -434,8 +434,8 @@ test("partially reliable HID helpers only mark mouse move input eligible", () =>
 
 test("uses session-relative capture and send timestamps", () => {
   startInputSessionClock(1_000);
-  assert.equal(captureTimestampUs(1_010), 10_000n);
-  assert.equal(sendTimestampUs(1_025), 25_000n);
+  assert.equal(captureTimestampUs(1_010), 10_000);
+  assert.equal(sendTimestampUs(1_025), 25_000);
 });
 
 test("restamps protocol v3 outer header at send time", () => {
@@ -445,11 +445,11 @@ test("restamps protocol v3 outer header at send time", () => {
     keycode: 0x41,
     scancode: 0,
     modifiers: 0,
-    timestampUs: 7n,
+    timestampUs: 7,
   });
 
   startInputSessionClock(0);
-  assert.ok(restampProtocolV3OuterTimestamp(packet, 99n));
+  assert.ok(restampProtocolV3OuterTimestamp(packet, 99));
   assert.equal(view(packet).getBigUint64(1, false), 99n);
 });
 
@@ -460,17 +460,17 @@ test("combines multiple v3 keyboard packets under one outer header", () => {
     keycode: 0x41,
     scancode: 0,
     modifiers: 0,
-    timestampUs: 1n,
+    timestampUs: 1,
   });
   const up = encoder.encodeKeyUp({
     keycode: 0x41,
     scancode: 0,
     modifiers: 0,
-    timestampUs: 2n,
+    timestampUs: 2,
   });
 
   startInputSessionClock(0);
-  const combined = combineSingleInputPackets([down, up], 50n);
+  const combined = combineSingleInputPackets([down, up], 50);
   assert.ok(combined);
   assert.equal(combined![0], 0x23);
   assert.equal(view(combined!).getBigUint64(1, false), 50n);
@@ -484,9 +484,9 @@ test("finalizeReliableSingleInputPackets coalesces keyboard bursts", () => {
   const encoder = new InputEncoder();
   encoder.setProtocolVersion(3);
   const packets = finalizeReliableSingleInputPackets([
-    encoder.encodeKeyDown({ keycode: 0x41, scancode: 0, modifiers: 0, timestampUs: 1n }),
-    encoder.encodeKeyDown({ keycode: 0x42, scancode: 0, modifiers: 0, timestampUs: 2n }),
-  ], 77n);
+    encoder.encodeKeyDown({ keycode: 0x41, scancode: 0, modifiers: 0, timestampUs: 1 }),
+    encoder.encodeKeyDown({ keycode: 0x42, scancode: 0, modifiers: 0, timestampUs: 2 }),
+  ], 77);
 
   assert.equal(packets.length, 1);
   assert.equal(view(packets[0]).getBigUint64(1, false), 77n);

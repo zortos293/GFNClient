@@ -59,7 +59,7 @@ function normalizeFunctionKeyToken(upper: string): string | null {
     return null;
   }
 
-  const index = Number.parseInt(match[1], 10);
+  const index = parseInt(match[1], 10);
   return index >= 1 && index <= 24 ? `F${index}` : null;
 }
 

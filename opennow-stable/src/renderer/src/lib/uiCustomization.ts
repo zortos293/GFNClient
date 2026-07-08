@@ -34,9 +34,9 @@ function hexToRgb(hex: string): RgbColor {
     ? normalized.split("").map((char) => `${char}${char}`).join("")
     : normalized;
   return {
-    r: Number.parseInt(expanded.slice(0, 2), 16),
-    g: Number.parseInt(expanded.slice(2, 4), 16),
-    b: Number.parseInt(expanded.slice(4, 6), 16),
+    r: parseInt(expanded.slice(0, 2), 16),
+    g: parseInt(expanded.slice(2, 4), 16),
+    b: parseInt(expanded.slice(4, 6), 16),
   };
 }
 

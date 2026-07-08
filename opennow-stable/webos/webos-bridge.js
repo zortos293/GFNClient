@@ -9,13 +9,71 @@
 
   console.log("[webOS Bridge] Injecting webOS GFN shim...");
 
-  const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
-  const GFN_CLIENT_VERSION = "2.0.80.173";
-  const GRAPHQL_URL = "https://games.geforce.com/graphql";
+  // Error trapping to display on-screen diagnostic messages
+  window.onerror = function(message, source, lineno, colno, error) {
+    var errorMsg = "Error: " + message + "\nSource: " + source + "\nLine: " + lineno + ":" + colno;
+    if (error && error.stack) {
+      errorMsg += "\nStack: " + error.stack;
+    }
+    showDebugError(errorMsg);
+    return false;
+  };
+
+  try {
+    window.addEventListener('unhandledrejection', function(event) {
+      var reason = event.reason;
+      var msg = reason;
+      if (reason instanceof Error) {
+        msg = reason.message + "\nStack: " + reason.stack;
+      } else if (typeof reason === 'object') {
+        try {
+          msg = JSON.stringify(reason);
+        } catch (e) {}
+      }
+      showDebugError("Unhandled Rejection: " + msg);
+    });
+  } catch (e) {}
+
+  function showDebugError(msg) {
+    var div = document.getElementById("debug-error-overlay");
+    if (!div) {
+      div = document.createElement("div");
+      div.id = "debug-error-overlay";
+      div.style.position = "fixed";
+      div.style.top = "10px";
+      div.style.left = "10px";
+      div.style.right = "10px";
+      div.style.bottom = "10px";
+      div.style.background = "rgba(180, 0, 0, 0.95)";
+      div.style.color = "white";
+      div.style.padding = "20px";
+      div.style.fontFamily = "monospace";
+      div.style.fontSize = "16px";
+      div.style.lineHeight = "1.4";
+      div.style.zIndex = "999999";
+      div.style.overflow = "auto";
+      div.style.whiteSpace = "pre-wrap";
+      div.style.borderRadius = "8px";
+      div.style.border = "3px solid white";
+      
+      if (document.body) {
+        document.body.appendChild(div);
+      } else {
+        document.addEventListener("DOMContentLoaded", function() {
+          document.body.appendChild(div);
+        });
+      }
+    }
+    div.textContent = (div.textContent ? div.textContent + "\n\n" : "") + msg;
+  }
+
+  var LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
+  var GFN_CLIENT_VERSION = "2.0.80.173";
+  var GRAPHQL_URL = "https://games.geforce.com/graphql";
 
   // Base client headers builder
   function buildHeaders(token) {
-    return {
+    var headers = {
       "Accept": "application/json, text/plain, */*",
       "Content-Type": "application/json",
       "nv-client-id": LCARS_CLIENT_ID,
@@ -23,13 +81,16 @@
       "nv-client-version": GFN_CLIENT_VERSION,
       "nv-client-streamer": "NVIDIA-CLASSIC",
       "nv-device-os": "LINUX",
-      "nv-device-type": "DESKTOP",
-      ...(token ? { "Authorization": `GFNJWT ${token}` } : {})
+      "nv-device-type": "DESKTOP"
     };
+    if (token) {
+      headers["Authorization"] = "GFNJWT " + token;
+    }
+    return headers;
   }
 
   // Settings management
-  const defaultSettings = {
+  var defaultSettings = {
     resolution: "1920x1080",
     fps: 60,
     maxBitrateMbps: 75,
@@ -56,240 +117,371 @@
   };
 
   function getSettingsInternal() {
-    const saved = localStorage.getItem("opennow_settings");
-    return saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
+    var saved = localStorage.getItem("opennow_settings");
+    if (!saved) return defaultSettings;
+    try {
+      var parsed = JSON.parse(saved);
+      var result = {};
+      var key;
+      for (key in defaultSettings) {
+        if (defaultSettings.hasOwnProperty(key)) {
+          result[key] = defaultSettings[key];
+        }
+      }
+      for (key in parsed) {
+        if (parsed.hasOwnProperty(key)) {
+          result[key] = parsed[key];
+        }
+      }
+      return result;
+    } catch (e) {
+      return defaultSettings;
+    }
   }
 
-  // Device Login State cache
-  const deviceLoginAttempts = new Map();
-  const pendingSessions = new Map();
+  // Device Login State cache using ES5 objects instead of Map
+  var deviceLoginAttempts = {};
+  var pendingSessions = {};
 
-  const api = {
+  // Polyfill for generateUUID
+  function generateUUID() {
+    var d = new Date().getTime();
+    var d2 = (typeof performance !== 'undefined' && performance.now && (performance.now() * 1000)) || 0;
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      var r = Math.random() * 16;
+      if (d > 0) {
+        r = (d + r) % 16 | 0;
+        d = Math.floor(d / 16);
+      } else {
+        r = (d2 + r) % 16 | 0;
+        d2 = Math.floor(d2 / 16);
+      }
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+
+  // Polyfill for fetch using XMLHttpRequest
+  function httpFetch(url, options) {
+    return new Promise(function(resolve, reject) {
+      options = options || {};
+      var xhr = new XMLHttpRequest();
+      var method = options.method || "GET";
+      xhr.open(method, url, true);
+      
+      var headers = options.headers || {};
+      for (var key in headers) {
+        if (headers.hasOwnProperty(key)) {
+          xhr.setRequestHeader(key, headers[key]);
+        }
+      }
+      
+      xhr.onload = function() {
+        var responseText = xhr.responseText;
+        var status = xhr.status;
+        var ok = status >= 200 && status < 300;
+        
+        var response = {
+          ok: ok,
+          status: status,
+          text: function() { return Promise.resolve(responseText); },
+          json: function() {
+            try {
+              return Promise.resolve(JSON.parse(responseText));
+            } catch (e) {
+              return Promise.reject(e);
+            }
+          }
+        };
+        resolve(response);
+      };
+      
+      xhr.onerror = function() {
+        reject(new Error("Network error during fetch to: " + url));
+      };
+      
+      xhr.send(options.body || null);
+    });
+  }
+
+  var api = {
     // Settings
-    getSettings: () => Promise.resolve(getSettingsInternal()),
-    setSetting: (key, value) => {
-      const settings = getSettingsInternal();
+    getSettings: function() {
+      return Promise.resolve(getSettingsInternal());
+    },
+    setSetting: function(key, value) {
+      var settings = getSettingsInternal();
       settings[key] = value;
       localStorage.setItem("opennow_settings", JSON.stringify(settings));
       return Promise.resolve();
     },
-    resetSettings: () => {
+    resetSettings: function() {
       localStorage.removeItem("opennow_settings");
       return Promise.resolve(defaultSettings);
     },
 
     // Accounts
-    getSavedAccounts: () => {
-      const val = localStorage.getItem("opennow_saved_accounts");
+    getSavedAccounts: function() {
+      var val = localStorage.getItem("opennow_saved_accounts");
       return Promise.resolve(val ? JSON.parse(val) : []);
     },
-    getAuthSession: () => {
-      const val = localStorage.getItem("opennow_auth_session");
+    getAuthSession: function() {
+      var val = localStorage.getItem("opennow_auth_session");
       return Promise.resolve({
         session: val ? JSON.parse(val) : null,
         refresh: { outcome: "not_attempted" }
       });
     },
-    switchAccount: (userId) => {
-      const val = localStorage.getItem("opennow_saved_accounts");
-      const accounts = val ? JSON.parse(val) : [];
-      const acc = accounts.find(a => a.user.userId === userId);
+    switchAccount: function(userId) {
+      var val = localStorage.getItem("opennow_saved_accounts");
+      var accounts = val ? JSON.parse(val) : [];
+      var acc = null;
+      for (var i = 0; i < accounts.length; i++) {
+        if (accounts[i].user.userId === userId) {
+          acc = accounts[i];
+          break;
+        }
+      }
       if (acc) {
         localStorage.setItem("opennow_auth_session", JSON.stringify(acc));
         return Promise.resolve(acc);
       }
       return Promise.reject(new Error("Account not found"));
     },
-    removeAccount: (userId) => {
-      const val = localStorage.getItem("opennow_saved_accounts");
-      const accounts = val ? JSON.parse(val) : [];
-      const filtered = accounts.filter(a => a.user.userId !== userId);
+    removeAccount: function(userId) {
+      var val = localStorage.getItem("opennow_saved_accounts");
+      var accounts = val ? JSON.parse(val) : [];
+      var filtered = [];
+      for (var i = 0; i < accounts.length; i++) {
+        if (accounts[i].user.userId !== userId) {
+          filtered.push(accounts[i]);
+        }
+      }
       localStorage.setItem("opennow_saved_accounts", JSON.stringify(filtered));
 
-      const active = localStorage.getItem("opennow_auth_session");
+      var active = localStorage.getItem("opennow_auth_session");
       if (active) {
-        const activeSession = JSON.parse(active);
-        if (activeSession.user.userId === userId) {
-          localStorage.removeItem("opennow_auth_session");
-        }
+        try {
+          var activeSession = JSON.parse(active);
+          if (activeSession.user.userId === userId) {
+            localStorage.removeItem("opennow_auth_session");
+          }
+        } catch (e) {}
       }
       return Promise.resolve();
     },
-    logout: () => {
+    logout: function() {
       localStorage.removeItem("opennow_auth_session");
       return Promise.resolve();
     },
-    logoutAll: () => {
+    logoutAll: function() {
       localStorage.removeItem("opennow_auth_session");
       localStorage.setItem("opennow_saved_accounts", "[]");
       return Promise.resolve();
     },
 
     // Auth Providers / Regions
-    getLoginProviders: async () => {
-      try {
-        const res = await fetch("https://pcs.geforcenow.com/v1/serviceUrls");
-        if (!res.ok) throw new Error("Failed to fetch service URLs");
-        const data = await res.json();
-        const endpoints = data.gfnServiceInfo?.gfnServiceEndpoints || [];
-        return endpoints.map(entry => ({
-          idpId: entry.idpId,
-          code: entry.loginProviderCode,
-          displayName: entry.loginProviderCode === "BPC" ? "bro.game" : entry.loginProviderDisplayName,
-          streamingServiceUrl: entry.streamingServiceUrl,
-          priority: entry.loginProviderPriority || 0
-        })).sort((a, b) => a.priority - b.priority);
-      } catch (e) {
-        console.warn("[webOS Bridge] Error loading login providers:", e);
-        return [{ idpId: "NVIDIA", code: "NV", displayName: "GeForce NOW", streamingServiceUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/", priority: 1 }];
-      }
+    getLoginProviders: function() {
+      return httpFetch("https://pcs.geforcenow.com/v1/serviceUrls")
+        .then(function(res) {
+          if (!res.ok) throw new Error("Failed to fetch service URLs");
+          return res.json();
+        })
+        .then(function(data) {
+          var endpoints = (data.gfnServiceInfo && data.gfnServiceInfo.gfnServiceEndpoints) || [];
+          var mapped = [];
+          for (var i = 0; i < endpoints.length; i++) {
+            var entry = endpoints[i];
+            mapped.push({
+              idpId: entry.idpId,
+              code: entry.loginProviderCode,
+              displayName: entry.loginProviderCode === "BPC" ? "bro.game" : entry.loginProviderDisplayName,
+              streamingServiceUrl: entry.streamingServiceUrl,
+              priority: entry.loginProviderPriority || 0
+            });
+          }
+          return mapped.sort(function(a, b) {
+            return a.priority - b.priority;
+          });
+        })
+        .catch(function(e) {
+          console.warn("[webOS Bridge] Error loading login providers:", e);
+          return [{ idpId: "NVIDIA", code: "NV", displayName: "GeForce NOW", streamingServiceUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/", priority: 1 }];
+        });
     },
 
-    getRegions: async (input) => {
-      const baseUrl = input?.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      try {
-        const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/v2/serverInfo`, {
-          headers: buildHeaders(input?.token)
+    getRegions: function(input) {
+      var baseUrl = (input && input.providerStreamingBaseUrl) || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = baseUrl.replace(/\/+$/, "");
+      var token = input && input.token;
+      return httpFetch(cleanUrl + "/v2/serverInfo", {
+        headers: buildHeaders(token)
+      })
+        .then(function(res) {
+          if (!res.ok) return [];
+          return res.json();
+        })
+        .then(function(data) {
+          var zoneList = data.zoneList || [];
+          var mapped = [];
+          for (var i = 0; i < zoneList.length; i++) {
+            mapped.push({
+              name: zoneList[i].zoneName,
+              url: zoneList[i].zoneUrl
+            });
+          }
+          return mapped;
+        })
+        .catch(function(e) {
+          console.warn("[webOS Bridge] Error loading regions:", e);
+          return [];
         });
-        if (!res.ok) return [];
-        const data = await res.json();
-        return (data.zoneList || []).map(zone => ({
-          name: zone.zoneName,
-          url: zone.zoneUrl
-        }));
-      } catch (e) {
-        console.warn("[webOS Bridge] Error loading regions:", e);
-        return [];
-      }
     },
 
     // Device Authorization OAuth Flow (QR/PIN Login)
-    startDeviceLogin: async (input) => {
-      const providers = await api.getLoginProviders();
-      const provider = providers.find(p => p.idpId === input.providerIdpId) || providers[0];
-      const deviceId = crypto.randomUUID();
-      const body = new URLSearchParams({
-        client_id: LCARS_CLIENT_ID,
-        scope: "openid offline_access credential",
-        device_id: deviceId,
-        display_name: "OpenNOW webOS TV",
-        idp_id: provider.idpId
-      });
+    startDeviceLogin: function(input) {
+      return api.getLoginProviders()
+        .then(function(providers) {
+          var provider = null;
+          for (var i = 0; i < providers.length; i++) {
+            if (providers[i].idpId === input.providerIdpId) {
+              provider = providers[i];
+              break;
+            }
+          }
+          if (!provider) {
+            provider = providers[0];
+          }
+          var deviceId = generateUUID();
+          var body = "client_id=" + encodeURIComponent(LCARS_CLIENT_ID) +
+                     "&scope=" + encodeURIComponent("openid offline_access credential") +
+                     "&device_id=" + encodeURIComponent(deviceId) +
+                     "&display_name=" + encodeURIComponent("OpenNOW webOS TV") +
+                     "&idp_id=" + encodeURIComponent(provider.idpId);
 
-      const res = await fetch("https://login.nvidia.com/device/authorize", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          "x-device-id": deviceId,
-          "nv-client-id": LCARS_CLIENT_ID,
-          "nv-client-streamer": "WEBRTC",
-          "nv-client-type": "BROWSER"
-        },
-        body
-      });
+          return httpFetch("https://login.nvidia.com/device/authorize", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+              "x-device-id": deviceId,
+              "nv-client-id": LCARS_CLIENT_ID,
+              "nv-client-streamer": "WEBRTC",
+              "nv-client-type": "BROWSER"
+            },
+            body: body
+          })
+            .then(function(res) {
+              if (!res.ok) {
+                throw new Error("Failed to start device authorization");
+              }
+              return res.json();
+            })
+            .then(function(challenge) {
+              var attemptId = generateUUID().replace(/-/g, "");
+              deviceLoginAttempts[attemptId] = {
+                provider: provider,
+                deviceCode: challenge.device_code,
+                expiresAt: Date.now() + (challenge.expires_in * 1000),
+                deviceId: deviceId
+              };
 
-      if (!res.ok) {
-        throw new Error("Failed to start device authorization");
-      }
-
-      const challenge = await res.json();
-      const attemptId = crypto.randomUUID().replace(/-/g, "");
-      deviceLoginAttempts.set(attemptId, {
-        provider,
-        deviceCode: challenge.device_code,
-        expiresAt: Date.now() + (challenge.expires_in * 1000),
-        deviceId
-      });
-
-      return {
-        attemptId,
-        userCode: challenge.user_code,
-        verificationUrl: challenge.verification_uri,
-        verificationUrlWithCode: challenge.verification_uri_complete,
-        expiresIn: challenge.expires_in,
-        interval: challenge.interval,
-        deviceCode: challenge.device_code
-      };
+              return {
+                attemptId: attemptId,
+                userCode: challenge.user_code,
+                verificationUrl: challenge.verification_uri,
+                verificationUrlWithCode: challenge.verification_uri_complete,
+                expiresIn: challenge.expires_in,
+                interval: challenge.interval,
+                deviceCode: challenge.device_code
+              };
+            });
+        });
     },
 
-    pollDeviceLogin: async (input) => {
-      const attempt = deviceLoginAttempts.get(input.attemptId);
-      if (!attempt) return { status: "expired", error: "Device login expired" };
+    pollDeviceLogin: function(input) {
+      var attempt = deviceLoginAttempts[input.attemptId];
+      if (!attempt) return Promise.resolve({ status: "expired", error: "Device login expired" });
       if (Date.now() >= attempt.expiresAt) {
-        deviceLoginAttempts.delete(input.attemptId);
-        return { status: "expired", error: "Device login expired" };
+        delete deviceLoginAttempts[input.attemptId];
+        return Promise.resolve({ status: "expired", error: "Device login expired" });
       }
 
-      const body = new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        device_code: attempt.deviceCode,
-        client_id: LCARS_CLIENT_ID
-      });
+      var body = "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:device_code") +
+                 "&device_code=" + encodeURIComponent(attempt.deviceCode) +
+                 "&client_id=" + encodeURIComponent(LCARS_CLIENT_ID);
 
-      const res = await fetch("https://login.nvidia.com/token", {
+      return httpFetch("https://login.nvidia.com/token", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
           "x-device-id": attempt.deviceId,
           "nv-client-id": LCARS_CLIENT_ID
         },
-        body
-      });
+        body: body
+      })
+        .then(function(res) {
+          return res.json().then(function(data) {
+            if (!res.ok) {
+              if (data.error === "authorization_pending") {
+                return { status: "pending" };
+              }
+              return { status: "error", error: data.error_description || "Login failed" };
+            }
 
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.error === "authorization_pending") {
-          return { status: "pending" };
-        }
-        return { status: "error", error: data.error_description || "Login failed" };
-      }
+            // Parse user info from ID Token
+            var token = data.id_token || data.access_token;
+            var user = { userId: "unknown", displayName: "User", email: "", avatarUrl: "", membershipTier: "FREE" };
+            try {
+              var payload = JSON.parse(atob(token.split(".")[1]));
+              var splitEmail = payload.email ? payload.email.split("@")[0] : "";
+              user = {
+                userId: payload.sub || "unknown",
+                displayName: payload.preferred_username || splitEmail || "User",
+                email: payload.email || "",
+                avatarUrl: payload.picture || "",
+                membershipTier: payload.gfn_tier || "FREE"
+              };
+            } catch (e) {
+              console.error("[webOS Bridge] Error parsing JWT", e);
+            }
 
-      // Parse user info from ID Token
-      const token = data.id_token || data.access_token;
-      let user = { userId: "unknown", displayName: "User", email: "", avatarUrl: "", membershipTier: "FREE" };
-      try {
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        user = {
-          userId: payload.sub || "unknown",
-          displayName: payload.preferred_username || payload.email?.split("@")[0] || "User",
-          email: payload.email || "",
-          avatarUrl: payload.picture || "",
-          membershipTier: payload.gfn_tier || "FREE"
-        };
-      } catch (e) {
-        console.error("[webOS Bridge] Error parsing JWT", e);
-      }
+            var tokens = {
+              accessToken: data.access_token,
+              refreshToken: data.refresh_token,
+              idToken: data.id_token,
+              expiresAt: Date.now() + (data.expires_in * 1000),
+              authClientId: LCARS_CLIENT_ID,
+              clientToken: data.client_token
+            };
 
-      const tokens = {
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token,
-        idToken: data.id_token,
-        expiresAt: Date.now() + (data.expires_in * 1000),
-        authClientId: LCARS_CLIENT_ID,
-        clientToken: data.client_token
-      };
+            var session = {
+              provider: attempt.provider,
+              tokens: tokens,
+              user: user
+            };
 
-      const session = {
-        provider: attempt.provider,
-        tokens,
-        user
-      };
-
-      pendingSessions.set(input.attemptId, session);
-      return { status: "authorized" };
+            pendingSessions[input.attemptId] = session;
+            return { status: "authorized" };
+          });
+        });
     },
 
-    completeDeviceLogin: (input) => {
-      const session = pendingSessions.get(input.attemptId);
+    completeDeviceLogin: function(input) {
+      var session = pendingSessions[input.attemptId];
       if (!session) return Promise.reject(new Error("No authorized session found"));
       
-      pendingSessions.delete(input.attemptId);
-      deviceLoginAttempts.delete(input.attemptId);
+      delete pendingSessions[input.attemptId];
+      delete deviceLoginAttempts[input.attemptId];
 
       // Save to accounts
-      const val = localStorage.getItem("opennow_saved_accounts");
-      const accounts = val ? JSON.parse(val) : [];
-      const existingIdx = accounts.findIndex(a => a.user.userId === session.user.userId);
+      var val = localStorage.getItem("opennow_saved_accounts");
+      var accounts = val ? JSON.parse(val) : [];
+      var existingIdx = -1;
+      for (var i = 0; i < accounts.length; i++) {
+        if (accounts[i].user.userId === session.user.userId) {
+          existingIdx = i;
+          break;
+        }
+      }
       if (existingIdx >= 0) {
         accounts[existingIdx] = session;
       } else {
@@ -301,292 +493,349 @@
       return Promise.resolve(session);
     },
 
-    cancelDeviceLogin: (input) => {
-      deviceLoginAttempts.delete(input.attemptId);
-      pendingSessions.delete(input.attemptId);
+    cancelDeviceLogin: function(input) {
+      delete deviceLoginAttempts[input.attemptId];
+      delete pendingSessions[input.attemptId];
       return Promise.resolve();
     },
 
-    login: () => Promise.reject(new Error("Standard login not supported on webOS TV. Please use QR Code / Device Login.")),
+    login: function() {
+      return Promise.reject(new Error("Standard login not supported on webOS TV. Please use QR Code / Device Login."));
+    },
 
     // Catalog & Games (GraphQL client-side requests)
-    browseCatalog: async (input) => {
-      const token = input.token;
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      const serverInfoRes = await fetch(`${base.replace(/\/+$/, "")}/v2/serverInfo`, {
+    browseCatalog: function(input) {
+      var token = input.token;
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+
+      return httpFetch(cleanUrl + "/v2/serverInfo", {
         headers: buildHeaders(token)
-      });
-      const serverInfo = await serverInfoRes.json();
-      const vpcId = serverInfo.vpcId || "default";
+      })
+        .then(function(res) {
+          return res.json();
+        })
+        .then(function(serverInfo) {
+          var vpcId = serverInfo.vpcId || "default";
+          var variables = {
+            vpcId: vpcId,
+            locale: "en_US",
+            sortString: "itemMetadata.relevance:DESC,sortName:ASC",
+            fetchCount: input.fetchCount || 60,
+            cursor: "",
+            filters: {}
+          };
+          if (input.searchQuery) {
+            variables.searchString = input.searchQuery;
+          }
 
-      const variables = {
-        vpcId,
-        locale: "en_US",
-        sortString: "itemMetadata.relevance:DESC,sortName:ASC",
-        fetchCount: input.fetchCount || 60,
-        cursor: "",
-        filters: {}
-      };
-      if (input.searchQuery) {
-        variables.searchString = input.searchQuery;
-      }
+          var appFields = "\n" +
+            "        numberReturned\n" +
+            "        numberSupported\n" +
+            "        pageInfo { hasNextPage endCursor totalCount }\n" +
+            "        items {\n" +
+            "          id\n" +
+            "          title\n" +
+            "          images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }\n" +
+            "          variants {\n" +
+            "            id\n" +
+            "            appStore\n" +
+            "            storeUrl\n" +
+            "            supportedControls\n" +
+            "            gfn {\n" +
+            "              status\n" +
+            "              library { status selected }\n" +
+            "            }\n" +
+            "          }\n" +
+            "          gfn {\n" +
+            "            playabilityState\n" +
+            "            minimumMembershipTierLabel\n" +
+            "          }\n" +
+            "          itemMetadata { campaignIds }\n" +
+            "        }\n";
 
-      const appFields = `
-        numberReturned
-        numberSupported
-        pageInfo { hasNextPage endCursor totalCount }
-        items {
-          id
-          title
-          images { KEY_ART KEY_IMAGE GAME_BOX_ART TV_BANNER HERO_IMAGE MARQUEE_HERO_IMAGE FEATURE_IMAGE GAME_LOGO SCREENSHOTS }
-          variants {
-            id
-            appStore
-            storeUrl
-            supportedControls
-            gfn {
-              status
-              library { status selected }
+          var query = input.searchQuery
+            ? "query GetSearchFilterResults($vpcId: String!, $locale: String!, $sortString: String!, $fetchCount: Int!, $cursor: String!, $searchString: String!, $filters: AppFilterFields!) {\n" +
+              "            apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, searchQuery: $searchString, filters: $filters) { " + appFields + " }\n" +
+              "          }"
+            : "query GetFilterBrowseResults($vpcId: String!, $locale: String!, $sortString: String!, $fetchCount: Int!, $cursor: String!, $filters: AppFilterFields!) {\n" +
+              "            apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, filters: $filters) { " + appFields + " }\n" +
+              "          }";
+
+          return httpFetch(GRAPHQL_URL, {
+            method: "POST",
+            headers: buildHeaders(token),
+            body: JSON.stringify({ query: query, variables: variables })
+          });
+        })
+        .then(function(res) {
+          if (!res.ok) throw new Error("Catalog query failed");
+          return res.json();
+        })
+        .then(function(body) {
+          var appsData = (body.data && body.data.apps) || { items: [], pageInfo: { hasNextPage: false, totalCount: 0 } };
+          return {
+            games: appsData.items || [],
+            hasNextPage: !!(appsData.pageInfo && appsData.pageInfo.hasNextPage),
+            totalCount: (appsData.pageInfo && appsData.pageInfo.totalCount) || 0
+          };
+        });
+    },
+
+    fetchFeaturedGames: function(input) {
+      var token = input.token;
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+
+      return httpFetch(cleanUrl + "/v2/serverInfo", {
+        headers: buildHeaders(token)
+      })
+        .then(function(res) {
+          return res.json();
+        })
+        .then(function(serverInfo) {
+          var vpcId = serverInfo.vpcId || "default";
+          var variables = JSON.stringify({
+            vpcId: vpcId,
+            locale: "en_US",
+            panelNames: ["MAIN"]
+          });
+          var extensions = JSON.stringify({
+            persistedQuery: {
+              sha256Hash: "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
             }
-          }
-          gfn {
-            playabilityState
-            minimumMembershipTierLabel
-          }
-          itemMetadata { campaignIds }
-        }
-      `;
+          });
+          var params = "requestType=" + encodeURIComponent("panels/MainV2") +
+                       "&extensions=" + encodeURIComponent(extensions) +
+                       "&huId=" + encodeURIComponent(Date.now().toString(16) + Math.random().toString(16).slice(2)) +
+                       "&variables=" + encodeURIComponent(variables);
 
-      const query = input.searchQuery
-        ? `query GetSearchFilterResults($vpcId: String!, $locale: String!, $sortString: String!, $fetchCount: Int!, $cursor: String!, $searchString: String!, $filters: AppFilterFields!) {
-            apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, searchQuery: $searchString, filters: $filters) { ${appFields} }
-          }`
-        : `query GetFilterBrowseResults($vpcId: String!, $locale: String!, $sortString: String!, $fetchCount: Int!, $cursor: String!, $filters: AppFilterFields!) {
-            apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, filters: $filters) { ${appFields} }
-          }`;
+          var headers = buildHeaders(token);
+          headers["Content-Type"] = "application/graphql";
 
-      const res = await fetch(GRAPHQL_URL, {
-        method: "POST",
-        headers: buildHeaders(token),
-        body: JSON.stringify({ query, variables })
-      });
-
-      if (!res.ok) throw new Error("Catalog query failed");
-      const body = await res.json();
-      const appsData = body.data?.apps || { items: [], pageInfo: { hasNextPage: false, totalCount: 0 } };
-      
-      return {
-        games: appsData.items || [],
-        hasNextPage: appsData.pageInfo?.hasNextPage || false,
-        totalCount: appsData.pageInfo?.totalCount || 0
-      };
+          return httpFetch(GRAPHQL_URL + "?" + params, {
+            headers: headers
+          });
+        })
+        .then(function(res) {
+          if (!res.ok) return [];
+          return res.json().then(function(body) {
+            var panels = (body.data && body.data.panels) || [];
+            var games = [];
+            for (var i = 0; i < panels.length; i++) {
+              var panel = panels[i];
+              if (panel.apps && panel.apps.items) {
+                var items = panel.apps.items;
+                for (var j = 0; j < items.length; j++) {
+                  games.push(items[j]);
+                }
+              }
+            }
+            return games;
+          });
+        })
+        .catch(function() {
+          return [];
+        });
     },
 
-    fetchFeaturedGames: async (input) => {
-      const token = input.token;
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      const serverInfoRes = await fetch(`${base.replace(/\/+$/, "")}/v2/serverInfo`, {
+    fetchLibraryGames: function(input) {
+      var token = input.token;
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+
+      return httpFetch(cleanUrl + "/v2/serverInfo", {
         headers: buildHeaders(token)
-      });
-      const serverInfo = await serverInfoRes.json();
-      const vpcId = serverInfo.vpcId || "default";
+      })
+        .then(function(res) {
+          return res.json();
+        })
+        .then(function(serverInfo) {
+          var vpcId = serverInfo.vpcId || "default";
+          var variables = JSON.stringify({
+            vpcId: vpcId,
+            locale: "en_US",
+            panelNames: ["LIBRARY"]
+          });
+          var extensions = JSON.stringify({
+            persistedQuery: {
+              sha256Hash: "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f"
+            }
+          });
+          var params = "requestType=" + encodeURIComponent("panels/Library") +
+                       "&extensions=" + encodeURIComponent(extensions) +
+                       "&huId=" + encodeURIComponent(Date.now().toString(16) + Math.random().toString(16).slice(2)) +
+                       "&variables=" + encodeURIComponent(variables);
 
-      const variables = JSON.stringify({
-        vpcId,
-        locale: "en_US",
-        panelNames: ["MAIN"]
-      });
-      const extensions = JSON.stringify({
-        persistedQuery: {
-          sha256Hash: "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
-        }
-      });
-      const params = new URLSearchParams({
-        requestType: "panels/MainV2",
-        extensions,
-        huId: `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`,
-        variables
-      });
+          var headers = buildHeaders(token);
+          headers["Content-Type"] = "application/graphql";
 
-      const res = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
-        headers: {
-          ...buildHeaders(token),
-          "Content-Type": "application/graphql"
-        }
-      });
-      if (!res.ok) return [];
-      const body = await res.json();
-      
-      const panels = body.data?.panels || [];
-      const games = [];
-      for (const panel of panels) {
-        if (panel.apps?.items) {
-          games.push(...panel.apps.items);
-        }
-      }
-      return games;
+          return httpFetch(GRAPHQL_URL + "?" + params, {
+            headers: headers
+          });
+        })
+        .then(function(res) {
+          if (!res.ok) return [];
+          return res.json().then(function(body) {
+            var panels = (body.data && body.data.panels) || [];
+            var games = [];
+            for (var i = 0; i < panels.length; i++) {
+              var panel = panels[i];
+              if (panel.apps && panel.apps.items) {
+                var items = panel.apps.items;
+                for (var j = 0; j < items.length; j++) {
+                  games.push(items[j]);
+                }
+              }
+            }
+            return games;
+          });
+        })
+        .catch(function() {
+          return [];
+        });
     },
 
-    fetchLibraryGames: async (input) => {
-      const token = input.token;
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      const serverInfoRes = await fetch(`${base.replace(/\/+$/, "")}/v2/serverInfo`, {
-        headers: buildHeaders(token)
-      });
-      const serverInfo = await serverInfoRes.json();
-      const vpcId = serverInfo.vpcId || "default";
-
-      const variables = JSON.stringify({
-        vpcId,
-        locale: "en_US",
-        panelNames: ["LIBRARY"]
-      });
-      const extensions = JSON.stringify({
-        persistedQuery: {
-          sha256Hash: "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f"
-        }
-      });
-      const params = new URLSearchParams({
-        requestType: "panels/Library",
-        extensions,
-        huId: `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`,
-        variables
-      });
-
-      const res = await fetch(`${GRAPHQL_URL}?${params.toString()}`, {
-        headers: {
-          ...buildHeaders(token),
-          "Content-Type": "application/graphql"
-        }
-      });
-      if (!res.ok) return [];
-      const body = await res.json();
-      
-      const panels = body.data?.panels || [];
-      const games = [];
-      for (const panel of panels) {
-        if (panel.apps?.items) {
-          games.push(...panel.apps.items);
-        }
-      }
-      return games;
-    },
-
-    fetchStorePanels: async () => [],
-    fetchMainGames: async () => [],
-    fetchPublicGames: async () => [],
-    resolveLaunchAppId: async () => null,
-    resolveStoreUrl: async () => null,
+    fetchStorePanels: function() { return Promise.resolve([]); },
+    fetchMainGames: function() { return Promise.resolve([]); },
+    fetchPublicGames: function() { return Promise.resolve([]); },
+    resolveLaunchAppId: function() { return Promise.resolve(null); },
+    resolveStoreUrl: function() { return Promise.resolve(null); },
 
     // GFN CloudMatch Session Lifecycle
-    createSession: async (input) => {
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      const body = {
+    createSession: function(input) {
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+      var body = {
         appId: input.appId,
         appStore: input.appStore,
         billingMode: input.billingMode || 1,
         cmsSignature: input.cmsSignature,
         playSource: input.playSource || "PLAYSOURCE_LIBRARY",
         targetGpuType: input.targetGpuType || 0,
-        userAgreedToLStore: input.userAgreedToLStore || false
+        userAgreedToLStore: !!input.userAgreedToLStore
       };
 
-      const res = await fetch(`${base.replace(/\/+$/, "")}/v2/session`, {
+      return httpFetch(cleanUrl + "/v2/session", {
         method: "POST",
         headers: buildHeaders(input.token),
         body: JSON.stringify(body)
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Session creation failed: ${errText}`);
-      }
-      return res.json();
+      })
+        .then(function(res) {
+          if (!res.ok) {
+            return res.text().then(function(errText) {
+              throw new Error("Session creation failed: " + errText);
+            });
+          }
+          return res.json();
+        });
     },
 
-    pollSession: async (input) => {
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      const res = await fetch(`${base.replace(/\/+$/, "")}/v2/session/${input.sessionId}`, {
+    pollSession: function(input) {
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+      return httpFetch(cleanUrl + "/v2/session/" + input.sessionId, {
         headers: buildHeaders(input.token)
-      });
-      if (!res.ok) throw new Error("Session polling failed");
-      return res.json();
+      })
+        .then(function(res) {
+          if (!res.ok) throw new Error("Session polling failed");
+          return res.json();
+        });
     },
 
-    reportSessionAd: async (input) => {
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      const res = await fetch(`${base.replace(/\/+$/, "")}/v2/session/${input.sessionId}/adreport`, {
+    reportSessionAd: function(input) {
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+      return httpFetch(cleanUrl + "/v2/session/" + input.sessionId + "/adreport", {
         method: "POST",
         headers: buildHeaders(input.token),
         body: JSON.stringify({ adState: input.adState })
-      });
-      if (!res.ok) throw new Error("Ad reporting failed");
-      return res.json();
+      })
+        .then(function(res) {
+          if (!res.ok) throw new Error("Ad reporting failed");
+          return res.json();
+        });
     },
 
-    stopSession: async (input) => {
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      await fetch(`${base.replace(/\/+$/, "")}/v2/session/${input.sessionId}`, {
+    stopSession: function(input) {
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+      return httpFetch(cleanUrl + "/v2/session/" + input.sessionId, {
         method: "DELETE",
         headers: buildHeaders(input.token)
+      }).then(function() {
+        return;
       });
     },
 
-    getActiveSessions: async (token, streamingBaseUrl) => {
-      const base = streamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      try {
-        const res = await fetch(`${base.replace(/\/+$/, "")}/v2/session`, {
-          headers: buildHeaders(token)
+    getActiveSessions: function(token, streamingBaseUrl) {
+      var base = streamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+      return httpFetch(cleanUrl + "/v2/session", {
+        headers: buildHeaders(token)
+      })
+        .then(function(res) {
+          if (!res.ok) return [];
+          return res.json().then(function(data) {
+            return data.sessionList || [];
+          });
+        })
+        .catch(function() {
+          return [];
         });
-        if (!res.ok) return [];
-        const data = await res.json();
-        return data.sessionList || [];
-      } catch (e) {
-        return [];
-      }
     },
 
-    claimSession: async (input) => {
-      const base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
-      const res = await fetch(`${base.replace(/\/+$/, "")}/v2/session/${input.sessionId}/claim`, {
+    claimSession: function(input) {
+      var base = input.providerStreamingBaseUrl || "https://prod.cloudmatchbeta.nvidiagrid.net/";
+      var cleanUrl = base.replace(/\/+$/, "");
+      return httpFetch(cleanUrl + "/v2/session/" + input.sessionId + "/claim", {
         method: "POST",
         headers: buildHeaders(input.token)
-      });
-      if (!res.ok) throw new Error("Session claim failed");
-      return res.json();
+      })
+        .then(function(res) {
+          if (!res.ok) throw new Error("Session claim failed");
+          return res.json();
+        });
     },
 
-    showSessionConflictDialog: () => Promise.resolve("terminate"),
+    showSessionConflictDialog: function() {
+      return Promise.resolve("terminate");
+    },
 
     // Browser WebRTC Signaling via WebSocket
-    connectSignaling: async (input) => {
-      if (api._signaling) api._signaling.disconnect();
+    connectSignaling: function(input) {
+      if (api._signaling) {
+        api._signaling.disconnect();
+      }
       
-      const peerName = `peer-${Math.floor(Math.random() * 10000000000)}`;
-      const server = input.signalingServer.includes(":") ? input.signalingServer : `${input.signalingServer}:443`;
-      const url = `wss://${server}/nvst/sign_in?peer_id=${peerName}&version=2`;
-      const protocol = `x-nv-sessionid.${input.sessionId}`;
+      var peerName = "peer-" + Math.floor(Math.random() * 10000000000);
+      var server = input.signalingServer.indexOf(":") >= 0 ? input.signalingServer : input.signalingServer + ":443";
+      var url = "wss://" + server + "/nvst/sign_in?peer_id=" + peerName + "&version=2";
+      var protocol = "x-nv-sessionid." + input.sessionId;
 
-      const ws = new WebSocket(url, protocol);
-      let ackCounter = 0;
-      let heartbeatTimer = null;
+      var ws = new WebSocket(url, protocol);
+      var ackCounter = 0;
+      var heartbeatTimer = null;
 
-      const client = {
-        ws,
-        disconnect: () => {
-          clearInterval(heartbeatTimer);
+      var client = {
+        ws: ws,
+        disconnect: function() {
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+          }
           ws.close();
         },
-        sendJson: (payload) => {
+        sendJson: function(payload) {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(payload));
           }
         }
       };
 
-      ws.onopen = () => {
+      ws.onopen = function() {
+        ackCounter++;
         client.sendJson({
-          ackid: ++ackCounter,
+          ackid: ackCounter,
           peer_info: {
             browser: "Chrome",
             browserVersion: "131",
@@ -598,28 +847,32 @@
             version: 2
           }
         });
-        heartbeatTimer = setInterval(() => client.sendJson({ hb: 1 }), 5000);
+        heartbeatTimer = setInterval(function() {
+          client.sendJson({ hb: 1 });
+        }, 5000);
         api._emitSignaling({ type: "connected" });
       };
 
-      ws.onclose = (e) => {
-        clearInterval(heartbeatTimer);
+      ws.onclose = function(e) {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+        }
         api._emitSignaling({ type: "disconnected", reason: e.reason || "socket closed" });
       };
 
-      ws.onerror = () => {
+      ws.onerror = function() {
         api._emitSignaling({ type: "error", message: "Signaling connection error" });
       };
 
-      ws.onmessage = (e) => {
-        let msg;
+      ws.onmessage = function(e) {
+        var msg;
         try {
           msg = JSON.parse(e.data);
-        } catch {
+        } catch (err) {
           return;
         }
 
-        if (msg.ackid && msg.peer_info?.id !== 2) {
+        if (msg.ackid && msg.peer_info && msg.peer_info.id !== 2) {
           client.sendJson({ ack: msg.ackid });
         }
 
@@ -628,11 +881,11 @@
           return;
         }
 
-        if (msg.peer_msg?.msg) {
-          let payload;
+        if (msg.peer_msg && msg.peer_msg.msg) {
+          var payload;
           try {
             payload = JSON.parse(msg.peer_msg.msg);
-          } catch {
+          } catch (err) {
             return;
           }
 
@@ -652,9 +905,10 @@
       };
 
       api._signaling = client;
+      return Promise.resolve();
     },
 
-    disconnectSignaling: () => {
+    disconnectSignaling: function() {
       if (api._signaling) {
         api._signaling.disconnect();
         api._signaling = null;
@@ -662,13 +916,15 @@
       return Promise.resolve();
     },
 
-    sendAnswer: (input) => {
+    sendAnswer: function(input) {
       if (api._signaling) {
-        const answer = {
+        var answer = {
           type: "answer",
-          sdp: input.sdp,
-          ...(input.nvstSdp ? { nvstSdp: input.nvstSdp } : {})
+          sdp: input.sdp
         };
+        if (input.nvstSdp) {
+          answer.nvstSdp = input.nvstSdp;
+        }
         api._signaling.sendJson({
           peer_msg: { from: 2, to: 1, msg: JSON.stringify(answer) },
           ackid: 1
@@ -677,7 +933,7 @@
       return Promise.resolve();
     },
 
-    sendIceCandidate: (input) => {
+    sendIceCandidate: function(input) {
       if (api._signaling) {
         api._signaling.sendJson({
           peer_msg: {
@@ -695,64 +951,103 @@
       return Promise.resolve();
     },
 
-    _signalingListeners: new Set(),
-    onSignalingEvent: (listener) => {
-      api._signalingListeners.add(listener);
-      return () => api._signalingListeners.delete(listener);
+    _signalingListeners: [],
+    onSignalingEvent: function(listener) {
+      api._signalingListeners.push(listener);
+      return function() {
+        var index = api._signalingListeners.indexOf(listener);
+        if (index >= 0) {
+          api._signalingListeners.splice(index, 1);
+        }
+      };
     },
-    _emitSignaling: (event) => {
-      for (const listener of api._signalingListeners) listener(event);
+    _emitSignaling: function(event) {
+      var listeners = api._signalingListeners;
+      for (var i = 0; i < listeners.length; i++) {
+        try {
+          listeners[i](event);
+        } catch (e) {
+          console.error(e);
+        }
+      }
     },
 
     // UI/Platform APIs
-    readClipboardText: () => navigator.clipboard ? navigator.clipboard.readText() : Promise.resolve(""),
-    onToggleFullscreen: (cb) => { return () => {}; },
-    onTriggerScreenshot: (cb) => { return () => {}; },
-    onExternalEscape: (cb) => { return () => {}; },
-    getMicrophonePermission: () => Promise.resolve({ granted: false }),
-    notifyPointerLockChange: () => {},
-    updateNativeShortcuts: () => {},
-    fetchSubscriptionInfo: () => Promise.resolve(null),
-    getNativeCloudGsyncCapabilities: () => Promise.resolve({ supported: false }),
-    getNativeStreamerStatus: () => Promise.resolve({ detected: false, gstreamerAvailable: false }),
+    readClipboardText: function() {
+      if (navigator.clipboard && typeof navigator.clipboard.readText === "function") {
+        return navigator.clipboard.readText();
+      }
+      return Promise.resolve("");
+    },
+    onToggleFullscreen: function(cb) { return function() {}; },
+    onTriggerScreenshot: function(cb) { return function() {}; },
+    onExternalEscape: function(cb) { return function() {}; },
+    getMicrophonePermission: function() { return Promise.resolve({ granted: false }); },
+    notifyPointerLockChange: function() {},
+    updateNativeShortcuts: function() {},
+    fetchSubscriptionInfo: function() { return Promise.resolve(null); },
+    getNativeCloudGsyncCapabilities: function() { return Promise.resolve({ supported: false }); },
+    getNativeStreamerStatus: function() { return Promise.resolve({ detected: false, gstreamerAvailable: false }); },
     
-    setFullscreen: (v) => {
+    setFullscreen: function(v) {
       if (v) {
-        document.documentElement.requestFullscreen().catch(() => {});
+        if (document.documentElement.requestFullscreen) {
+          var p1 = document.documentElement.requestFullscreen();
+          if (p1 && typeof p1["catch"] === "function") {
+            p1["catch"](function() {});
+          }
+        }
       } else {
-        document.exitFullscreen().catch(() => {});
+        if (document.exitFullscreen) {
+          var p2 = document.exitFullscreen();
+          if (p2 && typeof p2["catch"] === "function") {
+            p2["catch"](function() {});
+          }
+        }
       }
       return Promise.resolve();
     },
-    toggleFullscreen: () => {
+    toggleFullscreen: function() {
       if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {});
+        if (document.documentElement.requestFullscreen) {
+          var p3 = document.documentElement.requestFullscreen();
+          if (p3 && typeof p3["catch"] === "function") {
+            p3["catch"](function() {});
+          }
+        }
       } else {
-        document.exitFullscreen().catch(() => {});
+        if (document.exitFullscreen) {
+          var p4 = document.exitFullscreen();
+          if (p4 && typeof p4["catch"] === "function") {
+            p4["catch"](function() {});
+          }
+        }
       }
       return Promise.resolve();
     },
-    togglePointerLock: () => Promise.resolve(),
+    togglePointerLock: function() { return Promise.resolve(); },
     
     // Direct Launch & Release Highlights (no-op)
-    onDirectLaunchRequest: (cb) => { return () => {}; },
-    getPendingDirectLaunchRequest: () => Promise.resolve(null),
-    onReleaseHighlightsShow: (cb) => { return () => {}; },
-    clearDiscordActivity: () => Promise.resolve(),
-    quitApp: () => {
+    onDirectLaunchRequest: function(cb) { return function() {}; },
+    getPendingDirectLaunchRequest: function() { return Promise.resolve(null); },
+    onReleaseHighlightsShow: function(cb) { return function() {}; },
+    clearDiscordActivity: function() { return Promise.resolve(); },
+    quitApp: function() {
       window.close();
       return Promise.resolve();
     },
-    fetchSubscription: (input) => Promise.resolve({
-      membershipTier: "PREMIUM",
-      allottedHours: 100,
-      remainingHours: 100,
-      isUnlimited: true,
-      entitledResolutions: [
-        { width: 1920, height: 1080, fps: 60 },
-        { width: 3840, height: 2160, fps: 60 }
-      ]
-    })
+    fetchSubscription: function(input) {
+      return Promise.resolve({
+        membershipTier: "PREMIUM",
+        allottedHours: 100,
+        remainingHours: 100,
+        isUnlimited: true,
+        entitledResolutions: [
+          { width: 1920, height: 1080, fps: 60 },
+          { width: 3840, height: 2160, fps: 60 }
+        ]
+      });
+    }
   };
 
   window.openNow = api;

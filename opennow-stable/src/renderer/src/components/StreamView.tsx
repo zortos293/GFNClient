@@ -475,6 +475,7 @@ export function StreamView({
   const sidebarGamepadLastMoveAtRef = useRef(0);
   const exitPromptGamepadFrameRef = useRef<number | null>(null);
   const exitPromptGamepadPreviousButtonsRef = useRef(0);
+  const suppressVideoFocusOnSidebarCloseRef = useRef(false);
   const screenshotApiAvailable =
     typeof window.openNow?.saveScreenshot === "function" &&
     typeof window.openNow?.listScreenshots === "function" &&
@@ -1362,6 +1363,10 @@ export function StreamView({
         } catch {}
       };
     }
+    if (suppressVideoFocusOnSidebarCloseRef.current) {
+      suppressVideoFocusOnSidebarCloseRef.current = false;
+      return undefined;
+    }
     // Sidebar just closed — restore focus to the video so clicks register
     // immediately. Without this, focus stays on the last sidebar element and
     // mousedown's preventDefault() blocks the browser from re-focusing on click.
@@ -1397,6 +1402,7 @@ export function StreamView({
   }, [onReleasePointerLock]);
 
   const handleSidebarExitSession = useCallback(() => {
+    suppressVideoFocusOnSidebarCloseRef.current = true;
     setShowSideBar(false);
     onEndSession();
   }, [onEndSession]);
@@ -1412,7 +1418,7 @@ export function StreamView({
   }, []);
 
   useEffect(() => {
-    if (!showSideBar) return;
+    if (!showSideBar || exitPrompt.open) return;
 
     const getMenuItems = (): HTMLElement[] => {
       const scope = selectedScreenshotId
@@ -1497,8 +1503,10 @@ export function StreamView({
     };
 
     const initialFocusTimer = window.setTimeout(() => {
-      const activeTab = sidebarRef.current?.querySelector<HTMLElement>(".sidebar-tab--active");
-      activeTab?.focus({ preventScroll: true });
+      const initialFocus = selectedScreenshotId
+        ? document.querySelector<HTMLElement>(".sv-shot-modal-btn:not(:disabled), .sv-shot-modal-close")
+        : sidebarRef.current?.querySelector<HTMLElement>(".sidebar-tab--active");
+      initialFocus?.focus({ preventScroll: true });
     }, 0);
     sidebarGamepadPreviousButtonsRef.current = readButtons();
     sidebarGamepadLastMoveAtRef.current = performance.now();
@@ -1513,7 +1521,7 @@ export function StreamView({
       sidebarGamepadPreviousButtonsRef.current = 0;
       sidebarGamepadLastMoveAtRef.current = 0;
     };
-  }, [selectAdjacentSidebarTab, selectedScreenshotId, showSideBar]);
+  }, [exitPrompt.open, selectAdjacentSidebarTab, selectedScreenshotId, showSideBar]);
 
   useEffect(() => {
     if (!exitPrompt.open) return;

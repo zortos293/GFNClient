@@ -14,17 +14,19 @@ export const controllerButton = {
 
 export function readControllerGamepadButtons(pad: Gamepad | undefined): number {
   if (!pad) return 0;
-  let buttons = 0;
-  if (pad.buttons[0]?.pressed) buttons |= controllerButton.south;
-  if (pad.buttons[1]?.pressed) buttons |= controllerButton.east;
-  if (pad.buttons[2]?.pressed) buttons |= controllerButton.west;
-  if (pad.buttons[3]?.pressed) buttons |= controllerButton.north;
-  if (pad.buttons[4]?.pressed) buttons |= controllerButton.leftShoulder;
-  if (pad.buttons[5]?.pressed) buttons |= controllerButton.rightShoulder;
-  if (pad.buttons[12]?.pressed || (pad.axes[1] ?? 0) < -0.65) buttons |= controllerButton.up;
-  if (pad.buttons[13]?.pressed || (pad.axes[1] ?? 0) > 0.65) buttons |= controllerButton.down;
-  if (pad.buttons[14]?.pressed || (pad.axes[0] ?? 0) < -0.65) buttons |= controllerButton.left;
-  if (pad.buttons[15]?.pressed || (pad.axes[0] ?? 0) > 0.65) buttons |= controllerButton.right;
-  if (pad.buttons[9]?.pressed || pad.buttons[16]?.pressed) buttons |= controllerButton.menu;
-  return buttons;
+  const buttons = pad.buttons ?? [];
+  const axes = pad.axes ?? [];
+  let result = 0;
+  if (buttons[0]?.pressed) result |= controllerButton.south;
+  if (buttons[1]?.pressed) result |= controllerButton.east;
+  if (buttons[2]?.pressed) result |= controllerButton.west;
+  if (buttons[3]?.pressed) result |= controllerButton.north;
+  if (buttons[4]?.pressed) result |= controllerButton.leftShoulder;
+  if (buttons[5]?.pressed) result |= controllerButton.rightShoulder;
+  if (buttons[12]?.pressed || (axes[1] ?? 0) < -0.65) result |= controllerButton.up;
+  if (buttons[13]?.pressed || (axes[1] ?? 0) > 0.65) result |= controllerButton.down;
+  if (buttons[14]?.pressed || (axes[0] ?? 0) < -0.65) result |= controllerButton.left;
+  if (buttons[15]?.pressed || (axes[0] ?? 0) > 0.65) result |= controllerButton.right;
+  if (buttons[9]?.pressed || buttons[16]?.pressed) result |= controllerButton.menu;
+  return result;
 }

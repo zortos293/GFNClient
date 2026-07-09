@@ -1,4 +1,5 @@
 import { Loader2, Monitor, Cpu, Wifi, X, XCircle } from "lucide-react";
+import { useEffect } from "react";
 import type { JSX, Ref } from "react";
 import {
   getPreferredSessionAdMediaUrl,
@@ -13,6 +14,7 @@ import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
 import { useTranslation } from "../i18n";
+import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 
 type TranslateFunction = typeof import("../i18n").t;
 
@@ -20,6 +22,7 @@ export interface StreamLoadingProps {
   gameTitle: string;
   gameCover?: string;
   platformStore?: string;
+  controllerMode?: boolean;
   status: "queue" | "setup" | "starting" | "connecting";
   queuePosition?: number;
   estimatedWait?: string;
@@ -106,6 +109,7 @@ export function StreamLoading({
   gameTitle,
   gameCover,
   platformStore,
+  controllerMode = false,
   status,
   queuePosition,
   estimatedWait,
@@ -129,6 +133,49 @@ export function StreamLoading({
   const activeAdDurationMs = getSessionAdDurationMs(activeAd);
   const activeAdDurationSeconds = activeAdDurationMs ? Math.round(activeAdDurationMs / 1000) : undefined;
   const gracePeriodSeconds = getSessionAdGracePeriodSeconds(adState);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onCancel]);
+
+  useEffect(() => {
+    if (!controllerMode) return;
+
+    let frameId: number | null = null;
+    let previousButtons = 0;
+
+    const readButtons = (): number => {
+      const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
+      return readControllerGamepadButtons(pad);
+    };
+
+    const handleFrame = () => {
+      const buttons = readButtons();
+      const pressed = buttons & ~previousButtons;
+      if (pressed & controllerButton.west) {
+        onCancel();
+      }
+      previousButtons = buttons;
+      frameId = window.requestAnimationFrame(handleFrame);
+    };
+
+    frameId = window.requestAnimationFrame(handleFrame);
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [controllerMode, onCancel]);
 
   return (
     <div className={`sload${hasError ? " sload--error" : ""}`}>
@@ -238,7 +285,11 @@ export function StreamLoading({
             </button>
           )}
           <button className="sload-cancel" onClick={onCancel} aria-label={t("streamLoading.actions.cancelLoading")}>
-            <X size={16} />
+            {controllerMode && !hasError ? (
+              <span className="controller-button controller-button--x">X</span>
+            ) : (
+              <X size={16} />
+            )}
             <span>{hasError ? t("app.actions.close") : t("app.actions.cancel")}</span>
           </button>
         </div>

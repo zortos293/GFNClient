@@ -42,6 +42,7 @@ import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent 
 import { getCodecDecodeBadgeState, shouldShowLinuxHardwareCodecHint, type CodecTestResult } from "../lib/codecDiagnostics";
 import { getAccentColorOption, getAccentColorOptions } from "../lib/uiCustomization";
 import { useTranslation } from "../i18n";
+import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import {
   clearStoredRegionPingResults,
   loadStoredRegionPingResults,
@@ -57,6 +58,8 @@ interface SettingsPageProps {
   onRunCodecTest: () => Promise<void>;
   onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onClose: () => void;
+  returnPageLabel: string;
+  controllerMode?: boolean;
   focusSection?: SettingsSectionId;
   /** Called when the user clicks "What's new" in the About section */
   onOpenWhatsNew?: () => void;
@@ -716,7 +719,19 @@ function saveCachedEntitledResolutions(cache: EntitledResolutionsCache): void {
 
 /* ── Component ────────────────────────────────────────────────────── */
 
-export function SettingsPage({ settings, regions, onSettingChange, codecResults, codecTesting, onRunCodecTest, onClose, focusSection, onOpenWhatsNew }: SettingsPageProps): JSX.Element {
+export function SettingsPage({
+  settings,
+  regions,
+  onSettingChange,
+  codecResults,
+  codecTesting,
+  onRunCodecTest,
+  onClose,
+  returnPageLabel,
+  controllerMode = false,
+  focusSection,
+  onOpenWhatsNew,
+}: SettingsPageProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
@@ -2412,6 +2427,33 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
     };
   }, [nativeStreamerEnablePromptVisible, onClose, zortosCommunityProxyPromptVisible]);
 
+  useEffect(() => {
+    if (!controllerMode) return;
+
+    let frameId: number | null = null;
+    const readButtons = (): number => {
+      const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
+      return readControllerGamepadButtons(pad);
+    };
+
+    const handleFrame = () => {
+      if (!nativeStreamerEnablePromptVisible && !zortosCommunityProxyPromptVisible) {
+        const buttons = readButtons();
+        if (buttons & controllerButton.west) {
+          onClose();
+        }
+      }
+      frameId = window.requestAnimationFrame(handleFrame);
+    };
+
+    frameId = window.requestAnimationFrame(handleFrame);
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [controllerMode, nativeStreamerEnablePromptVisible, onClose, zortosCommunityProxyPromptVisible]);
+
   return (
     <>
         <header className="settings-modal-header">
@@ -2469,6 +2511,14 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               ))}
             </div>
           ))}
+        </div>
+        <div className="settings-sidebar-footer">
+          <span className="settings-footer-kicker">{t("settings.backTo")}</span>
+          <button type="button" className="settings-back-btn" onClick={onClose}>
+            <span className="controller-button controller-button--x">X</span>
+            <span>{t("app.actions.cancel")}</span>
+          </button>
+          <span className="settings-footer-destination">{returnPageLabel}</span>
         </div>
       </nav>
 
@@ -4680,7 +4730,8 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
           </>
         )}
       </div>
-        </div>
+
+      </div>
 
       {nativeStreamerEnablePromptVisible && (
         <div

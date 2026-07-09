@@ -4606,6 +4606,7 @@ export function App(): JSX.Element {
             gameTitle={streamingGame?.title ?? t("app.labels.game")}
             gameCover={streamingGame?.imageUrl}
             platformStore={streamingStore ?? undefined}
+            controllerMode={effectiveControllerMode}
             status={loadingStatus}
             queuePosition={queuePosition}
             adState={effectiveAdState}
@@ -4750,17 +4751,19 @@ export function App(): JSX.Element {
         onExitComplete={handleSettingsExitComplete}
       >
         {settingsMounted && (
-          <SettingsPage
-            settings={settings}
-            regions={regions}
-            codecResults={codecResults}
-            codecTesting={codecTesting}
-            onRunCodecTest={runCodecTest}
-            onSettingChange={updateSetting}
-            onClose={handleCloseSettings}
-            focusSection={settingsFocusSection}
-            onOpenWhatsNew={handleOpenWhatsNew}
-          />
+            <SettingsPage
+              settings={settings}
+              regions={regions}
+              codecResults={codecResults}
+              codecTesting={codecTesting}
+              onRunCodecTest={runCodecTest}
+              onSettingChange={updateSetting}
+              onClose={handleCloseSettings}
+              returnPageLabel={pageBeforeSettings === "home" ? t("navigation.home") : t("navigation.library")}
+              controllerMode={effectiveControllerMode}
+              focusSection={settingsFocusSection}
+              onOpenWhatsNew={handleOpenWhatsNew}
+            />
         )}
       </SettingsModalHost>
       {logoutConfirmModal}

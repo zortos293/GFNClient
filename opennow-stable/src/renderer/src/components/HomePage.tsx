@@ -651,10 +651,26 @@ export const HomePage = memo(function HomePage({
             </div>
 
             <div className="controller-bottom-hints" aria-hidden="true">
-              <div className="controller-hint"><span className="controller-button controller-button--a">A</span><span>{t("app.actions.select")}</span></div>
-              <div className="controller-hint"><span className="controller-button controller-button--b">B</span><span>{t("app.actions.back")}</span></div>
-              <div className="controller-hint"><span className="controller-button controller-button--x">X</span><span>{t("app.actions.search")}</span></div>
-              <div className="controller-hint controller-hint--more"><span className="controller-menu-button"><Menu size={22} /></span><span>{t("library.moreOptions")}</span></div>
+              <button type="button" className="controller-hint controller-hint--a" onClick={launchFocusedTile}>
+                <span className="controller-button controller-button--a">A</span>
+                <span>{t("app.actions.select")}</span>
+              </button>
+              <button type="button" className="controller-hint controller-hint--b" onClick={onPreviousControllerPage}>
+                <span className="controller-button controller-button--b">B</span>
+                <span>{t("app.actions.back")}</span>
+              </button>
+              <button type="button" className="controller-hint" onClick={cycleFocusedVariant}>
+                <span className="controller-button controller-button--y">Y</span>
+                <span>{t("library.filter")}</span>
+              </button>
+              <button type="button" className="controller-hint controller-hint--x" onClick={() => setControllerSearchOpen(true)}>
+                <span className="controller-button controller-button--x">X</span>
+                <span>{t("app.actions.search")}</span>
+              </button>
+              <button type="button" className="controller-hint controller-hint--more" onClick={() => alert('More Options')}>
+                <span className="controller-menu-button"><Menu size={22} /></span>
+                <span>{t("library.moreOptions")}</span>
+              </button>
             </div>
 
             <AnimatePresence initial={false}>

@@ -683,7 +683,10 @@ class GfnAuthRepository(
         return refreshed
     }
 
-    suspend fun login(provider: LoginProvider): AuthSession {
+    suspend fun login(
+        provider: LoginProvider,
+        onAuthorizationCodeReceived: suspend () -> Unit = {},
+    ): AuthSession {
         drainExternalOAuthRedirects()
         val callbackServers = openAvailableCallbackServers()
         val port = callbackServers.port
@@ -712,6 +715,7 @@ class GfnAuthRepository(
             }
             codeDeferred.await()
         }
+        onAuthorizationCodeReceived()
         val tokens = ensureClientTokenBestEffort(exchangeAuthorizationCode(code, verifier, port))
         val session = buildSession(provider, tokens)
         authStore.upsertSession(session)

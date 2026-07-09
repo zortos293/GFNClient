@@ -219,4 +219,34 @@ class AppUpdateTest {
         assertFalse(isGooglePlayInstallerPackage("com.android.packageinstaller"))
         assertFalse(isGooglePlayInstallerPackage(null))
     }
+
+    @Test
+    fun installSourceLabelsPlayStoreAndApkDistribution() {
+        val play = AndroidAppInstallSource(setOf(GOOGLE_PLAY_STORE_PACKAGE))
+        val sideload = AndroidAppInstallSource(installerPackageNames = emptySet())
+        val packageInstaller = AndroidAppInstallSource(setOf("com.google.android.packageinstaller"))
+
+        assertEquals("play-store", play.distributionKind)
+        assertEquals("apk", sideload.distributionKind)
+        assertEquals("apk", packageInstaller.distributionKind)
+        assertEquals("Google Play", play.displayName)
+        assertEquals("Sideloaded", sideload.displayName)
+    }
+
+    @Test
+    fun debugHeaderIncludesBuildAndDistribution() {
+        val update = AndroidUpdateState(
+            currentVersionName = "0.7.5",
+            currentVersionCode = 30,
+            installSource = AndroidAppInstallSource(
+                installerPackageNames = setOf(GOOGLE_PLAY_STORE_PACKAGE),
+                apkUpdatesSupportedByBuild = false,
+            ),
+        )
+
+        assertEquals(
+            "app.version=0.7.5 build=30 variant=release distribution=play-store installSource=Google Play buildDistribution=play-release apkUpdatesAllowed=false",
+            update.debugHeaderLine(debugBuild = false),
+        )
+    }
 }

@@ -37,6 +37,7 @@
     <string name="action_clear_filters">Clear filters</string>
     <string name="action_scroll_top">Back to top</string>
     <string name="option_auto">Auto</string>
+    <string name="option_coming_soon">Coming soon</string>
     <string name="store_selector_choose_launcher">Choose launcher</string>
     <string name="store_selector_launchers">Launchers</string>
     <string name="store_selector_default">Default</string>
@@ -80,6 +81,9 @@
     <string name="settings_cloud_gsync_desc">Asks the cloud session to use variable refresh timing when supported by your device, display, plan, and the GFN session.</string>
     <string name="settings_dynamic_color">Use system colors</string>
     <string name="settings_accent">Accent</string>
+    <string name="settings_launch_page">Launch page</string>
+    <string name="launch_page_store">Store</string>
+    <string name="launch_page_library">Library</string>
     <string name="settings_disable_update_checking">Disable update checking</string>
     <string name="settings_nerd_mode">Advanced options</string>
     <string name="settings_nerd_mode_desc">Shows experimental catalog and tuning options. The Advanced diagnostics tab stays available.</string>
@@ -100,16 +104,15 @@
     <string name="settings_show_stats">Show stats on launch</string>
     <string name="settings_stats_position">Stats overlay position</string>
     <string name="settings_hide_server_selector">Hide server selector</string>
-    <string name="settings_controller_mode">Controller mode</string>
     <string name="settings_button_press_tones">Button press tones</string>
     <string name="settings_button_press_tones_desc">Plays a short UI tone for controller navigation and on-screen control presses.</string>
     <string name="settings_stream_intro_music">Play intro music</string>
+    <string name="settings_stream_intro_music_start">Intro music starts</string>
+    <string name="intro_music_start_muted">Muted</string>
+    <string name="intro_music_start_playing">Playing</string>
     <string name="settings_queue_ready_music">Play music when queue finishes</string>
     <string name="action_mute_music">Mute music</string>
     <string name="settings_stretch_stream_to_fill">Stretch stream to fill</string>
-    <string name="settings_controller_animations">Controller background animations</string>
-    <string name="settings_controller_backdrop">Controller library game backdrop</string>
-    <string name="settings_auto_load_library">Auto-load controller library</string>
     <string name="settings_session_counter">Smart session timer</string>
     <string name="settings_thanks_body">Thanks to the people helping improve OpenNOW for everyone.</string>
     <string name="settings_thanks_darkevilpt">DarkevilPT</string>

@@ -245,9 +245,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateStreamPictureInPicture(ready: Boolean, settings: StreamSettings) {
+        val aspectRatio = pictureInPictureAspectRatioFor(settings)
+        val shouldUpdateParams = streamPictureInPictureReady != ready ||
+            streamPictureInPictureAspectRatio != aspectRatio
         streamPictureInPictureReady = ready
-        streamPictureInPictureAspectRatio = pictureInPictureAspectRatioFor(settings)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && ready) {
+        streamPictureInPictureAspectRatio = aspectRatio
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && shouldUpdateParams) {
             runCatching {
                 setPictureInPictureParams(buildStreamPictureInPictureParams())
             }.onFailure { error ->

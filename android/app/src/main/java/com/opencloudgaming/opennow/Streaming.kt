@@ -1185,17 +1185,9 @@ internal object AndroidControllerMouseAssist {
         return if (dx != 0 || dy != 0) ControllerMouseDelta(dx, dy) else null
     }
 
-    fun togglesAssist(buttonMask: Int, pressed: Boolean): Boolean =
-        pressed && buttonMask == GamepadButtonMapping.RIGHT_THUMB
+    fun mouseButtonForGamepad(buttonMask: Int): Int? = null
 
-    fun mouseButtonForGamepad(buttonMask: Int): Int? =
-        when (buttonMask) {
-            GamepadButtonMapping.A -> 1
-            else -> null
-        }
-
-    fun mouseButtonForTrigger(left: Boolean): Int =
-        if (left) 2 else 1
+    fun mouseButtonForTrigger(left: Boolean): Int? = null
 
     private const val CONTROLLER_MOUSE_BASE_DELTA_PX = 7f
     private const val CONTROLLER_MOUSE_ACCEL_DELTA_PX = 34f
@@ -3317,10 +3309,6 @@ class NativeStreamClient(
     }
 
     private fun handleControllerMouseButton(buttonMask: Int, pressed: Boolean): Boolean {
-        if (AndroidControllerMouseAssist.togglesAssist(buttonMask, pressed)) {
-            setControllerMouseAssistActive(!controllerMouseAssistActive)
-            return true
-        }
         if (!controllerMouseAssistActive) return false
         val mouseButton = AndroidControllerMouseAssist.mouseButtonForGamepad(buttonMask) ?: return false
         return setControllerMouseButton(mouseButton, pressed)
@@ -3328,7 +3316,8 @@ class NativeStreamClient(
 
     private fun handleControllerMouseTrigger(left: Boolean, pressed: Boolean): Boolean {
         if (!controllerMouseAssistActive) return false
-        return setControllerMouseButton(AndroidControllerMouseAssist.mouseButtonForTrigger(left), pressed)
+        val mouseButton = AndroidControllerMouseAssist.mouseButtonForTrigger(left) ?: return false
+        return setControllerMouseButton(mouseButton, pressed)
     }
 
     private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {

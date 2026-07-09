@@ -366,15 +366,60 @@ class StreamResolutionTest {
         assertEquals(false, active.matchesStreamSettings(settings))
     }
 
+    @Test
+    fun activeSessionConflictPrefersSameRequestedAppBeforePolling() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val otherReady = activeSession(
+            sessionId = "other-ready",
+            appId = 200,
+            resolution = "1680x720",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(settings),
+        )
+        val sameAppLaunching = activeSession(
+            sessionId = "same-launching",
+            appId = 100,
+            status = 1,
+            resolution = "1680x720",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(settings),
+        )
+
+        assertEquals(
+            "same-launching",
+            activeSessionLaunchConflict(listOf(otherReady, sameAppLaunching), launchAppId = 100, settings = settings)?.sessionId,
+        )
+    }
+
+    @Test
+    fun activeSessionConflictStillReturnsMismatchedExistingSessionForUserChoice() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val mismatched = activeSession(
+            sessionId = "mismatched",
+            appId = 100,
+            resolution = "1920x1080",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 60)),
+        )
+
+        assertEquals(
+            "mismatched",
+            activeSessionLaunchConflict(listOf(mismatched), launchAppId = 100, settings = settings)?.sessionId,
+        )
+    }
+
     private fun activeSession(
+        sessionId: String = "session",
+        appId: Int = 100,
+        status: Int = 2,
         resolution: String?,
         fps: Int?,
         settingsSignature: String? = null,
     ): ActiveSessionInfo =
         ActiveSessionInfo(
-            sessionId = "session",
-            appId = 100,
-            status = 2,
+            sessionId = sessionId,
+            appId = appId,
+            status = status,
             serverIp = "127.0.0.1",
             signalingUrl = "wss://127.0.0.1/nvst/",
             resolution = resolution,

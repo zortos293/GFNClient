@@ -9,6 +9,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
@@ -176,6 +178,7 @@ internal fun SettingsScreen(
     var selectedCategory by remember { mutableStateOf<SettingsCategory?>(null) }
     val scrollState = rememberScrollState()
     val searchFocusRequester = remember { FocusRequester() }
+    val detailFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val showSearch = searchRequested || searchQuery.isNotBlank()
@@ -203,7 +206,12 @@ internal fun SettingsScreen(
         selectedCategory = null
     }
     LaunchedEffect(selectedCategory) {
-        onDetailRouteChange(selectedCategory != null)
+        val detailOpen = selectedCategory != null
+        onDetailRouteChange(detailOpen)
+        if (detailOpen) {
+            delay(90)
+            runCatching { detailFocusRequester.requestFocus() }
+        }
     }
     LaunchedEffect(backRequestToken) {
         if (backRequestToken > 0 && selectedCategory != null) {
@@ -253,6 +261,7 @@ internal fun SettingsScreen(
                         searchQuery = searchQuery,
                         selectedCategory = category,
                         categories = categories,
+                        detailFocusRequester = detailFocusRequester,
                         onSelectCategory = { selectedCategory = it },
                         onBack = { selectedCategory = null },
                         showSessionProxyWarning = { showSessionProxyWarning = true },
@@ -292,6 +301,7 @@ internal fun SettingsScreen(
                             searchQuery = searchQuery,
                             selectedCategory = category,
                             categories = categories,
+                            detailFocusRequester = detailFocusRequester,
                             onSelectCategory = { selectedCategory = it },
                             onBack = { selectedCategory = null },
                             showSessionProxyWarning = { showSessionProxyWarning = true },
@@ -310,6 +320,7 @@ private fun SettingsBody(
     searchQuery: String,
     selectedCategory: SettingsCategory?,
     categories: List<SettingsCategory>,
+    detailFocusRequester: FocusRequester,
     onSelectCategory: (SettingsCategory) -> Unit,
     onBack: () -> Unit,
     showSessionProxyWarning: () -> Unit,
@@ -333,15 +344,27 @@ private fun SettingsBody(
             )
         }
         else -> {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .lockedFocusGroup(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 SettingsDetailHeader(category = selectedCategory, onBack = onBack)
-                SettingsContent(
-                    state = state,
-                    viewModel = viewModel,
-                    searchQuery = searchQuery,
-                    selectedCategory = selectedCategory,
-                    showSessionProxyWarning = showSessionProxyWarning,
-                )
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .focusRequester(detailFocusRequester)
+                        .focusGroup(),
+                ) {
+                    SettingsContent(
+                        state = state,
+                        viewModel = viewModel,
+                        searchQuery = searchQuery,
+                        selectedCategory = selectedCategory,
+                        showSessionProxyWarning = showSessionProxyWarning,
+                    )
+                }
             }
         }
     }
@@ -448,7 +471,10 @@ private fun SettingsContent(
                 NumberSlider(stringResource(R.string.settings_bitrate), settings.stream.maxBitrateMbps.toFloat(), 1f, 150f, 1f) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
                 }
-                val effectiveCodec = settings.stream.adjustedForDevice(state.codecReport).codec
+                val comingSoonLabel = stringResource(R.string.option_coming_soon)
+                val unavailableLabel = "Unavailable"
+                val settingsAvailableStream = settings.stream.withAndroidSettingsAvailability()
+                val effectiveCodec = settingsAvailableStream.adjustedForDevice(state.codecReport).codec
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_codec),
                     options = VideoCodec.entries.map { codec ->
@@ -457,11 +483,17 @@ private fun SettingsContent(
                             ?.firstOrNull { it.codec == codec }
                             ?.streamingDecoderUsableForLaunch()
                             ?: true
+                        val settingsAvailable = codec.availableForAndroidSettings()
+                        val available = settingsAvailable && launchUsable
                         ChoiceMenuOption(
                             value = codec.name,
                             label = codec.name,
-                            enabled = launchUsable,
-                            badge = if (launchUsable) null else "Unavailable",
+                            enabled = available,
+                            badge = when {
+                                available -> null
+                                !settingsAvailable -> comingSoonLabel
+                                else -> unavailableLabel
+                            },
                         )
                     },
                     selectedLabel = if (effectiveCodec == settings.stream.codec) {
@@ -474,16 +506,16 @@ private fun SettingsContent(
                         s.copy(codec = VideoCodec.valueOf(it)).withCodecColorCompatibility()
                     }
                 }
-                val effectiveColorQuality = settings.stream.withCodecColorCompatibility().colorQuality
+                val effectiveColorQuality = settingsAvailableStream.withCodecColorCompatibility().colorQuality
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_color),
                     options = ColorQuality.entries.map { quality ->
-                        val available = quality.availableForCodec(settings.stream.codec)
+                        val available = quality.availableForCodec(settingsAvailableStream.codec)
                         ChoiceMenuOption(
                             value = quality.name,
                             label = quality.label,
                             enabled = available,
-                            badge = if (available) null else "Not for AV1",
+                            badge = if (available) null else comingSoonLabel,
                         )
                     },
                     selectedLabel = if (effectiveColorQuality == settings.stream.colorQuality) {
@@ -586,12 +618,23 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "position", "server selector", "controller", "sounds", "button", "tone", "animations", "backdrop", "tv", "safe area", "screen padding", "overscan", "auto-load", "library", "session counter", "intro", "music", "queue", "stretch", "fill") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "launch page", "default page", "store", "library", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "position", "server selector", "controller", "sounds", "button", "tone", "tv", "safe area", "screen padding", "overscan", "session counter", "intro", "music", "queue", "stretch", "fill") {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
                     accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
+                    }
+                }
+                val launchPageOptions = AppLaunchPage.entries.map { page -> page to appLaunchPageLabel(page) }
+                ChoiceRow(
+                    stringResource(R.string.settings_launch_page),
+                    launchPageOptions.map { it.second },
+                    launchPageOptions.firstOrNull { it.first == settings.launchPage }?.second
+                        ?: launchPageOptions.first().second,
+                ) { label ->
+                    launchPageOptions.firstOrNull { it.second == label }?.first?.let { page ->
+                        viewModel.updateSettings(settings.copy(launchPage = page))
                     }
                 }
                 SettingSwitch(
@@ -619,7 +662,6 @@ private fun SettingsContent(
                     }
                 }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
-                SettingSwitch(stringResource(R.string.settings_controller_mode), settings.controllerMode) { viewModel.updateSettings(settings.copy(controllerMode = it)) }
                 SettingSwitch(
                     label = stringResource(R.string.settings_button_press_tones),
                     checked = settings.controllerUiSounds,
@@ -627,18 +669,30 @@ private fun SettingsContent(
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
                 }
-                SettingSwitch(stringResource(R.string.settings_controller_animations), settings.controllerBackgroundAnimations) { viewModel.updateSettings(settings.copy(controllerBackgroundAnimations = it)) }
-                SettingSwitch(stringResource(R.string.settings_controller_backdrop), settings.controllerLibraryGameBackdrop) { viewModel.updateSettings(settings.copy(controllerLibraryGameBackdrop = it)) }
-                SettingSwitch(stringResource(R.string.settings_auto_load_library), settings.autoLoadControllerLibrary) { viewModel.updateSettings(settings.copy(autoLoadControllerLibrary = it)) }
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
                 SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
                     viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
+                }
+                if (settings.streamIntroMusic) {
+                    val introStartOptions = IntroMusicStartMode.entries.map { mode ->
+                        mode to introMusicStartModeLabel(mode)
+                    }
+                    ChoiceRow(
+                        stringResource(R.string.settings_stream_intro_music_start),
+                        introStartOptions.map { it.second },
+                        introStartOptions.firstOrNull { it.first == settings.streamIntroStartMode }?.second
+                            ?: introStartOptions.first().second,
+                    ) { label ->
+                        introStartOptions.firstOrNull { it.second == label }?.first?.let { mode ->
+                            viewModel.updateSettings(settings.copy(streamIntroStartMode = mode))
+                        }
+                    }
                 }
                 SettingSwitch(stringResource(R.string.settings_queue_ready_music), settings.queueReadyMusic) { enabled ->
                     viewModel.updateSettings(settings.copy(queueReadyMusic = enabled))
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings", "tutorial", "guide", "wipe", "relaunch", "fresh install") {
                 AppDataSettingsPanel(viewModel = viewModel)
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Account, searchQuery, "Account", "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription") {
@@ -858,6 +912,20 @@ private fun streamPresetLabel(preset: StreamPreset): String =
         StreamPreset.LowDataSaver -> stringResource(R.string.stream_preset_low_data_saver)
         StreamPreset.Medium -> stringResource(R.string.stream_preset_medium)
         StreamPreset.High -> stringResource(R.string.stream_preset_high)
+    }
+
+@Composable
+private fun introMusicStartModeLabel(mode: IntroMusicStartMode): String =
+    when (mode) {
+        IntroMusicStartMode.Muted -> stringResource(R.string.intro_music_start_muted)
+        IntroMusicStartMode.Playing -> stringResource(R.string.intro_music_start_playing)
+    }
+
+@Composable
+private fun appLaunchPageLabel(page: AppLaunchPage): String =
+    when (page) {
+        AppLaunchPage.Store -> stringResource(R.string.launch_page_store)
+        AppLaunchPage.Library -> stringResource(R.string.launch_page_library)
     }
 
 @Composable

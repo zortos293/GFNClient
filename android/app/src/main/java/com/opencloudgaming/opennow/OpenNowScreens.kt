@@ -37,6 +37,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -49,6 +50,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -144,6 +146,7 @@ import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -214,6 +217,7 @@ private val TextPrimary = Color(0xffeef3f5)
 private val TextMuted = Color(0xff98a4aa)
 private val ChromeScrim = Color.Black.copy(alpha = 0.16f)
 private val TopBarCompactControlHeight = 30.dp
+private const val DEVICE_LOGIN_SIDE_BY_SIDE_MIN_WIDTH_DP = 520
 private const val COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS = 5_000L
 private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
 private val UiAccent.color: Color
@@ -272,10 +276,13 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     val context = LocalContext.current
     val launchAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     val playIntroOnAppLaunch = remember { state.settings.streamIntroMusic }
+    val introStartsMutedOnLaunch = remember {
+        state.settings.streamIntroMusic && state.settings.streamIntroStartMode == IntroMusicStartMode.Muted
+    }
     val musicControlsEnabled = state.settings.streamIntroMusic || state.settings.queueReadyMusic
     val streamActive = state.page == AppPage.Stream || state.streamStatus != "idle"
     var launchIntroStarted by remember { mutableStateOf(false) }
-    var launchMusicMuted by remember { mutableStateOf(false) }
+    var launchMusicMuted by remember { mutableStateOf(introStartsMutedOnLaunch) }
     var launchMusicPlaying by remember { mutableStateOf(false) }
     var previousStreamStatus by remember { mutableStateOf(state.streamStatus) }
     var queuedForStartCue by remember { mutableStateOf(false) }
@@ -326,14 +333,9 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
             }
             return@LaunchedEffect
         }
-        if (launchMusicMuted) {
-            launchAudioController.stopAll { launchMusicPlaying = it }
-            if (state.streamStatus == "idle") {
-                queuedForStartCue = false
-            }
-            return@LaunchedEffect
+        if (!state.settings.streamIntroMusic && launchMusicMuted) {
+            launchMusicMuted = false
         }
-
         if (!state.settings.streamIntroMusic) {
             launchAudioController.stopIntro { launchMusicPlaying = it }
         }
@@ -344,9 +346,12 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         if (!state.settings.streamIntroMusic && !state.settings.queueReadyMusic) {
             launchAudioController.stopAll { launchMusicPlaying = it }
         } else if (queueReadyForStream && queuedForStartCue) {
+            launchMusicMuted = false
             lastStartCueSessionId = sessionId
             queuedForStartCue = false
             launchAudioController.startQueueReadyReminder(enabled = state.settings.queueReadyMusic) { launchMusicPlaying = it }
+        } else if (launchMusicMuted) {
+            launchAudioController.stopIntro { launchMusicPlaying = it }
         } else if (playIntroOnAppLaunch && state.settings.streamIntroMusic && !streamActive) {
             if (!launchIntroStarted) {
                 launchIntroStarted = true
@@ -487,6 +492,7 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val deviceCodeLoginAvailable = state.selectedProvider.supportsDeviceCodeLogin
     val preferDeviceCodeLogin = tvLogin && deviceCodeLoginAvailable
     val deviceLoginPrompt = state.deviceLoginPrompt.takeIf { deviceCodeLoginAvailable }
+    val normalLoginBusy = state.launchPhase.isNotBlank() && deviceLoginPrompt == null
     LaunchedEffect(preferDeviceCodeLogin, deviceLoginPrompt == null) {
         if (preferDeviceCodeLogin && deviceLoginPrompt == null) {
             runCatching { signInFocusRequester.requestFocus() }
@@ -520,8 +526,21 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         } ?: Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
                 onClick = { viewModel.login() },
+                enabled = !normalLoginBusy,
                 modifier = Modifier.focusRequester(signInFocusRequester),
+                colors = ButtonDefaults.buttonColors(
+                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),
+                    disabledContentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
             ) {
+                if (normalLoginBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                }
                 Text(
                     when {
                         state.launchPhase.isNotBlank() -> state.launchPhase
@@ -531,7 +550,7 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 )
             }
             if (!tvLogin && deviceCodeLoginAvailable) {
-                TextButton(onClick = { viewModel.loginWithCode() }) {
+                TextButton(onClick = { viewModel.loginWithCode() }, enabled = !normalLoginBusy) {
                     Text("Use code sign-in")
                 }
             }
@@ -579,7 +598,13 @@ internal fun DeviceLoginPanel(
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
+    val configuration = LocalConfiguration.current
     val initialFocusRequester = remember { FocusRequester() }
+    val sideBySideLayout = shouldUseSideBySideDeviceLoginLayout(
+        orientation = configuration.orientation,
+        preferLandscapeLayout = preferLandscapeLayout,
+        availableWidthDp = configuration.screenWidthDp,
+    )
     val launchUrl = remember(prompt.verificationUriComplete, prompt.verificationUri) {
         prompt.verificationUriComplete ?: prompt.verificationUri
     }
@@ -602,7 +627,7 @@ internal fun DeviceLoginPanel(
         shape = RoundedCornerShape(14.dp),
         modifier = modifier,
     ) {
-        if (preferLandscapeLayout) {
+        if (sideBySideLayout) {
             Row(
                 Modifier.fillMaxWidth().padding(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
@@ -655,6 +680,14 @@ internal fun DeviceLoginPanel(
         }
     }
 }
+
+internal fun shouldUseSideBySideDeviceLoginLayout(
+    orientation: Int,
+    preferLandscapeLayout: Boolean,
+    availableWidthDp: Int,
+): Boolean =
+    preferLandscapeLayout ||
+        (orientation == Configuration.ORIENTATION_LANDSCAPE && availableWidthDp >= DEVICE_LOGIN_SIDE_BY_SIDE_MIN_WIDTH_DP)
 
 @Composable
 private fun DeviceLoginQr(qrCode: QrCode?, qrMaxSize: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
@@ -1170,7 +1203,6 @@ private fun AppNavigationRail(
     onSearch: (SearchTarget) -> Unit,
     onSettingsBack: () -> Unit,
 ) {
-    val compactAppIconHeader = showAppIcon && showSettingsBack
     Box(
         modifier = Modifier
             .width(APP_NAV_RAIL_WIDTH)
@@ -1190,20 +1222,13 @@ private fun AppNavigationRail(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .fillMaxWidth()
+                            .focusProperties { canFocus = false }
                             .clickable { onNavigate(AppPage.Home) }
-                            .padding(
-                                top = if (compactAppIconHeader) 4.dp else 12.dp,
-                                bottom = if (compactAppIconHeader) 2.dp else 8.dp,
-                            ),
+                            .padding(top = 12.dp, bottom = 8.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         OpenNowAppIcon(
-                            when {
-                                compactAppIconHeader && largeIcons -> 34.dp
-                                compactAppIconHeader -> 28.dp
-                                largeIcons -> 44.dp
-                                else -> 34.dp
-                            },
+                            if (largeIcons) 44.dp else 34.dp,
                         )
                     }
                 }
@@ -1615,6 +1640,10 @@ private fun handleDpadFocusMove(event: androidx.compose.ui.input.key.KeyEvent, f
     }
     return focusManager.moveFocus(direction)
 }
+
+internal fun Modifier.lockedFocusGroup(): Modifier =
+    focusProperties { onExit = { cancelFocusChange() } }
+        .focusGroup()
 
 private fun isNavigationToneKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean =
     event.type == KeyEventType.KeyDown &&
@@ -2764,6 +2793,7 @@ private fun StoreRailGameCard(
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val shape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
+    val actionButtonSize = 34.dp
     Surface(
         modifier = Modifier
             .width(width)
@@ -2797,19 +2827,28 @@ private fun StoreRailGameCard(
         Box(Modifier.fillMaxSize().clip(shape)) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.06f)))
+            LauncherBadgeStrip(
+                game = game,
+                maxBadges = 2,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp),
+            )
             ThumbnailPlayButton(
                 onClick = { onPlay(game) },
                 onLongClick = { onChooseStore(game) },
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
+                    .align(Alignment.TopEnd)
                     .padding(6.dp),
+                buttonSize = actionButtonSize,
             )
             FavoriteIconButton(
                 favorite = favorite,
                 onClick = { onFavorite(game.id) },
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
+                    .align(Alignment.BottomEnd)
                     .padding(6.dp),
+                size = actionButtonSize,
             )
         }
     }
@@ -3020,6 +3059,9 @@ private fun GameCard(
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val cardShape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
+    val launcherTile = squareCard && thumbnailPlayOverlay
+    val overlayActionSize = if (launcherTile) 34.dp else 44.dp
+    val overlayActionPadding = if (launcherTile) 6.dp else 8.dp
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -3053,19 +3095,30 @@ private fun GameCard(
         ) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
             if (thumbnailPlayOverlay) {
+                if (launcherTile) {
+                    LauncherBadgeStrip(
+                        game = game,
+                        maxBadges = 1,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(overlayActionPadding),
+                    )
+                }
                 FavoriteIconButton(
                     favorite = favorite,
                     onClick = { onFavorite(game.id) },
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(8.dp),
+                        .align(if (launcherTile) Alignment.TopEnd else Alignment.BottomStart)
+                        .padding(overlayActionPadding),
+                    size = overlayActionSize,
                 )
                 ThumbnailPlayButton(
                     onClick = { onPlay(game) },
                     onLongClick = { onChooseStore(game) },
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(8.dp),
+                        .padding(overlayActionPadding),
+                    buttonSize = overlayActionSize,
                 )
             } else {
                 FavoriteIconButton(
@@ -3111,6 +3164,61 @@ private fun GameCard(
     }
 }
 
+@Composable
+private fun LauncherBadgeStrip(
+    game: GameInfo,
+    maxBadges: Int,
+    modifier: Modifier = Modifier,
+) {
+    val badges = remember(game, maxBadges) { launcherBadgesForGame(game, maxBadges) }
+    if (badges.isEmpty()) return
+    Row(
+        modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        badges.forEach { badge ->
+            LauncherBadgeBubble(badge)
+        }
+    }
+}
+
+@Composable
+private fun LauncherBadgeBubble(badge: LauncherBadge, size: Dp = 24.dp) {
+    Surface(
+        modifier = Modifier
+            .size(size)
+            .semantics { contentDescription = "${badge.name} launcher" },
+        shape = RoundedCornerShape(7.dp),
+        color = badge.background.copy(alpha = 0.9f),
+        tonalElevation = 2.dp,
+        shadowElevation = 2.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            Icon(
+                painter = painterResource(badge.iconRes),
+                contentDescription = null,
+                tint = badge.foreground,
+                modifier = Modifier.size(size * 0.58f),
+            )
+        }
+    }
+}
+
+private fun launcherBadgesForGame(game: GameInfo, limit: Int): List<LauncherBadge> =
+    launcherStoreKeysForGame(game)
+        .take(limit)
+        .map(::launcherBadgeForStoreKey)
+
+private fun launcherStoreKeysForGame(game: GameInfo): List<String> {
+    val variantKeys = launchableGameVariants(game.variants)
+        .flatMap { variant -> splitGameStoreKeys(variant.store) }
+    val availableKeys = game.availableStores.flatMap(::splitGameStoreKeys)
+    return (variantKeys + availableKeys)
+        .filter { it.isNotBlank() }
+        .distinct()
+}
+
 internal fun launcherBadgeForStoreKey(storeKey: String?): LauncherBadge =
     when (storeKey) {
         "STEAM" -> LauncherBadge(R.drawable.ic_store_steam, "Steam", Color(0xff17324d))
@@ -3139,11 +3247,11 @@ private fun displayStoresForGame(game: GameInfo): String {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier = Modifier, buttonSize: Dp = 44.dp) {
     val playColor = MaterialTheme.colorScheme.onPrimary
     Surface(
         modifier = modifier
-            .size(44.dp)
+            .size(buttonSize)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
@@ -3154,7 +3262,7 @@ private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, mo
         tonalElevation = 3.dp,
         shadowElevation = 3.dp,
     ) {
-        Canvas(Modifier.fillMaxSize().padding(14.dp)) {
+        Canvas(Modifier.fillMaxSize().padding(buttonSize * 0.32f)) {
             val path = Path().apply {
                 moveTo(size.width * 0.32f, size.height * 0.18f)
                 lineTo(size.width * 0.32f, size.height * 0.82f)
@@ -3201,6 +3309,7 @@ private fun GameDetailsSheet(
     Box(
         Modifier
             .fillMaxSize()
+            .lockedFocusGroup()
             .background(Color.Black.copy(alpha = 0.72f))
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.BottomCenter,
@@ -3608,20 +3717,23 @@ private fun ImageCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier)
 }
 
 @Composable
-private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, size: Dp = 44.dp) {
     val label = stringResource(if (favorite) R.string.action_saved else R.string.action_save)
     Surface(
-        modifier = modifier.size(44.dp),
+        modifier = modifier
+            .size(size)
+            .semantics { contentDescription = label }
+            .clickable(onClick = onClick),
         shape = CircleShape,
         color = Color.Black.copy(alpha = 0.52f),
         tonalElevation = 3.dp,
     ) {
-        IconButton(onClick = onClick) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(
                 painter = painterResource(if (favorite) R.drawable.ic_save_filled else R.drawable.ic_save),
-                contentDescription = label,
+                contentDescription = null,
                 tint = if (favorite) MaterialTheme.colorScheme.primary else TextPrimary,
-                modifier = Modifier.size(22.dp),
+                modifier = Modifier.size(size * 0.5f),
             )
         }
     }
@@ -4026,6 +4138,7 @@ private fun StoreLaunchSelector(
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
+            .lockedFocusGroup()
             .background(Color.Black.copy(alpha = 0.72f))
             .clickable(enabled = false) {},
     ) {
@@ -4281,13 +4394,25 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var audioMuted by remember { mutableStateOf(false) }
     var touchLayoutEditing by remember { mutableStateOf(false) }
     var streamGuideOpen by remember(session?.sessionId) { mutableStateOf(false) }
+    var streamGuideStep by remember(session?.sessionId) { mutableStateOf(StreamGuideStep.OpenControls) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     val streamReady = session?.isReadyForStream() == true
     val tvProfile = state.codecReport?.androidTvProfile == true
-    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = tvProfile && streamReady)
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = streamReady)
+    var showTouchControlsWithPhysicalController by remember(session?.sessionId) { mutableStateOf(false) }
+    var physicalControllerPromptOpen by remember(session?.sessionId) { mutableStateOf(false) }
+    var physicalControllerPromptHandled by remember(session?.sessionId) { mutableStateOf(false) }
+    var physicalControllerPromptDoNotShowAgain by remember(session?.sessionId) { mutableStateOf(false) }
     val touchInputEnabled = !state.androidPictureInPictureActive
-    val touchControlsVisible = touchInputEnabled && state.settings.androidTouch.enabled && !(tvProfile && physicalControllerConnected)
+    val touchControlsSuppressedByPhysicalController =
+        physicalControllerConnected &&
+            state.settings.androidTouch.enabled &&
+            !showTouchControlsWithPhysicalController
+    val touchControlsVisible =
+        touchInputEnabled &&
+            state.settings.androidTouch.enabled &&
+            !touchControlsSuppressedByPhysicalController
     val sessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
     var timerNowMs by remember(session?.sessionId) { mutableStateOf(System.currentTimeMillis()) }
     val smartSessionLimit = smartSessionLimitFor(state.subscriptionInfo, state.authSession?.user?.membershipTier)
@@ -4315,13 +4440,28 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             viewModel.updateSettings(state.settings.copy(androidStreamGuideDismissed = true))
         }
     }
-    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen
+    val openControlsForGuide = {
+        keyboardOpen = false
+        exitConfirmOpen = false
+        physicalControllerPromptOpen = false
+        if (streamGuideOpen && streamGuideStep == StreamGuideStep.OpenControls) {
+            streamGuideStep = StreamGuideStep.PressDone
+        }
+        controlsOpen = true
+    }
+    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen
     val externalMousePassthroughActive = streamReady && !streamOverlayOpen
     val handleStreamBack = {
         when {
+            streamGuideOpen && streamGuideStep == StreamGuideStep.OpenControls -> openControlsForGuide()
+            streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone && controlsOpen -> {
+                controlsOpen = false
+                dismissStreamGuide()
+            }
             streamGuideOpen -> dismissStreamGuide()
             exitConfirmOpen -> exitConfirmOpen = false
             keyboardOpen -> keyboardOpen = false
+            physicalControllerPromptOpen -> physicalControllerPromptOpen = false
             controlsOpen -> controlsOpen = false
             else -> controlsOpen = true
         }
@@ -4378,17 +4518,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, streamOverlayOpen) {
+    LaunchedEffect(streamReady, streamOverlayOpen, streamGuideOpen, streamGuideStep) {
         NativeStreamInputRouter.setStreamUiActive(streamReady && streamOverlayOpen)
         NativeStreamInputRouter.setSystemMenuHandler {
-            keyboardOpen = false
-            exitConfirmOpen = false
-            if (streamGuideOpen) {
-                dismissStreamGuide()
-            } else {
-                streamGuideOpen = false
-            }
-            controlsOpen = true
+            openControlsForGuide()
         }
         NativeStreamInputRouter.setSystemBackHandler {
             handleStreamBack()
@@ -4396,7 +4529,43 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     }
 
     LaunchedEffect(streamReady, state.settings.androidStreamGuideDismissed, session?.sessionId) {
-        streamGuideOpen = streamReady && !state.settings.androidStreamGuideDismissed
+        val shouldOpenGuide = streamReady && !state.settings.androidStreamGuideDismissed
+        streamGuideOpen = shouldOpenGuide
+        if (shouldOpenGuide) {
+            streamGuideStep = StreamGuideStep.OpenControls
+        }
+    }
+
+    LaunchedEffect(controlsOpen, streamGuideOpen, streamGuideStep) {
+        if (controlsOpen && streamGuideOpen && streamGuideStep == StreamGuideStep.OpenControls) {
+            streamGuideStep = StreamGuideStep.PressDone
+        }
+    }
+
+    LaunchedEffect(
+        physicalControllerConnected,
+        touchControlsSuppressedByPhysicalController,
+        streamGuideOpen,
+        controlsOpen,
+        exitConfirmOpen,
+        keyboardOpen,
+    ) {
+        if (!physicalControllerConnected) {
+            showTouchControlsWithPhysicalController = false
+            physicalControllerPromptOpen = false
+            return@LaunchedEffect
+        }
+        if (
+            touchControlsSuppressedByPhysicalController &&
+            !state.settings.androidPhysicalControllerPromptDismissed &&
+            !physicalControllerPromptHandled &&
+            !streamGuideOpen &&
+            !controlsOpen &&
+            !exitConfirmOpen &&
+            !keyboardOpen
+        ) {
+            physicalControllerPromptOpen = true
+        }
     }
 
     LaunchedEffect(streamReady, state.settings.sessionCounterEnabled, session?.sessionId, sessionStartedAtMs, smartSessionLimit) {
@@ -4442,10 +4611,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     LaunchedEffect(state.settings.phoneRumbleFallback) {
         client.updateHapticsSettings(state.settings.phoneRumbleFallback)
     }
-    LaunchedEffect(streamReady, tvProfile, session?.sessionId) {
-        client.updateControllerMouseAssistAutoArm(streamReady && tvProfile)
-    }
-    LaunchedEffect(session?.sessionId, session?.status, launchStreamSettings) {
+    LaunchedEffect(session?.sessionId, session?.status, streamReady, launchStreamSettings) {
         if (session != null && streamReady) {
             client.start(session, launchStreamSettings)
         }
@@ -4488,7 +4654,14 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (session == null && state.streamStatus != "idle") {
+        if (state.activeSessionDecision != null) {
+            ActiveSessionDecisionScreen(
+                state = state,
+                onResumeSession = viewModel::resumeActiveSession,
+                onReplaceSession = viewModel::terminateActiveSessionAndStartNew,
+                onCancel = viewModel::dismissActiveSessionDecision,
+            )
+        } else if (session == null && state.streamStatus != "idle") {
             QueueLoadingScreen(state, viewModel)
         } else if (session == null) {
             NoActiveStreamScreen(
@@ -4547,19 +4720,46 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             if (streamGuideOpen) {
                 AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
                     StreamFirstLaunchGuide(
-                        gameTitle = game?.title ?: "your game",
+                        step = streamGuideStep,
+                        controlsOpen = controlsOpen,
                         touchControlsEnabled = touchControlsVisible,
                         onOpenControls = {
                             playButtonTone()
-                            dismissStreamGuide()
-                            controlsOpen = true
+                            openControlsForGuide()
                         },
-                        onDismiss = {
+                        onSkip = {
                             playButtonTone()
+                            controlsOpen = false
                             dismissStreamGuide()
                         },
                     )
                 }
+            }
+            if (physicalControllerPromptOpen) {
+                PhysicalControllerTouchControlsDialog(
+                    doNotShowAgain = physicalControllerPromptDoNotShowAgain,
+                    onDoNotShowAgainChange = { physicalControllerPromptDoNotShowAgain = it },
+                    onOk = {
+                        physicalControllerPromptHandled = true
+                        physicalControllerPromptOpen = false
+                        showTouchControlsWithPhysicalController = false
+                        if (physicalControllerPromptDoNotShowAgain) {
+                            viewModel.updateSettings(
+                                state.settings.copy(androidPhysicalControllerPromptDismissed = true),
+                            )
+                        }
+                    },
+                    onUndo = {
+                        physicalControllerPromptHandled = true
+                        physicalControllerPromptOpen = false
+                        showTouchControlsWithPhysicalController = true
+                        if (physicalControllerPromptDoNotShowAgain) {
+                            viewModel.updateSettings(
+                                state.settings.copy(androidPhysicalControllerPromptDismissed = true),
+                            )
+                        }
+                    },
+                )
             }
             AnimatedVisibility(
                 visible = controlsOpen,
@@ -4661,7 +4861,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(rightOffsetYDp = value)))
                     },
                     onButtonTone = playButtonTone,
-                    onClose = { controlsOpen = false },
+                    highlightDone = streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone,
+                    onClose = {
+                        controlsOpen = false
+                        if (streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone) {
+                            dismissStreamGuide()
+                        }
+                    },
                 )
             }
             if (keyboardOpen) {
@@ -4707,6 +4913,11 @@ private data class SessionTimerDisplay(
     val progress: Float,
     val warning: Boolean,
 )
+
+private enum class StreamGuideStep {
+    OpenControls,
+    PressDone,
+}
 
 private fun sessionTimerDisplay(limit: SmartSessionLimit, startedAtMs: Long, nowMs: Long): SessionTimerDisplay {
     val elapsedSeconds = sessionElapsedSeconds(startedAtMs, nowMs)
@@ -5130,6 +5341,77 @@ private fun MotionEvent.firstTwoPointerCentroid(): Offset =
     }
 
 @Composable
+private fun ActiveSessionDecisionScreen(
+    state: OpenNowUiState,
+    onResumeSession: () -> Unit,
+    onReplaceSession: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val decision = state.activeSessionDecision ?: return
+    val active = decision.activeSession
+    val activeGame = activeSessionGame(state, active)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
+            shape = RoundedCornerShape(18.dp),
+            color = PanelAlt.copy(alpha = 0.96f),
+            tonalElevation = 4.dp,
+        ) {
+            Column(
+                Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    UrlImage(
+                        activeGame?.imageUrl ?: state.streamGame?.imageUrl,
+                        Modifier
+                            .width(56.dp)
+                            .height(74.dp)
+                            .clip(RoundedCornerShape(10.dp)),
+                    )
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Cloud session already active", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            activeGame?.title ?: "App ${active.appId}",
+                            color = TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            activeSessionSummary(active),
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Text(
+                    "Resume the existing session, or terminate it and start ${decision.requestedGameTitle}.",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TextButton(onClick = onCancel) { Text("Cancel") }
+                    OutlinedButton(onClick = onReplaceSession) { Text("Terminate and start new") }
+                    Button(onClick = onResumeSession) { Text(stringResource(R.string.action_resume)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun NoActiveStreamScreen(
     canResumeSession: Boolean,
     canEndSession: Boolean,
@@ -5220,92 +5502,127 @@ private fun StreamControlLauncher(
 
 @Composable
 private fun StreamFirstLaunchGuide(
-    gameTitle: String,
+    step: StreamGuideStep,
+    controlsOpen: Boolean,
     touchControlsEnabled: Boolean,
     onOpenControls: () -> Unit,
-    onDismiss: () -> Unit,
+    onSkip: () -> Unit,
 ) {
     val primaryFocusRequester = remember { FocusRequester() }
     val overlayInteraction = remember { MutableInteractionSource() }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(step, controlsOpen) {
         delay(80)
-        runCatching { primaryFocusRequester.requestFocus() }
+        if (step == StreamGuideStep.OpenControls || !controlsOpen) {
+            runCatching { primaryFocusRequester.requestFocus() }
+        }
     }
     BoxWithConstraints(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.62f))
-            .clickable(
-                interactionSource = overlayInteraction,
-                indication = null,
-                onClick = {},
-            ),
-        contentAlignment = Alignment.Center,
+        if (step == StreamGuideStep.OpenControls) {
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.62f))
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                )
+        } else {
+            Modifier.fillMaxSize()
+        },
     ) {
         val landscape = maxWidth > maxHeight
-        val panelWidth = if (landscape) 0.58f else 0.92f
-        Surface(
-            modifier = Modifier
-                .padding(18.dp)
-                .fillMaxWidth(panelWidth)
-                .then(if (landscape) Modifier.fillMaxHeight(0.9f) else Modifier),
-            shape = RoundedCornerShape(20.dp),
-            color = Panel.copy(alpha = 0.96f),
-            tonalElevation = 8.dp,
-        ) {
-            Column(
-                Modifier
-                    .padding(18.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Native stream guide", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Quick controls for $gameTitle",
-                        color = TextMuted,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                StreamGuidePoint(
-                    title = "Open controls",
-                    body = "Press Android Back once, Menu, controller Start hold, or D-pad Center/Enter. Back again closes panels.",
-                )
-                StreamGuidePoint(
-                    title = "Change stream options",
-                    body = "Controls include stats, audio, keyboard bar, finger mouse, touch controller, sharpening, and stretch to fill.",
-                )
-                StreamGuidePoint(
-                    title = if (touchControlsEnabled) "Touch controls are active" else "Touch controls are hidden",
-                    body = if (touchControlsEnabled) {
-                        "Use the panel to resize, fade, move, or hide the on-screen controls."
+        if (step == StreamGuideStep.OpenControls) {
+            StreamGuideEdgeCue(Modifier.align(Alignment.CenterStart))
+            StreamGuideCard(
+                stepLabel = "Step 1 of 2",
+                title = "Open the stream menu",
+                body = "Press Android Back, Menu, or swipe from the left edge. That opens the menu without exiting the stream.",
+                details = listOf(
+                    "Back or the left-edge gesture opens controls.",
+                    if (touchControlsEnabled) {
+                        "Touch controls pause while this guide is up."
                     } else {
-                        "Use the panel to turn on the on-screen controller when you need it."
+                        "You can turn touch controls on from the menu."
                     },
-                )
-                StreamGuidePoint(
-                    title = "Exit is separate",
-                    body = "Use Exit in the controls panel when you want to leave the stream. OpenNOW asks before ending the cloud session.",
-                )
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    "Use Skip tutorial if you already know this flow.",
+                ),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(18.dp)
+                    .fillMaxWidth(if (landscape) 0.54f else 0.92f)
+                    .then(if (landscape) Modifier.fillMaxHeight(0.82f) else Modifier),
+                primaryLabel = "Open controls",
+                primaryFocusRequester = primaryFocusRequester,
+                onPrimary = onOpenControls,
+                secondaryLabel = "Skip tutorial",
+                onSecondary = onSkip,
+            )
+        } else {
+            StreamGuideDoneCallout(
+                controlsOpen = controlsOpen,
+                onOpenControls = onOpenControls,
+                onSkip = onSkip,
+                primaryFocusRequester = primaryFocusRequester,
+                modifier = Modifier
+                    .align(if (landscape) Alignment.TopStart else Alignment.TopCenter)
+                    .padding(18.dp)
+                    .then(if (landscape) Modifier.fillMaxWidth(0.34f) else Modifier.fillMaxWidth(0.86f))
+                    .widthIn(max = 340.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun StreamGuideCard(
+    stepLabel: String,
+    title: String,
+    body: String,
+    details: List<String>,
+    primaryLabel: String,
+    primaryFocusRequester: FocusRequester,
+    onPrimary: () -> Unit,
+    secondaryLabel: String,
+    onSecondary: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = Panel.copy(alpha = 0.96f),
+        tonalElevation = 8.dp,
+    ) {
+        Column(
+            Modifier
+                .padding(18.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(stepLabel, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(body, color = TextMuted, style = MaterialTheme.typography.bodyMedium)
+            }
+            details.forEachIndexed { index, detail ->
+                StreamGuidePoint(number = index + 1, body = detail)
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onSecondary,
+                    modifier = Modifier.weight(1f),
                 ) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Got it", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    Button(
-                        onClick = onOpenControls,
-                        modifier = Modifier
-                            .weight(1f)
-                            .focusRequester(primaryFocusRequester),
-                    ) {
-                        Text("Open controls", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
+                    Text(secondaryLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Button(
+                    onClick = onPrimary,
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(primaryFocusRequester),
+                ) {
+                    Text(primaryLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -5313,7 +5630,135 @@ private fun StreamFirstLaunchGuide(
 }
 
 @Composable
-private fun StreamGuidePoint(title: String, body: String) {
+private fun StreamGuideDoneCallout(
+    controlsOpen: Boolean,
+    onOpenControls: () -> Unit,
+    onSkip: () -> Unit,
+    primaryFocusRequester: FocusRequester,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        color = Panel.copy(alpha = 0.9f),
+        tonalElevation = 6.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text("Step 2 of 2", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                Text("Press Done", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            TextButton(
+                onClick = onSkip,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text("Skip", maxLines = 1)
+            }
+            if (!controlsOpen) {
+                Button(
+                    onClick = onOpenControls,
+                    modifier = Modifier.focusRequester(primaryFocusRequester),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    Text("Open", maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhysicalControllerTouchControlsDialog(
+    doNotShowAgain: Boolean,
+    onDoNotShowAgainChange: (Boolean) -> Unit,
+    onOk: () -> Unit,
+    onUndo: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onOk,
+        title = { Text("Controller detected") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "The on-screen controller was hidden because a physical controller is connected.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onDoNotShowAgainChange(!doNotShowAgain) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Checkbox(
+                        checked = doNotShowAgain,
+                        onCheckedChange = onDoNotShowAgainChange,
+                    )
+                    Text("Don't show again", color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onOk) {
+                Text("OK")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onUndo) {
+                Text("Undo")
+            }
+        },
+    )
+}
+
+@Composable
+private fun StreamGuideEdgeCue(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .fillMaxHeight()
+            .width(112.dp)
+            .background(
+                Brush.horizontalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
+                        Color.Transparent,
+                    ),
+                ),
+            ),
+    ) {
+        Surface(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 14.dp),
+            shape = RoundedCornerShape(999.dp),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
+            tonalElevation = 6.dp,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_arrow_back),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text("Back", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamGuidePoint(number: Int, body: String) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -5324,12 +5769,15 @@ private fun StreamGuidePoint(title: String, body: String) {
         verticalAlignment = Alignment.Top,
     ) {
         Surface(
-            modifier = Modifier.padding(top = 6.dp).size(8.dp),
+            modifier = Modifier.size(22.dp),
             shape = CircleShape,
             color = MaterialTheme.colorScheme.primary,
-        ) {}
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(number.toString(), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            }
+        }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, fontWeight = FontWeight.SemiBold)
             Text(body, color = TextMuted, style = MaterialTheme.typography.bodySmall)
         }
     }
@@ -5372,6 +5820,7 @@ private fun StreamControlsPanel(
     onTouchLeftOffsetChange: (Float) -> Unit,
     onTouchRightOffsetChange: (Float) -> Unit,
     onButtonTone: () -> Unit,
+    highlightDone: Boolean = false,
     onClose: () -> Unit,
 ) {
     val doneFocusRequester = remember { FocusRequester() }
@@ -5435,15 +5884,28 @@ private fun StreamControlsPanel(
                     ) {
                         Text("Exit")
                     }
-                    OutlinedButton(
-                        onClick = {
-                            onButtonTone()
-                            onClose()
-                        },
-                        modifier = Modifier.focusRequester(doneFocusRequester),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    ) {
-                        Text("Done")
+                    val doneAction = {
+                        onButtonTone()
+                        onClose()
+                    }
+                    val doneModifier = Modifier.focusRequester(doneFocusRequester)
+                    if (highlightDone) {
+                        Button(
+                            onClick = doneAction,
+                            modifier = doneModifier,
+                            border = BorderStroke(2.dp, TextPrimary),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        ) {
+                            Text("Done")
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = doneAction,
+                            modifier = doneModifier,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text("Done")
+                        }
                     }
                 }
             }
@@ -5998,61 +6460,43 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
                 .padding(18.dp),
             contentAlignment = Alignment.Center,
         ) {
-            if (useLandscapeAdLayout) {
-                Row(
-                    Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    QueueStatusPanel(
-                        game = game,
-                        queueCopy = queueCopy,
-                        queuePosition = visibleQueuePosition,
-                        error = state.error,
-                        compact = true,
-                        onMinimize = viewModel::minimizeStreamLaunch,
-                        onCancel = viewModel::stopStream,
-                        modifier = Modifier.weight(1f),
-                    )
-                    QueueAdPanel(
-                        ad = ad,
-                        mediaUrl = mediaUrl,
-                        viewModel = viewModel,
-                        modifier = Modifier.weight(1f),
-                        playerModifier = Modifier
+            if (ad != null && mediaUrl != null) {
+                QueueAdPanel(
+                    ad = ad,
+                    mediaUrl = mediaUrl,
+                    viewModel = viewModel,
+                    game = game,
+                    queueCopy = queueCopy,
+                    queuePosition = visibleQueuePosition,
+                    error = state.error,
+                    playbackKey = "${session?.sessionId.orEmpty()}:${state.queueAdPlaybackEpoch}",
+                    compact = useLandscapeAdLayout,
+                    onMinimize = viewModel::minimizeStreamLaunch,
+                    onCancel = viewModel::stopStream,
+                    modifier = Modifier
+                        .fillMaxWidth(if (useLandscapeAdLayout) 0.72f else 1f)
+                        .widthIn(max = if (useLandscapeAdLayout) 900.dp else 620.dp),
+                    playerModifier = if (useLandscapeAdLayout) {
+                        Modifier
                             .fillMaxWidth()
-                            .aspectRatio(16f / 9f),
-                    )
-                }
+                            .aspectRatio(16f / 9f)
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                    },
+                )
             } else {
-                Column(
-                    Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    QueueStatusPanel(
-                        game = game,
-                        queueCopy = queueCopy,
-                        queuePosition = visibleQueuePosition,
-                        error = state.error,
-                        compact = false,
-                        onMinimize = viewModel::minimizeStreamLaunch,
-                        onCancel = viewModel::stopStream,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (hasPlayableAd) {
-                        Spacer(Modifier.height(18.dp))
-                        QueueAdPanel(
-                            ad = ad,
-                            mediaUrl = mediaUrl,
-                            viewModel = viewModel,
-                            modifier = Modifier.fillMaxWidth(),
-                            playerModifier = Modifier
-                                .fillMaxWidth(0.8f)
-                                .height(220.dp),
-                        )
-                    }
-                }
+                QueueStatusPanel(
+                    game = game,
+                    queueCopy = queueCopy,
+                    queuePosition = visibleQueuePosition,
+                    error = state.error,
+                    compact = false,
+                    onMinimize = viewModel::minimizeStreamLaunch,
+                    onCancel = viewModel::stopStream,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }
@@ -6669,34 +7113,99 @@ private fun QueueAdPanel(
     ad: SessionAdInfo,
     mediaUrl: String,
     viewModel: OpenNowViewModel,
+    game: GameInfo?,
+    queueCopy: String,
+    queuePosition: Int?,
+    error: String?,
+    playbackKey: String,
+    compact: Boolean,
+    onMinimize: () -> Unit,
+    onCancel: () -> Unit,
     modifier: Modifier = Modifier,
     playerModifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        color = Panel.copy(alpha = 0.95f),
+        tonalElevation = 8.dp,
     ) {
-        QueueAdPlayer(
-            adId = ad.adId,
-            url = mediaUrl,
-            modifier = playerModifier,
-            onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
-            onPaused = { viewModel.reportQueueAd(ad.adId, "pause") },
-            onResumed = { viewModel.reportQueueAd(ad.adId, "resume") },
-            onFinished = { watchedTimeInMs ->
-                viewModel.reportQueueAd(ad.adId, "finish", watchedTimeInMs = watchedTimeInMs)
-            },
-            onError = { watchedTimeInMs ->
-                viewModel.reportQueueAd(
-                    ad.adId,
-                    "cancel",
-                    watchedTimeInMs = watchedTimeInMs,
-                    cancelReason = "error",
-                    errorInfo = "Error loading url",
-                )
-            },
-        )
+        Column(
+            Modifier.padding(if (compact) 14.dp else 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Advertisement",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                    Text(
+                        game?.title ?: "Starting stream",
+                        style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                queuePosition?.let {
+                    Text(
+                        it.toString(),
+                        color = queueUrgencyColor(it),
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
+                        maxLines = 1,
+                    )
+                }
+            }
+            QueueAdPlayer(
+                adId = ad.adId,
+                url = mediaUrl,
+                playbackKey = playbackKey,
+                modifier = playerModifier,
+                onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
+                onPaused = { viewModel.reportQueueAd(ad.adId, "pause") },
+                onResumed = { viewModel.reportQueueAd(ad.adId, "resume") },
+                onFinished = { watchedTimeInMs ->
+                    viewModel.reportQueueAd(ad.adId, "finish", watchedTimeInMs = watchedTimeInMs)
+                },
+                onError = { watchedTimeInMs ->
+                    viewModel.reportQueueAd(
+                        ad.adId,
+                        "cancel",
+                        watchedTimeInMs = watchedTimeInMs,
+                        cancelReason = "error",
+                        errorInfo = "Error loading url",
+                    )
+                },
+            )
+            AnimatedQueueStatusText(
+                queueCopy = queueCopy,
+                queuePosition = queuePosition,
+                compact = true,
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedButton(onClick = onMinimize, modifier = Modifier.weight(1f)) {
+                    Text("Minimize", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
+                    Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            error?.let {
+                Text(it, color = Color(0xffff9f9f), textAlign = TextAlign.Center)
+            }
+        }
     }
 }
 
@@ -6769,6 +7278,7 @@ private fun MinimizedQueueStatusText(
 private fun QueueAdPlayer(
     adId: String,
     url: String,
+    playbackKey: String,
     modifier: Modifier = Modifier,
     onStarted: () -> Unit,
     onPaused: () -> Unit,
@@ -6778,7 +7288,7 @@ private fun QueueAdPlayer(
 ) {
     val context = LocalContext.current
     var muted by remember { mutableStateOf(false) }
-    val player = remember(adId, url) {
+    val player = remember(adId, url, playbackKey) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(url))
             volume = if (muted) 0f else 1f
@@ -6786,11 +7296,11 @@ private fun QueueAdPlayer(
             playWhenReady = true
         }
     }
-    var reportedStart by remember(adId, url) { mutableStateOf(false) }
-    var reportedFinish by remember(adId, url) { mutableStateOf(false) }
-    var reportedPause by remember(adId, url) { mutableStateOf(false) }
-    var playing by remember(adId, url) { mutableStateOf(player.playWhenReady) }
-    var controlsVisible by remember(adId, url) { mutableStateOf(false) }
+    var reportedStart by remember(adId, url, playbackKey) { mutableStateOf(false) }
+    var reportedFinish by remember(adId, url, playbackKey) { mutableStateOf(false) }
+    var reportedPause by remember(adId, url, playbackKey) { mutableStateOf(false) }
+    var playing by remember(adId, url, playbackKey) { mutableStateOf(player.playWhenReady) }
+    var controlsVisible by remember(adId, url, playbackKey) { mutableStateOf(false) }
     LaunchedEffect(controlsVisible, playing) {
         if (controlsVisible && playing) {
             delay(2400L)
@@ -7707,6 +8217,7 @@ private fun PrintedWasteSelector(
     viewModel: OpenNowViewModel,
     modifier: Modifier = Modifier,
 ) {
+    BackHandler(onBack = viewModel::dismissPrintedWasteSelector)
     val zones = remember(state.printedWasteQueue, state.printedWasteMapping, state.printedWastePings) {
         state.printedWasteQueue
             .filter { (zoneId, _) -> isStandardPrintedWasteZone(zoneId) && state.printedWasteMapping[zoneId]?.nuked != true }
@@ -7737,6 +8248,7 @@ private fun PrintedWasteSelector(
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
+            .lockedFocusGroup()
             .background(Color.Black.copy(alpha = 0.72f))
             .clickable(enabled = false) {},
     ) {

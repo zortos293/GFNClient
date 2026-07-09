@@ -263,22 +263,24 @@ internal fun ChoiceMenuRow(
                 options.forEach { option ->
                     DropdownMenuItem(
                         text = {
+                            val disabledAlpha = if (option.enabled) 1f else 0.48f
+                            val badgeAlpha = if (option.enabled) 0.7f else 0.48f
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 Text(
                                     option.label,
-                                    color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f),
+                                    color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = disabledAlpha),
                                 )
                                 option.badge?.let { badge ->
                                     Text(
                                         badge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = badgeAlpha),
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier
-                                            .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(3.dp))
+                                            .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (option.enabled) 0.3f else 0.2f), RoundedCornerShape(3.dp))
                                             .padding(horizontal = 4.dp, vertical = 1.dp),
                                     )
                                 }

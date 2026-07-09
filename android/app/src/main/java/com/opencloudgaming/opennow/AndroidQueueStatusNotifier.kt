@@ -139,6 +139,7 @@ private fun ensureQueueNotificationChannel(context: Context) {
         NotificationManager.IMPORTANCE_LOW,
     ).apply {
         description = "Shows OpenNOW queue and session startup progress."
+        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         setShowBadge(false)
     }
     notificationManager.createNotificationChannel(channel)
@@ -168,6 +169,9 @@ private fun buildQueueNotification(context: Context, title: String, text: String
         .setContentTitle(title)
         .setContentText(text)
         .setSubText("OpenNOW")
+        .setCategory(Notification.CATEGORY_PROGRESS)
+        .setProgress(0, 0, true)
+        .setVisibility(Notification.VISIBILITY_PUBLIC)
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setShowWhen(false)

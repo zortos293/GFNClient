@@ -15,7 +15,7 @@ import java.util.Locale
 internal const val OPENNOW_DEBUG_LOG_TAG = "OpenNOWDebug"
 
 private const val DIAGNOSTIC_PAYLOAD_BODY_LIMIT = 20_000
-private const val HTTP_DIAGNOSTIC_LIMIT = 160
+private const val HTTP_DIAGNOSTIC_LIMIT = 80
 private const val HTTP_DIAGNOSTIC_BODY_LIMIT = 4_000
 private const val HTTP_DIAGNOSTIC_MAX_REQUEST_CAPTURE_BYTES = 48_000L
 

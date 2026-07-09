@@ -55,3 +55,6 @@ internal fun removeSessionAdItem(adState: SessionAdState?, adId: String): Sessio
 
 internal fun removeSessionAdItem(session: SessionInfo, adId: String): SessionInfo =
     session.copy(adState = removeSessionAdItem(session.adState, adId))
+
+internal fun shouldRestartCompletedQueueAd(session: SessionInfo, completedAdId: String): Boolean =
+    sessionAdItems(session.adState).any { it.adId == completedAdId }

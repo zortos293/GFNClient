@@ -57,6 +57,12 @@ data class AndroidAppInstallSource(
     val isGooglePlay: Boolean
         get() = installerPackageNames.any(::isGooglePlayInstallerPackage)
 
+    val distributionKind: String
+        get() = if (isGooglePlay) "play-store" else "apk"
+
+    val buildDistributionKind: String
+        get() = if (apkUpdatesSupportedByBuild) "apk" else "play-release"
+
     val allowsApkUpdates: Boolean
         get() = apkUpdatesSupportedByBuild && !isGooglePlay
 
@@ -66,6 +72,19 @@ data class AndroidAppInstallSource(
             installerPackageNames.isEmpty() -> "Sideloaded"
             else -> installerPackageNames.sorted().joinToString(", ")
         }
+}
+
+internal fun AndroidUpdateState.debugHeaderLine(debugBuild: Boolean = BuildConfig.DEBUG): String {
+    val variant = if (debugBuild) "debug" else "release"
+    return listOf(
+        "app.version=$currentVersionName",
+        "build=$currentVersionCode",
+        "variant=$variant",
+        "distribution=${installSource.distributionKind}",
+        "installSource=${installSource.displayName}",
+        "buildDistribution=${installSource.buildDistributionKind}",
+        "apkUpdatesAllowed=$apkUpdatesAllowed",
+    ).joinToString(" ")
 }
 
 data class AndroidUpdateProgress(

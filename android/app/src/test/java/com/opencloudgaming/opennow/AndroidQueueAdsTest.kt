@@ -1,7 +1,9 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidQueueAdsTest {
@@ -238,6 +240,28 @@ class AndroidQueueAdsTest {
 
         assertEquals(5, merged.queuePosition)
         assertEquals(emptyList<SessionAdInfo>(), sessionAdItems(merged.adState))
+    }
+
+    @Test
+    fun shouldRestartCompletedQueueAdOnlyWhenServerReturnsIt() {
+        val cleared = session(
+            adState = SessionAdState(
+                isAdsRequired = false,
+                sessionAdsRequired = false,
+                serverSentEmptyAds = true,
+            ),
+        )
+        val explicitReplay = session(
+            adState = SessionAdState(
+                isAdsRequired = true,
+                sessionAdsRequired = true,
+                sessionAds = listOf(ad("ad-1")),
+                ads = listOf(ad("ad-1")),
+            ),
+        )
+
+        assertFalse(shouldRestartCompletedQueueAd(cleared, "ad-1"))
+        assertTrue(shouldRestartCompletedQueueAd(explicitReplay, "ad-1"))
     }
 
     @Test

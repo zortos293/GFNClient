@@ -86,8 +86,8 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
     if (resetSettingsConfirmOpen) {
         AlertDialog(
             onDismissRequest = { resetSettingsConfirmOpen = false },
-            title = { Text("Reset settings?") },
-            text = { Text("Stream, input, interface, and controller preferences will return to recommended defaults. Accounts stay signed in.") },
+            title = { Text("Reset settings and app data?") },
+            text = { Text("Accounts, settings, cached games, tutorial state, and local app files will be removed. OpenNOW will relaunch like a fresh install.") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -95,7 +95,7 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
                         viewModel.resetSettings()
                     },
                 ) {
-                    Text("Reset settings")
+                    Text("Reset and relaunch")
                 }
             },
             dismissButton = {
@@ -107,15 +107,20 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "Recommended defaults keep touch controls, fullscreen recovery, dynamic color, compact cards, and controller polish on. Riskier debugging, proxy, stats, clipboard, and auto-load options stay off.",
+            "Reset tutorial only makes the stream guide appear again. Reset settings is destructive: it clears local app data and relaunches OpenNOW.",
             color = SettingsTextMuted,
             style = MaterialTheme.typography.bodySmall,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = { clearCacheConfirmOpen = true }, modifier = Modifier.weight(1f)) {
-                Text("Clear cache", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { clearCacheConfirmOpen = true }, modifier = Modifier.weight(1f)) {
+                    Text("Clear cache", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedButton(onClick = viewModel::resetStreamTutorial, modifier = Modifier.weight(1f)) {
+                    Text("Reset tutorial", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
-            OutlinedButton(onClick = { resetSettingsConfirmOpen = true }, modifier = Modifier.weight(1f)) {
+            OutlinedButton(onClick = { resetSettingsConfirmOpen = true }, modifier = Modifier.fillMaxWidth()) {
                 Text("Reset settings", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

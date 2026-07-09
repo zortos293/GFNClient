@@ -76,6 +76,24 @@ enum class StreamStatsPosition {
     Right,
 }
 
+@Serializable
+enum class IntroMusicStartMode {
+    @kotlinx.serialization.SerialName("muted")
+    Muted,
+
+    @kotlinx.serialization.SerialName("playing")
+    Playing,
+}
+
+@Serializable
+enum class AppLaunchPage {
+    @kotlinx.serialization.SerialName("store")
+    Store,
+
+    @kotlinx.serialization.SerialName("library")
+    Library,
+}
+
 enum class SessionTimerMode {
     Countdown,
     Stopwatch,
@@ -165,7 +183,8 @@ data class AppSettings(
     val expressiveUi: Boolean = true,
     val dynamicColor: Boolean = false,
     val uiAccent: UiAccent = UiAccent.OpenNow,
-    val nerdMode: Boolean = false,
+    val launchPage: AppLaunchPage = AppLaunchPage.Store,
+    val nerdMode: Boolean = true,
     val hideStreamButtons: Boolean = false,
     val showAntiAfkIndicator: Boolean = true,
     val showStatsOnLaunch: Boolean = false,
@@ -174,15 +193,16 @@ data class AppSettings(
     val phoneRumbleFallback: Boolean = true,
     val hideServerSelector: Boolean = false,
     val controllerMode: Boolean = false,
-    val controllerUiSounds: Boolean = false,
+    val controllerUiSounds: Boolean = true,
     val controllerBackgroundAnimations: Boolean = true,
     val controllerThemeStyle: String = "aurora",
     val controllerThemeColor: ControllerThemeRgb = ControllerThemeRgb(),
     val controllerLibraryGameBackdrop: Boolean = true,
     val autoLoadControllerLibrary: Boolean = false,
     val autoFullScreen: Boolean = true,
-    val streamIntroMusic: Boolean = false,
-    val queueReadyMusic: Boolean = false,
+    val streamIntroMusic: Boolean = true,
+    val streamIntroStartMode: IntroMusicStartMode = IntroMusicStartMode.Muted,
+    val queueReadyMusic: Boolean = true,
     val stretchStreamToFill: Boolean = false,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
@@ -192,6 +212,7 @@ data class AppSettings(
     val clipboardPaste: Boolean = true,
     val androidTouch: AndroidTouchSettings = AndroidTouchSettings(),
     val androidStreamGuideDismissed: Boolean = false,
+    val androidPhysicalControllerPromptDismissed: Boolean = false,
     val discordRichPresence: Boolean = false,
     val autoCheckForUpdates: Boolean = true,
     val analyticsOptOut: Boolean = false,
@@ -240,6 +261,9 @@ internal fun streamResolutionChoicesForAspect(aspectRatio: String): List<StreamR
 
 internal fun streamAspectRatioOptions(): List<String> =
     STREAM_RESOLUTION_OPTIONS.map { it.aspectRatio }.distinct()
+
+internal fun streamAspectRatioForResolution(resolution: String): String? =
+    STREAM_RESOLUTION_OPTIONS.firstOrNull { it.value == resolution }?.aspectRatio
 
 internal fun normalizeStreamResolutionForAspect(resolution: String, aspectRatio: String): String {
     val normalizedAspect = aspectRatio.trim()
@@ -412,12 +436,24 @@ internal fun monthlyHoursRemainingFor(subscriptionInfo: SubscriptionInfo?, fallb
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
     if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
 
+internal fun VideoCodec.availableForAndroidSettings(): Boolean =
+    this != VideoCodec.AV1
+
+internal fun ColorQuality.availableForAndroidSettings(): Boolean =
+    !isChroma444()
+
 internal fun ColorQuality.availableForCodec(codec: VideoCodec): Boolean =
-    codec != VideoCodec.AV1 || !isChroma444()
+    availableForAndroidSettings() && codec.availableForAndroidSettings()
+
+internal fun StreamSettings.withAndroidSettingsAvailability(): StreamSettings {
+    val availableCodec = if (codec.availableForAndroidSettings()) codec else VideoCodec.H264
+    val normalized = if (availableCodec == codec) this else copy(codec = availableCodec)
+    return normalized.withCodecColorCompatibility()
+}
 
 internal fun StreamSettings.withCodecColorCompatibility(): StreamSettings {
     val compatibleColor = when {
-        codec == VideoCodec.AV1 && colorQuality.isChroma444() -> colorQuality.asChroma420()
+        colorQuality.isChroma444() -> colorQuality.asChroma420()
         hdrEnabled && !colorQuality.isTenBit() -> ColorQuality.TenBit420
         else -> colorQuality
     }
@@ -435,7 +471,7 @@ internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSe
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
         enableCloudGsync = false,
-    ).withCodecColorCompatibility()
+    ).withAndroidSettingsAvailability()
 }
 
 internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
@@ -1119,6 +1155,21 @@ internal fun ActiveSessionInfo.matchesStreamSettings(settings: StreamSettings): 
     return activeResolution == expectedResolution && activeFps == settings.fps
 }
 
+internal fun activeSessionLaunchConflict(
+    sessions: List<ActiveSessionInfo>,
+    launchAppId: Int?,
+    settings: StreamSettings,
+): ActiveSessionInfo? =
+    sessions
+        .filter { it.status in setOf(1, 2, 3) }
+        .sortedWith(
+            compareByDescending<ActiveSessionInfo> { launchAppId != null && it.appId == launchAppId }
+                .thenByDescending { it.matchesStreamSettings(settings) }
+                .thenByDescending { it.isReadyForClaim() }
+                .thenBy { it.queuePosition ?: Int.MAX_VALUE },
+        )
+        .firstOrNull()
+
 internal fun parseResolutionPixelsOrNull(value: String?): Pair<Int, Int>? {
     val parts = value?.split("x") ?: return null
     val width = parts.getOrNull(0)?.toIntOrNull()
@@ -1181,11 +1232,14 @@ internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean {
 }
 
 private fun RuntimeCodecReport.bestStreamingFallbackCodec(): VideoCodec =
-    listOf(VideoCodec.H264, VideoCodec.AV1, VideoCodec.H265)
+    listOf(VideoCodec.H264, VideoCodec.H265)
         .firstOrNull { codec -> capabilities.firstOrNull { it.codec == codec }?.streamingDecoderUsableForLaunch() == true }
         ?: VideoCodec.H264
 
 internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): StreamSettings {
+    val availableSettings = withAndroidSettingsAvailability()
+    if (availableSettings != this) return availableSettings.adjustedForDevice(report)
+
     if (report?.androidTvProfile == true && report.lowPowerGpuProfile) {
         return copy(
             codec = VideoCodec.H264,

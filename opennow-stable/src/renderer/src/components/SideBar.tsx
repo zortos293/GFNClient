@@ -1,18 +1,22 @@
-import type { JSX, ReactNode } from "react";
+import type { JSX, ReactNode, Ref } from "react";
 import { useTranslation } from "../i18n";
 
 interface SideBarProps {
   title?: string;
   children?: ReactNode;
+  footer?: ReactNode;
   className?: string;
   onClose?: () => void;
+  elementRef?: Ref<HTMLElement>;
 }
 
 export default function SideBar({
   title,
   children,
+  footer,
   className = "",
   onClose,
+  elementRef,
 }: SideBarProps): JSX.Element {
   const { t } = useTranslation();
   const classNames = ["sidebar", className].filter(Boolean).join(" ");
@@ -20,6 +24,7 @@ export default function SideBar({
 
   return (
     <aside
+      ref={elementRef}
       className={classNames}
       role="dialog"
       aria-label={sidebarTitle}
@@ -40,6 +45,7 @@ export default function SideBar({
       <div className="sidebar-body">
         {children}
       </div>
+      {footer && <div className="sidebar-footer">{footer}</div>}
     </aside>
   );
 }

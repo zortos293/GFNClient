@@ -461,7 +461,7 @@ export const HomePage = memo(function HomePage({
       if (pressed & controllerButton.west) setControllerSearchOpen(true);
       if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
       if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
-      if (pressed & controllerButton.menu) cycleControllerVariant();
+      if (pressed & controllerButton.menu) onNextControllerPage?.();
       if (pressed & controllerButton.up) focusControllerTile(rowIndex - 1, columnIndex);
       if (pressed & controllerButton.down) focusControllerTile(rowIndex + 1, columnIndex);
       if (pressed & controllerButton.left) focusControllerTile(rowIndex, columnIndex - 1);
@@ -655,7 +655,7 @@ export const HomePage = memo(function HomePage({
                 <span className="controller-button controller-button--a">A</span>
                 <span>{t("app.actions.select")}</span>
               </button>
-              <button type="button" className="controller-hint controller-hint--b" onClick={onPreviousControllerPage}>
+              <button type="button" className="controller-hint controller-hint--b" onClick={() => onPreviousControllerPage?.()}>
                 <span className="controller-button controller-button--b">B</span>
                 <span>{t("app.actions.back")}</span>
               </button>
@@ -667,7 +667,7 @@ export const HomePage = memo(function HomePage({
                 <span className="controller-button controller-button--x">X</span>
                 <span>{t("app.actions.search")}</span>
               </button>
-              <button type="button" className="controller-hint controller-hint--more" onClick={() => alert('More Options')}>
+              <button type="button" className="controller-hint controller-hint--more" onClick={() => onNextControllerPage?.()}>
                 <span className="controller-menu-button"><Menu size={22} /></span>
                 <span>{t("library.moreOptions")}</span>
               </button>
@@ -701,7 +701,11 @@ export const HomePage = memo(function HomePage({
                     placeholder={t("home.searchPlaceholder")}
                     className="controller-search-input"
                   />
-                  <p>{t("app.actions.back")}</p>
+                  <div className="controller-search-actions">
+                    <button type="button" className="controller-secondary-action" onClick={() => setControllerSearchOpen(false)}>
+                      {t("app.actions.back")}
+                    </button>
+                  </div>
                   </m.div>
                 </m.div>
               )}

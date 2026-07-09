@@ -959,11 +959,27 @@ export const LibraryPage = memo(function LibraryPage({
                 <span className="controller-button controller-button--a">A</span>
                 <span>{t("app.actions.select")}</span>
               </button>
-              <button type="button" className="controller-hint" onClick={() => setDetailsGame(null)}>
+              <button type="button" className="controller-hint controller-hint--b" onClick={() => {
+                if (detailsGame) {
+                  setDetailsGame(null);
+                } else if (controllerStoreFilterOpen) {
+                  setControllerStoreFilterOpen(false);
+                } else {
+                  onPreviousControllerPage?.();
+                }
+              }}>
                 <span className="controller-button controller-button--b">B</span>
                 <span>{t("app.actions.back")}</span>
               </button>
-              <button type="button" className="controller-hint" onClick={cycleSelectedVariant}>
+              <button type="button" className="controller-hint" onClick={() => {
+                const index = controllerStoreFilterItems.findIndex(item => item.id === controllerStoreFilterId);
+                const next = (index + 1) % controllerStoreFilterItems.length;
+                const item = controllerStoreFilterItems[next];
+                if (item) {
+                  setFocusedControllerStoreFilterIndex(next);
+                  setControllerStoreFilterId(item.id);
+                }
+              }}>
                 <span className="controller-button controller-button--y">Y</span>
                 <span>{t("library.filter")}</span>
               </button>
@@ -971,7 +987,9 @@ export const LibraryPage = memo(function LibraryPage({
                 <span className="controller-button controller-button--x">X</span>
                 <span>{t("app.actions.search")}</span>
               </button>
-              <button type="button" className="controller-hint controller-hint--more" onClick={() => alert('More Options')}>
+              <button type="button" className="controller-hint controller-hint--more" onClick={() => {
+                if (selectedControllerGame) setDetailsGame(selectedControllerGame);
+              }}>
                 <span className="controller-menu-button"><Menu size={22} /></span>
                 <span>{t("library.moreOptions")}</span>
               </button>
@@ -1048,7 +1066,11 @@ export const LibraryPage = memo(function LibraryPage({
                     placeholder={t("library.searchPlaceholder")}
                     className="controller-search-input"
                   />
-                  <p>{t("app.actions.back")}</p>
+                  <div className="controller-search-actions">
+                    <button type="button" className="controller-secondary-action" onClick={() => setControllerSearchOpen(false)}>
+                      {t("app.actions.back")}
+                    </button>
+                  </div>
                   </m.div>
                 </m.div>
               )}

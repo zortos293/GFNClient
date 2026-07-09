@@ -748,10 +748,10 @@
       "nativeStreamingHint": "Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.",
       "enablePromptKicker": "Experimental",
       "enablePromptTitle": "Enable Native Streamer?",
-      "enablePromptBody": "The native streamer is still experimental. OpenNOW shortcuts do not work while the native streamer window has focus.",
+      "enablePromptBody": "The native streamer is still experimental. Internal mode keeps video inside the OpenNOW window; external floating mode is available as a fallback in settings.",
       "enablePromptNewSessions": "Native streaming applies to new sessions only.",
-      "enablePromptShortcuts": "Overlay, exit, fullscreen, stats, and other shortcuts will not trigger inside the native streamer window.",
-      "enablePromptAltTab": "Alt+Tab back into the OpenNOW window to exit the stream or use OpenNOW shortcuts.",
+      "enablePromptShortcuts": "In internal mode, OpenNOW shortcuts stay available. External floating mode captures input in its own window.",
+      "enablePromptAltTab": "If you use external floating mode, Alt+Tab back into OpenNOW to exit the stream or use app shortcuts.",
       "enablePromptCancel": "Keep Disabled",
       "enablePromptEnable": "Enable Native Streamer",
       "enablePromptEsc": "cancel",
@@ -777,7 +777,11 @@
       "framePacing": "Frame Pacing",
       "lowestLatency": "Lowest Latency",
       "smoothGsync": "Smooth G-Sync",
-      "framePacingHint": "Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate."
+      "framePacingHint": "Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate.",
+      "renderMode": "Render Mode",
+      "renderModeInternal": "Internal (One Window)",
+      "renderModeExternal": "External (Floating)",
+      "renderModeHint": "Internal (default) embeds native video in the OpenNOW window. External keeps the floating GStreamer window for testing/fallback. Change applies to the next native streamer process."
     },
     "thanks": {
       "title": "Thanks for helping OpenNOW grow",

@@ -28,7 +28,7 @@ import {
   createUnsupportedNativeStreamerStatus,
   DEFAULT_VIDEO_SHADER_SETTINGS,
   isNativeStreamerSupportedPlatform,
-  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+  NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
   colorQualityRequiresHevc,
   expandEntitledStreamResolutions,
   getSafeFallbackEntitledResolutions,
@@ -423,7 +423,11 @@ const STATIC_FPS_PRESETS: FpsPreset[] = [
 ];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
-const isWindows = isNativeStreamerSupportedPlatform(`${navigator.platform} ${navigator.userAgent}`);
+const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(
+  `${navigator.platform} ${navigator.userAgent}`,
+);
+/** @deprecated Prefer isNativeStreamerPlatform — kept for existing Windows-only UI branches. */
+const isWindows = isNativeStreamerPlatform;
 const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
 const shortcutDefaults = {
   shortcutToggleStats: "F3",
@@ -3332,7 +3336,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               <h2>{t("settings.nativeStreamer.title")}</h2>
             </div>
             <div className="settings-rows">
-              {!isWindows ? (
+              {!isNativeStreamerPlatform ? (
                 <div className="settings-row settings-row--column">
                   <div className="settings-row-top settings-row-top--compact">
                     <label className="settings-label settings-label--wrap">
@@ -3343,7 +3347,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </label>
                   </div>
                   <span className="settings-input-hint">
-                    {NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE}
+                    {NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE}
                   </span>
                 </div>
               ) : (
@@ -3532,6 +3536,29 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </div>
                     <span className="settings-subtle-hint">
                       {t("settings.nativeStreamer.framePacingHint")}
+                    </span>
+                  </div>
+
+                  <div className="settings-row settings-row--column">
+                    <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
+                    <div className="settings-chip-row">
+                      <button
+                        type="button"
+                        className={`settings-chip ${!settings.nativeExternalRenderer ? "active" : ""}`}
+                        onClick={() => handleChange("nativeExternalRenderer", false)}
+                      >
+                        <span>{t("settings.nativeStreamer.renderModeInternal")}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`settings-chip ${settings.nativeExternalRenderer ? "active" : ""}`}
+                        onClick={() => handleChange("nativeExternalRenderer", true)}
+                      >
+                        <span>{t("settings.nativeStreamer.renderModeExternal")}</span>
+                      </button>
+                    </div>
+                    <span className="settings-subtle-hint">
+                      {t("settings.nativeStreamer.renderModeHint")}
                     </span>
                   </div>
                 </>

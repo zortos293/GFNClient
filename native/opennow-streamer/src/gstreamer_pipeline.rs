@@ -1,7 +1,7 @@
 use crate::gstreamer_backend::send_log;
 use crate::gstreamer_config::{
     automatic_present_max_fps, requested_video_backend, use_external_renderer_window,
-    zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_D3D_FULLSCREEN_ENV,
+    use_internal_renderer, zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_D3D_FULLSCREEN_ENV,
     NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV,
     PRESENT_LIMITER_AUTO_SENTINEL,
 };
@@ -17,11 +17,11 @@ use crate::gstreamer_liveness::{
     watch_video_sink_caps_transitions, watch_video_sink_rate, VideoLivenessMonitor,
 };
 use crate::gstreamer_platform::{
-    apply_render_surface_to_video_sink, primary_display_refresh_hz,
-    release_native_input_capture, start_external_renderer_window_guard,
-    update_external_renderer_surface,
+    arm_internal_child_input, primary_display_refresh_hz, release_native_input_capture,
+    start_external_renderer_window_guard, update_external_renderer_surface,
 };
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
+use crate::internal_renderer::InternalRenderer;
 use crate::protocol::{
     Event, IceCandidatePayload, NativeRenderSurface, NativeStreamerSessionContext,
     NativeVideoBackendCapability, NativeVideoCodecCapability,
@@ -246,13 +246,29 @@ impl RtpVideoChainSpec {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct GstreamerRenderState {
     surface: Arc<Mutex<Option<NativeRenderSurface>>>,
     video_sink: Arc<Mutex<Option<gst::Element>>>,
+    internal_renderer: Arc<InternalRenderer>,
     external_renderer_logged: Arc<AtomicBool>,
+    internal_renderer_logged: Arc<AtomicBool>,
     external_window_guard_started: Arc<AtomicBool>,
     external_window_guard_stop: Arc<AtomicBool>,
+}
+
+impl Default for GstreamerRenderState {
+    fn default() -> Self {
+        Self {
+            surface: Arc::new(Mutex::new(None)),
+            video_sink: Arc::new(Mutex::new(None)),
+            internal_renderer: Arc::new(InternalRenderer::new()),
+            external_renderer_logged: Arc::new(AtomicBool::new(false)),
+            internal_renderer_logged: Arc::new(AtomicBool::new(false)),
+            external_window_guard_started: Arc::new(AtomicBool::new(false)),
+            external_window_guard_stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl GstreamerRenderState {
@@ -265,18 +281,23 @@ impl GstreamerRenderState {
 
     fn set_video_sink(&self, sink: gst::Element, event_sender: &Option<Sender<Event>>) {
         if let Ok(mut current) = self.video_sink.lock() {
-            *current = Some(sink);
+            *current = Some(sink.clone());
+        }
+        if use_internal_renderer() {
+            if let Err(message) = self.internal_renderer.set_video_sink(sink) {
+                send_log(event_sender, "warn", message);
+            }
         }
         self.apply(event_sender);
     }
 
     fn apply(&self, event_sender: &Option<Sender<Event>>) {
-        let sink = self.video_sink.lock().ok().and_then(|sink| sink.clone());
-        let Some(sink) = sink else {
-            return;
-        };
-
         if use_external_renderer_window() {
+            let sink_ready = self.video_sink.lock().ok().and_then(|sink| sink.clone());
+            let Some(_sink) = sink_ready else {
+                return;
+            };
+
             if let Some(surface) = self.surface.lock().ok().and_then(|surface| surface.clone()) {
                 update_external_renderer_surface(&surface);
             }
@@ -296,20 +317,46 @@ impl GstreamerRenderState {
                     event_sender,
                     "info",
                     format!(
-                        "Using external native GStreamer renderer window; set {EXTERNAL_RENDERER_ENV}=0 to retry Electron HWND embedding."
+                        "Using external native GStreamer renderer window; set {EXTERNAL_RENDERER_ENV}=0 for the internal child-surface renderer."
                     ),
                 );
             }
             return;
         }
 
+        let sink_ready = self.video_sink.lock().ok().and_then(|sink| sink.clone());
+        let Some(_sink) = sink_ready else {
+            return;
+        };
+
         let surface = self.surface.lock().ok().and_then(|surface| surface.clone());
         let Some(surface) = surface else {
             return;
         };
 
-        if let Err(message) = apply_render_surface_to_video_sink(&sink, &surface) {
+        if !self.internal_renderer_logged.swap(true, Ordering::SeqCst) {
+            send_log(
+                event_sender,
+                "info",
+                format!(
+                    "Using internal native child-surface renderer; set {EXTERNAL_RENDERER_ENV}=1 for the floating GStreamer window."
+                ),
+            );
+        }
+
+        if let Err(message) = self.internal_renderer.apply_surface(&surface) {
             send_log(event_sender, "warn", message);
+        }
+
+        // Keep ClipCursor / capture rect aligned with the StreamView hole, and
+        // (re)arm RawInput if the child HWND was recreated on parent change.
+        #[cfg(target_os = "windows")]
+        {
+            update_external_renderer_surface(&surface);
+            let hwnd = self.internal_renderer.child_handle();
+            if hwnd != 0 {
+                let _ = arm_internal_child_input(hwnd);
+            }
         }
     }
 
@@ -317,6 +364,12 @@ impl GstreamerRenderState {
         self.external_window_guard_stop
             .store(true, Ordering::SeqCst);
         self.external_window_guard_started
+            .store(false, Ordering::SeqCst);
+    }
+
+    fn destroy_internal_renderer(&self) {
+        self.internal_renderer.destroy();
+        self.internal_renderer_logged
             .store(false, Ordering::SeqCst);
     }
 }
@@ -447,6 +500,8 @@ impl GstreamerPipeline {
 
     #[cfg(target_os = "windows")]
     fn ensure_native_window_input_bridge(&mut self) {
+        // Win32 RawInput: floating external window OR internal child HWND.
+        // Electron click-through across a topmost D3D sibling is unreliable.
         if self.native_window_input_bridge.is_some() {
             return;
         }
@@ -459,10 +514,23 @@ impl GstreamerPipeline {
             input_channels,
             self.event_sender.clone(),
         ));
+        if use_internal_renderer() {
+            let hwnd = self.render_state.internal_renderer.child_handle();
+            if hwnd != 0 && arm_internal_child_input(hwnd) {
+                send_log(
+                    &self.event_sender,
+                    "info",
+                    "Armed RawInput capture on the internal child HWND.".to_owned(),
+                );
+            }
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
     fn ensure_native_window_input_bridge(&mut self) {
+        if use_internal_renderer() {
+            return;
+        }
         send_log(
             &self.event_sender,
             "warn",
@@ -763,6 +831,7 @@ impl GstreamerPipeline {
     pub(crate) fn stop(mut self) -> Result<(), String> {
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
+        self.render_state.destroy_internal_renderer();
         #[cfg(target_os = "windows")]
         if let Some(mut bridge) = self.native_window_input_bridge.take() {
             bridge.stop();

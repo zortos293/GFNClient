@@ -1431,7 +1431,7 @@ pub(crate) fn watch_first_sink_buffer(
                 let message = if use_external_renderer_window() {
                     "Native video frames reached the external low-latency GStreamer renderer window."
                 } else {
-                    "Native video frames reached the embedded low-latency GStreamer sink."
+                    "Native video frames reached the internal child-surface GStreamer renderer."
                 };
                 let _ = event_sender.send(Event::Status {
                     status: "streaming",

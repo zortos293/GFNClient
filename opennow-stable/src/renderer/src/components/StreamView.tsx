@@ -31,6 +31,8 @@ interface StreamViewProps {
   showNativeStats?: boolean;
   nativeInputCaptureActive?: boolean;
   gstreamerEnabled: boolean;
+  /** When false, native mode uses the internal child-surface renderer (one window). */
+  nativeExternalRenderer?: boolean;
   shortcuts: {
     toggleStats: string;
     togglePointerLock: string;
@@ -406,6 +408,7 @@ export function StreamView({
   showNativeStats = false,
   nativeInputCaptureActive = false,
   gstreamerEnabled,
+  nativeExternalRenderer = false,
   shortcuts,
   serverRegion,
   antiAfkEnabled,
@@ -1229,7 +1232,10 @@ export function StreamView({
       const rect = element.getBoundingClientRect();
       const width = Math.round(rect.width * dpr);
       const height = Math.round(rect.height * dpr);
-      const visible = width >= 2 && height >= 2;
+      // Hide the child surface while the stream sidebar or exit prompt is open so
+      // Chromium UI is not covered by the topmost native child window.
+      const overlaysOpen = showSideBar || exitPrompt.open;
+      const visible = width >= 2 && height >= 2 && !overlaysOpen;
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
@@ -1284,7 +1290,7 @@ export function StreamView({
         showStats: false,
       });
     };
-  }, [showNativeStats, showStats]);
+  }, [exitPrompt.open, showNativeStats, showSideBar, showStats]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
@@ -1519,15 +1525,24 @@ export function StreamView({
     };
   }, [exitPrompt.open, isConnecting, showSideBar]);
 
+  const nativeInternalHole =
+    (nativeRendererActive || gstreamerEnabled) && !nativeExternalRenderer;
+
   return (
-    <div className={["sv", className].filter(Boolean).join(" ")}>
+    <div
+      className={["sv", nativeInternalHole ? "sv--native-hole" : "", className]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <video
         ref={setVideoRef}
         autoPlay
         playsInline
         muted
         tabIndex={-1}
-        className="sv-video"
+        className={["sv-video", nativeInternalHole ? "sv-video--native-hole" : ""]
+          .filter(Boolean)
+          .join(" ")}
         onClick={() => {
           if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
             localVideoRef.current.focus({ preventScroll: true });

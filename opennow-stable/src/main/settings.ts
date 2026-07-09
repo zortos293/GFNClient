@@ -208,7 +208,7 @@ const DEFAULT_SETTINGS: Settings = {
   nativeStreamerExecutablePath: "",
   nativeCloudGsyncMode: "auto",
   nativeD3dFullscreenMode: "auto",
-  nativeExternalRenderer: true,
+  nativeExternalRenderer: false,
   showNativeStreamerStats: false,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
@@ -435,8 +435,8 @@ export class SettingsManager {
       settings.translucentUI = false;
       migrated = true;
     }
-    if (!settings.nativeExternalRenderer) {
-      settings.nativeExternalRenderer = true;
+    if (typeof settings.nativeExternalRenderer !== "boolean") {
+      settings.nativeExternalRenderer = false;
       migrated = true;
     }
     const nativeVideoBackend = normalizeNativeVideoBackendPreference(settings.nativeVideoBackend);

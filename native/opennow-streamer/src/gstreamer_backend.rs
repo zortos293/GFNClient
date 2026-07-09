@@ -227,6 +227,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         };
 
         let present_max_fps = resolve_present_max_fps(context.settings.fps);
+        // Internal child-surface mode never uses exclusive D3D fullscreen present.
         let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
         set_native_shortcut_bindings(&context.shortcuts);
         pipeline.set_present_max_fps(present_max_fps);

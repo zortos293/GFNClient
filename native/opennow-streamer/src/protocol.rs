@@ -265,7 +265,7 @@ pub struct NativeRenderSurface {
     pub show_stats: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeRenderRect {
     pub x: i32,

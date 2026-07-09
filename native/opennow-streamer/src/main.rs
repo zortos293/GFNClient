@@ -15,6 +15,8 @@ mod gstreamer_pipeline;
 mod gstreamer_platform;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_transitions;
+#[cfg(feature = "gstreamer")]
+mod internal_renderer;
 mod input;
 mod protocol;
 mod shortcuts;

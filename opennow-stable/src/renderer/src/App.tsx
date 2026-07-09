@@ -497,7 +497,7 @@ export function App(): JSX.Element {
     nativeStreamerExecutablePath: "",
     nativeCloudGsyncMode: "auto",
     nativeD3dFullscreenMode: "auto",
-    nativeExternalRenderer: true,
+    nativeExternalRenderer: false,
     showNativeStreamerStats: false,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
@@ -2693,6 +2693,11 @@ export function App(): JSX.Element {
     nativeInputProtocolVersionRef.current = null;
     setNativeInputBridgeReady(false);
     setNativeInputCaptureActive(false);
+    try {
+      window.openNow.notifyPointerLockChange(false, true);
+    } catch {
+      /* best-effort */
+    }
     setQueuePosition(undefined);
     setLaunchError(null);
     setStreamStatus("connecting");
@@ -3068,13 +3073,23 @@ export function App(): JSX.Element {
 
       nativeStreamingRef.current = true;
       pendingControlledDisconnectsRef.current = 0;
-      client.activateNativeInput(protocolVersion, {
-        codec: settings.codec,
-        colorQuality: settings.colorQuality,
-        resolution: settings.resolution,
-        fps: settings.fps,
-        maxBitrateKbps: settings.maxBitrateMbps * 1000,
-      });
+      client.activateNativeInput(
+        protocolVersion,
+        {
+          codec: settings.codec,
+          colorQuality: settings.colorQuality,
+          resolution: settings.resolution,
+          fps: settings.fps,
+          maxBitrateKbps: settings.maxBitrateMbps * 1000,
+        },
+        {
+          // Windows internal: RawInput on the child HWND (Electron click-through is flaky).
+          // macOS/Linux internal: Electron → IPC. External floating window: always OS capture.
+          electronInputBridge:
+            !settings.nativeExternalRenderer
+            && !navigator.platform.toLowerCase().includes("win"),
+        },
+      );
       setLaunchError(null);
       setStreamStatus("streaming");
       markDiscordStreamStarted();
@@ -3175,6 +3190,13 @@ export function App(): JSX.Element {
           }
         } else if (event.type === "native-input-capture-changed") {
           setNativeInputCaptureActive(event.captured);
+          // Treat OS RawInput capture like pointer lock so main-process Escape
+          // interception keeps Chromium from exiting fullscreen on tap.
+          try {
+            window.openNow.notifyPointerLockChange(event.captured);
+          } catch {
+            /* best-effort */
+          }
         } else if (event.type === "native-stream-stats") {
           diagnosticsStore.set(mergeNativeStreamStats(
             diagnosticsStore.getSnapshot(),
@@ -3197,6 +3219,11 @@ export function App(): JSX.Element {
           nativeInputProtocolVersionRef.current = null;
           setNativeInputBridgeReady(false);
           setNativeInputCaptureActive(false);
+          try {
+            window.openNow.notifyPointerLockChange(false, true);
+          } catch {
+            /* best-effort */
+          }
           clientRef.current?.dispose();
           clientRef.current = null;
           launchInFlightRef.current = false;
@@ -4534,6 +4561,7 @@ export function App(): JSX.Element {
             showNativeStats={settings.showNativeStreamerStats}
             nativeInputCaptureActive={nativeInputCaptureActive}
             gstreamerEnabled={settings.streamClientMode === "native"}
+            nativeExternalRenderer={settings.nativeExternalRenderer}
             shortcuts={{
               toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
               togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),

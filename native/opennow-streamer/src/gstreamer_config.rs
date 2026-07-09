@@ -14,7 +14,12 @@ pub(crate) fn use_external_renderer_window() -> bool {
                 "0" | "false" | "no" | "off"
             )
         })
-        .unwrap_or(true)
+        // Default to the internal child-surface renderer (single Electron window).
+        .unwrap_or(false)
+}
+
+pub(crate) fn use_internal_renderer() -> bool {
+    !use_external_renderer_window()
 }
 
 pub(crate) fn requested_video_backend() -> String {
@@ -58,6 +63,12 @@ pub(crate) fn automatic_present_max_fps(requested_fps: u32, display_hz: Option<u
 }
 
 pub(crate) fn resolve_d3d_fullscreen_sink(cloud_gsync_enabled: bool) -> bool {
+    // Exclusive D3D fullscreen fights child-window parenting; never enable it
+    // while the internal (single-window) renderer is active.
+    if use_internal_renderer() {
+        return false;
+    }
+
     if let Ok(value) = std::env::var(NATIVE_D3D_FULLSCREEN_ENV) {
         let value = value.trim().to_ascii_lowercase();
         if value == "1" || value == "on" || value == "true" || value == "yes" {

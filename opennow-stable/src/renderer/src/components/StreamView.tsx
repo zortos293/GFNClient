@@ -1758,7 +1758,7 @@ export function StreamView({
                   className="sidebar-exit-session-button"
                   onClick={handleSidebarExitSession}
                 >
-                  <LogOut size={17} />
+                  <LogOut size={16} />
                   <span>End session</span>
                 </button>
               </>
@@ -1838,21 +1838,21 @@ export function StreamView({
                 </section>
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
-                    <span>Quick actions</span>
-                    <span className="sidebar-section-sub">The things you actually opened this menu for.</span>
+                    <span>Session controls</span>
+                    <span className="sidebar-section-sub">Manage the active stream.</span>
                   </div>
                   <div className="sidebar-quick-actions">
                     <button type="button" className="sidebar-action-card" onClick={handleFullscreenToggle}>
-                      {isFullscreen ? <Minimize size={20} /> : <Maximize size={20} />}
+                      {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
                       <span>{isFullscreen ? "Windowed" : "Fullscreen"}</span>
                     </button>
                     <button type="button" className="sidebar-action-card" onClick={handlePointerLockToggle}>
-                      <MousePointer2 size={20} />
+                      <MousePointer2 size={16} />
                       <span>{isPointerLocked ? "Release mouse" : "Capture mouse"}</span>
                     </button>
                     {onToggleMicrophone && (
                       <button type="button" className="sidebar-action-card" onClick={onToggleMicrophone}>
-                        <Mic size={20} />
+                        <Mic size={16} />
                         <span>Toggle mic</span>
                       </button>
                     )}
@@ -1862,7 +1862,7 @@ export function StreamView({
                       onClick={() => { void captureScreenshot(); }}
                       disabled={isSavingScreenshot || !screenshotApiAvailable}
                     >
-                      <Camera size={20} />
+                      <Camera size={16} />
                       <span>{isSavingScreenshot ? "Capturing" : "Screenshot"}</span>
                     </button>
                   </div>
@@ -1875,6 +1875,7 @@ export function StreamView({
                     </span>
                     <input
                       type="checkbox"
+                      name="show-session-time-in-stats"
                       checked={showSessionTimeRemainingInStatsOverlay}
                       aria-label={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
                       onChange={(event) => onShowSessionTimeRemainingInStatsOverlayChange(event.target.checked)}
@@ -1894,7 +1895,7 @@ export function StreamView({
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Mouse Preferences</span>
-                    <span className="sidebar-section-sub">Fine-tune cursor movement</span>
+                    <span className="sidebar-section-sub">Fine-tune cursor movement.</span>
                   </div>
                   <div className="sidebar-row sidebar-row--column">
                     <div className="sidebar-row-top">
@@ -1903,6 +1904,8 @@ export function StreamView({
                     </div>
                     <input
                       type="range"
+                      name="mouse-sensitivity"
+                      aria-label="Mouse sensitivity"
                       className="settings-slider"
                       min={0.1}
                       max={4}
@@ -1924,6 +1927,8 @@ export function StreamView({
                     </div>
                     <input
                       type="range"
+                      name="mouse-acceleration"
+                      aria-label="Mouse accelerator"
                       className="settings-slider"
                       min={1}
                       max={150}
@@ -1943,7 +1948,7 @@ export function StreamView({
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Video Filters</span>
-                    <span className="sidebar-section-sub">GPU shaders applied to the stream</span>
+                    <span className="sidebar-section-sub">GPU shaders applied to the stream.</span>
                   </div>
                   {gstreamerEnabled ? (
                     <span className="sidebar-hint">Video filters are unavailable while the native streamer renders the video.</span>
@@ -1954,6 +1959,7 @@ export function StreamView({
                         <label className="sidebar-mini-toggle" title="Enable GPU post-processing filters" tabIndex={0}>
                           <input
                             type="checkbox"
+                            name="enable-video-filters"
                             checked={videoShader.enabled}
                             aria-label="Enable video filters"
                             onChange={(event) => onVideoShaderChange({ ...videoShader, enabled: event.target.checked })}
@@ -1978,6 +1984,8 @@ export function StreamView({
                               </div>
                               <input
                                 type="range"
+                                name={`video-filter-${control.key}`}
+                                aria-label={`${control.label} video filter`}
                                 className="settings-slider"
                                 min={control.min}
                                 max={control.max}
@@ -2016,7 +2024,7 @@ export function StreamView({
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Audio</span>
-                    <span className="sidebar-section-sub">Microphone handling</span>
+                    <span className="sidebar-section-sub">Configure microphone handling.</span>
                   </div>
                   <div className="sidebar-row sidebar-row--column">
                     <div className="sidebar-row-top">
@@ -2228,6 +2236,8 @@ export function StreamView({
                     </div>
                     <input
                       type="text"
+                      name="screenshot-shortcut"
+                      aria-label="Screenshot shortcut"
                       className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${screenshotShortcutError ? "error" : ""}`}
                       value={screenshotShortcutInput}
                       readOnly
@@ -2263,6 +2273,8 @@ export function StreamView({
                     </div>
                     <input
                       type="text"
+                      name="recording-shortcut"
+                      aria-label="Recording shortcut"
                       className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${recordingShortcutError ? "error" : ""}`}
                       value={recordingShortcutInput}
                       readOnly

@@ -1,4 +1,5 @@
 import type { JSX, ReactNode, Ref } from "react";
+import { X } from "lucide-react";
 import { useTranslation } from "../i18n";
 
 interface SideBarProps {
@@ -27,6 +28,7 @@ export default function SideBar({
       ref={elementRef}
       className={classNames}
       role="dialog"
+      aria-modal="true"
       aria-label={sidebarTitle}
     >
       <div className="sidebar-header">
@@ -38,7 +40,8 @@ export default function SideBar({
             onClick={onClose}
             aria-label={t("sidebar.closeSettings")}
           >
-            ✕
+            <X size={16} aria-hidden="true" />
+            <span className="sidebar-close-hit-area" aria-hidden="true" />
           </button>
         )}
       </div>

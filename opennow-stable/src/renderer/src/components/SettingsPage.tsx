@@ -2431,6 +2431,7 @@ export function SettingsPage({
     if (!controllerMode) return;
 
     let frameId: number | null = null;
+    let previousButtons = 0;
     const readButtons = (): number => {
       const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
       return readControllerGamepadButtons(pad);
@@ -2439,9 +2440,11 @@ export function SettingsPage({
     const handleFrame = () => {
       if (!nativeStreamerEnablePromptVisible && !zortosCommunityProxyPromptVisible) {
         const buttons = readButtons();
-        if (buttons & controllerButton.west) {
+        const pressed = buttons & ~previousButtons;
+        if (pressed & controllerButton.west) {
           onClose();
         }
+        previousButtons = buttons;
       }
       frameId = window.requestAnimationFrame(handleFrame);
     };
@@ -2515,7 +2518,11 @@ export function SettingsPage({
         <div className="settings-sidebar-footer">
           <span className="settings-footer-kicker">{t("settings.backTo")}</span>
           <button type="button" className="settings-back-btn" onClick={onClose}>
-            <span className="controller-button controller-button--x">X</span>
+            {controllerMode ? (
+              <span className="controller-button controller-button--x">X</span>
+            ) : (
+              <X size={18} />
+            )}
             <span>{t("app.actions.cancel")}</span>
           </button>
           <span className="settings-footer-destination">{returnPageLabel}</span>

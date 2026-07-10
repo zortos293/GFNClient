@@ -462,6 +462,7 @@ export const HomePage = memo(function HomePage({
       if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
       if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
       if (pressed & controllerButton.menu) onNextControllerPage?.();
+      if (pressed & controllerButton.north) cycleControllerVariant();
       if (pressed & controllerButton.up) focusControllerTile(rowIndex - 1, columnIndex);
       if (pressed & controllerButton.down) focusControllerTile(rowIndex + 1, columnIndex);
       if (pressed & controllerButton.left) focusControllerTile(rowIndex, columnIndex - 1);
@@ -650,7 +651,7 @@ export const HomePage = memo(function HomePage({
               ))}
             </div>
 
-            <div className="controller-bottom-hints" aria-hidden="true">
+            <div className="controller-bottom-hints">
               <button type="button" className="controller-hint controller-hint--a" onClick={launchFocusedTile}>
                 <span className="controller-button controller-button--a">A</span>
                 <span>{t("app.actions.select")}</span>

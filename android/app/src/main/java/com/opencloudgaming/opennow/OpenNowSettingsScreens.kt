@@ -62,6 +62,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 import kotlin.math.roundToInt
 
 internal val SettingsBackground = Color(0xff090b0d)
@@ -74,7 +75,7 @@ internal val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 internal val APP_NAV_RAIL_WIDTH = 80.dp
 internal const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
 internal const val PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT = 2.0f
-private const val CATALOG_BACKGROUND_IMAGE_FILE = "catalog_background_image"
+internal const val CATALOG_BACKGROUND_IMAGE_FILE_PREFIX = "catalog_background_image"
 
 internal data class SettingsChoiceOption(val value: String, val label: String)
 internal data class ChoiceMenuOption(
@@ -792,18 +793,20 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
             val newUri = withContext(Dispatchers.IO) {
                 persistCatalogBackgroundImage(appContext, uri)
             }
+            val previousUri = currentSettings.nerdCatalogBackgroundUri
             if (newUri != uri.toString()) {
                 releasePersistableImageReadPermission(context, uri.toString())
             }
-            currentSettings.nerdCatalogBackgroundUri
-                ?.takeIf { it.isNotBlank() && it != newUri }
-                ?.let { releasePersistableImageReadPermission(context, it) }
             viewModel.updateSettings(
                 currentSettings.copy(
                     nerdCatalogBackground = true,
                     nerdCatalogBackgroundUri = newUri,
                 ),
             )
+            if (!previousUri.isNullOrBlank() && previousUri != newUri) {
+                releasePersistableImageReadPermission(context, previousUri)
+            }
+            pruneStoredCatalogBackgroundImages(appContext, keepUri = newUri)
         }
     }
     val customBackgroundUri = settings.nerdCatalogBackgroundUri?.takeIf { it.isNotBlank() }
@@ -853,9 +856,9 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
                 if (hasCustomBackground) {
                     OutlinedButton(
                         onClick = {
-                            releasePersistableImageReadPermission(context, customBackgroundUri)
-                            deleteStoredCatalogBackgroundImage(appContext)
                             viewModel.updateSettings(settings.copy(nerdCatalogBackgroundUri = null))
+                            releasePersistableImageReadPermission(context, customBackgroundUri)
+                            pruneStoredCatalogBackgroundImages(appContext)
                         },
                         modifier = Modifier.weight(1f),
                     ) {
@@ -873,28 +876,62 @@ private fun takePersistableImageReadPermission(context: android.content.Context,
     }
 }
 
-private fun persistCatalogBackgroundImage(context: android.content.Context, uri: Uri): String =
-    runCatching {
-        val target = File(context.filesDir, CATALOG_BACKGROUND_IMAGE_FILE)
-        val temp = File(context.cacheDir, "$CATALOG_BACKGROUND_IMAGE_FILE.tmp")
-        context.contentResolver.openInputStream(uri)?.use { input ->
+private fun persistCatalogBackgroundImage(context: android.content.Context, uri: Uri): String {
+    val uniqueId = UUID.randomUUID().toString()
+    val target = File(context.filesDir, "$CATALOG_BACKGROUND_IMAGE_FILE_PREFIX-$uniqueId")
+    val temp = File(context.cacheDir, "$CATALOG_BACKGROUND_IMAGE_FILE_PREFIX-$uniqueId.tmp")
+    return try {
+        val input = context.contentResolver.openInputStream(uri) ?: return uri.toString()
+        input.use {
             temp.outputStream().use { output ->
-                input.copyTo(output)
+                it.copyTo(output)
             }
-        } ?: return uri.toString()
+        }
         if (!temp.renameTo(target)) {
             temp.copyTo(target, overwrite = true)
-            temp.delete()
         }
         Uri.fromFile(target).toString()
-    }.getOrElse {
+    } catch (_: Exception) {
+        target.delete()
         uri.toString()
+    } finally {
+        temp.delete()
     }
+}
 
-private fun deleteStoredCatalogBackgroundImage(context: android.content.Context) {
+internal fun isManagedCatalogBackgroundImageFile(filesDir: File, candidate: File): Boolean {
+    val normalizedFilesDir = runCatching { filesDir.canonicalFile }.getOrElse { filesDir.absoluteFile }
+    val normalizedCandidate = runCatching { candidate.canonicalFile }.getOrElse { candidate.absoluteFile }
+    val managedName = normalizedCandidate.name == CATALOG_BACKGROUND_IMAGE_FILE_PREFIX ||
+        normalizedCandidate.name.startsWith("$CATALOG_BACKGROUND_IMAGE_FILE_PREFIX-")
+    return normalizedCandidate.parentFile == normalizedFilesDir && managedName
+}
+
+private fun pruneStoredCatalogBackgroundImages(context: android.content.Context, keepUri: String? = null) {
+    val keepFile = keepUri
+        ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        ?.takeIf { it.scheme.equals("file", ignoreCase = true) }
+        ?.path
+        ?.let(::File)
+        ?.let { file -> runCatching { file.canonicalFile }.getOrElse { file.absoluteFile } }
     runCatching {
-        File(context.filesDir, CATALOG_BACKGROUND_IMAGE_FILE).delete()
-        File(context.cacheDir, "$CATALOG_BACKGROUND_IMAGE_FILE.tmp").delete()
+        context.filesDir.listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter { isManagedCatalogBackgroundImageFile(context.filesDir, it) }
+            .filterNot { candidate ->
+                val normalized = runCatching { candidate.canonicalFile }.getOrElse { candidate.absoluteFile }
+                normalized == keepFile
+            }
+            .forEach(File::delete)
+        context.cacheDir.listFiles()
+            .orEmpty()
+            .asSequence()
+            .filter {
+                it.name == "$CATALOG_BACKGROUND_IMAGE_FILE_PREFIX.tmp" ||
+                    (it.name.startsWith("$CATALOG_BACKGROUND_IMAGE_FILE_PREFIX-") && it.name.endsWith(".tmp"))
+            }
+            .forEach(File::delete)
     }
 }
 

@@ -1444,6 +1444,8 @@ class GfnCatalogRepository(
             val selectedIndex = selectedId?.let { id -> merged.variants.indexOfFirst { it.id == id } } ?: -1
             merged.copy(
                 id = game.id,
+                catalogSectionId = game.catalogSectionId,
+                catalogSectionTitle = game.catalogSectionTitle,
                 selectedVariantIndex = if (selectedIndex >= 0) selectedIndex else merged.selectedVariantIndex,
             )
         })
@@ -1455,7 +1457,12 @@ class GfnCatalogRepository(
                 section.asObject()?.arr("items")?.mapNotNull { item ->
                     val obj = item.asObject()
                     val app = obj?.obj("app")
-                    if (obj?.string("__typename") == "GameItem" && app != null) appToGame(app) else null
+                    if (obj?.string("__typename") == "GameItem" && app != null) {
+                        appToGame(app).copy(
+                            catalogSectionId = section.asObject()?.string("id"),
+                            catalogSectionTitle = section.asObject()?.string("title"),
+                        )
+                    } else null
                 }.orEmpty()
             }.orEmpty()
         }.orEmpty()

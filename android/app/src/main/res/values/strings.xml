@@ -27,12 +27,14 @@
     <string name="store_empty_filters_body">Clear filters to show more games.</string>
     <string name="store_empty_search_filters_body">Clear search or filters to show more games.</string>
     <string name="store_jump_back_in">Jump back in</string>
-    <string name="store_recommendations">Recommendations</string>
+    <string name="store_coming_next">Coming next</string>
     <string name="action_play">Play</string>
     <string name="action_continue">Continue</string>
     <string name="action_resume">Resume</string>
     <string name="action_save">Save</string>
     <string name="action_saved">Saved</string>
+    <string name="controller_action_favorite">Favorite</string>
+    <string name="controller_action_unfavorite">Unfavorite</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_clear_filters">Clear filters</string>
     <string name="action_scroll_top">Back to top</string>

@@ -44,6 +44,28 @@ class InputHapticsParserTest {
     }
 
     @Test
+    fun parsesDirectBufferSliceWithoutChangingItsPosition() {
+        val packet = ByteBuffer.allocateDirect(18).order(ByteOrder.LITTLE_ENDIAN).apply {
+            position(3)
+            putShort(267.toShort())
+            putShort(1.toShort())
+            putShort(6.toShort())
+            putShort(3.toShort())
+            putShort(0x2000.toShort())
+            putShort(0x6000.toShort())
+            limit(position())
+            position(3)
+        }
+
+        val command = HapticsPacketParser.parse(packet)
+
+        assertEquals(3, packet.position())
+        assertEquals(3, command?.controllerId)
+        assertEquals(0x2000, command?.weakMagnitude)
+        assertEquals(0x6000, command?.strongMagnitude)
+    }
+
+    @Test
     fun ignoresHandshakeAndInputWrappers() {
         assertNull(HapticsPacketParser.parse(byteArrayOf(0x0e, 0x02, 0x03, 0x00)))
         assertNull(HapticsPacketParser.parse(byteArrayOf(33, 0, 0, 0)))

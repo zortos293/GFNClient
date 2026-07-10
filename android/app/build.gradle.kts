@@ -58,8 +58,8 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 24
         targetSdk = 36
-        versionCode = 31
-        versionName = "0.7.6"
+        versionCode = 32
+        versionName = "0.7.7"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
         buildConfigField("String", "POSTHOG_HOST", buildConfigString(postHogHost))

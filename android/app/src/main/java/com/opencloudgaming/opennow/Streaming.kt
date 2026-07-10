@@ -1265,39 +1265,40 @@ internal data class GamepadRumbleCommand(
 )
 
 internal object HapticsPacketParser {
-    fun parse(bytes: ByteArray): GamepadRumbleCommand? {
-        if (bytes.size < 2) return null
-        val view = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+    fun parse(bytes: ByteArray): GamepadRumbleCommand? = parse(ByteBuffer.wrap(bytes))
+
+    fun parse(buffer: ByteBuffer): GamepadRumbleCommand? {
+        val view = buffer.slice().order(ByteOrder.LITTLE_ENDIAN)
+        if (view.remaining() < 2) return null
         val firstWord = view.getShort(0).toInt() and 0xffff
         if (firstWord == LEGACY_HAPTIC_SUBMESSAGE_TYPE) {
-            return parseLegacy(bytes, 2)
+            return parseLegacy(view, 2)
         }
 
         return when (firstWord and 0xff) {
-            WRAPPER_SINGLE_EVENT -> parseSubMessage(bytes, 1)
+            WRAPPER_SINGLE_EVENT -> parseSubMessage(view, 1)
             WRAPPER_BATCHED_EVENT,
             WRAPPER_LEGACY_INPUT,
             WRAPPER_TIMESTAMPED_SINGLE,
             WRAPPER_TIMESTAMPED_BATCHED,
             WRAPPER_RESERVED,
             -> null
-            else -> parseLegacy(bytes, 0)
+            else -> parseLegacy(view, 0)
         }
     }
 
-    private fun parseSubMessage(bytes: ByteArray, offset: Int): GamepadRumbleCommand? {
-        if (offset < 0 || offset + 4 > bytes.size) return null
-        val type = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(offset)
+    private fun parseSubMessage(view: ByteBuffer, offset: Int): GamepadRumbleCommand? {
+        if (offset < 0 || offset + 4 > view.limit()) return null
+        val type = view.getInt(offset)
         return when (type) {
-            LEGACY_HAPTIC_SUBMESSAGE_TYPE -> parseLegacy(bytes, offset + 4)
-            OC_HAPTIC_SUBMESSAGE_TYPE -> parseOc(bytes, offset + 4)
+            LEGACY_HAPTIC_SUBMESSAGE_TYPE -> parseLegacy(view, offset + 4)
+            OC_HAPTIC_SUBMESSAGE_TYPE -> parseOc(view, offset + 4)
             else -> null
         }
     }
 
-    private fun parseLegacy(bytes: ByteArray, offset: Int): GamepadRumbleCommand? {
-        if (offset < 0 || offset + 10 > bytes.size) return null
-        val view = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+    private fun parseLegacy(view: ByteBuffer, offset: Int): GamepadRumbleCommand? {
+        if (offset < 0 || offset + 10 > view.limit()) return null
         val kind = view.getShort(offset).toInt() and 0xffff
         if (kind != 1) return null
         val length = view.getShort(offset + 2).toInt() and 0xffff
@@ -1309,17 +1310,17 @@ internal object HapticsPacketParser {
         )
     }
 
-    private fun parseOc(bytes: ByteArray, offset: Int): GamepadRumbleCommand? {
-        if (offset < 0 || offset + 9 > bytes.size) return null
-        val controllerByte = bytes[offset].toInt() and 0xff
+    private fun parseOc(view: ByteBuffer, offset: Int): GamepadRumbleCommand? {
+        if (offset < 0 || offset + 9 > view.limit()) return null
+        val controllerByte = view.get(offset).toInt() and 0xff
         if (controllerByte !in 6 until 10) return null
-        val reportKind = bytes[offset + 3].toInt() and 0xff
-        val flags = bytes[offset + 4].toInt() and 0xff
+        val reportKind = view.get(offset + 3).toInt() and 0xff
+        val flags = view.get(offset + 4).toInt() and 0xff
         if (reportKind != 5 || (flags and 0xfe) != 0) return null
         return GamepadRumbleCommand(
             controllerId = controllerByte - 6,
-            weakMagnitude = (bytes[offset + 7].toInt() and 0xff) shl 8,
-            strongMagnitude = (bytes[offset + 8].toInt() and 0xff) shl 8,
+            weakMagnitude = (view.get(offset + 7).toInt() and 0xff) shl 8,
+            strongMagnitude = (view.get(offset + 8).toInt() and 0xff) shl 8,
         )
     }
 
@@ -1933,6 +1934,7 @@ class NativeStreamClient(
     private var physicalControllerActive = false
     private var activeControllerId = 0
     private val controllerSlots = linkedMapOf<Int, Int>()
+    private val controllerAxisAvailability = mutableMapOf<Int, AndroidGamepadAxisAvailability>()
     private var physicalButtons = 0
     private var physicalHatButtons = 0
     private var physicalLeftTriggerButtonPressed = false
@@ -2142,6 +2144,7 @@ class NativeStreamClient(
         controllerMouseRightButtonDown = false
         activeControllerId = 0
         controllerSlots.clear()
+        controllerAxisAvailability.clear()
         mousePositionValid = false
         mouseSuppressNextAbsoluteDelta = false
         inputDropLogged = false
@@ -2189,8 +2192,19 @@ class NativeStreamClient(
     }
 
     fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
-        val adjusted = adjustedMouseDelta(dx, dy)
-        return sendInput(inputEncoder.encodeMouseMove(adjusted.first, adjusted.second), partiallyReliable = partiallyReliable)
+        var adjustedDx = dx * settings.mouseSensitivity
+        var adjustedDy = dy * settings.mouseSensitivity
+        if (settings.mouseAcceleration > 1) {
+            val speed = sqrt(adjustedDx * adjustedDx + adjustedDy * adjustedDy)
+            val strength = (settings.mouseAcceleration - 1f) / 149f
+            val accelFactor = 1f + min(0.6f * strength, (speed / 50f) * strength)
+            adjustedDx *= accelFactor
+            adjustedDy *= accelFactor
+        }
+        return sendInput(
+            inputEncoder.encodeMouseMove(adjustedDx.roundToInt(), adjustedDy.roundToInt()),
+            partiallyReliable = partiallyReliable,
+        )
     }
 
     private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
@@ -2300,19 +2314,6 @@ class NativeStreamClient(
         mouseLastX = event.x
         mouseLastY = event.y
         mousePositionValid = true
-    }
-
-    private fun adjustedMouseDelta(dx: Int, dy: Int): Pair<Int, Int> {
-        var adjustedDx = dx * settings.mouseSensitivity
-        var adjustedDy = dy * settings.mouseSensitivity
-        if (settings.mouseAcceleration > 1) {
-            val speed = sqrt(adjustedDx * adjustedDx + adjustedDy * adjustedDy)
-            val strength = (settings.mouseAcceleration - 1f) / 149f
-            val accelFactor = 1f + min(0.6f * strength, (speed / 50f) * strength)
-            adjustedDx *= accelFactor
-            adjustedDy *= accelFactor
-        }
-        return adjustedDx.roundToInt() to adjustedDy.roundToInt()
     }
 
     fun sendTouchMouseClick(delayBeforeDownMs: Long = 0L) {
@@ -2463,18 +2464,22 @@ class NativeStreamClient(
     }
 
     fun setVirtualLeftStick(x: Float, y: Float) {
-        val normalized = applyDeadzone(x, y, deadzone = 0.08f)
-        virtualLeftStickActive = normalized.first != 0f || normalized.second != 0f
-        virtualLeftStickX = normalizeToInt16(normalized.first)
-        virtualLeftStickY = normalizeToInt16(-normalized.second)
+        val scale = radialDeadzoneScale(x, y, deadzone = 0.08f)
+        val normalizedX = x * scale
+        val normalizedY = y * scale
+        virtualLeftStickActive = normalizedX != 0f || normalizedY != 0f
+        virtualLeftStickX = normalizeToInt16(normalizedX)
+        virtualLeftStickY = normalizeToInt16(-normalizedY)
         sendCurrentGamepadState()
     }
 
     fun setVirtualRightStick(x: Float, y: Float) {
-        val normalized = applyDeadzone(x, y, deadzone = 0.08f)
-        virtualRightStickActive = normalized.first != 0f || normalized.second != 0f
-        virtualRightStickX = normalizeToInt16(normalized.first)
-        virtualRightStickY = normalizeToInt16(-normalized.second)
+        val scale = radialDeadzoneScale(x, y, deadzone = 0.08f)
+        val normalizedX = x * scale
+        val normalizedY = y * scale
+        virtualRightStickActive = normalizedX != 0f || normalizedY != 0f
+        virtualRightStickX = normalizeToInt16(normalizedX)
+        virtualRightStickY = normalizeToInt16(-normalizedY)
         sendCurrentGamepadState()
     }
 
@@ -2991,37 +2996,36 @@ class NativeStreamClient(
     }
 
     private fun handleInputChannelMessage(buffer: DataChannel.Buffer) {
-        val bytes = buffer.data.duplicate().let { data ->
-            ByteArray(data.remaining()).also(data::get)
-        }
-        if (bytes.isEmpty()) return
-        if (handleInputHandshakeMessage(bytes)) return
-        HapticsPacketParser.parse(bytes)?.let { command ->
+        val data = buffer.data.duplicate().slice().order(ByteOrder.LITTLE_ENDIAN)
+        if (!data.hasRemaining()) return
+        if (handleInputHandshakeMessage(data)) return
+        HapticsPacketParser.parse(data)?.let { command ->
             applyGamepadRumble(command.controllerId, command.weakMagnitude, command.strongMagnitude)
         }
     }
 
-    private fun handleInputHandshakeMessage(bytes: ByteArray): Boolean {
-        val firstWord = if (bytes.size >= 2) {
-            ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xffff
+    private fun handleInputHandshakeMessage(data: ByteBuffer): Boolean {
+        val size = data.remaining()
+        val firstWord = if (size >= 2) {
+            data.getShort(0).toInt() and 0xffff
         } else {
-            bytes[0].toInt() and 0xff
+            data.get(0).toInt() and 0xff
         }
         val version = when {
             firstWord == INPUT_HANDSHAKE_MAGIC_WORD -> {
-                if (bytes.size >= 4) {
-                    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getShort(2).toInt() and 0xffff
+                if (size >= 4) {
+                    data.getShort(2).toInt() and 0xffff
                 } else {
                     DEFAULT_INPUT_PROTOCOL_VERSION
                 }
             }
-            (bytes[0].toInt() and 0xff) == INPUT_HANDSHAKE_MARKER -> firstWord
+            (data.get(0).toInt() and 0xff) == INPUT_HANDSHAKE_MARKER -> firstWord
             else -> return false
         }.coerceAtLeast(1)
 
         inputEncoder.setProtocolVersion(version)
         inputEncoder.resetGamepadSequences()
-        NativeInputDiagnostics.add("input handshake protocol=$version bytes=${bytes.size}")
+        NativeInputDiagnostics.add("input handshake protocol=$version bytes=$size")
         updateHapticsAdvertisement(force = true)
         schedulePrimeConnectedGamepadState(reason = "input handshake")
         return true
@@ -3234,16 +3238,20 @@ class NativeStreamClient(
             max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_GAS))),
             if (physicalRightTriggerButtonPressed) 1f else 0f,
         )
-        val left = applyDeadzone(axes.leftX, axes.leftY)
-        val right = applyDeadzone(axes.rightX, axes.rightY)
+        val leftScale = radialDeadzoneScale(axes.leftX, axes.leftY)
+        val rightScale = radialDeadzoneScale(axes.rightX, axes.rightY)
+        val leftX = axes.leftX * leftScale
+        val leftY = axes.leftY * leftScale
+        val rightX = axes.rightX * rightScale
+        val rightY = axes.rightY * rightScale
         physicalHatButtons = if (axes.hatUsedAsLeftStick) 0 else event.hatDpadButtons()
         lastLeftTrigger = normalizeToUint8(lt)
         lastRightTrigger = normalizeToUint8(rt)
-        lastLeftStickX = normalizeToInt16(left.first)
-        lastLeftStickY = normalizeToInt16(-left.second)
-        lastRightStickX = normalizeToInt16(right.first)
-        lastRightStickY = normalizeToInt16(-right.second)
-        val mouseSent = sendControllerMouseMove(right.first, right.second)
+        lastLeftStickX = normalizeToInt16(leftX)
+        lastLeftStickY = normalizeToInt16(-leftY)
+        lastRightStickX = normalizeToInt16(rightX)
+        lastRightStickY = normalizeToInt16(-rightY)
+        val mouseSent = sendControllerMouseMove(rightX, rightY)
         return sendCurrentGamepadState(controllerId = controllerId) || mouseSent
     }
 
@@ -3409,6 +3417,7 @@ class NativeStreamClient(
     }
 
     private fun refreshConnectedPhysicalControllers() {
+        controllerAxisAvailability.clear()
         val connectedDevices = mutableListOf<InputDevice>()
         InputDevice.getDeviceIds().forEach { deviceId ->
             val device = InputDevice.getDevice(deviceId) ?: return@forEach
@@ -3502,14 +3511,14 @@ class NativeStreamClient(
         val slot = controllerId.coerceIn(0, GAMEPAD_MAX_CONTROLLERS - 1)
         val profile = buildRumbleEffectProfile(weakMagnitude16, strongMagnitude16)
         val isStop = profile.isStop
+        val now = SystemClock.elapsedRealtime()
+        if (!isStop && lastRumbleEffectAtMs[slot] != 0L && now - lastRumbleEffectAtMs[slot] <= RUMBLE_THROTTLE_MS) {
+            return
+        }
         val device = findHapticControllerDevice(slot)
         val usePhoneFallback = device == null && hasPhoneRumbleFallback()
         if (device == null && !usePhoneFallback) {
             logHapticsWarning("input haptics no vibrator controller=$controllerId phoneFallback=$phoneRumbleFallbackEnabled")
-            return
-        }
-        val now = SystemClock.elapsedRealtime()
-        if (!isStop && lastRumbleEffectAtMs[slot] != 0L && now - lastRumbleEffectAtMs[slot] <= RUMBLE_THROTTLE_MS) {
             return
         }
         lastRumbleEffectAtMs[slot] = if (isStop) 0L else now
@@ -3746,8 +3755,12 @@ class NativeStreamClient(
             hatY = getAxisValue(MotionEvent.AXIS_HAT_Y),
         )
 
-    private fun MotionEvent.axisAvailability(): AndroidGamepadAxisAvailability =
-        AndroidGamepadAxisAvailability(
+    private fun MotionEvent.axisAvailability(): AndroidGamepadAxisAvailability {
+        val cacheKey = deviceId
+        if (cacheKey >= 0) {
+            controllerAxisAvailability[cacheKey]?.let { return it }
+        }
+        return AndroidGamepadAxisAvailability(
             x = hasMotionAxis(MotionEvent.AXIS_X),
             y = hasMotionAxis(MotionEvent.AXIS_Y),
             z = hasMotionAxis(MotionEvent.AXIS_Z),
@@ -3756,7 +3769,12 @@ class NativeStreamClient(
             ry = hasMotionAxis(MotionEvent.AXIS_RY),
             hatX = hasMotionAxis(MotionEvent.AXIS_HAT_X),
             hatY = hasMotionAxis(MotionEvent.AXIS_HAT_Y),
-        )
+        ).also { availability ->
+            if (cacheKey >= 0) {
+                controllerAxisAvailability[cacheKey] = availability
+            }
+        }
+    }
 
     private fun MotionEvent.hasMotionAxis(axis: Int): Boolean {
         val inputDevice = device ?: return false
@@ -3805,11 +3823,11 @@ class NativeStreamClient(
         private const val HAPTICS_LOG_INTERVAL_MS = 5000L
     }
 
-    private fun applyDeadzone(x: Float, y: Float, deadzone: Float = 0.15f): Pair<Float, Float> {
+    private fun radialDeadzoneScale(x: Float, y: Float, deadzone: Float = 0.15f): Float {
         val magnitude = kotlin.math.sqrt((x * x + y * y).toDouble()).toFloat()
-        if (magnitude < deadzone) return 0f to 0f
+        if (magnitude < deadzone) return 0f
         val scaled = ((magnitude - deadzone) / (1f - deadzone)).coerceIn(0f, 1f)
-        return (x / magnitude) * scaled to (y / magnitude) * scaled
+        return scaled / magnitude
     }
 
     private fun normalizeToInt16(value: Float): Int = (value.coerceIn(-1f, 1f) * 32767).roundToInt().coerceIn(-32768, 32767)

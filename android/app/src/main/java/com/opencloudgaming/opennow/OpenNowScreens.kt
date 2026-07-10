@@ -838,6 +838,18 @@ private fun hasConnectedPhysicalController(): Boolean =
         AndroidControllerInput.isControllerDevice(InputDevice.getDevice(deviceId))
     }
 
+internal sealed interface CatalogWallpaperSelection {
+    data object Default : CatalogWallpaperSelection
+    data class Custom(val source: String) : CatalogWallpaperSelection
+}
+
+internal fun catalogWallpaperSelection(customSource: String?): CatalogWallpaperSelection =
+    customSource
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let(CatalogWallpaperSelection::Custom)
+        ?: CatalogWallpaperSelection.Default
+
 @Composable
 private fun CatalogWallpaperBackdrop(
     settings: AppSettings,
@@ -849,26 +861,29 @@ private fun CatalogWallpaperBackdrop(
     if (!showBackdrop) {
         return
     }
-    val wallpaperSource = settings.nerdCatalogBackgroundUri?.takeIf { it.isNotBlank() }
-    val imageAlpha = when {
-        tvProfile -> 0.48f
-        width > height -> 0.72f
-        else -> 0.62f
-    }
+    val wallpaper = catalogWallpaperSelection(settings.nerdCatalogBackgroundUri)
     val scrimAlpha = when {
         tvProfile -> 0.48f
         width > height -> 0.28f
         else -> 0.36f
     }
     Box(Modifier.fillMaxSize().clipToBounds()) {
-        CatalogDefaultWallpaperBackdrop(Modifier.matchParentSize())
-        if (wallpaperSource != null) {
-            UrlImage(
-                wallpaperSource,
-                Modifier
-                    .matchParentSize()
-                    .graphicsLayer(alpha = imageAlpha),
-            )
+        when (wallpaper) {
+            CatalogWallpaperSelection.Default -> {
+                CatalogDefaultWallpaperBackdrop(Modifier.matchParentSize())
+            }
+            is CatalogWallpaperSelection.Custom -> {
+                val fallbackPainter = painterResource(R.drawable.catalog_default_background)
+                AsyncImage(
+                    model = imageDataForSource(wallpaper.source),
+                    contentDescription = null,
+                    modifier = Modifier.matchParentSize(),
+                    contentScale = ContentScale.Crop,
+                    placeholder = fallbackPainter,
+                    error = fallbackPainter,
+                    fallback = fallbackPainter,
+                )
+            }
         }
         Box(
             Modifier
@@ -941,6 +956,14 @@ private fun MainShell(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         var phoneLandscapeScrollChromeHidden by remember { mutableStateOf(false) }
         val horizontalChrome = maxWidth > maxHeight
+        val controllerLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val physicalControllerConnected = rememberPhysicalControllerConnected(
+            enabled = controllerLandscape && !tvProfile,
+        )
+        val controllerCatalogActionsVisible =
+            controllerLandscape &&
+                !tvProfile &&
+                physicalControllerConnected
         val phoneLandscapeChrome = !tvProfile && !inStream && isPhoneLandscape(maxWidth, maxHeight)
         val portraitChrome = !inStream && maxHeight >= maxWidth
         val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
@@ -1186,6 +1209,20 @@ private fun MainShell(
                             onDismiss = viewModel::dismissStoreChoice,
                         )
                     }
+                }
+                AnimatedVisibility(
+                    visible = controllerCatalogActionsVisible &&
+                        !inStream &&
+                        state.selectedGame == null &&
+                        !modalPickerOpen &&
+                        (state.page == AppPage.Home || state.page == AppPage.Library),
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
+                ) {
+                    ControllerCatalogActionHints()
                 }
             }
         }
@@ -2553,6 +2590,8 @@ private fun GameGrid(
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
+    val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         LazyVerticalGrid(
@@ -2571,6 +2610,7 @@ private fun GameGrid(
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
+                    controllerActionMode = controllerActionMode,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
                     onPlay = onPlay,
@@ -2627,6 +2667,8 @@ private fun StoreGameGrid(
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
+    val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
     val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
@@ -2651,6 +2693,7 @@ private fun StoreGameGrid(
                     queuedGameKeys = state.queuedGameKeys,
                     settings = settings,
                     tvProfile = tvProfile,
+                    controllerActionMode = controllerActionMode,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
                     onPlay = onPlay,
@@ -2665,6 +2708,7 @@ private fun StoreGameGrid(
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
+                    controllerActionMode = controllerActionMode,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
                     onPlay = onPlay,
@@ -2683,6 +2727,7 @@ private fun StoreStartRails(
     queuedGameKeys: List<String>,
     settings: AppSettings,
     tvProfile: Boolean,
+    controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -2691,15 +2736,13 @@ private fun StoreStartRails(
     val jumpBackIn = remember(games, libraryGames, favoriteIds, queuedGameKeys) {
         jumpBackInGames(games, libraryGames, favoriteIds, queuedGameKeys)
     }
-    val recommendations = remember(games, libraryGames, favoriteIds, jumpBackIn) {
-        recommendedStoreGames(
+    val comingNext = remember(games, jumpBackIn) {
+        comingNextStoreGames(
             games = games,
-            libraryGames = libraryGames,
-            favoriteIds = favoriteIds,
             excludedGames = jumpBackIn,
         )
     }
-    if (jumpBackIn.isEmpty() && recommendations.isEmpty()) return
+    if (jumpBackIn.isEmpty() && comingNext.isEmpty()) return
     Column(
         Modifier
             .fillMaxWidth()
@@ -2713,19 +2756,21 @@ private fun StoreStartRails(
                 favoriteIds = favoriteIds,
                 settings = settings,
                 tvProfile = tvProfile,
+                controllerActionMode = controllerActionMode,
                 onSelect = onSelect,
                 onFavorite = onFavorite,
                 onPlay = onPlay,
                 onChooseStore = onChooseStore,
             )
         }
-        if (recommendations.isNotEmpty()) {
+        if (comingNext.isNotEmpty()) {
             StoreRailSection(
-                title = stringResource(R.string.store_recommendations),
-                games = recommendations,
+                title = stringResource(R.string.store_coming_next),
+                games = comingNext,
                 favoriteIds = favoriteIds,
                 settings = settings,
                 tvProfile = tvProfile,
+                controllerActionMode = controllerActionMode,
                 onSelect = onSelect,
                 onFavorite = onFavorite,
                 onPlay = onPlay,
@@ -2742,6 +2787,7 @@ private fun StoreRailSection(
     favoriteIds: List<String>,
     settings: AppSettings,
     tvProfile: Boolean,
+    controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -2768,6 +2814,7 @@ private fun StoreRailSection(
                     favorite = game.id in favoriteIds,
                     settings = settings,
                     width = cardWidth,
+                    controllerActionMode = controllerActionMode,
                     onSelect = onSelect,
                     onFavorite = onFavorite,
                     onPlay = onPlay,
@@ -2785,6 +2832,7 @@ private fun StoreRailGameCard(
     favorite: Boolean,
     settings: AppSettings,
     width: Dp,
+    controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -2806,6 +2854,11 @@ private fun StoreRailGameCard(
             )
             .onPreviewKeyEvent { event ->
                 when {
+                    controllerActionMode && handleCatalogControllerAction(
+                        event = event,
+                        onFavorite = { onFavorite(game.id) },
+                        onPlay = { onPlay(game) },
+                    ) -> true
                     isTvActivateKey(event) -> {
                         onSelect(game)
                         true
@@ -2827,29 +2880,24 @@ private fun StoreRailGameCard(
         Box(Modifier.fillMaxSize().clip(shape)) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.06f)))
-            LauncherBadgeStrip(
-                game = game,
-                maxBadges = 2,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(6.dp),
-            )
-            ThumbnailPlayButton(
-                onClick = { onPlay(game) },
-                onLongClick = { onChooseStore(game) },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(6.dp),
-                buttonSize = actionButtonSize,
-            )
-            FavoriteIconButton(
-                favorite = favorite,
-                onClick = { onFavorite(game.id) },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(6.dp),
-                size = actionButtonSize,
-            )
+            if (!controllerActionMode) {
+                ThumbnailPlayButton(
+                    onClick = { onPlay(game) },
+                    onLongClick = { onChooseStore(game) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp),
+                    buttonSize = actionButtonSize,
+                )
+                FavoriteIconButton(
+                    favorite = favorite,
+                    onClick = { onFavorite(game.id) },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp),
+                    size = actionButtonSize,
+                )
+            }
         }
     }
 }
@@ -2872,51 +2920,24 @@ private fun jumpBackInGames(
     return distinctStoreGames(queued + favorites + recent + owned).take(STORE_RAIL_GAME_LIMIT)
 }
 
-private fun recommendedStoreGames(
+internal fun comingNextStoreGames(
     games: List<GameInfo>,
-    libraryGames: List<GameInfo>,
-    favoriteIds: List<String>,
     excludedGames: List<GameInfo>,
 ): List<GameInfo> {
     val excludedKeys = excludedGames.map(::storeRailGameKey).toSet()
-    val preferredGenres = distinctStoreGames(libraryGames + games.filter { it.id in favoriteIds })
-        .flatMap { it.cleanGenreKeys() }
-        .toSet()
-    val preferredStores = libraryGames
-        .flatMap { libraryStoreDisplayNames(it) }
-        .map(::normalizeGameStore)
-        .filter { it.isNotBlank() }
-        .toSet()
-    val candidates = distinctStoreGames(games)
+    return distinctStoreGames(games)
         .filterNot { storeRailGameKey(it) in excludedKeys }
-    val scored = candidates
-        .map { game -> game to game.recommendationScore(preferredGenres, preferredStores) }
-        .filter { it.second > 0 }
-        .sortedWith(
-            compareByDescending<Pair<GameInfo, Int>> { it.second }
-                .thenBy { it.first.title.lowercase(Locale.US) },
-        )
-        .map { it.first }
-    return distinctStoreGames(scored + candidates).take(STORE_RAIL_GAME_LIMIT)
+        .filter(GameInfo::isNewOrUpdatedCatalogSection)
+        .take(STORE_RAIL_GAME_LIMIT)
 }
 
-private fun GameInfo.recommendationScore(preferredGenres: Set<String>, preferredStores: Set<String>): Int {
-    var score = cleanGenreKeys().count { it in preferredGenres } * 4
-    val storeScore = (availableStores + variants.map { it.store })
-        .flatMap(::splitGameStoreKeys)
-        .map(::normalizeGameStore)
-        .count { it in preferredStores }
-    score += storeScore
-    if (!publisherName.isNullOrBlank()) score += 1
-    if (featureLabels.isNotEmpty()) score += 1
-    return score
+private fun GameInfo.isNewOrUpdatedCatalogSection(): Boolean {
+    val section = catalogSectionTitle?.lowercase(Locale.US)?.trim().orEmpty()
+    return section.contains("new") ||
+        section.contains("recent") ||
+        section.contains("updated") ||
+        section.contains("just added")
 }
-
-private fun GameInfo.cleanGenreKeys(): List<String> =
-    genres
-        .map { formatGameMetadataLabel(it).lowercase(Locale.US).trim() }
-        .filter { it.isNotBlank() && !isNoisyGameTag(it) }
-        .distinct()
 
 private fun GameInfo.recentPlaySortKey(): String? =
     listOfNotNull(
@@ -3051,6 +3072,7 @@ private fun GameCard(
     cardHeight: androidx.compose.ui.unit.Dp,
     squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
+    controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
     onPlay: (GameInfo) -> Unit,
@@ -3074,6 +3096,11 @@ private fun GameCard(
             )
             .onPreviewKeyEvent { event ->
                 when {
+                    controllerActionMode && handleCatalogControllerAction(
+                        event = event,
+                        onFavorite = { onFavorite(game.id) },
+                        onPlay = { onPlay(game) },
+                    ) -> true
                     isTvActivateKey(event) -> {
                         onSelect(game)
                         true
@@ -3095,31 +3122,24 @@ private fun GameCard(
         ) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
             if (thumbnailPlayOverlay) {
-                if (launcherTile) {
-                    LauncherBadgeStrip(
-                        game = game,
-                        maxBadges = 1,
+                if (!controllerActionMode) {
+                    FavoriteIconButton(
+                        favorite = favorite,
+                        onClick = { onFavorite(game.id) },
                         modifier = Modifier
-                            .align(Alignment.TopStart)
+                            .align(if (launcherTile) Alignment.TopEnd else Alignment.BottomStart)
                             .padding(overlayActionPadding),
+                        size = overlayActionSize,
+                    )
+                    ThumbnailPlayButton(
+                        onClick = { onPlay(game) },
+                        onLongClick = { onChooseStore(game) },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(overlayActionPadding),
+                        buttonSize = overlayActionSize,
                     )
                 }
-                FavoriteIconButton(
-                    favorite = favorite,
-                    onClick = { onFavorite(game.id) },
-                    modifier = Modifier
-                        .align(if (launcherTile) Alignment.TopEnd else Alignment.BottomStart)
-                        .padding(overlayActionPadding),
-                    size = overlayActionSize,
-                )
-                ThumbnailPlayButton(
-                    onClick = { onPlay(game) },
-                    onLongClick = { onChooseStore(game) },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(overlayActionPadding),
-                    buttonSize = overlayActionSize,
-                )
             } else {
                 FavoriteIconButton(
                     favorite = favorite,
@@ -3164,59 +3184,84 @@ private fun GameCard(
     }
 }
 
-@Composable
-private fun LauncherBadgeStrip(
-    game: GameInfo,
-    maxBadges: Int,
-    modifier: Modifier = Modifier,
-) {
-    val badges = remember(game, maxBadges) { launcherBadgesForGame(game, maxBadges) }
-    if (badges.isEmpty()) return
-    Row(
-        modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        badges.forEach { badge ->
-            LauncherBadgeBubble(badge)
+private fun handleCatalogControllerAction(
+    event: androidx.compose.ui.input.key.KeyEvent,
+    onFavorite: () -> Unit,
+    onPlay: () -> Unit,
+): Boolean {
+    if (event.type != KeyEventType.KeyUp) return false
+    return when (event.key) {
+        Key.ButtonX -> {
+            onFavorite()
+            true
         }
+        Key.ButtonY -> {
+            onPlay()
+            true
+        }
+        else -> false
     }
 }
 
 @Composable
-private fun LauncherBadgeBubble(badge: LauncherBadge, size: Dp = 24.dp) {
+private fun ControllerCatalogActionHints(modifier: Modifier = Modifier) {
     Surface(
-        modifier = Modifier
-            .size(size)
-            .semantics { contentDescription = "${badge.name} launcher" },
-        shape = RoundedCornerShape(7.dp),
-        color = badge.background.copy(alpha = 0.9f),
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = Color.Black.copy(alpha = 0.8f),
         tonalElevation = 2.dp,
         shadowElevation = 2.dp,
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            Icon(
-                painter = painterResource(badge.iconRes),
-                contentDescription = null,
-                tint = badge.foreground,
-                modifier = Modifier.size(size * 0.58f),
+        Column(
+            Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            ControllerCatalogActionHint(
+                button = "X",
+                label = stringResource(R.string.controller_action_favorite),
+                buttonColor = Color(0xff4aa3ff),
+            )
+            ControllerCatalogActionHint(
+                button = "Y",
+                label = stringResource(R.string.action_play),
+                buttonColor = Color(0xffffcf40),
             )
         }
     }
 }
 
-private fun launcherBadgesForGame(game: GameInfo, limit: Int): List<LauncherBadge> =
-    launcherStoreKeysForGame(game)
-        .take(limit)
-        .map(::launcherBadgeForStoreKey)
-
-private fun launcherStoreKeysForGame(game: GameInfo): List<String> {
-    val variantKeys = launchableGameVariants(game.variants)
-        .flatMap { variant -> splitGameStoreKeys(variant.store) }
-    val availableKeys = game.availableStores.flatMap(::splitGameStoreKeys)
-    return (variantKeys + availableKeys)
-        .filter { it.isNotBlank() }
-        .distinct()
+@Composable
+private fun ControllerCatalogActionHint(
+    button: String,
+    label: String,
+    buttonColor: Color,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Surface(
+            modifier = Modifier.size(18.dp),
+            shape = CircleShape,
+            color = buttonColor,
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    button,
+                    color = Color.Black,
+                    fontWeight = FontWeight.Black,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        Text(
+            label,
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 internal fun launcherBadgeForStoreKey(storeKey: String?): LauncherBadge =
@@ -4771,6 +4816,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     gameTitle = game?.title ?: "Stream",
                     status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
                     settings = state.settings,
+                    touchControlsVisible = touchControlsVisible,
                     showSessionTimer = state.settings.sessionCounterEnabled,
                     sessionTimerLimit = smartSessionLimit,
                     sessionStartedAtMs = sessionStartedAtMs,
@@ -4810,11 +4856,22 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         exitConfirmOpen = true
                     },
                     onTouchControlsToggle = {
-                        viewModel.updateSettings(
-                            state.settings.copy(
-                                androidTouch = state.settings.androidTouch.copy(enabled = !state.settings.androidTouch.enabled),
-                            ),
-                        )
+                        if (physicalControllerConnected && !touchControlsVisible) {
+                            showTouchControlsWithPhysicalController = true
+                            if (!state.settings.androidTouch.enabled) {
+                                viewModel.updateSettings(
+                                    state.settings.copy(
+                                        androidTouch = state.settings.androidTouch.copy(enabled = true),
+                                    ),
+                                )
+                            }
+                        } else {
+                            viewModel.updateSettings(
+                                state.settings.copy(
+                                    androidTouch = state.settings.androidTouch.copy(enabled = !state.settings.androidTouch.enabled),
+                                ),
+                            )
+                        }
                     },
                     onMousePadToggle = {
                         viewModel.updateSettings(
@@ -5106,7 +5163,9 @@ private fun StreamVideoSurface(
                 },
             contentAlignment = Alignment.Center,
         ) {
-            key(settings.streamSharpeningEnabled, viewportSize.width, viewportSize.height, stretchToFill) {
+            // AndroidView resizes the SurfaceView in place. Re-keying it as the viewport
+            // settles creates overlapping renderer surfaces during stream startup.
+            key(settings.streamSharpeningEnabled) {
                 AndroidView(
                     modifier = rendererModifier,
                     factory = { ctx ->
@@ -5788,6 +5847,7 @@ private fun StreamControlsPanel(
     gameTitle: String,
     status: String?,
     settings: AppSettings,
+    touchControlsVisible: Boolean,
     showSessionTimer: Boolean,
     sessionTimerLimit: SmartSessionLimit,
     sessionStartedAtMs: Long,
@@ -5978,7 +6038,7 @@ private fun StreamControlsPanel(
                         onButtonTone()
                         onMousePadToggle()
                     }
-                    StreamControlSwitch("Touch controller", if (settings.androidTouch.enabled) "Visible" else "Hidden", settings.androidTouch.enabled) {
+                    StreamControlSwitch("Touch controller", if (touchControlsVisible) "Visible" else "Hidden", touchControlsVisible) {
                         onButtonTone()
                         onTouchControlsToggle()
                     }

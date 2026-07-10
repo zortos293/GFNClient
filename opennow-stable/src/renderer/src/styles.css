@@ -8853,13 +8853,11 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 18% -12%, rgba(119, 187, 255, 0.18), transparent 34%),
-    linear-gradient(180deg, rgba(20, 22, 28, 0.98), rgba(8, 9, 12, 0.96));
-  border-radius: var(--r-xl);
+  background: #121417;
+  border-radius: 14px;
   border: 1px solid var(--panel-border);
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .sidebar-header {
@@ -8880,20 +8878,41 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sidebar-close {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   color: var(--ink-muted);
-  font-size: 1.1rem;
-  line-height: 1;
   cursor: pointer;
-  padding: 6px;
-  border-radius: 6px;
-  transition: background var(--t-normal), color var(--t-normal);
+  padding: 0;
+  border-radius: 8px;
 }
 
 .sidebar-close:hover {
   background: var(--card-hover);
   color: var(--ink);
+}
+
+.sidebar-close svg {
+  flex-shrink: 0;
+}
+
+.sidebar-close-hit-area {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100%, 48px);
+  height: max(100%, 48px);
+  transform: translate(-50%, -50%);
+}
+
+@media (pointer: fine) {
+  .sidebar-close-hit-area {
+    display: none;
+  }
 }
 
 .sidebar-body {
@@ -8905,7 +8924,7 @@ button.game-card-store-chip.owned.active:hover {
   overscroll-behavior: contain;
   padding: 12px 14px 14px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(119, 187, 255, 0.36) transparent;
+  scrollbar-color: color-mix(in srgb, var(--accent) 34%, transparent) transparent;
 }
 
 .sidebar-body>* {
@@ -8918,7 +8937,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .sidebar-body::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: rgba(119, 187, 255, 0.32);
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 .sidebar-body::-webkit-scrollbar-track {
@@ -8926,26 +8945,13 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sidebar-session-card {
-  position: relative;
-  overflow: hidden;
-  padding: 13px;
-  border-radius: 15px;
-  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--panel-border));
-  background:
-    linear-gradient(135deg, rgba(119, 187, 255, 0.16), color-mix(in srgb, var(--ink) 3.5%, transparent) 42%, rgba(255, 80, 80, 0.07)),
-    color-mix(in srgb, var(--ink) 3.5%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 7%, transparent);
+  padding: 4px 0 18px;
+  border-bottom: 1px solid var(--panel-border);
+  background: transparent;
 }
 
 .sidebar-session-card::before {
-  content: "";
-  position: absolute;
-  inset: -38% -18% auto auto;
-  width: 140px;
-  height: 140px;
-  border-radius: 999px;
-  background: rgba(119, 187, 255, 0.12);
-  pointer-events: none;
+  content: none;
 }
 
 .sidebar-session-card-head {
@@ -8957,15 +8963,14 @@ button.game-card-store-chip.owned.active:hover {
 
 .sidebar-session-kicker {
   color: var(--accent);
-  font-size: 0.64rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 0.72rem;
+  font-weight: 650;
 }
 
 .sidebar-session-title {
   color: var(--ink);
-  font-size: 1.02rem;
+  font-size: 1.16rem;
+  font-weight: 600;
   line-height: 1.18;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -8978,10 +8983,10 @@ button.game-card-store-chip.owned.active:hover {
   gap: 6px;
   width: fit-content;
   max-width: 100%;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--panel-border);
-  background: rgba(0, 0, 0, 0.18);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--ink-soft);
   font-size: 0.72rem;
   font-weight: 700;
@@ -8991,40 +8996,7 @@ button.game-card-store-chip.owned.active:hover {
   display: inline-flex;
   width: 14px;
   height: 14px;
-  color: var(--accent);
-}
-
-.sidebar-session-shortcuts {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-  margin-top: 12px;
-}
-
-.sidebar-session-shortcut {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 7px 8px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
-  background: rgba(0, 0, 0, 0.22);
   color: var(--ink-muted);
-  font-size: 0.67rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.sidebar-session-shortcut kbd {
-  color: var(--ink);
-  font-family: inherit;
-  font-size: 0.76rem;
-  font-weight: 800;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .sidebar-exit-session-button {
@@ -9036,68 +9008,29 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  border-radius: 11px;
-  border: 1px solid rgba(255, 105, 105, 0.34);
-  background: rgba(255, 80, 80, 0.12);
-  color: #ffd6d6;
+  border-radius: 8px;
+  border: 1px solid rgba(248, 113, 113, 0.26);
+  background: transparent;
+  color: #fca5a5;
   font: inherit;
   font-size: 0.84rem;
-  font-weight: 800;
+  font-weight: 650;
   cursor: pointer;
-  transition:
-    border-color var(--t-fast),
-    background var(--t-fast),
-    color var(--t-fast),
-    transform var(--t-fast);
 }
 
 .sidebar-exit-session-button:hover {
-  transform: translateY(-1px);
-  border-color: rgba(255, 105, 105, 0.7);
-  background: rgba(255, 80, 80, 0.2);
-  color: #fff;
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fecaca;
 }
 
 .sidebar-exit-session-button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--error-bg);
-}
-
-.sidebar-stat-line {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.sidebar-stat-line--stacked {
-  align-items: flex-start;
-}
-
-.sidebar-stat-label {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--ink-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.sidebar-session-time-controls {
-  display: flex;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.sidebar-session-time-left {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-variant-numeric: tabular-nums;
+  outline: 2px solid var(--error);
+  outline-offset: 2px;
 }
 
 .sidebar-mini-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -9109,14 +9042,18 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sidebar-mini-toggle input {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .sidebar-mini-toggle-track {
   position: relative;
   width: 28px;
   height: 16px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--chip);
   border: 1px solid var(--panel-border);
   transition: background var(--t-fast), border-color var(--t-fast);
@@ -9129,7 +9066,7 @@ button.game-card-store-chip.owned.active:hover {
   left: 2px;
   width: 10px;
   height: 10px;
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--ink-muted);
   transition: transform var(--t-fast), background var(--t-fast);
 }
@@ -9144,6 +9081,11 @@ button.game-card-store-chip.owned.active:hover {
   background: var(--accent);
 }
 
+.sidebar-mini-toggle input:focus-visible + .sidebar-mini-toggle-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .sidebar-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -9152,24 +9094,23 @@ button.game-card-store-chip.owned.active:hover {
 
 .sidebar-tab {
   border-radius: 8px;
-  border: 1px solid var(--panel-border);
-  background: var(--card);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--ink-soft);
   font-size: 0.78rem;
   font-weight: 600;
   padding: 7px 10px;
   cursor: pointer;
-  transition: border-color var(--t-fast), background var(--t-fast), color var(--t-fast);
 }
 
 .sidebar-tab:hover {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--panel-border));
+  background: var(--card-hover);
   color: var(--ink);
 }
 
 .sidebar-tab--active {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--panel-border);
+  color: var(--ink);
   background: var(--accent-surface);
 }
 
@@ -9189,9 +9130,7 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 0.72rem;
   color: var(--ink-muted);
 }
 
@@ -9262,24 +9201,23 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sidebar-button {
-  border-radius: 4px;
+  min-height: 32px;
+  border-radius: 8px;
   border: 1px solid var(--panel-border);
   background: var(--card);
   color: var(--ink);
   font-size: 0.82rem;
-  font-weight: 600;
-  padding: 6px 12px;
+  font-weight: 650;
+  padding: 5px 10px;
   cursor: pointer;
-  transition: transform var(--t-normal), background var(--t-normal);
 }
 
 .sidebar-button:hover {
-  transform: translateY(-1px);
   background: var(--card-hover);
 }
 
 .sidebar-button:active {
-  transform: translateY(0);
+  background: var(--chip);
 }
 
 .sidebar-screenshot-button {
@@ -9295,7 +9233,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sidebar-chip {
-  border-radius: 999px;
+  border-radius: 8px;
   border: 1px solid var(--panel-border);
   background: var(--card);
   color: var(--ink);
@@ -9303,18 +9241,16 @@ button.game-card-store-chip.owned.active:hover {
   font-weight: 600;
   padding: 6px 12px;
   cursor: pointer;
-  transition: transform var(--t-normal), background var(--t-normal), border-color var(--t-normal), color var(--t-normal);
 }
 
 .sidebar-chip:hover {
-  transform: translateY(-1px);
   background: var(--card-hover);
 }
 
 .sidebar-chip--active {
-  border-color: var(--accent);
-  background: rgba(119, 187, 255, 0.12);
-  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--accent-surface);
+  color: var(--ink);
 }
 
 .sidebar-gallery-row {
@@ -9335,7 +9271,6 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
 }
 
 .sidebar-gallery-arrow:hover {
@@ -9363,11 +9298,9 @@ button.game-card-store-chip.owned.active:hover {
   background: #08090b;
   padding: 0;
   cursor: pointer;
-  transition: transform var(--t-fast), border-color var(--t-fast);
 }
 
 .sidebar-gallery-item:hover {
-  transform: translateY(-1px);
   border-color: var(--accent);
 }
 
@@ -9507,7 +9440,407 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sv-sidebar {
-  width: min(420px, calc(100vw - 28px));
+  --ink: #f4f4f5;
+  --ink-soft: #c3c7cc;
+  --ink-muted: #858c94;
+  --panel-border: rgba(255, 255, 255, 0.09);
+  --card: #191d21;
+  --card-hover: #20252a;
+  --chip: #24292e;
+  width: min(460px, calc(100vw - 28px));
+  height: min(720px, calc(100vh - 28px));
+  background: #121519;
+  border-color: rgba(255, 255, 255, 0.11);
+  color-scheme: dark;
+}
+
+.sv-sidebar .sidebar-header {
+  min-height: 58px;
+  padding: 13px 16px;
+}
+
+.sv-sidebar .sidebar-header h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.sv-sidebar .sidebar-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.sv-sidebar .sidebar-body {
+  gap: 18px;
+  padding: 14px 16px 18px;
+}
+
+.sidebar-footer {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--panel-border);
+  background: #101316;
+}
+
+.sidebar-controller-hints {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.sidebar-controller-hints span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sidebar-controller-hints kbd,
+.sidebar-open-shortcuts kbd {
+  min-width: 21px;
+  min-height: 21px;
+  display: inline-grid;
+  place-items: center;
+  padding: 2px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.65rem;
+}
+
+.sv-sidebar .sidebar-exit-session-button {
+  width: auto;
+  min-width: 132px;
+  min-height: 36px;
+  margin: 0;
+  padding: 0 12px 0 10px;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.sv-sidebar .sidebar-tabs {
+  position: sticky;
+  top: -14px;
+  z-index: 5;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  margin: -14px 0 0;
+  padding: 14px 0 8px;
+  background: #121519;
+}
+
+.sv-sidebar .sidebar-tab {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 7px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.sv-sidebar .sidebar-tab svg {
+  flex-shrink: 0;
+}
+
+.sv-sidebar .sidebar-tab--active {
+  border-color: var(--panel-border);
+  background: var(--card);
+  color: var(--ink);
+}
+
+.sidebar-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  animation: sidebar-page-in 120ms ease-out both;
+}
+
+@keyframes sidebar-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sidebar-page .sidebar-section {
+  gap: 12px;
+}
+
+.sidebar-page .sidebar-section + .sidebar-separator {
+  margin-top: -2px;
+}
+
+.sidebar-session-card {
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  padding: 4px 0 18px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.sidebar-session-card::before {
+  content: none;
+}
+
+.sidebar-session-title {
+  max-width: 400px;
+  font-size: 1.3rem;
+  letter-spacing: -0.02em;
+}
+
+.sidebar-session-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.sidebar-metric {
+  min-width: 0;
+  min-height: 66px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 0 14px 16px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.sidebar-metric + .sidebar-metric {
+  padding-right: 0;
+  padding-left: 14px;
+  border-left: 1px solid var(--panel-border);
+}
+
+.sidebar-metric-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sidebar-action-card {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 9px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-action-card svg {
+  flex: 0 0 auto;
+  color: var(--ink-muted);
+}
+
+.sidebar-action-card:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: var(--card-hover);
+  color: var(--ink);
+}
+
+.sidebar-action-card:hover svg {
+  color: var(--accent);
+}
+
+.sidebar-setting-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--panel-border);
+  border-bottom: 1px solid var(--panel-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.sidebar-setting-card > span:first-child {
+  min-width: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sidebar-setting-card strong {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.sidebar-setting-card small {
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.sidebar-open-shortcuts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.sidebar-open-shortcuts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.sv-sidebar button:focus-visible,
+.sv-sidebar input:focus-visible,
+.sv-sidebar label:focus-visible,
+.sv-sidebar [tabindex="0"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sv-sidebar input[type="range"]:focus-visible {
+  border-color: transparent;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sv-sidebar .sidebar-section-header > span:first-child {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.sv-sidebar .sidebar-row--column {
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: #161a1e;
+}
+
+.sv-sidebar .settings-value-badge {
+  padding: 3px 7px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sv-sidebar .settings-slider::-webkit-slider-thumb:hover {
+  transform: none;
+}
+
+@media (max-width: 560px) {
+  .sv-sidebar {
+    top: 8px;
+    left: 8px;
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+    max-height: none;
+    border-radius: 12px;
+  }
+
+  .sv-sidebar .sidebar-body {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .sv-sidebar .sidebar-tab {
+    min-height: 42px;
+    font-size: 0.8rem;
+  }
+
+  .sidebar-label,
+  .sidebar-setting-card strong,
+  .sidebar-action-card {
+    font-size: 0.9rem;
+  }
+
+  .sidebar-hint,
+  .sidebar-setting-card small,
+  .sidebar-section-sub {
+    font-size: 0.78rem;
+  }
+
+  .sidebar-controller-hints {
+    justify-content: center;
+  }
+
+  .sidebar-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .sv-sidebar .sidebar-exit-session-button {
+    width: 100%;
+    min-height: 38px;
+  }
+}
+
+@media (max-height: 560px) {
+  .sidebar-controller-hints {
+    display: none;
+  }
+
+  .sidebar-footer {
+    grid-template-columns: 1fr;
+    padding-block: 9px;
+  }
+
+  .sv-sidebar .sidebar-exit-session-button {
+    width: 100%;
+    min-height: 36px;
+  }
 }
 
 .sv-sidebar-backdrop {

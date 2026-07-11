@@ -58,6 +58,46 @@ import {
   rewriteSdpIceCandidateEndpoints,
 } from "./sdp";
 import { MicrophoneManager, type MicState, type MicStateChange } from "./microphoneManager";
+import type {
+  StreamDiagnostics,
+  StreamTimeWarning,
+} from "./webrtc/streamDiagnosticsTypes";
+import { classifyStreamLagReason } from "./webrtc/streamLag";
+import {
+  MouseDeltaFilter,
+  quantizeMouseDeltaWithResidual,
+  subsampleCoalescedPointerEvents,
+} from "./webrtc/mouseInput";
+import {
+  evaluateControllerOverlayShortcutGate,
+  type ControllerOverlayChordState,
+} from "./webrtc/controllerOverlayGate";
+import {
+  averageJitterBufferDelayMs,
+  codecLabelFromMimeType,
+  detectGpuType,
+} from "./webrtc/streamStatsHelpers";
+
+export type {
+  StreamDiagnostics,
+  StreamLagReason,
+  StreamTimeWarning,
+} from "./webrtc/streamDiagnosticsTypes";
+export {
+  classifyStreamLagReason,
+  type ClassifyStreamLagReasonParams,
+} from "./webrtc/streamLag";
+export {
+  chooseAdaptiveMouseFlushInterval,
+  quantizeMouseDeltaWithResidual,
+  subsampleCoalescedPointerEvents,
+  type AdaptiveMouseFlushDecisionParams,
+} from "./webrtc/mouseInput";
+export {
+  evaluateControllerOverlayShortcutGate,
+  type ControllerOverlayChordState,
+  type ControllerOverlayShortcutGate,
+} from "./webrtc/controllerOverlayGate";
 
 interface OfferSettings {
   codec: VideoCodec;
@@ -140,94 +180,6 @@ function describeNativeHardwareAcceleration(): string {
   return "GStreamer VAAPI/V4L2";
 }
 
-export interface StreamDiagnostics {
-  // Connection state
-  connectionState: RTCPeerConnectionState | "closed";
-  inputReady: boolean;
-  nativeRendererActive: boolean;
-  connectedGamepads: number;
-
-  // Video stats
-  resolution: string;
-  codec: string;
-  hardwareAcceleration: string;
-  colorCodec: string;
-  isHdr: boolean;
-  bitrateKbps: number;
-  targetBitrateKbps: number;
-  decodeFps: number;
-  renderFps: number;
-
-  // Network stats
-  packetsLost: number;
-  packetsReceived: number;
-  packetLossPercent: number;
-  jitterMs: number;
-  rttMs: number;
-
-  // Frame counters
-  framesReceived: number;
-  framesDecoded: number;
-  framesDropped: number;
-
-  // Timing
-  decodeTimeMs: number;
-  renderTimeMs: number;
-  jitterBufferDelayMs: number;
-
-  // Input channel pressure
-  inputQueueBufferedBytes: number;
-  inputQueuePeakBufferedBytes: number;
-  partiallyReliableInputQueueBufferedBytes: number;
-  partiallyReliableInputQueuePeakBufferedBytes: number;
-  inputQueueDropCount: number;
-  inputQueueMaxSchedulingDelayMs: number;
-  partiallyReliableInputOpen: boolean;
-  mouseMoveTransport: "reliable" | "partially_reliable";
-  mouseFlushIntervalMs: number;
-  mousePacketsPerSecond: number;
-  mouseResidualMagnitude: number;
-  mouseAdaptiveFlushActive: boolean;
-
-  lagReason: StreamLagReason;
-  lagReasonDetail: string;
-
-  // System info
-  gpuType: string;
-  serverRegion: string;
-
-  // Decoder recovery status
-  decoderPressureActive: boolean;
-  decoderRecoveryAttempts: number;
-  decoderRecoveryAction: string;
-  nativeRequestedFps?: number;
-  nativeCapsFramerate?: string;
-  nativeQueueMode?: NativeQueueMode;
-  nativeFramesPendingToPresent?: number;
-  nativePartialFlushCount?: number;
-  nativeCompleteFlushCount?: number;
-  nativeTransitionSummary?: string;
-  nativeRequestedStreamingFeaturesSummary?: string;
-  nativeFinalizedStreamingFeaturesSummary?: string;
-
-  // Microphone state
-  micState: MicState;
-  micEnabled: boolean;
-}
-
-export type StreamLagReason =
-  | "unknown"
-  | "stable"
-  | "network"
-  | "decoder"
-  | "input_backpressure"
-  | "render";
-
-export interface StreamTimeWarning {
-  code: 1 | 2 | 3;
-  secondsLeft?: number;
-}
-
 interface ClientOptions {
   videoElement: HTMLVideoElement;
   audioElement: HTMLAudioElement;
@@ -259,84 +211,6 @@ interface ClientOptions {
   onPeerConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   /** Optional host callback for controller overlay shortcut edge presses. */
   onControllerMetaPress?: (event: { controllerId: number; gamepad: Gamepad }) => void;
-}
-
-function isPressedGamepadButton(button: GamepadButton | undefined): boolean {
-  return Boolean(button?.pressed || (button?.value ?? 0) > 0.5);
-}
-
-type ControllerOverlayChordHalf = "view" | "menu";
-
-export interface ControllerOverlayChordState {
-  pendingHalf: ControllerOverlayChordHalf;
-  pendingSinceMs: number;
-  disqualified: boolean;
-}
-
-export interface ControllerOverlayShortcutGate {
-  overlayPressed: boolean;
-  preemptInput: boolean;
-  nextState: ControllerOverlayChordState | null;
-}
-
-const CONTROLLER_OVERLAY_CHORD_GRACE_MS = 120;
-
-export function evaluateControllerOverlayShortcutGate(
-  gamepad: Pick<Gamepad, "buttons">,
-  state: ControllerOverlayChordState | null,
-  nowMs: number,
-  graceMs: number = CONTROLLER_OVERLAY_CHORD_GRACE_MS,
-): ControllerOverlayShortcutGate {
-  const guidePressed = isPressedGamepadButton(gamepad.buttons[16]);
-  const viewPressed = isPressedGamepadButton(gamepad.buttons[8]);
-  const menuPressed = isPressedGamepadButton(gamepad.buttons[9]);
-  const pressedHalf: ControllerOverlayChordHalf | null = viewPressed === menuPressed
-    ? null
-    : viewPressed
-      ? "view"
-      : "menu";
-
-  if (guidePressed) {
-    return { overlayPressed: true, preemptInput: true, nextState: null };
-  }
-
-  if (viewPressed && menuPressed) {
-    if (state?.disqualified) {
-      return { overlayPressed: false, preemptInput: false, nextState: state };
-    }
-
-    return { overlayPressed: true, preemptInput: true, nextState: null };
-  }
-
-  if (!pressedHalf) {
-    return { overlayPressed: false, preemptInput: false, nextState: null };
-  }
-
-  if (state?.disqualified) {
-    return {
-      overlayPressed: false,
-      preemptInput: false,
-      nextState: state.pendingHalf === pressedHalf
-        ? state
-        : { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: true },
-    };
-  }
-
-  if (!state || state.pendingHalf !== pressedHalf) {
-    return {
-      overlayPressed: false,
-      preemptInput: true,
-      nextState: { pendingHalf: pressedHalf, pendingSinceMs: nowMs, disqualified: false },
-    };
-  }
-
-  const disqualified = nowMs - state.pendingSinceMs >= graceMs;
-  const nextState = { ...state, disqualified };
-  return {
-    overlayPressed: false,
-    preemptInput: !disqualified,
-    nextState,
-  };
 }
 
 function timestampUs(sourceTimestampMs?: number): bigint {
@@ -412,307 +286,6 @@ function getGamepadRumbleApi(gamepad: Gamepad): GamepadRumbleApi | null {
   return api.playEffectActuator || api.pulseActuator ? api : null;
 }
 
-export interface AdaptiveMouseFlushDecisionParams {
-  baseIntervalMs: number;
-  currentIntervalMs: number;
-  reliableBufferedAmount: number;
-  schedulingDelayMs: number;
-  canUsePartiallyReliableMouse: boolean;
-  backpressureThresholdBytes: number;
-  minIntervalMs: number;
-  maxIntervalMs: number;
-}
-
-export function chooseAdaptiveMouseFlushInterval(params: AdaptiveMouseFlushDecisionParams): number {
-  const boundedBase = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.baseIntervalMs));
-  const boundedCurrent = Math.max(params.minIntervalMs, Math.min(params.maxIntervalMs, params.currentIntervalMs));
-  // Official GFN keeps a fixed coalesce interval (4/8/16 ms) for PR mouse and does not
-  // back off because the reliable keyboard channel is busy.
-  if (params.canUsePartiallyReliableMouse) {
-    return boundedBase;
-  }
-
-  const highPressure =
-    params.reliableBufferedAmount >= params.backpressureThresholdBytes / 2
-    || params.schedulingDelayMs >= 4;
-  if (highPressure) {
-    return Math.max(boundedBase, Math.min(params.maxIntervalMs, boundedCurrent + 2));
-  }
-
-  const lowPressure = params.reliableBufferedAmount <= 4096 && params.schedulingDelayMs <= 1;
-  if (lowPressure) {
-    return Math.max(params.minIntervalMs, boundedCurrent - 1);
-  }
-
-  if (boundedCurrent > boundedBase) {
-    return Math.max(boundedBase, boundedCurrent - 1);
-  }
-  if (boundedCurrent < boundedBase) {
-    return Math.min(boundedBase, boundedCurrent + 1);
-  }
-  return boundedCurrent;
-}
-
-/** Coalesce pointer samples like official GFN wm() when bursts are large. */
-export function subsampleCoalescedPointerEvents<T extends { movementX: number; movementY: number }>(
-  samples: readonly T[],
-  pendingBatchEntries: number,
-  maxBatchEntries: number = 16,
-): { events: T[]; stride: number } {
-  if (samples.length <= 1) {
-    return { events: [...samples], stride: 1 };
-  }
-
-  const budget = samples.length > 2 * maxBatchEntries
-    ? 1
-    : Math.max(maxBatchEntries - pendingBatchEntries - 4, 1);
-  if (samples.length <= budget) {
-    return { events: [...samples], stride: 1 };
-  }
-
-  const stride = Math.ceil(samples.length / budget);
-  const events: T[] = [];
-  for (let index = 0; index < samples.length; index += stride) {
-    const end = Math.min(index + stride, samples.length);
-    let movementX = 0;
-    let movementY = 0;
-    for (let sampleIndex = index; sampleIndex < end; sampleIndex += 1) {
-      movementX += samples[sampleIndex]!.movementX;
-      movementY += samples[sampleIndex]!.movementY;
-    }
-    events.push({
-      ...samples[end - 1]!,
-      movementX,
-      movementY,
-    } as T);
-  }
-  return { events, stride };
-}
-
-export interface ClassifyStreamLagReasonParams {
-  nativeInputActive: boolean;
-  nativeRendererActive: boolean;
-  framesReceived: number;
-  framesDecoded: number;
-  decodeTimeMs: number;
-  decodeFps: number;
-  renderFps: number;
-  rttMs: number;
-  packetLossPercent: number;
-  jitterMs: number;
-  jitterBufferDelayMs: number;
-  inputQueueBufferedBytes: number;
-  inputQueueDropCount: number;
-  decoderPressureActive: boolean;
-  decoderPressureReason: string;
-  decoderBacklogFrames: number;
-  dropRatePercent: number;
-  backpressureThresholdBytes: number;
-}
-
-/** Classify overlay lag warnings using sustained pressure signals, not timer jitter or normal decode times. */
-export function classifyStreamLagReason(
-  params: ClassifyStreamLagReasonParams,
-): { reason: StreamLagReason; detail: string } {
-  if (params.nativeInputActive || params.nativeRendererActive) {
-    return {
-      reason: "stable",
-      detail: "Native streamer input bridge active",
-    };
-  }
-
-  const networkSignals: string[] = [];
-  if (params.packetLossPercent >= 1) networkSignals.push(`${params.packetLossPercent.toFixed(1)}% loss`);
-  if (params.rttMs >= 75) networkSignals.push(`RTT ${params.rttMs.toFixed(0)}ms`);
-  if (params.jitterMs >= 12) networkSignals.push(`jitter ${params.jitterMs.toFixed(1)}ms`);
-  if (params.jitterBufferDelayMs >= 20) networkSignals.push(`buffer ${params.jitterBufferDelayMs.toFixed(1)}ms`);
-  if (networkSignals.length > 0) {
-    return {
-      reason: "network",
-      detail: networkSignals.join(" · "),
-    };
-  }
-
-  const severeDecoderStall = params.framesReceived > 100 && params.framesDecoded === 0;
-  if (params.decoderPressureActive || severeDecoderStall) {
-    const detailParts: string[] = [];
-    if (severeDecoderStall) detailParts.push("frames received but not decoded");
-    if (params.decoderPressureReason === "decode_saturated" && params.decodeTimeMs > 0) {
-      detailParts.push(`decode ${params.decodeTimeMs.toFixed(1)}ms`);
-    }
-    if (params.decoderBacklogFrames >= 45) detailParts.push(`backlog ${params.decoderBacklogFrames}`);
-    if (params.dropRatePercent >= 6) detailParts.push(`${params.dropRatePercent.toFixed(1)}% drops`);
-    if (detailParts.length === 0 && params.decoderPressureReason !== "stable") {
-      detailParts.push(params.decoderPressureReason.replace(/_/g, " "));
-    }
-    return {
-      reason: "decoder",
-      detail: detailParts.join(" · ") || "decode pressure",
-    };
-  }
-
-  if (
-    params.inputQueueDropCount > 0
-    || params.inputQueueBufferedBytes >= params.backpressureThresholdBytes
-  ) {
-    const detailParts: string[] = [];
-    if (params.inputQueueDropCount > 0) detailParts.push(`drops ${params.inputQueueDropCount}`);
-    if (params.inputQueueBufferedBytes >= params.backpressureThresholdBytes) {
-      detailParts.push(`buffered ${(params.inputQueueBufferedBytes / 1024).toFixed(1)}KB`);
-    }
-    return {
-      reason: "input_backpressure",
-      detail: detailParts.join(" · "),
-    };
-  }
-
-  if (params.renderFps > 0 && params.decodeFps > 0) {
-    const renderGap = params.decodeFps - params.renderFps;
-    const renderGapPercent = renderGap / params.decodeFps;
-    // Absolute fps gaps are misleading at 120/240fps streams — require a large relative drop.
-    const renderPressure =
-      params.renderFps < 30
-      || (renderGap >= 20 && renderGapPercent >= 0.2);
-    if (renderPressure) {
-      return {
-        reason: "render",
-        detail: `render ${params.renderFps}fps vs decode ${params.decodeFps}fps`,
-      };
-    }
-  }
-
-  return {
-    reason: params.decodeFps > 0 || params.renderFps > 0 ? "stable" : "unknown",
-    detail: params.decodeFps > 0 || params.renderFps > 0
-      ? "No dominant lag source detected"
-      : "Waiting for stream stats",
-  };
-}
-
-export function quantizeMouseDeltaWithResidual(accumulatedDelta: number): { send: number; residual: number } {
-  const send = Math.round(accumulatedDelta);
-  return {
-    send,
-    residual: accumulatedDelta - send,
-  };
-}
-
-class MouseDeltaFilter {
-  private x = 0;
-  private y = 0;
-  private lastTsMs = 0;
-  private velocityX = 0;
-  private velocityY = 0;
-  private rejectedX = 0;
-  private rejectedY = 0;
-  private pendingX = 0;
-  private pendingY = 0;
-  private sawZero = false;
-  private relaxedForRawInput = false;
-
-  public setRelaxedForRawInput(value: boolean): void {
-    this.relaxedForRawInput = value;
-  }
-
-  public getX(): number {
-    return this.x;
-  }
-
-  public getY(): number {
-    return this.y;
-  }
-
-  public reset(): void {
-    this.x = 0;
-    this.y = 0;
-    this.lastTsMs = 0;
-    this.velocityX = 0;
-    this.velocityY = 0;
-    this.rejectedX = 0;
-    this.rejectedY = 0;
-    this.pendingX = 0;
-    this.pendingY = 0;
-    this.sawZero = false;
-  }
-
-  public update(dx: number, dy: number, tsMs: number): boolean {
-    if (dx === 0 && dy === 0) {
-      if (this.sawZero) {
-        this.pendingX = 0;
-        this.pendingY = 0;
-      } else {
-        this.sawZero = true;
-      }
-      return false;
-    }
-
-    this.sawZero = false;
-    if (this.pendingX === 0 && this.pendingY === 0) {
-      if (tsMs < this.lastTsMs) {
-        this.pendingX = dx;
-        this.pendingY = dy;
-        return false;
-      }
-    } else {
-      dx += this.pendingX;
-      dy += this.pendingY;
-      this.pendingX = 0;
-      this.pendingY = 0;
-    }
-
-    const dot = dx * this.x + dy * this.y;
-    const magIncoming = dx * dx + dy * dy;
-    const magPrev = this.x * this.x + this.y * this.y;
-    let accept = true;
-
-    const dtMs = tsMs - this.lastTsMs;
-    const directionReversalCosineThreshold = this.relaxedForRawInput ? 0.89 : 0.81;
-    if (dtMs < 0.95 && dot < 0 && magPrev !== 0 && dot * dot > directionReversalCosineThreshold * magIncoming * magPrev) {
-      const ratio = Math.sqrt(magIncoming) / Math.sqrt(magPrev);
-      let distToInt = Math.abs(ratio - Math.trunc(ratio));
-      if (distToInt > 0.5) {
-        distToInt = 1 - distToInt;
-      }
-      const intRatioRejectThreshold = this.relaxedForRawInput ? 0.07 : 0.1;
-      if (distToInt < intRatioRejectThreshold) {
-        accept = false;
-      }
-    }
-
-    const diffX = dx - this.x;
-    const diffY = dy - this.y;
-    const diffMag = diffX * diffX + diffY * diffY;
-
-    if (accept) {
-      const scale = 1 + 0.1 * Math.max(1, Math.min(16, dtMs));
-      const vx2 = 2 * scale * Math.abs(this.velocityX);
-      const vy2 = 2 * scale * Math.abs(this.velocityY);
-      const threshold = Math.max(this.relaxedForRawInput ? 9800 : 8100, vx2 * vx2 + vy2 * vy2);
-      accept = diffMag < threshold;
-      if (!accept && (this.rejectedX !== 0 || this.rejectedY !== 0)) {
-        const rx = dx - this.rejectedX;
-        const ry = dy - this.rejectedY;
-        accept = rx * rx + ry * ry < threshold;
-      }
-    }
-
-    if (accept) {
-      this.velocityX = 0.4 * this.velocityX + 0.6 * diffX;
-      this.velocityY = 0.4 * this.velocityY + 0.6 * diffY;
-      this.x = dx;
-      this.y = dy;
-      this.lastTsMs = tsMs;
-      this.rejectedX = 0;
-      this.rejectedY = 0;
-      return true;
-    }
-
-    this.rejectedX = dx;
-    this.rejectedY = dy;
-    return false;
-  }
-}
-
 function parseResolution(resolution: string): { width: number; height: number } {
   const [rawWidth, rawHeight] = resolution.split("x");
   const width = Number.parseInt(rawWidth ?? "", 10);
@@ -742,77 +315,6 @@ async function toBytes(data: string | Blob | ArrayBuffer): Promise<Uint8Array> {
   }
   const arrayBuffer = await data.arrayBuffer();
   return new Uint8Array(arrayBuffer);
-}
-
-/**
- * Detect GPU type using browser APIs
- * Uses WebGL renderer string to identify GPU vendor/model
- */
-function detectGpuType(): string {
-  try {
-    const canvas = document.createElement("canvas");
-    const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
-    if (!gl) {
-      return "Unknown";
-    }
-
-    const debugInfo = gl.getExtension("WEBGL_debug_renderer_info");
-    if (debugInfo) {
-      const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
-      const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
-
-      // Clean up renderer string - extract main GPU name
-      let gpuName = renderer;
-
-      // Remove common prefixes/suffixes for cleaner display
-      gpuName = gpuName
-        .replace(/\(R\)/g, "")
-        .replace(/\(TM\)/g, "")
-        .replace(/NVIDIA /i, "")
-        .replace(/AMD /i, "")
-        .replace(/Intel /i, "")
-        .replace(/Microsoft Corporation - /i, "")
-        .replace(/D3D12 /i, "")
-        .replace(/Direct3D11 /i, "")
-        .replace(/OpenGL Engine/i, "")
-        .trim();
-
-      // Limit length
-      if (gpuName.length > 30) {
-        gpuName = gpuName.substring(0, 27) + "...";
-      }
-
-      return gpuName || vendor || "Unknown";
-    }
-    return "Unknown";
-  } catch {
-    return "Unknown";
-  }
-}
-
-/**
- * Extract codec name from codecId string (e.g., "VP09" -> "VP9", "AV1X" -> "AV1")
- */
-function normalizeCodecName(codecId: string): string {
-  const upper = codecId.toUpperCase();
-
-  if (upper.startsWith("H264") || upper === "H264") {
-    return "H264";
-  }
-  if (upper.startsWith("H265") || upper === "H265" || upper.startsWith("HEVC")) {
-    return "H265";
-  }
-  if (upper.startsWith("AV1")) {
-    return "AV1";
-  }
-  if (upper.startsWith("VP9") || upper.startsWith("VP09")) {
-    return "VP9";
-  }
-  if (upper.startsWith("VP8")) {
-    return "VP8";
-  }
-
-  return codecId;
 }
 
 export class GfnWebRtcClient {
@@ -1952,8 +1454,9 @@ export class GfnWebRtcClient {
       // Average = (delay / emittedCount) * 1000 for milliseconds.
       const jbDelay = Number(inboundVideo.jitterBufferDelay ?? 0);
       const jbEmitted = Number(inboundVideo.jitterBufferEmittedCount ?? 0);
-      if (jbEmitted > 0) {
-        this.diagnostics.jitterBufferDelayMs = Math.round((jbDelay / jbEmitted) * 1000 * 10) / 10;
+      const avgJitterBufferDelayMs = averageJitterBufferDelayMs(jbDelay, jbEmitted);
+      if (avgJitterBufferDelayMs !== null) {
+        this.diagnostics.jitterBufferDelayMs = avgJitterBufferDelayMs;
       }
 
       // Get codec information
@@ -1963,21 +1466,7 @@ export class GfnWebRtcClient {
         const mimeType = (codecStats.mimeType as string) || "";
         const sdpFmtpLine = (codecStats.sdpFmtpLine as string) || "";
 
-        // Extract codec name from MIME type
-        if (mimeType.includes("H264")) {
-          this.currentCodec = "H264";
-        } else if (mimeType.includes("H265") || mimeType.includes("HEVC")) {
-          this.currentCodec = "H265";
-        } else if (mimeType.includes("AV1")) {
-          this.currentCodec = "AV1";
-        } else if (mimeType.includes("VP9")) {
-          this.currentCodec = "VP9";
-        } else if (mimeType.includes("VP8")) {
-          this.currentCodec = "VP8";
-        } else {
-          // Try to extract from codecId itself
-          this.currentCodec = normalizeCodecName(codecId);
-        }
+        this.currentCodec = codecLabelFromMimeType(mimeType, codecId);
 
         // Check for HDR in SDP fmtp line
         this.isHdr = sdpFmtpLine.includes("transfer-characteristics=16") ||

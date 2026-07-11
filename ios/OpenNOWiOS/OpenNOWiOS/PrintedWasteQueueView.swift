@@ -21,10 +21,41 @@ struct PrintedWasteZone: Identifiable, Equatable {
     let regionSuffix: String
 }
 
+enum StreamZonePolicy {
+    static let blockedZoneIDs: Set<String> = ["NP-BOM-01"]
+    static let blockedZoneMessage = "NP-BOM-01 is temporarily unavailable on iOS. Choose another server or Automatic."
+
+    static func isBlocked(_ value: String?) -> Bool {
+        guard let zoneID = normalizedZoneID(from: value) else { return false }
+        return blockedZoneIDs.contains(zoneID)
+    }
+
+    private static func normalizedZoneID(from value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let host = URLComponents(string: trimmed)?.host
+            ?? trimmed
+                .replacingOccurrences(of: "https://", with: "", options: [.caseInsensitive, .anchored])
+                .replacingOccurrences(of: "http://", with: "", options: [.caseInsensitive, .anchored])
+                .split(separator: "/", maxSplits: 1)
+                .first
+                .map(String.init)
+        return host?
+            .split(separator: ".", maxSplits: 1)
+            .first
+            .map { String($0).uppercased() }
+    }
+}
+
 func recommendedPrintedWasteZone(in zones: [PrintedWasteZone]) -> PrintedWasteZone? {
-    guard !zones.isEmpty else { return nil }
-    let pingedZones = zones.filter { $0.pingMs != nil }
-    let candidates = pingedZones.isEmpty ? zones : pingedZones
+    let allowedZones = zones.filter {
+        !StreamZonePolicy.isBlocked($0.id) && !StreamZonePolicy.isBlocked($0.zoneUrl)
+    }
+    guard !allowedZones.isEmpty else { return nil }
+    let pingedZones = allowedZones.filter { $0.pingMs != nil }
+    let candidates = pingedZones.isEmpty ? allowedZones : pingedZones
     let maxPing = max(candidates.compactMap(\.pingMs).max() ?? 1, 1)
     let maxQueue = max(candidates.map(\.queuePosition).max() ?? 1, 1)
     return candidates.min { lhs, rhs in
@@ -379,7 +410,9 @@ struct PrintedWasteQueueView: View {
 
             zones = queue.data
                 .filter { zoneId, _ in
-                    Self.isStandardZone(zoneId) && !nukedZones.contains(zoneId)
+                    Self.isStandardZone(zoneId)
+                        && !nukedZones.contains(zoneId)
+                        && !StreamZonePolicy.isBlocked(zoneId)
                 }
                 .map { zoneId, zone in
                     let components = zone.Region
@@ -804,7 +837,11 @@ private func fetchQueueResponse() async throws -> PrintedWasteQueueResponse {
     var request = URLRequest(url: url)
     request.setValue("opennow/1.0 iOS", forHTTPHeaderField: "User-Agent")
     request.timeoutInterval = 7
-    let (data, response) = try await URLSession.shared.data(for: request)
+    let (data, response) = try await DiagnosticsHTTPRecorder.data(
+        for: request,
+        using: .shared,
+        source: "PrintedWasteQueue"
+    )
     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
         throw NSError(domain: "PrintedWaste", code: 2, userInfo: [NSLocalizedDescriptionKey: "PrintedWaste queue request failed"])
     }
@@ -822,7 +859,11 @@ private func fetchMappingResponse() async throws -> PrintedWasteMappingResponse 
     var request = URLRequest(url: url)
     request.setValue("opennow/1.0 iOS", forHTTPHeaderField: "User-Agent")
     request.timeoutInterval = 7
-    let (data, response) = try await URLSession.shared.data(for: request)
+    let (data, response) = try await DiagnosticsHTTPRecorder.data(
+        for: request,
+        using: .shared,
+        source: "PrintedWasteMapping"
+    )
     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
         throw NSError(domain: "PrintedWaste", code: 5, userInfo: [NSLocalizedDescriptionKey: "PrintedWaste mapping request failed"])
     }

@@ -5,6 +5,7 @@ import UIKit
 #endif
 #if os(iOS)
 import PhotosUI
+import UniformTypeIdentifiers
 #endif
 
 private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
@@ -90,6 +91,11 @@ struct SettingsView: View {
     @State private var selectedCatalogWallpaperItem: PhotosPickerItem?
     @State private var catalogWallpaperImportInProgress = false
     @State private var catalogWallpaperImportError: String?
+    @State private var diagnosticsDocument = DiagnosticsTextDocument(text: "")
+    @State private var diagnosticsExportInProgress = false
+    @State private var showingDiagnosticsExporter = false
+    @State private var diagnosticsExportError: String?
+    @State private var diagnosticsExportStatus: String?
     #endif
 
     private let qualityValues = ["Balanced", "Data Saver", "Quality"]
@@ -400,9 +406,9 @@ struct SettingsView: View {
             } else {
                 ForEach(store.accountConnectors.prefix(8)) { connector in
                     HStack(spacing: 12) {
-                        Image(systemName: connector.isLinked ? "checkmark.circle.fill" : "link.circle")
-                            .foregroundStyle(connector.isLinked ? .green : .secondary)
-                            .frame(width: 24)
+                        StoreGlyph(store: connector.store)
+                            .frame(width: 30, height: 30)
+                            .accessibilityHidden(true)
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(connector.label)
@@ -711,14 +717,85 @@ struct SettingsView: View {
     }
 
     private var advancedSection: some View {
-        Section("Codec Diagnostics") {
+        Section {
             LabeledContent("Preferred Codec", value: store.settings.preferredCodec)
             LabeledContent("Stream Profile", value: headerSummary)
             LabeledContent("Color", value: selectedColorQualityLabel)
             LabeledContent("HDR", value: hdrAvailable ? (store.settings.hdrEnabled ? "On" : "Off") : "Unavailable")
+            #if os(iOS)
+            Button {
+                diagnosticsExportInProgress = true
+                diagnosticsExportError = nil
+                diagnosticsExportStatus = nil
+                Task {
+                    defer { diagnosticsExportInProgress = false }
+                    do {
+                        let pasteURL = try await store.uploadDiagnosticsPaste()
+                        UIPasteboard.general.string = store.diagnosticsClipboardSummary(pasteURL: pasteURL)
+                        diagnosticsExportStatus = "Copied a compact build and tier summary with the full log paste link at the end."
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        diagnosticsExportError = error.localizedDescription
+                    }
+                }
+            } label: {
+                Label("Upload Redacted Logs & Copy Summary", systemImage: "doc.on.clipboard")
+            }
+            .disabled(diagnosticsExportInProgress)
+
+            Button {
+                diagnosticsExportInProgress = true
+                diagnosticsExportError = nil
+                diagnosticsExportStatus = nil
+                Task {
+                    diagnosticsDocument = DiagnosticsTextDocument(
+                        text: await store.makeDiagnosticsExport()
+                    )
+                    diagnosticsExportInProgress = false
+                    showingDiagnosticsExporter = true
+                }
+            } label: {
+                Label("Export Extensive Logs", systemImage: "square.and.arrow.up")
+            }
+            .disabled(diagnosticsExportInProgress)
+            .fileExporter(
+                isPresented: $showingDiagnosticsExporter,
+                document: diagnosticsDocument,
+                contentType: .plainText,
+                defaultFilename: store.diagnosticsExportFileName
+            ) { result in
+                if case .failure(let error) = result {
+                    diagnosticsExportError = error.localizedDescription
+                }
+            }
+
+            if diagnosticsExportInProgress {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Sanitizing app, API, queue, and stream logs…")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let diagnosticsExportStatus {
+                Text(diagnosticsExportStatus)
+                    .font(.footnote)
+                    .foregroundStyle(.green)
+            }
+            if let diagnosticsExportError {
+                Text(diagnosticsExportError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+            #else
             ShareLink(item: store.diagnosticsReport) {
                 Label("Share Redacted Diagnostics", systemImage: "square.and.arrow.up")
             }
+            #endif
+        } header: {
+            Text("Codec Diagnostics")
+        } footer: {
+            Text("Includes detailed redacted API requests and responses, launch, queue, stream, codec, device, settings, telemetry, and recent OpenNOW logs. Uploads use an unlisted public paste that expires after 7 days. Credentials, tokens, cookies, OAuth values, email addresses, local user paths, identifiers, IP addresses, and long opaque values are removed or fingerprinted before upload. Only the compact summary and paste link are copied.")
         }
     }
 
@@ -1221,6 +1298,7 @@ private struct OpenNOWPrivacyPolicyView: View {
             Section("Services You Contact") {
                 Text("When you sign in, browse games, link stores, or start a stream, the app communicates directly with NVIDIA and the selected GeForce NOW alliance provider. Those services receive the account, device, network, and session information needed to provide their service under their own privacy terms.")
                 Text("Free-tier server selection can contact PrintedWaste queue endpoints. OpenNOW does not send OAuth passwords to PrintedWaste.")
+                Text("If you explicitly choose Upload Redacted Logs, OpenNOW sends a strictly sanitized diagnostic artifact to paste.rtech.support. The unlisted paste expires after seven days. The app does not upload diagnostics automatically.")
             }
 
             Section("Apple Features") {
@@ -1292,6 +1370,30 @@ private struct SettingsAccountAvatar: View {
         .accessibilityHidden(true)
     }
 }
+
+#if os(iOS)
+private struct DiagnosticsTextDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+
+    var text: String
+
+    init(text: String) {
+        self.text = text
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let text = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.text = text
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
+#endif
 
 private extension String {
     var nonEmpty: String? {

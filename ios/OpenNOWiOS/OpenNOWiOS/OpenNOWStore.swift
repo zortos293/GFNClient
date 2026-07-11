@@ -2515,7 +2515,11 @@ private actor GFNAPIClient {
         let urlSession = Self.shouldUseSessionProxy(for: url, settings: sessionSettings)
             ? proxiedSession(settings: sessionSettings)
             : self.session
-        let (data, response) = try await urlSession.data(for: req)
+        let (data, response) = try await DiagnosticsHTTPRecorder.data(
+            for: req,
+            using: urlSession,
+            source: "GFNAPI"
+        )
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "OpenNOW.Network", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
@@ -4252,6 +4256,9 @@ private actor GFNAPIClient {
                 components.path += "/"
             }
             guard let normalizedURL = components.url?.absoluteString else { return nil }
+            guard !StreamZonePolicy.isBlocked(key), !StreamZonePolicy.isBlocked(normalizedURL) else {
+                return nil
+            }
             return StreamRegion(name: key, url: normalizedURL)
         }
         .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -4936,7 +4943,7 @@ private actor GFNAPIClient {
     ) -> Data {
         let hdrEnabled = settings.hdrEnabled
         let colorQuality = StreamSettingsResolver.colorQuality(for: settings)
-        let bitDepth = hdrEnabled ? 10 : colorQuality.bitDepth
+        let bitDepth = hdrEnabled || colorQuality.bitDepth == 10 ? 10 : 0
         let chromaFormat = colorQuality.chromaFormat
         let hdrDisplayDataValue: Any = hdrEnabled ? hdrDisplayData() : NSNull()
         let hdrCapabilitiesValue: Any = hdrEnabled ? hdrCapabilities() : NSNull()
@@ -5013,7 +5020,7 @@ private actor GFNAPIClient {
     ) -> Data {
         let hdrEnabled = settings.hdrEnabled
         let colorQuality = StreamSettingsResolver.colorQuality(for: settings)
-        let bitDepth = hdrEnabled ? 10 : colorQuality.bitDepth
+        let bitDepth = hdrEnabled || colorQuality.bitDepth == 10 ? 10 : 0
         let chromaFormat = colorQuality.chromaFormat
         let hdrDisplayDataValue: Any = hdrEnabled ? hdrDisplayData() : NSNull()
         let hdrCapabilitiesValue: Any = hdrEnabled ? hdrCapabilities() : NSNull()
@@ -5294,6 +5301,10 @@ final class OpenNOWStore: ObservableObject {
         if loadedSettings.preferredCodec == "HEVC" {
             loadedSettings.preferredCodec = "H265"
         }
+        let removedBlockedPreferredRegion = StreamZonePolicy.isBlocked(loadedSettings.preferredRegion)
+        if removedBlockedPreferredRegion {
+            loadedSettings.preferredRegion = ""
+        }
         loadedSettings.normalizeStreamDefaults()
         settings = loadedSettings
         let retainedWallpaperFilename = loadedSettings.catalogWallpaperFilename
@@ -5309,6 +5320,14 @@ final class OpenNOWStore: ObservableObject {
             settings.selectedProviderIdpId = provider.idpId
         }
         activeSession = Self.loadActiveSession(from: defaults)
+        if let restoredSession = activeSession,
+           StreamZonePolicy.isBlocked(restoredSession.streamingBaseUrl)
+            || StreamZonePolicy.isBlocked(restoredSession.serverIp)
+            || StreamZonePolicy.isBlocked(restoredSession.zone) {
+            activeSession = nil
+            defaults.removeObject(forKey: activeSessionSnapshotKey)
+            defaults.removeObject(forKey: activeStreamSettingsKey)
+        }
         #if DEBUG
         if activeSession?.id == "debug-queue-preview" {
             activeSession = nil
@@ -5322,6 +5341,9 @@ final class OpenNOWStore: ObservableObject {
             hydrateCachedCatalog(for: authSession)
         }
         showStreamLoading = activeSession != nil
+        if removedBlockedPreferredRegion {
+            persistSettings()
+        }
         syncTrackedSessionSurface()
         #if os(tvOS)
         tvAuthLogObserver = NotificationCenter.default.addObserver(
@@ -5371,26 +5393,137 @@ final class OpenNOWStore: ObservableObject {
             for: currentStreamerSettings,
             membershipTier: subscription?.membershipTier ?? user?.membershipTier
         )
+        let codecReport = NativeStreamCodecProbe.report()
         let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
         let provider = authSession?.provider.code ?? "signed-out"
         let tier = subscription?.membershipTier ?? user?.membershipTier ?? "unknown"
         let active = activeSession
         let negotiated = active?.negotiatedStreamProfile
-        let lines = [
-            "OpenNOW iOS \(appVersion) (\(buildNumber))",
-            "Platform: \(OpenNOWPlatform.displayName) \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+        let process = ProcessInfo.processInfo
+        let proxyHost = URL(string: settings.sessionProxyUrl)?.host ?? (settings.sessionProxyEnabled ? "configured" : "off")
+        let adState = effectiveAdState
+        let regionSummary = availableRegions
+            .prefix(30)
+            .map { "\($0.name)=\(URL(string: $0.url)?.host ?? $0.url)" }
+            .joined(separator: ",")
+        var lines = [
+            "OpenNOW iOS diagnostics",
+            "generatedAt=\(ISO8601DateFormatter().string(from: Date()))",
+            "app.version=\(appVersion) build=\(buildNumber) bundle=\(Bundle.main.bundleIdentifier ?? "unknown")",
             "Distribution: App Store compatible build; no self-updater",
-            "Provider/Tier: \(provider) / \(tier)",
-            "Catalog: \(allGames.count) games, \(libraryGames.count) library, \(availableRegions.count) regions",
-            "Requested: \(profile.width)x\(profile.height) @ \(profile.fps) fps, \(profile.maxBitrateKbps / 1_000) Mbps, \(currentStreamerSettings.preferredCodec)",
-            "Features: HDR=\(currentStreamerSettings.hdrEnabled) L4S=\(currentStreamerSettings.enableL4S) GSync=\(currentStreamerSettings.enableCloudGsync)",
-            "Codec probe: \(NativeStreamCodecProbe.report().summary)",
-            "Session: \(active == nil ? "none" : "active") status=\(active?.status ?? -1) queue=\(active?.queuePosition ?? -1)",
-            "Negotiated: \(negotiated?.resolution ?? "unknown") @ \(negotiated?.fps.map { String($0) } ?? "unknown") fps, \(negotiated?.codec ?? "unknown")",
-            String(format: "Telemetry: %d fps, %d ms, %.2f%% loss, %.1f Mbps", telemetry.fps, telemetry.pingMs, telemetry.packetLossPercent, telemetry.bitrateMbps)
+            "device.model=\(UIDevice.current.model) platform=\(OpenNOWPlatform.displayName) os=\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+            "device.locale=\(Locale.current.identifier) timezone=\(TimeZone.current.identifier) lowPower=\(process.isLowPowerModeEnabled) thermal=\(process.thermalState.rawValue)",
+            "device.memoryBytes=\(process.physicalMemory) processors=\(process.processorCount) activeProcessors=\(process.activeProcessorCount)",
+            "privacy.microphoneDescriptionPresent=\(Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil) cameraDescriptionPresent=\(Bundle.main.object(forInfoDictionaryKey: "NSCameraUsageDescription") != nil)",
+            "account.signedIn=\(authSession != nil) provider=\(provider) tier=\(tier) savedAccounts=\(savedAccounts.count)",
+            "catalog.games=\(allGames.count) library=\(libraryGames.count) regions=\(availableRegions.count) connectors=\(accountConnectors.count)",
+            "catalog.regionHosts=\(regionSummary.isEmpty ? "none" : regionSummary)",
+            "ui.bootstrapping=\(isBootstrapping) loadingGames=\(isLoadingGames) launching=\(isLaunchingSession) queueOverlay=\(queueOverlayVisible) loadingSurface=\(showStreamLoading)",
+            "session.present=\(active != nil) id=\(active?.id ?? "none") status=\(active?.status ?? -1) queue=\(active?.queuePosition ?? -1) seatSetup=\(active?.seatSetupStep ?? -1)",
+            "session.game=\(active?.game.title ?? "none") zone=\(active?.zone ?? "none") base=\(active.flatMap { URL(string: $0.streamingBaseUrl)?.host } ?? "none")",
+            "session.server=\(active?.serverIp ?? "none") media=\(active?.mediaIp ?? "none"):\(active?.mediaPort ?? 0) signaling=\(active?.signalingServer ?? "none")",
+            "session.adsRequired=\(isSessionAdsRequired(adState)) ads=\(sessionAdItems(adState).count) queuePaused=\(adState?.isQueuePaused ?? false) activeAd=\(activeQueueAd?.adId ?? "none")",
+            "requested.resolution=\(profile.width)x\(profile.height) fps=\(profile.fps) bitrateKbps=\(profile.maxBitrateKbps) codec=\(currentStreamerSettings.preferredCodec) quality=\(currentStreamerSettings.preferredQuality)",
+            "requested.aspect=\(currentStreamerSettings.preferredAspectRatio) color=\(currentStreamerSettings.preferredColorQuality) hdr=\(currentStreamerSettings.hdrEnabled) l4s=\(currentStreamerSettings.enableL4S) gsync=\(currentStreamerSettings.enableCloudGsync)",
+            "requested.region=\(currentStreamerSettings.preferredRegion.isEmpty ? "automatic" : currentStreamerSettings.preferredRegion) proxy=\(proxyHost)",
+            "negotiated.resolution=\(negotiated?.resolution ?? "unknown") fps=\(negotiated?.fps.map(String.init) ?? "unknown") codec=\(negotiated?.codec ?? "unknown") color=\(negotiated?.colorQuality?.rawValue ?? "unknown")",
+            "input.keyboard=\(settings.keyboardLayout) language=\(settings.gameLanguage) fingerMouse=\(settings.fingerMouseEnabled) sensitivity=\(settings.mouseSensitivity) acceleration=\(settings.mouseAcceleration) phoneRumble=\(settings.phoneRumbleFallback)",
+            "streamer.audioMuted=\(settings.streamerPreferences.audioMuted) stats=\(settings.showStatsOverlay) statsStyle=\(settings.streamerPreferences.statsStyle.rawValue) statsPosition=\(settings.streamerPreferences.statsPosition.rawValue)",
+            "streamer.touchVisible=\(settings.streamerPreferences.touchControllerVisible) touchscreen=\(settings.streamerPreferences.touchscreenModeEnabled) controllerPassthrough=\(settings.streamerPreferences.physicalControllerPassthrough) stretch=\(settings.streamerPreferences.stretchStreamToFill)",
+            "codec.summary=\(codecReport.summary)",
+            String(format: "telemetry.fps=%d pingMs=%d packetLoss=%.2f bitrateMbps=%.1f", telemetry.fps, telemetry.pingMs, telemetry.packetLossPercent, telemetry.bitrateMbps),
+            "lastError=\(lastError ?? "none")"
         ]
-        return lines.joined(separator: "\n")
+        for capability in codecReport.capabilities {
+            lines.append(
+                "codec.\(capability.codec.rawValue)=hardwareDecode:\(capability.videoToolboxHardwareDecode) webRTC:\(capability.webRTCSupported) launchSafe:\(capability.launchSafe) profiles:\(capability.webRTCProfileSummary.joined(separator: " | "))"
+            )
+        }
+        return DiagnosticsSanitizer.sanitize(lines.joined(separator: "\n"))
+    }
+
+    var diagnosticsExportFileName: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "opennow-ios-logs-\(formatter.string(from: Date()))"
+    }
+
+    func makeDiagnosticsExport() async -> String {
+        let stateSnapshot = diagnosticsReport
+        let unifiedLogs = await Task.detached(priority: .utility) {
+            Self.currentProcessUnifiedLogs()
+        }.value
+        let apiTrace = await DiagnosticsHTTPTraceStore.shared.export()
+        return DiagnosticsSanitizer.sanitize(
+            """
+            \(stateSnapshot)
+
+            privacy
+            strictRedaction=true
+            redacted=credentials,tokens,cookies,oauthCodes,emailAddresses,userPaths,deviceIds,userIds,sessionIds,requestIds,ipAddresses,longOpaqueValues
+            apiTraceRetention=boundedInMemoryOnly
+            pasteRetention=7days
+
+            apiTrace
+            \(apiTrace)
+
+            unifiedLogs
+            \(unifiedLogs)
+            """
+        ) + "\n"
+    }
+
+    func uploadDiagnosticsPaste() async throws -> URL {
+        try await DiagnosticsPasteClient.upload(await makeDiagnosticsExport())
+    }
+
+    func diagnosticsClipboardSummary(pasteURL: URL) -> String {
+        let profile = StreamSettingsResolver.profile(
+            for: currentStreamerSettings,
+            membershipTier: subscription?.membershipTier ?? user?.membershipTier
+        )
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let provider = authSession?.provider.code ?? "signed-out"
+        let tier = subscription?.membershipTier ?? user?.membershipTier ?? "unknown"
+        let error = DiagnosticsSanitizer.sanitize(lastError ?? "none")
+        let shortError = error.count > 240 ? String(error.prefix(240)) + "…" : error
+        return """
+        OpenNOW iOS \(appVersion) (\(buildNumber))
+        Distribution: App Store compatible build; no self-updater
+        Platform: \(OpenNOWPlatform.displayName) — \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)
+        Provider/Tier: \(provider) / \(tier)
+        Requested: \(profile.width)x\(profile.height) @ \(profile.fps) FPS — \(currentStreamerSettings.preferredCodec) — \(currentStreamerSettings.preferredColorQuality)
+        Session: status \(activeSession?.status ?? -1), queue \(activeSession?.queuePosition ?? -1), seat \(activeSession?.seatSetupStep ?? -1)
+        Error: \(shortError)
+        Redaction: strict; paste expires after 7 days
+        Full redacted log paste:
+        \(pasteURL.absoluteString)
+        """
+    }
+
+    nonisolated private static func currentProcessUnifiedLogs() -> String {
+        do {
+            let store = try OSLogStore(scope: .currentProcessIdentifier)
+            let position = store.position(date: Date().addingTimeInterval(-6 * 60 * 60))
+            let logs = Array(try store.getEntries(at: position))
+                .compactMap { $0 as? OSLogEntryLog }
+                .filter { $0.subsystem == "OpenNOWiOS" }
+                .suffix(800)
+            guard !logs.isEmpty else { return "entries=0" }
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var lines = ["entries=\(logs.count) max=800 windowHours=6"]
+            lines.append(contentsOf: logs.map { entry in
+                "\(formatter.string(from: entry.date)) level=\(entry.level.rawValue) [\(entry.category)] \(DiagnosticsSanitizer.sanitize(entry.composedMessage))"
+            })
+            return lines.joined(separator: "\n")
+        } catch {
+            return "unavailable=\(error.localizedDescription)"
+        }
     }
 
     func bootstrap() async {
@@ -5648,7 +5781,7 @@ final class OpenNOWStore: ObservableObject {
 
             let (fetchedMainGames, vpcId, regions) = try await api.fetchMainGames(session: refreshed)
             cachedVpcId = vpcId
-            availableRegions = regions
+            availableRegions = regions.filter { !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name) }
             let mainGames = preservingCatalogMetadata(in: fetchedMainGames, from: allGames)
             let fetchedLibrary = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
             let library = preservingCatalogMetadata(in: fetchedLibrary, from: libraryGames + allGames)
@@ -5678,7 +5811,9 @@ final class OpenNOWStore: ObservableObject {
                     settings: streamSettings,
                     deviceId: persistentDeviceId()
                 )
-                resumableSessions = remoteSessions.filter(remoteSessionIsLaunchable)
+                resumableSessions = remoteSessions.filter {
+                    remoteSessionIsLaunchable($0) && remoteSessionIsAllowed($0)
+                }
                 remoteSessionsSnapshotLoaded = true
             } catch {
                 remoteSessionsSnapshotLoaded = false
@@ -5808,6 +5943,10 @@ final class OpenNOWStore: ObservableObject {
             lastError = launchRestriction
             return
         }
+        if StreamZonePolicy.isBlocked(zoneUrl) {
+            lastError = StreamZonePolicy.blockedZoneMessage
+            return
+        }
         isLaunchingSession = true
         showStreamLoading = true
         queueOverlayVisible = true
@@ -5830,10 +5969,18 @@ final class OpenNOWStore: ObservableObject {
             }
 
             let deviceId = persistentDeviceId()
-            let configuredRegion = launchSettings.preferredRegion.trimmingCharacters(in: .whitespacesAndNewlines)
+            let storedRegion = launchSettings.preferredRegion.trimmingCharacters(in: .whitespacesAndNewlines)
+            let configuredRegion = StreamZonePolicy.isBlocked(storedRegion) ? "" : storedRegion
             let baseUrl = zoneUrl
                 ?? (configuredRegion.isEmpty ? nil : configuredRegion)
                 ?? refreshed.provider.streamingServiceUrl
+            guard !StreamZonePolicy.isBlocked(baseUrl) else {
+                throw NSError(
+                    domain: "OpenNOW.StreamZonePolicy",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: StreamZonePolicy.blockedZoneMessage]
+                )
+            }
             let activeCandidates: [RemoteSessionCandidate]
             do {
                 activeCandidates = try await api.fetchActiveSessions(
@@ -5851,9 +5998,12 @@ final class OpenNOWStore: ObservableObject {
             }
 
             let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: launchSettings, session: refreshed)
-            resumableSessions = activeCandidates.filter(remoteSessionIsLaunchable)
+            resumableSessions = activeCandidates.filter {
+                remoteSessionIsLaunchable($0) && remoteSessionIsAllowed($0)
+            }
             let staleLaunchCandidate = activeCandidates.first {
                 $0.appId == launchAppId
+                    && remoteSessionIsAllowed($0)
                     && remoteSessionIsLaunchable($0)
                     && !remoteSession($0, matchesStreamSettings: launchSettings, session: refreshed)
             }
@@ -6021,12 +6171,34 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func deepLinkSettingsOverride(from query: [String: String]) -> AppSettings? {
-        guard let rawCodec = query["codec"] ?? query["videoCodec"],
-              let codec = NativeStreamVideoCodec.normalized(rawCodec) else {
-            return nil
-        }
         var override = settings
-        override.preferredCodec = codec.rawValue
+        var hasOverride = false
+
+        if let rawCodec = query["codec"] ?? query["videoCodec"],
+           let codec = NativeStreamVideoCodec.normalized(rawCodec) {
+            override.preferredCodec = codec.rawValue
+            hasOverride = true
+        }
+
+        if let rawResolution = query["resolution"],
+           let choice = StreamSettingsResolver.resolutionChoices.first(where: {
+               $0.value.caseInsensitiveCompare(rawResolution.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+           }) {
+            override.streamPreset = .custom
+            override.preferredAspectRatio = choice.aspectRatio
+            override.preferredResolution = choice.value
+            hasOverride = true
+        }
+
+        if let rawFPS = query["fps"],
+           let fps = Int(rawFPS),
+           [30, 60, 120].contains(fps) {
+            override.streamPreset = .custom
+            override.preferredFPS = fps
+            hasOverride = true
+        }
+
+        guard hasOverride else { return nil }
         override.normalizeStreamDefaults()
         return override
     }
@@ -6088,7 +6260,9 @@ final class OpenNOWStore: ObservableObject {
                 settings: streamSettings,
                 deviceId: persistentDeviceId()
             )
-            resumableSessions = remoteSessions.filter(remoteSessionIsLaunchable)
+            resumableSessions = remoteSessions.filter {
+                remoteSessionIsLaunchable($0) && remoteSessionIsAllowed($0)
+            }
             remoteSessionsSnapshotLoaded = true
         } catch {
             remoteSessionsSnapshotLoaded = false
@@ -6134,6 +6308,10 @@ final class OpenNOWStore: ObservableObject {
         }
         guard let game = resolveGameForRemoteSession(candidate) else {
             lastError = "Unable to match this remote session to a known game."
+            return
+        }
+        guard remoteSessionIsAllowed(candidate) else {
+            lastError = StreamZonePolicy.blockedZoneMessage
             return
         }
         isLaunchingSession = true
@@ -6857,7 +7035,14 @@ final class OpenNOWStore: ObservableObject {
         settings: AppSettings,
         session: AuthSession
     ) -> [RemoteSessionCandidate] {
-        candidates.filter { remoteSession($0, matchesStreamSettings: settings, session: session) }
+        candidates.filter {
+            remoteSessionIsAllowed($0)
+                && remoteSession($0, matchesStreamSettings: settings, session: session)
+        }
+    }
+
+    private func remoteSessionIsAllowed(_ candidate: RemoteSessionCandidate) -> Bool {
+        !StreamZonePolicy.isBlocked(candidate.serverIp)
     }
 
     private func remoteSession(
@@ -7078,6 +7263,11 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func isReadyForStreamer(_ session: ActiveSession) -> Bool {
+        guard !StreamZonePolicy.isBlocked(session.streamingBaseUrl),
+              !StreamZonePolicy.isBlocked(session.serverIp),
+              !StreamZonePolicy.isBlocked(session.zone) else {
+            return false
+        }
         // Match desktop behavior: allow connect on status 2 or 3.
         // Keep signaling non-empty checks below to avoid premature handoff.
         guard session.status == 2 || session.status == 3 else { return false }

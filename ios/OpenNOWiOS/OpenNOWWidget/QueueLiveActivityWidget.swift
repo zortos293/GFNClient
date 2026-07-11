@@ -14,7 +14,7 @@ struct QueueLiveActivityWidget: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     LiveActivityAppIcon(size: 24)
-                        .padding(.leading, 2)
+                        .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(spacing: 1) {
@@ -37,6 +37,7 @@ struct QueueLiveActivityWidget: Widget {
                             phase: context.state.phase,
                             size: .expanded
                         )
+                        .padding(.trailing, 6)
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
@@ -48,10 +49,11 @@ struct QueueLiveActivityWidget: Widget {
                             .minimumScaleFactor(0.78)
                         LiveActivityPhaseTrack(phase: context.state.phase)
                     }
-                    .padding(.horizontal, 2)
+                    .padding(.horizontal, 6)
                 }
             } compactLeading: {
                 LiveActivityAppIcon(size: 21)
+                    .padding(.trailing, 6)
             } compactTrailing: {
                 if let queueLabel = queueNumberLabel(for: context.state) {
                     QueueValueText(
@@ -59,15 +61,17 @@ struct QueueLiveActivityWidget: Widget {
                         phase: context.state.phase,
                         size: .compact
                     )
+                    .padding(.leading, 6)
                 }
             } minimal: {
                 LiveActivityAppIcon(size: 19)
+                    .padding(2)
             }
-            .contentMargins(.horizontal, 20, for: .expanded)
-            .contentMargins(.vertical, 12, for: .expanded)
-            .contentMargins([.leading, .top, .bottom], 8, for: .compactLeading)
-            .contentMargins([.trailing, .top, .bottom], 8, for: .compactTrailing)
-            .contentMargins(.all, 8, for: .minimal)
+            .contentMargins(.horizontal, 26, for: .expanded)
+            .contentMargins(.vertical, 16, for: .expanded)
+            .contentMargins([.leading, .top, .bottom], 10, for: .compactLeading)
+            .contentMargins([.trailing, .top, .bottom], 10, for: .compactTrailing)
+            .contentMargins(.all, 10, for: .minimal)
             .keylineTint(color(for: context.state.phase))
             .widgetURL(URL(string: "opennow://resume"))
         }
@@ -102,7 +106,7 @@ struct QueueLiveActivityWidget: Widget {
     }
 
     private func queueNumberLabel(for state: QueueActivityAttributes.ContentState) -> String? {
-        state.queuePosition.map(String.init)
+        state.queuePosition.map { "#\($0)" }
     }
 }
 

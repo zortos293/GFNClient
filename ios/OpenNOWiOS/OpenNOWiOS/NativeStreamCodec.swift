@@ -623,6 +623,65 @@ enum NativeStreamSelfTest {
         let preferred = NativeStreamSDP.preferCodec(in: sampleOffer, codec: .h265, preferTenBit: false)
         assertSelfTest(preferred.contains("m=video 9 UDP/TLS/RTP/SAVPF 98 99"), "codec preference rewrite", failures: &failures)
 
+        let sampleAnswer = """
+        v=0
+        o=- 0 0 IN IP4 0.0.0.0
+        s=-
+        t=0 0
+        a=ice-ufrag:answerufrag
+        a=ice-pwd:answerpassword
+        a=fingerprint:sha-256 AA:BB
+        """
+        var profileMatrixFailures: [String] = []
+        for choice in StreamSettingsResolver.resolutionChoices {
+            let membershipTier: String
+            switch choice.requiredPlan {
+            case .free: membershipTier = "FREE"
+            case .priority: membershipTier = "PRIORITY"
+            case .ultimate: membershipTier = "ULTIMATE"
+            }
+
+            for codec in NativeStreamVideoCodec.allCases {
+                var matrixSettings = AppSettings.default
+                matrixSettings.streamPreset = .custom
+                matrixSettings.preferredAspectRatio = choice.aspectRatio
+                matrixSettings.preferredResolution = choice.value
+                matrixSettings.preferredFPS = 60
+                matrixSettings.preferredCodec = codec.rawValue
+                matrixSettings.normalizeStreamDefaults()
+
+                let profile = StreamSettingsResolver.profile(
+                    for: matrixSettings,
+                    nativeBounds: .zero,
+                    nativeScale: 1,
+                    userInterfaceIdiom: .phone,
+                    membershipTier: membershipTier
+                )
+                let nvstSDP = NativeStreamSDP.buildNvstSDP(
+                    offerSDP: sampleOffer,
+                    localAnswerSDP: sampleAnswer,
+                    profile: profile,
+                    settings: matrixSettings,
+                    codec: codec
+                )
+                let resolutionIsExact = profile.resolutionString == choice.value
+                let carriesViewport = nvstSDP.contains("a=video.clientViewportWd:\(profile.width)")
+                    && nvstSDP.contains("a=video.clientViewportHt:\(profile.height)")
+                let carriesFPS = nvstSDP.contains("a=video.maxFPS:\(profile.fps)")
+                if !resolutionIsExact || !carriesViewport || !carriesFPS {
+                    profileMatrixFailures.append("\(codec.rawValue) \(choice.value)")
+                }
+            }
+        }
+        assertSelfTest(
+            profileMatrixFailures.isEmpty,
+            "codec and resolution request matrix \(NativeStreamVideoCodec.allCases.count * StreamSettingsResolver.resolutionChoices.count) profiles",
+            failures: &failures
+        )
+        if !profileMatrixFailures.isEmpty {
+            failures.append("invalid request profiles: \(profileMatrixFailures.joined(separator: ", "))")
+        }
+
         var h265Settings = AppSettings.default
         h265Settings.preferredCodec = "H265"
         h265Settings.preferredFPS = 120

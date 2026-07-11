@@ -178,3 +178,43 @@ struct AndroidQueueStatusText: View {
         )
     }
 }
+
+struct OscillatingQueueProgressView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isAnimating = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.secondary.opacity(0.3))
+                    .frame(height: 8)
+
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(brandAccent)
+                    .frame(width: geometry.size.width * 0.3, height: 8)
+                    .offset(
+                        x: reduceMotion
+                            ? geometry.size.width * 0.35
+                            : (isAnimating ? geometry.size.width * 0.7 : 0)
+                    )
+                    .animation(
+                        reduceMotion
+                            ? nil
+                            : .easeInOut(duration: 1.0).repeatForever(autoreverses: true),
+                        value: isAnimating
+                    )
+            }
+        }
+        .frame(height: 8)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Queue progress")
+        .accessibilityValue("Waiting for a gaming rig")
+        .onAppear {
+            isAnimating = !reduceMotion
+        }
+        .onChangeCompat(of: reduceMotion) { enabled in
+            isAnimating = !enabled
+        }
+    }
+}

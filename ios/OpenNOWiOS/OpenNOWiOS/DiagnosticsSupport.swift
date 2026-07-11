@@ -1,0 +1,335 @@
+import CryptoKit
+import Foundation
+
+enum DiagnosticsSanitizer {
+    private static let sensitiveKeys: Set<String> = [
+        "authorization", "proxyauthorization", "cookie", "setcookie", "password", "passwd",
+        "secret", "accesstoken", "refreshtoken", "idtoken", "clienttoken", "authtoken",
+        "authkey", "code", "codeverifier", "state"
+    ]
+    private static let identifierKeys: Set<String> = [
+        "devicehashid", "deviceid", "xdeviceid", "sessionid", "subsessionid", "userid",
+        "accountid", "subject", "sub", "nvclientid", "xrequestid", "requestid"
+    ]
+    private static let personalKeys: Set<String> = [
+        "email", "username", "preferredusername", "displayname", "firstname", "lastname"
+    ]
+
+    static func sanitize(_ raw: String) -> String {
+        var value = raw
+        value = replacing(
+            in: value,
+            pattern: #"(?i)\b(Bearer|GFNJWT)\s+[A-Za-z0-9._~+/=-]+"#,
+            with: "$1 [REDACTED]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"#,
+            with: "[REDACTED_JWT]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"(?i)([?&](?:access_token|refresh_token|id_token|client_token|token|auth_key|code|code_verifier|state|password|secret)=)[^&#\s]+"#,
+            with: "$1[REDACTED]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"(?i)([?&](?:deviceHashId|deviceId|sessionId|subSessionId|userId|accountId|requestId)=)[^&#\s]+"#,
+            with: "$1[REDACTED_ID]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"(?i)([\"']?\b(?:authorization|proxy[_-]?authorization|cookie|set[_-]?cookie|password|passwd|secret|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?token|auth[_-]?token|auth[_-]?key|code[_-]?verifier)\b[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"#,
+            with: "$1[REDACTED]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"(?i)([\"']?\b(?:device[_-]?hash[_-]?id|device[_-]?id|x-device-id|session[_-]?id|subsession[_-]?id|user[_-]?id|account[_-]?id|request[_-]?id|x-request-id)\b[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"#,
+            with: "$1[REDACTED_ID]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"(?i)([\"']?\b(?:email|user[_-]?name|preferred[_-]?username|display[_-]?name|first[_-]?name|last[_-]?name)\b[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&}]+)"#,
+            with: "$1[REDACTED_PII]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
+            with: "[REDACTED_EMAIL]"
+        )
+        value = replacing(
+            in: value,
+            pattern: #"/Users/[^/\s]+"#,
+            with: "/Users/[REDACTED_USER]"
+        )
+        value = replacingMatches(
+            in: value,
+            pattern: #"(?<![A-Fa-f0-9])[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}(?![A-Fa-f0-9])"#,
+            label: "ID"
+        )
+        value = replacingMatches(
+            in: value,
+            pattern: #"(?<![0-9])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![0-9])"#,
+            label: "IP"
+        )
+        value = replacingMatches(
+            in: value,
+            pattern: #"(?i)(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}(?![0-9a-f:])"#,
+            label: "IP"
+        )
+        value = replacingMatches(
+            in: value,
+            pattern: #"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])"#,
+            label: "OPAQUE"
+        )
+        value = replacingMatches(
+            in: value,
+            pattern: #"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/=])"#,
+            label: "OPAQUE"
+        )
+        return value
+    }
+
+    static func redactedHeaders(_ headers: [String: String]) -> String {
+        headers
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { key, value in
+                let normalized = normalizedKey(key)
+                if sensitiveKeys.contains(normalized) {
+                    return "\(key): [REDACTED]"
+                }
+                if identifierKeys.contains(normalized) {
+                    return "\(key): \(fingerprint(value, label: "ID"))"
+                }
+                return "\(key): \(sanitize(value))"
+            }
+            .joined(separator: "\n")
+    }
+
+    static func redactedBody(_ data: Data?, headers: [String: String]) -> String {
+        guard let data, !data.isEmpty else { return "<empty>" }
+        let contentType = headers.first { $0.key.caseInsensitiveCompare("Content-Type") == .orderedSame }?.value.lowercased() ?? ""
+
+        if contentType.contains("json") || data.first == 123 || data.first == 91 {
+            if let object = try? JSONSerialization.jsonObject(with: data),
+               JSONSerialization.isValidJSONObject(object),
+               let redacted = try? JSONSerialization.data(
+                   withJSONObject: redactJSONObject(object),
+                   options: [.prettyPrinted, .sortedKeys]
+               ),
+               let text = String(data: redacted, encoding: .utf8) {
+                return sanitize(text)
+            }
+        }
+
+        if contentType.contains("application/x-www-form-urlencoded"),
+           let raw = String(data: data, encoding: .utf8) {
+            var components = URLComponents()
+            components.percentEncodedQuery = raw
+            if let items = components.queryItems {
+                return items.map { item in
+                    let normalized = normalizedKey(item.name)
+                    let value = item.value ?? ""
+                    if sensitiveKeys.contains(normalized) {
+                        return "\(item.name)=[REDACTED]"
+                    }
+                    if identifierKeys.contains(normalized) {
+                        return "\(item.name)=\(fingerprint(value, label: "ID"))"
+                    }
+                    return "\(item.name)=\(sanitize(value))"
+                }.joined(separator: "&")
+            }
+        }
+
+        guard let text = String(data: data, encoding: .utf8) else {
+            return "<binary \(data.count) bytes>"
+        }
+        return sanitize(text)
+    }
+
+    static func fingerprint(_ value: String, label: String) -> String {
+        let digest = SHA256.hash(data: Data(value.utf8))
+        let short = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return "[\(label):\(short)]"
+    }
+
+    private static func redactJSONObject(_ value: Any, key: String? = nil) -> Any {
+        if let key {
+            let normalized = normalizedKey(key)
+            if sensitiveKeys.contains(normalized) {
+                return "[REDACTED]"
+            }
+            if identifierKeys.contains(normalized) {
+                return fingerprint(String(describing: value), label: "ID")
+            }
+            if personalKeys.contains(normalized) {
+                return "[REDACTED_PII]"
+            }
+        }
+
+        if let dictionary = value as? [String: Any] {
+            var redacted: [String: Any] = [:]
+            for (childKey, child) in dictionary {
+                redacted[childKey] = redactJSONObject(child, key: childKey)
+            }
+            return redacted
+        }
+        if let array = value as? [Any] {
+            return array.map { redactJSONObject($0) }
+        }
+        if let string = value as? String {
+            return sanitize(string)
+        }
+        return value
+    }
+
+    private static func normalizedKey(_ key: String) -> String {
+        key.lowercased().filter(\.isLetter)
+    }
+
+    private static func replacing(in value: String, pattern: String, with replacement: String) -> String {
+        value.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+    }
+
+    private static func replacingMatches(in value: String, pattern: String, label: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return value }
+        let range = NSRange(value.startIndex..., in: value)
+        let matches = regex.matches(in: value, range: range)
+        var result = value
+        for match in matches.reversed() {
+            guard let swiftRange = Range(match.range, in: result) else { continue }
+            result.replaceSubrange(swiftRange, with: fingerprint(String(result[swiftRange]), label: label))
+        }
+        return result
+    }
+}
+
+actor DiagnosticsHTTPTraceStore {
+    static let shared = DiagnosticsHTTPTraceStore()
+
+    private var entries: [String] = []
+    private var storedBytes = 0
+    private let maximumEntries = 180
+    private let maximumStoredBytes = 700_000
+    private let maximumBodyCharacters = 24_000
+
+    func record(
+        source: String,
+        request: URLRequest,
+        response: HTTPURLResponse?,
+        responseData: Data?,
+        duration: TimeInterval,
+        error: Error?
+    ) {
+        let requestHeaders = request.allHTTPHeaderFields ?? [:]
+        let responseHeaders = response?.allHeaderFields.reduce(into: [String: String]()) { partial, item in
+            partial[String(describing: item.key)] = String(describing: item.value)
+        } ?? [:]
+        let requestBody = bounded(DiagnosticsSanitizer.redactedBody(request.httpBody, headers: requestHeaders))
+        let responseBody = bounded(DiagnosticsSanitizer.redactedBody(responseData, headers: responseHeaders))
+        let url = DiagnosticsSanitizer.sanitize(request.url?.absoluteString ?? "unknown")
+        let rendered = DiagnosticsSanitizer.sanitize(
+            """
+            --- api request ---
+            time=\(ISO8601DateFormatter().string(from: Date())) source=\(source) durationMs=\(Int(duration * 1_000))
+            \(request.httpMethod ?? "GET") \(url)
+            request.headers
+            \(DiagnosticsSanitizer.redactedHeaders(requestHeaders))
+            request.body bytes=\(request.httpBody?.count ?? 0)
+            \(requestBody)
+            response.status=\(response?.statusCode ?? -1) bytes=\(responseData?.count ?? 0)
+            response.headers
+            \(DiagnosticsSanitizer.redactedHeaders(responseHeaders))
+            response.body
+            \(responseBody)
+            transport.error=\(error.map { DiagnosticsSanitizer.sanitize($0.localizedDescription) } ?? "none")
+            """
+        )
+
+        entries.append(rendered)
+        storedBytes += rendered.utf8.count
+        while entries.count > maximumEntries || storedBytes > maximumStoredBytes {
+            storedBytes -= entries.removeFirst().utf8.count
+        }
+    }
+
+    func export() -> String {
+        guard !entries.isEmpty else { return "entries=0" }
+        return "entries=\(entries.count) maxEntries=\(maximumEntries) maxStoredBytes=\(maximumStoredBytes)\n" + entries.joined(separator: "\n")
+    }
+
+    private func bounded(_ value: String) -> String {
+        guard value.count > maximumBodyCharacters else { return value }
+        return String(value.prefix(maximumBodyCharacters)) + "\n[TRUNCATED bodyChars=\(value.count)]"
+    }
+}
+
+enum DiagnosticsHTTPRecorder {
+    static func data(
+        for request: URLRequest,
+        using session: URLSession,
+        source: String
+    ) async throws -> (Data, URLResponse) {
+        let startedAt = Date()
+        do {
+            let (data, response) = try await session.data(for: request)
+            await DiagnosticsHTTPTraceStore.shared.record(
+                source: source,
+                request: request,
+                response: response as? HTTPURLResponse,
+                responseData: data,
+                duration: Date().timeIntervalSince(startedAt),
+                error: nil
+            )
+            return (data, response)
+        } catch {
+            await DiagnosticsHTTPTraceStore.shared.record(
+                source: source,
+                request: request,
+                response: nil,
+                responseData: nil,
+                duration: Date().timeIntervalSince(startedAt),
+                error: error
+            )
+            throw error
+        }
+    }
+}
+
+enum DiagnosticsPasteClient {
+    private static let endpoint = URL(string: "https://paste.rtech.support/upload/opennow-ios-diagnostics.txt")!
+
+    static func upload(_ diagnostics: String) async throws -> URL {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 45
+        request.setValue("text/plain; charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("OpenNOW-iOS-Diagnostics/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("604800", forHTTPHeaderField: "Linx-Expiry")
+        request.setValue("yes", forHTTPHeaderField: "Linx-Randomize")
+        request.httpBody = DiagnosticsSanitizer.sanitize(diagnostics).data(using: .utf8)
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 45
+        configuration.timeoutIntervalForResource = 60
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw NSError(
+                domain: "OpenNOW.DiagnosticsPaste",
+                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: "The log paste service rejected the upload."]
+            )
+        }
+        let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let url = URL(string: raw), url.scheme == "https", url.host == "paste.rtech.support" else {
+            throw NSError(
+                domain: "OpenNOW.DiagnosticsPaste",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "The log paste service returned an invalid link."]
+            )
+        }
+        return url
+    }
+}

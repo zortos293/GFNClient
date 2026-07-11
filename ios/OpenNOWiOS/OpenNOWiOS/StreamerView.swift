@@ -2289,7 +2289,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 "id": peerId,
                 "name": peerName,
                 "peerRole": 0,
-                "resolution": "1920x1080",
+                "resolution": streamProfile.resolutionString,
                 "version": 2
             ]
         ])
@@ -2976,6 +2976,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         renderedFrameCount = count
         updateRenderedVideoSize(size)
         sampledLuma = luma ?? sampledLuma
+        if count <= 3 || count.isMultiple(of: 300) {
+            log(
+                "Video sink frame=\(count) size=\(Int(size.width))x\(Int(size.height)) luma=\(luma.map(String.init) ?? "unknown")"
+            )
+        }
         decodedWithoutRenderStartedAt = nil
         lastRenderKeyframeRequestAt = nil
         renderKeyframeAttempts = 0
@@ -3404,7 +3409,7 @@ extension NativeStreamCoordinator: RTCDataChannelDelegate {
         Task { @MainActor in
             if dataChannel.readyState == .open {
                 if dataChannel === self.reliableInputChannel {
-                    self.inputBridge.advertiseHaptics()
+                    self.inputBridge.primeReliableChannel()
                     self.log("Reliable input channel open")
                 } else if dataChannel === self.partiallyReliableInputChannel {
                     self.log("Partially reliable input channel open")
@@ -3418,6 +3423,11 @@ extension NativeStreamCoordinator: RTCDataChannelDelegate {
     nonisolated func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
         Task { @MainActor in
             if buffer.isBinary {
+                if dataChannel === self.reliableInputChannel,
+                   let version = self.inputBridge.handleServerHandshake(buffer.data) {
+                    self.log("Input handshake applied protocol=\(version) bytes=\(buffer.data.count)")
+                    return
+                }
                 self.parseHapticsMessage(buffer.data)
             } else if let text = String(data: buffer.data, encoding: .utf8),
                       text.contains("request_keyframe") {
@@ -3770,7 +3780,19 @@ private final class NativeStreamVideoSink: NSObject, RTCVideoRenderer {
             onPictureInPictureFrame?(frame)
         }
         if count <= 3 || count.isMultiple(of: 60) {
-            onFrame?(count, size, Self.sampleLuma(from: frame))
+            let luma = Self.sampleLuma(from: frame)
+            if count <= 3 {
+                let bufferType = frame.map { String(describing: type(of: $0.buffer)) } ?? "nil"
+                NSLog(
+                    "[OpenNOW] video sink frame=%d size=%dx%d luma=%@ buffer=%@",
+                    count,
+                    Int(size.width),
+                    Int(size.height),
+                    luma.map(String.init) ?? "nil",
+                    bufferType
+                )
+            }
+            onFrame?(count, size, luma)
         }
     }
 
@@ -3884,6 +3906,7 @@ private final class NativeStreamRenderView: UIView {
     private var streamSharpeningAmount = 0.25
     private var viewportTransformScale: CGFloat = 1
     private var viewportTransformOffset: CGSize = .zero
+    private var loggedRendererPath = false
 
     var metalDelegate: RTCVideoViewDelegate? {
         get { metalVideoView.delegate }
@@ -3933,7 +3956,16 @@ private final class NativeStreamRenderView: UIView {
         rendererStateLock.lock()
         let useFilteredRenderer = filteredRendererActive
         let filtered = filteredMetalView
+        let shouldLogRendererPath = !loggedRendererPath
+        loggedRendererPath = true
         rendererStateLock.unlock()
+        if shouldLogRendererPath {
+            NSLog(
+                "[OpenNOW] presenting first video frame renderer=%@ sharpening=%@",
+                useFilteredRenderer ? "filtered-metal" : "rtc-metal",
+                streamSharpeningEnabled ? "on" : "off"
+            )
+        }
         if useFilteredRenderer, let filtered {
             filtered.display(frame: frame)
         } else {
@@ -3981,7 +4013,7 @@ private final class NativeStreamRenderView: UIView {
         #if targetEnvironment(simulator)
         true
         #else
-        streamSharpeningEnabled
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 || streamSharpeningEnabled
         #endif
     }
 
@@ -4011,9 +4043,9 @@ private final class NativeStreamRenderView: UIView {
     }
 }
 
-/// `RTCMTLVideoView` does not reliably present IOSurfaces in CoreSimulator.
-/// This Core Image + Metal surface therefore remains the simulator renderer and
-/// is also used on devices only while the opt-in sharpening filter is enabled.
+/// `RTCMTLVideoView` does not reliably present IOSurfaces in CoreSimulator or
+/// current iOS 27 runtimes. This Core Image + Metal surface is the reliable
+/// fallback there and remains opt-in through sharpening on older devices.
 private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     var stretchToFill = false
     var sharpeningAmount = 0.0

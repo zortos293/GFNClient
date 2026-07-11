@@ -459,7 +459,7 @@ struct HomeView: View {
                 ErrorBannerView(message: error)
             }
 
-            if jumpBackInHasContent {
+            if !isHomeSearchActive && jumpBackInHasContent {
                 continueSection
             }
 
@@ -2548,7 +2548,7 @@ private struct StorePill: View {
     }
 }
 
-private struct StoreGlyph: View {
+struct StoreGlyph: View {
     let store: String
 
     var body: some View {

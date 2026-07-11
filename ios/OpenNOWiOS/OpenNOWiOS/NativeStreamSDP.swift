@@ -32,9 +32,7 @@ enum NativeStreamSDP {
     static let defaultInputProtocolVersion = 3
     static let defaultPartialReliableThresholdMs = 30
     static let partiallyReliableGamepadMaskAll = 0x0f
-    private static let officialMinBitrateKbps = 4_000
-    private static let highResolutionPixelCount = 2_764_800
-    private static let highBitratePacingThresholdKbps = 42_000
+    private static let absoluteMinBitrateKbps = 5_000
 
     static func preferredCodecName(for settings: AppSettings) -> String {
         NativeStreamVideoCodec.normalized(settings.preferredCodec)?.rawValue ?? NativeStreamVideoCodec.h264.rawValue
@@ -400,15 +398,13 @@ enum NativeStreamSDP {
         let colorQuality = StreamColorQuality(rawValue: settings.preferredColorQuality) ?? .eightBit420
         let supportsHighBitDepth = codec == .h265 || codec == .av1
         let bitDepth = supportsHighBitDepth && (colorQuality == .tenBit420 || colorQuality == .tenBit444) ? 10 : 8
-        let maxBitrate = max(officialMinBitrateKbps, profile.maxBitrateKbps)
-        let startupBitrate = max(officialMinBitrateKbps, Int((Double(maxBitrate) / 4.0).rounded()))
+        let maxBitrate = max(absoluteMinBitrateKbps, profile.maxBitrateKbps)
+        let minimumBitrate = max(absoluteMinBitrateKbps, Int((Double(maxBitrate) * 0.35).rounded()))
+        let startupBitrate = max(minimumBitrate, Int((Double(maxBitrate) * 0.70).rounded()))
         let isHighFPS = profile.fps >= 90
         let is120FPS = profile.fps == 120
         let is240FPS = profile.fps >= 240
         let isAV1 = codec == .av1
-        let useHighThroughputPacing = (profile.width * profile.height) >= highResolutionPixelCount
-            || maxBitrate >= highBitratePacingThresholdKbps
-
         var lines = [
             "v=0",
             "o=SdpTest test_id_13 14 IN IPv4 127.0.0.1",
@@ -421,7 +417,6 @@ enum NativeStreamSDP {
             "a=msid:fbc-video-0",
             "a=vqos.fec.rateDropWindow:10",
             "a=vqos.fec.minRequiredFecPackets:2",
-            "a=vqos.drc.minRequiredBitrateCheckEnabled:1",
             "a=vqos.fec.repairMinPercent:5",
             "a=vqos.fec.repairPercent:5",
             "a=vqos.fec.repairMaxPercent:35",
@@ -436,8 +431,7 @@ enum NativeStreamSDP {
             "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200",
             "a=vqos.drc.bitrateIirFilterFactor:18",
             "a=video.packetSize:1140",
-            "a=packetPacing.minNumPacketsPerGroup:15",
-            "a=vqos.bllFec.enable:0"
+            "a=packetPacing.minNumPacketsPerGroup:15"
         ]
 
         if isHighFPS {
@@ -476,55 +470,43 @@ enum NativeStreamSDP {
         }
 
         lines += [
-            "a=vqos.adjustStreamingFpsDuringOutOfFocus:1",
+            "a=vqos.adjustStreamingFpsDuringOutOfFocus:0",
             "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1",
             "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1",
             "a=vqos.resControl.cpmRtc.featureMask:0",
             "a=vqos.resControl.cpmRtc.enable:0",
             "a=vqos.resControl.cpmRtc.minResolutionPercent:100",
-            "a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"
+            "a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999",
+            "a=packetPacing.numGroups:\(is120FPS ? 3 : 5)",
+            "a=packetPacing.maxDelayUs:1000",
+            "a=packetPacing.minNumPacketsFrame:10",
+            "a=video.rtpNackQueueLength:1024",
+            "a=video.rtpNackQueueMaxPackets:512",
+            "a=video.rtpNackMaxPacketCount:25",
+            "a=vqos.drc.qpMaxResThresholdAdj:4",
+            "a=vqos.grc.qpMaxResThresholdAdj:4",
+            "a=vqos.drc.iirFilterFactor:100"
         ]
 
-        if useHighThroughputPacing {
-            lines += [
-                "a=packetPacing.numGroups:\(is120FPS ? 3 : 5)",
-                "a=packetPacing.maxDelayUs:1000",
-                "a=packetPacing.minNumPacketsFrame:10",
-                "a=video.rtpNackQueueLength:1024",
-                "a=video.rtpNackQueueMaxPackets:512",
-                "a=video.rtpNackMaxPacketCount:25",
-                "a=vqos.drc.iirFilterFactor:100"
-            ]
-
-            if !isAV1 {
-                lines += [
-                    "a=vqos.drc.qpMaxResThresholdAdj:4",
-                    "a=vqos.dfc.qpMaxResThresholdAdj:4",
-                    "a=vqos.grc.qpMaxResThresholdAdj:2"
-                ]
-            }
-        }
-
         if isAV1 {
-            let av1QpMaxResThresholdAdj = useHighThroughputPacing ? 20 : 0
             lines += [
                 "a=vqos.drc.minQpHeadroom:20",
                 "a=vqos.drc.lowerQpThreshold:100",
                 "a=vqos.drc.upperQpThreshold:200",
                 "a=vqos.drc.minAdaptiveQpThreshold:180",
-                "a=vqos.drc.qpMaxResThresholdAdj:\(av1QpMaxResThresholdAdj)",
+                "a=vqos.drc.qpMaxResThresholdAdj:20",
                 "a=vqos.drc.qpCodecThresholdAdj:0",
                 "a=vqos.dfc.minQpHeadroom:20",
                 "a=vqos.dfc.qpLowerLimit:100",
                 "a=vqos.dfc.qpMaxUpperLimit:200",
                 "a=vqos.dfc.qpMinUpperLimit:180",
-                "a=vqos.dfc.qpMaxResThresholdAdj:\(av1QpMaxResThresholdAdj)",
+                "a=vqos.dfc.qpMaxResThresholdAdj:20",
                 "a=vqos.dfc.qpCodecThresholdAdj:0",
                 "a=vqos.grc.minQpHeadroom:20",
                 "a=vqos.grc.lowerQpThreshold:100",
                 "a=vqos.grc.upperQpThreshold:200",
                 "a=vqos.grc.minAdaptiveQpThreshold:180",
-                "a=vqos.grc.qpMaxResThresholdAdj:\(av1QpMaxResThresholdAdj)",
+                "a=vqos.grc.qpMaxResThresholdAdj:20",
                 "a=vqos.grc.qpCodecThresholdAdj:0",
                 "a=video.minQp:25",
                 "a=video.enableAv1RcPrecisionFactor:1"
@@ -536,9 +518,9 @@ enum NativeStreamSDP {
             "a=video.clientViewportHt:\(profile.height)",
             "a=video.maxFPS:\(profile.fps)",
             "a=video.initialBitrateKbps:\(startupBitrate)",
-            "a=video.initialPeakBitrateKbps:\(startupBitrate)",
+            "a=video.initialPeakBitrateKbps:\(maxBitrate)",
             "a=vqos.bw.maximumBitrateKbps:\(maxBitrate)",
-            "a=vqos.bw.minimumBitrateKbps:\(officialMinBitrateKbps)",
+            "a=vqos.bw.minimumBitrateKbps:\(minimumBitrate)",
             "a=vqos.bw.peakBitrateKbps:\(maxBitrate)",
             "a=vqos.bw.serverPeakBitrateKbps:\(maxBitrate)",
             "a=vqos.bw.enableBandwidthEstimation:1",

@@ -3,6 +3,41 @@ import UIKit
 @testable import OpenNOWiOS
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    func testAndroidInputHandshakeIsAppliedAndPrimesReliableChannel() {
+        let bridge = NativeStreamInputBridge()
+        let sink = RecordingNativeStreamInputSink()
+        bridge.sink = sink
+
+        XCTAssertEqual(bridge.handleServerHandshake(Data([0x0e, 0x02, 0x03, 0x00])), 3)
+        XCTAssertGreaterThanOrEqual(sink.reliablePackets.count, 2)
+        XCTAssertEqual(sink.reliablePackets.first, Data([0x02, 0x00, 0x00, 0x00]))
+
+        let packetCount = sink.reliablePackets.count
+        XCTAssertNil(bridge.handleServerHandshake(Data([0xff, 0x00])))
+        XCTAssertEqual(sink.reliablePackets.count, packetCount)
+    }
+
+    func testNvstRequestMatchesAndroidStartupAndPacingContract() {
+        var settings = AppSettings.default
+        settings.preferredCodec = "H264"
+        let profile = StreamVideoProfile(width: 1_280, height: 720, fps: 60, maxBitrateKbps: 13_000)
+        let nvst = NativeStreamSDP.buildNvstSDP(
+            offerSDP: "a=ri.partialReliableThresholdMs:30",
+            localAnswerSDP: "a=ice-ufrag:u\na=ice-pwd:p\na=fingerprint:sha-256 AA:BB",
+            profile: profile,
+            settings: settings,
+            codec: .h264
+        )
+
+        XCTAssertTrue(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:0"))
+        XCTAssertTrue(nvst.contains("a=packetPacing.numGroups:5"))
+        XCTAssertTrue(nvst.contains("a=video.initialBitrateKbps:9100"))
+        XCTAssertTrue(nvst.contains("a=video.initialPeakBitrateKbps:13000"))
+        XCTAssertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:5000"))
+        XCTAssertFalse(nvst.contains("a=vqos.drc.minRequiredBitrateCheckEnabled"))
+        XCTAssertFalse(nvst.contains("a=vqos.bllFec.enable"))
+    }
+
     func testStreamPresetsMatchAndroidValuesAndRespectAppleTierFPSCaps() {
         var base = AppSettings.default
         base.preferredAspectRatio = "16:9"
@@ -313,6 +348,36 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
+    func testBlockedBombayZoneCannotBeSelectedByIDURLOrAutomaticRouting() {
+        XCTAssertTrue(StreamZonePolicy.isBlocked("np-bom-01"))
+        XCTAssertTrue(StreamZonePolicy.isBlocked("https://np-bom-01.cloudmatchbeta.nvidiagrid.net/"))
+        XCTAssertTrue(StreamZonePolicy.isBlocked("NP-BOM-01.CLOUDMATCHBETA.NVIDIAGRID.NET"))
+        XCTAssertFalse(StreamZonePolicy.isBlocked("np-bom-02"))
+
+        let blocked = PrintedWasteZone(
+            id: "NP-BOM-01",
+            region: "IN",
+            queuePosition: 1,
+            etaMs: nil,
+            zoneUrl: "https://np-bom-01.cloudmatchbeta.nvidiagrid.net/",
+            pingMs: 1,
+            isMeasuring: false,
+            regionSuffix: "bom-01"
+        )
+        let allowed = PrintedWasteZone(
+            id: "NP-AMS-02",
+            region: "EU",
+            queuePosition: 30,
+            etaMs: nil,
+            zoneUrl: "https://np-ams-02.cloudmatchbeta.nvidiagrid.net/",
+            pingMs: 40,
+            isMeasuring: false,
+            regionSuffix: "ams-02"
+        )
+
+        XCTAssertEqual(recommendedPrintedWasteZone(in: [blocked, allowed])?.id, allowed.id)
+    }
+
     func testAndroidBitrateAndLanguageChoicesRemainAvailable() {
         XCTAssertEqual(StreamSettingsResolver.bitrateOptionsMbps, [0] + Array(1...150))
         XCTAssertTrue(StreamSettingsResolver.keyboardLayoutOptions.contains { $0.value == "zh-TW" })
@@ -541,6 +606,41 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(catalogStableGameKey(first), catalogStableGameKey(second))
     }
 
+    func testDiagnosticsStrictlyRedactsCredentialsAndIdentifiers() throws {
+        let payload = #"{"requestStatus":{"statusCode":500,"statusDescription":"internal_server_error"},"access_token":"secret-access-token","refresh_token":"secret-refresh-token","email":"person@example.com","sessionId":"c49ec342-4c25-4e0a-9416-9c82e2f53233","serverIp":"203.0.113.42"}"#
+        let redacted = DiagnosticsSanitizer.redactedBody(
+            Data(payload.utf8),
+            headers: ["Content-Type": "application/json"]
+        )
+
+        XCTAssertTrue(redacted.contains("internal_server_error"))
+        XCTAssertTrue(redacted.contains("500"))
+        XCTAssertFalse(redacted.contains("secret-access-token"))
+        XCTAssertFalse(redacted.contains("secret-refresh-token"))
+        XCTAssertFalse(redacted.contains("person@example.com"))
+        XCTAssertFalse(redacted.contains("c49ec342-4c25-4e0a-9416-9c82e2f53233"))
+        XCTAssertFalse(redacted.contains("203.0.113.42"))
+        XCTAssertFalse(
+            DiagnosticsSanitizer.sanitize(#"lastError={"access_token":"short-secret"}"#)
+                .contains("short-secret")
+        )
+    }
+
+    func testDiagnosticsHeadersKeepUsefulMetadataWithoutSecrets() {
+        let redacted = DiagnosticsSanitizer.redactedHeaders([
+            "Authorization": "GFNJWT super-secret-token",
+            "x-device-id": "device-12345",
+            "Content-Type": "application/json",
+            "x-request-id": "request-67890"
+        ])
+
+        XCTAssertTrue(redacted.contains("Content-Type: application/json"))
+        XCTAssertFalse(redacted.contains("super-secret-token"))
+        XCTAssertFalse(redacted.contains("device-12345"))
+        XCTAssertFalse(redacted.contains("request-67890"))
+        XCTAssertTrue(redacted.contains("[ID:"))
+    }
+
     private func deterministicProfile(
         for settings: AppSettings,
         membershipTier: String
@@ -552,5 +652,23 @@ final class OpenNOWiOSParityTests: XCTestCase {
             userInterfaceIdiom: .phone,
             membershipTier: membershipTier
         )
+    }
+}
+
+private final class RecordingNativeStreamInputSink: NativeStreamInputSink {
+    var reliablePackets: [Data] = []
+    var partiallyReliablePackets: [Data] = []
+    var logMessages: [String] = []
+
+    func sendReliableInput(_ data: Data) {
+        reliablePackets.append(data)
+    }
+
+    func sendPartiallyReliableInput(_ data: Data) {
+        partiallyReliablePackets.append(data)
+    }
+
+    func logInputEvent(_ message: String) {
+        logMessages.append(message)
     }
 }

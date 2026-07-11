@@ -15,6 +15,7 @@
 		A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26000000000000000000011 /* OpenNOWVisualComponents.swift */; };
 		A26000000000000000000002 /* QueueVisualComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26000000000000000000012 /* QueueVisualComponents.swift */; };
 		A26000000000000000000003 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A26000000000000000000013 /* AppIntents.framework */; };
+		AB0000000000000000000001 /* DiagnosticsSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000011 /* DiagnosticsSupport.swift */; };
 		BB0000000000000000000001 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000011 /* LoginView.swift */; };
 		BB0000000000000000000002 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000012 /* HomeView.swift */; };
 		BB0000000000000000000003 /* BrowseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000013 /* BrowseView.swift */; };
@@ -95,6 +96,7 @@
 		A26000000000000000000011 /* OpenNOWVisualComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWVisualComponents.swift; sourceTree = "<group>"; };
 		A26000000000000000000012 /* QueueVisualComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueVisualComponents.swift; sourceTree = "<group>"; };
 		A26000000000000000000013 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
+		AB0000000000000000000011 /* DiagnosticsSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsSupport.swift; sourceTree = "<group>"; };
 		BB0000000000000000000011 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000012 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000013 /* BrowseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseView.swift; sourceTree = "<group>"; };
@@ -168,6 +170,7 @@
 				BB000000000000000000001B /* Haptics.swift */,
 				0A1B2C3D4E5F6A7B8C9D2001 /* OpenNOWiOSApp.swift */,
 				0A1B2C3D4E5F6A7B8C9D2002 /* ContentView.swift */,
+				AB0000000000000000000011 /* DiagnosticsSupport.swift */,
 				0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */,
 				BB0000000000000000000011 /* LoginView.swift */,
 				BB0000000000000000000012 /* HomeView.swift */,
@@ -364,6 +367,7 @@
 			files = (
 				0A1B2C3D4E5F6A7B8C9D1002 /* ContentView.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1001 /* OpenNOWiOSApp.swift in Sources */,
+				AB0000000000000000000001 /* DiagnosticsSupport.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1005 /* OpenNOWStore.swift in Sources */,
 				74417F2A2F8C848000233AC1 /* BrandLogoView.swift in Sources */,
 				BB000000000000000000000B /* Haptics.swift in Sources */,
@@ -475,7 +479,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 93;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -510,7 +514,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 93;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -544,7 +548,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 93;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -573,7 +577,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 93;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;

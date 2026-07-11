@@ -36,6 +36,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>OpenNOW uses the camera only when you choose to provide camera input in a compatible streamed game.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>OpenNOW may access the microphone when you enable voice input in a compatible streamed game.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

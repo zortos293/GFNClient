@@ -90,9 +90,7 @@ struct StreamLoadingView: View {
       )
 
       Spacer().frame(height: 18)
-      ProgressView()
-        .progressViewStyle(.linear)
-        .tint(brandAccent)
+      OscillatingQueueProgressView()
         .frame(maxWidth: 430)
       Spacer().frame(height: 12)
       actionButtons

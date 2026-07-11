@@ -747,6 +747,37 @@ final class NativeStreamInputBridge {
         sink?.sendReliableInput(encoder.encodeHapticsEnabled(controllerAvailable || phoneAvailable))
     }
 
+    func primeReliableChannel() {
+        sink?.sendReliableInput(encoder.encodeHeartbeat())
+        advertiseHaptics()
+    }
+
+    @discardableResult
+    func handleServerHandshake(_ data: Data) -> Int? {
+        let bytes = [UInt8](data)
+        guard let firstByte = bytes.first else { return nil }
+        let firstWord = bytes.count >= 2
+            ? Int(bytes[0]) | (Int(bytes[1]) << 8)
+            : Int(firstByte)
+        let version: Int
+        if firstWord == 526 {
+            version = bytes.count >= 4
+                ? Int(bytes[2]) | (Int(bytes[3]) << 8)
+                : NativeStreamSDP.defaultInputProtocolVersion
+        } else if firstByte == 0x0e {
+            version = firstWord
+        } else {
+            return nil
+        }
+
+        let normalizedVersion = max(version, 1)
+        encoder.setProtocolVersion(normalizedVersion)
+        encoder.resetGamepadSequences()
+        primeReliableChannel()
+        NSLog("[OpenNOW] input handshake protocol=%d bytes=%d", normalizedVersion, bytes.count)
+        return normalizedVersion
+    }
+
     func applyRumble(controllerId: Int, weakMagnitude: Int, strongMagnitude: Int) {
         #if canImport(CoreHaptics)
         guard Thread.isMainThread else {
@@ -856,7 +887,7 @@ final class NativeStreamInputBridge {
 
     private func startTimers() {
         heartbeatTimer?.invalidate()
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.sink?.sendReliableInput(self.encoder.encodeHeartbeat())
         }

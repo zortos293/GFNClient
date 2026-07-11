@@ -91,7 +91,9 @@ internal fun SettingSwitch(
     onCheckedChange: (Boolean) -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
+    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
     var focused by remember { mutableStateOf(false) }
+    val showFocus = controllerNavigationEnabled && focused
     var descriptionExpanded by remember(label) { mutableStateOf(false) }
     val shape = RoundedCornerShape(14.dp)
     val toggle = {
@@ -102,10 +104,10 @@ internal fun SettingSwitch(
     Row(
         Modifier
             .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+            .onFocusChanged { focused = controllerNavigationEnabled && (it.isFocused || it.hasFocus) }
             .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                width = if (showFocus) 2.dp else 1.dp,
+                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
                 shape = shape,
             )
             .clip(shape)
@@ -113,14 +115,15 @@ internal fun SettingSwitch(
             .clickable(enabled = enabled, onClick = toggle)
             .onPreviewKeyEvent { event ->
                 when {
-                    enabled && isTvActivateKey(event) -> {
+                    controllerNavigationEnabled && enabled && isTvActivateKey(event) -> {
                         toggle()
                         true
                     }
-                    else -> handleVerticalDpadFocusMove(event, focusManager)
+                    controllerNavigationEnabled -> handleVerticalDpadFocusMove(event, focusManager)
+                    else -> false
                 }
             }
-            .focusable()
+            .focusable(enabled = controllerNavigationEnabled)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -229,15 +232,17 @@ internal fun ChoiceMenuRow(
     var expanded by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
+    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
+    val showFocus = controllerNavigationEnabled && focused
     val autoLabel = stringResource(R.string.option_auto)
     val shape = RoundedCornerShape(14.dp)
     Row(
         Modifier
             .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+            .onFocusChanged { focused = controllerNavigationEnabled && (it.isFocused || it.hasFocus) }
             .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                width = if (showFocus) 2.dp else 1.dp,
+                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
                 shape = shape,
             )
             .clip(shape)
@@ -245,14 +250,15 @@ internal fun ChoiceMenuRow(
             .clickable { expanded = true }
             .onPreviewKeyEvent { event ->
                 when {
-                    isTvActivateKey(event) -> {
+                    controllerNavigationEnabled && isTvActivateKey(event) -> {
                         expanded = true
                         true
                     }
-                    else -> handleVerticalDpadFocusMove(event, focusManager)
+                    controllerNavigationEnabled -> handleVerticalDpadFocusMove(event, focusManager)
+                    else -> false
                 }
             }
-            .focusable()
+            .focusable(enabled = controllerNavigationEnabled)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

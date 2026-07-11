@@ -20,6 +20,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
@@ -28,6 +29,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.MutableTransitionState
@@ -129,6 +131,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -157,6 +160,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -807,7 +811,7 @@ private fun isPhonePortrait(width: androidx.compose.ui.unit.Dp, height: androidx
     height >= width && minOf(width, height) < PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH
 
 @Composable
-private fun rememberPhysicalControllerConnected(enabled: Boolean): Boolean {
+internal fun rememberPhysicalControllerConnected(enabled: Boolean): Boolean {
     val context = LocalContext.current.applicationContext
     var connected by remember { mutableStateOf(enabled && hasConnectedPhysicalController()) }
     DisposableEffect(context, enabled) {
@@ -1061,6 +1065,10 @@ private fun MainShell(
                             showAppIcon = showNavigationRail && horizontalChrome,
                             largeIcons = phoneLandscapeChrome,
                             showSettingsBack = state.page == AppPage.Settings && horizontalChrome && settingsDetailRouteOpen,
+                            showCatalogControllerActions = controllerCatalogActionsVisible &&
+                                state.selectedGame == null &&
+                                !modalPickerOpen &&
+                                (state.page == AppPage.Home || state.page == AppPage.Library),
                             onNavigate = { page ->
                                 visibleSearchTarget = null
                                 viewModel.setPage(page)
@@ -1210,20 +1218,6 @@ private fun MainShell(
                         )
                     }
                 }
-                AnimatedVisibility(
-                    visible = controllerCatalogActionsVisible &&
-                        !inStream &&
-                        state.selectedGame == null &&
-                        !modalPickerOpen &&
-                        (state.page == AppPage.Home || state.page == AppPage.Library),
-                    enter = fadeIn(),
-                    exit = fadeOut(),
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 12.dp),
-                ) {
-                    ControllerCatalogActionHints()
-                }
             }
         }
     }
@@ -1236,6 +1230,7 @@ private fun AppNavigationRail(
     showAppIcon: Boolean,
     largeIcons: Boolean,
     showSettingsBack: Boolean,
+    showCatalogControllerActions: Boolean,
     onNavigate: (AppPage) -> Unit,
     onSearch: (SearchTarget) -> Unit,
     onSettingsBack: () -> Unit,
@@ -1253,7 +1248,8 @@ private fun AppNavigationRail(
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
         ) {
-            Box(Modifier.fillMaxSize()) {
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val canFitCatalogControllerActions = maxHeight >= 440.dp
                 if (showAppIcon) {
                     Box(
                         modifier = Modifier
@@ -1315,6 +1311,12 @@ private fun AppNavigationRail(
                         label = stringResource(R.string.nav_settings),
                         iconSize = if (largeIcons) 30.dp else 24.dp,
                     )
+                    AnimatedVisibility(visible = showCatalogControllerActions && canFitCatalogControllerActions) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Spacer(Modifier.height(8.dp))
+                            ControllerCatalogRailActionHints()
+                        }
+                    }
                     AnimatedVisibility(visible = showSettingsBack) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Spacer(Modifier.height(6.dp))
@@ -2764,18 +2766,195 @@ private fun StoreStartRails(
             )
         }
         if (comingNext.isNotEmpty()) {
-            StoreRailSection(
+            StoreComingNextCarousel(
                 title = stringResource(R.string.store_coming_next),
                 games = comingNext,
                 favoriteIds = favoriteIds,
                 settings = settings,
-                tvProfile = tvProfile,
                 controllerActionMode = controllerActionMode,
                 onSelect = onSelect,
                 onFavorite = onFavorite,
                 onPlay = onPlay,
                 onChooseStore = onChooseStore,
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun StoreComingNextCarousel(
+    title: String,
+    games: List<GameInfo>,
+    favoriteIds: List<String>,
+    settings: AppSettings,
+    controllerActionMode: Boolean,
+    onSelect: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
+) {
+    if (games.isEmpty()) return
+    val context = LocalContext.current
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var page by remember(games) { mutableIntStateOf(0) }
+    var focused by remember { mutableStateOf(false) }
+    val focusBorderColor = controllerFocusBorderColor(
+        active = focused && controllerActionMode,
+        animate = settings.controllerBackgroundAnimations,
+    )
+    LaunchedEffect(games, page, focused) {
+        if (games.size > 1 && !focused && settings.controllerBackgroundAnimations) {
+            delay(6_000L)
+            page = (page + 1) % games.size
+        }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    "Fresh arrivals from GeForce NOW",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                games.forEachIndexed { index, _ ->
+                    Box(
+                        Modifier
+                            .width(if (index == page) 22.dp else 7.dp)
+                            .height(5.dp)
+                            .clip(CircleShape)
+                            .background(if (index == page) MaterialTheme.colorScheme.primary else TextMuted.copy(alpha = 0.32f)),
+                    )
+                }
+            }
+        }
+        AnimatedContent(
+            targetState = page,
+            transitionSpec = { fadeIn(tween(240)) togetherWith fadeOut(tween(180)) },
+            label = "coming-next-carousel",
+        ) { targetPage ->
+            val featured = games[targetPage.coerceIn(games.indices)]
+            val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (landscape) 176.dp else 218.dp)
+                    .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                    .border(
+                        width = if (focused) 3.dp else 1.dp,
+                        color = when {
+                            focused && controllerActionMode -> focusBorderColor
+                            focused -> Color.White
+                            else -> Color.White.copy(alpha = 0.08f)
+                        },
+                        shape = shape,
+                    )
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                        when {
+                            controllerActionMode && event.key == Key.DirectionLeft && games.size > 1 -> {
+                                page = (page - 1 + games.size) % games.size
+                                true
+                            }
+                            controllerActionMode && event.key == Key.DirectionRight && games.size > 1 -> {
+                                page = (page + 1) % games.size
+                                true
+                            }
+                            controllerActionMode && handleCatalogControllerAction(
+                                event = event,
+                                onFavorite = { onFavorite(featured.id) },
+                                onPlay = { onPlay(featured) },
+                            ) -> true
+                            isTvActivateKey(event) -> {
+                                onSelect(featured)
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                    .focusable()
+                    .combinedClickable(
+                        onClick = { onSelect(featured) },
+                        onLongClick = { onChooseStore(featured) },
+                        onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                    ),
+                shape = shape,
+                color = Panel,
+                tonalElevation = if (focused) 5.dp else 0.dp,
+                shadowElevation = if (focused) 9.dp else 1.dp,
+            ) {
+                Box(Modifier.fillMaxSize()) {
+                    UrlImage(gameHeroImageUrl(context, featured), Modifier.fillMaxSize())
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(Color.Black.copy(alpha = 0.88f), Color.Black.copy(alpha = 0.3f), Color.Transparent),
+                                ),
+                            ),
+                    )
+                    Column(
+                        Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth(0.66f)
+                            .padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text(
+                            featured.title,
+                            color = Color.White,
+                            style = if (landscape) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Black,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            listOfNotNull(featured.publisherName, displayStoresForGame(featured).takeIf { it.isNotBlank() })
+                                .distinct()
+                                .joinToString("  •  "),
+                            color = Color.White.copy(alpha = 0.72f),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (!controllerActionMode) {
+                        ThumbnailPlayButton(
+                            onClick = { onPlay(featured) },
+                            onLongClick = { onChooseStore(featured) },
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                            buttonSize = 50.dp,
+                        )
+                        FavoriteIconButton(
+                            favorite = featured.id in favoriteIds,
+                            onClick = { onFavorite(featured.id) },
+                            modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
+                            size = 38.dp,
+                        )
+                    }
+                    ControllerFocusSheen(
+                        visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
+                        cornerRadius = if (settings.expressiveUi) 24.dp else 16.dp,
+                    )
+                }
+            }
         }
     }
 }
@@ -2842,14 +3021,22 @@ private fun StoreRailGameCard(
     val focusManager = LocalFocusManager.current
     val shape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
     val actionButtonSize = 34.dp
+    val focusBorderColor = controllerFocusBorderColor(
+        active = focused && controllerActionMode,
+        animate = settings.controllerBackgroundAnimations,
+    )
     Surface(
         modifier = Modifier
             .width(width)
             .aspectRatio(1f)
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color.White else Color.White.copy(alpha = 0.08f),
+                width = if (focused) 3.dp else 1.dp,
+                color = when {
+                    focused && controllerActionMode -> focusBorderColor
+                    focused -> Color.White
+                    else -> Color.White.copy(alpha = 0.08f)
+                },
                 shape = shape,
             )
             .onPreviewKeyEvent { event ->
@@ -2898,6 +3085,10 @@ private fun StoreRailGameCard(
                     size = actionButtonSize,
                 )
             }
+            ControllerFocusSheen(
+                visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
+                cornerRadius = if (settings.expressiveUi) 12.dp else 8.dp,
+            )
         }
     }
 }
@@ -2970,9 +3161,63 @@ private data class GameGridSpec(
 private fun storeRailCardWidth(tvProfile: Boolean, landscapeLayout: Boolean): Dp =
     when {
         tvProfile -> 158.dp
-        landscapeLayout -> 126.dp
+        landscapeLayout -> 146.dp
         else -> 142.dp
     }
+
+@Composable
+private fun controllerFocusBorderColor(active: Boolean, animate: Boolean): Color {
+    if (!active) return Color.Transparent
+    val accent = MaterialTheme.colorScheme.primary
+    if (!animate) return accent
+    val transition = rememberInfiniteTransition(label = "controller-focus")
+    val glow by transition.animateFloat(
+        initialValue = 0.46f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 920, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "controller-focus-glow",
+    )
+    return accent.copy(alpha = glow)
+}
+
+@Composable
+private fun BoxScope.ControllerFocusSheen(visible: Boolean, cornerRadius: Dp) {
+    if (!visible) return
+    val accent = MaterialTheme.colorScheme.primary
+    val transition = rememberInfiniteTransition(label = "controller-focus-sheen")
+    val travel by transition.animateFloat(
+        initialValue = -0.55f,
+        targetValue = 1.55f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1_650, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "controller-focus-sheen-travel",
+    )
+    Canvas(Modifier.matchParentSize().padding(1.dp)) {
+        val diagonal = size.width + size.height
+        val center = diagonal * travel
+        val brush = Brush.linearGradient(
+            colors = listOf(
+                accent.copy(alpha = 0.12f),
+                accent.copy(alpha = 0.32f),
+                Color.White.copy(alpha = 0.96f),
+                accent.copy(alpha = 0.34f),
+                accent.copy(alpha = 0.12f),
+            ),
+            start = Offset(center - size.width * 0.42f, center - size.height * 0.42f),
+            end = Offset(center + size.width * 0.42f, center + size.height * 0.42f),
+        )
+        drawRoundRect(
+            brush = brush,
+            cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
+            style = Stroke(width = 2.4.dp.toPx()),
+        )
+    }
+}
 
 private fun gameGridSpec(
     maxWidth: androidx.compose.ui.unit.Dp,
@@ -3030,7 +3275,7 @@ private fun landscapePosterColumnCount(
         else -> 150.dp
     }
     val preferredColumns = when {
-        handheldLayout && maxWidth >= 520.dp -> 6
+        handheldLayout && maxWidth >= 520.dp -> 5
         handheldLayout -> 5
         maxWidth >= 1440.dp -> 8
         maxWidth >= 1050.dp -> 7
@@ -3084,6 +3329,10 @@ private fun GameCard(
     val launcherTile = squareCard && thumbnailPlayOverlay
     val overlayActionSize = if (launcherTile) 34.dp else 44.dp
     val overlayActionPadding = if (launcherTile) 6.dp else 8.dp
+    val focusBorderColor = controllerFocusBorderColor(
+        active = focused && controllerActionMode,
+        animate = settings.controllerBackgroundAnimations,
+    )
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -3091,7 +3340,11 @@ private fun GameCard(
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .border(
                 width = if (focused) 3.dp else 1.dp,
-                color = if (focused) Color.White else Color.Transparent,
+                color = when {
+                    focused && controllerActionMode -> focusBorderColor
+                    focused -> Color.White
+                    else -> Color.Transparent
+                },
                 shape = cardShape,
             )
             .onPreviewKeyEvent { event ->
@@ -3149,6 +3402,10 @@ private fun GameCard(
                         .padding(8.dp),
                 )
             }
+            ControllerFocusSheen(
+                visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
+                cornerRadius = if (settings.expressiveUi) 12.dp else 8.dp,
+            )
         }
         if (!thumbnailPlayOverlay) {
             Column(
@@ -3204,21 +3461,21 @@ private fun handleCatalogControllerAction(
 }
 
 @Composable
-private fun ControllerCatalogActionHints(modifier: Modifier = Modifier) {
+private fun ControllerCatalogRailActionHints(modifier: Modifier = Modifier) {
     Surface(
-        modifier = modifier,
+        modifier = modifier.padding(horizontal = 3.dp),
         shape = RoundedCornerShape(8.dp),
         color = Color.Black.copy(alpha = 0.8f),
         tonalElevation = 2.dp,
         shadowElevation = 2.dp,
     ) {
         Column(
-            Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
+            Modifier.padding(horizontal = 4.dp, vertical = 5.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             ControllerCatalogActionHint(
                 button = "X",
-                label = stringResource(R.string.controller_action_favorite),
+                label = stringResource(R.string.action_save),
                 buttonColor = Color(0xff4aa3ff),
             )
             ControllerCatalogActionHint(
@@ -3293,7 +3550,6 @@ private fun displayStoresForGame(game: GameInfo): String {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier = Modifier, buttonSize: Dp = 44.dp) {
-    val playColor = MaterialTheme.colorScheme.onPrimary
     Surface(
         modifier = modifier
             .size(buttonSize)
@@ -3307,15 +3563,41 @@ private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, mo
         tonalElevation = 3.dp,
         shadowElevation = 3.dp,
     ) {
-        Canvas(Modifier.fillMaxSize().padding(buttonSize * 0.32f)) {
-            val path = Path().apply {
-                moveTo(size.width * 0.32f, size.height * 0.18f)
-                lineTo(size.width * 0.32f, size.height * 0.82f)
-                lineTo(size.width * 0.84f, size.height * 0.5f)
-                close()
-            }
-            drawPath(path, playColor)
+        ZortosPlayMark(
+            modifier = Modifier.fillMaxSize().padding(buttonSize * 0.13f),
+            ringColor = MaterialTheme.colorScheme.onPrimary,
+        )
+    }
+}
+
+@Composable
+private fun ZortosPlayMark(
+    modifier: Modifier = Modifier,
+    ringColor: Color = MaterialTheme.colorScheme.primary,
+    playColor: Color = ringColor,
+) {
+    Canvas(modifier) {
+        val stroke = (size.minDimension * 0.105f).coerceAtLeast(1f)
+        val gapAngle = 13f
+        listOf(0.44f, 0.30f).forEach { radiusFraction ->
+            val radius = size.minDimension * radiusFraction
+            drawArc(
+                color = ringColor,
+                startAngle = -90f + gapAngle,
+                sweepAngle = 360f - gapAngle * 2f,
+                useCenter = false,
+                topLeft = Offset(center.x - radius, center.y - radius),
+                size = Size(radius * 2f, radius * 2f),
+                style = Stroke(width = stroke),
+            )
         }
+        val play = Path().apply {
+            moveTo(size.width * 0.43f, size.height * 0.34f)
+            lineTo(size.width * 0.43f, size.height * 0.66f)
+            lineTo(size.width * 0.68f, size.height * 0.5f)
+            close()
+        }
+        drawPath(play, playColor)
     }
 }
 
@@ -3723,7 +4005,16 @@ private fun LongPressPlayButton(
         color = MaterialTheme.colorScheme.primary,
         tonalElevation = 2.dp,
     ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 18.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ZortosPlayMark(
+                modifier = Modifier.size(26.dp),
+                ringColor = MaterialTheme.colorScheme.onPrimary,
+            )
+            Spacer(Modifier.width(8.dp))
             Text(
                 stringResource(R.string.action_play),
                 color = MaterialTheme.colorScheme.onPrimary,
@@ -4681,18 +4972,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 resolutionMismatchStats += 1
                 if (resolutionMismatchStats >= 3 && !resolutionMismatchRestartRequested) {
                     resolutionMismatchRestartRequested = true
-                    if (mismatch.isServerNegotiatedFallback) {
-                        viewModel.recordServerNegotiatedResolutionFallback(
-                            actualResolution = mismatch.actualResolution,
-                            expectedResolution = mismatch.expectedResolution,
-                        )
-                    } else {
-                        client.stop()
-                        viewModel.restartStreamForResolutionMismatch(
-                            actualResolution = mismatch.actualResolution,
-                            expectedResolution = mismatch.expectedResolution,
-                        )
-                    }
+                    client.stop()
+                    viewModel.restartStreamForResolutionMismatch(
+                        actualResolution = mismatch.actualResolution,
+                        expectedResolution = mismatch.expectedResolution,
+                    )
                 }
             }
         }
@@ -5198,6 +5482,7 @@ private fun StreamVideoSurface(
                             NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
                         }
                     },
+                    onRelease = client::releaseRenderer,
                 )
             }
         }

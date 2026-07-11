@@ -33,6 +33,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -76,6 +77,7 @@ internal val APP_NAV_RAIL_WIDTH = 80.dp
 internal const val PHONE_ULTRAWIDE_MIN_STREAM_ASPECT = 2.2f
 internal const val PHONE_ULTRAWIDE_MIN_VIEWPORT_ASPECT = 2.0f
 internal const val CATALOG_BACKGROUND_IMAGE_FILE_PREFIX = "catalog_background_image"
+internal val LocalSettingsControllerNavigationEnabled = androidx.compose.runtime.staticCompositionLocalOf { false }
 
 internal data class SettingsChoiceOption(val value: String, val label: String)
 internal data class ChoiceMenuOption(
@@ -182,6 +184,8 @@ internal fun SettingsScreen(
     val detailFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val controllerNavigationEnabled =
+        tvProfile || rememberPhysicalControllerConnected(enabled = !tvProfile)
     val showSearch = searchRequested || searchQuery.isNotBlank()
     val categories = remember { settingsCategories() }
     LaunchedEffect(searchRequested) {
@@ -206,10 +210,10 @@ internal fun SettingsScreen(
     BackHandler(enabled = selectedCategory != null) {
         selectedCategory = null
     }
-    LaunchedEffect(selectedCategory) {
+    LaunchedEffect(selectedCategory, controllerNavigationEnabled) {
         val detailOpen = selectedCategory != null
         onDetailRouteChange(detailOpen)
-        if (detailOpen) {
+        if (detailOpen && controllerNavigationEnabled) {
             delay(90)
             runCatching { detailFocusRequester.requestFocus() }
         }
@@ -222,68 +226,31 @@ internal fun SettingsScreen(
     DisposableEffect(Unit) {
         onDispose { onDetailRouteChange(false) }
     }
-    if (showSessionProxyWarning) {
-        SessionProxyWarningDialog(
-            onCancel = { showSessionProxyWarning = false },
-            onEnable = {
-                viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = true) }
-                showSessionProxyWarning = false
-            },
-        )
-    }
-    if (tvProfile) {
-        SwipeToRefreshContainer(
-            refreshing = state.settingsRefreshing,
-            onRefresh = viewModel::refreshSettings,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .background(SettingsBackground)
-                    .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) }
-                    .verticalScroll(scrollState)
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                AnimatedVisibility(visible = showSearch) {
-                    NativeSearchField(
-                        query = searchQuery,
-                        onQueryChange = onSearchQueryChange,
-                        placeholder = stringResource(R.string.search_settings),
-                        focusRequester = searchFocusRequester,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                AnimatedContent(targetState = selectedCategory, label = "settings-route") { category ->
-                    SettingsBody(
-                        state = state,
-                        viewModel = viewModel,
-                        searchQuery = searchQuery,
-                        selectedCategory = category,
-                        categories = categories,
-                        detailFocusRequester = detailFocusRequester,
-                        onSelectCategory = { selectedCategory = it },
-                        onBack = { selectedCategory = null },
-                        showSessionProxyWarning = { showSessionProxyWarning = true },
-                    )
-                }
-            }
+    CompositionLocalProvider(LocalSettingsControllerNavigationEnabled provides controllerNavigationEnabled) {
+        if (showSessionProxyWarning) {
+            SessionProxyWarningDialog(
+                onCancel = { showSessionProxyWarning = false },
+                onEnable = {
+                    viewModel.updateStreamSettings { s -> s.copy(sessionProxyEnabled = true) }
+                    showSessionProxyWarning = false
+                },
+            )
         }
-    } else {
-        SwipeToRefreshContainer(
-            refreshing = state.settingsRefreshing,
-            onRefresh = viewModel::refreshSettings,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            LazyColumn(
-                Modifier
-                    .fillMaxSize()
-                    .background(SettingsBackground),
-                contentPadding = PaddingValues(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+        if (tvProfile) {
+            SwipeToRefreshContainer(
+                refreshing = state.settingsRefreshing,
+                onRefresh = viewModel::refreshSettings,
+                modifier = Modifier.fillMaxSize(),
             ) {
-                item {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .background(SettingsBackground)
+                        .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) }
+                        .verticalScroll(scrollState)
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
                     AnimatedVisibility(visible = showSearch) {
                         NativeSearchField(
                             query = searchQuery,
@@ -293,8 +260,6 @@ internal fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                }
-                item {
                     AnimatedContent(targetState = selectedCategory, label = "settings-route") { category ->
                         SettingsBody(
                             state = state,
@@ -307,6 +272,47 @@ internal fun SettingsScreen(
                             onBack = { selectedCategory = null },
                             showSessionProxyWarning = { showSessionProxyWarning = true },
                         )
+                    }
+                }
+            }
+        } else {
+            SwipeToRefreshContainer(
+                refreshing = state.settingsRefreshing,
+                onRefresh = viewModel::refreshSettings,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                LazyColumn(
+                    Modifier
+                        .fillMaxSize()
+                        .background(SettingsBackground),
+                    contentPadding = PaddingValues(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    item {
+                        AnimatedVisibility(visible = showSearch) {
+                            NativeSearchField(
+                                query = searchQuery,
+                                onQueryChange = onSearchQueryChange,
+                                placeholder = stringResource(R.string.search_settings),
+                                focusRequester = searchFocusRequester,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                    item {
+                        AnimatedContent(targetState = selectedCategory, label = "settings-route") { category ->
+                            SettingsBody(
+                                state = state,
+                                viewModel = viewModel,
+                                searchQuery = searchQuery,
+                                selectedCategory = category,
+                                categories = categories,
+                                detailFocusRequester = detailFocusRequester,
+                                onSelectCategory = { selectedCategory = it },
+                                onBack = { selectedCategory = null },
+                                showSessionProxyWarning = { showSessionProxyWarning = true },
+                            )
+                        }
                     }
                 }
             }

@@ -2030,10 +2030,22 @@ class NativeStreamClient(
             }
             it.setEnableHardwareScaler(false)
             it.setMirror(false)
+            // A SurfaceView is a separate native window layer. Keep its pre-frame
+            // buffer black and explicitly release it when Compose removes the view,
+            // otherwise some devices retain a pale surface above the next app screen.
+            it.setBackgroundColor(android.graphics.Color.BLACK)
             it.setStreamScaling(stretchToFill)
             renderer = it
             videoTrack?.addSink(it)
         }
+
+    fun releaseRenderer(candidate: SurfaceViewRenderer) {
+        if (renderer !== candidate) return
+        videoTrack?.removeSink(candidate)
+        candidate.release()
+        renderer = null
+        rendererSharpnessDrawer = null
+    }
 
     fun updateRendererSettings(settings: StreamSettings, stretchToFill: Boolean = false) {
         this.settings = this.settings.copy(

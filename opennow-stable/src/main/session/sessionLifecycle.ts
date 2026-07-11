@@ -1,4 +1,4 @@
-import { stopSession, getActiveSessions } from "../gfn/cloudmatch";
+import { stopSession, getActiveSessions } from "../platforms/gfn/cloudmatch";
 import { isActiveCreateSessionConflict } from "./sessionSelection";
 
 export async function stopActiveSessionsForCreate(params: {

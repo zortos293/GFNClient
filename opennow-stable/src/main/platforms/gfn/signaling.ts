@@ -8,9 +8,7 @@ import type {
   MainToRendererSignalingEvent,
   SendAnswerRequest,
 } from "@shared/gfn";
-
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36";
+import { GFN_PLAY_ORIGIN, GFN_USER_AGENT } from "./clientHeaders";
 
 interface SignalingMessage {
   ackid?: number;
@@ -139,8 +137,8 @@ export class GfnSignalingClient {
         rejectUnauthorized: false,
         headers: {
           Host: urlHost,
-          Origin: "https://play.geforcenow.com",
-          "User-Agent": USER_AGENT,
+          Origin: GFN_PLAY_ORIGIN,
+          "User-Agent": GFN_USER_AGENT,
           "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
         },
       });

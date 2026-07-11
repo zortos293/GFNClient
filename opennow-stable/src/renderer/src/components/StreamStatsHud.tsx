@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
 import { AlertTriangle, ChevronDown } from "lucide-react";
 import type { JSX } from "react";
-import type { StreamLagReason } from "../gfn/webrtcClient";
+import type { StreamLagReason } from "../platforms/gfn/webrtcClient";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import {

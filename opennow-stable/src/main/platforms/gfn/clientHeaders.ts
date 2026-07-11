@@ -9,8 +9,10 @@ export const GFN_USER_AGENT = process.platform === "darwin" ? GFN_MACOS_USER_AGE
 export const GFN_CLIENT_VERSION = "2.0.80.173";
 export const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
 
-export const GFN_PLAY_ORIGIN = "https://play.geforcenow.com";
-export const GFN_PLAY_REFERER = "https://play.geforcenow.com/";
+import { GFN_PLAY_ORIGIN as SHARED_GFN_PLAY_ORIGIN, GFN_PLAY_REFERER as SHARED_GFN_PLAY_REFERER } from "@shared/gfn/endpoints";
+
+export const GFN_PLAY_ORIGIN = SHARED_GFN_PLAY_ORIGIN;
+export const GFN_PLAY_REFERER = SHARED_GFN_PLAY_REFERER;
 export const NVIDIA_FILE_ORIGIN = "https://nvfile";
 export const NVIDIA_FILE_REFERER = "https://nvfile/";
 

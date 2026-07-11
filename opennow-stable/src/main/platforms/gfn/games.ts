@@ -11,7 +11,7 @@ import type {
 } from "@shared/gfn";
 import { createHash } from "node:crypto";
 import { isOwnedLibraryStatus, normalizeGameStore } from "@shared/gfn";
-import { cacheManager } from "../services/cacheManager";
+import { cacheManager } from "../../services/cacheManager";
 import { appendPublicGameSearchMatches, fetchPublicGamesUncached, mergePublicGameVariants } from "./publicGames";
 import {
   buildGfnGraphQlHeaders,

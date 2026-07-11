@@ -27,6 +27,7 @@ import type {
 import {
   createUnsupportedNativeStreamerStatus,
   DEFAULT_VIDEO_SHADER_SETTINGS,
+  GFN_STORAGE_MANAGER_URL,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   colorQualityRequiresHevc,
@@ -264,7 +265,6 @@ const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly string
 const POSTER_SIZE_MIN = 75;
 const POSTER_SIZE_MAX = 135;
 const POSTER_SIZE_STEP = 5;
-const NVIDIA_STORAGE_MANAGER_URL = "https://www.nvidia.com/en-us/account/gfn/manage-storage/";
 
 const codecOptions: VideoCodec[] = [...USER_FACING_VIDEO_CODEC_OPTIONS];
 
@@ -1148,7 +1148,7 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
 
   const handleOpenPersistentStorageManager = useCallback(async (): Promise<void> => {
     try {
-      await window.openNow.openExternalUrl(NVIDIA_STORAGE_MANAGER_URL);
+      await window.openNow.openExternalUrl(GFN_STORAGE_MANAGER_URL);
     } catch (error) {
       console.error("[Settings] Failed to open NVIDIA Storage Manager:", error);
       setStorageResetState("error");

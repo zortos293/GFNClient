@@ -26,6 +26,8 @@ import type {
 import {
   buildGfnLcarsHeaders,
   buildNvidiaAuthHeaders,
+  GFN_PLAY_ORIGIN,
+  GFN_PLAY_REFERER,
   GFN_USER_AGENT,
 } from "./clientHeaders";
 import { fetchSubscription, fetchDynamicRegions } from "./subscription";
@@ -208,8 +210,8 @@ function buildAuthHeadersForClient(
 
   const headers: Record<string, string> = {
     Accept: options.accept ?? "application/json, text/plain, */*",
-    Origin: "https://play.geforcenow.com",
-    Referer: "https://play.geforcenow.com/",
+    Origin: GFN_PLAY_ORIGIN,
+    Referer: GFN_PLAY_REFERER,
     "User-Agent": STEAM_DECK_USER_AGENT,
   };
 

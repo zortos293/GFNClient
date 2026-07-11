@@ -40,7 +40,7 @@ import {
   resolveEntitledStreamProfile,
   SAFE_FALLBACK_STREAM_PROFILE,
 } from "@shared/gfn";
-import { GfnWebRtcClient } from "./gfn/webrtcClient";
+import { GfnWebRtcClient } from "./platforms/gfn/webrtcClient";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { dispatchStreamShortcutAction } from "./streamShortcutActions";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";

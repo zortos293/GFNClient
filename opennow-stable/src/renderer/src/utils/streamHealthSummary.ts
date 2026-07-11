@@ -1,4 +1,4 @@
-import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { StreamDiagnostics } from "../platforms/gfn/webrtcClient";
 
 export type StreamHealthTier = "good" | "fair" | "poor" | "connecting";
 

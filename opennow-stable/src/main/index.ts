@@ -31,7 +31,7 @@ import {
   fetchMainGamesUncached,
   fetchLibraryGamesUncached,
   fetchPublicGamesUncached,
-} from "./gfn/games";
+} from "./platforms/gfn/games";
 import type {
   AppUpdaterState,
   SessionConflictChoice,
@@ -47,9 +47,9 @@ import type {
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
-import { getActiveSessions } from "./gfn/cloudmatch";
-import { AuthService } from "./gfn/auth";
-import { initSessionProxyAuth } from "./gfn/proxyFetch";
+import { getActiveSessions } from "./platforms/gfn/cloudmatch";
+import { AuthService } from "./platforms/gfn/auth";
+import { initSessionProxyAuth } from "./platforms/gfn/proxyFetch";
 import {
   connectDiscordRpc,
   setActivity,

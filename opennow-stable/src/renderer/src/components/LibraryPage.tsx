@@ -176,7 +176,7 @@ export const LibraryPage = memo(function LibraryPage({
   useEffect(() => {
     if (!controllerMode) return;
     setControllerHeroIndex(0);
-  }, [controllerMode, controllerFeaturedGames]);
+  }, [controllerMode, controllerStoreFilterId, controllerFeaturedGames.length, controllerFeaturedGames[0]?.id]);
 
   useEffect(() => {
     if (controllerMode) return;
@@ -262,23 +262,24 @@ export const LibraryPage = memo(function LibraryPage({
     setControllerStoreFilterOpen(false);
   };
 
-  useEffect(() => {
-    controllerInputStateRef.current = {
-      detailsGame,
-      selectedControllerGame,
-      selectedControllerGameIndex,
-      controllerStoreFilterOpen,
-      focusedControllerStoreFilterIndex,
-      controllerStoreFilterItems,
-      focusControllerGame,
-      cycleSelectedVariant,
-      cycleControllerStoreFilter,
-      moveControllerStoreFilterFocusBy,
-      hideControllerStoreFilterOverlay,
-      showControllerStoreFilterOverlay,
-      onPlayGame,
-    };
-  }, [controllerStoreFilterItems, controllerStoreFilterOpen, detailsGame, focusedControllerStoreFilterIndex, focusControllerGame, cycleSelectedVariant, cycleControllerStoreFilter, moveControllerStoreFilterFocusBy, hideControllerStoreFilterOverlay, showControllerStoreFilterOverlay, onPlayGame, selectedControllerGame, selectedControllerGameIndex]);
+  // Keep the gamepad poller on a stable ref snapshot. Do not list the inline
+  // helpers as effect deps — they are recreated every render and only need to
+  // be copied into the ref, not trigger another commit.
+  controllerInputStateRef.current = {
+    detailsGame,
+    selectedControllerGame,
+    selectedControllerGameIndex,
+    controllerStoreFilterOpen,
+    focusedControllerStoreFilterIndex,
+    controllerStoreFilterItems,
+    focusControllerGame,
+    cycleSelectedVariant,
+    cycleControllerStoreFilter,
+    moveControllerStoreFilterFocusBy,
+    hideControllerStoreFilterOverlay,
+    showControllerStoreFilterOverlay,
+    onPlayGame,
+  };
 
   useEffect(() => {
     if (!controllerMode) return;

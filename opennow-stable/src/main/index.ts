@@ -140,6 +140,9 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
+if (!app.isPackaged && process.env.OPENNOW_REMOTE_DEBUG === "1") {
+  app.commandLine.appendSwitch("remote-debugging-port", "9222");
+}
 
 // file:// in &lt;video&gt; is blocked by Chromium for renderer pages; use a privileged custom scheme.
 protocol.registerSchemesAsPrivileged([

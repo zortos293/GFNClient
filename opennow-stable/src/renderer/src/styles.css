@@ -3413,13 +3413,17 @@ body,
   contain: layout style;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
-  will-change: transform;
-  transition: border-color var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast), transform var(--t-fast);
+}
+
+.controller-native-card:hover {
+  transform: translate3d(0, -3px, 0) scale(1.02);
 }
 
 .controller-native-card.selected {
   border-color: #2ee375;
   box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.68), 0 24px 48px rgba(0, 0, 0, 0.38);
+  transform: translate3d(0, -3px, 0) scale(1.025);
 }
 
 .controller-native-card-art,

@@ -65,6 +65,14 @@ export async function createMainWindow(
   });
   deps.setMainWindow(window);
 
+  window.webContents.on("render-process-gone", (_event, details) => {
+    console.error("[Main] Renderer process gone:", details);
+  });
+  window.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    if (level < 2) return;
+    console.error(`[renderer:console:${level}]`, message, sourceId ? `(${sourceId}:${line})` : "");
+  });
+
   window.webContents.setWindowOpenHandler(({ url }) => {
     void openExternalHttpUrl(url).catch((error) => {
       console.warn(

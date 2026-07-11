@@ -1,6 +1,5 @@
 import { Search, Gamepad2, Loader2, MoreHorizontal, Menu } from "lucide-react";
 import type { JSX, RefObject } from "react";
-import { AnimatePresence, m } from "motion/react";
 import type { GameInfo } from "@shared/gfn";
 import {
   gameMatchesActiveSession,
@@ -12,7 +11,6 @@ import {
 } from "../../lib/controllerCatalogUi";
 import type { ControllerStoreFilterItem } from "../../lib/libraryFilters";
 import { useTranslation } from "../../i18n";
-import { pageTransition, panelSpring } from "../MotionProvider";
 import { ControllerGameCard } from "./ControllerGameCard";
 
 export interface LibraryControllerViewProps {
@@ -43,6 +41,11 @@ export interface LibraryControllerViewProps {
   onCycleGameVariant: (game: GameInfo | undefined) => void;
 }
 
+/**
+ * Controller-mode library shell. Intentionally avoids motion/AnimatePresence here:
+ * those animations have been observed to crash the Chromium renderer in this
+ * environment when combined with the library hero + card strip.
+ */
 export function LibraryControllerView({
   isLoading,
   libraryCount,
@@ -93,68 +96,47 @@ export function LibraryControllerView({
           <h3>{t("library.empty.libraryEmpty")}</h3>
           <p>{t("library.empty.ownedGamesAppearHere")}</p>
         </div>
-      ) : featuredGame ? (
+      ) : !featuredGame ? (
+        <div className="library-empty-state controller-library-empty">
+          <Search className="library-empty-icon" size={64} />
+          <h3>{t("library.empty.noGamesFound")}</h3>
+          <p>{t("library.empty.noGamesMatch", { query: searchQuery })}</p>
+        </div>
+      ) : (
         <>
           <section className="controller-hero" aria-label={featuredGame.title}>
-            <AnimatePresence initial={false} mode="popLayout">
-              {heroImageUrl ? (
-                <m.img
-                  key={heroImageUrl}
-                  src={heroImageUrl}
-                  alt=""
-                  className="controller-hero-image"
-                  initial={{ opacity: 0, scale: 1.035 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 1.015 }}
-                  transition={pageTransition}
-                />
-              ) : (
-                <m.div
-                  key="controller-library-hero-placeholder"
-                  className="controller-hero-placeholder"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={pageTransition}
-                />
-              )}
-            </AnimatePresence>
+            {heroImageUrl ? (
+              <img src={heroImageUrl} alt="" className="controller-hero-image" />
+            ) : (
+              <div className="controller-hero-placeholder" />
+            )}
             <div className="controller-hero-scrim" />
-            <AnimatePresence initial={false} mode="wait">
-              <m.div
-                key={featuredGame.id}
-                className="controller-hero-content"
-                initial={{ opacity: 0, y: 16 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={pageTransition}
-              >
-                {heroLogoUrl ? (
-                  <img src={heroLogoUrl} alt={featuredGame.title} className="controller-hero-logo" />
-                ) : (
-                  <h1>{featuredGame.title}</h1>
-                )}
-                <div className="controller-hero-actions">
-                  <button
-                    type="button"
-                    className="controller-primary-action"
-                    onClick={() => {
-                      if (heroShouldBuy) {
-                        onBuyGame?.(featuredGame, heroSelectedVariantId);
-                        return;
-                      }
-                      onPlayGame(featuredGame);
-                    }}
-                  >
-                    {featuredGameHasActiveSession ? t("app.actions.resume") : heroShouldBuy ? t("app.actions.buy") : t("app.actions.play")}
-                  </button>
-                  {heroStoreLabel && <span className="controller-hero-variant-pill">{heroStoreLabel}</span>}
-                  <button type="button" className="controller-icon-action" aria-label={t("library.moreOptions")} onClick={() => onCycleGameVariant(featuredGame)}>
-                    <MoreHorizontal size={30} />
-                  </button>
-                </div>
-              </m.div>
-            </AnimatePresence>
+            <div className="controller-hero-content">
+              {heroLogoUrl ? (
+                <img src={heroLogoUrl} alt={featuredGame.title} className="controller-hero-logo" />
+              ) : (
+                <h1>{featuredGame.title}</h1>
+              )}
+              <div className="controller-hero-actions">
+                <button
+                  type="button"
+                  className="controller-primary-action"
+                  onClick={() => {
+                    if (heroShouldBuy) {
+                      onBuyGame?.(featuredGame, heroSelectedVariantId);
+                      return;
+                    }
+                    onPlayGame(featuredGame);
+                  }}
+                >
+                  {featuredGameHasActiveSession ? t("app.actions.resume") : heroShouldBuy ? t("app.actions.buy") : t("app.actions.play")}
+                </button>
+                {heroStoreLabel && <span className="controller-hero-variant-pill">{heroStoreLabel}</span>}
+                <button type="button" className="controller-icon-action" aria-label={t("library.moreOptions")} onClick={() => onCycleGameVariant(featuredGame)}>
+                  <MoreHorizontal size={30} />
+                </button>
+              </div>
+            </div>
           </section>
 
           <div className="controller-hero-dots" aria-hidden="true">
@@ -199,123 +181,72 @@ export function LibraryControllerView({
             <div className="controller-hint controller-hint--more"><span className="controller-menu-button"><Menu size={22} /></span><span>{t("library.moreOptions")}</span></div>
           </div>
 
-          <AnimatePresence initial={false}>
-            {controllerStoreFilterOpen && (
-              <m.div
-                className="controller-store-filter-overlay"
-                role="dialog"
-                aria-modal="true"
-                aria-label={t("library.chooseStore")}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={pageTransition}
-              >
-                <m.div
-                  className="controller-store-filter-panel"
-                  initial={{ opacity: 0, y: 16, scale: 0.985 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.99 }}
-                  transition={panelSpring}
-                >
-                  <span className="controller-store-filter-eyebrow">{t("library.storeFilter")}</span>
-                  <h3>{t("library.chooseStore")}</h3>
-                  <p>{t("library.storeFilterHint")}</p>
-                  <div className="controller-store-filter-options">
-                    {controllerStoreFilterItems.map((item, index) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={`controller-store-filter-option${index === focusedControllerStoreFilterIndex ? " focused" : ""}`}
-                        onClick={() => {
-                          onFocusControllerStoreFilter(index);
-                          onSelectControllerStoreFilter(item.id);
-                        }}
-                      >
-                        {item.title}
-                      </button>
-                    ))}
-                  </div>
-                </m.div>
-              </m.div>
-            )}
-          </AnimatePresence>
+          {controllerStoreFilterOpen && (
+            <div className="controller-store-filter-overlay" role="dialog" aria-modal="true" aria-label={t("library.chooseStore")}>
+              <div className="controller-store-filter-panel">
+                <span className="controller-store-filter-eyebrow">{t("library.storeFilter")}</span>
+                <h3>{t("library.chooseStore")}</h3>
+                <p>{t("library.storeFilterHint")}</p>
+                <div className="controller-store-filter-options">
+                  {controllerStoreFilterItems.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`controller-store-filter-option${index === focusedControllerStoreFilterIndex ? " focused" : ""}`}
+                      onClick={() => {
+                        onFocusControllerStoreFilter(index);
+                        onSelectControllerStoreFilter(item.id);
+                      }}
+                    >
+                      {item.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
-          <AnimatePresence initial={false}>
-            {controllerSearchOpen && (
-              <m.div
-                className="controller-search-overlay"
-                role="dialog"
-                aria-modal="true"
-                aria-label={t("app.actions.search")}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={pageTransition}
-              >
-                <m.div
-                  className="controller-search-panel"
-                  initial={{ opacity: 0, y: 16, scale: 0.985 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.99 }}
-                  transition={panelSpring}
-                >
-                  <span className="controller-search-eyebrow">{t("app.actions.search")}</span>
-                  <input
-                    ref={controllerSearchInputRef}
-                    type="text"
-                    value={searchQuery}
-                    onChange={(event) => onSearchChange(event.target.value)}
-                    placeholder={t("library.searchPlaceholder")}
-                    className="controller-search-input"
-                  />
-                  <p>{t("app.actions.back")}</p>
-                </m.div>
-              </m.div>
-            )}
-          </AnimatePresence>
+          {controllerSearchOpen && (
+            <div className="controller-search-overlay" role="dialog" aria-modal="true" aria-label={t("app.actions.search")}>
+              <div className="controller-search-panel">
+                <span className="controller-search-eyebrow">{t("app.actions.search")}</span>
+                <input
+                  ref={controllerSearchInputRef}
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => onSearchChange(event.target.value)}
+                  placeholder={t("library.searchPlaceholder")}
+                  className="controller-search-input"
+                />
+                <p>{t("app.actions.back")}</p>
+              </div>
+            </div>
+          )}
 
-          <AnimatePresence initial={false}>
-            {detailsGame && (
-              <m.div
-                className="controller-details-overlay"
-                role="dialog"
-                aria-modal="true"
-                aria-label={detailsGame.title}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={pageTransition}
-              >
-                <m.div
-                  className="controller-details-panel"
-                  initial={{ opacity: 0, y: 18, scale: 0.985 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.99 }}
-                  transition={panelSpring}
-                >
-                  <h3>{detailsGame.title}</h3>
-                  <p className="controller-details-store">{t("library.selectedStore", { store: getGameStoreSummary(detailsGame, t("library.storeNotListed")) })}</p>
-                  <p className="controller-details-body">{detailsGame.description || detailsGame.longDescription || detailsGame.featureLabels?.join(" / ") || t("library.loadingGameDetails")}</p>
-                  <div className="controller-details-meta">
-                    {detailsGame.developerName && <span>{t("library.developer", { developer: detailsGame.developerName })}</span>}
-                    {detailsGame.publisherName && <span>{t("library.publisher", { publisher: detailsGame.publisherName })}</span>}
-                    {getPlayerSummary(detailsGame) && <span>{t("library.players", { players: getPlayerSummary(detailsGame) })}</span>}
-                    {detailsGame.supportedControls?.length ? <span>{t("library.controls", { controls: detailsGame.supportedControls.slice(0, 4).join(", ") })}</span> : null}
-                    {detailsGame.nvidiaTech?.length ? <span>{t("library.nvidiaTech", { tech: detailsGame.nvidiaTech.slice(0, 4).join(", ") })}</span> : null}
-                    {detailsGame.genres?.length ? <span>{t("library.genres", { genres: detailsGame.genres.slice(0, 4).join(", ") })}</span> : null}
-                    {detailsGame.contentRatings?.length ? <span>{t("library.rating", { rating: detailsGame.contentRatings.slice(0, 2).join(", ") })}</span> : null}
-                  </div>
-                  <div className="controller-details-actions">
-                    <button type="button" className="controller-primary-action" onClick={() => onPlayGame(detailsGame)}>{t("app.actions.play")}</button>
-                    <button type="button" className="controller-secondary-action" onClick={onCloseDetails}>{t("app.actions.back")}</button>
-                  </div>
-                </m.div>
-              </m.div>
-            )}
-          </AnimatePresence>
+          {detailsGame && (
+            <div className="controller-details-overlay" role="dialog" aria-modal="true" aria-label={detailsGame.title}>
+              <div className="controller-details-panel">
+                <h3>{detailsGame.title}</h3>
+                <p className="controller-details-store">{t("library.selectedStore", { store: getGameStoreSummary(detailsGame, t("library.storeNotListed")) })}</p>
+                <p className="controller-details-body">{detailsGame.description || detailsGame.longDescription || detailsGame.featureLabels?.join(" / ") || t("library.loadingGameDetails")}</p>
+                <div className="controller-details-meta">
+                  {detailsGame.developerName && <span>{t("library.developer", { developer: detailsGame.developerName })}</span>}
+                  {detailsGame.publisherName && <span>{t("library.publisher", { publisher: detailsGame.publisherName })}</span>}
+                  {getPlayerSummary(detailsGame) && <span>{t("library.players", { players: getPlayerSummary(detailsGame) })}</span>}
+                  {detailsGame.supportedControls?.length ? <span>{t("library.controls", { controls: detailsGame.supportedControls.slice(0, 4).join(", ") })}</span> : null}
+                  {detailsGame.nvidiaTech?.length ? <span>{t("library.nvidiaTech", { tech: detailsGame.nvidiaTech.slice(0, 4).join(", ") })}</span> : null}
+                  {detailsGame.genres?.length ? <span>{t("library.genres", { genres: detailsGame.genres.slice(0, 4).join(", ") })}</span> : null}
+                  {detailsGame.contentRatings?.length ? <span>{t("library.rating", { rating: detailsGame.contentRatings.slice(0, 2).join(", ") })}</span> : null}
+                </div>
+                <div className="controller-details-actions">
+                  <button type="button" className="controller-primary-action" onClick={() => onPlayGame(detailsGame)}>{t("app.actions.play")}</button>
+                  <button type="button" className="controller-secondary-action" onClick={onCloseDetails}>{t("app.actions.back")}</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
-      ) : null}
+      )}
     </div>
   );
 }

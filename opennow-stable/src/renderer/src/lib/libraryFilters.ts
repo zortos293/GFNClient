@@ -77,7 +77,7 @@ function getGameStoreFilters(game: GameInfo): Array<{ id: string; label: string 
   const seen = new Set<string>();
   const filters: Array<{ id: string; label: string }> = [];
   for (const store of stores) {
-    if (!store.trim()) continue;
+    if (!store || !store.trim()) continue;
     const key = normalizeStoreKey(store);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -106,7 +106,7 @@ function getControlFilter(control: string, t: LibraryTranslation): { id: string;
 function getGameControlFilters(game: GameInfo, t: LibraryTranslation): Array<{ id: string; label: string }> {
   const controls = [
     ...(game.supportedControls ?? []),
-    ...game.variants.flatMap((variant) => variant.supportedControls),
+    ...(game.variants ?? []).flatMap((variant) => variant.supportedControls ?? []),
   ];
   const seen = new Set<string>();
   const filters: Array<{ id: string; label: string }> = [];
@@ -231,17 +231,17 @@ export interface ControllerStoreFilterItem {
 export function gameMatchesStoreFilter(game: GameInfo, filterId: string): boolean {
   if (filterId === "library") return true;
   const store = filterId.slice("store:".length);
-  return game.variants.some((variant) => variant.store === store) || (game.availableStores ?? []).includes(store);
+  return (game.variants ?? []).some((variant) => variant.store === store) || (game.availableStores ?? []).includes(store);
 }
 
 export function getControllerStoreFilterItems(games: GameInfo[], allStoresLabel: string): ControllerStoreFilterItem[] {
   const stores = new Set<string>();
   for (const game of games) {
     for (const store of game.availableStores ?? []) {
-      if (store.trim()) stores.add(store);
+      if (store?.trim()) stores.add(store);
     }
-    for (const variant of game.variants) {
-      if (variant.store.trim()) stores.add(variant.store);
+    for (const variant of game.variants ?? []) {
+      if (variant.store?.trim()) stores.add(variant.store);
     }
   }
 

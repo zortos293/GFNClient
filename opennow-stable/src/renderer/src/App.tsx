@@ -108,6 +108,7 @@ import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
 import { HomePage } from "./components/HomePage";
 import { LibraryPage } from "./components/LibraryPage";
+import { PageErrorBoundary } from "./components/PageErrorBoundary";
 import { SettingsPage } from "./components/SettingsPage";
 import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
@@ -3689,6 +3690,7 @@ export function App(): JSX.Element {
       />
 
       <main className="main-content">
+        <PageErrorBoundary label="main">
         <AnimatePresence mode="wait" initial={false}>
           <m.div
             key={mainPage}
@@ -3730,32 +3732,35 @@ export function App(): JSX.Element {
             )}
 
             {mainPage === "library" && (
-              <LibraryPage
-                games={filteredLibraryGames}
-                allGames={libraryGames}
-                playtimeData={playtime}
-                searchQuery={searchQuery}
-                onSearchChange={setSearchQuery}
-                onPlayGame={handleInitiatePlay}
-                isLoading={isLoadingLibrary}
-                selectedGameId={selectedGameId}
-                onSelectGame={setSelectedGameId}
-                selectedVariantByGameId={variantByGameId}
-                onSelectGameVariant={handleSelectGameVariant}
-                libraryCount={libraryGames.length}
-                sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
-                selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
-                onSortChange={setCatalogSelectedSortId}
-                controllerMode={effectiveControllerMode}
-                featuredGames={featuredGames.length > 0 ? featuredGames : games}
-                activeSessionAppIds={activeSessionAppIds}
-                onBuyGame={handleBuyGame}
-                onPreviousControllerPage={() => navigateControllerPage(-1)}
-                onNextControllerPage={() => navigateControllerPage(1)}
-              />
+              <PageErrorBoundary label="library">
+                <LibraryPage
+                  games={filteredLibraryGames}
+                  allGames={libraryGames}
+                  playtimeData={playtime}
+                  searchQuery={searchQuery}
+                  onSearchChange={setSearchQuery}
+                  onPlayGame={handleInitiatePlay}
+                  isLoading={isLoadingLibrary}
+                  selectedGameId={selectedGameId}
+                  onSelectGame={setSelectedGameId}
+                  selectedVariantByGameId={variantByGameId}
+                  onSelectGameVariant={handleSelectGameVariant}
+                  libraryCount={libraryGames.length}
+                  sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
+                  selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
+                  onSortChange={setCatalogSelectedSortId}
+                  controllerMode={effectiveControllerMode}
+                  featuredGames={featuredGames.length > 0 ? featuredGames : games}
+                  activeSessionAppIds={activeSessionAppIds}
+                  onBuyGame={handleBuyGame}
+                  onPreviousControllerPage={() => navigateControllerPage(-1)}
+                  onNextControllerPage={() => navigateControllerPage(1)}
+                />
+              </PageErrorBoundary>
             )}
           </m.div>
         </AnimatePresence>
+        </PageErrorBoundary>
       </main>
       <SettingsModalHost
         open={currentPage === "settings"}

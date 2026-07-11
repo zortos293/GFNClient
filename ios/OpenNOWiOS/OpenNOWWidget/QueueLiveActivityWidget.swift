@@ -9,24 +9,26 @@ struct QueueLiveActivityWidget: Widget {
             LockScreenQueueLiveActivityView(context: context)
                 .activityBackgroundTint(backgroundTint(for: context.state.phase))
                 .activitySystemActionForegroundColor(.white)
+                .widgetURL(URL(string: "opennow://resume"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    HStack(alignment: .center, spacing: 8) {
-                        LiveActivityAppIcon(size: 28)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(context.attributes.gameTitle)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.72)
-                            Text(storeQueueLabel(for: context))
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.white.opacity(0.78))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        }
+                    LiveActivityAppIcon(size: 24)
+                        .padding(.leading, 2)
+                }
+                DynamicIslandExpandedRegion(.center) {
+                    VStack(spacing: 1) {
+                        Text(context.attributes.gameTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                        Text(storeQueueLabel(for: context))
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .lineLimit(1)
                     }
+                    .padding(.horizontal, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     if let queueLabel = queueNumberLabel(for: context.state) {
@@ -38,14 +40,15 @@ struct QueueLiveActivityWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(context.state.detail)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.white.opacity(0.92))
                             .lineLimit(1)
                             .minimumScaleFactor(0.78)
-                        Spacer(minLength: 0)
+                        LiveActivityPhaseTrack(phase: context.state.phase)
                     }
+                    .padding(.horizontal, 2)
                 }
             } compactLeading: {
                 LiveActivityAppIcon(size: 21)
@@ -60,22 +63,24 @@ struct QueueLiveActivityWidget: Widget {
             } minimal: {
                 LiveActivityAppIcon(size: 19)
             }
-            .contentMargins(.all, 14, for: .expanded)
+            .contentMargins(.horizontal, 20, for: .expanded)
+            .contentMargins(.vertical, 12, for: .expanded)
             .contentMargins([.leading, .top, .bottom], 8, for: .compactLeading)
             .contentMargins([.trailing, .top, .bottom], 8, for: .compactTrailing)
             .contentMargins(.all, 8, for: .minimal)
             .keylineTint(color(for: context.state.phase))
+            .widgetURL(URL(string: "opennow://resume"))
         }
     }
 
     private func backgroundTint(for phase: QueueActivityAttributes.ContentState.Phase) -> Color {
         switch phase {
         case .queued:
-            return Color(red: 0.14, green: 0.2, blue: 0.27)
+            return Color(red: 0.035, green: 0.075, blue: 0.105)
         case .waiting:
-            return Color(red: 0.22, green: 0.2, blue: 0.12)
+            return Color(red: 0.12, green: 0.10, blue: 0.035)
         case .ready:
-            return Color(red: 0.08, green: 0.29, blue: 0.19)
+            return Color(red: 0.025, green: 0.15, blue: 0.09)
         }
     }
 
@@ -105,33 +110,36 @@ private struct LockScreenQueueLiveActivityView: View {
     let context: ActivityViewContext<QueueActivityAttributes>
 
     var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(context.attributes.gameTitle)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                Text(context.state.headline)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                Text(context.state.detail)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+        VStack(spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                LiveActivityAppIcon(size: 38)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(context.attributes.gameTitle)
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                    Text(context.state.headline)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.88))
+                        .lineLimit(1)
+                    Text(context.state.detail)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                Spacer(minLength: 10)
+                QueueValueText(
+                    label: lockScreenValueLabel(for: context.state),
+                    phase: context.state.phase,
+                    size: .lockScreen
+                )
             }
-            Spacer(minLength: 12)
-            QueueValueText(
-                label: lockScreenValueLabel(for: context.state),
-                phase: context.state.phase,
-                size: .lockScreen
-            )
+            LiveActivityPhaseTrack(phase: context.state.phase)
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 22)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
     }
 
     private func lockScreenValueLabel(for state: QueueActivityAttributes.ContentState) -> String {
@@ -145,6 +153,48 @@ private struct LockScreenQueueLiveActivityView: View {
             return "WAIT"
         case .ready:
             return "READY"
+        }
+    }
+}
+
+private struct LiveActivityPhaseTrack: View {
+    let phase: QueueActivityAttributes.ContentState.Phase
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<3, id: \.self) { index in
+                Capsule()
+                    .fill(index <= activeIndex ? activeColor : Color.white.opacity(0.14))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 4)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Queue progress")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var activeIndex: Int {
+        switch phase {
+        case .queued: return 0
+        case .waiting: return 1
+        case .ready: return 2
+        }
+    }
+
+    private var activeColor: Color {
+        switch phase {
+        case .queued: return Color(red: 0.45, green: 0.82, blue: 1)
+        case .waiting: return Color(red: 1, green: 0.82, blue: 0.36)
+        case .ready: return Color(red: 0.48, green: 0.94, blue: 0.65)
+        }
+    }
+
+    private var accessibilityValue: String {
+        switch phase {
+        case .queued: return "In queue"
+        case .waiting: return "Preparing rig"
+        case .ready: return "Ready"
         }
     }
 }

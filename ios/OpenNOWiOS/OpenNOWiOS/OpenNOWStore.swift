@@ -1,8 +1,10 @@
 import AuthenticationServices
 import CryptoKit
 import Foundation
+import ImageIO
 import Network
 import OSLog
+import Security
 import SwiftUI
 import UIKit
 
@@ -102,6 +104,9 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let platform: String
     let icon: String
     let imageUrl: String?
+    var boxArtUrl: String? = nil
+    var heroImageUrl: String? = nil
+    var tvBannerUrl: String? = nil
     let launchAppId: String?
     let launchOptions: [GameLaunchOption]
     let uuid: String?
@@ -115,6 +120,173 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let stores: [String]?
     let playType: String?
     let membershipTierLabel: String?
+    let catalogSectionId: String?
+    let catalogSectionTitle: String?
+    let contentRatings: [String]?
+
+    func fillingMissingMetadata(from fallback: CloudGame?) -> CloudGame {
+        guard let fallback else { return self }
+        return CloudGame(
+            id: id,
+            title: title,
+            genre: genre,
+            platform: platform,
+            icon: icon,
+            imageUrl: imageUrl ?? fallback.imageUrl,
+            boxArtUrl: boxArtUrl ?? fallback.boxArtUrl,
+            heroImageUrl: heroImageUrl ?? fallback.heroImageUrl,
+            tvBannerUrl: tvBannerUrl ?? fallback.tvBannerUrl,
+            launchAppId: launchAppId,
+            launchOptions: launchOptions,
+            uuid: uuid,
+            summary: summary ?? fallback.summary,
+            longDescription: longDescription ?? fallback.longDescription,
+            publisher: publisher ?? fallback.publisher,
+            developer: developer ?? fallback.developer,
+            releaseDate: releaseDate ?? fallback.releaseDate,
+            featureLabels: featureLabels ?? fallback.featureLabels,
+            tags: tags ?? fallback.tags,
+            stores: stores,
+            playType: playType,
+            membershipTierLabel: membershipTierLabel,
+            catalogSectionId: catalogSectionId,
+            catalogSectionTitle: catalogSectionTitle,
+            contentRatings: GFNContentRatingParser.merging(contentRatings, fallback.contentRatings)
+        )
+    }
+
+    var catalogArtworkUrl: String? {
+        boxArtUrl ?? imageUrl ?? heroImageUrl ?? tvBannerUrl
+    }
+
+    var detailsArtworkUrl: String? {
+        heroImageUrl ?? tvBannerUrl ?? imageUrl ?? boxArtUrl
+    }
+
+    var queueArtworkUrl: String? {
+        tvBannerUrl ?? heroImageUrl ?? imageUrl ?? boxArtUrl
+    }
+}
+
+enum GFNCatalogLabelParser {
+    static func labels(from value: Any?) -> [String]? {
+        let rawLabels: [String]
+        if let list = value as? [String] {
+            rawLabels = list
+        } else if let list = value as? [[String: Any]] {
+            rawLabels = list.compactMap { item in
+                ["name", "label", "title", "displayName"]
+                    .compactMap { normalizedString(item[$0]) }
+                    .first
+            }
+        } else {
+            return nil
+        }
+
+        var seen = Set<String>()
+        let cleaned = rawLabels.compactMap(normalizedString).filter { seen.insert($0).inserted }
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func normalizedString(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+enum GFNContentRatingParser {
+    static func merging(_ primary: [String]?, _ fallback: [String]?) -> [String]? {
+        var seen = Set<String>()
+        let merged = (primary ?? []) + (fallback ?? [])
+        let unique = merged.filter { seen.insert($0).inserted }
+        return unique.isEmpty ? nil : unique
+    }
+
+    static func ageBadge(from labels: [String]?) -> String? {
+        let ages = (labels ?? []).compactMap(ageValue(from:))
+        guard let highest = ages.max() else { return nil }
+        return "\(highest)+"
+    }
+
+    private static func ageValue(from label: String) -> Int? {
+        let normalized = label
+            .uppercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        if normalized.contains("ESRB") || normalized.contains("EVERYONE") ||
+            normalized.contains("TEEN") || normalized.contains("MATURE") {
+            if normalized.contains("MATURE") || normalized.contains("AO") { return 18 }
+            if normalized.contains("TEEN") || normalized.range(of: #"\bT\b"#, options: .regularExpression) != nil { return 12 }
+            if normalized.contains("E10") || normalized.contains("EVERYONE 10") { return 10 }
+            if normalized.range(of: #"\bE\b"#, options: .regularExpression) != nil || normalized.contains("EVERYONE") { return 4 }
+        }
+
+        guard let range = normalized.range(of: #"\b([0-9]{1,2})\+?\b"#, options: .regularExpression) else {
+            return nil
+        }
+        return Int(normalized[range].trimmingCharacters(in: CharacterSet(charactersIn: "+")))
+    }
+
+    static func labels(from value: Any?) -> [String]? {
+        let entries: [Any]
+        if let values = value as? [Any] {
+            entries = values
+        } else if let value {
+            entries = [value]
+        } else {
+            return nil
+        }
+
+        var labels: [String] = []
+        for entry in entries {
+            if let text = normalizedString(entry) {
+                labels.append(text)
+                continue
+            }
+            guard let object = entry as? [String: Any] else { continue }
+
+            let type = normalizedString(object["type"])
+            let category = normalizedString(object["categoryKey"])
+            let currentRating = [type, category].compactMap { $0 }.joined(separator: " ")
+            if !currentRating.isEmpty {
+                labels.append(currentRating)
+            } else if let legacyLabel = ["name", "label", "title", "displayName"]
+                .compactMap({ normalizedString(object[$0]) })
+                .first {
+                labels.append(legacyLabel)
+            }
+
+            for key in ["contentDescriptorKeys", "interactiveElementKeys"] {
+                labels.append(contentsOf: (object[key] as? [String] ?? []).compactMap(humanizedKey))
+            }
+        }
+
+        var seen = Set<String>()
+        let unique = labels.filter { seen.insert($0).inserted }
+        return unique.isEmpty ? nil : unique
+    }
+
+    private static func normalizedString(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func humanizedKey(_ value: String) -> String? {
+        normalizedString(value)?
+            .lowercased()
+            .split(separator: "_")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+}
+
+struct StreamRegion: Identifiable, Codable, Equatable {
+    var id: String { url }
+    let name: String
+    let url: String
 }
 
 struct GameLaunchOption: Identifiable, Codable, Equatable {
@@ -251,6 +423,48 @@ enum StreamColorQuality: String, Codable, CaseIterable, Identifiable {
         case .eightBit420, .tenBit420: return 0
         }
     }
+}
+
+enum StreamPreset: String, Codable, CaseIterable, Identifiable {
+    case custom
+    case lowDataSaver = "low_data_saver"
+    case medium
+    case high
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .custom: return "Custom"
+        case .lowDataSaver: return "Low Data Saver"
+        case .medium: return "Medium"
+        case .high: return "High"
+        }
+    }
+}
+
+enum AppLaunchPage: String, Codable, CaseIterable, Identifiable {
+    case store
+    case library
+
+    var id: String { rawValue }
+    var label: String { self == .store ? "Home" : "Library" }
+}
+
+enum StreamStatsStyle: String, Codable, CaseIterable, Identifiable {
+    case compact
+    case detailed
+
+    var id: String { rawValue }
+    var label: String { self == .compact ? "Compact" : "Detailed" }
+}
+
+enum StreamStatsPosition: String, Codable, CaseIterable, Identifiable {
+    case left
+    case right
+
+    var id: String { rawValue }
+    var label: String { self == .left ? "Left" : "Right" }
 }
 
 struct StreamingFeatures: Codable, Equatable {
@@ -405,6 +619,7 @@ struct AppSettings: Codable, Equatable {
     var preferredRegion: String
     var preferredAspectRatio: String = "16:9"
     var preferredResolution: String
+    var streamPreset: StreamPreset = .custom
     var preferredFPS: Int
     var preferredQuality: String
     var preferredCodec: String
@@ -420,6 +635,20 @@ struct AppSettings: Codable, Equatable {
     var enableCloudGsync: Bool
     var streamSharpeningEnabled: Bool = false
     var streamSharpeningAmount: Double = 0.25
+    var mouseSensitivity: Double = 1
+    var mouseAcceleration: Int = 1
+    var fingerMouseEnabled: Bool = true
+    var phoneRumbleFallback: Bool = true
+    var launchPage: AppLaunchPage = .store
+    var posterSizeScale: Double = 1
+    var compactGameCards: Bool = true
+    var showGameStoreLabels: Bool = true
+    var catalogWallpaperEnabled: Bool = false
+    var catalogWallpaperFilename: String? = nil
+    var streamTutorialCompleted: Bool = false
+    var controllerTouchPromptDismissed: Bool = false
+    var sessionCounterEnabled: Bool = true
+    var ageRequirementAccepted: Bool = false
     var keepMicEnabled: Bool
     var showStatsOverlay: Bool
     var hideServerSelector: Bool
@@ -436,6 +665,7 @@ struct AppSettings: Codable, Equatable {
         case preferredRegion
         case preferredAspectRatio
         case preferredResolution
+        case streamPreset
         case preferredFPS
         case preferredQuality
         case preferredCodec
@@ -451,6 +681,20 @@ struct AppSettings: Codable, Equatable {
         case enableCloudGsync
         case streamSharpeningEnabled
         case streamSharpeningAmount
+        case mouseSensitivity
+        case mouseAcceleration
+        case fingerMouseEnabled
+        case phoneRumbleFallback
+        case launchPage
+        case posterSizeScale
+        case compactGameCards
+        case showGameStoreLabels
+        case catalogWallpaperEnabled
+        case catalogWallpaperFilename
+        case streamTutorialCompleted
+        case controllerTouchPromptDismissed
+        case sessionCounterEnabled
+        case ageRequirementAccepted
         case keepMicEnabled
         case showStatsOverlay
         case hideServerSelector
@@ -514,6 +758,7 @@ struct AppSettings: Codable, Equatable {
         preferredRegion = try container.decodeIfPresent(String.self, forKey: .preferredRegion) ?? "Auto"
         preferredAspectRatio = try container.decodeIfPresent(String.self, forKey: .preferredAspectRatio) ?? "16:9"
         preferredResolution = try container.decodeIfPresent(String.self, forKey: .preferredResolution) ?? "Auto"
+        streamPreset = try container.decodeIfPresent(StreamPreset.self, forKey: .streamPreset) ?? .custom
         preferredFPS = try container.decodeIfPresent(Int.self, forKey: .preferredFPS) ?? 60
         preferredQuality = try container.decodeIfPresent(String.self, forKey: .preferredQuality) ?? "Balanced"
         preferredCodec = try container.decodeIfPresent(String.self, forKey: .preferredCodec) ?? "Auto"
@@ -529,6 +774,20 @@ struct AppSettings: Codable, Equatable {
         enableCloudGsync = try container.decodeIfPresent(Bool.self, forKey: .enableCloudGsync) ?? false
         streamSharpeningEnabled = try container.decodeIfPresent(Bool.self, forKey: .streamSharpeningEnabled) ?? false
         streamSharpeningAmount = try container.decodeIfPresent(Double.self, forKey: .streamSharpeningAmount) ?? 0.25
+        mouseSensitivity = try container.decodeIfPresent(Double.self, forKey: .mouseSensitivity) ?? 1
+        mouseAcceleration = try container.decodeIfPresent(Int.self, forKey: .mouseAcceleration) ?? 1
+        fingerMouseEnabled = try container.decodeIfPresent(Bool.self, forKey: .fingerMouseEnabled) ?? true
+        phoneRumbleFallback = try container.decodeIfPresent(Bool.self, forKey: .phoneRumbleFallback) ?? true
+        launchPage = try container.decodeIfPresent(AppLaunchPage.self, forKey: .launchPage) ?? .store
+        posterSizeScale = try container.decodeIfPresent(Double.self, forKey: .posterSizeScale) ?? 1
+        compactGameCards = try container.decodeIfPresent(Bool.self, forKey: .compactGameCards) ?? true
+        showGameStoreLabels = try container.decodeIfPresent(Bool.self, forKey: .showGameStoreLabels) ?? true
+        catalogWallpaperEnabled = try container.decodeIfPresent(Bool.self, forKey: .catalogWallpaperEnabled) ?? false
+        catalogWallpaperFilename = try container.decodeIfPresent(String.self, forKey: .catalogWallpaperFilename)
+        streamTutorialCompleted = try container.decodeIfPresent(Bool.self, forKey: .streamTutorialCompleted) ?? false
+        controllerTouchPromptDismissed = try container.decodeIfPresent(Bool.self, forKey: .controllerTouchPromptDismissed) ?? false
+        sessionCounterEnabled = try container.decodeIfPresent(Bool.self, forKey: .sessionCounterEnabled) ?? true
+        ageRequirementAccepted = try container.decodeIfPresent(Bool.self, forKey: .ageRequirementAccepted) ?? false
         keepMicEnabled = try container.decodeIfPresent(Bool.self, forKey: .keepMicEnabled) ?? false
         showStatsOverlay = try container.decodeIfPresent(Bool.self, forKey: .showStatsOverlay) ?? true
         hideServerSelector = try container.decodeIfPresent(Bool.self, forKey: .hideServerSelector) ?? false
@@ -594,7 +853,18 @@ struct AppSettings: Codable, Equatable {
             preferredColorQuality = StreamColorQuality.eightBit420.rawValue
         }
         streamSharpeningAmount = min(max(streamSharpeningAmount, 0), 1)
+        mouseSensitivity = min(max(mouseSensitivity, 0.25), 3)
+        mouseAcceleration = min(max(mouseAcceleration, 0), 2)
+        posterSizeScale = min(max(posterSizeScale, 0.75), 1.35)
         sessionProxyUrl = sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if preferredRegion == "Auto" {
+            preferredRegion = ""
+        } else if !preferredRegion.isEmpty,
+                  URL(string: preferredRegion)?.scheme?.lowercased() != "https" {
+            // Older iOS builds stored display labels such as "US East" even
+            // though launches require the server-provided region URL.
+            preferredRegion = ""
+        }
     }
 
     func safeVideoFallback() -> AppSettings {
@@ -671,6 +941,99 @@ struct AppSettings: Codable, Equatable {
     }
 }
 
+enum CatalogWallpaperStorageError: LocalizedError {
+    case invalidImage
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidImage:
+            return "The selected file is not a supported image."
+        }
+    }
+}
+
+enum CatalogWallpaperStorage {
+    private static let directoryName = "CatalogWallpapers"
+    private static let managedFilenamePrefix = "catalog-wallpaper-"
+    private static let maximumPixelDimension = 2_560
+
+    static func storeSelectedImageData(_ data: Data) throws -> String {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw CatalogWallpaperStorageError.invalidImage
+        }
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelDimension
+        ] as CFDictionary
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions),
+              let encoded = UIImage(cgImage: image).jpegData(compressionQuality: 0.88) else {
+            throw CatalogWallpaperStorageError.invalidImage
+        }
+
+        let filename = "\(managedFilenamePrefix)\(UUID().uuidString).jpg"
+        let targetURL = try storageDirectory().appendingPathComponent(filename, isDirectory: false)
+        try encoded.write(to: targetURL, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: targetURL.path
+        )
+        return filename
+    }
+
+    static func wallpaperURL(for filename: String?) -> URL? {
+        guard let filename, isManagedFilename(filename),
+              let directory = try? storageDirectory() else {
+            return nil
+        }
+        let url = directory.appendingPathComponent(filename, isDirectory: false)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    static func pruneManagedWallpapers(keeping filename: String?) {
+        guard let directory = try? storageDirectory(),
+              let contents = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+              ) else {
+            return
+        }
+        for url in contents {
+            let candidate = url.lastPathComponent
+            guard isManagedFilename(candidate), candidate != filename else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private static func storageDirectory() throws -> URL {
+        let applicationSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let directory = applicationSupport
+            .appendingPathComponent("OpenNOW", isDirectory: true)
+            .appendingPathComponent(directoryName, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        )
+        return directory
+    }
+
+    private static func isManagedFilename(_ filename: String) -> Bool {
+        filename.hasPrefix(managedFilenamePrefix) &&
+            filename.hasSuffix(".jpg") &&
+            !filename.contains("/") &&
+            !filename.contains("\\")
+    }
+}
+
 struct StreamerPreferences: Codable, Equatable {
     var audioMuted: Bool
     var showStatsClock: Bool
@@ -679,6 +1042,9 @@ struct StreamerPreferences: Codable, Equatable {
     var touchControllerVisible: Bool
     var touchscreenModeEnabled: Bool
     var physicalControllerPassthrough: Bool
+    var statsStyle: StreamStatsStyle
+    var statsPosition: StreamStatsPosition
+    var stretchStreamToFill: Bool
 
     enum CodingKeys: String, CodingKey {
         case audioMuted
@@ -688,6 +1054,9 @@ struct StreamerPreferences: Codable, Equatable {
         case touchControllerVisible
         case touchscreenModeEnabled
         case physicalControllerPassthrough
+        case statsStyle
+        case statsPosition
+        case stretchStreamToFill
     }
 
     init(
@@ -697,7 +1066,10 @@ struct StreamerPreferences: Codable, Equatable {
         showStatsCellular: Bool,
         touchControllerVisible: Bool,
         touchscreenModeEnabled: Bool,
-        physicalControllerPassthrough: Bool
+        physicalControllerPassthrough: Bool,
+        statsStyle: StreamStatsStyle = .compact,
+        statsPosition: StreamStatsPosition = .right,
+        stretchStreamToFill: Bool = false
     ) {
         self.audioMuted = audioMuted
         self.showStatsClock = showStatsClock
@@ -706,6 +1078,9 @@ struct StreamerPreferences: Codable, Equatable {
         self.touchControllerVisible = touchControllerVisible
         self.touchscreenModeEnabled = touchscreenModeEnabled
         self.physicalControllerPassthrough = physicalControllerPassthrough
+        self.statsStyle = statsStyle
+        self.statsPosition = statsPosition
+        self.stretchStreamToFill = stretchStreamToFill
     }
 
     init(from decoder: Decoder) throws {
@@ -717,16 +1092,22 @@ struct StreamerPreferences: Codable, Equatable {
         touchControllerVisible = try container.decodeIfPresent(Bool.self, forKey: .touchControllerVisible) ?? Self.default.touchControllerVisible
         touchscreenModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .touchscreenModeEnabled) ?? Self.default.touchscreenModeEnabled
         physicalControllerPassthrough = try container.decodeIfPresent(Bool.self, forKey: .physicalControllerPassthrough) ?? Self.default.physicalControllerPassthrough
+        statsStyle = try container.decodeIfPresent(StreamStatsStyle.self, forKey: .statsStyle) ?? Self.default.statsStyle
+        statsPosition = try container.decodeIfPresent(StreamStatsPosition.self, forKey: .statsPosition) ?? Self.default.statsPosition
+        stretchStreamToFill = try container.decodeIfPresent(Bool.self, forKey: .stretchStreamToFill) ?? Self.default.stretchStreamToFill
     }
 
     static let `default` = StreamerPreferences(
-        audioMuted: true,
+        audioMuted: false,
         showStatsClock: false,
         showStatsBattery: false,
         showStatsCellular: false,
         touchControllerVisible: false,
         touchscreenModeEnabled: false,
-        physicalControllerPassthrough: true
+        physicalControllerPassthrough: true,
+        statsStyle: .compact,
+        statsPosition: .right,
+        stretchStreamToFill: false
     )
 }
 
@@ -946,7 +1327,7 @@ enum StreamSettingsResolver {
         }
     }
 
-    static let aspectRatioOptions = ["16:9", "16:10", "4:3", "5:4", "21:9", "24:10", "32:9"]
+    static let aspectRatioOptions = ["16:9", "16:10", "4:3", "5:4", "20:9", "21:9", "24:10", "32:9"]
 
     static let resolutionChoices: [StreamResolutionChoice] = [
         .init(value: "1280x720", aspectRatio: "16:9", tier: "720", requiredPlan: .free),
@@ -961,21 +1342,25 @@ enum StreamSettingsResolver {
         .init(value: "1112x834", aspectRatio: "4:3", tier: "834", requiredPlan: .free),
         .init(value: "1600x1200", aspectRatio: "4:3", tier: "1080", requiredPlan: .free),
         .init(value: "1280x1024", aspectRatio: "5:4", tier: "1050", requiredPlan: .free),
-        .init(value: "1680x720", aspectRatio: "21:9", tier: "720", requiredPlan: .priority),
+        .init(value: "1600x720", aspectRatio: "20:9", tier: "720", requiredPlan: .free),
+        .init(value: "1680x720", aspectRatio: "21:9", tier: "720", requiredPlan: .free),
+        .init(value: "2400x1080", aspectRatio: "20:9", tier: "1080", requiredPlan: .priority),
         .init(value: "2560x1080", aspectRatio: "21:9", tier: "1080", requiredPlan: .priority),
         .init(value: "3840x1080", aspectRatio: "32:9", tier: "1080", requiredPlan: .priority),
         .init(value: "2560x1440", aspectRatio: "16:9", tier: "1440", requiredPlan: .priority),
         .init(value: "2560x1600", aspectRatio: "16:10", tier: "1440", requiredPlan: .priority),
+        .init(value: "3200x1440", aspectRatio: "20:9", tier: "1440", requiredPlan: .priority),
         .init(value: "3440x1440", aspectRatio: "21:9", tier: "1440", requiredPlan: .priority),
         .init(value: "5120x1440", aspectRatio: "32:9", tier: "1440", requiredPlan: .priority),
         .init(value: "3840x1600", aspectRatio: "24:10", tier: "1440", requiredPlan: .priority),
         .init(value: "3840x2160", aspectRatio: "16:9", tier: "2160", requiredPlan: .ultimate),
         .init(value: "3456x2160", aspectRatio: "16:10", tier: "2160", requiredPlan: .ultimate),
+        .init(value: "4800x2160", aspectRatio: "20:9", tier: "2160", requiredPlan: .ultimate),
         .init(value: "5120x2160", aspectRatio: "21:9", tier: "2160", requiredPlan: .ultimate),
         .init(value: "5120x2880", aspectRatio: "16:9", tier: "2880", requiredPlan: .ultimate)
     ]
 
-    static let bitrateOptionsMbps: [Int] = [0, 10, 15, 25, 35, 50, 75, 100]
+    static let bitrateOptionsMbps: [Int] = [0] + Array(1...150)
 
     static var resolutionOptions: [(value: String, label: String)] {
         resolutionOptions(for: "16:9")
@@ -1007,16 +1392,20 @@ enum StreamSettingsResolver {
     static let keyboardLayoutOptions: [(value: String, label: String)] = [
         ("en-US", "English (US)"),
         ("en-GB", "English (UK)"),
+        ("tr-TR", "Turkish Q"),
         ("de-DE", "German"),
         ("fr-FR", "French"),
         ("es-ES", "Spanish"),
+        ("es-MX", "Spanish (Latin America)"),
         ("it-IT", "Italian"),
+        ("pt-PT", "Portuguese (Portugal)"),
         ("pt-BR", "Portuguese (Brazil)"),
         ("pl-PL", "Polish"),
-        ("tr-TR", "Turkish"),
+        ("ru-RU", "Russian"),
         ("ja-JP", "Japanese"),
         ("ko-KR", "Korean"),
-        ("zh-CN", "Chinese (Simplified)")
+        ("zh-CN", "Chinese (Simplified)"),
+        ("zh-TW", "Chinese (Traditional)")
     ]
 
     static let gameLanguageOptions: [(value: String, label: String)] = [
@@ -1027,13 +1416,29 @@ enum StreamSettingsResolver {
         ("es_ES", "Spanish"),
         ("es_MX", "Spanish (Latin America)"),
         ("it_IT", "Italian"),
+        ("pt_PT", "Portuguese (Portugal)"),
         ("pt_BR", "Portuguese (Brazil)"),
+        ("ru_RU", "Russian"),
         ("pl_PL", "Polish"),
         ("tr_TR", "Turkish"),
+        ("ar_SA", "Arabic"),
         ("ja_JP", "Japanese"),
         ("ko_KR", "Korean"),
         ("zh_CN", "Chinese (Simplified)"),
-        ("zh_TW", "Chinese (Traditional)")
+        ("zh_TW", "Chinese (Traditional)"),
+        ("th_TH", "Thai"),
+        ("vi_VN", "Vietnamese"),
+        ("id_ID", "Indonesian"),
+        ("cs_CZ", "Czech"),
+        ("el_GR", "Greek"),
+        ("hu_HU", "Hungarian"),
+        ("ro_RO", "Romanian"),
+        ("uk_UA", "Ukrainian"),
+        ("nl_NL", "Dutch"),
+        ("sv_SE", "Swedish"),
+        ("da_DK", "Danish"),
+        ("fi_FI", "Finnish"),
+        ("no_NO", "Norwegian")
     ]
 
     static func profile(for settings: AppSettings) -> StreamVideoProfile {
@@ -1058,6 +1463,60 @@ enum StreamSettingsResolver {
             membershipTier: membershipTier
         )
         #endif
+    }
+
+    static func settings(
+        _ settings: AppSettings,
+        applying preset: StreamPreset,
+        membershipTier: String? = nil
+    ) -> AppSettings {
+        var updated = settings
+        updated.streamPreset = preset
+        guard preset != .custom else { return updated }
+
+        let aspect = normalizedAspectRatio(settings.preferredAspectRatio)
+        let maxHeight: Int
+        switch preset {
+        case .custom: maxHeight = .max
+        case .lowDataSaver: maxHeight = 800
+        case .medium: maxHeight = 1_200
+        case .high: maxHeight = 1_600
+        }
+        let maxPlan = profilePlanLimit(for: membershipTier)
+        let choice = choices(forAspectRatio: aspect)
+            .filter { $0.requiredPlan <= maxPlan }
+            .filter { (parseResolution($0.value)?.height ?? .max) <= maxHeight }
+            .max { lhs, rhs in
+                let lhsPixels = parseResolution(lhs.value).map { $0.width * $0.height } ?? 0
+                let rhsPixels = parseResolution(rhs.value).map { $0.width * $0.height } ?? 0
+                return lhsPixels < rhsPixels
+            }
+            ?? choices(forAspectRatio: aspect).first
+            ?? resolutionChoices[0]
+        updated.preferredAspectRatio = choice.aspectRatio
+        updated.preferredResolution = choice.value
+        updated.preferredColorQuality = StreamColorQuality.eightBit420.rawValue
+        updated.hdrEnabled = false
+        updated.enableCloudGsync = false
+        switch preset {
+        case .custom:
+            break
+        case .lowDataSaver:
+            updated.preferredFPS = 30
+            updated.maxBitrateMbps = 12
+            updated.preferredQuality = "Data Saver"
+        case .medium:
+            updated.preferredFPS = 60
+            updated.maxBitrateMbps = 35
+            updated.preferredQuality = "Balanced"
+        case .high:
+            // Apple displays currently top out at 120 Hz. Requesting 360 FPS
+            // wastes bandwidth and decoder work without a visible benefit.
+            updated.preferredFPS = maxPlan >= .ultimate ? 120 : 60
+            updated.maxBitrateMbps = 75
+            updated.preferredQuality = "Quality"
+        }
+        return updated
     }
 
     static func sessionSignature(for settings: AppSettings) -> String {
@@ -1088,9 +1547,9 @@ enum StreamSettingsResolver {
         userInterfaceIdiom: UIUserInterfaceIdiom,
         membershipTier: String? = nil
     ) -> StreamVideoProfile {
-        let fps = normalizedFPS(settings.preferredFPS)
         let aspectRatio = normalizedAspectRatio(settings.preferredAspectRatio)
         let maxPlan = profilePlanLimit(for: membershipTier)
+        let fps = min(normalizedFPS(settings.preferredFPS), maxPlan >= .ultimate ? 120 : 60)
         let normalizedResolution = normalizedResolution(
             settings.preferredResolution,
             aspectRatio: aspectRatio,
@@ -1142,6 +1601,11 @@ enum StreamSettingsResolver {
            exact.requiredPlan <= maxPlan {
             return value
         }
+        if resolutionChoices.allSatisfy({ $0.value != value }),
+           let parsed = parseResolution(value),
+           customResolutionIsAvailable(width: parsed.width, height: parsed.height, maxPlan: maxPlan) {
+            return "\(parsed.width)x\(parsed.height)"
+        }
         let requestedTier = resolutionChoices.first(where: { $0.value == value })?.tier
             ?? resolutionTier(forHeight: parseResolution(value)?.height ?? 1080)
         if let preferred = preferredResolutionByTierAndAspect[requestedTier]?[normalizedAspect],
@@ -1159,6 +1623,31 @@ enum StreamSettingsResolver {
                 return lhsDistance == rhsDistance ? lhsPixels < rhsPixels : lhsDistance < rhsDistance
             }?
             .value ?? "1920x1080"
+    }
+
+    static func customResolutionIsAvailable(
+        width: Int,
+        height: Int,
+        membershipTier: String?
+    ) -> Bool {
+        customResolutionIsAvailable(width: width, height: height, maxPlan: plan(for: membershipTier))
+    }
+
+    private static func customResolutionIsAvailable(
+        width: Int,
+        height: Int,
+        maxPlan: StreamResolutionPlan
+    ) -> Bool {
+        guard width > 0, height > 0 else { return false }
+        let available = resolutionChoices.filter { $0.requiredPlan <= maxPlan }
+        guard !available.isEmpty else { return false }
+        let parsed = available.compactMap { parseResolution($0.value) }
+        guard let maxWidth = parsed.map(\.width).max(),
+              let maxHeight = parsed.map(\.height).max(),
+              let maxPixels = parsed.map({ $0.width * $0.height }).max() else {
+            return false
+        }
+        return width <= maxWidth && height <= maxHeight && width * height <= maxPixels
     }
 
     static func plan(for membershipTier: String?) -> StreamResolutionPlan {
@@ -1278,14 +1767,14 @@ enum StreamSettingsResolver {
     }
 
     private static let preferredResolutionByTierAndAspect: [String: [String: String]] = [
-        "720": ["16:9": "1280x720", "16:10": "1280x800", "4:3": "1024x768", "21:9": "1680x720"],
+        "720": ["16:9": "1280x720", "16:10": "1280x800", "4:3": "1024x768", "20:9": "1600x720", "21:9": "1680x720"],
         "768": ["16:9": "1366x768", "4:3": "1024x768"],
         "834": ["4:3": "1112x834"],
         "900": ["16:9": "1600x900", "16:10": "1440x900"],
         "1050": ["16:10": "1680x1050", "5:4": "1280x1024"],
-        "1080": ["16:9": "1920x1080", "16:10": "1920x1200", "4:3": "1600x1200", "21:9": "2560x1080", "32:9": "3840x1080"],
-        "1440": ["16:9": "2560x1440", "16:10": "2560x1600", "21:9": "3440x1440", "24:10": "3840x1600", "32:9": "5120x1440"],
-        "2160": ["16:9": "3840x2160", "16:10": "3456x2160", "21:9": "5120x2160"],
+        "1080": ["16:9": "1920x1080", "16:10": "1920x1200", "4:3": "1600x1200", "20:9": "2400x1080", "21:9": "2560x1080", "32:9": "3840x1080"],
+        "1440": ["16:9": "2560x1440", "16:10": "2560x1600", "20:9": "3200x1440", "21:9": "3440x1440", "24:10": "3840x1600", "32:9": "5120x1440"],
+        "2160": ["16:9": "3840x2160", "16:10": "3456x2160", "20:9": "4800x2160", "21:9": "5120x2160"],
         "2880": ["16:9": "5120x2880"]
     ]
 }
@@ -1662,7 +2151,11 @@ enum SessionAdAction: String, Codable {
 private final class OAuthWebAuthenticator: NSObject {
     private var session: ASWebAuthenticationSession?
 
-    func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+    func authenticate(
+        url: URL,
+        callbackScheme: String,
+        prefersEphemeralBrowserSession: Bool
+    ) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             TVAuthDiagnostics.record(
                 "Preparing ASWebAuthenticationSession host=\(url.host ?? "unknown") callbackScheme=\(callbackScheme)"
@@ -1703,7 +2196,7 @@ private final class OAuthWebAuthenticator: NSObject {
                 continuation.resume(throwing: authError)
             }
             authSession.presentationContextProvider = self
-            authSession.prefersEphemeralWebBrowserSession = false
+            authSession.prefersEphemeralWebBrowserSession = prefersEphemeralBrowserSession
             #endif
             self.session = authSession
             TVAuthDiagnostics.record("Starting ASWebAuthenticationSession canStart=\(authSession.canStart).")
@@ -1894,22 +2387,6 @@ private final class OAuthLoopbackServer: @unchecked Sendable {
     }
 }
 
-private final class GFNTLSDelegate: NSObject, URLSessionDelegate {
-    func urlSession(
-        _ session: URLSession,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let serverTrust = challenge.protectionSpace.serverTrust,
-              challenge.protectionSpace.host.hasSuffix("nvidiagrid.net") else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-        completionHandler(.useCredential, URLCredential(trust: serverTrust))
-    }
-}
-
 private enum StreamDeviceProfile {
     case desktop
     case mobileTouch
@@ -2012,22 +2489,26 @@ private actor GFNAPIClient {
     }
 
     private let session: URLSession = {
-        let delegate = GFNTLSDelegate()
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
-        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        return URLSession(configuration: config)
     }()
+    private let logger = Logger(subsystem: "OpenNOWiOS", category: "GFNAPI")
 
     private func request(
         url: URL,
         method: String = "GET",
         headers: [String: String],
         body: Data? = nil,
-        sessionSettings: AppSettings? = nil
+        sessionSettings: AppSettings? = nil,
+        timeoutInterval: TimeInterval? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.httpBody = body
+        if let timeoutInterval {
+            req.timeoutInterval = max(0.1, timeoutInterval)
+        }
         for (k, v) in headers {
             req.setValue(v, forHTTPHeaderField: k)
         }
@@ -2069,7 +2550,7 @@ private actor GFNAPIClient {
             "HTTPSProxy": proxyHost,
             "HTTPSPort": port
         ]
-        return URLSession(configuration: config, delegate: GFNTLSDelegate(), delegateQueue: nil)
+        return URLSession(configuration: config)
     }
 
     private func parseJSON(_ data: Data) throws -> [String: Any] {
@@ -2116,7 +2597,11 @@ private actor GFNAPIClient {
         }
     }
 
-    func login(with provider: LoginProvider, deviceId: String) async throws -> AuthSession {
+    func login(
+        with provider: LoginProvider,
+        deviceId: String,
+        forceAccountSelection: Bool = false
+    ) async throws -> AuthSession {
         let pending = makePendingOAuthLogin(with: provider, deviceId: deviceId)
         let callbackServer = OAuthLoopbackServer()
         let callbackURL: URL
@@ -2126,7 +2611,11 @@ private actor GFNAPIClient {
                 authUrl: pending.authURL,
                 callbackServer: callbackServer,
                 authenticate: { url, callbackScheme in
-                    try await Self.performOAuthSession(url: url, callbackScheme: callbackScheme)
+                    try await Self.performOAuthSession(
+                        url: url,
+                        callbackScheme: callbackScheme,
+                        prefersEphemeralBrowserSession: forceAccountSelection
+                    )
                 }
             )
             callbackURL = callbackResult.url
@@ -2144,7 +2633,8 @@ private actor GFNAPIClient {
             }
             callbackURL = try await Self.performOAuthSession(
                 url: pending.authURL,
-                callbackScheme: GFNConstants.oauthCallbackScheme
+                callbackScheme: GFNConstants.oauthCallbackScheme,
+                prefersEphemeralBrowserSession: forceAccountSelection
             )
             serverTask.cancel()
             #endif
@@ -2315,9 +2805,17 @@ private actor GFNAPIClient {
     }
 
     @MainActor
-    private static func performOAuthSession(url: URL, callbackScheme: String) async throws -> URL {
+    private static func performOAuthSession(
+        url: URL,
+        callbackScheme: String,
+        prefersEphemeralBrowserSession: Bool = false
+    ) async throws -> URL {
         let authenticator = OAuthWebAuthenticator()
-        return try await authenticator.authenticate(url: url, callbackScheme: callbackScheme)
+        return try await authenticator.authenticate(
+            url: url,
+            callbackScheme: callbackScheme,
+            prefersEphemeralBrowserSession: prefersEphemeralBrowserSession
+        )
     }
 
     #if os(tvOS)
@@ -2492,14 +2990,14 @@ private actor GFNAPIClient {
         return AuthSession(provider: existing.provider, tokens: newTokens, user: user)
     }
 
-    func fetchMainGames(session: AuthSession) async throws -> ([CloudGame], String) {
+    func fetchMainGames(session: AuthSession) async throws -> ([CloudGame], String, [StreamRegion]) {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let serverInfo = try await fetchServerInfo(token: token, streamingBaseUrl: session.provider.streamingServiceUrl)
         let vpcId = serverInfo.vpcId ?? "GFN-PC"
         let payload = try await fetchPanels(token: token, panelNames: ["MAIN"], vpcId: vpcId)
         let games = Self.flattenPanels(payload: payload)
         let enrichedGames = (try? await enrichGamesWithMetadata(token: token, vpcId: vpcId, games: games)) ?? games
-        return (enrichedGames, vpcId)
+        return (enrichedGames, vpcId, serverInfo.regions)
     }
 
     func fetchLibraryGames(session: AuthSession, vpcId: String) async throws -> [CloudGame] {
@@ -3715,7 +4213,7 @@ private actor GFNAPIClient {
         ]
     }
 
-    private func fetchServerInfo(token: String, streamingBaseUrl: String) async throws -> (vpcId: String?, regions: [String]) {
+    private func fetchServerInfo(token: String, streamingBaseUrl: String) async throws -> (vpcId: String?, regions: [StreamRegion]) {
         let normalized = streamingBaseUrl.hasSuffix("/") ? streamingBaseUrl : "\(streamingBaseUrl)/"
         let (data, response) = try await request(
             url: URL(string: "\(normalized)v2/serverInfo")!,
@@ -3738,8 +4236,26 @@ private actor GFNAPIClient {
         let requestStatus = json["requestStatus"] as? [String: Any]
         let vpcId = requestStatus?["serverId"] as? String
         let metadata = json["metaData"] as? [[String: Any]] ?? []
-        let regionNames = metadata.compactMap { $0["key"] as? String }.filter { !$0.starts(with: "gfn-") && $0 != "gfn-regions" }
-        return (vpcId, regionNames)
+        let regions = metadata.compactMap { entry -> StreamRegion? in
+            guard let key = entry["key"] as? String,
+                  key != "gfn-regions",
+                  !key.starts(with: "gfn-"),
+                  let rawValue = entry["value"] as? String,
+                  var components = URLComponents(string: rawValue),
+                  components.scheme?.lowercased() == "https",
+                  components.host != nil else {
+                return nil
+            }
+            if components.path.isEmpty {
+                components.path = "/"
+            } else if !components.path.hasSuffix("/") {
+                components.path += "/"
+            }
+            guard let normalizedURL = components.url?.absoluteString else { return nil }
+            return StreamRegion(name: key, url: normalizedURL)
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return (vpcId, regions)
     }
 
     private func fetchPanels(token: String, panelNames: [String], vpcId: String) async throws -> [String: Any] {
@@ -3783,7 +4299,12 @@ private actor GFNAPIClient {
         return try parseJSON(data)
     }
 
-    private func fetchAppMetadata(token: String, appIds: [String], vpcId: String) async throws -> [String: Any] {
+    private func fetchAppMetadata(
+        token: String,
+        appIds: [String],
+        vpcId: String,
+        timeoutInterval: TimeInterval? = nil
+    ) async throws -> [String: Any] {
         let uniqueAppIds = Array(Set(appIds.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }))
         guard !uniqueAppIds.isEmpty else {
             return ["data": ["apps": ["items": []]]]
@@ -3821,7 +4342,8 @@ private actor GFNAPIClient {
                 "nv-device-model": "UNKNOWN",
                 "nv-browser-type": "CHROME",
                 "User-Agent": GFNConstants.userAgent
-            ]
+            ],
+            timeoutInterval: timeoutInterval
         )
         guard response.statusCode == 200 else {
             let text = String(data: data, encoding: .utf8) ?? "unknown"
@@ -3830,27 +4352,139 @@ private actor GFNAPIClient {
         return try parseJSON(data)
     }
 
+    private func fetchAppMetadataWithRegistryRetry(
+        token: String,
+        appIds: [String],
+        vpcId: String,
+        deadline: Date,
+        allowSplit: Bool = true
+    ) async throws -> [String: Any] {
+        var lastPayload: [String: Any] = [:]
+        var lastRegistryError: Error?
+        for attempt in 0..<3 {
+            let remainingTime = deadline.timeIntervalSinceNow
+            guard remainingTime > 0 else {
+                throw NSError(
+                    domain: "OpenNOW.GameMetadata",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Catalog metadata refresh deadline exceeded"]
+                )
+            }
+            let payload: [String: Any]
+            do {
+                payload = try await fetchAppMetadata(
+                    token: token,
+                    appIds: appIds,
+                    vpcId: vpcId,
+                    timeoutInterval: min(10, remainingTime)
+                )
+            } catch {
+                guard error.localizedDescription.localizedCaseInsensitiveContains("PersistedQueryNotFound") ||
+                        error.localizedDescription.localizedCaseInsensitiveContains("PERSISTED_QUERY_NOT_FOUND") else {
+                    throw error
+                }
+                lastRegistryError = error
+                if attempt < 2 {
+                    try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 150_000_000)
+                }
+                continue
+            }
+            lastPayload = payload
+            let errors = payload["errors"] as? [[String: Any]] ?? []
+            let registryMiss = errors.contains { error in
+                let message = (error["message"] as? String) ?? ""
+                let code = (error["extensions"] as? [String: Any])?["code"] as? String ?? ""
+                return message.localizedCaseInsensitiveContains("PersistedQueryNotFound") ||
+                    code.localizedCaseInsensitiveContains("PERSISTED_QUERY_NOT_FOUND")
+            }
+            guard registryMiss else { return payload }
+            if attempt < 2 {
+                try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 150_000_000)
+            }
+        }
+
+        if allowSplit, appIds.count > 1 {
+            let midpoint = appIds.count / 2
+            let subchunks = [Array(appIds[..<midpoint]), Array(appIds[midpoint...])]
+            var combinedItems: [[String: Any]] = []
+            var successfulSubchunks = 0
+            for subchunk in subchunks where !subchunk.isEmpty {
+                let payload: [String: Any]
+                do {
+                    payload = try await fetchAppMetadataWithRegistryRetry(
+                        token: token,
+                        appIds: subchunk,
+                        vpcId: vpcId,
+                        deadline: deadline,
+                        allowSplit: false
+                    )
+                } catch {
+                    logger.warning("Catalog metadata subchunk unavailable size=\(subchunk.count, privacy: .public)")
+                    continue
+                }
+                let errors = payload["errors"] as? [[String: Any]] ?? []
+                guard errors.isEmpty else {
+                    logger.warning("Catalog metadata subchunk unavailable size=\(subchunk.count, privacy: .public)")
+                    continue
+                }
+                successfulSubchunks += 1
+                let data = payload["data"] as? [String: Any]
+                let apps = data?["apps"] as? [String: Any]
+                combinedItems.append(contentsOf: apps?["items"] as? [[String: Any]] ?? [])
+            }
+            if successfulSubchunks > 0 {
+                return ["data": ["apps": ["items": combinedItems]]]
+            }
+        }
+        if let lastRegistryError {
+            throw lastRegistryError
+        }
+        return lastPayload
+    }
+
     private func enrichGamesWithMetadata(token: String, vpcId: String, games: [CloudGame]) async throws -> [CloudGame] {
         let appIds = Array(Set(games.compactMap(\.uuid)))
         guard !appIds.isEmpty else { return games }
 
         var metadataById: [String: [String: Any]] = [:]
+        var lastError: Error?
+        let deadline = Date().addingTimeInterval(20)
         let chunkSize = 40
         for start in stride(from: 0, to: appIds.count, by: chunkSize) {
+            guard Date() < deadline else {
+                logger.warning("Catalog metadata enrichment stopped at its 20-second deadline")
+                break
+            }
             let chunk = Array(appIds[start..<min(start + chunkSize, appIds.count)])
-            let payload = try await fetchAppMetadata(token: token, appIds: chunk, vpcId: vpcId)
-            if let errors = payload["errors"] as? [[String: Any]], !errors.isEmpty {
-                let message = errors.compactMap { $0["message"] as? String }.joined(separator: ", ")
-                throw NSError(domain: "OpenNOW.GameMetadata", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
-            }
-            let data = payload["data"] as? [String: Any]
-            let apps = data?["apps"] as? [String: Any]
-            let items = apps?["items"] as? [[String: Any]] ?? []
-            for app in items {
-                if let id = app["id"] as? String {
-                    metadataById[id] = app
+            do {
+                let payload = try await fetchAppMetadataWithRegistryRetry(
+                    token: token,
+                    appIds: chunk,
+                    vpcId: vpcId,
+                    deadline: deadline
+                )
+                if let errors = payload["errors"] as? [[String: Any]], !errors.isEmpty {
+                    let message = errors.compactMap { $0["message"] as? String }.joined(separator: ", ")
+                    throw NSError(domain: "OpenNOW.GameMetadata", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
                 }
+                let data = payload["data"] as? [String: Any]
+                let apps = data?["apps"] as? [String: Any]
+                let items = apps?["items"] as? [[String: Any]] ?? []
+                for app in items {
+                    if let id = app["id"] as? String {
+                        metadataById[id] = app
+                    }
+                }
+            } catch {
+                lastError = error
+                logger.warning(
+                    "Catalog metadata chunk failed size=\(chunk.count, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
             }
+        }
+
+        if metadataById.isEmpty, let lastError {
+            throw lastError
         }
 
         return games.map { game in
@@ -3953,6 +4587,9 @@ private actor GFNAPIClient {
         for panel in panels {
             let sections = panel["sections"] as? [[String: Any]] ?? []
             for section in sections {
+                let sectionId = toOptionalString(section["id"])
+                let sectionTitle = toOptionalString(section["title"])
+                    ?? toOptionalString(section["name"])
                 let items = section["items"] as? [[String: Any]] ?? []
                 for item in items {
                     guard let type = item["__typename"] as? String, type == "GameItem",
@@ -3996,13 +4633,25 @@ private actor GFNAPIClient {
                     }
                     let store = launchOptions.first?.storefront ?? (selectedVariant?["appStore"] as? String) ?? "Unknown"
                     let id = "\(appId):\(selectedVariantId ?? "default")"
-                    let imageUrl: String? = {
-                        guard let images = app["images"] as? [String: Any] else { return nil }
-                        let raw = (images["TV_BANNER"] as? String)
-                            ?? (images["HERO_IMAGE"] as? String)
-                            ?? (images["GAME_BOX_ART"] as? String)
-                        return optimizedImageURL(raw)
-                    }()
+                    let images = app["images"] as? [String: Any]
+                    let boxArtUrl = optimizedImageURL(
+                        (images?["GAME_BOX_ART"] as? String)
+                            ?? (images?["KEY_ART"] as? String)
+                            ?? (images?["HERO_IMAGE"] as? String)
+                            ?? (images?["TV_BANNER"] as? String)
+                    )
+                    let heroImageUrl = optimizedImageURL(
+                        (images?["HERO_IMAGE"] as? String)
+                            ?? (images?["TV_BANNER"] as? String)
+                            ?? (images?["KEY_ART"] as? String)
+                            ?? (images?["GAME_BOX_ART"] as? String)
+                    )
+                    let tvBannerUrl = optimizedImageURL(
+                        (images?["TV_BANNER"] as? String)
+                            ?? (images?["HERO_IMAGE"] as? String)
+                            ?? (images?["KEY_ART"] as? String)
+                            ?? (images?["GAME_BOX_ART"] as? String)
+                    )
                     if seen.contains(id) { continue }
                     seen.insert(id)
                     let genre = (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
@@ -4027,7 +4676,10 @@ private actor GFNAPIClient {
                             genre: genre,
                             platform: store,
                             icon: icon,
-                            imageUrl: imageUrl,
+                            imageUrl: boxArtUrl,
+                            boxArtUrl: boxArtUrl,
+                            heroImageUrl: heroImageUrl,
+                            tvBannerUrl: tvBannerUrl,
                             launchAppId: launchAppId,
                             launchOptions: launchOptions,
                             uuid: appId,
@@ -4040,7 +4692,10 @@ private actor GFNAPIClient {
                             tags: metadata.tags,
                             stores: metadata.stores,
                             playType: metadata.playType,
-                            membershipTierLabel: metadata.membershipTierLabel
+                            membershipTierLabel: metadata.membershipTierLabel,
+                            catalogSectionId: sectionId,
+                            catalogSectionTitle: sectionTitle,
+                            contentRatings: GFNContentRatingParser.labels(from: app["contentRatings"])
                         )
                     )
                 }
@@ -4112,13 +4767,25 @@ private actor GFNAPIClient {
             selectedVariant: selectedVariant(for: game, app: app),
             launchOptions: launchOptions(for: game, app: app)
         )
-        let imageUrl: String? = {
-            guard let images = app["images"] as? [String: Any] else { return game.imageUrl }
-            let raw = (images["TV_BANNER"] as? String)
-                ?? (images["HERO_IMAGE"] as? String)
-                ?? (images["GAME_BOX_ART"] as? String)
-            return optimizedImageURL(raw) ?? game.imageUrl
-        }()
+        let images = app["images"] as? [String: Any]
+        let boxArtUrl = optimizedImageURL(
+            (images?["GAME_BOX_ART"] as? String)
+                ?? (images?["KEY_ART"] as? String)
+                ?? (images?["HERO_IMAGE"] as? String)
+                ?? (images?["TV_BANNER"] as? String)
+        ) ?? game.boxArtUrl ?? game.imageUrl
+        let heroImageUrl = optimizedImageURL(
+            (images?["HERO_IMAGE"] as? String)
+                ?? (images?["TV_BANNER"] as? String)
+                ?? (images?["KEY_ART"] as? String)
+                ?? (images?["GAME_BOX_ART"] as? String)
+        ) ?? game.heroImageUrl
+        let tvBannerUrl = optimizedImageURL(
+            (images?["TV_BANNER"] as? String)
+                ?? (images?["HERO_IMAGE"] as? String)
+                ?? (images?["KEY_ART"] as? String)
+                ?? (images?["GAME_BOX_ART"] as? String)
+        ) ?? game.tvBannerUrl
 
         return CloudGame(
             id: game.id,
@@ -4126,7 +4793,10 @@ private actor GFNAPIClient {
             genre: game.genre,
             platform: game.platform,
             icon: game.icon,
-            imageUrl: imageUrl,
+            imageUrl: boxArtUrl,
+            boxArtUrl: boxArtUrl,
+            heroImageUrl: heroImageUrl,
+            tvBannerUrl: tvBannerUrl,
             launchAppId: game.launchAppId,
             launchOptions: launchOptions(for: game, app: app),
             uuid: game.uuid,
@@ -4139,7 +4809,13 @@ private actor GFNAPIClient {
             tags: metadata.tags ?? game.tags,
             stores: metadata.stores ?? game.stores,
             playType: metadata.playType ?? game.playType,
-            membershipTierLabel: metadata.membershipTierLabel ?? game.membershipTierLabel
+            membershipTierLabel: metadata.membershipTierLabel ?? game.membershipTierLabel,
+            catalogSectionId: game.catalogSectionId,
+            catalogSectionTitle: game.catalogSectionTitle,
+            contentRatings: GFNContentRatingParser.merging(
+                GFNContentRatingParser.labels(from: app["contentRatings"]),
+                game.contentRatings
+            )
         )
     }
 
@@ -4191,17 +4867,7 @@ private actor GFNAPIClient {
     }
 
     private static func toOptionalStringArray(_ value: Any?) -> [String]? {
-        if let list = value as? [String] {
-            let cleaned = list.compactMap { toOptionalString($0) }
-            return cleaned.isEmpty ? nil : cleaned
-        }
-        if let list = value as? [[String: Any]] {
-            let cleaned = list.compactMap {
-                toOptionalString($0["name"]) ?? toOptionalString($0["title"]) ?? toOptionalString($0["label"])
-            }
-            return cleaned.isEmpty ? nil : cleaned
-        }
-        return nil
+        GFNCatalogLabelParser.labels(from: value)
     }
 
     private static func formatReleaseDate(_ raw: String?) -> String? {
@@ -4504,6 +5170,56 @@ private enum URLQueryItemEncoder {
     }
 }
 
+private enum AuthKeychainStore {
+    private static let service = "com.opencloudgaming.opennow.auth"
+    private static let account = "OpenNOW.iOS.authState"
+
+    static func load() -> Data? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else {
+            return nil
+        }
+        return result as? Data
+    }
+
+    @discardableResult
+    static func save(_ data: Data) -> Bool {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ]
+        let attributes: [CFString: Any] = [
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+        guard updateStatus == errSecItemNotFound else { return false }
+        var item = query
+        attributes.forEach { item[$0.key] = $0.value }
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func delete() {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
 @MainActor
 final class OpenNOWStore: ObservableObject {
     @Published private(set) var user: UserProfile?
@@ -4518,6 +5234,7 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var subscription: SubscriptionSnapshot?
     @Published private(set) var savedAccounts: [SavedAccount] = []
     @Published private(set) var accountConnectors: [AccountConnector] = []
+    @Published private(set) var availableRegions: [StreamRegion] = []
     @Published private(set) var loadingAccountConnectors = false
     @Published private(set) var connectorActionStore: String?
     @Published var settings: AppSettings
@@ -4556,6 +5273,7 @@ final class OpenNOWStore: ObservableObject {
     private var adStartedAtById: [String: Date] = [:]
     private var reopenToken: UUID = UUID()
     private var currentScenePhase: ScenePhase = .active
+    private var sessionPollBackgroundAllowanceConsumed = false
     #if os(tvOS)
     private var tvAuthLogObserver: NSObjectProtocol?
     #endif
@@ -4578,6 +5296,10 @@ final class OpenNOWStore: ObservableObject {
         }
         loadedSettings.normalizeStreamDefaults()
         settings = loadedSettings
+        let retainedWallpaperFilename = loadedSettings.catalogWallpaperFilename
+        Task.detached(priority: .utility) {
+            CatalogWallpaperStorage.pruneManagedWallpapers(keeping: retainedWallpaperFilename)
+        }
         let loadedAuthState = Self.loadAuthState(from: defaults)
         authSession = loadedAuthState.activeSession
         savedAccounts = loadedAuthState.savedAccounts
@@ -4587,6 +5309,13 @@ final class OpenNOWStore: ObservableObject {
             settings.selectedProviderIdpId = provider.idpId
         }
         activeSession = Self.loadActiveSession(from: defaults)
+        #if DEBUG
+        if activeSession?.id == "debug-queue-preview" {
+            activeSession = nil
+            defaults.removeObject(forKey: activeSessionSnapshotKey)
+            defaults.removeObject(forKey: activeStreamSettingsKey)
+        }
+        #endif
         activeStreamSettings = activeSession == nil ? nil : Self.loadActiveStreamSettings(from: defaults)
         user = authSession?.user
         if let authSession {
@@ -4637,6 +5366,33 @@ final class OpenNOWStore: ObservableObject {
     var cloudStorageAddURL: URL { GFNConstants.storageAddURL }
     var accountHelpURL: URL { GFNConstants.accountHelpURL }
 
+    var diagnosticsReport: String {
+        let profile = StreamSettingsResolver.profile(
+            for: currentStreamerSettings,
+            membershipTier: subscription?.membershipTier ?? user?.membershipTier
+        )
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let provider = authSession?.provider.code ?? "signed-out"
+        let tier = subscription?.membershipTier ?? user?.membershipTier ?? "unknown"
+        let active = activeSession
+        let negotiated = active?.negotiatedStreamProfile
+        let lines = [
+            "OpenNOW iOS \(appVersion) (\(buildNumber))",
+            "Platform: \(OpenNOWPlatform.displayName) \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+            "Distribution: App Store compatible build; no self-updater",
+            "Provider/Tier: \(provider) / \(tier)",
+            "Catalog: \(allGames.count) games, \(libraryGames.count) library, \(availableRegions.count) regions",
+            "Requested: \(profile.width)x\(profile.height) @ \(profile.fps) fps, \(profile.maxBitrateKbps / 1_000) Mbps, \(currentStreamerSettings.preferredCodec)",
+            "Features: HDR=\(currentStreamerSettings.hdrEnabled) L4S=\(currentStreamerSettings.enableL4S) GSync=\(currentStreamerSettings.enableCloudGsync)",
+            "Codec probe: \(NativeStreamCodecProbe.report().summary)",
+            "Session: \(active == nil ? "none" : "active") status=\(active?.status ?? -1) queue=\(active?.queuePosition ?? -1)",
+            "Negotiated: \(negotiated?.resolution ?? "unknown") @ \(negotiated?.fps.map { String($0) } ?? "unknown") fps, \(negotiated?.codec ?? "unknown")",
+            String(format: "Telemetry: %d fps, %d ms, %.2f%% loss, %.1f Mbps", telemetry.fps, telemetry.pingMs, telemetry.packetLossPercent, telemetry.bitrateMbps)
+        ]
+        return lines.joined(separator: "\n")
+    }
+
     func bootstrap() async {
         guard isBootstrapping else { return }
 
@@ -4667,7 +5423,82 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
-    func signIn() async {
+    #if DEBUG
+    func installDebugQueuePreview(position: Int) {
+        guard activeSession?.id != "debug-queue-preview" else { return }
+        let heroUrl = "https://cdn.cloudflare.steamstatic.com/steam/apps/714010/library_hero.jpg"
+        let boxArtUrl = "https://cdn.cloudflare.steamstatic.com/steam/apps/714010/library_600x900.jpg"
+        let game = CloudGame(
+            id: "debug-aimlabs",
+            title: "Aimlabs",
+            genre: "Action",
+            platform: "Steam",
+            icon: "scope",
+            imageUrl: boxArtUrl,
+            boxArtUrl: boxArtUrl,
+            heroImageUrl: heroUrl,
+            tvBannerUrl: heroUrl,
+            launchAppId: "714010",
+            launchOptions: [GameLaunchOption(storefront: "STEAM", appId: "714010", supportedControls: ["GAMEPAD", "KEYBOARD_MOUSE"])],
+            uuid: "debug-aimlabs",
+            summary: "Training and warmup",
+            longDescription: nil,
+            publisher: "Statespace",
+            developer: "Statespace",
+            releaseDate: nil,
+            featureLabels: ["Gamepad", "Keyboard & Mouse"],
+            tags: ["Action"],
+            stores: ["STEAM"],
+            playType: "Single Player",
+            membershipTierLabel: nil,
+            catalogSectionId: nil,
+            catalogSectionTitle: nil,
+            contentRatings: ["ESRB T"]
+        )
+        activeSession = ActiveSession(
+            id: "debug-queue-preview",
+            game: game,
+            startedAt: Date(),
+            status: 1,
+            queuePosition: max(1, position),
+            seatSetupStep: 1,
+            serverIp: nil,
+            mediaIp: nil,
+            mediaPort: 0,
+            signalingServer: nil,
+            signalingUrl: nil,
+            iceServers: [],
+            zone: "NP-DAL-01",
+            streamingBaseUrl: "https://preview.invalid",
+            clientId: "preview",
+            deviceId: "preview",
+            adState: nil
+        )
+        activeStreamSettings = settings
+        settings.queueLiveActivitiesEnabled = true
+        isBootstrapping = false
+        showStreamLoading = true
+        queueOverlayVisible = true
+        defaults.removeObject(forKey: activeSessionSnapshotKey)
+        defaults.removeObject(forKey: activeStreamSettingsKey)
+        Task {
+            await QueueLiveActivityManager.shared.sync(
+                sessionId: "debug-queue-preview",
+                gameTitle: game.title,
+                storeName: "Steam",
+                state: QueueActivityAttributes.ContentState(
+                    phase: .queued,
+                    headline: "In queue",
+                    detail: position == 1 ? "A cloud rig is nearly ready" : "Queue #\(max(1, position))",
+                    queueLabel: position == 1 ? "Soon" : "Q\(max(1, position))",
+                    queuePosition: max(1, position)
+                )
+            )
+        }
+    }
+    #endif
+
+    func signIn(forceAccountSelection: Bool = false) async {
         lastError = nil
         isAuthenticating = true
         defer { isAuthenticating = false }
@@ -4682,7 +5513,11 @@ final class OpenNOWStore: ObservableObject {
 
         let provider = providers.first(where: { $0.idpId == settings.selectedProviderIdpId }) ?? GFNConstants.defaultProvider
         do {
-            let session = try await api.login(with: provider, deviceId: persistentDeviceId())
+            let session = try await api.login(
+                with: provider,
+                deviceId: persistentDeviceId(),
+                forceAccountSelection: forceAccountSelection
+            )
             authSession = session
             user = session.user
             persistAuthSession(session)
@@ -4791,6 +5626,7 @@ final class OpenNOWStore: ObservableObject {
         adReportStateById = [:]
         adStartedAtById = [:]
         accountConnectors = []
+        availableRegions = []
         loadingAccountConnectors = false
         connectorActionStore = nil
         syncTrackedSessionSurface()
@@ -4810,9 +5646,12 @@ final class OpenNOWStore: ObservableObject {
                 hydrateCachedCatalog(for: refreshed, onlyMissing: true)
             }
 
-            let (mainGames, vpcId) = try await api.fetchMainGames(session: refreshed)
+            let (fetchedMainGames, vpcId, regions) = try await api.fetchMainGames(session: refreshed)
             cachedVpcId = vpcId
-            let library = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
+            availableRegions = regions
+            let mainGames = preservingCatalogMetadata(in: fetchedMainGames, from: allGames)
+            let fetchedLibrary = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
+            let library = preservingCatalogMetadata(in: fetchedLibrary, from: libraryGames + allGames)
             let sub = try? await api.fetchSubscription(session: refreshed, vpcId: vpcId)
             let connectors = try? await api.fetchAccountConnectors(session: refreshed)
 
@@ -4839,7 +5678,7 @@ final class OpenNOWStore: ObservableObject {
                     settings: streamSettings,
                     deviceId: persistentDeviceId()
                 )
-                resumableSessions = compatibleRemoteSessions(remoteSessions, settings: streamSettings, session: refreshed)
+                resumableSessions = remoteSessions.filter(remoteSessionIsLaunchable)
                 remoteSessionsSnapshotLoaded = true
             } catch {
                 remoteSessionsSnapshotLoaded = false
@@ -4865,6 +5704,18 @@ final class OpenNOWStore: ObservableObject {
                 hydrateCachedCatalog(for: session, onlyMissing: true)
             }
             lastError = "Failed to load games: \(error.localizedDescription)"
+        }
+    }
+
+    private func preservingCatalogMetadata(in games: [CloudGame], from fallbackGames: [CloudGame]) -> [CloudGame] {
+        let byID = Dictionary(fallbackGames.map { ($0.id, $0) }, uniquingKeysWith: { current, _ in current })
+        let byUUID = Dictionary(
+            fallbackGames.compactMap { game in game.uuid.map { ($0, game) } },
+            uniquingKeysWith: { current, _ in current }
+        )
+        return games.map { game in
+            let fallback = byID[game.id] ?? game.uuid.flatMap { byUUID[$0] }
+            return game.fillingMissingMetadata(from: fallback)
         }
     }
 
@@ -4979,7 +5830,10 @@ final class OpenNOWStore: ObservableObject {
             }
 
             let deviceId = persistentDeviceId()
-            let baseUrl = zoneUrl ?? refreshed.provider.streamingServiceUrl
+            let configuredRegion = launchSettings.preferredRegion.trimmingCharacters(in: .whitespacesAndNewlines)
+            let baseUrl = zoneUrl
+                ?? (configuredRegion.isEmpty ? nil : configuredRegion)
+                ?? refreshed.provider.streamingServiceUrl
             let activeCandidates: [RemoteSessionCandidate]
             do {
                 activeCandidates = try await api.fetchActiveSessions(
@@ -4997,7 +5851,7 @@ final class OpenNOWStore: ObservableObject {
             }
 
             let compatibleCandidates = compatibleRemoteSessions(activeCandidates, settings: launchSettings, session: refreshed)
-            resumableSessions = compatibleCandidates
+            resumableSessions = activeCandidates.filter(remoteSessionIsLaunchable)
             let staleLaunchCandidate = activeCandidates.first {
                 $0.appId == launchAppId
                     && remoteSessionIsLaunchable($0)
@@ -5234,7 +6088,7 @@ final class OpenNOWStore: ObservableObject {
                 settings: streamSettings,
                 deviceId: persistentDeviceId()
             )
-            resumableSessions = compatibleRemoteSessions(remoteSessions, settings: streamSettings, session: refreshed)
+            resumableSessions = remoteSessions.filter(remoteSessionIsLaunchable)
             remoteSessionsSnapshotLoaded = true
         } catch {
             remoteSessionsSnapshotLoaded = false
@@ -5291,17 +6145,12 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(session)
             authSession = refreshed
             persistAuthSession(refreshed)
-            let streamSettings = nativeLaunchSettings(for: settings, context: "resumeSession")
-            guard remoteSession(candidate, matchesStreamSettings: streamSettings, session: refreshed) else {
-                resumableSessions.removeAll { $0.id == candidate.id }
-                throw NSError(
-                    domain: "OpenNOW.Session",
-                    code: 41,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "No active session matches the current stream resolution. Start the game again to recreate it."
-                    ]
-                )
-            }
+            let requestedSettings = nativeLaunchSettings(for: settings, context: "resumeSession")
+            let streamSettings = streamSettingsByAdoptingRemoteProfile(
+                candidate,
+                base: requestedSettings,
+                session: refreshed
+            )
             let claimed = try await api.claimSession(
                 session: refreshed,
                 candidate: candidate,
@@ -5387,6 +6236,7 @@ final class OpenNOWStore: ObservableObject {
             lastError = "Stop session failed: \(error.localizedDescription)"
         }
         clearLocalSessionState(reason: "endSession.completed")
+        resumableSessions.removeAll { $0.id == active.id }
     }
 
     private func terminateAllSessions(reason: String) async {
@@ -5525,7 +6375,9 @@ final class OpenNOWStore: ObservableObject {
             }
 
             let deviceId = persistentDeviceId()
-            let baseUrl = refreshed.provider.streamingServiceUrl
+            let baseUrl = previous.streamingBaseUrl.isEmpty
+                ? refreshed.provider.streamingServiceUrl
+                : previous.streamingBaseUrl
             let started = try await api.startSession(
                 session: refreshed,
                 game: game,
@@ -5709,6 +6561,12 @@ final class OpenNOWStore: ObservableObject {
 
     func handleScenePhase(_ phase: ScenePhase) {
         currentScenePhase = phase
+        if phase == .active {
+            sessionPollBackgroundAllowanceConsumed = false
+            endSessionPollBackgroundTask()
+        } else if activeSession != nil {
+            refreshSessionPollBackgroundTask()
+        }
         syncTrackedSessionSurface()
     }
 
@@ -5788,6 +6646,7 @@ final class OpenNOWStore: ObservableObject {
         settings = .default
         settings.normalizeStreamDefaults()
         persistSettings()
+        CatalogWallpaperStorage.pruneManagedWallpapers(keeping: nil)
         refreshTrackedSessionSurface()
     }
 
@@ -5823,6 +6682,7 @@ final class OpenNOWStore: ObservableObject {
         settings = .default
         settings.normalizeStreamDefaults()
         persistSettings()
+        CatalogWallpaperStorage.pruneManagedWallpapers(keeping: nil)
         clearAccountScopedState()
     }
 
@@ -5840,6 +6700,70 @@ final class OpenNOWStore: ObservableObject {
         settings.streamerPreferences = preferences
         if activeStreamSettings != nil {
             activeStreamSettings?.streamerPreferences = preferences
+            syncTrackedSessionSurface()
+        }
+        persistSettings()
+    }
+
+    func setStreamTutorialCompleted(_ completed: Bool) {
+        let activeStreamNeedsUpdate = activeStreamSettings.map { $0.streamTutorialCompleted != completed } ?? false
+        guard settings.streamTutorialCompleted != completed || activeStreamNeedsUpdate else {
+            return
+        }
+        settings.streamTutorialCompleted = completed
+        if activeStreamSettings != nil {
+            activeStreamSettings?.streamTutorialCompleted = completed
+            syncTrackedSessionSurface()
+        }
+        persistSettings()
+    }
+
+    func setControllerTouchPromptDismissed(_ dismissed: Bool) {
+        let activeStreamNeedsUpdate = activeStreamSettings.map { $0.controllerTouchPromptDismissed != dismissed } ?? false
+        guard settings.controllerTouchPromptDismissed != dismissed || activeStreamNeedsUpdate else {
+            return
+        }
+        settings.controllerTouchPromptDismissed = dismissed
+        if activeStreamSettings != nil {
+            activeStreamSettings?.controllerTouchPromptDismissed = dismissed
+            syncTrackedSessionSurface()
+        }
+        persistSettings()
+    }
+
+    func updateStreamSharpening(enabled: Bool, amount: Double) {
+        let normalizedAmount = min(max(amount, 0), 1)
+        settings.streamSharpeningEnabled = enabled
+        settings.streamSharpeningAmount = normalizedAmount
+        if activeStreamSettings != nil {
+            activeStreamSettings?.streamSharpeningEnabled = enabled
+            activeStreamSettings?.streamSharpeningAmount = normalizedAmount
+            syncTrackedSessionSurface()
+        }
+        persistSettings()
+    }
+
+    func updateFingerMouseEnabled(_ enabled: Bool) {
+        let activeStreamNeedsUpdate = activeStreamSettings.map { $0.fingerMouseEnabled != enabled } ?? false
+        guard settings.fingerMouseEnabled != enabled || activeStreamNeedsUpdate else {
+            return
+        }
+        settings.fingerMouseEnabled = enabled
+        if activeStreamSettings != nil {
+            activeStreamSettings?.fingerMouseEnabled = enabled
+            syncTrackedSessionSurface()
+        }
+        persistSettings()
+    }
+
+    func updatePhoneRumbleFallback(_ enabled: Bool) {
+        let activeStreamNeedsUpdate = activeStreamSettings.map { $0.phoneRumbleFallback != enabled } ?? false
+        guard settings.phoneRumbleFallback != enabled || activeStreamNeedsUpdate else {
+            return
+        }
+        settings.phoneRumbleFallback = enabled
+        if activeStreamSettings != nil {
+            activeStreamSettings?.phoneRumbleFallback = enabled
             syncTrackedSessionSurface()
         }
         persistSettings()
@@ -5953,7 +6877,42 @@ final class OpenNOWStore: ObservableObject {
         guard candidate.resolution?.trimmingCharacters(in: .whitespacesAndNewlines) == expectedResolution else {
             return false
         }
-        return candidate.fps == settings.preferredFPS
+        return candidate.fps == profile.fps
+    }
+
+    private func streamSettingsByAdoptingRemoteProfile(
+        _ candidate: RemoteSessionCandidate,
+        base: AppSettings,
+        session: AuthSession
+    ) -> AppSettings {
+        var adopted = base
+        let membershipTier = subscription?.membershipTier ?? session.user.membershipTier
+
+        if let resolution = candidate.resolution?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resolution.isEmpty {
+            let parts = resolution.split(separator: "x", maxSplits: 1)
+            if parts.count == 2,
+               let width = Int(parts[0]),
+               let height = Int(parts[1]),
+               StreamSettingsResolver.customResolutionIsAvailable(
+                width: width,
+                height: height,
+                membershipTier: membershipTier
+               ) {
+                adopted.preferredResolution = "\(width)x\(height)"
+                if let known = StreamSettingsResolver.resolutionChoices.first(where: { $0.value == adopted.preferredResolution }) {
+                    adopted.preferredAspectRatio = known.aspectRatio
+                }
+            }
+        }
+
+        if let fps = candidate.fps {
+            let planLimit = StreamSettingsResolver.plan(for: membershipTier) >= .ultimate ? 120 : 60
+            adopted.preferredFPS = min(max(fps, 30), planLimit)
+        }
+        adopted.streamPreset = .custom
+        adopted.normalizeStreamDefaults()
+        return nativeLaunchSettings(for: adopted, context: "adoptRemoteProfile")
     }
 
     private func remoteSessionIsLaunchable(_ candidate: RemoteSessionCandidate) -> Bool {
@@ -6191,33 +7150,42 @@ final class OpenNOWStore: ObservableObject {
             let refreshed = try await api.refreshSession(currentAuth)
             authSession = refreshed
             persistAuthSession(refreshed)
-            let streamSettings = currentStreamerSettings
+            let requestedStreamSettings = currentStreamerSettings
             let deviceId = persistentDeviceId()
             let baseUrl = refreshed.provider.streamingServiceUrl
             let activeCandidates = try await api.fetchActiveSessions(
                 session: refreshed,
                 streamingBaseUrl: baseUrl,
                 vpcId: cachedVpcId,
-                settings: streamSettings,
+                settings: requestedStreamSettings,
                 deviceId: deviceId
             )
             let compatibleCandidates = activeCandidates.filter {
-                remoteSession($0, matchesStreamSettings: streamSettings, session: refreshed)
+                remoteSession($0, matchesStreamSettings: requestedStreamSettings, session: refreshed)
             }
             let gameAppIds = Set(
                 ([session.game.launchAppId] + session.game.launchOptions.map(\.appId))
                     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
             )
-            let readyCandidate = compatibleCandidates.first {
+            let sameGameCandidates = activeCandidates.filter { candidate in
+                guard remoteSessionIsLaunchable(candidate) else { return false }
+                if candidate.id == session.id { return true }
+                guard let appId = candidate.appId else { return false }
+                return gameAppIds.contains(appId)
+            }
+            let candidatePool = compatibleCandidates + sameGameCandidates.filter { candidate in
+                !compatibleCandidates.contains(where: { $0.id == candidate.id })
+            }
+            let readyCandidate = candidatePool.first {
                 $0.id == session.id && ($0.status == 2 || $0.status == 3) && $0.serverIp?.isEmpty == false
-            } ?? compatibleCandidates.first {
+            } ?? candidatePool.first {
                 guard let appId = $0.appId else { return false }
                 return gameAppIds.contains(appId) && ($0.status == 2 || $0.status == 3) && $0.serverIp?.isEmpty == false
             }
-            let launchingCandidate = compatibleCandidates.first {
+            let launchingCandidate = candidatePool.first {
                 $0.id == session.id && remoteSessionIsLaunchable($0)
-            } ?? compatibleCandidates.first {
+            } ?? candidatePool.first {
                 guard let appId = $0.appId else { return false }
                 return gameAppIds.contains(appId) && remoteSessionIsLaunchable($0)
             }
@@ -6226,6 +7194,11 @@ final class OpenNOWStore: ObservableObject {
             if let readyCandidate {
                 candidate = readyCandidate
             } else if let launchingCandidate {
+                let pollingSettings = streamSettingsByAdoptingRemoteProfile(
+                    launchingCandidate,
+                    base: requestedStreamSettings,
+                    session: refreshed
+                )
                 var latest = ActiveSession(
                     id: launchingCandidate.id,
                     game: session.game,
@@ -6254,7 +7227,7 @@ final class OpenNOWStore: ObservableObject {
                         "Reopen polling active candidate id=\(latest.id, privacy: .public) status=\(latest.status) attempt=\(attempt + 1) signalingServer=\(latest.signalingServer ?? "nil", privacy: .public) signalingUrl=\(latest.signalingUrl ?? "nil", privacy: .public) mediaIp=\(latest.mediaIp ?? "nil", privacy: .public) mediaPort=\(latest.mediaPort)"
                     )
                     try await Task.sleep(for: .seconds(1))
-                    latest = try await api.pollSession(session: refreshed, activeSession: latest, settings: streamSettings)
+                    latest = try await api.pollSession(session: refreshed, activeSession: latest, settings: pollingSettings)
                     activeSession = mergeQueueSessionState(previous: activeSession ?? latest, next: latest)
                 }
                 guard isReadyForStreamer(latest), let serverIp = latest.serverIp, !serverIp.isEmpty else {
@@ -6275,9 +7248,15 @@ final class OpenNOWStore: ObservableObject {
                 activeSession = nil
                 activeStreamSettings = nil
                 syncTrackedSessionSurface()
-                lastError = "No active session matches the current stream profile. Start the game again to recreate it."
+                lastError = "No active session for this game is available to reconnect."
                 return
             }
+
+            let streamSettings = streamSettingsByAdoptingRemoteProfile(
+                candidate,
+                base: requestedStreamSettings,
+                session: refreshed
+            )
 
             let claimed = try await api.claimSession(
                 session: refreshed,
@@ -6364,7 +7343,12 @@ final class OpenNOWStore: ObservableObject {
         #if os(tvOS)
         sessionPollBackgroundTaskActive = true
         #else
-        endSessionPollBackgroundTask()
+        guard currentScenePhase != .active,
+              !sessionPollBackgroundAllowanceConsumed,
+              sessionPollBackgroundTaskId == .invalid else {
+            return
+        }
+        sessionPollBackgroundAllowanceConsumed = true
         sessionPollBackgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "OpenNOW.SessionPoll") { [weak self] in
             Task { @MainActor [weak self] in
                 self?.endSessionPollBackgroundTask()
@@ -6549,18 +7533,31 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private static func loadAuthState(from defaults: UserDefaults) -> PersistedAuthState {
-        if let data = defaults.data(forKey: "OpenNOW.iOS.authState"),
+        if let data = AuthKeychainStore.load(),
            let state = try? JSONDecoder().decode(PersistedAuthState.self, from: data) {
             return normalizedAuthState(state)
         }
-        guard let legacySession = loadAuthSession(from: defaults) else {
+
+        let migratedState: PersistedAuthState
+        if let data = defaults.data(forKey: "OpenNOW.iOS.authState"),
+           let state = try? JSONDecoder().decode(PersistedAuthState.self, from: data) {
+            migratedState = normalizedAuthState(state)
+        } else if let legacySession = loadAuthSession(from: defaults) {
+            migratedState = PersistedAuthState(
+                sessions: [legacySession],
+                activeUserId: legacySession.user.userId,
+                selectedProvider: legacySession.provider
+            )
+        } else {
             return PersistedAuthState()
         }
-        return PersistedAuthState(
-            sessions: [legacySession],
-            activeUserId: legacySession.user.userId,
-            selectedProvider: legacySession.provider
-        )
+        if !migratedState.sessions.isEmpty,
+           let encoded = try? JSONEncoder().encode(migratedState),
+           AuthKeychainStore.save(encoded) {
+            defaults.removeObject(forKey: "OpenNOW.iOS.authState")
+            defaults.removeObject(forKey: "OpenNOW.iOS.authSession")
+        }
+        return migratedState
     }
 
     private static func normalizedAuthState(_ state: PersistedAuthState) -> PersistedAuthState {
@@ -6679,23 +7676,22 @@ final class OpenNOWStore: ObservableObject {
         state.activeUserId = session.user.userId
         state.selectedProvider = session.provider
         persistAuthState(state)
-        if let encoded = try? JSONEncoder().encode(session) {
-            defaults.set(encoded, forKey: authSessionKey)
-        }
     }
 
     private func persistAuthState(_ state: PersistedAuthState) {
         let normalized = Self.normalizedAuthState(state)
         savedAccounts = normalized.savedAccounts
-        if let encoded = try? JSONEncoder().encode(normalized) {
-            defaults.set(encoded, forKey: authStateKey)
-        }
-        if let active = normalized.activeSession,
-           let encoded = try? JSONEncoder().encode(active) {
-            defaults.set(encoded, forKey: authSessionKey)
+        if normalized.sessions.isEmpty {
+            AuthKeychainStore.delete()
         } else {
-            defaults.removeObject(forKey: authSessionKey)
+            guard let encoded = try? JSONEncoder().encode(normalized),
+                  AuthKeychainStore.save(encoded) else {
+                lastError = "Could not securely save account credentials in Keychain."
+                return
+            }
         }
+        defaults.removeObject(forKey: authStateKey)
+        defaults.removeObject(forKey: authSessionKey)
     }
 
     private func persistActiveSession(_ session: ActiveSession?) {

@@ -8,10 +8,158 @@ import UIKit
 #if os(iOS) && canImport(WebRTC)
 import AVFoundation
 import AVKit
+import CoreImage
 import MetalKit
+import Network
 @preconcurrency import WebRTC
 import os
 #endif
+
+enum StreamSessionTimerMode: Equatable {
+    case countdown
+    case stopwatch
+}
+
+struct StreamSessionLimit: Equatable {
+    let tierLabel: String
+    let limitHours: Int
+    let mode: StreamSessionTimerMode
+
+    var limitSeconds: Int {
+        limitHours * 60 * 60
+    }
+}
+
+struct StreamSessionTimerSnapshot: Equatable {
+    let elapsedSeconds: Int
+    let remainingSeconds: Int
+    let progress: Double
+
+    var isWarning: Bool {
+        remainingSeconds <= 10 * 60
+    }
+}
+
+let streamSessionWarningThresholdsSeconds = [
+    30 * 60,
+    10 * 60,
+    5 * 60,
+    3 * 60,
+    60
+]
+
+func streamSessionLimit(for membershipTier: String?) -> StreamSessionLimit {
+    switch StreamSettingsResolver.plan(for: membershipTier) {
+    case .free:
+        return StreamSessionLimit(tierLabel: "Free", limitHours: 1, mode: .countdown)
+    case .priority:
+        return StreamSessionLimit(tierLabel: "Performance", limitHours: 6, mode: .stopwatch)
+    case .ultimate:
+        return StreamSessionLimit(tierLabel: "Ultimate", limitHours: 8, mode: .stopwatch)
+    }
+}
+
+func streamSessionTimerSnapshot(
+    limit: StreamSessionLimit,
+    startedAt: Date,
+    now: Date = Date()
+) -> StreamSessionTimerSnapshot {
+    let elapsedSeconds = max(0, Int(now.timeIntervalSince(startedAt)))
+    let remainingSeconds = max(0, limit.limitSeconds - elapsedSeconds)
+    let progress = limit.limitSeconds > 0
+        ? min(max(Double(elapsedSeconds) / Double(limit.limitSeconds), 0), 1)
+        : 0
+    return StreamSessionTimerSnapshot(
+        elapsedSeconds: elapsedSeconds,
+        remainingSeconds: remainingSeconds,
+        progress: progress
+    )
+}
+
+struct StreamSessionWarningTracker: Equatable {
+    private(set) var previousRemainingSeconds: Int?
+    private(set) var warnedThresholds: Set<Int> = []
+
+    mutating func nextWarning(remainingSeconds: Int) -> Int? {
+        defer { previousRemainingSeconds = remainingSeconds }
+        guard let previousRemainingSeconds else { return nil }
+        guard let crossedThreshold = streamSessionWarningThresholdsSeconds
+            .filter({ previousRemainingSeconds > $0 && remainingSeconds <= $0 })
+            .min() else {
+            return nil
+        }
+        return warnedThresholds.insert(crossedThreshold).inserted ? crossedThreshold : nil
+    }
+}
+
+func streamTouchLayoutProfile(gameTitle: String, settings: AppSettings) -> String {
+    settings.fortnitePrefersNativeTouch && gameTitle.localizedCaseInsensitiveContains("fortnite")
+        ? "fortnite-mobile"
+        : "default"
+}
+
+#if os(iOS) && canImport(WebRTC)
+fileprivate enum NativeStreamNetworkTransport: Equatable, Sendable {
+    case wifi
+    case cellular
+    case ethernet
+    case other
+    case offline
+
+    init(path: NWPath) {
+        guard path.status == .satisfied else {
+            self = .offline
+            return
+        }
+        if path.usesInterfaceType(.wifi) {
+            self = .wifi
+        } else if path.usesInterfaceType(.cellular) {
+            self = .cellular
+        } else if path.usesInterfaceType(.wiredEthernet) {
+            self = .ethernet
+        } else {
+            self = .other
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .wifi: return "Wi-Fi"
+        case .cellular: return "Cell"
+        case .ethernet: return "LAN"
+        case .other: return "Net"
+        case .offline: return "Off"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .wifi: return "Network: Wi-Fi"
+        case .cellular: return "Network: Cellular"
+        case .ethernet: return "Network: Ethernet"
+        case .other: return "Network: Other"
+        case .offline: return "Network: Offline"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .wifi: return "wifi"
+        case .cellular: return "antenna.radiowaves.left.and.right"
+        case .ethernet: return "cable.connector.horizontal"
+        case .other: return "network"
+        case .offline: return "network.slash"
+        }
+    }
+}
+#endif
+
+fileprivate enum NativeStreamGuidanceSheet: String, Identifiable {
+    case streamTutorial
+    case controllerTouchPrompt
+
+    var id: String { rawValue }
+}
 
 struct StreamerView: View {
     #if os(iOS) && canImport(WebRTC)
@@ -21,9 +169,15 @@ struct StreamerView: View {
     init(
         session: ActiveSession,
         settings: AppSettings,
+        membershipTier: String? = nil,
         nativeStreamerEnabled: Bool = true,
         onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
         onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
+        onStreamSharpeningChange: @escaping (Bool, Double) -> Void,
+        onFingerMouseEnabledChange: @escaping (Bool) -> Void,
+        onPhoneRumbleFallbackChange: @escaping (Bool) -> Void,
+        onStreamTutorialCompleted: @escaping () -> Void = {},
+        onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
@@ -34,8 +188,14 @@ struct StreamerView: View {
             wrappedValue: NativeStreamCoordinator(
                 session: session,
                 settings: settings,
+                membershipTier: membershipTier,
                 onTouchLayoutChange: onTouchLayoutChange,
                 onStreamerPreferencesChange: onStreamerPreferencesChange,
+                onStreamSharpeningChange: onStreamSharpeningChange,
+                onFingerMouseEnabledChange: onFingerMouseEnabledChange,
+                onPhoneRumbleFallbackChange: onPhoneRumbleFallbackChange,
+                onStreamTutorialCompleted: onStreamTutorialCompleted,
+                onControllerTouchPromptDismissed: onControllerTouchPromptDismissed,
                 onStatsOverlayChange: onStatsOverlayChange,
                 onSafeVideoFallbackRequired: onSafeVideoFallbackRequired,
                 onClose: onClose,
@@ -55,36 +215,67 @@ struct StreamerView: View {
                 NativeStreamVideoView(coordinator: coordinator)
                     .ignoresSafeArea()
 
-                NativeStreamTouchCaptureView(inputBridge: coordinator.inputBridge)
+                NativeStreamTouchCaptureView(
+                    inputBridge: coordinator.inputBridge,
+                    inputEnabled: coordinator.fingerMouseCaptureEnabled,
+                    onZoomGesture: coordinator.applyFingerMouseZoom
+                )
                     .ignoresSafeArea()
+
+                if coordinator.shouldShowVirtualController {
+                    NativeStreamVirtualControllerOverlay(
+                        inputBridge: coordinator.inputBridge,
+                        layout: coordinator.touchLayout,
+                        editing: coordinator.touchLayoutEditing,
+                        inputEnabled: coordinator.virtualControllerInputEnabled,
+                        onPositionChange: coordinator.setTouchLayoutPosition,
+                        onHide: { coordinator.setTouchControllerVisible(false) },
+                        onReset: coordinator.resetTouchLayout,
+                        onDoneEditing: coordinator.endTouchLayoutEditing
+                    )
+                    .padding(.horizontal, max(12, proxy.safeAreaInsets.leading + 12))
+                    .padding(.bottom, max(10, proxy.safeAreaInsets.bottom + 8))
+                    .transition(.opacity)
+                }
 
                 VStack {
                     HStack(alignment: .top, spacing: 10) {
-                        if coordinator.showStatsOverlay {
+                        if coordinator.showStatsOverlay,
+                           coordinator.streamerPreferences.statsPosition == .left {
                             NativeStreamStatsPill(
                                 gameTitle: coordinator.gameTitle,
                                 status: coordinator.statusText,
                                 snapshot: coordinator.statsSnapshot,
                                 preferences: coordinator.streamerPreferences,
                                 deviceStatus: coordinator.deviceStatus,
-                                style: coordinator.statsDisplayStyle
+                                style: coordinator.statsDisplayStyle,
+                                sessionDurationText: coordinator.sessionDurationText
                             )
                             .transition(.opacity.combined(with: .move(edge: .top)))
                         }
 
-                        Spacer(minLength: 10)
-
-                        if coordinator.pictureInPictureAvailable {
-                            NativeStreamOverlayButton(
-                                systemImage: coordinator.isPictureInPictureActive ? "pip.exit" : "pip.enter",
-                                label: coordinator.isPictureInPictureActive ? "Stop Picture in Picture" : "Start Picture in Picture"
-                            ) {
-                                coordinator.togglePictureInPicture()
-                            }
+                        if coordinator.streamerPreferences.statsPosition == .right {
+                            streamOverlayButtons
                         }
 
-                        NativeStreamOverlayButton(systemImage: "slider.horizontal.3", label: "Stream controls") {
-                            coordinator.toggleControlsPanel()
+                        Spacer(minLength: 10)
+
+                        if coordinator.streamerPreferences.statsPosition == .left {
+                            streamOverlayButtons
+                        }
+
+                        if coordinator.showStatsOverlay,
+                           coordinator.streamerPreferences.statsPosition == .right {
+                            NativeStreamStatsPill(
+                                gameTitle: coordinator.gameTitle,
+                                status: coordinator.statusText,
+                                snapshot: coordinator.statsSnapshot,
+                                preferences: coordinator.streamerPreferences,
+                                deviceStatus: coordinator.deviceStatus,
+                                style: coordinator.statsDisplayStyle,
+                                sessionDurationText: coordinator.sessionDurationText
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
                     .padding(.top, max(22, proxy.safeAreaInsets.top + 8))
@@ -105,7 +296,7 @@ struct StreamerView: View {
                 if coordinator.controlsPanelVisible {
                     Color.black.opacity(0.24)
                         .ignoresSafeArea()
-                        .onTapGesture { coordinator.setControlsPanelVisible(false) }
+                        .onTapGesture { coordinator.dismissControlsPanelFromBackdrop() }
 
                     VStack {
                         Spacer()
@@ -117,9 +308,24 @@ struct StreamerView: View {
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
+
+                if let sessionWarningText = coordinator.sessionWarningText {
+                    VStack {
+                        Spacer()
+                        NativeStreamSessionWarningBanner(message: sessionWarningText)
+                            .frame(maxWidth: min(proxy.size.width - 32, 420))
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, max(24, proxy.safeAreaInsets.bottom + 18))
+                    }
+                    .allowsHitTesting(false)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(50)
+                }
             }
             .animation(.easeInOut(duration: 0.18), value: coordinator.controlsPanelVisible)
             .animation(.easeInOut(duration: 0.18), value: coordinator.showStatsOverlay)
+            .animation(.easeInOut(duration: 0.18), value: coordinator.shouldShowVirtualController)
+            .animation(.easeInOut(duration: 0.18), value: coordinator.sessionWarningText)
             .task(id: coordinator.sessionID) {
                 coordinator.handleScenePhase(scenePhase)
                 coordinator.start(viewportSize: proxy.size)
@@ -135,6 +341,32 @@ struct StreamerView: View {
             }
             .statusBarHidden(true)
         }
+        .sheet(item: $coordinator.presentedGuidanceSheet) { destination in
+            switch destination {
+            case .streamTutorial:
+                NativeStreamTutorialSheet(coordinator: coordinator)
+            case .controllerTouchPrompt:
+                NativeControllerTouchPromptSheet(coordinator: coordinator)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var streamOverlayButtons: some View {
+        HStack(spacing: 10) {
+            if coordinator.pictureInPictureAvailable {
+                NativeStreamOverlayButton(
+                    systemImage: coordinator.isPictureInPictureActive ? "pip.exit" : "pip.enter",
+                    label: coordinator.isPictureInPictureActive ? "Stop Picture in Picture" : "Start Picture in Picture"
+                ) {
+                    coordinator.togglePictureInPicture()
+                }
+            }
+
+            NativeStreamOverlayButton(systemImage: "slider.horizontal.3", label: "Stream controls") {
+                coordinator.toggleControlsPanel()
+            }
+        }
     }
     #else
     private let session: ActiveSession
@@ -143,9 +375,15 @@ struct StreamerView: View {
     init(
         session: ActiveSession,
         settings: AppSettings,
+        membershipTier: String? = nil,
         nativeStreamerEnabled: Bool = true,
         onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
         onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
+        onStreamSharpeningChange: @escaping (Bool, Double) -> Void,
+        onFingerMouseEnabledChange: @escaping (Bool) -> Void,
+        onPhoneRumbleFallbackChange: @escaping (Bool) -> Void,
+        onStreamTutorialCompleted: @escaping () -> Void = {},
+        onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
@@ -155,9 +393,15 @@ struct StreamerView: View {
         self.session = session
         self.onClose = onClose
         _ = settings
+        _ = membershipTier
         _ = nativeStreamerEnabled
         _ = onTouchLayoutChange
         _ = onStreamerPreferencesChange
+        _ = onStreamSharpeningChange
+        _ = onFingerMouseEnabledChange
+        _ = onPhoneRumbleFallbackChange
+        _ = onStreamTutorialCompleted
+        _ = onControllerTouchPromptDismissed
         _ = onStatsOverlayChange
         _ = onSafeVideoFallbackRequired
         _ = onNativeFallbackRequiresFreshEndpoint
@@ -189,22 +433,6 @@ struct StreamerView: View {
 }
 
 #if os(iOS) && canImport(WebRTC)
-private enum NativeStreamStatsDisplayStyle: String {
-    case compact
-    case detail
-
-    var label: String {
-        switch self {
-        case .compact: return "Compact"
-        case .detail: return "Detail"
-        }
-    }
-
-    var next: NativeStreamStatsDisplayStyle {
-        self == .compact ? .detail : .compact
-    }
-}
-
 private struct NativeStreamStatsSnapshot: Equatable {
     var codec = "--"
     var resolution = "--"
@@ -250,15 +478,19 @@ private struct NativeStreamDeviceStatus: Equatable {
     var timeText: String = "--:--"
     var batteryPercent: Int?
     var batteryState: UIDevice.BatteryState = .unknown
+    var networkTransport: NativeStreamNetworkTransport = .offline
 
-    static func current() -> NativeStreamDeviceStatus {
+    static func current(
+        networkTransport: NativeStreamNetworkTransport = .offline
+    ) -> NativeStreamDeviceStatus {
         UIDevice.current.isBatteryMonitoringEnabled = true
         let level = UIDevice.current.batteryLevel
         let percent = level >= 0 ? Int((level * 100).rounded()) : nil
         return NativeStreamDeviceStatus(
             timeText: timeFormatter.string(from: Date()),
             batteryPercent: percent,
-            batteryState: UIDevice.current.batteryState
+            batteryState: UIDevice.current.batteryState,
+            networkTransport: networkTransport
         )
     }
 
@@ -308,6 +540,31 @@ private struct NativeStreamStatusOverlay: View {
     }
 }
 
+private struct NativeStreamSessionWarningBanner: View {
+    let message: String
+
+    var body: some View {
+        Label {
+            Text(message)
+                .font(.subheadline.weight(.semibold))
+        } icon: {
+            Image(systemName: "clock.badge.exclamationmark")
+                .foregroundStyle(.orange)
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.orange.opacity(0.28), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.24), radius: 12, y: 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(message)
+    }
+}
+
 private struct NativeStreamOverlayButton: View {
     let systemImage: String
     let label: String
@@ -333,7 +590,8 @@ private struct NativeStreamStatsPill: View {
     let snapshot: NativeStreamStatsSnapshot
     let preferences: StreamerPreferences
     let deviceStatus: NativeStreamDeviceStatus
-    let style: NativeStreamStatsDisplayStyle
+    let style: StreamStatsStyle
+    let sessionDurationText: String?
 
     var body: some View {
         if style == .compact {
@@ -343,11 +601,17 @@ private struct NativeStreamStatsPill: View {
                     Text("FPS \(snapshot.fpsText)")
                     Text(snapshot.pingText)
                     Text(snapshot.compactBitrateText)
+                    if let sessionDurationText {
+                        Text(sessionDurationText)
+                    }
                 }
                 HStack(spacing: 7) {
                     statusIndicators(showBatteryPercent: false)
                     Text("\(snapshot.fpsText) fps")
                     Text(snapshot.pingText)
+                    if let sessionDurationText {
+                        Text(sessionDurationText)
+                    }
                 }
                 HStack(spacing: 6) {
                     statusIndicators(showBatteryPercent: false)
@@ -376,6 +640,9 @@ private struct NativeStreamStatsPill: View {
                     .lineLimit(1)
                 HStack(spacing: 8) {
                     statusIndicators(showBatteryPercent: true)
+                    if let sessionDurationText {
+                        Label(sessionDurationText, systemImage: "stopwatch")
+                    }
                     Text([status == "Streaming" ? nil : status, preferences.audioMuted ? "audio muted" : "audio on"].compactMap { $0 }.joined(separator: "  "))
                         .lineLimit(1)
                 }
@@ -397,8 +664,11 @@ private struct NativeStreamStatsPill: View {
             Text(deviceStatus.timeText)
         }
         if preferences.showStatsCellular {
-            Image(systemName: "cellularbars")
-                .accessibilityLabel("Cellular bars")
+            Label(
+                deviceStatus.networkTransport.shortLabel,
+                systemImage: deviceStatus.networkTransport.systemImage
+            )
+            .accessibilityLabel(deviceStatus.networkTransport.accessibilityLabel)
         }
         if preferences.showStatsBattery {
             HStack(spacing: 3) {
@@ -411,12 +681,155 @@ private struct NativeStreamStatsPill: View {
     }
 }
 
+private struct NativeStreamTutorialSheet: View {
+    @ObservedObject var coordinator: NativeStreamCoordinator
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 44, weight: .semibold))
+                        .foregroundStyle(.tint)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Step 1 of 2")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tint)
+                        Text("Open Stream Controls")
+                            .font(.title2.bold())
+                        Text("Stream controls let you manage audio, video, input, Picture in Picture, and your touch layout without ending the session.")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Label("Use the sliders button at the top of the stream.", systemImage: "1.circle.fill")
+                    Label("The stream keeps running while controls are open.", systemImage: "2.circle.fill")
+                    Label("Choose Done to return to gameplay.", systemImage: "3.circle.fill")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+            }
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 10) {
+                    Button("Skip Tutorial") {
+                        coordinator.skipStreamTutorial()
+                        dismiss()
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Show Stream Controls") {
+                        coordinator.beginStreamTutorialControlsStep()
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.bar)
+            }
+            .navigationTitle("Stream Tutorial")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled()
+    }
+}
+
+private struct NativeControllerTouchPromptSheet: View {
+    @ObservedObject var coordinator: NativeStreamCoordinator
+    @Environment(\.dismiss) private var dismiss
+    @State private var doNotShowAgain = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Label("Controller Connected", systemImage: "gamecontroller.fill")
+                    .font(.title2.bold())
+                    .foregroundStyle(.tint)
+
+                Text("OpenNOW hides the on-screen controller while a physical controller is connected. You can keep it hidden or show both for this stream.")
+                    .foregroundStyle(.secondary)
+
+                Toggle("Don't show this again", isOn: $doNotShowAgain)
+
+                VStack(spacing: 10) {
+                    Button("Show Both") {
+                        coordinator.resolveControllerTouchPrompt(
+                            showTouchControls: true,
+                            doNotShowAgain: doNotShowAgain
+                        )
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity)
+
+                    Button("Keep Touch Controls Hidden") {
+                        coordinator.resolveControllerTouchPrompt(
+                            showTouchControls: false,
+                            doNotShowAgain: doNotShowAgain
+                        )
+                        dismiss()
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(20)
+            .navigationTitle("Input")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium])
+        .interactiveDismissDisabled()
+    }
+}
+
+private struct NativeStreamTutorialDoneCallout: View {
+    @ObservedObject var coordinator: NativeStreamCoordinator
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Step 2 of 2")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tint)
+                Text("Choose Done above to return to your game.")
+                    .font(.subheadline.weight(.semibold))
+            }
+            Spacer(minLength: 8)
+            Button("Skip") {
+                coordinator.skipStreamTutorial()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.35), lineWidth: 1)
+        )
+    }
+}
+
 private struct NativeStreamControlsPanel: View {
     @ObservedObject var coordinator: NativeStreamCoordinator
+    @State private var keyboardText = ""
+    @State private var keyboardPresented = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                if coordinator.tutorialDoneCalloutVisible {
+                    NativeStreamTutorialDoneCallout(coordinator: coordinator)
+                }
+
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Stream Controls")
@@ -434,7 +847,7 @@ private struct NativeStreamControlsPanel: View {
                     }
 
                     NativeStreamPanelIconButton(systemImage: "checkmark", label: "Done") {
-                        coordinator.setControlsPanelVisible(false)
+                        coordinator.finishControlsPanel()
                     }
                 }
 
@@ -458,6 +871,38 @@ private struct NativeStreamControlsPanel: View {
                     NativeStreamActionRow(title: "Stats style", value: coordinator.statsDisplayStyle.label) {
                         coordinator.cycleStatsStyle()
                     }
+                    NativeStreamActionRow(
+                        title: "Stats position",
+                        value: coordinator.streamerPreferences.statsPosition.label
+                    ) {
+                        coordinator.toggleStatsPosition()
+                    }
+                    NativeStreamToggleRow(
+                        title: "Stream sharpening",
+                        value: coordinator.streamSharpeningEnabled ? "On" : "Off",
+                        isOn: Binding(
+                            get: { coordinator.streamSharpeningEnabled },
+                            set: { coordinator.setStreamSharpeningEnabled($0) }
+                        )
+                    )
+                    if coordinator.streamSharpeningEnabled {
+                        NativeStreamSliderRow(
+                            title: "Sharpness",
+                            value: Binding(
+                                get: { coordinator.streamSharpeningAmount },
+                                set: { coordinator.setStreamSharpeningAmount($0) }
+                            ),
+                            range: 0...1
+                        )
+                    }
+                    NativeStreamToggleRow(
+                        title: "Stretch to fill",
+                        value: coordinator.streamerPreferences.stretchStreamToFill ? "Fill" : "Fit",
+                        isOn: Binding(
+                            get: { coordinator.streamerPreferences.stretchStreamToFill },
+                            set: { coordinator.setStretchStreamToFill($0) }
+                        )
+                    )
                     if coordinator.pictureInPictureAvailable {
                         NativeStreamActionRow(
                             title: "Picture in Picture",
@@ -469,6 +914,13 @@ private struct NativeStreamControlsPanel: View {
                     }
                     NativeStreamInfoRow(title: "Codec", value: coordinator.selectedCodecLabel)
                     NativeStreamInfoRow(title: "Resolution", value: coordinator.profileLabel)
+                    if let sessionDurationText = coordinator.sessionDurationText {
+                        NativeStreamSessionTimeRow(
+                            value: sessionDurationText,
+                            progress: coordinator.sessionTimerProgress,
+                            isWarning: coordinator.sessionTimerWarningActive
+                        )
+                    }
                 }
 
                 NativeStreamPanelSection(title: "Status") {
@@ -489,30 +941,43 @@ private struct NativeStreamControlsPanel: View {
                         )
                     )
                     NativeStreamToggleRow(
-                        title: "Cellular",
+                        title: "Network",
                         value: coordinator.streamerPreferences.showStatsCellular ? "Shown" : "Hidden",
                         isOn: Binding(
                             get: { coordinator.streamerPreferences.showStatsCellular },
-                            set: { coordinator.setStatsCellularVisible($0) }
+                            set: { coordinator.setStatsNetworkVisible($0) }
                         )
                     )
                 }
 
                 NativeStreamPanelSection(title: "Input") {
+                    NativeStreamActionRow(
+                        title: "Keyboard",
+                        value: "Type into stream",
+                        actionLabel: "Open"
+                    ) {
+                        keyboardPresented = true
+                    }
                     NativeStreamToggleRow(
-                        title: "Touch controller",
-                        value: coordinator.streamerPreferences.touchControllerVisible ? "Shown" : "Hidden",
+                        title: "Finger mouse",
+                        value: coordinator.fingerMouseEnabled ? "On" : "Off",
                         isOn: Binding(
-                            get: { coordinator.streamerPreferences.touchControllerVisible },
-                            set: { coordinator.setTouchControllerVisible($0) }
+                            get: { coordinator.fingerMouseEnabled },
+                            set: { coordinator.setFingerMouseEnabled($0) }
                         )
                     )
                     NativeStreamToggleRow(
-                        title: "Touchscreen mode",
-                        value: coordinator.streamerPreferences.touchscreenModeEnabled ? "Direct touch" : "Mouse",
+                        title: "Touch controller",
+                        value: !coordinator.streamerPreferences.touchControllerVisible
+                            ? "Hidden"
+                            : (coordinator.physicalControllerConnected
+                                ? (coordinator.showTouchControlsWithPhysicalController
+                                    ? "Shown with physical controller"
+                                    : "Hidden while controller is connected")
+                                : "Shown"),
                         isOn: Binding(
-                            get: { coordinator.streamerPreferences.touchscreenModeEnabled },
-                            set: { coordinator.setTouchscreenModeEnabled($0) }
+                            get: { coordinator.streamerPreferences.touchControllerVisible },
+                            set: { coordinator.setTouchControllerVisible($0) }
                         )
                     )
                     NativeStreamToggleRow(
@@ -521,6 +986,14 @@ private struct NativeStreamControlsPanel: View {
                         isOn: Binding(
                             get: { coordinator.streamerPreferences.physicalControllerPassthrough },
                             set: { coordinator.setPhysicalControllerPassthrough($0) }
+                        )
+                    )
+                    NativeStreamToggleRow(
+                        title: "Phone rumble fallback",
+                        value: coordinator.phoneRumbleFallbackEnabled ? "On" : "Off",
+                        isOn: Binding(
+                            get: { coordinator.phoneRumbleFallbackEnabled },
+                            set: { coordinator.setPhoneRumbleFallback($0) }
                         )
                     )
                     HStack(spacing: 8) {
@@ -537,6 +1010,13 @@ private struct NativeStreamControlsPanel: View {
                 }
 
                 NativeStreamPanelSection(title: "Touch Layout") {
+                    NativeStreamActionRow(
+                        title: "Edit layout",
+                        value: "Drag control groups",
+                        actionLabel: coordinator.touchLayoutEditing ? "Resume" : "Edit"
+                    ) {
+                        coordinator.beginTouchLayoutEditing()
+                    }
                     NativeStreamSliderRow(
                         title: "Layout scale",
                         value: Binding(
@@ -579,6 +1059,94 @@ private struct NativeStreamControlsPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
         .scrollIndicators(.visible)
         .shadow(color: .black.opacity(0.24), radius: 16, y: 8)
+        .sheet(isPresented: $keyboardPresented) {
+            NativeStreamKeyboardSheet(
+                coordinator: coordinator,
+                text: $keyboardText
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+private struct NativeStreamKeyboardSheet: View {
+    @ObservedObject var coordinator: NativeStreamCoordinator
+    @Binding var text: String
+
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var textFieldFocused: Bool
+    @State private var sendError: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .focused($textFieldFocused)
+                        .frame(minHeight: 96)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Text to type into stream")
+
+                    Button {
+                        sendText()
+                    } label: {
+                        Label("Send", systemImage: "paperplane.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(text.isEmpty)
+
+                    if let sendError {
+                        Text(sendError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Type into Stream")
+                } footer: {
+                    Text("Text is sent directly to the active game. Nothing is copied to the system clipboard.")
+                }
+
+                Section("Keys") {
+                    HStack(spacing: 8) {
+                        NativeStreamKeyButton(title: "Backspace") {
+                            coordinator.sendVirtualKey(.backspace)
+                        }
+                        NativeStreamKeyButton(title: "Enter") {
+                            coordinator.sendVirtualKey(.enter)
+                        }
+                        NativeStreamKeyButton(title: "Escape") {
+                            coordinator.sendVirtualKey(.escape)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Stream Keyboard")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            textFieldFocused = true
+        }
+    }
+
+    private func sendText() {
+        guard !text.isEmpty else { return }
+        let sentCharacterCount = coordinator.sendTextToStream(text)
+        if sentCharacterCount > 0 {
+            text = String(text.dropFirst(sentCharacterCount))
+            sendError = nil
+        } else {
+            sendError = "Keyboard input is reconnecting. Your text has not been cleared; try again in a moment."
+        }
+        textFieldFocused = true
     }
 }
 
@@ -742,6 +1310,33 @@ private struct NativeStreamInfoRow: View {
     }
 }
 
+private struct NativeStreamSessionTimeRow: View {
+    let value: String
+    let progress: Double
+    let isWarning: Bool
+
+    var body: some View {
+        VStack(spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Session time")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 12)
+                Text(value)
+                    .font(.caption.weight(isWarning ? .semibold : .regular))
+                    .foregroundStyle(isWarning ? Color.orange : Color.primary.opacity(0.72))
+                    .multilineTextAlignment(.trailing)
+            }
+            ProgressView(value: min(max(progress, 0), 1))
+                .tint(isWarning ? .orange : .accentColor)
+                .accessibilityLabel("Session progress")
+                .accessibilityValue("\(Int((min(max(progress, 0), 1) * 100).rounded())) percent")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
 private struct NativeStreamKeyButton: View {
     let title: String
     let action: () -> Void
@@ -784,26 +1379,48 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @Published var retryAvailable = false
     @Published var showStatsOverlay = false
     @Published var controlsPanelVisible = false
-    @Published fileprivate var statsDisplayStyle: NativeStreamStatsDisplayStyle = .compact
+    @Published fileprivate var touchLayoutEditing = false
+    @Published fileprivate var statsDisplayStyle: StreamStatsStyle = .compact
     @Published var streamerPreferences: StreamerPreferences
+    @Published fileprivate var streamSharpeningEnabled: Bool
+    @Published fileprivate var streamSharpeningAmount: Double
+    @Published fileprivate var fingerMouseEnabled: Bool
+    @Published fileprivate var phoneRumbleFallbackEnabled: Bool
     @Published fileprivate var deviceStatus = NativeStreamDeviceStatus.current()
     @Published var touchLayout: TouchControlLayout
     @Published fileprivate var pictureInPictureAvailable = false
     @Published fileprivate var isPictureInPictureActive = false
+    @Published fileprivate var physicalControllerConnected = false
+    @Published fileprivate var showTouchControlsWithPhysicalController = false
+    @Published fileprivate var presentedGuidanceSheet: NativeStreamGuidanceSheet?
+    @Published fileprivate var tutorialDoneCalloutVisible = false
+    @Published fileprivate var sessionDurationText: String?
+    @Published fileprivate var sessionTimerProgress = 0.0
+    @Published fileprivate var sessionTimerWarningActive = false
+    @Published fileprivate var sessionWarningText: String?
 
     let sessionID: String
     let inputBridge = NativeStreamInputBridge()
 
     private let session: ActiveSession
     private let settings: AppSettings
+    private let sessionLimit: StreamSessionLimit
+    private let touchLayoutProfile: String
     private let onTouchLayoutChange: (String, TouchControlLayout) -> Void
     private let onStreamerPreferencesChange: (StreamerPreferences) -> Void
+    private let onStreamSharpeningChange: (Bool, Double) -> Void
+    private let onFingerMouseEnabledChange: (Bool) -> Void
+    private let onPhoneRumbleFallbackChange: (Bool) -> Void
+    private let onStreamTutorialCompleted: () -> Void
+    private let onControllerTouchPromptDismissed: () -> Void
     private let onStatsOverlayChange: (Bool) -> Void
     private let onSafeVideoFallbackRequired: (String) -> Void
     private let onClose: () -> Void
     private let onRetry: (() -> Void)?
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "NativeStreamer")
     private let workQueue = DispatchQueue(label: "OpenNOW.NativeStreamer")
+    private let networkMonitor = NWPathMonitor()
+    private let networkMonitorQueue = DispatchQueue(label: "OpenNOW.NativeStreamer.Network")
     private let peerName = "peer-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))"
     private var peerId = 0
     private var remotePeerId = 1
@@ -830,6 +1447,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var videoSinkAttached = false
     private var renderedFrameCount = 0
     private var renderedVideoSize: CGSize = .zero
+    private var streamZoomScale: CGFloat = 1
+    private var streamZoomOffset: CGSize = .zero
     private var sampledLuma: Int?
     private var decodedWithoutRenderStartedAt: TimeInterval?
     private var lastRenderKeyframeRequestAt: TimeInterval?
@@ -843,39 +1462,97 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var queuedLocalIceCandidates: [[String: Any]] = []
     private var lastStatsSampleAt: TimeInterval?
     private var lastStatsFramesDecoded: Int?
+    private var lastStatsFramesRendered: Int?
     private var lastStatsBytesReceived: Int?
+    private var lastRenderedStatsProgressAt: TimeInterval?
+    private var lastPostStartKeyframeRequestAt: TimeInterval?
+    private var postStartKeyframeAttempts = 0
     private var autoRetryScheduled = false
     private var webRTCAudioSessionConfigured = false
     private var mutedAudioDevice: NativeStreamMutedAudioDevice?
     private var latestScenePhase: ScenePhase = .active
     private var backgroundPictureInPictureStartPending = false
     private var needsForegroundReconnect = false
+    private var videoActive = false
+    private var streamTutorialCompleted: Bool
+    private var controllerTouchPromptDismissed: Bool
+    private var controllerTouchPromptHandledThisSession = false
+    private var guidancePresentationTask: Task<Void, Never>?
+    private var sessionWarningTracker = StreamSessionWarningTracker()
+    private var sessionWarningDismissTask: Task<Void, Never>?
+    private var networkMonitorStarted = false
 
     init(
         session: ActiveSession,
         settings: AppSettings,
+        membershipTier: String?,
         onTouchLayoutChange: @escaping (String, TouchControlLayout) -> Void,
         onStreamerPreferencesChange: @escaping (StreamerPreferences) -> Void,
+        onStreamSharpeningChange: @escaping (Bool, Double) -> Void,
+        onFingerMouseEnabledChange: @escaping (Bool) -> Void,
+        onPhoneRumbleFallbackChange: @escaping (Bool) -> Void,
+        onStreamTutorialCompleted: @escaping () -> Void,
+        onControllerTouchPromptDismissed: @escaping () -> Void,
         onStatsOverlayChange: @escaping (Bool) -> Void,
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)?
     ) {
+        let resolvedSessionLimit = streamSessionLimit(for: membershipTier)
+        let resolvedTouchLayoutProfile = streamTouchLayoutProfile(
+            gameTitle: session.game.title,
+            settings: settings
+        )
+        let initialTimerSnapshot = streamSessionTimerSnapshot(
+            limit: resolvedSessionLimit,
+            startedAt: session.startedAt
+        )
         self.session = session
         self.settings = settings
+        self.sessionLimit = resolvedSessionLimit
+        self.touchLayoutProfile = resolvedTouchLayoutProfile
         self.sessionID = session.id
         self.streamerPreferences = settings.streamerPreferences
-        self.touchLayout = settings.touchLayout(for: "default")
+        self.streamSharpeningEnabled = settings.streamSharpeningEnabled
+        self.streamSharpeningAmount = min(max(settings.streamSharpeningAmount, 0), 1)
+        self.fingerMouseEnabled = settings.fingerMouseEnabled
+        self.phoneRumbleFallbackEnabled = settings.phoneRumbleFallback
+        self.touchLayout = settings.touchLayout(for: resolvedTouchLayoutProfile)
         self.onTouchLayoutChange = onTouchLayoutChange
         self.onStreamerPreferencesChange = onStreamerPreferencesChange
+        self.onStreamSharpeningChange = onStreamSharpeningChange
+        self.onFingerMouseEnabledChange = onFingerMouseEnabledChange
+        self.onPhoneRumbleFallbackChange = onPhoneRumbleFallbackChange
+        self.onStreamTutorialCompleted = onStreamTutorialCompleted
+        self.onControllerTouchPromptDismissed = onControllerTouchPromptDismissed
         self.onStatsOverlayChange = onStatsOverlayChange
         self.onSafeVideoFallbackRequired = onSafeVideoFallbackRequired
         self.onClose = onClose
         self.onRetry = onRetry
         self.streamProfile = Self.effectiveProfile(for: session, settings: settings)
         self.showStatsOverlay = settings.showStatsOverlay
+        self.statsDisplayStyle = settings.streamerPreferences.statsStyle
+        self.streamTutorialCompleted = settings.streamTutorialCompleted
+        self.controllerTouchPromptDismissed = settings.controllerTouchPromptDismissed
+        self.sessionDurationText = settings.sessionCounterEnabled
+            ? Self.formatSessionDuration(snapshot: initialTimerSnapshot, limit: resolvedSessionLimit)
+            : nil
+        self.sessionTimerProgress = settings.sessionCounterEnabled ? initialTimerSnapshot.progress : 0
+        self.sessionTimerWarningActive = settings.sessionCounterEnabled && initialTimerSnapshot.isWarning
         super.init()
         inputBridge.sink = self
+        inputBridge.configureUserPreferences(
+            mouseSensitivity: settings.mouseSensitivity,
+            mouseAcceleration: settings.mouseAcceleration,
+            phoneRumbleFallback: settings.phoneRumbleFallback,
+            physicalControllerPassthrough: settings.streamerPreferences.physicalControllerPassthrough
+        )
+        inputBridge.onPhysicalControllerAvailabilityChanged = { [weak self] connected in
+            Task { @MainActor in
+                guard let self else { return }
+                self.handlePhysicalControllerAvailabilityChanged(connected)
+            }
+        }
         videoSink.onFrame = { [weak self] count, size, luma in
             Task { @MainActor in
                 self?.noteRenderedFrame(count: count, size: size, luma: luma)
@@ -926,6 +1603,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             selectedCodec = resolved
         }
 
+        startNetworkMonitoring()
         configureWebRTCAudioSession()
         inputBridge.attach()
         setIdleTimerDisabled(true)
@@ -933,6 +1611,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     func updateViewportSize(_ size: CGSize) {
+        if viewportSize != .zero,
+           abs(viewportSize.width - size.width) > 0.5 || abs(viewportSize.height - size.height) > 0.5 {
+            resetStreamZoom()
+        }
         viewportSize = size
     }
 
@@ -942,6 +1624,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         case .active:
             backgroundPictureInPictureStartPending = false
             reconnectAfterBackgroundIfNeeded()
+            scheduleGuidancePresentation()
         case .inactive:
             startPictureInPictureForBackground(reason: "scene inactive")
         case .background:
@@ -973,13 +1656,79 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         "\(streamProfile.resolutionString) @ \(streamProfile.fps) fps"
     }
 
+    var shouldShowVirtualController: Bool {
+        streamerPreferences.touchControllerVisible &&
+            (!physicalControllerConnected || showTouchControlsWithPhysicalController || touchLayoutEditing)
+    }
+
+    var virtualControllerInputEnabled: Bool {
+        streamerPreferences.touchControllerVisible &&
+            (!physicalControllerConnected || showTouchControlsWithPhysicalController) &&
+            !touchLayoutEditing
+    }
+
+    fileprivate var fingerMouseCaptureEnabled: Bool {
+        fingerMouseEnabled &&
+            !shouldShowVirtualController &&
+            !controlsPanelVisible &&
+            presentedGuidanceSheet == nil
+    }
+
     func toggleControlsPanel() {
-        setControlsPanelVisible(!controlsPanelVisible)
+        if controlsPanelVisible {
+            finishControlsPanel()
+        } else {
+            setControlsPanelVisible(true)
+        }
     }
 
     func setControlsPanelVisible(_ visible: Bool) {
         withAnimation(.easeInOut(duration: 0.18)) {
             controlsPanelVisible = visible
+        }
+        if !visible {
+            scheduleGuidancePresentation()
+        }
+    }
+
+    func dismissControlsPanelFromBackdrop() {
+        guard !tutorialDoneCalloutVisible else { return }
+        setControlsPanelVisible(false)
+    }
+
+    func finishControlsPanel() {
+        let completesTutorial = tutorialDoneCalloutVisible
+        withAnimation(.easeInOut(duration: 0.18)) {
+            controlsPanelVisible = false
+        }
+        if completesTutorial {
+            completeStreamTutorial()
+        } else {
+            scheduleGuidancePresentation()
+        }
+    }
+
+    func beginStreamTutorialControlsStep() {
+        presentedGuidanceSheet = nil
+        tutorialDoneCalloutVisible = true
+        setControlsPanelVisible(true)
+    }
+
+    func skipStreamTutorial() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            controlsPanelVisible = false
+        }
+        completeStreamTutorial()
+    }
+
+    func resolveControllerTouchPrompt(showTouchControls: Bool, doNotShowAgain: Bool) {
+        controllerTouchPromptHandledThisSession = true
+        showTouchControlsWithPhysicalController = showTouchControls
+        presentedGuidanceSheet = nil
+        updateVirtualControllerAvailability()
+        if doNotShowAgain && !controllerTouchPromptDismissed {
+            controllerTouchPromptDismissed = true
+            onControllerTouchPromptDismissed()
         }
     }
 
@@ -989,7 +1738,102 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     func cycleStatsStyle() {
-        statsDisplayStyle = statsDisplayStyle.next
+        let next: StreamStatsStyle = statsDisplayStyle == .compact ? .detailed : .compact
+        statsDisplayStyle = next
+        var preferences = streamerPreferences
+        preferences.statsStyle = next
+        setStreamerPreferences(preferences)
+    }
+
+    func toggleStatsPosition() {
+        var preferences = streamerPreferences
+        preferences.statsPosition = preferences.statsPosition == .left ? .right : .left
+        setStreamerPreferences(preferences)
+    }
+
+    func setStretchStreamToFill(_ enabled: Bool) {
+        resetStreamZoom()
+        var preferences = streamerPreferences
+        preferences.stretchStreamToFill = enabled
+        setStreamerPreferences(preferences)
+        renderer?.setStretchStreamToFill(enabled)
+    }
+
+    func setStreamSharpeningEnabled(_ enabled: Bool) {
+        guard streamSharpeningEnabled != enabled else { return }
+        streamSharpeningEnabled = enabled
+        renderer?.setStreamSharpening(enabled: enabled, amount: streamSharpeningAmount)
+        onStreamSharpeningChange(enabled, streamSharpeningAmount)
+    }
+
+    func setStreamSharpeningAmount(_ amount: Double) {
+        let normalized = min(max(amount, 0), 1)
+        guard streamSharpeningAmount != normalized else { return }
+        streamSharpeningAmount = normalized
+        renderer?.setStreamSharpening(enabled: streamSharpeningEnabled, amount: normalized)
+        onStreamSharpeningChange(streamSharpeningEnabled, normalized)
+    }
+
+    func setFingerMouseEnabled(_ enabled: Bool) {
+        guard fingerMouseEnabled != enabled else { return }
+        fingerMouseEnabled = enabled
+        onFingerMouseEnabledChange(enabled)
+    }
+
+    func setPhoneRumbleFallback(_ enabled: Bool) {
+        guard phoneRumbleFallbackEnabled != enabled else { return }
+        phoneRumbleFallbackEnabled = enabled
+        inputBridge.setPhoneRumbleFallback(enabled)
+        onPhoneRumbleFallbackChange(enabled)
+    }
+
+    fileprivate func applyFingerMouseZoom(_ scaleChange: CGFloat, _ pan: CGSize) {
+        guard fingerMouseCaptureEnabled else { return }
+        let normalizedScaleChange = min(max(scaleChange, 0.82), 1.22)
+        let nextScale = min(max(streamZoomScale * normalizedScaleChange, 1), 3)
+        streamZoomScale = nextScale
+        if nextScale <= 1.001 {
+            streamZoomOffset = .zero
+        } else {
+            let proposedOffset = CGSize(
+                width: streamZoomOffset.width + pan.width,
+                height: streamZoomOffset.height + pan.height
+            )
+            streamZoomOffset = clampedStreamZoomOffset(proposedOffset, scale: nextScale)
+        }
+        renderer?.setViewportTransform(scale: streamZoomScale, offset: streamZoomOffset)
+    }
+
+    private func clampedStreamZoomOffset(_ offset: CGSize, scale: CGFloat) -> CGSize {
+        guard scale > 1.001, viewportSize.width > 0, viewportSize.height > 0 else {
+            return .zero
+        }
+        let maximumX = viewportSize.width * (scale - 1) / 2
+        let maximumY = viewportSize.height * (scale - 1) / 2
+        return CGSize(
+            width: min(max(offset.width, -maximumX), maximumX),
+            height: min(max(offset.height, -maximumY), maximumY)
+        )
+    }
+
+    private func resetStreamZoom() {
+        guard streamZoomScale != 1 || streamZoomOffset != .zero else { return }
+        streamZoomScale = 1
+        streamZoomOffset = .zero
+        renderer?.setViewportTransform(scale: 1, offset: .zero)
+    }
+
+    private func updateRenderedVideoSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        if renderedVideoSize.width > 0, renderedVideoSize.height > 0 {
+            let previousAspectRatio = renderedVideoSize.width / renderedVideoSize.height
+            let nextAspectRatio = size.width / size.height
+            let relativeDifference = abs(previousAspectRatio - nextAspectRatio) / max(previousAspectRatio, 0.001)
+            if relativeDifference > 0.01 {
+                resetStreamZoom()
+            }
+        }
+        renderedVideoSize = size
     }
 
     func togglePictureInPicture() {
@@ -1021,28 +1865,30 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         refreshDeviceStatus()
     }
 
-    func setStatsCellularVisible(_ visible: Bool) {
+    func setStatsNetworkVisible(_ visible: Bool) {
         var preferences = streamerPreferences
         preferences.showStatsCellular = visible
         setStreamerPreferences(preferences)
     }
 
     func setTouchControllerVisible(_ visible: Bool) {
+        if !visible {
+            touchLayoutEditing = false
+        }
         var preferences = streamerPreferences
         preferences.touchControllerVisible = visible
         setStreamerPreferences(preferences)
-    }
-
-    func setTouchscreenModeEnabled(_ enabled: Bool) {
-        var preferences = streamerPreferences
-        preferences.touchscreenModeEnabled = enabled
-        setStreamerPreferences(preferences)
+        updateVirtualControllerAvailability()
+        if visible {
+            scheduleGuidancePresentation()
+        }
     }
 
     func setPhysicalControllerPassthrough(_ enabled: Bool) {
         var preferences = streamerPreferences
         preferences.physicalControllerPassthrough = enabled
         setStreamerPreferences(preferences)
+        inputBridge.setPhysicalControllerPassthrough(enabled)
     }
 
     func setTouchLayoutScale(_ value: Double) {
@@ -1061,6 +1907,47 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         updateTouchLayout { $0.opacity = min(max(value, 0.15), 1.0) }
     }
 
+    func beginTouchLayoutEditing() {
+        if !streamerPreferences.touchControllerVisible {
+            var preferences = streamerPreferences
+            preferences.touchControllerVisible = true
+            setStreamerPreferences(preferences)
+        }
+        touchLayoutEditing = true
+        controlsPanelVisible = false
+        updateVirtualControllerAvailability()
+    }
+
+    fileprivate func endTouchLayoutEditing() {
+        touchLayoutEditing = false
+        updateVirtualControllerAvailability()
+    }
+
+    fileprivate func resetTouchLayout() {
+        touchLayout = TouchControlLayout.preset(for: touchLayoutProfile)
+        onTouchLayoutChange(touchLayoutProfile, touchLayout)
+    }
+
+    fileprivate func setTouchLayoutPosition(
+        _ group: NativeStreamTouchControlGroup,
+        _ point: TouchControlPoint
+    ) {
+        let normalized = TouchControlPoint(
+            x: min(max(point.x, 0), 1),
+            y: min(max(point.y, 0), 1)
+        )
+        updateTouchLayout { layout in
+            switch group {
+            case .topLeft: layout.topLeft = normalized
+            case .topCenter: layout.topCenter = normalized
+            case .topRight: layout.topRight = normalized
+            case .leftStick: layout.leftStick = normalized
+            case .rightCluster: layout.rightCluster = normalized
+            case .bottomCenter: layout.bottomCenter = normalized
+            }
+        }
+    }
+
     fileprivate func sendVirtualKey(_ key: NativeStreamVirtualKey) {
         let mapping = key.mapping
         inputBridge.sendKey(mapping: mapping, pressed: true, modifiers: 0)
@@ -1069,30 +1956,128 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
     }
 
+    @discardableResult
+    fileprivate func sendTextToStream(_ text: String) -> Int {
+        guard reliableInputChannel?.readyState == .open else {
+            return 0
+        }
+        let sentCharacters = inputBridge.sendUnicodeText(text)
+        guard sentCharacters > 0 else { return 0 }
+        log("Sent stream text characters=\(sentCharacters)")
+        return sentCharacters
+    }
+
     private func setStreamerPreferences(_ preferences: StreamerPreferences) {
         streamerPreferences = preferences
         onStreamerPreferencesChange(preferences)
     }
 
     private func refreshDeviceStatus() {
-        deviceStatus = NativeStreamDeviceStatus.current()
+        deviceStatus = NativeStreamDeviceStatus.current(
+            networkTransport: deviceStatus.networkTransport
+        )
+    }
+
+    private func startNetworkMonitoring() {
+        guard !networkMonitorStarted else { return }
+        networkMonitorStarted = true
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            let transport = NativeStreamNetworkTransport(path: path)
+            Task { @MainActor [weak self] in
+                guard let self, !self.stopped else { return }
+                var updatedStatus = self.deviceStatus
+                guard updatedStatus.networkTransport != transport else { return }
+                updatedStatus.networkTransport = transport
+                self.deviceStatus = updatedStatus
+            }
+        }
+        networkMonitor.start(queue: networkMonitorQueue)
+    }
+
+    private func stopNetworkMonitoring() {
+        guard networkMonitorStarted else { return }
+        networkMonitor.pathUpdateHandler = nil
+        networkMonitor.cancel()
+    }
+
+    private func updateVirtualControllerAvailability() {
+        inputBridge.setVirtualControllerEnabled(virtualControllerInputEnabled)
+    }
+
+    private func handlePhysicalControllerAvailabilityChanged(_ connected: Bool) {
+        physicalControllerConnected = connected
+        if !connected, presentedGuidanceSheet == .controllerTouchPrompt {
+            presentedGuidanceSheet = nil
+        }
+        updateVirtualControllerAvailability()
+        if connected {
+            scheduleGuidancePresentation()
+        }
+    }
+
+    private func completeStreamTutorial() {
+        presentedGuidanceSheet = nil
+        tutorialDoneCalloutVisible = false
+        if !streamTutorialCompleted {
+            streamTutorialCompleted = true
+            onStreamTutorialCompleted()
+        }
+        scheduleGuidancePresentation()
+    }
+
+    private func scheduleGuidancePresentation(delayNanoseconds: UInt64 = 350_000_000) {
+        guidancePresentationTask?.cancel()
+        guard videoActive else { return }
+        guidancePresentationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            self.presentNextGuidanceIfNeeded()
+        }
+    }
+
+    private func presentNextGuidanceIfNeeded() {
+        guard videoActive,
+              latestScenePhase == .active,
+              presentedGuidanceSheet == nil,
+              !controlsPanelVisible,
+              !touchLayoutEditing,
+              !isPictureInPictureActive else {
+            return
+        }
+        if !streamTutorialCompleted {
+            presentedGuidanceSheet = .streamTutorial
+            return
+        }
+        guard physicalControllerConnected,
+              streamerPreferences.touchControllerVisible,
+              !controllerTouchPromptDismissed,
+              !controllerTouchPromptHandledThisSession else {
+            return
+        }
+        presentedGuidanceSheet = .controllerTouchPrompt
     }
 
     private func updateTouchLayout(_ update: (inout TouchControlLayout) -> Void) {
         var next = touchLayout
         update(&next)
         touchLayout = next
-        onTouchLayoutChange("default", next)
+        onTouchLayoutChange(touchLayoutProfile, next)
     }
 
     fileprivate func attachRenderer(_ renderer: NativeStreamRenderView) {
         if self.renderer !== renderer {
             self.renderer?.metalDelegate = nil
             renderer.metalDelegate = self
+            renderer.setStretchStreamToFill(streamerPreferences.stretchStreamToFill)
+            renderer.setStreamSharpening(enabled: streamSharpeningEnabled, amount: streamSharpeningAmount)
+            renderer.setViewportTransform(scale: streamZoomScale, offset: streamZoomOffset)
             videoSink.attach(renderView: renderer)
             pictureInPictureBridge.attach(displayLayer: renderer.pictureInPictureDisplayLayer)
         }
         self.renderer = renderer
+        renderer.setStretchStreamToFill(streamerPreferences.stretchStreamToFill)
+        renderer.setStreamSharpening(enabled: streamSharpeningEnabled, amount: streamSharpeningAmount)
+        renderer.setViewportTransform(scale: streamZoomScale, offset: streamZoomOffset)
         attachCurrentVideoSinkIfNeeded()
     }
 
@@ -1109,6 +2094,13 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        guidancePresentationTask?.cancel()
+        guidancePresentationTask = nil
+        sessionWarningDismissTask?.cancel()
+        sessionWarningDismissTask = nil
+        sessionWarningText = nil
+        presentedGuidanceSheet = nil
+        stopNetworkMonitoring()
         inputBridge.detach()
         setIdleTimerDisabled(false)
         teardownWebRTCAudioSession()
@@ -1151,6 +2143,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func setVideoTrack(_ track: RTCVideoTrack) {
+        if let videoTrack, videoTrack !== track {
+            resetStreamZoom()
+        }
         if let existingTrack = videoTrack, existingTrack !== track, videoSinkAttached {
             existingTrack.remove(videoSink)
             videoSinkAttached = false
@@ -1319,7 +2314,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func createPeerConnection(with offerSDP: String) {
         if factory == nil {
             _ = RTCInitializeSSL()
-            let audioDevice = shouldNegotiateAudio ? nil : NativeStreamMutedAudioDevice()
+            let audioDevice = nativeAudioDeviceAvailable ? nil : NativeStreamMutedAudioDevice()
             mutedAudioDevice = audioDevice
             factory = RTCPeerConnectionFactory(
                 encoderFactory: RTCDefaultVideoEncoderFactory(),
@@ -1680,6 +2675,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func collectStats() {
+        updateSessionTimer()
         guard let peerConnection else { return }
         peerConnection.statistics { [weak self] report in
             Task { @MainActor in
@@ -1688,9 +2684,75 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
     }
 
+    private func updateSessionTimer(now: Date = Date()) {
+        guard settings.sessionCounterEnabled else { return }
+        let snapshot = streamSessionTimerSnapshot(
+            limit: sessionLimit,
+            startedAt: session.startedAt,
+            now: now
+        )
+        sessionDurationText = Self.formatSessionDuration(snapshot: snapshot, limit: sessionLimit)
+        sessionTimerProgress = snapshot.progress
+        sessionTimerWarningActive = snapshot.isWarning
+
+        guard videoActive,
+              let threshold = sessionWarningTracker.nextWarning(
+                  remainingSeconds: snapshot.remainingSeconds
+              ) else {
+            return
+        }
+        presentSessionWarning(thresholdSeconds: threshold)
+    }
+
+    private func presentSessionWarning(thresholdSeconds: Int) {
+        let minutes = thresholdSeconds / 60
+        let interval = minutes == 1 ? "1 minute" : "\(minutes) minutes"
+        let message = "\(interval) left in this session"
+        sessionWarningDismissTask?.cancel()
+        sessionWarningText = message
+        UIAccessibility.post(notification: .announcement, argument: message)
+        sessionWarningDismissTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.sessionWarningText == message else {
+                return
+            }
+            self.sessionWarningText = nil
+            self.sessionWarningDismissTask = nil
+        }
+    }
+
+    private static func formatSessionDuration(
+        snapshot: StreamSessionTimerSnapshot,
+        limit: StreamSessionLimit
+    ) -> String {
+        switch limit.mode {
+        case .countdown:
+            return "\(formatClock(snapshot.remainingSeconds)) left"
+        case .stopwatch:
+            return "\(formatClock(snapshot.elapsedSeconds)) / \(limit.limitHours)h"
+        }
+    }
+
+    private static func formatClock(_ secondsValue: Int) -> String {
+        let hours = secondsValue / 3_600
+        let minutes = (secondsValue % 3_600) / 60
+        let seconds = secondsValue % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
     private func updateStats(from report: RTCStatisticsReport) {
         refreshDeviceStatus()
         var framesDecoded: Int?
+        var framesRendered: Int?
         var framesPerSecond: Int?
         var framesDropped: Int?
         var width: Int?
@@ -1711,6 +2773,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             if stat.type == "inbound-rtp" {
                 if let kind = stat.values["kind"] as? String, kind != "video" { continue }
                 framesDecoded = (stat.values["framesDecoded"] as? NSNumber)?.intValue ?? framesDecoded
+                framesRendered = (stat.values["framesRendered"] as? NSNumber)?.intValue ?? framesRendered
                 framesPerSecond = (stat.values["framesPerSecond"] as? NSNumber)?.intValue ?? framesPerSecond
                 framesDropped = (stat.values["framesDropped"] as? NSNumber)?.intValue ?? framesDropped
                 width = (stat.values["frameWidth"] as? NSNumber)?.intValue ?? width
@@ -1749,13 +2812,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             handleDecodedVideoProgress(framesDecoded: framesDecoded ?? 0)
         }
         let now = ProcessInfo.processInfo.systemUptime
+        handlePostStartRenderProgress(
+            framesDecoded: framesDecoded,
+            framesRendered: framesRendered,
+            now: now
+        )
         let derivedFPS = framesPerSecond ?? estimatedFramesPerSecond(framesDecoded: framesDecoded, now: now)
         let derivedBitrate = estimatedBitrateKbps(bytesReceived: bytesReceived, now: now)
         statsText = [
             selectedCodec.rawValue,
             resolution,
             "decoded \(framesDecoded ?? 0)",
-            "rendered \(renderedFrameCount)",
+            "rendered \(framesRendered ?? renderedFrameCount)",
             sampledLuma.map { "luma \($0)" },
             localCodecDebugText.isEmpty ? nil : localCodecDebugText,
             "drop \(framesDropped ?? 0)",
@@ -1773,7 +2841,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             bitrateKbps: derivedBitrate,
             pingMs: rttMs.map { Int($0.rounded()) },
             decoded: framesDecoded ?? 0,
-            rendered: renderedFrameCount,
+            rendered: framesRendered ?? renderedFrameCount,
             dropped: framesDropped ?? 0,
             lossPercent: packetLossPercent,
             jitterMs: jitterMs.map { Int($0.rounded()) },
@@ -1782,7 +2850,56 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         )
         lastStatsSampleAt = now
         lastStatsFramesDecoded = framesDecoded
+        lastStatsFramesRendered = framesRendered
         lastStatsBytesReceived = bytesReceived
+    }
+
+    private func handlePostStartRenderProgress(
+        framesDecoded: Int?,
+        framesRendered: Int?,
+        now: TimeInterval
+    ) {
+        // Only arm this watchdog when WebRTC exposes a real framesRendered
+        // counter. Sink delivery is not proof that Metal presented the frame.
+        guard latestScenePhase == .active,
+              let framesDecoded,
+              let framesRendered,
+              framesRendered > 0 else {
+            return
+        }
+
+        if lastStatsFramesRendered == nil || framesRendered > (lastStatsFramesRendered ?? 0) {
+            lastRenderedStatsProgressAt = now
+            lastPostStartKeyframeRequestAt = nil
+            postStartKeyframeAttempts = 0
+            return
+        }
+
+        guard let previousDecoded = lastStatsFramesDecoded,
+              framesDecoded > previousDecoded,
+              let lastRenderedStatsProgressAt else {
+            return
+        }
+
+        let stalledFor = now - lastRenderedStatsProgressAt
+        let keyframeDue = lastPostStartKeyframeRequestAt.map { now - $0 >= 3 } ?? true
+        if stalledFor >= 2, keyframeDue {
+            postStartKeyframeAttempts += 1
+            lastPostStartKeyframeRequestAt = now
+            requestKeyframe(reason: "ios_renderer_stall", attempt: postStartKeyframeAttempts)
+            updateStatus(
+                "Recovering video",
+                detail: "Video rendering paused; requesting a fresh keyframe"
+            )
+        }
+
+        if stalledFor >= 14 {
+            if selectedCodec != .h264 {
+                onSafeVideoFallbackRequired("Video renderer stalled after playback started with \(selectedCodec.rawValue)")
+            } else {
+                fail("Video renderer stalled after playback started")
+            }
+        }
     }
 
     private func estimatedFramesPerSecond(framesDecoded: Int?, now: TimeInterval) -> Int? {
@@ -1843,16 +2960,21 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func markVideoActive() {
+        let becameActive = !videoActive
+        videoActive = true
         statusText = "Streaming"
         detailText = ""
         withAnimation(.easeOut(duration: 0.25)) {
             showStatusOverlay = false
         }
+        if becameActive {
+            scheduleGuidancePresentation()
+        }
     }
 
     private func noteRenderedFrame(count: Int, size: CGSize, luma: Int?) {
         renderedFrameCount = count
-        renderedVideoSize = size
+        updateRenderedVideoSize(size)
         sampledLuma = luma ?? sampledLuma
         decodedWithoutRenderStartedAt = nil
         lastRenderKeyframeRequestAt = nil
@@ -1953,6 +3075,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             || value.contains("waiting for offer timed out")
             || value.contains("signaling failed")
             || value.contains("signaling closed")
+            || value.contains("video renderer stalled")
             || value.contains("ice connection failed")
             || value.contains("peer connection failed")
     }
@@ -2037,25 +3160,31 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         )
     }
 
-    private var shouldNegotiateAudio: Bool {
+    private var nativeAudioDeviceAvailable: Bool {
         #if targetEnvironment(simulator)
         false
         #else
-        !streamerPreferences.audioMuted
+        true
         #endif
     }
 
-    private func configureWebRTCAudioSession() {
-        guard shouldNegotiateAudio else {
-            log("WebRTC audio held disabled")
-            return
-        }
+    private var shouldPlayAudio: Bool {
+        nativeAudioDeviceAvailable && !streamerPreferences.audioMuted
+    }
 
+    private func configureWebRTCAudioSession() {
         let audioSession = RTCAudioSession.sharedInstance()
-        let enableMic = settings.keepMicEnabled
+        // GFN's current offer has no upstream microphone track. Keep the
+        // session playback-only instead of requesting a misleading permission.
+        let enableMic = false
 
         audioSession.useManualAudio = true
         audioSession.ignoresPreferredAttributeConfigurationErrors = true
+        guard shouldPlayAudio else {
+            audioSession.isAudioEnabled = false
+            log("WebRTC audio held disabled")
+            return
+        }
         audioSession.lockForConfiguration()
         defer { audioSession.unlockForConfiguration() }
 
@@ -2082,7 +3211,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             return
         }
 
-        guard shouldNegotiateAudio else {
+        guard shouldPlayAudio else {
             teardownWebRTCAudioSession()
             log("WebRTC audio held disabled")
             return
@@ -2264,7 +3393,7 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
 extension NativeStreamCoordinator: RTCVideoViewDelegate {
     nonisolated func videoView(_ videoView: any RTCVideoRenderer, didChangeVideoSize size: CGSize) {
         Task { @MainActor in
-            self.renderedVideoSize = size
+            self.updateRenderedVideoSize(size)
             self.log("Native video size changed \(Int(size.width))x\(Int(size.height))")
         }
     }
@@ -2745,8 +3874,16 @@ private struct NativeStreamVideoView: UIViewRepresentable {
 private final class NativeStreamRenderView: UIView {
     let pictureInPictureDisplayLayer = AVSampleBufferDisplayLayer()
 
+    private let videoContainerView = UIView(frame: .zero)
     private let metalVideoView = RTCMTLVideoView(frame: .zero)
-    private let frameMetalView = NativeStreamFrameMetalView.make()
+    private let rendererStateLock = NSLock()
+    private var filteredMetalView: NativeStreamFilteredMetalView?
+    private var filteredRendererActive = false
+    private var stretchStreamToFill = false
+    private var streamSharpeningEnabled = false
+    private var streamSharpeningAmount = 0.25
+    private var viewportTransformScale: CGFloat = 1
+    private var viewportTransformOffset: CGSize = .zero
 
     var metalDelegate: RTCVideoViewDelegate? {
         get { metalVideoView.delegate }
@@ -2757,16 +3894,21 @@ private final class NativeStreamRenderView: UIView {
         super.init(frame: frame)
         backgroundColor = .black
         isOpaque = true
+        clipsToBounds = true
         pictureInPictureDisplayLayer.videoGravity = .resizeAspect
         pictureInPictureDisplayLayer.backgroundColor = UIColor.black.cgColor
         layer.addSublayer(pictureInPictureDisplayLayer)
+        videoContainerView.backgroundColor = .black
+        videoContainerView.isUserInteractionEnabled = false
+        addSubview(videoContainerView)
         metalVideoView.videoContentMode = .scaleAspectFit
         metalVideoView.backgroundColor = .black
         metalVideoView.isEnabled = true
-        addSubview(metalVideoView)
-        if let frameMetalView {
-            addSubview(frameMetalView)
-        }
+        videoContainerView.addSubview(metalVideoView)
+        #if targetEnvironment(simulator)
+        ensureFilteredMetalView()
+        #endif
+        updateRendererVisibility()
     }
 
     required init?(coder: NSCoder) {
@@ -2776,27 +3918,109 @@ private final class NativeStreamRenderView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         pictureInPictureDisplayLayer.frame = bounds
-        metalVideoView.frame = bounds
-        frameMetalView?.frame = bounds
+        videoContainerView.bounds = CGRect(origin: .zero, size: bounds.size)
+        videoContainerView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        metalVideoView.frame = videoContainerView.bounds
+        filteredMetalView?.frame = videoContainerView.bounds
+        applyViewportTransform()
     }
 
     func setSize(_ size: CGSize) {
         metalVideoView.setSize(size)
-        frameMetalView?.videoSize = size
     }
 
     func renderFrame(_ frame: RTCVideoFrame?) {
-        metalVideoView.renderFrame(frame)
-        frameMetalView?.display(frame: frame)
+        rendererStateLock.lock()
+        let useFilteredRenderer = filteredRendererActive
+        let filtered = filteredMetalView
+        rendererStateLock.unlock()
+        if useFilteredRenderer, let filtered {
+            filtered.display(frame: frame)
+        } else {
+            metalVideoView.renderFrame(frame)
+        }
+    }
+
+    func setStretchStreamToFill(_ enabled: Bool) {
+        stretchStreamToFill = enabled
+        metalVideoView.videoContentMode = enabled ? .scaleToFill : .scaleAspectFit
+        rendererStateLock.lock()
+        let filtered = filteredMetalView
+        rendererStateLock.unlock()
+        filtered?.stretchToFill = enabled
+    }
+
+    func setStreamSharpening(enabled: Bool, amount: Double) {
+        streamSharpeningEnabled = enabled
+        streamSharpeningAmount = min(max(amount, 0), 1)
+        if shouldRequestFilteredRenderer {
+            ensureFilteredMetalView()
+        }
+        filteredMetalView?.sharpeningAmount = enabled ? streamSharpeningAmount : 0
+        updateRendererVisibility()
+    }
+
+    func setViewportTransform(scale: CGFloat, offset: CGSize) {
+        viewportTransformScale = min(max(scale, 1), 3)
+        viewportTransformOffset = viewportTransformScale <= 1.001 ? .zero : offset
+        applyViewportTransform()
+    }
+
+    private func applyViewportTransform() {
+        videoContainerView.transform = CGAffineTransform(
+            a: viewportTransformScale,
+            b: 0,
+            c: 0,
+            d: viewportTransformScale,
+            tx: viewportTransformOffset.width,
+            ty: viewportTransformOffset.height
+        )
+    }
+
+    private var shouldRequestFilteredRenderer: Bool {
+        #if targetEnvironment(simulator)
+        true
+        #else
+        streamSharpeningEnabled
+        #endif
+    }
+
+    private func ensureFilteredMetalView() {
+        guard filteredMetalView == nil,
+              let filtered = NativeStreamFilteredMetalView.make() else {
+            return
+        }
+        filtered.frame = videoContainerView.bounds
+        filtered.stretchToFill = stretchStreamToFill
+        filtered.sharpeningAmount = streamSharpeningEnabled ? streamSharpeningAmount : 0
+        filtered.isHidden = true
+        videoContainerView.addSubview(filtered)
+        rendererStateLock.lock()
+        filteredMetalView = filtered
+        rendererStateLock.unlock()
+    }
+
+    private func updateRendererVisibility() {
+        let filteredActive = shouldRequestFilteredRenderer && filteredMetalView != nil
+        rendererStateLock.lock()
+        filteredRendererActive = filteredActive
+        rendererStateLock.unlock()
+        metalVideoView.isEnabled = !filteredActive
+        metalVideoView.isHidden = filteredActive
+        filteredMetalView?.isHidden = !filteredActive
     }
 }
 
-private final class NativeStreamFrameMetalView: UIView, MTKViewDelegate {
-    var videoSize: CGSize = .zero
+/// `RTCMTLVideoView` does not reliably present IOSurfaces in CoreSimulator.
+/// This Core Image + Metal surface therefore remains the simulator renderer and
+/// is also used on devices only while the opt-in sharpening filter is enabled.
+private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
+    var stretchToFill = false
+    var sharpeningAmount = 0.0
 
-    private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let ciContext: CIContext
+    private let sharpeningFilter = CIFilter(name: "CISharpenLuminance")
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private let mtkView: MTKView
     private let lock = NSLock()
@@ -2804,19 +4028,18 @@ private final class NativeStreamFrameMetalView: UIView, MTKViewDelegate {
     private var latestFrameSize: CGSize = .zero
     private var renderScheduled = false
 
-    static func make() -> NativeStreamFrameMetalView? {
+    static func make() -> NativeStreamFilteredMetalView? {
         guard let device = MTLCreateSystemDefaultDevice(),
               let queue = device.makeCommandQueue() else {
             return nil
         }
-        return NativeStreamFrameMetalView(device: device, commandQueue: queue)
+        return NativeStreamFilteredMetalView(device: device, commandQueue: queue)
     }
 
     private init(device: MTLDevice, commandQueue: MTLCommandQueue) {
-        self.device = device
         self.commandQueue = commandQueue
-        self.ciContext = CIContext(mtlDevice: device)
-        self.mtkView = MTKView(frame: .zero, device: device)
+        ciContext = CIContext(mtlDevice: device)
+        mtkView = MTKView(frame: .zero, device: device)
         super.init(frame: .zero)
         isOpaque = true
         backgroundColor = .black
@@ -2886,16 +4109,28 @@ private final class NativeStreamFrameMetalView: UIView, MTKViewDelegate {
 
         let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
         let sourceExtent = sourceImage.extent
+        let filteredImage: CIImage = {
+            let normalizedAmount = min(max(sharpeningAmount, 0), 1)
+            guard normalizedAmount > 0.001,
+                  let filter = sharpeningFilter else {
+                return sourceImage
+            }
+            filter.setValue(sourceImage, forKey: kCIInputImageKey)
+            filter.setValue(normalizedAmount, forKey: kCIInputSharpnessKey)
+            return (filter.outputImage ?? sourceImage).cropped(to: sourceExtent)
+        }()
         let targetBounds = CGRect(origin: .zero, size: view.drawableSize)
-        let fitted = Self.aspectFitRect(
-            source: frameSize == .zero ? sourceExtent.size : frameSize,
-            target: targetBounds.size
-        )
-        let scaleX = fitted.width / max(sourceExtent.width, 1)
-        let scaleY = fitted.height / max(sourceExtent.height, 1)
-        let transform = CGAffineTransform(translationX: fitted.minX, y: fitted.minY)
+        let destination = stretchToFill
+            ? targetBounds
+            : Self.aspectFitRect(
+                source: frameSize == .zero ? sourceExtent.size : frameSize,
+                target: targetBounds.size
+            )
+        let scaleX = destination.width / max(sourceExtent.width, 1)
+        let scaleY = destination.height / max(sourceExtent.height, 1)
+        let transform = CGAffineTransform(translationX: destination.minX, y: destination.minY)
             .scaledBy(x: scaleX, y: scaleY)
-        let outputImage = sourceImage.transformed(by: transform)
+        let outputImage = filteredImage.transformed(by: transform)
 
         ciContext.render(
             outputImage,
@@ -2924,17 +4159,571 @@ private final class NativeStreamFrameMetalView: UIView, MTKViewDelegate {
     }
 }
 
+private enum NativeStreamTouchControlGroup: CaseIterable {
+    case topLeft
+    case topCenter
+    case topRight
+    case leftStick
+    case rightCluster
+    case bottomCenter
+
+    var label: String {
+        switch self {
+        case .topLeft: return "Left shoulder buttons"
+        case .topCenter: return "View and Menu buttons"
+        case .topRight: return "Right shoulder buttons"
+        case .leftStick: return "Left stick and directional pad"
+        case .rightCluster: return "Right stick and face buttons"
+        case .bottomCenter: return "Hide controls button"
+        }
+    }
+}
+
+private struct NativeStreamVirtualControllerOverlay: View {
+    let inputBridge: NativeStreamInputBridge
+    let layout: TouchControlLayout
+    let editing: Bool
+    let inputEnabled: Bool
+    let onPositionChange: (NativeStreamTouchControlGroup, TouchControlPoint) -> Void
+    let onHide: () -> Void
+    let onReset: () -> Void
+    let onDoneEditing: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let compact = proxy.size.width < 600
+            let buttonSize = (compact ? 34.0 : 42.0) * layout.buttonScale
+            let stickSize = (compact ? 68.0 : 84.0) * layout.stickScale
+
+            ZStack {
+                controlGroup(
+                    .topLeft,
+                    point: layout.topLeft,
+                    containerSize: proxy.size,
+                    safeAreaInsets: proxy.safeAreaInsets
+                ) {
+                    HStack(spacing: 8) {
+                        NativeStreamVirtualHoldButton(
+                            label: "L1",
+                            size: buttonSize,
+                            pressed: { inputBridge.setVirtualButton(.leftShoulder, pressed: $0) }
+                        )
+                        NativeStreamVirtualHoldButton(
+                            label: "L2",
+                            size: buttonSize,
+                            pressed: { inputBridge.setVirtualTrigger(.left, value: $0 ? 1 : 0) }
+                        )
+                    }
+                }
+
+                controlGroup(
+                    .topCenter,
+                    point: layout.topCenter,
+                    containerSize: proxy.size,
+                    safeAreaInsets: proxy.safeAreaInsets
+                ) {
+                    HStack(spacing: 8) {
+                        NativeStreamVirtualHoldButton(
+                            label: "View",
+                            systemImage: "rectangle.on.rectangle",
+                            size: buttonSize,
+                            pressed: { inputBridge.setVirtualButton(.options, pressed: $0) }
+                        )
+                        NativeStreamVirtualHoldButton(
+                            label: "Menu",
+                            systemImage: "line.3.horizontal",
+                            size: buttonSize,
+                            pressed: { inputBridge.setVirtualButton(.menu, pressed: $0) }
+                        )
+                    }
+                }
+
+                controlGroup(
+                    .topRight,
+                    point: layout.topRight,
+                    containerSize: proxy.size,
+                    safeAreaInsets: proxy.safeAreaInsets
+                ) {
+                    HStack(spacing: 8) {
+                        NativeStreamVirtualHoldButton(
+                            label: "R2",
+                            size: buttonSize,
+                            pressed: { inputBridge.setVirtualTrigger(.right, value: $0 ? 1 : 0) }
+                        )
+                        NativeStreamVirtualHoldButton(
+                            label: "R1",
+                            size: buttonSize,
+                            pressed: { inputBridge.setVirtualButton(.rightShoulder, pressed: $0) }
+                        )
+                    }
+                }
+
+                controlGroup(
+                    .leftStick,
+                    point: layout.leftStick,
+                    containerSize: proxy.size,
+                    safeAreaInsets: proxy.safeAreaInsets
+                ) {
+                    HStack(alignment: .bottom, spacing: compact ? 5 : 10) {
+                        NativeStreamVirtualStickView(
+                            label: "L",
+                            size: stickSize,
+                            changed: { x, y in inputBridge.setVirtualStick(.left, x: x, y: y) },
+                            pressed: { inputBridge.setVirtualButton(.leftStick, pressed: $0) }
+                        )
+                        NativeStreamVirtualDPad(size: buttonSize * 0.72, inputBridge: inputBridge)
+                    }
+                }
+
+                controlGroup(
+                    .rightCluster,
+                    point: layout.rightCluster,
+                    containerSize: proxy.size,
+                    safeAreaInsets: proxy.safeAreaInsets
+                ) {
+                    HStack(alignment: .bottom, spacing: compact ? 5 : 10) {
+                        NativeStreamVirtualStickView(
+                            label: "R",
+                            size: stickSize,
+                            changed: { x, y in inputBridge.setVirtualStick(.right, x: x, y: y) },
+                            pressed: { inputBridge.setVirtualButton(.rightStick, pressed: $0) }
+                        )
+                        NativeStreamVirtualFaceButtons(size: buttonSize, inputBridge: inputBridge)
+                    }
+                }
+
+                controlGroup(
+                    .bottomCenter,
+                    point: layout.bottomCenter,
+                    containerSize: proxy.size,
+                    safeAreaInsets: proxy.safeAreaInsets
+                ) {
+                    Button(action: onHide) {
+                        Label("Hide controls", systemImage: "eye.slash")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                }
+
+                if editing {
+                    NativeStreamTouchLayoutEditorToolbar(
+                        onReset: onReset,
+                        onDone: onDoneEditing
+                    )
+                    .frame(maxWidth: min(max(proxy.size.width - 24, 1), 430))
+                    .position(x: proxy.size.width / 2, y: proxy.size.height * 0.48)
+                    .zIndex(100)
+                }
+            }
+        }
+        .onAppear { inputBridge.setVirtualControllerEnabled(inputEnabled) }
+        .onChangeCompat(of: inputEnabled) { inputBridge.setVirtualControllerEnabled($0) }
+        .onDisappear { inputBridge.setVirtualControllerEnabled(false) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(editing ? "Edit touch controller layout" : "Touch controller")
+    }
+
+    private func controlGroup<Content: View>(
+        _ group: NativeStreamTouchControlGroup,
+        point: TouchControlPoint,
+        containerSize: CGSize,
+        safeAreaInsets: EdgeInsets,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        NativeStreamPositionedControlGroup(
+            group: group,
+            point: point,
+            containerSize: containerSize,
+            safeAreaInsets: safeAreaInsets,
+            scale: layout.scale,
+            opacity: layout.opacity,
+            editing: editing,
+            onPositionChange: { onPositionChange(group, $0) },
+            content: content
+        )
+    }
+}
+
+private struct NativeStreamTouchLayoutEditorToolbar: View {
+    let onReset: () -> Void
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Label("Drag the highlighted control groups", systemImage: "hand.draw")
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.center)
+
+            HStack(spacing: 10) {
+                Button(role: .destructive) {
+                    onReset()
+                } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    onDone()
+                } label: {
+                    Label("Done", systemImage: "checkmark")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.accentColor.opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.28), radius: 14, y: 7)
+    }
+}
+
+private struct NativeStreamPositionedControlGroup<Content: View>: View {
+    let group: NativeStreamTouchControlGroup
+    let point: TouchControlPoint
+    let containerSize: CGSize
+    let safeAreaInsets: EdgeInsets
+    let scale: Double
+    let opacity: Double
+    let editing: Bool
+    let onPositionChange: (TouchControlPoint) -> Void
+    @ViewBuilder let content: () -> Content
+
+    @State private var contentSize = CGSize.zero
+    @GestureState private var dragTranslation = CGSize.zero
+
+    var body: some View {
+        Group {
+            if editing {
+                positionedContent
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .updating($dragTranslation) { value, state, _ in
+                                state = value.translation
+                            }
+                            .onEnded { value in
+                                onPositionChange(normalizedPoint(after: value.translation))
+                            }
+                    )
+                    .accessibilityHint("Drag to move this control group")
+            } else {
+                positionedContent
+            }
+        }
+        .onPreferenceChange(NativeStreamControlGroupSizePreferenceKey.self) { size in
+            guard size.width > 0, size.height > 0 else { return }
+            contentSize = size
+        }
+    }
+
+    private var positionedContent: some View {
+        content()
+            .allowsHitTesting(!editing)
+            .opacity(editing ? max(opacity, 0.82) : opacity)
+            .padding(editing ? 7 : 0)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: NativeStreamControlGroupSizePreferenceKey.self,
+                        value: proxy.size
+                    )
+                }
+            }
+            .overlay {
+                if editing {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(
+                            Color.accentColor,
+                            style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                        )
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if editing {
+                    Text(group.label)
+                        .font(.caption2.weight(.bold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .foregroundStyle(.white)
+                        .background(Color.accentColor, in: Capsule())
+                        .offset(y: -12)
+                }
+            }
+            .scaleEffect(scale)
+            .position(basePosition)
+            .offset(dragTranslation)
+            .zIndex(editing ? 20 : 1)
+            .accessibilityLabel(group.label)
+    }
+
+    private var safeRect: CGRect {
+        let margin: CGFloat = 8
+        let left = safeAreaInsets.leading + margin
+        let top = safeAreaInsets.top + margin
+        let right = safeAreaInsets.trailing + margin
+        let bottom = safeAreaInsets.bottom + margin
+        return CGRect(
+            x: left,
+            y: top,
+            width: max(1, containerSize.width - left - right),
+            height: max(1, containerSize.height - top - bottom)
+        )
+    }
+
+    private var scaledContentSize: CGSize {
+        CGSize(
+            width: contentSize.width * max(scale, 0.01),
+            height: contentSize.height * max(scale, 0.01)
+        )
+    }
+
+    private var basePosition: CGPoint {
+        clampedPosition(
+            CGPoint(
+                x: safeRect.minX + safeRect.width * CGFloat(point.x),
+                y: safeRect.minY + safeRect.height * CGFloat(point.y)
+            )
+        )
+    }
+
+    private func normalizedPoint(after translation: CGSize) -> TouchControlPoint {
+        let center = clampedPosition(
+            CGPoint(
+                x: basePosition.x + translation.width,
+                y: basePosition.y + translation.height
+            )
+        )
+        return TouchControlPoint(
+            x: Double(min(max((center.x - safeRect.minX) / safeRect.width, 0), 1)),
+            y: Double(min(max((center.y - safeRect.minY) / safeRect.height, 0), 1))
+        )
+    }
+
+    private func clampedPosition(_ proposed: CGPoint) -> CGPoint {
+        let halfWidth = scaledContentSize.width / 2
+        let halfHeight = scaledContentSize.height / 2
+        return CGPoint(
+            x: clamped(proposed.x, lower: safeRect.minX + halfWidth, upper: safeRect.maxX - halfWidth),
+            y: clamped(proposed.y, lower: safeRect.minY + halfHeight, upper: safeRect.maxY - halfHeight)
+        )
+    }
+
+    private func clamped(_ value: CGFloat, lower: CGFloat, upper: CGFloat) -> CGFloat {
+        guard lower <= upper else { return (lower + upper) / 2 }
+        return min(max(value, lower), upper)
+    }
+}
+
+private struct NativeStreamControlGroupSizePreferenceKey: PreferenceKey {
+    static var defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next.width > 0, next.height > 0 {
+            value = next
+        }
+    }
+}
+
+private struct NativeStreamVirtualDPad: View {
+    let size: CGFloat
+    let inputBridge: NativeStreamInputBridge
+
+    var body: some View {
+        Grid(horizontalSpacing: 2, verticalSpacing: 2) {
+            GridRow {
+                Color.clear.frame(width: size, height: size)
+                directionButton("chevron.up", .dpadUp)
+                Color.clear.frame(width: size, height: size)
+            }
+            GridRow {
+                directionButton("chevron.left", .dpadLeft)
+                Color.white.opacity(0.13).frame(width: size, height: size)
+                directionButton("chevron.right", .dpadRight)
+            }
+            GridRow {
+                Color.clear.frame(width: size, height: size)
+                directionButton("chevron.down", .dpadDown)
+                Color.clear.frame(width: size, height: size)
+            }
+        }
+        .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Directional pad")
+    }
+
+    private func directionButton(
+        _ image: String,
+        _ button: NativeStreamVirtualGamepadButton
+    ) -> some View {
+        NativeStreamVirtualHoldButton(
+            label: image.replacingOccurrences(of: "chevron.", with: "D-pad "),
+            systemImage: image,
+            size: size,
+            pressed: { inputBridge.setVirtualButton(button, pressed: $0) }
+        )
+    }
+}
+
+private struct NativeStreamVirtualFaceButtons: View {
+    let size: CGFloat
+    let inputBridge: NativeStreamInputBridge
+
+    var body: some View {
+        ZStack {
+            faceButton("Y", .y, color: .yellow).offset(y: -size * 0.82)
+            faceButton("B", .b, color: .red).offset(x: size * 0.82)
+            faceButton("A", .a, color: .green).offset(y: size * 0.82)
+            faceButton("X", .x, color: .blue).offset(x: -size * 0.82)
+        }
+        .frame(width: size * 2.7, height: size * 2.7)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Face buttons")
+    }
+
+    private func faceButton(
+        _ label: String,
+        _ button: NativeStreamVirtualGamepadButton,
+        color: Color
+    ) -> some View {
+        NativeStreamVirtualHoldButton(
+            label: label,
+            size: size,
+            tint: color,
+            pressed: { inputBridge.setVirtualButton(button, pressed: $0) }
+        )
+    }
+}
+
+private struct NativeStreamVirtualHoldButton: View {
+    let label: String
+    var systemImage: String? = nil
+    let size: CGFloat
+    var tint: Color = .white
+    let pressed: (Bool) -> Void
+
+    @State private var isPressed = false
+
+    var body: some View {
+        Group {
+            if let systemImage {
+                Image(systemName: systemImage)
+            } else {
+                Text(label)
+            }
+        }
+        .font(.caption.weight(.bold))
+        .foregroundStyle(tint)
+        .frame(width: size, height: size)
+        .background(.ultraThinMaterial, in: Circle())
+        .overlay(Circle().stroke(tint.opacity(isPressed ? 0.8 : 0.28), lineWidth: isPressed ? 2 : 1))
+        .scaleEffect(isPressed ? 0.91 : 1)
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in setPressed(true) }
+                .onEnded { _ in setPressed(false) }
+        )
+        .onDisappear { setPressed(false) }
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            setPressed(true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                setPressed(false)
+            }
+        }
+        .animation(.easeOut(duration: 0.08), value: isPressed)
+    }
+
+    private func setPressed(_ next: Bool) {
+        guard isPressed != next else { return }
+        isPressed = next
+        pressed(next)
+    }
+}
+
+private struct NativeStreamVirtualStickView: View {
+    let label: String
+    let size: CGFloat
+    let changed: (CGFloat, CGFloat) -> Void
+    let pressed: (Bool) -> Void
+
+    @State private var knobOffset = CGSize.zero
+    @State private var moved = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 1))
+            Circle()
+                .fill(Color.white.opacity(0.30))
+                .frame(width: size * 0.48, height: size * 0.48)
+                .overlay(Text(label).font(.caption2.bold()).foregroundStyle(.white))
+                .offset(knobOffset)
+        }
+        .frame(width: size, height: size)
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let radius = max(1, size * 0.34)
+                    let raw = CGSize(width: value.translation.width, height: value.translation.height)
+                    let magnitude = hypot(raw.width, raw.height)
+                    let scale = magnitude > radius ? radius / magnitude : 1
+                    knobOffset = CGSize(width: raw.width * scale, height: raw.height * scale)
+                    moved = moved || magnitude > 5
+                    changed(knobOffset.width / radius, -knobOffset.height / radius)
+                }
+                .onEnded { _ in
+                    changed(0, 0)
+                    knobOffset = .zero
+                    if !moved {
+                        pressed(true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { pressed(false) }
+                    }
+                    moved = false
+                }
+        )
+        .onDisappear { changed(0, 0) }
+        .accessibilityLabel("\(label) thumbstick")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: changed(0, 1)
+            case .decrement: changed(0, -1)
+            @unknown default: break
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { changed(0, 0) }
+        }
+    }
+}
+
 private struct NativeStreamTouchCaptureView: UIViewRepresentable {
     let inputBridge: NativeStreamInputBridge
+    let inputEnabled: Bool
+    let onZoomGesture: (CGFloat, CGSize) -> Void
 
     func makeUIView(context: Context) -> NativeStreamTouchView {
         let view = NativeStreamTouchView()
         view.inputBridge = inputBridge
+        view.inputEnabled = inputEnabled
+        view.onZoomGesture = onZoomGesture
         return view
     }
 
     func updateUIView(_ uiView: NativeStreamTouchView, context: Context) {
         uiView.inputBridge = inputBridge
+        uiView.inputEnabled = inputEnabled
+        uiView.onZoomGesture = onZoomGesture
     }
 }
 
@@ -2946,6 +4735,19 @@ private extension CGPoint {
 
 private final class NativeStreamTouchView: UIView {
     weak var inputBridge: NativeStreamInputBridge?
+    var inputEnabled = true {
+        didSet {
+            guard inputEnabled != oldValue else { return }
+            if !inputEnabled {
+                cancelTouchInteraction()
+            }
+            isAccessibilityElement = inputEnabled
+            accessibilityHint = inputEnabled
+                ? "Drag to move the pointer, tap to click, or pinch with two fingers to zoom."
+                : nil
+        }
+    }
+    var onZoomGesture: ((CGFloat, CGSize) -> Void)?
     private static let tapMovementThreshold: CGFloat = 8
     private static let clickReleaseDelay: TimeInterval = 0.045
 
@@ -2953,6 +4755,11 @@ private final class NativeStreamTouchView: UIView {
     private var touchStartPoint: CGPoint?
     private var lastPoint: CGPoint?
     private var movedBeyondTapThreshold = false
+    private var pinchTouches: [UITouch] = []
+    private var lastPinchDistance: CGFloat = 0
+    private var lastPinchCentroid: CGPoint?
+    private var pinchActive = false
+    private var suppressSingleTouchUntilAllEnded = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -2960,6 +4767,7 @@ private final class NativeStreamTouchView: UIView {
         backgroundColor = .clear
         isAccessibilityElement = true
         accessibilityLabel = "Stream input surface"
+        accessibilityHint = "Drag to move the pointer, tap to click, or pinch with two fingers to zoom."
         accessibilityTraits = [.button, .allowsDirectInteraction]
     }
 
@@ -2977,8 +4785,21 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard activeTouch == nil, let touch = touches.first else { return }
+        guard inputEnabled else { return }
         becomeFirstResponder()
+        let liveTouches = activeTouches(in: event, fallback: touches)
+        if liveTouches.count >= 2 {
+            if pinchActive {
+                updatePinch(using: liveTouches)
+            } else {
+                beginPinch(using: liveTouches)
+            }
+            return
+        }
+        guard !pinchActive,
+              !suppressSingleTouchUntilAllEnded,
+              activeTouch == nil,
+              let touch = liveTouches.first ?? touches.first else { return }
         activeTouch = touch
         let point = touch.location(in: self)
         touchStartPoint = point
@@ -2987,6 +4808,17 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard inputEnabled else { return }
+        let liveTouches = activeTouches(in: event, fallback: touches)
+        if liveTouches.count >= 2 {
+            if pinchActive {
+                updatePinch(using: liveTouches)
+            } else {
+                beginPinch(using: liveTouches)
+            }
+            return
+        }
+        guard !pinchActive, !suppressSingleTouchUntilAllEnded else { return }
         guard let activeTouch, touches.contains(activeTouch), let lastPoint else { return }
         let point = activeTouch.location(in: self)
         if let touchStartPoint, point.distance(to: touchStartPoint) > Self.tapMovementThreshold {
@@ -2997,6 +4829,22 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let liveTouches = activeTouches(in: event, fallback: [])
+        if pinchActive {
+            if liveTouches.count >= 2 {
+                updatePinch(using: liveTouches)
+            } else {
+                endPinch(remainingTouches: liveTouches.count)
+            }
+            return
+        }
+        if suppressSingleTouchUntilAllEnded {
+            if liveTouches.isEmpty {
+                suppressSingleTouchUntilAllEnded = false
+            }
+            return
+        }
+        guard inputEnabled else { return }
         guard let activeTouch, touches.contains(activeTouch) else { return }
         let shouldClick = !movedBeyondTapThreshold
         resetActiveTouch()
@@ -3006,8 +4854,92 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let liveTouches = activeTouches(in: event, fallback: [])
+        if pinchActive {
+            endPinch(remainingTouches: liveTouches.count)
+            return
+        }
+        if suppressSingleTouchUntilAllEnded {
+            if liveTouches.isEmpty {
+                suppressSingleTouchUntilAllEnded = false
+            }
+            return
+        }
         guard let activeTouch, touches.contains(activeTouch) else { return }
         resetActiveTouch()
+    }
+
+    private func activeTouches(in event: UIEvent?, fallback: Set<UITouch>) -> [UITouch] {
+        let candidates = event?.touches(for: self) ?? fallback
+        return candidates.filter { touch in
+            touch.phase == .began || touch.phase == .moved || touch.phase == .stationary
+        }
+    }
+
+    private func beginPinch(using touches: [UITouch]) {
+        guard touches.count >= 2 else { return }
+        resetActiveTouch()
+        pinchTouches = Array(touches.prefix(2))
+        let points = pinchTouches.map { $0.location(in: self) }
+        lastPinchDistance = points[0].distance(to: points[1])
+        lastPinchCentroid = CGPoint(
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2
+        )
+        pinchActive = true
+        suppressSingleTouchUntilAllEnded = true
+    }
+
+    private func updatePinch(using touches: [UITouch]) {
+        guard touches.count >= 2 else { return }
+        let liveTouchSet = Set(touches)
+        if pinchTouches.count != 2 || !pinchTouches.allSatisfy(liveTouchSet.contains) {
+            pinchTouches = Array(touches.prefix(2))
+            let points = pinchTouches.map { $0.location(in: self) }
+            lastPinchDistance = points[0].distance(to: points[1])
+            lastPinchCentroid = CGPoint(
+                x: (points[0].x + points[1].x) / 2,
+                y: (points[0].y + points[1].y) / 2
+            )
+            return
+        }
+
+        let firstPoint = pinchTouches[0].location(in: self)
+        let secondPoint = pinchTouches[1].location(in: self)
+        let distance = firstPoint.distance(to: secondPoint)
+        let centroid = CGPoint(
+            x: (firstPoint.x + secondPoint.x) / 2,
+            y: (firstPoint.y + secondPoint.y) / 2
+        )
+        if let lastPinchCentroid, lastPinchDistance > 0, distance > 0 {
+            let scaleChange = min(max(distance / lastPinchDistance, 0.82), 1.22)
+            onZoomGesture?(
+                scaleChange,
+                CGSize(
+                    width: centroid.x - lastPinchCentroid.x,
+                    height: centroid.y - lastPinchCentroid.y
+                )
+            )
+        }
+        lastPinchDistance = distance
+        lastPinchCentroid = centroid
+    }
+
+    private func endPinch(remainingTouches: Int) {
+        pinchTouches.removeAll(keepingCapacity: true)
+        lastPinchDistance = 0
+        lastPinchCentroid = nil
+        pinchActive = false
+        suppressSingleTouchUntilAllEnded = remainingTouches > 0
+    }
+
+    private func cancelTouchInteraction() {
+        resetActiveTouch()
+        pinchTouches.removeAll(keepingCapacity: true)
+        lastPinchDistance = 0
+        lastPinchCentroid = nil
+        pinchActive = false
+        suppressSingleTouchUntilAllEnded = false
     }
 
     private func resetActiveTouch() {
@@ -3018,11 +4950,13 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func accessibilityActivate() -> Bool {
+        guard inputEnabled else { return false }
         sendPrimaryClick()
         return true
     }
 
     private func sendPrimaryClick() {
+        guard inputEnabled else { return }
         inputBridge?.sendMouseButton(1, pressed: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.clickReleaseDelay) { [weak self] in
             self?.inputBridge?.sendMouseButton(1, pressed: false)

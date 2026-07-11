@@ -12,6 +12,9 @@
 		0A1B2C3D4E5F6A7B8C9D1004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */; };
 		0A1B2C3D4E5F6A7B8C9D1005 /* OpenNOWStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */; };
 		74417F2A2F8C848000233AC1 /* BrandLogoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74417F292F8C848000233AC1 /* BrandLogoView.swift */; };
+		A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26000000000000000000011 /* OpenNOWVisualComponents.swift */; };
+		A26000000000000000000002 /* QueueVisualComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26000000000000000000012 /* QueueVisualComponents.swift */; };
+		A26000000000000000000003 /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A26000000000000000000013 /* AppIntents.framework */; };
 		BB0000000000000000000001 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000011 /* LoginView.swift */; };
 		BB0000000000000000000002 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000012 /* HomeView.swift */; };
 		BB0000000000000000000003 /* BrowseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000013 /* BrowseView.swift */; };
@@ -36,6 +39,8 @@
 		CC0000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000017 /* Assets.xcassets */; };
 		DD0000000000000000000002 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000012 /* WebRTC.xcframework */; };
 		DD0000000000000000000003 /* WebRTC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000012 /* WebRTC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		EE0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000011 /* PrivacyInfo.xcprivacy */; };
+		F10000000000000000000001 /* OpenNOWiOSParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000011 /* OpenNOWiOSParityTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +50,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = CC0000000000000000000201;
 			remoteInfo = OpenNOWWidget;
+		};
+		F10000000000000000000101 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0A1B2C3D4E5F6A7B8C9D6001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0A1B2C3D4E5F6A7B8C9D5001;
+			remoteInfo = OpenNOWiOS;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -80,6 +92,9 @@
 		0A1B2C3D4E5F6A7B8C9D2005 /* OpenNOWiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenNOWiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWStore.swift; sourceTree = "<group>"; };
 		74417F292F8C848000233AC1 /* BrandLogoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandLogoView.swift; sourceTree = "<group>"; };
+		A26000000000000000000011 /* OpenNOWVisualComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWVisualComponents.swift; sourceTree = "<group>"; };
+		A26000000000000000000012 /* QueueVisualComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueVisualComponents.swift; sourceTree = "<group>"; };
+		A26000000000000000000013 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 		BB0000000000000000000011 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000012 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000013 /* BrowseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseView.swift; sourceTree = "<group>"; };
@@ -103,6 +118,9 @@
 		CC0000000000000000000016 /* OpenNOWWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OpenNOWWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		CC0000000000000000000017 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DD0000000000000000000012 /* WebRTC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = WebRTC.xcframework; sourceTree = "<group>"; };
+		EE0000000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		F10000000000000000000011 /* OpenNOWiOSParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWiOSParityTests.swift; sourceTree = "<group>"; };
+		F10000000000000000000012 /* OpenNOWiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenNOWiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -110,11 +128,19 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A26000000000000000000003 /* AppIntents.framework in Frameworks */,
 				DD0000000000000000000002 /* WebRTC.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		CC0000000000000000000204 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F10000000000000000000201 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -128,6 +154,7 @@
 			isa = PBXGroup;
 			children = (
 				0A1B2C3D4E5F6A7B8C9D4002 /* OpenNOWiOS */,
+				F10000000000000000000301 /* OpenNOWiOSTests */,
 				CC0000000000000000000202 /* OpenNOWWidget */,
 				DD0000000000000000004004 /* Frameworks */,
 				0A1B2C3D4E5F6A7B8C9D4003 /* Products */,
@@ -156,8 +183,11 @@
 				BB000000000000000000001D /* NativeStreamInput.swift */,
 				BB000000000000000000001E /* NativeStreamCodec.swift */,
 				BB000000000000000000001F /* NativeStreamAudioDevice.swift */,
+				A26000000000000000000011 /* OpenNOWVisualComponents.swift */,
+				A26000000000000000000012 /* QueueVisualComponents.swift */,
 				CC0000000000000000000011 /* QueueActivityAttributes.swift */,
 				CC0000000000000000000012 /* QueueLiveActivityManager.swift */,
+				EE0000000000000000000011 /* PrivacyInfo.xcprivacy */,
 				0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */,
 			);
 			path = OpenNOWiOS;
@@ -168,6 +198,7 @@
 			children = (
 				0A1B2C3D4E5F6A7B8C9D2005 /* OpenNOWiOS.app */,
 				CC0000000000000000000016 /* OpenNOWWidget.appex */,
+				F10000000000000000000012 /* OpenNOWiOSTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -186,9 +217,18 @@
 		DD0000000000000000004004 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				A26000000000000000000013 /* AppIntents.framework */,
 				DD0000000000000000000012 /* WebRTC.xcframework */,
 			);
 			path = Frameworks;
+			sourceTree = "<group>";
+		};
+		F10000000000000000000301 /* OpenNOWiOSTests */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000011 /* OpenNOWiOSParityTests.swift */,
+			);
+			path = OpenNOWiOSTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -231,6 +271,24 @@
 			productReference = CC0000000000000000000016 /* OpenNOWWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		F10000000000000000000401 /* OpenNOWiOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F10000000000000000000603 /* Build configuration list for PBXNativeTarget "OpenNOWiOSTests" */;
+			buildPhases = (
+				F10000000000000000000203 /* Sources */,
+				F10000000000000000000201 /* Frameworks */,
+				F10000000000000000000202 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F10000000000000000000501 /* PBXTargetDependency */,
+			);
+			name = OpenNOWiOSTests;
+			productName = OpenNOWiOSTests;
+			productReference = F10000000000000000000012 /* OpenNOWiOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -245,6 +303,10 @@
 					};
 					CC0000000000000000000201 = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					F10000000000000000000401 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 0A1B2C3D4E5F6A7B8C9D5001;
 					};
 				};
 			};
@@ -263,6 +325,7 @@
 			targets = (
 				0A1B2C3D4E5F6A7B8C9D5001 /* OpenNOWiOS */,
 				CC0000000000000000000201 /* OpenNOWWidget */,
+				F10000000000000000000401 /* OpenNOWiOSTests */,
 			);
 		};
 /* End PBXProject section */
@@ -273,6 +336,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0A1B2C3D4E5F6A7B8C9D1004 /* Assets.xcassets in Resources */,
+				EE0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -281,6 +345,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				CC0000000000000000000007 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F10000000000000000000202 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -310,6 +381,8 @@
 				BB000000000000000000000D /* NativeStreamInput.swift in Sources */,
 				BB000000000000000000000E /* NativeStreamCodec.swift in Sources */,
 				BB000000000000000000000F /* NativeStreamAudioDevice.swift in Sources */,
+				A26000000000000000000001 /* OpenNOWVisualComponents.swift in Sources */,
+				A26000000000000000000002 /* QueueVisualComponents.swift in Sources */,
 				CC0000000000000000000001 /* QueueActivityAttributes.swift in Sources */,
 				CC0000000000000000000002 /* QueueLiveActivityManager.swift in Sources */,
 			);
@@ -325,6 +398,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F10000000000000000000203 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F10000000000000000000001 /* OpenNOWiOSParityTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -333,6 +414,11 @@
 			platformFilter = ios;
 			target = CC0000000000000000000201 /* OpenNOWWidget */;
 			targetProxy = CC0000000000000000000101 /* PBXContainerItemProxy */;
+		};
+		F10000000000000000000501 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0A1B2C3D4E5F6A7B8C9D5001 /* OpenNOWiOS */;
+			targetProxy = F10000000000000000000101 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -366,11 +452,13 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_CODE_COVERAGE = NO;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 83;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_CODE_COVERAGE = NO;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
@@ -387,12 +475,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 89;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWiOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OpenNOW;
@@ -421,7 +510,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 89;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -455,7 +544,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 89;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -484,7 +573,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 89;
+				CURRENT_PROJECT_VERSION = 91;
 				DEVELOPMENT_TEAM = VR766AGP7G;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OpenNOWWidget/Info.plist;
@@ -505,6 +594,57 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		F10000000000000000000601 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VR766AGP7G;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenNOWiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenNOWiOS";
+			};
+			name = Debug;
+		};
+		F10000000000000000000602 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = VR766AGP7G;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.opencloudgaming.opennow.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenNOWiOS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenNOWiOS";
 			};
 			name = Release;
 		};
@@ -534,6 +674,15 @@
 			buildConfigurations = (
 				CC0000000000000000000301 /* Debug */,
 				CC0000000000000000000302 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F10000000000000000000603 /* Build configuration list for PBXNativeTarget "OpenNOWiOSTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000601 /* Debug */,
+				F10000000000000000000602 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

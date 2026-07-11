@@ -36,8 +36,14 @@ struct BrowseView: View {
             .navigationTitle("Browse")
             .searchable(text: $store.searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search games")
             .refreshable { await store.refreshCatalog() }
+            .background {
+                CatalogWallpaperBackdrop(
+                    isEnabled: store.settings.catalogWallpaperEnabled,
+                    managedFilename: store.settings.catalogWallpaperFilename
+                )
+            }
         }
-        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails, store: store) { game, option in
+        .presentGameDetailsSheet(selectedGame: $selectedGameForDetails, store: store) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
         .launcherSelectionModalSheet(selectedGame: $selectedGameForLauncher, store: store) { game, option in

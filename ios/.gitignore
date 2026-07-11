@@ -8,6 +8,10 @@ DerivedData/
 *.xcarchive
 *.xcresult
 
+# Required by App Store Connect: keep the vendor WebRTC device symbols versioned.
+!OpenNOWiOS/Frameworks/WebRTC.xcframework/ios-arm64/dSYMs/WebRTC.framework.dSYM/
+!OpenNOWiOS/Frameworks/WebRTC.xcframework/ios-arm64/dSYMs/WebRTC.framework.dSYM/**
+
 # Xcode local user state
 xcuserdata/
 *.xcuserstate

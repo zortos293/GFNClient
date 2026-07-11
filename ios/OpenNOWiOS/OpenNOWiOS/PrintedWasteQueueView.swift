@@ -21,6 +21,25 @@ struct PrintedWasteZone: Identifiable, Equatable {
     let regionSuffix: String
 }
 
+func recommendedPrintedWasteZone(in zones: [PrintedWasteZone]) -> PrintedWasteZone? {
+    guard !zones.isEmpty else { return nil }
+    let pingedZones = zones.filter { $0.pingMs != nil }
+    let candidates = pingedZones.isEmpty ? zones : pingedZones
+    let maxPing = max(candidates.compactMap(\.pingMs).max() ?? 1, 1)
+    let maxQueue = max(candidates.map(\.queuePosition).max() ?? 1, 1)
+    return candidates.min { lhs, rhs in
+        let lhsScore = (Double(lhs.pingMs ?? maxPing) / Double(maxPing)) * 0.75
+            + (Double(lhs.queuePosition) / Double(maxQueue)) * 0.25
+        let rhsScore = (Double(rhs.pingMs ?? maxPing) / Double(maxPing)) * 0.75
+            + (Double(rhs.queuePosition) / Double(maxQueue)) * 0.25
+        if lhsScore != rhsScore { return lhsScore < rhsScore }
+        let lhsPing = lhs.pingMs ?? .max
+        let rhsPing = rhs.pingMs ?? .max
+        if lhsPing != rhsPing { return lhsPing < rhsPing }
+        return lhs.queuePosition < rhs.queuePosition
+    }
+}
+
 struct PrintedWasteQueueView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -54,14 +73,7 @@ struct PrintedWasteQueueView: View {
     }
 
     private var computedAutoZone: PrintedWasteZone? {
-        guard !zones.isEmpty else { return nil }
-        let maxPing = max(zones.compactMap { $0.pingMs }.max() ?? 1, 1)
-        let maxQueue = max(zones.map(\.queuePosition).max() ?? 1, 1)
-        return zones.min { lhs, rhs in
-            let lhsScore = (Double(lhs.pingMs ?? maxPing) / Double(maxPing)) * 0.4 + (Double(lhs.queuePosition) / Double(maxQueue)) * 0.6
-            let rhsScore = (Double(rhs.pingMs ?? maxPing) / Double(maxPing)) * 0.4 + (Double(rhs.queuePosition) / Double(maxQueue)) * 0.6
-            return lhsScore < rhsScore
-        }
+        recommendedPrintedWasteZone(in: zones)
     }
 
     private var autoZone: PrintedWasteZone? {

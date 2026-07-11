@@ -27,40 +27,62 @@ actor NotificationManager {
     private let setupNotificationId = "com.opencloudgaming.opennow.seatSetup"
 
     func requestPermission() async {
-        _ = try? await UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .sound, .badge])
+        _ = await ensureAuthorization()
     }
 
     func sendQueueReadyNotification(gameTitle: String) async {
+        guard await ensureAuthorization() else { return }
+
         let content = UNMutableNotificationContent()
         content.title = "Session Ready!"
         content.body = "\(gameTitle) is ready to stream. Tap to play."
         content.sound = .default
-        content.interruptionLevel = .timeSensitive
+        content.interruptionLevel = .active
         let request = UNNotificationRequest(identifier: readyNotificationId, content: content, trigger: nil)
-        await withCheckedContinuation { continuation in
-            UNUserNotificationCenter.current().add(request) { _ in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            notificationCenter.add(request) { _ in
                 continuation.resume()
             }
         }
     }
 
     func sendQueueSetupNotification(gameTitle: String) async {
+        guard await ensureAuthorization() else { return }
+
         let content = UNMutableNotificationContent()
         content.title = "Seat Allocated!"
         content.body = "Setting up your \(gameTitle) session..."
         content.sound = .default
+        content.interruptionLevel = .active
         let request = UNNotificationRequest(identifier: setupNotificationId, content: content, trigger: nil)
-        await withCheckedContinuation { continuation in
-            UNUserNotificationCenter.current().add(request) { _ in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            notificationCenter.add(request) { _ in
                 continuation.resume()
             }
         }
     }
 
     func cancelSessionNotifications() {
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [readyNotificationId, setupNotificationId])
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [readyNotificationId, setupNotificationId])
+        notificationCenter.removeDeliveredNotifications(withIdentifiers: [readyNotificationId, setupNotificationId])
+        notificationCenter.removePendingNotificationRequests(withIdentifiers: [readyNotificationId, setupNotificationId])
+    }
+
+    private var notificationCenter: UNUserNotificationCenter {
+        UNUserNotificationCenter.current()
+    }
+
+    private func ensureAuthorization() async -> Bool {
+        let settings = await notificationCenter.notificationSettings()
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        case .notDetermined:
+            return (try? await notificationCenter.requestAuthorization(options: [.alert, .sound])) == true
+        case .denied:
+            return false
+        @unknown default:
+            return false
+        }
     }
 }
 #endif

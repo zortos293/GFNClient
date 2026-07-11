@@ -1,5 +1,11 @@
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if os(iOS)
+import PhotosUI
+#endif
 
 private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
     case general
@@ -49,11 +55,11 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .general:
             return ["general", "updates", "privacy", "cache", "reset", "data"]
         case .stream:
-            return ["stream", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "native"]
+            return ["stream", "preset", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "sharpness", "region", "session proxy", "proxy", "l4s", "cloud g-sync"]
         case .input:
-            return ["input", "mouse", "keyboard", "layout", "language", "touch", "controller", "rumble"]
+            return ["input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "touch", "controller", "rumble", "tutorial", "guide", "replay"]
         case .interface:
-            return ["interface", "ui", "stats", "server selector", "microphone", "queue", "live activities"]
+            return ["interface", "ui", "cards", "launch page", "stats", "server selector", "queue", "live activities", "catalog", "wallpaper", "background", "photo"]
         case .advanced:
             return ["advanced", "diagnostics", "debug", "logs", "codec", "native", "h264", "h265", "hevc", "av1"]
         case .account:
@@ -80,11 +86,25 @@ struct SettingsView: View {
     @State private var showingResetAppConfirmation = false
     @State private var showingSignOutAllConfirmation = false
     @State private var connectorPendingDisconnect: AccountConnector?
+    #if os(iOS)
+    @State private var selectedCatalogWallpaperItem: PhotosPickerItem?
+    @State private var catalogWallpaperImportInProgress = false
+    @State private var catalogWallpaperImportError: String?
+    #endif
 
-    private let fpsValues = [30, 60, 120]
     private let qualityValues = ["Balanced", "Data Saver", "Quality"]
-    private let codecValues = ["Auto", "H264", "H265", "AV1"]
-    private let regionValues = ["Auto", "US East", "US West", "Europe", "Asia"]
+
+    private var codecValues: [String] {
+        let report = NativeStreamCodecProbe.report()
+        var values = ["Auto", "H264"]
+        if report.capability(for: .h265)?.launchSafe == true {
+            values.append("H265")
+        }
+        if report.capability(for: .av1)?.launchSafe == true {
+            values.append("AV1")
+        }
+        return values
+    }
 
     var body: some View {
         NavigationStack {
@@ -111,12 +131,24 @@ struct SettingsView: View {
             }
             .onAppear {
                 enforceAvailableResolution()
+                enforceAvailableFPS()
+                enforceAvailableHDR()
+                enforceAvailableCodec()
             }
             .onChangeCompat(of: store.settings.preferredAspectRatio) { _ in
                 enforceAvailableResolution()
             }
             .onChangeCompat(of: currentMembershipTier ?? "") { _ in
                 enforceAvailableResolution()
+                enforceAvailableFPS()
+                enforceAvailableHDR()
+            }
+            .onChangeCompat(of: store.settings.hdrEnabled) { enabled in
+                guard enabled else { return }
+                store.settings.preferredColorQuality = StreamColorQuality.tenBit420.rawValue
+                if NativeStreamCodecProbe.report().capability(for: .h265)?.launchSafe == true {
+                    store.settings.preferredCodec = "H265"
+                }
             }
             .confirmationDialog("Reset settings?", isPresented: $showingResetConfirmation, titleVisibility: .visible) {
                 Button("Reset Settings", role: .destructive) {
@@ -167,6 +199,7 @@ struct SettingsView: View {
                 await store.refreshAccountConnectors()
             }
         }
+        .tint(brandAccent)
     }
 
     @ViewBuilder
@@ -175,14 +208,11 @@ struct SettingsView: View {
             Section {
                 NavigationLink(value: SettingsCategory.account) {
                     HStack(spacing: 14) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.accentColor)
-                            Text(accountLandingInitial)
-                                .font(.title3.weight(.bold))
-                                .foregroundStyle(.white)
-                        }
-                        .frame(width: 52, height: 52)
+                        SettingsAccountAvatar(
+                            initial: accountLandingInitial,
+                            size: 52,
+                            selected: true
+                        )
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(accountLandingTitle)
@@ -228,6 +258,7 @@ struct SettingsView: View {
         case .account:
             savedAccountsSection
             accountActionsSection
+            playTimeSection
             storageAddonSection
             accountConnectorsSection
         }
@@ -265,7 +296,7 @@ struct SettingsView: View {
         Section("Account Actions") {
             HStack {
                 Button {
-                    Task { await store.signIn() }
+                    Task { await store.signIn(forceAccountSelection: true) }
                 } label: {
                     Label("Add Account", systemImage: "person.badge.plus")
                 }
@@ -323,21 +354,30 @@ struct SettingsView: View {
                 if let region = storage.regionName, !region.isEmpty {
                     LabeledContent("Location", value: region)
                 }
-                Link(destination: store.cloudStorageManagementURL) {
-                    Label("Manage Storage", systemImage: "externaldrive")
-                }
-                Link(destination: store.cloudStorageResetURL) {
-                    Label("Reset Storage", systemImage: "arrow.counterclockwise")
-                }
-                Link(destination: store.cloudStorageManagementURL) {
-                    Label("Change Storage Location", systemImage: "location")
-                }
+                Text("Storage purchases and changes are managed outside OpenNOW in your GeForce NOW account.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } else {
                 Text("No persistent storage add-on is active for this account.")
                     .foregroundStyle(.secondary)
-                Link(destination: store.cloudStorageAddURL) {
-                    Label("Add Storage", systemImage: "plus.circle")
-                }
+            }
+        }
+    }
+
+    private var playTimeSection: some View {
+        Section("Play Time") {
+            LabeledContent("Membership", value: currentMembershipTier ?? "Unknown")
+            LabeledContent("Session Limit", value: sessionLimitDescription)
+            if let subscription = store.subscription, subscription.totalHours > 0 {
+                LabeledContent("Monthly Allowance", value: hoursLabel(subscription.totalHours))
+                LabeledContent("Monthly Remaining", value: hoursLabel(subscription.remainingHours))
+                ProgressView(
+                    value: min(max(subscription.totalHours - subscription.remainingHours, 0), subscription.totalHours),
+                    total: subscription.totalHours
+                )
+            }
+            if store.activeSession != nil {
+                LabeledContent("Current Session", value: elapsedLabel(store.sessionElapsedSeconds))
             }
         }
     }
@@ -413,17 +453,30 @@ struct SettingsView: View {
 
     private var streamingSection: some View {
         Section {
-            Picker("Region", selection: $store.settings.preferredRegion) {
-                ForEach(regionValues, id: \.self) { Text($0).tag($0) }
+            Picker("Preset", selection: streamPresetBinding) {
+                ForEach(StreamPreset.allCases) { preset in
+                    Text(preset.label).tag(preset)
+                }
             }
 
-            Picker("Aspect Ratio", selection: $store.settings.preferredAspectRatio) {
+            Picker("Region", selection: $store.settings.preferredRegion) {
+                Text("Automatic").tag("")
+                if !store.settings.preferredRegion.isEmpty,
+                   !store.availableRegions.contains(where: { $0.url == store.settings.preferredRegion }) {
+                    Text("Saved Region").tag(store.settings.preferredRegion)
+                }
+                ForEach(store.availableRegions) { region in
+                    Text(region.name).tag(region.url)
+                }
+            }
+
+            Picker("Aspect Ratio", selection: customStreamBinding(\.preferredAspectRatio)) {
                 ForEach(StreamSettingsResolver.aspectRatioOptions, id: \.self) { value in
                     Text(value).tag(value)
                 }
             }
 
-            Picker("Resolution", selection: $store.settings.preferredResolution) {
+            Picker("Resolution", selection: customStreamBinding(\.preferredResolution)) {
                 Text("Auto").tag("Auto")
                 ForEach(StreamSettingsResolver.choices(forAspectRatio: store.settings.preferredAspectRatio)) { choice in
                     let available = resolutionAvailable(choice)
@@ -434,28 +487,26 @@ struct SettingsView: View {
                 }
             }
 
-            Picker("Target FPS", selection: $store.settings.preferredFPS) {
+            Picker("Target FPS", selection: customStreamBinding(\.preferredFPS)) {
                 ForEach(fpsValues, id: \.self) { Text("\($0) fps").tag($0) }
             }
 
-            Picker("Quality", selection: $store.settings.preferredQuality) {
+            Picker("Quality", selection: customStreamBinding(\.preferredQuality)) {
                 ForEach(qualityValues, id: \.self) { Text($0).tag($0) }
             }
 
-            Picker("Codec", selection: $store.settings.preferredCodec) {
+            Picker("Codec", selection: codecSelectionBinding) {
                 ForEach(codecValues, id: \.self) { Text($0).tag($0) }
             }
 
-            Picker("Color", selection: $store.settings.preferredColorQuality) {
-                ForEach(StreamColorQuality.allCases) { color in
+            Picker("Color", selection: customStreamBinding(\.preferredColorQuality)) {
+                ForEach([StreamColorQuality.eightBit420, .tenBit420]) { color in
                     Text(color.label).tag(color.rawValue)
                 }
             }
 
-            Picker("Max Bitrate", selection: $store.settings.maxBitrateMbps) {
-                ForEach(StreamSettingsResolver.bitrateOptionsMbps, id: \.self) { value in
-                    Text(bitrateLabel(for: value)).tag(value)
-                }
+            Stepper(value: customStreamBinding(\.maxBitrateMbps), in: 0...150, step: 1) {
+                LabeledContent("Max Bitrate", value: bitrateLabel(for: store.settings.maxBitrateMbps))
             }
 
             Toggle("HDR", isOn: $store.settings.hdrEnabled)
@@ -468,13 +519,21 @@ struct SettingsView: View {
             Toggle("Stream Sharpening", isOn: $store.settings.streamSharpeningEnabled)
 
             if store.settings.streamSharpeningEnabled {
-                LabeledContent {
-                    Slider(value: $store.settings.streamSharpeningAmount, in: 0...1)
-                        .frame(maxWidth: 180)
-                } label: {
-                    Text("Amount")
+                VStack(alignment: .leading, spacing: 8) {
+                    LabeledContent(
+                        "Sharpness",
+                        value: "\(Int((store.settings.streamSharpeningAmount * 100).rounded()))%"
+                    )
+                    Slider(
+                        value: $store.settings.streamSharpeningAmount,
+                        in: 0...1,
+                        step: 0.05
+                    )
+                    .accessibilityLabel("Sharpness amount")
                 }
             }
+
+            Toggle("Stretch to Fill", isOn: $store.settings.streamerPreferences.stretchStreamToFill)
 
             Toggle("Session Proxy", isOn: $store.settings.sessionProxyEnabled)
 
@@ -498,6 +557,19 @@ struct SettingsView: View {
 
     private var inputSection: some View {
         Section("Input") {
+            LabeledContent {
+                Slider(value: $store.settings.mouseSensitivity, in: 0.25...3, step: 0.05)
+                    .frame(maxWidth: 180)
+            } label: {
+                Text("Mouse Sensitivity")
+            }
+
+            Picker("Mouse Acceleration", selection: $store.settings.mouseAcceleration) {
+                Text("Off").tag(0)
+                Text("Standard").tag(1)
+                Text("High").tag(2)
+            }
+
             Picker("Keyboard Layout", selection: $store.settings.keyboardLayout) {
                 ForEach(StreamSettingsResolver.keyboardLayoutOptions, id: \.value) { option in
                     Text(option.label).tag(option.value)
@@ -511,24 +583,100 @@ struct SettingsView: View {
             }
 
             #if !os(tvOS)
+            Toggle("Finger Mouse", isOn: $store.settings.fingerMouseEnabled)
             Toggle("Fortnite Mobile Touch", isOn: $store.settings.fortnitePrefersNativeTouch)
             Toggle("Touch Controller", isOn: $store.settings.streamerPreferences.touchControllerVisible)
-            Toggle("Touchscreen Mode", isOn: $store.settings.streamerPreferences.touchscreenModeEnabled)
+            Toggle("Phone Rumble Fallback", isOn: $store.settings.phoneRumbleFallback)
             touchLayoutSlider("Touch Layout Scale", keyPath: \.scale, range: 0.6...1.4, step: 0.05)
             touchLayoutSlider("Touch Button Size", keyPath: \.buttonScale, range: 0.65...1.5, step: 0.05)
             touchLayoutSlider("Touch Stick Size", keyPath: \.stickScale, range: 0.65...1.5, step: 0.05)
             touchLayoutSlider("Touch Opacity", keyPath: \.opacity, range: 0.15...1, step: 0.05)
             #endif
 
-            LabeledContent("Controller", value: "Automatic")
+            LabeledContent("Physical Controller", value: "Detected Automatically")
+            LabeledContent(
+                "Stream Tutorial",
+                value: store.settings.streamTutorialCompleted ? "Completed" : "Shows on Next Stream"
+            )
+            Button {
+                store.setStreamTutorialCompleted(false)
+            } label: {
+                Label("Replay Stream Tutorial", systemImage: "questionmark.circle")
+            }
+            .disabled(!store.settings.streamTutorialCompleted)
         }
     }
 
     private var interfaceSection: some View {
-        Section("Interface") {
+        let hasCustomCatalogWallpaper = store.settings.catalogWallpaperFilename != nil
+        return Section("Interface") {
             Toggle("Nerd Mode", isOn: $store.settings.nerdMode)
-            Toggle("Microphone", isOn: $store.settings.keepMicEnabled)
             Toggle("Stats Overlay", isOn: $store.settings.showStatsOverlay)
+            Picker("Stats Style", selection: $store.settings.streamerPreferences.statsStyle) {
+                ForEach(StreamStatsStyle.allCases) { style in
+                    Text(style.label).tag(style)
+                }
+            }
+            Picker("Stats Position", selection: $store.settings.streamerPreferences.statsPosition) {
+                ForEach(StreamStatsPosition.allCases) { position in
+                    Text(position.label).tag(position)
+                }
+            }
+            Toggle("Session Counter", isOn: $store.settings.sessionCounterEnabled)
+            Picker("Open App To", selection: $store.settings.launchPage) {
+                ForEach(AppLaunchPage.allCases) { page in
+                    Text(page.label).tag(page)
+                }
+            }
+            Toggle("Compact Game Cards", isOn: $store.settings.compactGameCards)
+            Toggle("Show Store Labels", isOn: $store.settings.showGameStoreLabels)
+            #if os(iOS)
+            Toggle("Catalog Wallpaper", isOn: $store.settings.catalogWallpaperEnabled)
+            if store.settings.catalogWallpaperEnabled {
+                LabeledContent("Wallpaper", value: catalogWallpaperDescription)
+
+                PhotosPicker(
+                    selection: $selectedCatalogWallpaperItem,
+                    matching: .images
+                ) {
+                    Label(
+                        hasCustomCatalogWallpaper ? "Replace Image" : "Choose Image",
+                        systemImage: "photo.on.rectangle"
+                    )
+                }
+                .disabled(catalogWallpaperImportInProgress)
+                .onChangeCompat(of: selectedCatalogWallpaperItem) { item in
+                    guard let item else { return }
+                    Task { await importCatalogWallpaper(item) }
+                }
+
+                if catalogWallpaperImportInProgress {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Preparing wallpaper…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if hasCustomCatalogWallpaper {
+                    Button("Use OpenNOW Gradient") {
+                        resetCatalogWallpaperImage()
+                    }
+                }
+
+                if let catalogWallpaperImportError {
+                    Text(catalogWallpaperImportError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+            #endif
+            LabeledContent {
+                Slider(value: $store.settings.posterSizeScale, in: 0.75...1.35, step: 0.05)
+                    .frame(maxWidth: 180)
+            } label: {
+                Text("Game Card Size")
+            }
             #if !os(tvOS)
             Toggle("Queue Live Activities", isOn: $store.settings.queueLiveActivitiesEnabled)
             #endif
@@ -554,6 +702,11 @@ struct SettingsView: View {
     private var privacySection: some View {
         Section("Privacy") {
             LabeledContent("Usage Analytics", value: "Not Collected")
+            NavigationLink {
+                OpenNOWPrivacyPolicyView()
+            } label: {
+                Label("Privacy Policy", systemImage: "hand.raised")
+            }
         }
     }
 
@@ -563,6 +716,9 @@ struct SettingsView: View {
             LabeledContent("Stream Profile", value: headerSummary)
             LabeledContent("Color", value: selectedColorQualityLabel)
             LabeledContent("HDR", value: hdrAvailable ? (store.settings.hdrEnabled ? "On" : "Off") : "Unavailable")
+            ShareLink(item: store.diagnosticsReport) {
+                Label("Share Redacted Diagnostics", systemImage: "square.and.arrow.up")
+            }
         }
     }
 
@@ -633,9 +789,6 @@ struct SettingsView: View {
             Text("Thanks to the people helping improve OpenNOW for everyone.")
                 .foregroundStyle(.secondary)
             LabeledContent("DarkevilPT", value: "Community support")
-            Link(destination: URL(string: "https://paypal.me/PrintedWaste")!) {
-                Label("Donate with PayPal", systemImage: "heart")
-            }
         }
     }
 
@@ -644,14 +797,11 @@ struct SettingsView: View {
 
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(selected ? Color.accentColor : Color.secondary.opacity(0.24))
-                    Text(accountInitial(account))
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(selected ? .white : .primary)
-                }
-                .frame(width: 38, height: 38)
+                SettingsAccountAvatar(
+                    initial: accountInitial(account),
+                    size: 38,
+                    selected: selected
+                )
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(account.displayName.isEmpty ? "NVIDIA Account" : account.displayName)
@@ -849,14 +999,125 @@ struct SettingsView: View {
     }
 
     private var hdrAvailable: Bool {
-        StreamSettingsResolver.isHDRAvailable(
+        let tierAllowsHDR = StreamSettingsResolver.isHDRAvailable(
             subscription: store.subscription,
             fallbackMembershipTier: store.user?.membershipTier
         )
+        #if canImport(UIKit)
+        let displayAllowsHDR = UIScreen.main.potentialEDRHeadroom > 1
+        #else
+        let displayAllowsHDR = false
+        #endif
+        let codecAllowsHDR = NativeStreamCodecProbe.report().capability(for: .h265)?.launchSafe == true
+        return tierAllowsHDR && displayAllowsHDR && codecAllowsHDR
     }
 
     private var currentMembershipTier: String? {
         store.subscription?.membershipTier ?? store.user?.membershipTier
+    }
+
+    private var fpsValues: [Int] {
+        StreamSettingsResolver.plan(for: currentMembershipTier) >= .ultimate
+            ? [30, 60, 90, 120]
+            : [30, 60]
+    }
+
+    private var streamPresetBinding: Binding<StreamPreset> {
+        Binding(
+            get: { store.settings.streamPreset },
+            set: { preset in
+                store.settings = StreamSettingsResolver.settings(
+                    store.settings,
+                    applying: preset,
+                    membershipTier: currentMembershipTier
+                )
+                enforceAvailableResolution()
+                enforceAvailableFPS()
+            }
+        )
+    }
+
+    private func customStreamBinding<Value>(
+        _ keyPath: WritableKeyPath<AppSettings, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { store.settings[keyPath: keyPath] },
+            set: { value in
+                var settings = store.settings
+                settings[keyPath: keyPath] = value
+                settings.streamPreset = .custom
+                store.settings = settings
+            }
+        )
+    }
+
+    #if os(iOS)
+    private var catalogWallpaperDescription: String {
+        store.settings.catalogWallpaperFilename == nil ? "OpenNOW Gradient" : "Custom Image"
+    }
+
+    @MainActor
+    private func importCatalogWallpaper(_ item: PhotosPickerItem) async {
+        catalogWallpaperImportInProgress = true
+        catalogWallpaperImportError = nil
+        defer {
+            catalogWallpaperImportInProgress = false
+            selectedCatalogWallpaperItem = nil
+        }
+
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                throw CatalogWallpaperStorageError.invalidImage
+            }
+            let filename = try await Task.detached(priority: .userInitiated) {
+                try CatalogWallpaperStorage.storeSelectedImageData(data)
+            }.value
+            store.settings.catalogWallpaperFilename = filename
+            store.settings.catalogWallpaperEnabled = true
+            store.persistSettings()
+            CatalogWallpaperStorage.pruneManagedWallpapers(keeping: filename)
+        } catch is CancellationError {
+            return
+        } catch {
+            catalogWallpaperImportError = error.localizedDescription
+        }
+    }
+
+    private func resetCatalogWallpaperImage() {
+        store.settings.catalogWallpaperFilename = nil
+        store.settings.catalogWallpaperEnabled = true
+        store.persistSettings()
+        CatalogWallpaperStorage.pruneManagedWallpapers(keeping: nil)
+        catalogWallpaperImportError = nil
+    }
+    #endif
+
+    private var sessionLimitDescription: String {
+        let tier = (currentMembershipTier ?? "").uppercased()
+        if tier.contains("ULTIMATE") || tier.contains("RTX3080") {
+            return "8 hours"
+        }
+        if tier.contains("PERFORMANCE") || tier.contains("PRIORITY") || tier.contains("PREMIUM") || tier.contains("FOUNDERS") {
+            return "6 hours"
+        }
+        return "1 hour"
+    }
+
+    private func hoursLabel(_ value: Double) -> String {
+        if value == floor(value) {
+            return "\(Int(value)) hr"
+        }
+        return String(format: "%.1f hr", value)
+    }
+
+    private func elapsedLabel(_ seconds: Int) -> String {
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainingSeconds = seconds % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+        }
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 
     private var headerSummary: String {
@@ -895,15 +1156,87 @@ struct SettingsView: View {
     }
 
     private func enforceAvailableResolution() {
-        guard store.settings.preferredResolution != "Auto",
-              let selected = StreamSettingsResolver.resolutionChoice(
+        guard store.settings.preferredResolution != "Auto" else { return }
+        if let selected = StreamSettingsResolver.resolutionChoice(
                 value: store.settings.preferredResolution,
                 aspectRatio: store.settings.preferredAspectRatio
-              ),
-              !resolutionAvailable(selected) else {
+              ) {
+            if !resolutionAvailable(selected) {
+                store.settings.preferredResolution = "Auto"
+            }
             return
         }
         store.settings.preferredResolution = "Auto"
+    }
+
+    private func enforceAvailableFPS() {
+        if !fpsValues.contains(store.settings.preferredFPS) {
+            store.settings.preferredFPS = fpsValues.last ?? 60
+            store.settings.streamPreset = .custom
+        }
+    }
+
+    private func enforceAvailableHDR() {
+        if store.settings.hdrEnabled && !hdrAvailable {
+            store.settings.hdrEnabled = false
+        }
+    }
+
+    private func enforceAvailableCodec() {
+        if !codecValues.contains(store.settings.preferredCodec) {
+            store.settings.preferredCodec = "H264"
+            store.settings.streamPreset = .custom
+        }
+    }
+
+    private var codecSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                codecValues.contains(store.settings.preferredCodec)
+                    ? store.settings.preferredCodec
+                    : "H264"
+            },
+            set: { value in
+                guard codecValues.contains(value) else { return }
+                var settings = store.settings
+                settings.preferredCodec = value
+                settings.streamPreset = .custom
+                store.settings = settings
+            }
+        )
+    }
+}
+
+private struct OpenNOWPrivacyPolicyView: View {
+    var body: some View {
+        List {
+            Section("Overview") {
+                Text("OpenNOW is a client for a GeForce NOW account you provide. OpenNOW does not sell personal information, serve its own advertising, or run usage analytics.")
+            }
+
+            Section("Information on This Device") {
+                Text("Account authorization tokens are stored in Apple Keychain. App preferences, a selected catalog wallpaper, a random device identifier, catalog cache, favorites, launcher choices, and resumable-session state are stored locally so the app can work reliably across launches.")
+            }
+
+            Section("Services You Contact") {
+                Text("When you sign in, browse games, link stores, or start a stream, the app communicates directly with NVIDIA and the selected GeForce NOW alliance provider. Those services receive the account, device, network, and session information needed to provide their service under their own privacy terms.")
+                Text("Free-tier server selection can contact PrintedWaste queue endpoints. OpenNOW does not send OAuth passwords to PrintedWaste.")
+            }
+
+            Section("Apple Features") {
+                Text("If enabled, queue status can be shown using local notifications and Live Activities. These features are processed by the app and Apple system services on your device.")
+            }
+
+            Section("Your Choices") {
+                Text("You can sign out one or all accounts, clear cached images and catalog data, reset settings, or reset the entire app from Settings. Resetting removes locally stored OpenNOW data and Keychain credentials.")
+            }
+
+            Section("Contact") {
+                Link("Open an OpenNOW privacy issue", destination: URL(string: "https://github.com/OpenCloudGaming/OpenNOW/issues")!)
+            }
+        }
+        .navigationTitle("Privacy Policy")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -925,6 +1258,38 @@ private struct SettingsCategoryLabel: View {
                 .frame(width: 28)
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct SettingsAccountAvatar: View {
+    let initial: String
+    let size: CGFloat
+    let selected: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.08, green: 0.14, blue: 0.10),
+                            Color(red: 0.035, green: 0.07, blue: 0.055),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            Circle()
+                .stroke(
+                    selected ? brandAccent.opacity(0.90) : Color.white.opacity(0.18),
+                    lineWidth: selected ? 2 : 1
+                )
+            Text(initial)
+                .font(.system(size: size * 0.38, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.white)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 

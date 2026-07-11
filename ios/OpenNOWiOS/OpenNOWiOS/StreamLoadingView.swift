@@ -5,261 +5,167 @@ struct StreamLoadingView: View {
   @EnvironmentObject private var store: OpenNOWStore
   var coversBottomBar = false
 
-  private enum StreamPhase: Equatable {
-    case queue
-    case setup
-    case launching
-  }
-
-  private enum StepState: Equatable {
-    case pending
-    case active
-    case completed
-  }
-
-  private let steps: [(title: String, icon: String)] = [
-    ("Queue", "person.3.fill"),
-    ("Setup", "cpu"),
-    ("Launching", "wifi"),
-  ]
-
-  private var currentPhase: StreamPhase {
-    if let adState = store.effectiveAdState,
-      store.activeSession?.status == 1,
-      adState.sessionAdsRequired ?? adState.isAdsRequired
-    {
-      return .queue
+  private var queueStatusText: String {
+    if let position = store.activeSession?.queuePosition {
+      return "Queue position \(position)"
     }
-    guard let session = store.activeSession else { return .queue }
+    if let adState = store.effectiveAdState, store.activeQueueAd != nil {
+      if adState.opportunity?.queuePaused == true || adState.isQueuePaused == true {
+        return adState.message ?? "Queue paused"
+      }
+      if adState.sessionAdsRequired ?? adState.isAdsRequired {
+        return adState.message ?? "Advertisement required"
+      }
+    }
+    guard let session = store.activeSession else {
+      return store.isLaunchingSession ? "Starting session" : "Waiting in queue"
+    }
     switch session.status {
-    case 2: return .setup
-    case 3: return .launching
-    case 1:
-      if session.seatSetupStep == 1 {
-        return .queue
-      }
-      if let pos = session.queuePosition, pos > 1 {
-        return .queue
-      }
-      return .setup
-    default: return .queue
-    }
-  }
-
-  private var statusMessage: String {
-    switch currentPhase {
-    case .queue:
-      if let adState = store.effectiveAdState, store.activeQueueAd != nil {
-        if adState.opportunity?.queuePaused == true || adState.isQueuePaused == true {
-          return adState.message ?? "Session queue paused. Resume ad playback to continue."
-        }
-        if adState.sessionAdsRequired ?? adState.isAdsRequired {
-          return adState.message ?? "Watch queue ads to continue."
-        }
-      }
-      if let pos = store.activeSession?.queuePosition {
-        return pos == 1 ? "A cloud rig is nearly ready." : "Waiting for a cloud rig to free up."
-      }
-      return store.isLaunchingSession ? "Starting session..." : "Waiting in queue..."
-    case .setup:
-      return "Setting up your gaming rig..."
-    case .launching:
-      if store.streamSession != nil {
-        return "Opening stream..."
-      }
-      if let signalingUrl = store.activeSession?.signalingUrl, !signalingUrl.isEmpty {
-        return "Connecting streamer..."
-      }
-      if let signalingServer = store.activeSession?.signalingServer, !signalingServer.isEmpty {
-        return "Connecting streamer..."
-      }
-      return "Finalizing stream endpoint..."
+    case 2: return "Setting up gaming rig"
+    case 3: return "Launching stream"
+    default: return store.isLaunchingSession ? "Starting session" : "Waiting in queue"
     }
   }
 
   var body: some View {
     GeometryReader { proxy in
-      let isWide = shouldUseWideLayout(size: proxy.size)
       ZStack {
-        #if os(tvOS)
-          Color.black
-            .ignoresSafeArea(edges: ignoredBackgroundEdges)
-        #else
-          Color(.systemBackground)
-            .ignoresSafeArea(edges: ignoredBackgroundEdges)
-        #endif
+        QueueAmbientBackdrop(
+          accent: brandAccent,
+          queuePosition: store.activeSession?.queuePosition
+        )
+        .ignoresSafeArea(edges: ignoredBackgroundEdges)
 
-        if isWide {
-          landscapeQueueLayout(proxy: proxy)
-        } else {
-          let hasAd = store.activeQueueAd != nil
-          let topContentInset = max(28, proxy.safeAreaInsets.top + (hasAd ? 14 : 18))
-          let bottomContentInset = max(28, proxy.safeAreaInsets.bottom + 18)
-          ScrollView {
-            Group {
-              VStack(spacing: hasAd ? 18 : 24) {
-                gameHeader(isWide: false, compact: hasAd)
-                queueProgressPanel(isWide: false)
-              }
-              .frame(maxWidth: 430)
+        let topInset = max(18, proxy.safeAreaInsets.top + 10)
+        let bottomInset = max(18, proxy.safeAreaInsets.bottom + 10)
+        ScrollView {
+          Group {
+            if let ad = store.activeQueueAd {
+              queueAdPanel(ad: ad, isWide: proxy.size.width > proxy.size.height)
+            } else {
+              queueStatusPanel
             }
-            .padding(.horizontal, 24)
-            .padding(.top, topContentInset)
-            .padding(.bottom, bottomContentInset)
-            .frame(maxWidth: .infinity)
-            .frame(
-              minHeight: max(
-                0, proxy.size.height - topContentInset - bottomContentInset))
           }
-          #if os(iOS)
-            .scrollBounceBehavior(.basedOnSize)
-          #endif
+          .padding(18)
+          .padding(.top, topInset)
+          .padding(.bottom, bottomInset)
+          .frame(maxWidth: .infinity)
+          .frame(minHeight: max(0, proxy.size.height - topInset - bottomInset))
         }
+        #if os(iOS)
+          .scrollBounceBehavior(.basedOnSize)
+        #endif
       }
     }
-    .animation(.spring(response: 0.34, dampingFraction: 0.84), value: currentPhase)
     .animation(
       .spring(response: 0.34, dampingFraction: 0.84), value: store.activeSession?.queuePosition
     )
-    .animation(.easeInOut(duration: 0.22), value: statusMessage)
-  }
-
-  private func shouldUseWideLayout(size: CGSize) -> Bool {
-    size.width > size.height && size.width >= 680
+    .animation(.easeInOut(duration: 0.22), value: queueStatusText)
+    .environment(\.colorScheme, .dark)
+    .task(id: store.activeSession?.id) {
+      guard store.activeSession != nil else { return }
+      await NotificationManager.shared.requestPermission()
+    }
   }
 
   private var ignoredBackgroundEdges: Edge.Set {
     coversBottomBar ? .all : [.top, .leading, .trailing]
   }
 
-  private func landscapeQueueLayout(proxy: GeometryProxy) -> some View {
-    let hasAd = store.activeQueueAd != nil
-    return HStack(alignment: .center, spacing: hasAd ? 18 : 26) {
-      VStack(alignment: .leading, spacing: hasAd ? 10 : 12) {
-        gameHeader(isWide: true, compact: hasAd)
-        if hasAd {
-          compactQueueStatus
-        }
-      }
-      .frame(maxWidth: hasAd ? 330 : 360, alignment: .leading)
+  private var queueStatusPanel: some View {
+    VStack(spacing: 0) {
+      queueGameArtwork
+      Spacer().frame(height: 16)
+      Text(store.activeSession?.game.title ?? "Starting stream")
+        .font(.title3.weight(.bold))
+        .foregroundStyle(.primary)
+        .multilineTextAlignment(.center)
+        .lineLimit(2)
+        .minimumScaleFactor(0.78)
 
-      VStack(spacing: 10) {
-        if let ad = store.activeQueueAd {
-          QueueAdPlayerCard(ad: ad, compact: true)
-            .environmentObject(store)
-        } else {
-          queueProgressPanel(isWide: true, includeAd: false, includeActions: false)
-        }
-        actionButtons
-          .frame(maxWidth: 320)
-      }
-      .frame(maxWidth: hasAd ? 330 : 380)
+      AndroidQueueStatusText(
+        text: queueStatusText,
+        position: store.activeSession?.queuePosition,
+        compact: false
+      )
+
+      Spacer().frame(height: 18)
+      ProgressView()
+        .progressViewStyle(.linear)
+        .tint(brandAccent)
+        .frame(maxWidth: 430)
+      Spacer().frame(height: 12)
+      actionButtons
+        .frame(maxWidth: 430)
+      queueError
     }
-    .padding(.leading, max(56, proxy.safeAreaInsets.leading + 38))
-    .padding(.trailing, max(18, proxy.safeAreaInsets.trailing + 14))
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    .clipped()
+    .frame(maxWidth: 620)
   }
 
-  private func gameHeader(isWide: Bool, compact: Bool = false) -> some View {
-    VStack(alignment: isWide ? .leading : .center, spacing: compact ? 8 : 14) {
-      gameArtworkHero(isWide: isWide, compact: compact)
-
-      VStack(alignment: isWide ? .leading : .center, spacing: 4) {
-        Text(store.activeSession?.game.title ?? "Preparing your game")
-          .font(compact ? .headline.bold() : isWide ? .title.bold() : .title2.bold())
-          .foregroundStyle(.primary)
-          .multilineTextAlignment(isWide ? .leading : .center)
-          .lineLimit(compact ? 2 : 3)
-          .minimumScaleFactor(0.78)
-          .fixedSize(horizontal: false, vertical: true)
-
-        Text(store.activeSession?.game.platform ?? "Cloud Gaming")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+  private func queueAdPanel(ad: SessionAdInfo, isWide: Bool) -> some View {
+    VStack(spacing: isWide ? 10 : 12) {
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Advertisement")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(.secondary)
+          Text(store.activeSession?.game.title ?? "Starting stream")
+            .font((isWide ? Font.headline : .title3).weight(.bold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+        }
+        Spacer(minLength: 8)
+        if let position = store.activeSession?.queuePosition {
+          Text(String(position))
+            .font(.title2.weight(.black))
+            .monospacedDigit()
+            .foregroundStyle(queueUrgencyColor(position))
+            .numericQueueTransition(value: position)
+        }
       }
-      .frame(maxWidth: .infinity, alignment: isWide ? .leading : .center)
+
+      QueueAdPlayerCard(ad: ad, compact: isWide)
+        .environmentObject(store)
+
+      AndroidQueueStatusText(
+        text: queueStatusText,
+        position: store.activeSession?.queuePosition,
+        compact: true
+      )
+
+      actionButtons
+      queueError
     }
-    .frame(maxWidth: .infinity, alignment: isWide ? .leading : .center)
+    .padding(isWide ? 14 : 16)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .stroke(Color.white.opacity(0.10), lineWidth: 1)
+    }
+    .frame(maxWidth: isWide ? 720 : 620)
   }
 
-  @ViewBuilder
-  private func gameArtworkHero(isWide: Bool, compact: Bool = false) -> some View {
-    let cornerRadius: CGFloat = compact ? 18 : isWide ? 24 : 22
+  private var queueGameArtwork: some View {
     ZStack {
       if let game = store.activeSession?.game {
-        GameArtworkView(game: game, iconSize: compact ? 48 : isWide ? 64 : 58)
+        GameArtworkView(
+          game: game,
+          iconSize: 52,
+          role: .queue
+        )
       } else {
-        BrandLogoView(size: compact ? 60 : isWide ? 86 : 78)
+        BrandLogoView(size: 64)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .background(.regularMaterial)
       }
     }
     .aspectRatio(16.0 / 9.0, contentMode: .fit)
-    .frame(maxWidth: compact ? 280 : isWide ? 340 : 340)
-    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    .frame(width: 220)
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(Color.white.opacity(0.1), lineWidth: 1)
     )
-    .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
-  }
-
-  private func queueProgressPanel(isWide: Bool, includeAd: Bool = true, includeActions: Bool = true) -> some View {
-    VStack(spacing: isWide ? 18 : 22) {
-      queuePositionBadge
-
-      if includeAd, let ad = store.activeQueueAd {
-        QueueAdPlayerCard(ad: ad)
-          .environmentObject(store)
-      }
-
-      stepsView
-
-      Text(statusMessage)
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .numericQueueTransition(value: store.activeSession?.queuePosition ?? -1)
-
-      ProgressView()
-        .progressViewStyle(.circular)
-        .tint(brandAccent)
-        .scaleEffect(1.3)
-
-      if includeActions {
-        actionButtons
-          .frame(maxWidth: 360)
-          .padding(.top, 4)
-      }
-    }
-    .frame(maxWidth: .infinity)
-  }
-
-  private var compactQueueStatus: some View {
-    VStack(alignment: .leading, spacing: 9) {
-      queuePositionBadge
-        .frame(maxWidth: 260, alignment: .leading)
-
-      compactStepsView
-
-      Text(statusMessage)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .lineLimit(2)
-        .minimumScaleFactor(0.82)
-        .fixedSize(horizontal: false, vertical: true)
-        .numericQueueTransition(value: store.activeSession?.queuePosition ?? -1)
-
-      ProgressView()
-        .progressViewStyle(.circular)
-        .tint(brandAccent)
-        .scaleEffect(0.82)
-        .frame(width: 22, height: 22)
-    }
-    .padding(.top, 2)
-    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var actionButtons: some View {
@@ -268,225 +174,41 @@ struct StreamLoadingView: View {
         Haptics.light()
         store.minimizeQueueOverlay()
       } label: {
-        Label("Minimize", systemImage: "rectangle.compress.vertical")
-          .frame(maxWidth: .infinity)
+        Text("Minimize").frame(maxWidth: .infinity)
       }
-      .streamActionButtonStyle()
+      .buttonStyle(.bordered)
+      .buttonBorderShape(.roundedRectangle(radius: 12))
 
       Button(role: .destructive) {
         Haptics.medium()
         Task { await store.endSession() }
       } label: {
-        Label("Cancel", systemImage: "xmark")
-          .frame(maxWidth: .infinity)
+        Text("Cancel").frame(maxWidth: .infinity)
       }
-      .streamActionButtonStyle(tint: .red.opacity(0.92))
+      .buttonStyle(.bordered)
+      .buttonBorderShape(.roundedRectangle(radius: 12))
+      .tint(.red)
     }
   }
 
-  @ViewBuilder
-  private var queuePositionBadge: some View {
-    if currentPhase == .queue, let pos = store.activeSession?.queuePosition {
-      HStack(spacing: 10) {
-        Image(systemName: pos == 1 ? "bolt.fill" : "person.3.fill")
-          .foregroundStyle(.orange)
-        Text(pos == 1 ? "Next in queue" : "Queue #\(pos)")
-          .font(.subheadline.bold())
-          .foregroundStyle(.primary)
-          .lineLimit(1)
-          .minimumScaleFactor(0.82)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 11)
-      .background(
-        Group {
-          if #available(iOS 26, *) {
-            Capsule()
-              .fill(.regularMaterial)
-              .glassEffect(in: Capsule())
-              .overlay(
-                Capsule()
-                  .stroke(.orange.opacity(0.35), lineWidth: 1)
-              )
-          } else {
-            Capsule()
-              .fill(.regularMaterial)
-              .overlay(
-                Capsule()
-                  .fill(.orange.opacity(0.08))
-              )
-          }
-        }
-      )
-      .frame(maxWidth: 360)
-      .numericQueueTransition(value: pos)
-      .transition(.scale(scale: 0.92).combined(with: .opacity))
+  @ViewBuilder private var queueError: some View {
+    if let error = store.lastError, !error.isEmpty {
+      Text(error)
+        .font(.footnote)
+        .foregroundStyle(Color(red: 1, green: 0.62, blue: 0.62))
+        .multilineTextAlignment(.center)
+        .padding(.top, 12)
     }
   }
 
-  private var stepsView: some View {
-    HStack(spacing: 0) {
-      ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-        VStack(spacing: 10) {
-          ZStack {
-            stepCircle(for: stepState(index: index))
-
-            if stepState(index: index) == .completed {
-              Image(systemName: "checkmark")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
-            } else {
-              Image(systemName: step.icon)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(iconColor(for: stepState(index: index)))
-            }
-          }
-          .frame(width: 44, height: 44)
-
-          Text(step.title)
-            .font(.caption.bold())
-            .lineLimit(1)
-            .minimumScaleFactor(0.9)
-            .foregroundStyle(labelColor(for: stepState(index: index)))
-        }
-        .frame(width: 88)
-
-        if index < steps.count - 1 {
-          Rectangle()
-            .fill(connectorGradient(after: index))
-            .frame(width: 24, height: 2)
-            .padding(.bottom, 26)
-        }
-      }
-    }
-    .frame(maxWidth: 320)
-  }
-
-  private var compactStepsView: some View {
-    HStack(spacing: 0) {
-      ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-        VStack(spacing: 5) {
-          ZStack {
-            stepCircle(for: stepState(index: index))
-
-            if stepState(index: index) == .completed {
-              Image(systemName: "checkmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white)
-            } else {
-              Image(systemName: step.icon)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(iconColor(for: stepState(index: index)))
-            }
-          }
-          .frame(width: 28, height: 28)
-
-          Text(step.title)
-            .font(.caption2.bold())
-            .lineLimit(1)
-            .minimumScaleFactor(0.85)
-            .foregroundStyle(labelColor(for: stepState(index: index)))
-        }
-        .frame(width: 58)
-
-        if index < steps.count - 1 {
-          Rectangle()
-            .fill(connectorGradient(after: index))
-            .frame(width: 16, height: 2)
-            .padding(.bottom, 17)
-        }
-      }
-    }
-    .frame(maxWidth: 230, alignment: .leading)
-  }
-
-  private func stepState(index: Int) -> StepState {
-    let activeIndex: Int
-    switch currentPhase {
-    case .queue: activeIndex = 0
-    case .setup: activeIndex = 1
-    case .launching: activeIndex = 2
-    }
-    if index < activeIndex { return .completed }
-    if index == activeIndex { return .active }
-    return .pending
-  }
-
-  @ViewBuilder
-  private func stepCircle(for state: StepState) -> some View {
-    switch state {
-    case .pending:
-      Circle()
-        .fill(Color.secondary.opacity(0.12))
-        .overlay(
-          Circle()
-            .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
-        )
-    case .active:
-      TimelineView(.animation(minimumInterval: 1.0 / 12.0, paused: false)) { timeline in
-        let phase = timeline.date.timeIntervalSinceReferenceDate.remainder(dividingBy: 0.9) / 0.9
-        let pulse = 0.5 - 0.5 * cos(phase * 2 * .pi)
-        Group {
-          if #available(iOS 26, *) {
-            Circle()
-              .fill(.regularMaterial)
-              .glassEffect(in: Circle())
-              .overlay(
-                Circle()
-                  .stroke(brandAccent.opacity(0.55), lineWidth: 1.5)
-              )
-          } else {
-            Circle()
-              .fill(brandAccent)
-          }
-        }
-        .scaleEffect(1.0 + (0.15 * pulse))
-        .opacity(1.0 - (0.08 * pulse))
-      }
-    case .completed:
-      Circle()
-        .fill(brandAccent.opacity(0.35))
-        .overlay(
-          Circle()
-            .stroke(brandAccent, lineWidth: 2)
-        )
-    }
-  }
-
-  private func iconColor(for state: StepState) -> Color {
-    switch state {
-    case .pending:
-      return .secondary.opacity(0.7)
-    case .active:
-      return brandAccent
-    case .completed:
-      return .white
-    }
-  }
-
-  private func labelColor(for state: StepState) -> Color {
-    switch state {
-    case .pending:
-      return .secondary
-    case .active:
-      return .primary
-    case .completed:
-      return brandAccent
-    }
-  }
-
-  private func connectorGradient(after index: Int) -> LinearGradient {
-    let startColor: Color =
-      stepState(index: index) == .completed ? brandAccent : .secondary.opacity(0.2)
-    let endColor: Color
-    switch stepState(index: index + 1) {
-    case .pending:
-      endColor = .secondary.opacity(0.2)
-    case .active, .completed:
-      endColor = brandAccent
-    }
-    return LinearGradient(
-      colors: [startColor, endColor], startPoint: .leading, endPoint: .trailing)
+  private func queueUrgencyColor(_ position: Int) -> Color {
+    let heat = position >= 10 ? 0 : Double(10 - max(1, position)) / 9
+    guard heat > 0 else { return .secondary }
+    return Color(
+      red: 1,
+      green: max(0.06, 0.57 - 0.49 * heat),
+      blue: max(0.08, 0.25 - 0.17 * heat)
+    )
   }
 }
 
@@ -508,8 +230,22 @@ private struct AdVideoView: UIViewControllerRepresentable {
   }
 }
 
+private struct QueueAdVideoFrame: ViewModifier {
+  let compact: Bool
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if compact {
+      content.aspectRatio(16.0 / 9.0, contentMode: .fit)
+    } else {
+      content.frame(height: 220)
+    }
+  }
+}
+
 private struct QueueAdPlayerCard: View {
   @EnvironmentObject private var store: OpenNOWStore
+  @Environment(\.openURL) private var openURL
   let ad: SessionAdInfo
   var compact = false
 
@@ -523,6 +259,7 @@ private struct QueueAdPlayerCard: View {
   @State private var isPaused = false
   @State private var isMuted = false
   @State private var isPlaying = false
+  @State private var isShowingReportConfirmation = false
 
   var body: some View {
     if !didSendFinish {
@@ -533,13 +270,26 @@ private struct QueueAdPlayerCard: View {
           Text("Ad Queue")
             .font((compact ? Font.caption2 : Font.caption).bold())
             .foregroundStyle(.secondary)
+
+          Spacer(minLength: 8)
+
+          Button {
+            isShowingReportConfirmation = true
+          } label: {
+            Label("Report Ad", systemImage: "exclamationmark.bubble")
+              .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
+              .lineLimit(1)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(.secondary)
+          .accessibilityHint("Opens NVIDIA Support after confirmation")
         }
 
         Group {
           if let mediaUrl = preferredMediaURLString(for: ad), let url = URL(string: mediaUrl) {
             ZStack(alignment: .bottom) {
               AdVideoView(player: player)
-                .frame(height: compact ? 118 : 150)
+                .modifier(QueueAdVideoFrame(compact: compact))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
               HStack {
@@ -618,7 +368,23 @@ private struct QueueAdPlayerCard: View {
               .stroke(.orange.opacity(0.28), lineWidth: 1)
           )
       )
-      .frame(maxWidth: compact ? 320 : 320)
+      .frame(maxWidth: .infinity)
+      .confirmationDialog(
+        "Report this ad?",
+        isPresented: $isShowingReportConfirmation,
+        titleVisibility: .visible
+      ) {
+        Button("Open NVIDIA Support") {
+          if let supportURL = URL(string: "https://www.nvidia.com/en-us/support/consumer/") {
+            openURL(supportURL)
+          }
+        }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text(
+          "Open NVIDIA Support to report this queue ad. OpenNOW does not automatically send the ad or your account details."
+        )
+      }
     }
   }
 

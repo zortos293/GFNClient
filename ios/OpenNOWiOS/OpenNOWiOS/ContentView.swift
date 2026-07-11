@@ -9,20 +9,50 @@ struct ContentView: View {
 
     var body: some View {
         Group {
+            #if DEBUG
+            if let queuePosition = debugQueuePreviewPosition {
+                StreamLoadingView(coversBottomBar: true)
+                    .task {
+                        store.installDebugQueuePreview(position: queuePosition)
+                    }
+            } else {
+                standardContent
+            }
+            #else
+            standardContent
+            #endif
+        }
+        .animation(.easeInOut(duration: 0.35), value: store.isBootstrapping)
+        .animation(.easeInOut(duration: 0.35), value: store.user == nil)
+        .task {
+            #if DEBUG
+            guard debugQueuePreviewPosition == nil else { return }
+            #endif
+            await store.bootstrap()
+        }
+    }
+
+    @ViewBuilder
+    private var standardContent: some View {
+        Group {
             if store.isBootstrapping {
                 SplashView()
             } else if store.user == nil {
                 LoginView()
             } else {
-                MainTabView()
+                MainTabView(initialPage: store.settings.launchPage)
             }
         }
-        .animation(.easeInOut(duration: 0.35), value: store.isBootstrapping)
-        .animation(.easeInOut(duration: 0.35), value: store.user == nil)
-        .task {
-            await store.bootstrap()
-        }
     }
+
+    #if DEBUG
+    private var debugQueuePreviewPosition: Int? {
+        ProcessInfo.processInfo.arguments
+            .first(where: { $0.hasPrefix("--opennow-queue-preview=") })
+            .flatMap { Int($0.split(separator: "=", maxSplits: 1).last ?? "") }
+            .map { max(1, $0) }
+    }
+    #endif
 }
 
 private struct SplashView: View {
@@ -42,10 +72,30 @@ private struct SplashView: View {
 }
 
 struct MainTabView: View {
+    private enum Tab: Hashable {
+        case home
+        case browse
+        case library
+        case settings
+    }
+
     @EnvironmentObject private var store: OpenNOWStore
+    @StateObject private var catalogControllerShortcuts = CatalogControllerShortcutCoordinator()
+    @State private var selectedTab: Tab
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
     private static let maxStreamerAutoRetries = 3
+
+    init(initialPage: AppLaunchPage) {
+        let initialTab: Tab
+        switch initialPage {
+        case .store:
+            initialTab = .home
+        case .library:
+            initialTab = .library
+        }
+        _selectedTab = State(initialValue: initialTab)
+    }
 
     private var queueSurfaceAnimation: Animation {
         .spring(response: 0.42, dampingFraction: 0.86)
@@ -66,15 +116,18 @@ struct MainTabView: View {
         .animation(.easeInOut(duration: 0.28), value: store.showStreamLoading && !store.queueOverlayVisible)
         .animation(.easeInOut(duration: 0.2), value: presentedStreamerSession?.id)
         .onAppear {
+            synchronizeCatalogControllerShortcuts()
             // MainTabView can be recreated by upstream auth/bootstrap state updates.
             // Reattach streamer overlay if store already has an active stream session.
             if let activeStream = store.streamSession {
+                catalogControllerShortcuts.setEnabled(false)
                 Self.dismissFocusedInput()
                 presentedStreamerSession = activeStream
             }
         }
         .onChangeCompat(of: store.streamSession) { newValue in
             if let newValue {
+                catalogControllerShortcuts.setEnabled(false)
                 Self.dismissFocusedInput()
                 presentedStreamerSession = newValue
             } else if store.activeSession == nil {
@@ -92,21 +145,36 @@ struct MainTabView: View {
             if newValue != nil {
                 Self.dismissFocusedInput()
             }
+            synchronizeCatalogControllerShortcuts()
+        }
+        .onChangeCompat(of: selectedTab) { _ in
+            synchronizeCatalogControllerShortcuts()
+        }
+        .onChangeCompat(of: store.queueOverlayVisible) { _ in
+            synchronizeCatalogControllerShortcuts()
+        }
+        .onDisappear {
+            catalogControllerShortcuts.setEnabled(false)
         }
     }
 
     private var tabSurface: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             HomeView()
                 .tabItem { Label("Home", systemImage: "house.fill") }
+                .tag(Tab.home)
             BrowseView()
                 .tabItem { Label("Browse", systemImage: "square.grid.2x2.fill") }
+                .tag(Tab.browse)
             LibraryView()
                 .tabItem { Label("Library", systemImage: "books.vertical.fill") }
+                .tag(Tab.library)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
+                .tag(Tab.settings)
         }
         .tint(brandAccent)
+        .environmentObject(catalogControllerShortcuts)
         .overlay {
             ZStack {
                 if store.queueOverlayVisible {
@@ -135,12 +203,28 @@ struct MainTabView: View {
         StreamerView(
             session: session,
             settings: store.currentStreamerSettings,
+            membershipTier: store.subscription?.membershipTier ?? store.user?.membershipTier,
             nativeStreamerEnabled: true,
             onTouchLayoutChange: { profile, layout in
                 store.updateTouchControlLayout(layout, profile: profile)
             },
             onStreamerPreferencesChange: { preferences in
                 store.updateStreamerPreferences(preferences)
+            },
+            onStreamSharpeningChange: { enabled, amount in
+                store.updateStreamSharpening(enabled: enabled, amount: amount)
+            },
+            onFingerMouseEnabledChange: { enabled in
+                store.updateFingerMouseEnabled(enabled)
+            },
+            onPhoneRumbleFallbackChange: { enabled in
+                store.updatePhoneRumbleFallback(enabled)
+            },
+            onStreamTutorialCompleted: {
+                store.setStreamTutorialCompleted(true)
+            },
+            onControllerTouchPromptDismissed: {
+                store.setControllerTouchPromptDismissed(true)
             },
             onStatsOverlayChange: { visible in
                 store.updateStreamStatsOverlayVisible(visible)
@@ -164,6 +248,16 @@ struct MainTabView: View {
         .ignoresSafeArea()
         .id(session.id)
         .zIndex(3000)
+        .onAppear {
+            catalogControllerShortcuts.setEnabled(false)
+        }
+    }
+
+    private func synchronizeCatalogControllerShortcuts() {
+        let catalogTabSelected = selectedTab == .home || selectedTab == .browse || selectedTab == .library
+        catalogControllerShortcuts.setEnabled(
+            catalogTabSelected && presentedStreamerSession == nil && !store.queueOverlayVisible
+        )
     }
 
     private var queueOverlayTransition: AnyTransition {

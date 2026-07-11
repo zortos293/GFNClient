@@ -1,6 +1,117 @@
 import SwiftUI
 import UIKit
 import ImageIO
+import GameController
+import Combine
+
+func catalogStableGameKey(_ game: CloudGame) -> String {
+    if let uuid = game.uuid?.trimmingCharacters(in: .whitespacesAndNewlines), !uuid.isEmpty {
+        return uuid.lowercased()
+    }
+    return game.id.lowercased()
+}
+
+@MainActor
+final class CatalogControllerShortcutCoordinator: ObservableObject {
+    @Published private(set) var isEnabled = false
+    @Published private(set) var controllerConnected = false
+
+    private struct FocusedActions {
+        let owner: UUID
+        let favorite: () -> Void
+        let play: () -> Void
+    }
+
+    private var focusedActions: FocusedActions?
+    private var attachedControllers: [GCController] = []
+    private var notificationObservers: [NSObjectProtocol] = []
+
+    init() {
+        let center = NotificationCenter.default
+        notificationObservers = [
+            center.addObserver(
+                forName: NSNotification.Name.GCControllerDidConnect,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.refreshControllers() }
+            },
+            center.addObserver(
+                forName: NSNotification.Name.GCControllerDidDisconnect,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.refreshControllers() }
+            }
+        ]
+    }
+
+    deinit {
+        notificationObservers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        guard isEnabled != enabled else { return }
+        isEnabled = enabled
+        if enabled {
+            refreshControllers()
+        } else {
+            focusedActions = nil
+            detachControllerHandlers()
+            controllerConnected = false
+        }
+    }
+
+    func updateFocusedActions(
+        owner: UUID,
+        isFocused: Bool,
+        favorite: @escaping () -> Void,
+        play: @escaping () -> Void
+    ) {
+        if isFocused {
+            focusedActions = FocusedActions(owner: owner, favorite: favorite, play: play)
+        } else if focusedActions?.owner == owner {
+            focusedActions = nil
+        }
+    }
+
+    func clearFocusedActions(owner: UUID) {
+        guard focusedActions?.owner == owner else { return }
+        focusedActions = nil
+    }
+
+    private func refreshControllers() {
+        guard isEnabled else { return }
+        detachControllerHandlers()
+        attachedControllers = GCController.controllers().filter { $0.extendedGamepad != nil }
+        controllerConnected = !attachedControllers.isEmpty
+
+        for controller in attachedControllers {
+            controller.extendedGamepad?.buttonX.pressedChangedHandler = { [weak self] _, _, pressed in
+                guard !pressed else { return }
+                Task { @MainActor in
+                    guard let self, self.isEnabled else { return }
+                    self.focusedActions?.favorite()
+                }
+            }
+            controller.extendedGamepad?.buttonY.pressedChangedHandler = { [weak self] _, _, pressed in
+                guard !pressed else { return }
+                Task { @MainActor in
+                    guard let self, self.isEnabled else { return }
+                    self.focusedActions?.play()
+                }
+            }
+        }
+    }
+
+    private func detachControllerHandlers() {
+        for controller in attachedControllers {
+            controller.extendedGamepad?.buttonX.pressedChangedHandler = nil
+            controller.extendedGamepad?.buttonY.pressedChangedHandler = nil
+        }
+        attachedControllers.removeAll()
+    }
+}
 
 final class OpenNOWImageCache {
     static let shared = OpenNOWImageCache()
@@ -226,6 +337,68 @@ struct CachedRemoteImage<Content: View, Placeholder: View, Failure: View>: View 
     }
 }
 
+struct CatalogWallpaperBackdrop: View {
+    let isEnabled: Bool
+    let managedFilename: String?
+
+    @State private var image: UIImage?
+
+    private var loadID: String {
+        "\(isEnabled)-\(managedFilename ?? "gradient")"
+    }
+
+    var body: some View {
+        Group {
+            if isEnabled {
+                ZStack {
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .transition(.opacity)
+                    } else {
+                        brandGradient
+                    }
+
+                    LinearGradient(
+                        colors: [
+                            Color(uiColor: .systemBackground).opacity(0.34),
+                            Color(uiColor: .systemBackground).opacity(0.72)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .clipped()
+            } else {
+                Color(uiColor: .systemBackground)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .task(id: loadID) {
+            await loadManagedWallpaper()
+        }
+    }
+
+    @MainActor
+    private func loadManagedWallpaper() async {
+        guard isEnabled,
+              let url = CatalogWallpaperStorage.wallpaperURL(for: managedFilename) else {
+            image = nil
+            return
+        }
+        let path = url.path
+        let loaded = await Task.detached(priority: .utility) {
+            UIImage(contentsOfFile: path)
+        }.value
+        guard !Task.isCancelled else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            image = loaded
+        }
+    }
+}
+
 struct HomeView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @State private var pendingLaunchRequest: GameLaunchRequest?
@@ -264,8 +437,14 @@ struct HomeView: View {
             )
             .refreshable { await store.refreshCatalog() }
             .navigationTitle("OpenNOW")
+            .background {
+                CatalogWallpaperBackdrop(
+                    isEnabled: store.settings.catalogWallpaperEnabled,
+                    managedFilename: store.settings.catalogWallpaperFilename
+                )
+            }
         }
-        .presentGameDetailsUIKit(selectedGame: $selectedGameForDetails, store: store) { game, option in
+        .presentGameDetailsSheet(selectedGame: $selectedGameForDetails, store: store) { game, option in
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
         .launcherSelectionModalSheet(selectedGame: $selectedGameForLauncher, store: store) { game, option in
@@ -282,6 +461,10 @@ struct HomeView: View {
 
             if jumpBackInHasContent {
                 continueSection
+            }
+
+            if !isHomeSearchActive && !comingNextGames.isEmpty {
+                comingNextSection
             }
 
             CatalogControlsHeader(
@@ -323,6 +506,52 @@ struct HomeView: View {
         }
     }
 
+    private var comingNextSection: some View {
+        ComingNextCarousel(
+            games: comingNextGames,
+            onOpenDetails: { selectedGameForDetails = $0 },
+            onPlay: launchFromCard
+        )
+    }
+
+    private var comingNextGames: [CloudGame] {
+        let excludedGameKeys = comingNextExcludedGameKeys
+        var seenGameKeys = Set<String>()
+        return Array(
+            store.allGames.lazy
+                .filter { !excludedGameKeys.contains(catalogStableGameKey($0)) }
+                .filter { game in
+                    guard let sectionTitle = game.catalogSectionTitle?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                        !sectionTitle.isEmpty else {
+                        return false
+                    }
+
+                    let normalizedTitle = sectionTitle.lowercased()
+                    guard !normalizedTitle.contains("jump back in") else { return false }
+                    return normalizedTitle.contains("new") ||
+                        normalizedTitle.contains("recent") ||
+                        normalizedTitle.contains("updated") ||
+                        normalizedTitle.contains("just added")
+                }
+                .filter { seenGameKeys.insert(catalogStableGameKey($0)).inserted }
+                .prefix(14)
+        )
+    }
+
+    private var comingNextExcludedGameKeys: Set<String> {
+        var keys = Set(continueGameItems.map { catalogStableGameKey($0.game) })
+        if let activeGame = store.activeSession?.game {
+            keys.insert(catalogStableGameKey(activeGame))
+        }
+        for candidate in store.resumableSessions {
+            if let game = store.gameForRemoteSession(candidate) {
+                keys.insert(catalogStableGameKey(game))
+            }
+        }
+        return keys
+    }
+
     private var homeGridGames: [CloudGame] {
         let games = isHomeSearchActive ? homeSearchResults : store.allGames
         guard !store.settings.favoriteGameIds.isEmpty else { return games }
@@ -355,7 +584,7 @@ struct HomeView: View {
     }
 
     private var jumpBackInHasContent: Bool {
-        store.activeSession != nil || !store.resumableSessions.isEmpty
+        !continueGameItems.isEmpty || !unknownResumableSessions.isEmpty
     }
 
     private var isHomeSearchActive: Bool {
@@ -382,7 +611,9 @@ struct HomeView: View {
 
     private var continueGameItems: [GameBannerActionItem] {
         var items: [GameBannerActionItem] = []
+        var seenGameKeys = Set<String>()
         if let active = store.activeSession {
+            seenGameKeys.insert(catalogStableGameKey(active.game))
             items.append(
                 GameBannerActionItem(
                     id: "active-\(active.id)",
@@ -397,6 +628,7 @@ struct HomeView: View {
 
         for candidate in resumableSessionsExcludingActive.prefix(6) {
             guard let game = store.gameForRemoteSession(candidate) else { continue }
+            guard seenGameKeys.insert(catalogStableGameKey(game)).inserted else { continue }
             items.append(
                 GameBannerActionItem(
                     id: "remote-\(candidate.id)",
@@ -405,6 +637,32 @@ struct HomeView: View {
                     badgeSystemImage: "arrow.clockwise.circle"
                 ) {
                     store.scheduleResume(candidate: candidate)
+                }
+            )
+        }
+
+        let favoriteIDs = Set(store.settings.favoriteGameIds)
+        let catalogGamesByID = Dictionary(
+            (store.allGames + store.libraryGames).map { ($0.id, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
+        let favoriteGames = favoriteIDs.compactMap { catalogGamesByID[$0] }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        let ownedGames = store.libraryGames.sorted {
+            $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+        }
+
+        for game in favoriteGames + ownedGames where items.count < 6 {
+            guard seenGameKeys.insert(catalogStableGameKey(game)).inserted else { continue }
+            let isFavorite = favoriteIDs.contains(game.id)
+            items.append(
+                GameBannerActionItem(
+                    id: "catalog-\(game.id)",
+                    game: game,
+                    subtitle: isFavorite ? "Favorite" : "In your library",
+                    badgeSystemImage: isFavorite ? "heart.fill" : "books.vertical.fill"
+                ) {
+                    launchFromCard(game)
                 }
             )
         }
@@ -484,9 +742,10 @@ func gameBannerActionRows(for items: [GameBannerActionItem]) -> [GameBannerActio
 }
 
 struct CatalogFilterChip: Identifiable {
-    let id = UUID()
     let label: String
     let onRemove: () -> Void
+
+    var id: String { label }
 }
 
 struct CatalogControlsHeader<Controls: View>: View {
@@ -556,6 +815,7 @@ private struct CatalogFilterChipButton: View {
 }
 
 struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
+    @EnvironmentObject private var store: OpenNOWStore
     let games: [CloudGame]
     let isLoading: Bool
     let emptyTitle: String
@@ -568,8 +828,15 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
     @ViewBuilder let emptyActions: () -> EmptyActions
 
     private var columns: [GridItem] {
-        [
-            GridItem(.adaptive(minimum: 154, maximum: 230), spacing: 10, alignment: .top)
+        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.35))
+        let baseMinimum: CGFloat = store.settings.compactGameCards ? 132 : 154
+        let baseMaximum: CGFloat = store.settings.compactGameCards ? 196 : 230
+        return [
+            GridItem(
+                .adaptive(minimum: baseMinimum * scale, maximum: baseMaximum * scale),
+                spacing: 10,
+                alignment: .top
+            )
         ]
     }
 
@@ -600,7 +867,7 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                         ForEach(games) { game in
                             GameCatalogGridCard(
                                 game: game,
-                                subtitle: subtitle(game),
+                                subtitle: store.settings.showGameStoreLabels ? subtitle(game) : nil,
                                 badgeSystemImage: badgeSystemImage(game),
                                 onOpenDetails: { onOpenDetails(game) },
                                 onPlay: { onPlay(game) }
@@ -618,6 +885,10 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
 
 private struct GameCatalogGridCard: View {
     @EnvironmentObject private var store: OpenNOWStore
+    @EnvironmentObject private var controllerShortcuts: CatalogControllerShortcutCoordinator
+    @FocusState private var isPosterFocused: Bool
+    @State private var isLegacyPosterFocused = false
+    @State private var controllerShortcutOwner = UUID()
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
@@ -628,56 +899,151 @@ private struct GameCatalogGridCard: View {
         OpenNOWPlatform.supportsEmbeddedStreamer && !store.launchOptions(for: game).isEmpty
     }
 
+    private var controlSize: CGFloat {
+        store.settings.compactGameCards ? 36 : 42
+    }
+
+    private var isPosterVisuallyFocused: Bool {
+        isPosterFocused || isLegacyPosterFocused
+    }
+
+    private func openDetails() {
+        Haptics.light()
+        onOpenDetails()
+    }
+
+    private func toggleFavorite() {
+        Haptics.light()
+        store.toggleFavorite(game)
+    }
+
+    private func play() {
+        Haptics.medium()
+        onPlay()
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            GameCatalogPosterContent(
-                game: game,
-                subtitle: subtitle,
-                badgeSystemImage: badgeSystemImage
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .onTapGesture {
-                Haptics.light()
-                onOpenDetails()
+            Button(action: openDetails) {
+                GameCatalogPosterContent(
+                    game: game,
+                    subtitle: subtitle,
+                    badgeSystemImage: badgeSystemImage,
+                    compact: store.settings.compactGameCards,
+                    isFocused: isPosterVisuallyFocused
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .accessibilityAddTraits(.isButton)
+            .buttonStyle(.plain)
+            .controllerFocusableCompat(
+                fallbackActivation: openDetails,
+                onLegacyFocusChange: { isLegacyPosterFocused = $0 }
+            )
+            .focused($isPosterFocused)
+            .scaleEffect(isPosterVisuallyFocused ? 1.025 : 1)
+            .animation(.easeOut(duration: 0.16), value: isPosterVisuallyFocused)
+            .accessibilityLabel("Open details for \(game.title)")
 
             HStack(alignment: .bottom) {
-                Button {
-                    Haptics.light()
-                    store.toggleFavorite(game)
-                } label: {
+                Button(action: toggleFavorite) {
                     Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(store.isFavorite(game) ? Color.red : Color.white)
-                        .frame(width: 42, height: 42)
+                        .frame(width: controlSize, height: controlSize)
                         .background(.ultraThinMaterial, in: Circle())
                         .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
                 }
                 .buttonStyle(.plain)
+                .controllerFocusableCompat(fallbackActivation: toggleFavorite)
                 .contentShape(Circle())
                 .accessibilityLabel(store.isFavorite(game) ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
 
                 Spacer(minLength: 8)
 
-                Button {
-                    Haptics.medium()
-                    onPlay()
-                } label: {
+                Button(action: play) {
                     Image(systemName: "play.fill")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(Color.white)
-                        .frame(width: 42, height: 42)
+                        .frame(width: controlSize, height: controlSize)
                         .background(brandAccent.opacity(canLaunch ? 0.96 : 0.45), in: Circle())
                         .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
                 }
                 .buttonStyle(.plain)
+                .controllerFocusableCompat(fallbackActivation: play)
                 .contentShape(Circle())
                 .accessibilityLabel("Launch \(game.title)")
                 .disabled(!canLaunch)
             }
-            .padding(8)
+            .padding(store.settings.compactGameCards ? 6 : 8)
             .zIndex(1)
+        }
+        .overlay(alignment: .topTrailing) {
+            if isPosterVisuallyFocused,
+               controllerShortcuts.isEnabled,
+               controllerShortcuts.controllerConnected {
+                CatalogControllerShortcutHint(
+                    favorite: store.isFavorite(game),
+                    playEnabled: canLaunch
+                )
+                .padding(6)
+                .transition(.opacity)
+            }
+        }
+        .onAppear {
+            updateControllerShortcutRegistration(isPosterVisuallyFocused)
+        }
+        .onChangeCompat(of: isPosterVisuallyFocused) { focused in
+            updateControllerShortcutRegistration(focused)
+        }
+        .onChangeCompat(of: controllerShortcuts.isEnabled) { enabled in
+            updateControllerShortcutRegistration(enabled && isPosterVisuallyFocused)
+        }
+        .onDisappear {
+            controllerShortcuts.clearFocusedActions(owner: controllerShortcutOwner)
+        }
+        .zIndex(isPosterVisuallyFocused ? 2 : 0)
+    }
+
+    private func updateControllerShortcutRegistration(_ focused: Bool) {
+        controllerShortcuts.updateFocusedActions(
+            owner: controllerShortcutOwner,
+            isFocused: focused,
+            favorite: { toggleFavorite() },
+            play: {
+                guard canLaunch else { return }
+                play()
+            }
+        )
+    }
+}
+
+private struct CatalogControllerShortcutHint: View {
+    let favorite: Bool
+    let playEnabled: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            shortcut(button: "X", systemImage: favorite ? "heart.fill" : "heart")
+            shortcut(button: "Y", systemImage: "play.fill")
+                .opacity(playEnabled ? 1 : 0.45)
+        }
+        .padding(5)
+        .background(.black.opacity(0.72), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func shortcut(button: String, systemImage: String) -> some View {
+        HStack(spacing: 3) {
+            Text(button)
+                .font(.caption2.bold())
+                .foregroundStyle(.white)
+                .frame(width: 17, height: 17)
+                .background(Color.white.opacity(0.18), in: Circle())
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.white)
         }
     }
 }
@@ -686,6 +1052,8 @@ private struct GameCatalogPosterContent: View {
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
+    let compact: Bool
+    let isFocused: Bool
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -705,9 +1073,9 @@ private struct GameCatalogPosterContent: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(game.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font((compact ? Font.caption : Font.subheadline).weight(.semibold))
                     .foregroundStyle(Color.white)
-                    .lineLimit(3)
+                    .lineLimit(compact ? 2 : 3)
                     .minimumScaleFactor(0.78)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -718,9 +1086,9 @@ private struct GameCatalogPosterContent: View {
                         .lineLimit(1)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 10)
-            .padding(.bottom, 58)
+            .padding(.horizontal, compact ? 8 : 10)
+            .padding(.top, compact ? 8 : 10)
+            .padding(.bottom, compact ? 48 : 58)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .aspectRatio(gameVerticalBannerAspectRatio, contentMode: .fit)
@@ -737,7 +1105,10 @@ private struct GameCatalogPosterContent: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                .stroke(
+                    isFocused ? brandAccent : Color.white.opacity(0.10),
+                    lineWidth: isFocused ? 2 : 1
+                )
         )
         .shadow(color: .black.opacity(0.14), radius: 8, y: 4)
         .accessibilityElement(children: .combine)
@@ -750,36 +1121,19 @@ private struct GameCatalogPosterContent: View {
 
 private struct GameCatalogGridSkeletonCard: View {
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            LinearGradient(
-                colors: [
-                    Color.secondary.opacity(0.22),
-                    Color.secondary.opacity(0.12),
-                    Color.black.opacity(0.16)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+        ZStack(alignment: .bottom) {
+            Color.secondary.opacity(0.16)
 
-            VStack(alignment: .leading, spacing: 7) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(Color.white.opacity(0.24))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 9)
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+            HStack {
+                Circle()
                     .fill(Color.white.opacity(0.18))
-                    .frame(width: 74, height: 8)
-                HStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.18))
-                        .frame(width: 42, height: 42)
-                    Spacer()
-                    Circle()
-                        .fill(Color.white.opacity(0.18))
-                        .frame(width: 42, height: 42)
-                }
+                    .frame(width: 42, height: 42)
+                Spacer()
+                Circle()
+                    .fill(Color.white.opacity(0.18))
+                    .frame(width: 42, height: 42)
             }
-            .padding(10)
+            .padding(8)
         }
         .aspectRatio(gameVerticalBannerAspectRatio, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -899,24 +1253,41 @@ private struct GameBannerSkeletonCard: View {
 }
 
 struct GameBannerButton: View {
+    @FocusState private var isFocused: Bool
+    @State private var isLegacyFocused = false
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
     let onSelect: () -> Void
 
+    private func select() {
+        Haptics.light()
+        onSelect()
+    }
+
+    private var isVisuallyFocused: Bool {
+        isFocused || isLegacyFocused
+    }
+
     var body: some View {
-        Button {
-            Haptics.light()
-            onSelect()
-        } label: {
+        Button(action: select) {
             GameVerticalBannerCard(
                 game: game,
                 subtitle: subtitle,
-                badgeSystemImage: badgeSystemImage
+                badgeSystemImage: badgeSystemImage,
+                isFocused: isVisuallyFocused
             )
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+        .controllerFocusableCompat(
+            fallbackActivation: select,
+            onLegacyFocusChange: { isLegacyFocused = $0 }
+        )
+        .focused($isFocused)
+        .scaleEffect(isVisuallyFocused ? 1.025 : 1)
+        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .zIndex(isVisuallyFocused ? 2 : 0)
     }
 }
 
@@ -925,6 +1296,7 @@ struct GameVerticalBannerCard: View {
     let subtitle: String?
     let badgeSystemImage: String?
     var fitArtwork = false
+    var isFocused = false
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -974,7 +1346,10 @@ struct GameVerticalBannerCard: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                .stroke(
+                    isFocused ? brandAccent : Color.white.opacity(0.10),
+                    lineWidth: isFocused ? 2 : 1
+                )
         )
         .shadow(color: .black.opacity(0.14), radius: 8, y: 4)
         .accessibilityElement(children: .combine)
@@ -1051,11 +1426,11 @@ private struct GameLaunchDetailsArtwork: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(gameColor(for: game.title).opacity(0.18))
-                if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
+                if let imageUrl = game.detailsArtworkUrl, let url = URL(string: imageUrl) {
                     CachedRemoteImage(url: url, targetPixelSize: imageTargetPixelSize(for: proxy.size)) { image in
                         image
                             .resizable()
-                            .scaledToFit()
+                            .scaledToFill()
                             .frame(width: proxy.size.width, height: proxy.size.height)
                     } placeholder: {
                         GameArtworkLoadingPlaceholder(game: game, iconSize: 42, isFailure: false)
@@ -1193,24 +1568,354 @@ private struct JumpBackInCard: View {
     }
 }
 
+private struct ComingNextCarousel: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var selectedPage = 0
+    @State private var focusedGameID: String?
+    @FocusState private var focusedPageIndicator: Int?
+    @State private var legacyFocusedPageIndicator: Int?
+    @State private var voiceOverRunning = false
+
+    let games: [CloudGame]
+    let onOpenDetails: (CloudGame) -> Void
+    let onPlay: (CloudGame) -> Void
+
+    private var gameIDs: [String] {
+        games.map(\.id)
+    }
+
+    private var shouldAutoAdvance: Bool {
+        games.count > 1 &&
+            focusedGameID == nil &&
+            focusedPageIndicator == nil &&
+            legacyFocusedPageIndicator == nil &&
+            scenePhase == .active &&
+            !reduceMotion &&
+            !voiceOverRunning
+    }
+
+    private var autoAdvanceID: String {
+        [
+            gameIDs.joined(separator: "|"),
+            String(selectedPage),
+            scenePhase == .active ? "active" : "inactive",
+            focusedGameID ?? "unfocused",
+            focusedPageIndicator.map(String.init) ?? "no-indicator-focus",
+            legacyFocusedPageIndicator.map(String.init) ?? "no-legacy-indicator-focus",
+            reduceMotion ? "reduce" : "motion",
+            voiceOverRunning ? "voiceover" : "standard"
+        ].joined(separator: "#")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Coming Next", systemImage: "sparkles")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text("Recently added or updated")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            TabView(selection: $selectedPage) {
+                ForEach(Array(games.enumerated()), id: \.element.id) { index, game in
+                    ComingNextHeroCard(
+                        game: game,
+                        onOpenDetails: { onOpenDetails(game) },
+                        onPlay: { onPlay(game) },
+                        onFocusChange: { focused in
+                            if focused {
+                                focusedGameID = game.id
+                            } else if focusedGameID == game.id {
+                                focusedGameID = nil
+                            }
+                        }
+                    )
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 4)
+                    .tag(index)
+                }
+            }
+            .frame(height: 218)
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .accessibilityLabel("Coming Next games")
+
+            HStack(spacing: 2) {
+                ForEach(games.indices, id: \.self) { index in
+                    Button {
+                        selectPage(index)
+                    } label: {
+                        Capsule()
+                            .fill(index == selectedPage ? brandAccent : Color.secondary.opacity(0.34))
+                            .frame(width: index == selectedPage ? 14 : 6, height: 5)
+                            .frame(width: 16, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .controllerFocusableCompat(
+                        fallbackActivation: { selectPage(index) },
+                        onLegacyFocusChange: { focused in
+                            if focused {
+                                legacyFocusedPageIndicator = index
+                            } else if legacyFocusedPageIndicator == index {
+                                legacyFocusedPageIndicator = nil
+                            }
+                        }
+                    )
+                    .focused($focusedPageIndicator, equals: index)
+                    .accessibilityLabel("Show \(games[index].title)")
+                    .accessibilityAddTraits(index == selectedPage ? .isSelected : [])
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .onAppear {
+            voiceOverRunning = UIAccessibility.isVoiceOverRunning
+            normalizeSelectedPage()
+        }
+        .onChangeCompat(of: gameIDs) { _ in
+            normalizeSelectedPage()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIAccessibility.voiceOverStatusDidChangeNotification
+            )
+        ) { _ in
+            voiceOverRunning = UIAccessibility.isVoiceOverRunning
+        }
+        .task(id: autoAdvanceID) {
+            guard shouldAutoAdvance else { return }
+            do {
+                try await Task.sleep(nanoseconds: 6_000_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, shouldAutoAdvance, !games.isEmpty else { return }
+            withAnimation(.easeInOut(duration: 0.32)) {
+                selectedPage = (selectedPage + 1) % games.count
+            }
+        }
+    }
+
+    private func normalizeSelectedPage() {
+        guard !games.isEmpty else {
+            selectedPage = 0
+            return
+        }
+        selectedPage = min(max(selectedPage, 0), games.count - 1)
+    }
+
+    private func selectPage(_ index: Int) {
+        withAnimation(.easeInOut(duration: 0.28)) {
+            selectedPage = index
+        }
+    }
+}
+
+private struct ComingNextHeroCard: View {
+    @EnvironmentObject private var store: OpenNOWStore
+    @EnvironmentObject private var controllerShortcuts: CatalogControllerShortcutCoordinator
+    @FocusState private var isFocused: Bool
+    @FocusState private var favoriteFocused: Bool
+    @FocusState private var playFocused: Bool
+    @State private var isLegacyFocused = false
+    @State private var favoriteLegacyFocused = false
+    @State private var playLegacyFocused = false
+    @State private var controllerShortcutOwner = UUID()
+
+    let game: CloudGame
+    let onOpenDetails: () -> Void
+    let onPlay: () -> Void
+    let onFocusChange: (Bool) -> Void
+
+    private var isVisuallyFocused: Bool {
+        isFocused || favoriteFocused || playFocused ||
+            isLegacyFocused || favoriteLegacyFocused || playLegacyFocused
+    }
+
+    private var canLaunch: Bool {
+        OpenNOWPlatform.supportsEmbeddedStreamer && !store.launchOptions(for: game).isEmpty
+    }
+
+    private func openDetails() {
+        Haptics.light()
+        onOpenDetails()
+    }
+
+    private func toggleFavorite() {
+        Haptics.light()
+        store.toggleFavorite(game)
+    }
+
+    private func play() {
+        guard canLaunch else { return }
+        Haptics.medium()
+        onPlay()
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        ZStack(alignment: .bottom) {
+            Button(action: openDetails) {
+                ZStack(alignment: .bottomLeading) {
+                    GameArtworkView(game: game, iconSize: 54)
+
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.30), .black.opacity(0.92)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(game.title)
+                            .font(.title3.bold())
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                        Text(gameCatalogSubtitle(for: game))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.white.opacity(0.78))
+                            .lineLimit(1)
+                    }
+                    .padding(16)
+                    .padding(.bottom, 44)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .contentShape(shape)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .buttonStyle(.plain)
+            .controllerFocusableCompat(
+                fallbackActivation: openDetails,
+                onLegacyFocusChange: { isLegacyFocused = $0 }
+            )
+            .focused($isFocused)
+
+            HStack {
+                Button(action: toggleFavorite) {
+                    Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(store.isFavorite(game) ? Color.red : Color.white)
+                        .frame(width: 42, height: 42)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .controllerFocusableCompat(
+                    fallbackActivation: toggleFavorite,
+                    onLegacyFocusChange: { favoriteLegacyFocused = $0 }
+                )
+                .focused($favoriteFocused)
+                .accessibilityLabel(store.isFavorite(game) ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
+
+                Spacer(minLength: 8)
+
+                Button(action: play) {
+                    Image(systemName: "play.fill")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 46, height: 46)
+                        .background(brandAccent.opacity(canLaunch ? 0.96 : 0.45), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .controllerFocusableCompat(
+                    fallbackActivation: play,
+                    onLegacyFocusChange: { playLegacyFocused = $0 }
+                )
+                .focused($playFocused)
+                .disabled(!canLaunch)
+                .accessibilityLabel("Launch \(game.title)")
+            }
+            .padding(12)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 210)
+        .clipShape(shape)
+        .overlay(
+            shape.stroke(isVisuallyFocused ? brandAccent : Color.white.opacity(0.12), lineWidth: isVisuallyFocused ? 2 : 1)
+        )
+        .overlay(alignment: .topTrailing) {
+            if isVisuallyFocused,
+               controllerShortcuts.isEnabled,
+               controllerShortcuts.controllerConnected {
+                CatalogControllerShortcutHint(
+                    favorite: store.isFavorite(game),
+                    playEnabled: canLaunch
+                )
+                .padding(10)
+            }
+        }
+        .scaleEffect(isVisuallyFocused ? 1.012 : 1)
+        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .onAppear {
+            updateControllerShortcutRegistration(isVisuallyFocused)
+        }
+        .onChangeCompat(of: isVisuallyFocused) { focused in
+            updateControllerShortcutRegistration(focused)
+            onFocusChange(focused)
+        }
+        .onChangeCompat(of: controllerShortcuts.isEnabled) { enabled in
+            updateControllerShortcutRegistration(enabled && isVisuallyFocused)
+        }
+        .onDisappear {
+            controllerShortcuts.clearFocusedActions(owner: controllerShortcutOwner)
+            onFocusChange(false)
+        }
+    }
+
+    private func updateControllerShortcutRegistration(_ focused: Bool) {
+        controllerShortcuts.updateFocusedActions(
+            owner: controllerShortcutOwner,
+            isFocused: focused,
+            favorite: { toggleFavorite() },
+            play: { play() }
+        )
+    }
+}
+
 struct FeaturedGameCard: View {
+    @EnvironmentObject private var store: OpenNOWStore
+    @FocusState private var isFocused: Bool
+    @State private var isLegacyFocused = false
     let game: CloudGame
     let onOpenDetails: () -> Void
 
+    private var cardWidth: CGFloat {
+        let baseWidth: CGFloat = store.settings.compactGameCards ? 140 : 160
+        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.35))
+        return baseWidth * scale
+    }
+
+    private func openDetails() {
+        Haptics.light()
+        onOpenDetails()
+    }
+
+    private var isVisuallyFocused: Bool {
+        isFocused || isLegacyFocused
+    }
+
     var body: some View {
-        Button(action: {
-            Haptics.light()
-            onOpenDetails()
-        }) {
+        Button(action: openDetails) {
             GameVerticalBannerCard(
                 game: game,
-                subtitle: gameCatalogSubtitle(for: game),
-                badgeSystemImage: nil
+                subtitle: store.settings.showGameStoreLabels ? gameCatalogSubtitle(for: game) : nil,
+                badgeSystemImage: nil,
+                isFocused: isVisuallyFocused
             )
-            .frame(width: 160)
+            .frame(width: cardWidth)
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+        .controllerFocusableCompat(
+            fallbackActivation: openDetails,
+            onLegacyFocusChange: { isLegacyFocused = $0 }
+        )
+        .focused($isFocused)
+        .scaleEffect(isVisuallyFocused ? 1.025 : 1)
+        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .zIndex(isVisuallyFocused ? 2 : 0)
     }
 }
 
@@ -1254,23 +1959,41 @@ struct ErrorBannerView: View {
 }
 
 struct GameCardView: View {
+    @EnvironmentObject private var store: OpenNOWStore
+    @FocusState private var isFocused: Bool
+    @State private var isLegacyFocused = false
     let game: CloudGame
     let onOpenDetails: () -> Void
 
+    private func openDetails() {
+        Haptics.light()
+        onOpenDetails()
+    }
+
+    private var isVisuallyFocused: Bool {
+        isFocused || isLegacyFocused
+    }
+
     var body: some View {
-        Button(action: {
-            Haptics.light()
-            onOpenDetails()
-        }) {
+        Button(action: openDetails) {
             GameVerticalBannerCard(
                 game: game,
-                subtitle: gameCatalogSubtitle(for: game),
-                badgeSystemImage: nil
+                subtitle: store.settings.showGameStoreLabels ? gameCatalogSubtitle(for: game) : nil,
+                badgeSystemImage: nil,
+                isFocused: isVisuallyFocused
             )
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+        .controllerFocusableCompat(
+            fallbackActivation: openDetails,
+            onLegacyFocusChange: { isLegacyFocused = $0 }
+        )
+        .focused($isFocused)
+        .scaleEffect(isVisuallyFocused ? 1.025 : 1)
+        .animation(.easeOut(duration: 0.16), value: isVisuallyFocused)
+        .zIndex(isVisuallyFocused ? 2 : 0)
     }
 }
 
@@ -1308,11 +2031,6 @@ struct GameLaunchDetailsSheet: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .listRowInsets(EdgeInsets())
 
-                    if let summary = summaryText {
-                        Text(summary)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
                 }
 
                 if !launcherOptions.isEmpty {
@@ -1371,6 +2089,10 @@ struct GameLaunchDetailsSheet: View {
                     if let tier = displayMetadataLabel(game.membershipTierLabel) {
                         LabeledContent("Membership", value: tier)
                     }
+                    LabeledContent(
+                        "Age Rating",
+                        value: GFNContentRatingParser.ageBadge(from: game.contentRatings) ?? "Not rated"
+                    )
                 }
 
                 if !detailLabels.isEmpty {
@@ -1378,6 +2100,14 @@ struct GameLaunchDetailsSheet: View {
                         ForEach(detailLabels.prefix(12), id: \.self) { label in
                             Text(label)
                         }
+                    }
+                }
+
+                if let summary = summaryText {
+                    Section("Description") {
+                        Text(summary)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -1758,7 +2488,8 @@ private struct GameArtworkCard: View {
     }
 
     private var displayStores: [String] {
-        Array(gameResolvedStores(game: game).prefix(storeBadgeLimit))
+        guard store.settings.showGameStoreLabels else { return [] }
+        return Array(gameResolvedStores(game: game).prefix(storeBadgeLimit))
     }
 }
 
@@ -1923,16 +2654,23 @@ struct GameCardSkeletonView: View {
 }
 
 struct GameArtworkView: View {
+    enum Role {
+        case catalog
+        case details
+        case queue
+    }
+
     let game: CloudGame
     let iconSize: CGFloat
     var fit = false
+    var role: Role = .catalog
 
     var body: some View {
         GeometryReader { proxy in
             let targetPixelSize = imageTargetPixelSize(for: proxy.size)
             ZStack {
                 gameColor(for: game.title).opacity(0.2)
-                if let imageUrl = game.imageUrl, let url = URL(string: imageUrl) {
+                if let imageUrl = artworkUrl, let url = URL(string: imageUrl) {
                     CachedRemoteImage(url: url, targetPixelSize: targetPixelSize) { image in
                         fittedImage(image, size: proxy.size)
                     } placeholder: {
@@ -1969,6 +2707,17 @@ struct GameArtworkView: View {
 
     private var iconFallback: some View {
         GameArtworkLoadingPlaceholder(game: game, iconSize: iconSize, isFailure: true)
+    }
+
+    private var artworkUrl: String? {
+        switch role {
+        case .catalog:
+            return game.catalogArtworkUrl
+        case .details:
+            return game.detailsArtworkUrl
+        case .queue:
+            return game.queueArtworkUrl
+        }
     }
 }
 
@@ -2027,34 +2776,6 @@ func imageTargetPixelSize(for size: CGSize) -> Int {
     return max(160, Int(ceil(pixels)))
 }
 
-private struct SkeletonShimmerModifier: ViewModifier {
-    @State private var phase: CGFloat = -0.6
-
-    func body(content: Content) -> some View {
-        content
-            .overlay(
-                LinearGradient(
-                    colors: [
-                        .clear,
-                        Color.white.opacity(0.25),
-                        .clear
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .rotationEffect(.degrees(12))
-                .offset(x: phase * 220)
-                .blendMode(.screen)
-            )
-            .mask(content)
-            .onAppear {
-                withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
-                    phase = 1.2
-                }
-            }
-    }
-}
-
 func gameColor(for title: String) -> Color {
     let palette: [Color] = [
         Color(red: 0.46, green: 0.72, blue: 0.0),
@@ -2068,23 +2789,112 @@ func gameColor(for title: String) -> Color {
     return palette[hash % palette.count]
 }
 
-struct GlassCardModifier: ViewModifier {
-    let cornerRadius: CGFloat
+private final class LegacyControllerFocusButton: UIButton {
+    var onActivate: () -> Void = {}
+    var onFocusChange: (Bool) -> Void = { _ in }
 
+    private var reportedFocus = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isAccessibilityElement = false
+        addTarget(self, action: #selector(activate), for: .primaryActionTriggered)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var canBecomeFocused: Bool {
+        isEnabled
+    }
+
+    override func didUpdateFocus(
+        in context: UIFocusUpdateContext,
+        with coordinator: UIFocusAnimationCoordinator
+    ) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        reportFocusIfNeeded(isFocused)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            reportFocusIfNeeded(false)
+        }
+    }
+
+    @objc private func activate() {
+        onActivate()
+    }
+
+    private func reportFocusIfNeeded(_ focused: Bool) {
+        guard reportedFocus != focused else { return }
+        reportedFocus = focused
+        onFocusChange(focused)
+    }
+}
+
+private struct LegacyControllerFocusProxy: UIViewRepresentable {
+    let isEnabled: Bool
+    let onActivate: () -> Void
+    let onFocusChange: (Bool) -> Void
+
+    func makeUIView(context: Context) -> LegacyControllerFocusButton {
+        let button = LegacyControllerFocusButton(type: .custom)
+        configure(button)
+        return button
+    }
+
+    func updateUIView(_ button: LegacyControllerFocusButton, context: Context) {
+        configure(button)
+    }
+
+    private func configure(_ button: LegacyControllerFocusButton) {
+        button.isEnabled = isEnabled
+        button.isUserInteractionEnabled = isEnabled
+        button.onActivate = onActivate
+        button.onFocusChange = onFocusChange
+    }
+}
+
+private struct ControllerFocusableCompatModifier: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    let fallbackActivation: () -> Void
+    let onLegacyFocusChange: (Bool) -> Void
+
+    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 26, *) {
-            content
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
-                .glassEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
+        if #available(iOS 17.0, *) {
+            content.focusable()
         } else {
-            content
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
-                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+            content.overlay {
+                LegacyControllerFocusProxy(
+                    isEnabled: isEnabled,
+                    onActivate: fallbackActivation,
+                    onFocusChange: onLegacyFocusChange
+                )
+            }
         }
     }
 }
 
 extension View {
+    func controllerFocusableCompat(
+        fallbackActivation: @escaping () -> Void,
+        onLegacyFocusChange: @escaping (Bool) -> Void = { _ in }
+    ) -> some View {
+        modifier(
+            ControllerFocusableCompatModifier(
+                fallbackActivation: fallbackActivation,
+                onLegacyFocusChange: onLegacyFocusChange
+            )
+        )
+    }
+
     func glassCard(cornerRadius: CGFloat = 16) -> some View {
         modifier(GlassCardModifier(cornerRadius: cornerRadius))
     }
@@ -2115,12 +2925,12 @@ extension View {
         }
     }
 
-    func presentGameDetailsUIKit(
+    func presentGameDetailsSheet(
         selectedGame: Binding<CloudGame?>,
         store: OpenNOWStore,
         onLaunch: @escaping (CloudGame, GameLaunchOption?) -> Void
     ) -> some View {
-        pageSheet(item: selectedGame) { game in
+        sheet(item: selectedGame) { game in
             GameLaunchDetailsSheet(game: game) { option in
                 selectedGame.wrappedValue = nil
                 DispatchQueue.main.async {
@@ -2136,7 +2946,7 @@ extension View {
         store: OpenNOWStore,
         onLaunch: @escaping (CloudGame, GameLaunchOption) -> Void
     ) -> some View {
-        pageSheet(item: selectedGame) { game in
+        sheet(item: selectedGame) { game in
             GameLauncherSelectionSheet(game: game) { option in
                 selectedGame.wrappedValue = nil
                 DispatchQueue.main.async {
@@ -2144,134 +2954,6 @@ extension View {
                 }
             }
             .environmentObject(store)
-        }
-    }
-
-    private func pageSheet<Item: Identifiable, SheetContent: View>(
-        item: Binding<Item?>,
-        @ViewBuilder content: @escaping (Item) -> SheetContent
-    ) -> some View {
-        background {
-            PageSheetPresenter(item: item, content: content)
-                .frame(width: 0, height: 0)
-        }
-    }
-}
-
-private struct PageSheetPresenter<Item: Identifiable, SheetContent: View>: UIViewControllerRepresentable {
-    @Binding var item: Item?
-    let content: (Item) -> SheetContent
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(item: $item)
-    }
-
-    func makeUIViewController(context: Context) -> UIViewController {
-        let controller = UIViewController()
-        controller.view.backgroundColor = .clear
-        controller.view.isUserInteractionEnabled = false
-        return controller
-    }
-
-    func updateUIViewController(_ presenter: UIViewController, context: Context) {
-        guard presenter.view.window != nil else { return }
-        context.coordinator.clearDismissedSheet(from: presenter)
-
-        guard let item else {
-            context.coordinator.dismissPresentedSheet(animated: true, from: presenter)
-            return
-        }
-
-        if let hostingController = context.coordinator.hostingController {
-            if context.coordinator.presentedItemID == item.id,
-               context.coordinator.isPresented(hostingController, from: presenter) {
-                hostingController.rootView = AnyView(content(item))
-                return
-            }
-
-            context.coordinator.dismissPresentedSheet(animated: false, from: presenter)
-        }
-
-        guard presenter.presentedViewController == nil else { return }
-
-        let hostingController = PageSheetHostingController(rootView: AnyView(content(item)))
-        hostingController.modalPresentationStyle = .pageSheet
-        hostingController.presentationController?.delegate = context.coordinator
-        hostingController.onDidDisappear = { [weak coordinator = context.coordinator, weak hostingController] in
-            guard let hostingController else { return }
-            coordinator?.presentedSheetDidDisappear(hostingController)
-        }
-
-        if let sheetController = hostingController.sheetPresentationController {
-            sheetController.prefersGrabberVisible = true
-            sheetController.prefersScrollingExpandsWhenScrolledToEdge = true
-        }
-
-        context.coordinator.hostingController = hostingController
-        context.coordinator.presentedItemID = item.id
-        presenter.present(hostingController, animated: true)
-    }
-
-    final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
-        private var item: Binding<Item?>
-        var hostingController: UIHostingController<AnyView>?
-        var presentedItemID: Item.ID?
-
-        init(item: Binding<Item?>) {
-            self.item = item
-        }
-
-        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-            item.wrappedValue = nil
-            clearPresentedSheet()
-        }
-
-        func dismissPresentedSheet(animated: Bool, from presenter: UIViewController) {
-            guard let hostingController else { return }
-            guard isPresented(hostingController, from: presenter) else {
-                clearPresentedSheet()
-                return
-            }
-            hostingController.dismiss(animated: animated) { [weak self, weak hostingController] in
-                guard let self, let hostingController else { return }
-                self.presentedSheetDidDisappear(hostingController)
-            }
-        }
-
-        func presentedSheetDidDisappear(_ controller: UIHostingController<AnyView>) {
-            guard hostingController === controller else { return }
-            item.wrappedValue = nil
-            clearPresentedSheet()
-        }
-
-        func clearDismissedSheet(from presenter: UIViewController) {
-            guard let hostingController,
-                  !isPresented(hostingController, from: presenter) else {
-                return
-            }
-            clearPresentedSheet()
-        }
-
-        func isPresented(_ controller: UIHostingController<AnyView>, from presenter: UIViewController) -> Bool {
-            presenter.presentedViewController === controller ||
-                controller.presentingViewController != nil ||
-                controller.isBeingPresented
-        }
-
-        func clearPresentedSheet() {
-            hostingController = nil
-            presentedItemID = nil
-        }
-    }
-}
-
-private final class PageSheetHostingController: UIHostingController<AnyView> {
-    var onDidDisappear: (() -> Void)?
-
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        if isBeingDismissed || navigationController?.isBeingDismissed == true || presentingViewController == nil {
-            onDidDisappear?()
         }
     }
 }

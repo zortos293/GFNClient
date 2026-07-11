@@ -10,9 +10,6 @@ final class OpenNOWAppDelegate: NSObject, UIApplicationDelegate {
         if ProcessInfo.processInfo.arguments.contains("--opennow-streamer-self-test") {
             NativeStreamSelfTest.run()
         }
-        Task { @MainActor in
-            await QueueLiveActivityManager.shared.endAll()
-        }
         return true
     }
 
@@ -20,11 +17,6 @@ final class OpenNOWAppDelegate: NSObject, UIApplicationDelegate {
         OpenNOWImageCache.shared.removeAll()
     }
 
-    func applicationWillTerminate(_ application: UIApplication) {
-        Task { @MainActor in
-            await QueueLiveActivityManager.shared.endAll()
-        }
-    }
 }
 
 @main

@@ -1,9 +1,10 @@
 import { useEffect } from "react";
 import type { JSX } from "react";
-import { Loader2 } from "lucide-react";
+import { AnimatePresence, m } from "motion/react";
 import type { StreamDiagnosticsStore } from "../../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../../utils/streamDiagnosticsStore";
 import { useTranslation } from "../../i18n";
+import { MotionSpinner } from "../MotionSpinner";
 
 export function hasVisibleStreamVideo(stats: {
   nativeRendererActive: boolean;
@@ -26,14 +27,20 @@ export function StreamEmptyState({
     (stats) => hasVisibleStreamVideo(stats),
   );
 
-  if (hasVisibleVideo) {
-    return null;
-  }
-
   return (
-    <div className="sv-empty">
-      <div className="sv-empty-grad" />
-    </div>
+    <AnimatePresence>
+      {!hasVisibleVideo && (
+        <m.div
+          className="sv-empty"
+          initial={{ opacity: 1, scale: 1 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 1.03 }}
+          transition={{ duration: 0.7, ease: "easeOut" }}
+        >
+          <div className="sv-empty-grad" />
+        </m.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -55,15 +62,23 @@ export function StreamWaitingForVideo({
     },
   );
 
-  if (isConnecting || !waitingForFirstFrame) {
-    return null;
-  }
-
   return (
-    <div className="sv-warm" role="status" aria-live="polite">
-      <Loader2 className="sv-warm-spin" size={34} />
-      <p className="sv-warm-text">{t("stream.stats.waitingForVideo")}</p>
-    </div>
+    <AnimatePresence>
+      {!isConnecting && waitingForFirstFrame && (
+        <m.div
+          className="sv-warm"
+          role="status"
+          aria-live="polite"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.28 }}
+        >
+          <MotionSpinner className="sv-warm-spin" size={34} label="Preparing stream" />
+          <p className="sv-warm-text">{t("stream.stats.waitingForVideo")}</p>
+        </m.div>
+      )}
+    </AnimatePresence>
   );
 }
 

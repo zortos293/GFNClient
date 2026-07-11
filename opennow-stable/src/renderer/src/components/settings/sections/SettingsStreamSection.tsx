@@ -1,7 +1,8 @@
 import {
-  Check, Globe, Heart, Loader, MapPin, Monitor, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive, Sparkles, Wifi, Zap, Search, X, Cpu,
+  Check, Globe, Heart, MapPin, Monitor, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive, Sparkles, Wifi, Zap, Search, X, Cpu,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { m } from "motion/react";
 import type {
   ColorQuality,
   EntitledResolution,
@@ -36,6 +37,8 @@ import {
   STATIC_FPS_PRESETS,
   STATIC_RESOLUTION_PRESETS,
 } from "../settingsFormatters";
+import { dialogMotion, overlayMotion } from "../../MotionProvider";
+import { MotionSpinner } from "../../MotionSpinner";
 
 export interface SettingsStreamSectionProps {
   settings: Settings;
@@ -468,7 +471,7 @@ export function SettingsStreamSection({
               title={t("settings.region.refreshPing")}
             >
               {isPinging ? (
-                <Loader size={14} className="spin" />
+                <MotionSpinner size={14} label="Testing regions" />
               ) : (
                 <Wifi size={14} />
               )}
@@ -571,7 +574,7 @@ export function SettingsStreamSection({
           <label className="settings-label settings-label--with-icon">
             <ScanLine size={15} className="settings-label-icon" />
             {t("settings.video.resolution")}
-            {subscriptionLoading && <Loader size={12} className="settings-loading-icon" />}
+            {subscriptionLoading && <MotionSpinner size={12} className="settings-loading-icon" />}
           </label>
           <div className="settings-dropdown settings-resolution-dropdown" ref={resolutionDropdownRef}>
             <button
@@ -991,7 +994,7 @@ export function SettingsStreamSection({
               >
                 {codecTesting ? (
                   <>
-                    <Loader size={16} className="settings-loading-icon" />
+                    <MotionSpinner size={16} className="settings-loading-icon" />
                     {t("settings.video.testing")}
                   </>
                 ) : (
@@ -1056,14 +1059,17 @@ export function SettingsStreamSection({
                   )}
                 </>
       {zortosCommunityProxyPromptVisible && (
-        <div
+        <m.div
           className={`native-streamer-warning ${zortosCommunityProxyPromptClosing ? "native-streamer-warning--closing" : ""}`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="zortos-community-proxy-title"
           aria-describedby="zortos-community-proxy-copy"
+          initial={overlayMotion.initial}
+          animate={zortosCommunityProxyPromptClosing ? overlayMotion.exit : overlayMotion.animate}
+          transition={overlayMotion.transition}
         >
-          <button
+          <m.button
             type="button"
             className="native-streamer-warning-backdrop"
             aria-label={t("app.actions.cancel")}
@@ -1071,8 +1077,18 @@ export function SettingsStreamSection({
             tabIndex={-1}
             disabled={zortosCommunityProxyProvisioning}
             onClick={closeZortosCommunityProxyPrompt}
+            initial={overlayMotion.initial}
+            animate={zortosCommunityProxyPromptClosing ? overlayMotion.exit : overlayMotion.animate}
+            transition={overlayMotion.transition}
           />
-          <div ref={zortosCommunityProxyPromptRef} className="native-streamer-warning-card" tabIndex={-1}>
+          <m.div
+            ref={zortosCommunityProxyPromptRef}
+            className="native-streamer-warning-card"
+            tabIndex={-1}
+            initial={dialogMotion.initial}
+            animate={zortosCommunityProxyPromptClosing ? dialogMotion.exit : dialogMotion.animate}
+            transition={dialogMotion.transition}
+          >
             <div className="native-streamer-warning-kicker">
               <Heart size={14} />
               {t("settings.video.zortosCommunityProxy.enablePromptKicker")}
@@ -1116,8 +1132,8 @@ export function SettingsStreamSection({
             <div className="native-streamer-warning-hint">
               <kbd>Esc</kbd> {t("settings.video.zortosCommunityProxy.enablePromptEsc")}
             </div>
-          </div>
-        </div>
+          </m.div>
+        </m.div>
       )}
     </>
   );

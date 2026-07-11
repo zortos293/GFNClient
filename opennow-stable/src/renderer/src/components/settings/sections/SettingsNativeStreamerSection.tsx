@@ -1,5 +1,6 @@
-import { AlertTriangle, Cpu, ExternalLink, Keyboard, Loader, Monitor, RefreshCcw } from "lucide-react";
+import { AlertTriangle, Cpu, ExternalLink, Keyboard, Monitor, RefreshCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
+import { m } from "motion/react";
 import type { NativeStreamerStatus, Settings } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
@@ -15,6 +16,8 @@ import {
   nativeVideoBackendOptions,
   NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS,
 } from "../settingsFormatters";
+import { dialogMotion, overlayMotion } from "../../MotionProvider";
+import { MotionSpinner } from "../../MotionSpinner";
 
 export interface SettingsNativeStreamerSectionProps {
   settings: Settings;
@@ -309,7 +312,7 @@ export function SettingsNativeStreamerSection({
                     title={t("settings.nativeStreamer.checkNativeStreamer")}
                     aria-label={t("settings.nativeStreamer.checkNativeStreamer")}
                   >
-                    {nativeStreamerStatusLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+                    {nativeStreamerStatusLoading ? <MotionSpinner size={15} label="Checking streamer status" /> : <RefreshCcw size={15} />}
                   </button>
                 </div>
                 <div className="settings-chip-row">
@@ -441,22 +444,35 @@ export function SettingsNativeStreamerSection({
       </section>
       )}
       {nativeStreamerEnablePromptVisible && (
-        <div
+        <m.div
           className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
           role="dialog"
           aria-modal="true"
           aria-labelledby="native-streamer-warning-title"
           aria-describedby="native-streamer-warning-copy"
+          initial={overlayMotion.initial}
+          animate={nativeStreamerEnablePromptClosing ? overlayMotion.exit : overlayMotion.animate}
+          transition={overlayMotion.transition}
         >
-          <button
+          <m.button
             type="button"
             className="native-streamer-warning-backdrop"
             aria-label={t("app.actions.cancel")}
             aria-hidden="true"
             tabIndex={-1}
             onClick={closeNativeStreamerEnablePrompt}
+            initial={overlayMotion.initial}
+            animate={nativeStreamerEnablePromptClosing ? overlayMotion.exit : overlayMotion.animate}
+            transition={overlayMotion.transition}
           />
-          <div ref={nativeStreamerEnablePromptRef} className="native-streamer-warning-card" tabIndex={-1}>
+          <m.div
+            ref={nativeStreamerEnablePromptRef}
+            className="native-streamer-warning-card"
+            tabIndex={-1}
+            initial={dialogMotion.initial}
+            animate={nativeStreamerEnablePromptClosing ? dialogMotion.exit : dialogMotion.animate}
+            transition={dialogMotion.transition}
+          >
             <div className="native-streamer-warning-kicker">
               <AlertTriangle size={14} />
               {t("settings.nativeStreamer.enablePromptKicker")}
@@ -504,8 +520,8 @@ export function SettingsNativeStreamerSection({
             <div className="native-streamer-warning-hint">
               <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
             </div>
-          </div>
-        </div>
+          </m.div>
+        </m.div>
       )}
     </>
   );

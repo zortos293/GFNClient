@@ -118,11 +118,27 @@ if (!hasElectronBinary()) {
   rmSync(resolvedDistRoot, { recursive: true, force: true });
   mkdirSync(resolvedDistRoot, { recursive: true });
 
-  const electronRequire = createRequire(electronPackageJson);
-  const { extract } = await import(pathToFileURL(electronRequire.resolve("@electron-internal/extract-zip")).href);
-
   try {
-    await extract(zipPath, { dir: resolvedDistRoot });
+    if (platform === "win32") {
+      // Windows ships bsdtar, which extracts Electron's zip reliably even on
+      // newer Node releases where extract-zip@2 can leave its promise pending.
+      const extractResult = spawnSync("tar.exe", ["-xf", zipPath, "-C", resolvedDistRoot], {
+        stdio: "inherit",
+      });
+      if (extractResult.status !== 0) {
+        throw new Error(`Windows archive extraction failed with exit code ${extractResult.status ?? "unknown"}.`);
+      }
+    } else {
+      // Electron 42 publishes extract-zip as a regular dependency. Resolve it
+      // from Electron's package boundary so npm hoisting does not affect us.
+      const electronRequire = createRequire(electronPackageJson);
+      const extractZipModule = await import(pathToFileURL(electronRequire.resolve("extract-zip")).href);
+      const extract = extractZipModule.default ?? extractZipModule.extract;
+      if (typeof extract !== "function") {
+        throw new TypeError("Electron archive extractor did not expose a callable function.");
+      }
+      await extract(zipPath, { dir: resolvedDistRoot });
+    }
   } catch (error) {
     console.error("Failed to extract Electron archive:", error);
     process.exit(1);

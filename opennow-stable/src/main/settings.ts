@@ -198,7 +198,7 @@ function normalizeRecordingBitrateMbps(raw: unknown): number | null {
 const DEFAULT_SETTINGS: Settings = {
   resolution: "1920x1080",
   aspectRatio: "16:9",
-  posterSizeScale: 1,
+  posterSizeScale: 1.05,
   fps: 60,
   maxBitrateMbps: 75,
   recordingBitrateMbps: null,

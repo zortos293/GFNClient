@@ -1,4 +1,4 @@
-import { Library, Search, Clock, Gamepad2, Loader2, ArrowUpDown, Filter, ChevronDown, X } from "lucide-react";
+import { Library, Search, Clock, Gamepad2, ArrowUpDown, Filter, ChevronDown, X } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
@@ -21,6 +21,7 @@ import { controllerButton, readControllerGamepadButtons } from "../utils/control
 import { pageTransition } from "./MotionProvider";
 import { SelectDropdown } from "./ui/SelectDropdown";
 import { LibraryControllerView } from "./library/LibraryControllerView";
+import { MotionSpinner } from "./MotionSpinner";
 
 const CONTROLLER_HERO_ROTATION_MS = 8000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -464,12 +465,13 @@ export const LibraryPage = memo(function LibraryPage({
           selectedVariantId={selectedVariantByGameId[game.id]}
           actionsRef={catalogActionsRef}
         />
-        {game.lastPlayed && (
-          <div className="library-last-played">
-            <Clock size={12} />
-            <span>{formatCatalogLastPlayed(t, game.lastPlayed)}</span>
-          </div>
-        )}
+        <div
+          className={`library-last-played${game.lastPlayed ? "" : " library-last-played--empty"}`}
+          aria-hidden={game.lastPlayed ? undefined : true}
+        >
+          <Clock size={12} />
+          <span>{game.lastPlayed ? formatCatalogLastPlayed(t, game.lastPlayed) : "—"}</span>
+        </div>
       </div>
     )),
     [catalogActionsRef, selectedGameId, selectedVariantByGameId, t, visibleLibraryGames],
@@ -614,7 +616,7 @@ export const LibraryPage = memo(function LibraryPage({
       <div className="library-grid-area">
         {isLoading ? (
           <div className="library-empty-state">
-            <Loader2 className="library-spinner" size={36} />
+            <MotionSpinner className="library-spinner" size={36} label={t("common.loading")} />
             <p>{t("library.empty.loadingLibrary")}</p>
           </div>
         ) : libraryCount === 0 ? (

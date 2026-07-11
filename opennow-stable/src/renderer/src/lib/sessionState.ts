@@ -83,6 +83,14 @@ export function toLoadingStatus(status: StreamStatus): StreamLoadingStatus {
   }
 }
 
+export function isStreamVideoReady(
+  status: StreamStatus,
+  diagnosticsReady: boolean,
+  videoElementHasFrame: boolean,
+): boolean {
+  return status === "streaming" && (diagnosticsReady || videoElementHasFrame);
+}
+
 export function toCodeLabel(code: number | undefined): string | undefined {
   if (code === undefined) return undefined;
   if (code === GFN_SESSION_LIMIT_EXCEEDED_CODE) return `SessionLimitExceeded (${code})`;

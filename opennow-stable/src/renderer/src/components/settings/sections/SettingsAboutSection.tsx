@@ -1,8 +1,9 @@
-import { Info, Loader, RefreshCcw, Download, FileDown, Trash2 } from "lucide-react";
+import { Info, RefreshCcw, Download, FileDown, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type JSX } from "react";
 import type { AppUpdaterState, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { formatBytes, formatUpdaterTimestamp, getUpdaterBadgeLabel } from "../settingsFormatters";
+import { MotionSpinner } from "../../MotionSpinner";
 
 export interface SettingsAboutSectionProps {
   settings: Settings;
@@ -121,7 +122,7 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
                 });
               }}
             >
-              {updaterState.status === "checking" ? <Loader size={16} className="spin" /> : <RefreshCcw size={16} />}
+              {updaterState.status === "checking" ? <MotionSpinner size={16} label="Checking for updates" /> : <RefreshCcw size={16} />}
               {t("settings.about.checkForUpdates")}
             </button>
             {updaterState.status === "available" ? (

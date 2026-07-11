@@ -3,7 +3,8 @@
 mod backend;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_backend;
-#[cfg(feature = "gstreamer")]
+// Present/input policy helpers are pure Rust and stay available for unit tests
+// even when the optional GStreamer feature is off.
 mod gstreamer_config;
 #[cfg(feature = "gstreamer")]
 mod gstreamer_input;
@@ -18,6 +19,7 @@ mod gstreamer_transitions;
 #[cfg(feature = "gstreamer")]
 mod internal_renderer;
 mod input;
+mod nvst_video;
 mod protocol;
 mod shortcuts;
 mod sdp;

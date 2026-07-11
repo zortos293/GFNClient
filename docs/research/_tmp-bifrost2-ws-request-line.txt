@@ -1,0 +1,97 @@
+4666b0 rdx (HTTPRequest arg2): rva=0x143f070 file=0x143ce70 bytes=b'' ascii=''
+4666a6 r9 version: rva=0x143f6e0 file=0x143d4e0 bytes=b'HTTP/1.1' ascii='HTTP/1.1'
+
+bytes at 46682b: 0fb7054ef5d9008845df
+46682b word load from rva=0x1206980 bytes=b'0\x00\x00\x00'
+bytes at 46684e: f20f1005922de000f20f1145bf
+46684e movsd from rva=0x126a1e8 blob=b'Content-Length\x00\x00'
+bytes at 46685b: 8b058f2de0008945c70fb705892de000668945cbc6
+46685b dword from rva=0x126a1f0 bytes=b'Length\x00\x00'
+466864 word from rva=0x126a1f4 bytes=b'th\x00\x00'
+header name piece RVAs: ['0x126a1e8', '0x126a1f0', '0x126a1f4']
+header name reconstructed: b'Content-Length'
+  as 14-byte: 'Content-Length'
+header value source word: b'0\x00' -> char '0'
+
+=== default HTTPRequest at c91680 sets path '/' (0x2f) ===
+bytes: 66c743702f00  ; mov word [rbx+0x70], 0x2f
+c9169c default method string: rva=0x143f070 file=0x143ce70 bytes=b'' ascii=''
+
+=== callers of 0x466640 (Nv WebSocket session ctor) ===
+callers: ['0x721e83']
+
+--- caller 0x721e83 context ---
+  0x721d83: xor rdi, rdi
+  0x721d87: mov dword ptr [rcx], edi
+  0x721d89: mov qword ptr [rcx + 8], rdi
+  0x721d8d: mov qword ptr [rcx + 0x10], rdi
+  0x721d91: xorps xmm0, xmm0
+  0x721d94: movups xmmword ptr [rcx + 0x18], xmm0
+  0x721d98: movups xmmword ptr [rcx + 0x28], xmm0
+  0x721d9c: movups xmmword ptr [rcx + 0x38], xmm0
+  0x721da0: mov qword ptr [rcx + 0x48], rdi
+  0x721da4: lea edx, [rdi + 2]
+  0x721da7: call 0xe00ef8
+  0x721dac: nop 
+  0x721dad: lea rcx, [r14 + 0x98]
+  0x721db4: call 0xe011d8
+  0x721db9: nop 
+  0x721dba: lea rcx, [r14 + 0xe0]
+  0x721dc1: mov dword ptr [rcx], edi
+  0x721dc3: mov qword ptr [rcx + 8], rdi
+  0x721dc7: mov qword ptr [rcx + 0x10], rdi
+  0x721dcb: xorps xmm0, xmm0
+  0x721dce: movups xmmword ptr [rcx + 0x18], xmm0
+  0x721dd2: movups xmmword ptr [rcx + 0x28], xmm0
+  0x721dd6: movups xmmword ptr [rcx + 0x38], xmm0
+  0x721dda: mov qword ptr [rcx + 0x48], rdi
+  0x721dde: lea edx, [rdi + 2]
+  0x721de1: call 0xe00ef8
+  0x721de6: nop 
+  0x721de7: mov ecx, 0x218
+  0x721dec: call 0xe2be14
+  0x721df1: mov qword ptr [rsp + 0x70], rax
+  0x721df6: lea rcx, [rip + 0xac76db]
+  0x721dfd: mov qword ptr [rbp - 0x20], rcx
+  0x721e01: mov qword ptr [rbp - 0x18], r14
+  0x721e05: lea rcx, [rbp - 0x20]
+  0x721e09: mov qword ptr [rbp + 0x18], rcx
+  0x721e0d: lea rcx, [rip + 0xac76fc]
+  0x721e14: mov qword ptr [rbp - 0x60], rcx
+  0x721e18: mov qword ptr [rbp - 0x58], r14
+  0x721e1c: lea rcx, [rbp - 0x60]
+  0x721e20: mov qword ptr [rbp - 0x28], rcx
+  0x721e24: xorps xmm0, xmm0
+  0x721e27: movups xmmword ptr [rsp + 0x78], xmm0
+  0x721e2c: mov qword ptr [rbp - 0x78], rdi
+  0x721e30: mov qword ptr [rbp - 0x70], 0xf
+  0x721e38: mov byte ptr [rsp + 0x78], dil
+  0x721e3d: mov dword ptr [rsp + 0x50], 7
+  0x721e45: lea rcx, [rbp - 0x20]
+  0x721e49: mov qword ptr [rsp + 0x40], rcx
+  0x721e4e: lea rcx, [rbp - 0x60]
+  0x721e52: mov qword ptr [rsp + 0x38], rcx
+  0x721e57: mov rcx, qword ptr [rsp + 0x58]
+  0x721e5c: mov qword ptr [rsp + 0x30], rcx
+  0x721e61: lea rcx, [rsp + 0x78]
+  0x721e66: mov qword ptr [rsp + 0x28], rcx
+  0x721e6b: mov rcx, qword ptr [rsp + 0x60]
+  0x721e70: mov qword ptr [rsp + 0x20], rcx
+  0x721e75: movzx r9d, r15w
+  0x721e79: mov r8, r13
+  0x721e7c: movzx edx, r12b
+  0x721e80: mov rcx, rax
+>>0x721e83: call 0x466640
+  0x721e88: nop 
+  0x721e89: mov qword ptr [r14 + 0x130], rax
+  0x721e90: mov rdx, qword ptr [rbp - 0x70]
+  0x721e94: cmp rdx, 0xf
+  0x721e98: jbe 0x721ecc
+  0x721e9a: inc rdx
+  0x721e9d: mov rcx, qword ptr [rsp + 0x78]
+
+=== Poco HTTPRequest write: empty URI handling ===
+mov imm '/' in connect region: []
+\0GET\0 sites: ['0xfeb9f4']
+
+4666b0 neighborhood: b'\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'

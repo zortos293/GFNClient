@@ -1,0 +1,101 @@
+{
+  "title": "NVST ANNOUNCE allowlist for 1080p60 MVP",
+  "source": "Derived from geronimo.log Nvsc dumps + nvst-describe-sdp-sample-1.txt + nvst-config-values.json (2026-07-08 session was 1080p240; values adjusted for 60 FPS)",
+  "notes": [
+    "Classic NVST ANNOUNCE uses a=x-nv-* keys (with [0] on video/vqos). OpenNOW WebRTC companion uses a=video.* without x-nv-.",
+    "Official client appends ~151 attrs; this is a minimal allowlist for a first PLAY attempt, not a byte-identical capture.",
+    "Skip ICE/DTLS fields on classic path (iceUsernameFragment, iceUsernamePwd, dtlsFingerprint).",
+    "Prefer server DESCRIBE defaults for large QoS trees; only override client-request surface listed here."
+  ],
+  "target": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "codec": "HEVC",
+    "videoSplitEncodeStripsPerFrame": 3
+  },
+  "naming": {
+    "classicPrefix": "a=x-nv-",
+    "videoIndex": "[0]",
+    "example": "a=x-nv-video[0].clientViewportWd:1920"
+  },
+  "allowlist": {
+    "video": {
+      "clientViewportWd": "1920",
+      "clientViewportHt": "1080",
+      "maxFPS": "60",
+      "videoSplitEncodeStripsPerFrame": "3",
+      "updateSplitEncodeStateDynamically": "1",
+      "packetSize": "1408",
+      "enableRtpNack": "1",
+      "rtpNackQueueLength": "2048",
+      "rtpNackQueueMaxPackets": "1024",
+      "rtpNackMaxPacketCount": "64",
+      "framePacing.mode": "2",
+      "framePacing.pid.minTargetFrameTimeUs": "16666",
+      "adaptiveQuantization.spatialAQSetting": "7",
+      "adaptiveQuantization.temporalAQSetting": "0",
+      "adaptiveQuantization.spatialAQStrength": "12",
+      "adaptiveQuantization.qpThresholdAdjPercent": "2",
+      "adaptiveQuantization.saqAdaptMinQpThresholdPercent": "40",
+      "adaptiveQuantization.saqAdaptMaxQpThresholdPercent": "100",
+      "adaptiveQuantization.saqAdaptDecayStrengthX100": "250",
+      "adaptiveQuantization.perfAdjEnablement": "1",
+      "enableAv1RcPrecisionFactor": "1"
+    },
+    "vqos": {
+      "fec.enable": "1",
+      "fec.repairPercent": "20",
+      "fec.repairMinPercent": "5",
+      "fec.repairMaxPercent": "40",
+      "bllFec.enable": "1",
+      "grc.enable": "0",
+      "drc.enable": "0",
+      "dfc.adjustResAndFps": "0",
+      "calculateAvgVideoStreamingBitrate": "1",
+      "bw.maximumBitrateKbps": "100000",
+      "bw.minimumBitrateKbps": "1000"
+    },
+    "packetPacing": {
+      "version": "3",
+      "mode": "1",
+      "numGroups": "5",
+      "maxDelayUs": "1000",
+      "minNumPacketsFrame": "10",
+      "minNumPacketsPerGroup": "0",
+      "enableAccurateSleep": "1",
+      "enableSmoothTransition": "1",
+      "allowFpsBasedToggle": "1"
+    },
+    "ri": {
+      "partialReliableThresholdMs": "300",
+      "timestampsEnabled": "1",
+      "useMultipleGamepads": "1",
+      "usePartiallyReliableUdpChannel": "0",
+      "enablePartiallyReliableTransferGamepad": "255",
+      "enablePartiallyReliableTransferHid": "-1"
+    },
+    "aqos": {
+      "enableRedundancy": "1",
+      "redundancyLevel": "2"
+    },
+    "general": {
+      "rtspWebSocketPerConnection": "1",
+      "enetControlChannel.mtuSize": "1191",
+      "pingIntervalBeforeConnectionMs": "20",
+      "pingIntervalAfterConnectionMs": "100"
+    },
+    "runtime": {
+      "audioSrtp": "0",
+      "micSrtp": "0"
+    }
+  },
+  "explicitly_omit_for_classic_mvp": [
+    "general.iceUsernameFragment",
+    "general.iceUsernamePwd",
+    "general.dtlsFingerprint",
+    "audio/mic Mjolnir SETUP (defer or stub)",
+    "videoSplitEncodeStripsPerFrame:63 (240-only)"
+  ],
+  "exit_criterion": "Sanitized allowlist checked in; full 151-attr ANNOUNCE body was not logged verbatim in geronimo — treat as shape guidance for handshake probe only."
+}

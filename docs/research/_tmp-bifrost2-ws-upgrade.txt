@@ -1,0 +1,224 @@
+=== GET-like strings ===
+  @0xfe8b18: 'NVB_EVT_GETSERVERINFO_RESULT'
+  @0xfe8b38: 'NVB_EVT_GETACTIVESESSIONS_RESULT'
+  @0xfe9c38: 'NVB_EVT_GETSESSION_RESULT'
+  @0xfeb9f4: 'GET'
+  @0x1091ec8: 'OSSL_TARGET_CERT'
+  @0x1091f28: 'OSSL_TARGET'
+  @0x1091f40: 'OSSL_TARGETS'
+  @0x1091f68: 'OSSL_TARGETING_INFORMATION'
+  @0x11e8e50: 'NVST_R_ERROR_GET_LOCAL_ADDRESS_FAILED'
+  @0x11e97d0: 'NVST_DISCONN_SERVER_VFP_INIT_GETSTATUS_FAILURE'
+  @0x11e9c40: 'NVST_DISCONN_SERVER_VIDEO_ENCODER_INIT_GET_PROC_ADDRESS_FAILED'
+  @0x11e9c80: 'NVST_DISCONN_SERVER_VIDEO_ENCODER_INIT_GET_API_FAILED'
+  @0x11e9fc0: 'NVST_DISCONN_SERVER_VIDEO_ENCODER_INIT_SPS_PPS_GET_FAILED'
+  @0x11ea258: 'NVST_DISCONN_SERVER_VIDEO_ADAPTER_GET_CO_PROC_INFO_FAILED'
+  @0x11ea358: 'NVST_DISCONN_SERVER_VIDEO_ADAPTER_GET_DRIVER_VERSION_FAILED'
+  @0x12a6a90: 'GET '
+cand 0x12a6a90: b'GET \x00\x00\x00\x00Unsupported AS_RS algorithm: %d\n\x00\x00\x00\x00\x00\x00\x00\x00%s: token integr'
+cand 0x12a6a90: b'GET \x00\x00\x00\x00Unsupported AS_RS algorithm: %d\n\x00\x00\x00\x00\x00\x00\x00\x00%s: token integr'
+
+=== x-nv-sessionid @0x125ea10 ===
+rva=0x1260210 va=0x181260210
+abs refs: []
+rip refs: []
+sessionid lower: first=0x125ea15
+Session-Id: MISSING
+session-id: first=0x12a65d6
+X-NV-SessionId: MISSING
+x-nv-sessionId: MISSING
+nv-session: first=0x125ea12
+pairing: MISSING
+Pairing: first=0x1443430
+
+=== CONNECT FUNCTION WINDOW starting 0x466d0a ===
+
+--- string refs in code window 0x466cca-0x46750a ---
+  @0x466d7a -> 'Connecting to host %s, port %hu'
+  @0x466d86 -> 'WebSocket'
+  @0x4671c6 -> 'list too long'
+  @0x467469 -> 'Failed to send too many times'
+
+=== WS upgrade failed site 0xeeba0c ===
+
+--- string refs in code window 0xeeb70c-0xeebc0c ---
+  @0xeeb817 -> 'Ignoring exceptions thrown at teardown: %s'
+  @0xeeb823 -> 'WebSocket'
+  @0xeeb916 -> 'Ignoring exceptions thrown at teardown: unknown'
+  @0xeeba0c -> 'WS upgrade failed: %s'
+  @0xeebb7d -> 'Exception during WebSocket operation: %s'
+
+=== WS upgrade failed site 0xeee482 ===
+
+--- string refs in code window 0xeee182-0xeee682 ---
+  @0xeee2f4 -> 'Failed to create RTSP Session: %s. Retry counter: %d, Max Retries: %d'
+  @0xeee300 -> 'RtspClient'
+  @0xeee396 -> 'Failed to create the RTSP session: %s'
+  @0xeee436 -> 'Forbidden'
+  @0xeee482 -> 'WS upgrade failed: %s'
+
+=== Establishing site 0x6fbd0c ===
+
+--- string refs in code window 0x6fbc0c-0x6fc30c ---
+  @0x6fbc26 -> 'Invalid server URL.'
+  @0x6fbccb -> '...'
+  @0x6fbd0c -> "Establishing RTSP session with protocol TAG '%s' and URL '%s' Domain Name %s"
+  @0x6fbd18 -> 'RtspSessionPocoBase'
+  @0x6fc08e -> 'result == RESULT_OK'
+  @0x6fc095 -> 'CNvEvent'
+  @0x6fc1df -> '2-way'
+  @0x6fc1e8 -> '1-way'
+  @0x6fc230 -> 'no'
+  @0x6fc265 -> '%s client using %s SSL'
+
+=== '/' string rip refs near WS upgrade sites ===
+exact '/' cstrings: 186
+site 0xeeba0c: nearby '/' refs []
+site 0xeee482: nearby '/' refs []
+site 0x466d0a: nearby '/' refs []
+
+=== /rtsp ptr-slot VA 0x181205f00 ===
+rip refs to slot: []
+WSS not near
+
+=== string neighborhood around 0x12a6a00 ===
+  @0x12a6000: 'deo sender SSRC %u, FEC SSRC %u from SDP answer'
+  @0x12a6030: 'FEC-FR'
+  @0x12a6038: 'Failed to parse video FID SSRCs: %s'
+  @0x12a6060: 'flexfec-03/90000'
+  @0x12a6078: 'No video format exists in media desc: %s'
+  @0x12a60a8: 'Failed to parse mic SSRC: %s'
+  @0x12a60c8: 'Parsed remote mic sender SSRC %u from SDP answer'
+  @0x12a6100: 'H265/90000'
+  @0x12a6110: 'H264/90000'
+  @0x12a6120: 'AV1/90000'
+  @0x12a6130: 'Assigned remote SSRCs to receiver config %zu: sender=%u rtx=%u fec=%u'
+  @0x12a6180: 'Supplied SSRC groups count (%zu) does not match receiver video config count (%zu)'
+  @0x12a61d8: 'Force enable video ECN'
+  @0x12a61f0: 'Enabling HEVC Main10 Profile'
+  @0x12a6210: 'Enabling HEVC Main Profile'
+  @0x12a6230: 'Enabling HEVC Safari Profile'
+  @0x12a6250: 'Enabling AV1.'
+  @0x12a6260: 'Disable video L4S as CCFB feedback is not negotiated'
+  @0x12a6298: 'Based on SDP negotiation, use CCFB feedback for Qos'
+  @0x12a62d0: 'H264 Constrained Baseline supported.'
+  @0x12a62f8: 'H264 Baseline supported.'
+  @0x12a6314: 'Accept'
+  @0x12a6320: 'application/sdp'
+  @0x12a6330: 'CSeq'
+  @0x12a6338: 'RtspSessionPoco'
+  @0x12a6348: 'streamingSessionId : %s'
+  @0x12a6360: 'extraction %s options response from responseBody'
+  @0x12a6394: 'Public'
+  @0x12a63a0: '%s Options: response: %u - %u : %s - %s'
+  @0x12a63c8: '%s Options: %s'
+  @0x12a63d8: 'x-nv-ping'
+  @0x12a63e8: 'x-nv-abtesting'
+  @0x12a63f8: 'X-Nv-Ping-Payload'
+  @0x12a6410: 'Transport'
+  @0x12a6420: '%s Setup: response: %s - %s'
+  @0x12a6440: '%s Setup: %s, transport %s'
+  @0x12a6460: '%s Describe: latency is: %Lf ms with code %u:%u'
+  @0x12a6490: 'text/parameters'
+  @0x12a64a0: '%s Set Parameter: %s'
+  @0x12a64b8: '%s Setup: latency is: %Lf ms with code %u:%u'
+  @0x12a64f0: '%s Setup: server returned 200 OK but incorrect session id (%s)                    m_sessionId:(%s)'
+  @0x12a6558: '%s Describe: response header: %s'
+  @0x12a6580: '%s Describe: %s'
+  @0x12a6590: '%s Options: latency is: %Lf ms with code %u:%u'
+  @0x12a65c0: 'X-GS-Version'
+  @0x12a65d0: 'Setup session-id: %s'
+  @0x12a65e8: 'Session'
+  @0x12a65f0: 'Content-Location'
+  @0x12a6608: 'Content-Base'
+  @0x12a6618: '%s Teardown: latency is: %Lf ms with code %u:%ld'
+  @0x12a6650: '%s Teardown: response: %s- %s'
+  @0x12a6670: '%s Teardown: %s'
+  @0x12a6680: '%s Play: latency is: %Lf ms with code %u:%ld'
+  @0x12a66b0: 'Signal %s disconnect'
+  @0x12a66d0: '%s Announce: %s'
+  @0x12a66e0: '%s Set Parameter: latency is: %Lf ms with code %u:%u'
+  @0x12a6718: '%s Set Parameter: response: %s- %s'
+  @0x12a6740: '%s Play: response: %s- %s'
+  @0x12a6760: '%s Play : sessionId : %s'
+  @0x12a6780: '%s Announce Parameter: response: %s- %s'
+  @0x12a67a8: '%s Announce: latency is: %Lf millisec with code %u:%u'
+  @0x12a67e0: 'ALLOCATE'
+  @0x12a67f0: 'BINDING'
+  @0x12a67f8: 'CHANNEL_BIND'
+  @0x12a6808: 'CREATE_PERMISSION'
+  @0x12a681c: 'SEND'
+  @0x12a6828: 'REFRESH'
+  @0x12a6830: 'Wrong Credentials'
+  @0x12a6848: 'Address Family not Supported'
+  @0x12a6868: 'Stale Nonce'
+  @0x12a6878: 'Allocation Mismatch'
+  @0x12a6890: 'Connection Timeout or Failure'
+  @0x12a68b0: 'Connection Already Exists'
+  @0x12a68d0: 'Peer Address Family Mismatch'
+  @0x12a68f0: 'Unsupported Transport Protocol'
+  @0x12a6910: '%02x'
+  @0x12a6918: 'CONNECTION_ATTEMPT'
+  @0x12a6930: 'CONNECTION_BIND'
+  @0x12a6940: 'CONNECT'
+  @0x12a6948: 'Unknown Attribute'
+  @0x12a6960: 'Not Found'
+  @0x12a6970: 'Try Alternate'
+  @0x12a6980: 'Unknown error'
+  @0x12a6998: '%s:len=%d:['
+  @0x12a69b0: 'content-length: '
+  @0x12a69c4: ' HTTP/'
+  @0x12a69cc: '<0x%x>'
+  @0x12a6a10: 'get_cipher_type'
+  @0x12a6a20: 'Insufficient Capacity'
+  @0x12a6a38: 'Server Error'
+  @0x12a6a48: 'Role Conflict'
+  @0x12a6a58: 'Allocation Quota Reached'
+  @0x12a6a74: 'PUT '
+  @0x12a6a80: 'DELETE '
+  @0x12a6a88: 'POST '
+  @0x12a6a90: 'GET '
+  @0x12a6b58: 'decode_oauth_token_gcm'
+
+=== request-line-like format strings ===
+b'GET %s': MISSING
+b'%s %s HTTP': MISSING
+b'GET /': MISSING
+b' %s HTTP/1.': MISSING
+b'HTTP/1.1\r\n': MISSING
+b'Upgrade: websocket': 0x112753b
+b'upgrade: websocket': MISSING
+b'Connection: Upgrade': 0x1127503
+b'Connection: upgrade': MISSING
+b'Sec-WebSocket-Key:': MISSING
+b'Sec-WebSocket-Version: 13': MISSING
+b'Host: %s': MISSING
+b'Host:%s': MISSING
+
+=== secure client / websocket create strings ===
+b'Creating Secure': count=1 first=0x1269b60
+b'HTTPSClientSession': count=1 first=0x14545f4
+b'HTTPClientSession': count=2 first=0x1127243
+b'SecureStreamSocket': count=9 first=0x100877e
+b'StreamSocket': count=12 first=0x1008784
+b'WebSocket(': MISSING
+b'class Poco::Net::WebSocket': MISSING
+b'Poco::Net::WebSocket': MISSING
+b'Net::WebSocket': MISSING
+b'performHandshake': MISSING
+b'completeHandshake': MISSING
+b'acceptKey': MISSING
+b'computeAccept': MISSING
+
+=== streamingSessionId site 0x6b659d ===
+
+--- string refs in code window 0x6b639d-0x6b6a9d ---
+  @0x6b659d -> 'streamingSessionId : %s'
+  @0x6b65a9 -> 'RtspSessionPoco'
+  @0x6b6802 -> 'RTSP/1.0'
+  @0x6b6851 -> 'OPTIONS'
+  @0x6b6902 -> '...'
+  @0x6b693a -> '%s Options: %s'
+  @0x6b69e3 -> '%s Options: response: %u - %u : %s - %s'
+  @0x6b6a25 -> 'Public'
+  @0x6b6a4e -> 'extraction %s options response from responseBody'

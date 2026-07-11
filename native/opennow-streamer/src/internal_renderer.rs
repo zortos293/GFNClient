@@ -1145,26 +1145,44 @@ mod linux_child {
             height: u32,
         ) -> i32;
         fn XRaiseWindow(display: *mut c_void, window: u64) -> i32;
+        fn XClearWindow(display: *mut c_void, window: u64) -> i32;
         fn XDestroyWindow(display: *mut c_void, window: u64) -> i32;
         fn XFlush(display: *mut c_void) -> i32;
+        fn XSync(display: *mut c_void, discard: i32) -> i32;
         fn XSelectInput(display: *mut c_void, window: u64, event_mask: i64) -> i32;
     }
 
     const INPUT_OUTPUT: u32 = 1;
     const CW_BACK_PIXEL: u64 = 0x0002;
     const CW_EVENT_MASK: u64 = 0x0800;
-    const CW_OVERRIDE_REDIRECT: u64 = 0x0200;
-    // No input events — Electron owns input in internal mode.
-    const EVENT_MASK: i64 = 0;
+    const CW_COLORMAP: u64 = 0x2000;
+    // Exposure + StructureNotify so GstVideoOverlay can redraw after map/resize.
+    // No pointer/keyboard masks — Electron owns input in internal mode.
+    const EXPOSURE_MASK: i64 = 0x0000_8000;
+    const STRUCTURE_NOTIFY_MASK: i64 = 0x0002_0000;
+    const EVENT_MASK: i64 = EXPOSURE_MASK | STRUCTURE_NOTIFY_MASK;
+
+    fn wayland_session_active() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY")
+            .filter(|value| !value.is_empty())
+            .is_some()
+    }
+
+    fn x11_unavailable_message() -> String {
+        if wayland_session_active() {
+            "Native internal renderer requires X11 or XWayland. Pure Wayland embedding is not supported yet — launch under X11, or set GDK_BACKEND=x11 / use an XWayland session."
+                .to_owned()
+        } else {
+            "XOpenDisplay failed; native internal renderer requires a working X11 display (DISPLAY unset or unreachable)."
+                .to_owned()
+        }
+    }
 
     pub(super) fn create_child(parent: usize, bounds: &NativeRenderRect) -> Result<XWindow, String> {
         unsafe {
             let display = XOpenDisplay(null_mut());
             if display.is_null() {
-                return Err(
-                    "XOpenDisplay failed; internal renderer requires an X11 display (Wayland embedding is not ready yet)."
-                        .to_owned(),
-                );
+                return Err(x11_unavailable_message());
             }
 
             let screen = XDefaultScreen(display);
@@ -1199,7 +1217,7 @@ mod linux_child {
                 depth,
                 INPUT_OUTPUT,
                 visual,
-                CW_BACK_PIXEL | CW_EVENT_MASK,
+                CW_BACK_PIXEL | CW_EVENT_MASK | CW_COLORMAP,
                 &mut attrs,
             );
 
@@ -1207,10 +1225,12 @@ mod linux_child {
                 return Err("XCreateWindow failed for internal renderer child.".to_owned());
             }
 
-            let _ = CW_OVERRIDE_REDIRECT;
             XSelectInput(display, window, EVENT_MASK);
             XMapWindow(display, window);
             XRaiseWindow(display, window);
+            // Ensure the child is mapped and sized before GstVideoOverlay binds.
+            XSync(display, 0);
+            XClearWindow(display, window);
             XFlush(display);
 
             Ok(XWindow {
@@ -1236,6 +1256,7 @@ mod linux_child {
                 bounds.height.max(2) as u32,
             );
             XRaiseWindow(display, window.window);
+            XSync(display, 0);
             XFlush(display);
         }
         let _ = window.parent;
@@ -1251,9 +1272,11 @@ mod linux_child {
             if visible {
                 XMapWindow(display, window.window);
                 XRaiseWindow(display, window.window);
+                XClearWindow(display, window.window);
             } else {
                 XUnmapWindow(display, window.window);
             }
+            XSync(display, 0);
             XFlush(display);
         }
         Ok(())

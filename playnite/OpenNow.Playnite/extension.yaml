@@ -1,0 +1,14 @@
+Id: OpenNOW_Library
+Name: OpenNOW Library
+Author: OpenCloudGaming
+Version: 1.0
+Module: OpenNow.Playnite.dll
+Type: GameLibrary
+Icon: icon.png
+Links:
+  - Name: GitHub
+    Url: https://github.com/OpenCloudGaming/OpenNOW
+  - Name: Help and Troubleshooting
+    Url: https://opennow.zortos.me/guides/getting-started/
+  - Name: Issues Tracker
+    Url: https://github.com/OpenCloudGaming/OpenNOW/issues

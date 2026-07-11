@@ -1,0 +1,194 @@
+﻿# geronimo.log wire-format evidence extract (IPs/hex redacted)
+# source: C:\Users\Zortos\AppData\Local\NVIDIA Corporation\GeForceNOW\geronimo.log
+# date mined: 2026-07-09
+
+
+### UdpRtpSource
+
+[2026-07-08 17:50:25,746]=19:50:25=    INFO [NVST:UdpRtpSource] {000064F8} -  UDP socket is already bound. No need to bind again.
+[2026-07-08 17:50:25,746]=19:50:25=    INFO [NVST:UdpRtpSource] {000064F8} -  UDP RTP Source: bound to <IP>:49005
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:UdpRtpSource] {000064F8} -  UDP RTP Source: Keeping address <IP>:5004 as default peer
+[2026-07-08 17:50:26,801]=19:50:26=    INFO [NVST:UdpRtpSource] {000034D8} -  000002D2225FE0F0 UdpRtpSource::UdpRtpSource::readPacket() received first payload
+[2026-07-08 17:50:26,801]=19:50:26=    INFO [NVST:UdpRtpSource] {000034D8} -  UDP RTP Source Connect: connected to: <IP>:5004
+[2026-07-08 17:50:51,557]=19:50:51=    INFO [NVST:UdpRtpSource] {000064F8} -  000002D2225FE0F0 UdpRtpSource::UdpRtpSource::close() last receiveFrom: 9.299000 ms, last PING sent: 365948.535000 ms, last PING received: 365948.535000 ms, last payload received: 9.300300 ms ago
+
+### RtpSourceQueue
+
+[2026-07-08 17:50:26,503]=19:50:26=    INFO [NVST:RtpSourceQueueExtV2] {000064F8} -  NACK waiting queue limit time: 52 ms, waiting queue packets limit count: 1024, NACK request backoff time: 4 ms, NACK request initial send delay: 1 ms, max allowed NACK retries: 3, max allowed pending NACKS: 2048
+[2026-07-08 17:50:26,503]=19:50:26=    INFO [NVST:RtpSourceQueue] {000034D8} -  RtpSourceQueue: thread started, Port: 49005
+[2026-07-08 17:50:51,548]=19:50:51=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numTotalRxPkts=9273, numOutOfOrderRxPkts=0, numDropEvent=     0, numRxDroppedPackets=       0]
+[2026-07-08 17:50:51,549]=19:50:51=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numRxDroppedWaitingQFull=       0, numRxDroppedWaitingQTimedOut=       0, numRxDroppedFrameComplete=       0, numRxDroppedWaitingFrameTimedOut=       0, maxDropBurstlength=   0, maxWaitingQDepth=   0]
+[2026-07-08 17:50:51,549]=19:50:51=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numRecoveredPackets=0, numLatePackets=0, numDuplicatePackets=0, Qsize=2, waitingQsize=0
+[2026-07-08 17:50:51,549]=19:50:51=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP NACK Stats: numNackRequest=0, numNackedPacketsRequested=0, numNackedPacketsReceived=0, numNackedPacketsUtilized=0, numNackedPacketsRetried=0
+
+### Parser server RTP extension
+
+[2026-07-08 17:50:25,646]=19:50:25=    INFO [NVST:SignalingHandler] {000064F8} -  Parser server RTP extension header version 2
+[2026-07-08 17:51:31,600]=19:51:31=    INFO [NVST:SignalingHandler] {000064F8} -  Parser server RTP extension header version 2
+[2026-07-08 17:52:26,610]=19:52:26=    INFO [NVST:SignalingHandler] {000064F8} -  Parser server RTP extension header version 2
+
+### videoSrtp
+
+[2026-07-08 17:50:26,365]=19:50:26=    INFO [NVST:NvscClientConfig] {000064F8} -  runtime.videoSrtp: 1
+[2026-07-08 17:51:32,322]=19:51:32=    INFO [NVST:NvscClientConfig] {000064F8} -  runtime.videoSrtp: 1
+[2026-07-08 17:52:27,352]=19:52:27=    INFO [NVST:NvscClientConfig] {000064F8} -  runtime.videoSrtp: 1
+
+### Using libsrtp
+
+[2026-07-08 17:50:26,503]=19:50:26=    INFO [NVST:SecureRtp] {000064F8} -  Using libsrtp2 2.7.0 [0x2070000]
+[2026-07-08 17:51:32,449]=19:51:32=    INFO [NVST:SecureRtp] {000064F8} -  Using libsrtp2 2.7.0 [0x2070000]
+[2026-07-08 17:52:27,475]=19:52:27=    INFO [NVST:SecureRtp] {000064F8} -  Using libsrtp2 2.7.0 [0x2070000]
+
+### SRTP for video
+
+[2026-07-08 17:50:26,503]=19:50:26=    INFO [NVST:ClientSession] {000064F8} -  SRTP for video is enabled.
+[2026-07-08 17:51:32,449]=19:51:32=    INFO [NVST:ClientSession] {000064F8} -  SRTP for video is enabled.
+[2026-07-08 17:52:27,475]=19:52:27=    INFO [NVST:ClientSession] {000064F8} -  SRTP for video is enabled.
+
+### GaloisField28
+
+[2026-07-08 17:50:26,504]=19:50:26=    INFO [NVST:GaloisField28] {000064F8} -  gfInit FEC Begin (2)
+[2026-07-08 17:50:26,504]=19:50:26=    INFO [NVST:GaloisField28] {000064F8} -  FEC Mode: SSE3
+[2026-07-08 17:50:26,504]=19:50:26=    INFO [NVST:GaloisField28] {000064F8} -  gfInit FEC End (2)
+[2026-07-08 17:51:32,450]=19:51:32=    INFO [NVST:GaloisField28] {000064F8} -  gfInit FEC Begin (2)
+[2026-07-08 17:51:32,450]=19:51:32=    INFO [NVST:GaloisField28] {000064F8} -  FEC Mode: SSE3
+[2026-07-08 17:51:32,450]=19:51:32=    INFO [NVST:GaloisField28] {000064F8} -  gfInit FEC End (2)
+
+### Dynamic FEC
+
+[2026-07-08 17:50:26,504]=19:50:26=    INFO [NVST:NvstStreamProcessor] {000064F8} -  Dynamic FEC is enabled
+[2026-07-08 17:51:32,450]=19:51:32=    INFO [NVST:NvstStreamProcessor] {000064F8} -  Dynamic FEC is enabled
+[2026-07-08 17:52:27,476]=19:52:27=    INFO [NVST:NvstStreamProcessor] {000064F8} -  Dynamic FEC is enabled
+
+### Initialized the frame-based
+
+[2026-07-08 17:50:26,503]=19:50:26=    INFO [NVST:NvstStreamProcessor] {000064F8} -  Initialized the frame-based depacketizer
+[2026-07-08 17:51:32,450]=19:51:32=    INFO [NVST:NvstStreamProcessor] {000064F8} -  Initialized the frame-based depacketizer
+[2026-07-08 17:52:27,475]=19:52:27=    INFO [NVST:NvstStreamProcessor] {000064F8} -  Initialized the frame-based depacketizer
+
+### sendFrameSizeInGsExtnHeader
+
+[2026-07-08 17:50:26,360]=19:50:26=    INFO [NVST:NvscClientConfig] {000064F8} -  general.sendFrameSizeInGsExtnHeader: 1
+[2026-07-08 17:51:32,316]=19:51:32=    INFO [NVST:NvscClientConfig] {000064F8} -  general.sendFrameSizeInGsExtnHeader: 1
+[2026-07-08 17:52:27,347]=19:52:27=    INFO [NVST:NvscClientConfig] {000064F8} -  general.sendFrameSizeInGsExtnHeader: 1
+
+### Channel .+ is created
+
+[2026-07-08 17:50:26,500]=19:50:26=    INFO [NVST:ServerControlReliableUdp] {000065D0} -  Channel control_channel_reliable is created with stream-id: 0
+[2026-07-08 17:50:26,501]=19:50:26=    INFO [NVST:ServerControlReliableUdp] {000065D0} -  Channel custom_message_on_sctp_private_reliable is created with stream-id: 2
+[2026-07-08 17:50:26,501]=19:50:26=    INFO [NVST:ServerControlReliableUdp] {000065D0} -  Channel custom_message_on_sctp_private_partially_reliable is created with stream-id: 4
+[2026-07-08 17:50:26,501]=19:50:26=    INFO [NVST:ServerControlReliableUdp] {000065D0} -  Channel control_channel_partially_reliable is created with stream-id: 6
+[2026-07-08 17:50:26,502]=19:50:26=    INFO [NVST:ServerControlReliableUdp] {000065D0} -  Channel control_channel_unreliable is created with stream-id: 8
+[2026-07-08 17:50:26,502]=19:50:26=    INFO [NVST:ServerControlReliableUdp] {000065D0} -  Channel input_channel_partially_reliable is created with stream-id: 10
+
+### riPartiallyReliableChannel
+
+[2026-07-08 17:50:26,494]=19:50:26=   DEBUG [NVST:ServerControlReliableUdp] {000064F8} -  Successfully created riPartiallyReliableChannel under label input_channel_partially_reliable. config.maxRetransmitTime = 300
+[2026-07-08 17:51:32,440]=19:51:32=   DEBUG [NVST:ServerControlReliableUdp] {000064F8} -  Successfully created riPartiallyReliableChannel under label input_channel_partially_reliable. config.maxRetransmitTime = 300
+[2026-07-08 17:52:27,465]=19:52:27=   DEBUG [NVST:ServerControlReliableUdp] {000064F8} -  Successfully created riPartiallyReliableChannel under label input_channel_partially_reliable. config.maxRetransmitTime = 300
+
+### SctpDataChannelThreadSafe with channelId
+
+[2026-07-08 17:50:26,493]=19:50:26=    INFO [NVST:SctpDCTS] {000064F8} -  Initializing SctpDataChannelThreadSafe with channelId 0
+[2026-07-08 17:50:26,493]=19:50:26=    INFO [NVST:SctpDCTS] {000064F8} -  Initializing SctpDataChannelThreadSafe with channelId 2
+[2026-07-08 17:50:26,494]=19:50:26=    INFO [NVST:SctpDCTS] {000064F8} -  Initializing SctpDataChannelThreadSafe with channelId 4
+[2026-07-08 17:50:26,494]=19:50:26=    INFO [NVST:SctpDCTS] {000064F8} -  Initializing SctpDataChannelThreadSafe with channelId 6
+[2026-07-08 17:50:26,494]=19:50:26=    INFO [NVST:SctpDCTS] {000064F8} -  Initializing SctpDataChannelThreadSafe with channelId 8
+[2026-07-08 17:50:26,494]=19:50:26=    INFO [NVST:SctpDCTS] {000064F8} -  Initializing SctpDataChannelThreadSafe with channelId 10
+
+### SCTP stats:
+
+[2026-07-08 17:50:51,675]=19:50:51=    INFO [NVST:StatsPacketObserver] {000064F8} -  SCTP stats: otherChunksCount 5
+
+### Remote input stream
+
+[2026-07-08 17:50:25,749]=19:50:25=    INFO [NVST:ClientLibraryWrapper] {000064F8} -  Remote input stream connection created
+[2026-07-08 17:51:31,703]=19:51:31=    INFO [NVST:ClientLibraryWrapper] {000064F8} -  Remote input stream connection created
+[2026-07-08 17:52:26,716]=19:52:26=    INFO [NVST:ClientLibraryWrapper] {000064F8} -  Remote input stream connection created
+
+### ri\.protocol
+
+[2026-07-08 17:50:26,365]=19:50:26=    INFO [NVST:NvscClientConfig] {000064F8} -  ri.protocol: 0
+[2026-07-08 17:51:32,322]=19:51:32=    INFO [NVST:NvscClientConfig] {000064F8} -  ri.protocol: 0
+[2026-07-08 17:52:27,352]=19:52:27=    INFO [NVST:NvscClientConfig] {000064F8} -  ri.protocol: 0
+
+### ri\.usePartiallyReliable
+
+[2026-07-08 17:50:26,365]=19:50:26=    INFO [NVST:NvscClientConfig] {000064F8} -  ri.usePartiallyReliableUdpChannel: 0
+[2026-07-08 17:51:32,322]=19:51:32=    INFO [NVST:NvscClientConfig] {000064F8} -  ri.usePartiallyReliableUdpChannel: 0
+[2026-07-08 17:52:27,352]=19:52:27=    INFO [NVST:NvscClientConfig] {000064F8} -  ri.usePartiallyReliableUdpChannel: 0
+
+### setEncryptionKey
+
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:SignalingHandler] {000064F8} -  setEncryptionKey - setting encryption key for control
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:CommandPacket] {000064F8} -  NetPacket::setEncryptionKey(Key) type 3
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:SignalingHandler] {000064F8} -  setEncryptionKey - setting encryption key for audio
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:SignalingHandler] {000064F8} -  setEncryptionKey - setting encryption key for video
+[2026-07-08 17:51:31,702]=19:51:31=    INFO [NVST:SignalingHandler] {000064F8} -  setEncryptionKey - setting encryption key for control
+[2026-07-08 17:51:31,702]=19:51:31=    INFO [NVST:CommandPacket] {000064F8} -  NetPacket::setEncryptionKey(Key) type 3
+
+### AES Key set keyType
+
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:CommandPacket] {000064F8} -  AES Key set keyType 3
+[2026-07-08 17:51:31,702]=19:51:31=    INFO [NVST:CommandPacket] {000064F8} -  AES Key set keyType 3
+[2026-07-08 17:52:26,715]=19:52:26=    INFO [NVST:CommandPacket] {000064F8} -  AES Key set keyType 3
+
+### X-GS-ServerPort
+
+Transport: unicast;X-GS-ServerPort=5004-5005;source=<IP>
+[2026-07-08 17:50:25,746]=19:50:25=    INFO [NVST:SignalingHandler] {000064F8} -  Server transport header:  unicast;X-GS-ServerPort=5004-5005;source=<IP>
+Transport: unicast;X-GS-ServerPort=5004-5005;source=<IP>
+[2026-07-08 17:51:31,701]=19:51:31=    INFO [NVST:SignalingHandler] {000064F8} -  Server transport header:  unicast;X-GS-ServerPort=5004-5005;source=<IP>
+Transport: unicast;X-GS-ServerPort=5004-5005;source=<IP>
+[2026-07-08 17:52:26,714]=19:52:26=    INFO [NVST:SignalingHandler] {000064F8} -  Server transport header:  unicast;X-GS-ServerPort=5004-5005;source=<IP>
+
+### Set ping-version
+
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-version: 6
+[2026-07-08 17:50:26,367]=19:50:26=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-version: 6
+[2026-07-08 17:51:31,701]=19:51:31=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-version: 6
+[2026-07-08 17:51:32,324]=19:51:32=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-version: 6
+[2026-07-08 17:52:26,714]=19:52:26=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-version: 6
+[2026-07-08 17:52:27,354]=19:52:27=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-version: 6
+
+### Set ping-string
+
+[2026-07-08 17:50:25,747]=19:50:25=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-string PING
+[2026-07-08 17:50:26,367]=19:50:26=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-string PING
+[2026-07-08 17:51:31,701]=19:51:31=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-string PING
+[2026-07-08 17:51:32,324]=19:51:32=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-string PING
+[2026-07-08 17:52:26,714]=19:52:26=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-string PING
+[2026-07-08 17:52:27,354]=19:52:27=    INFO [NVST:NattHolePunch] {000064F8} -  Set ping-string PING
+
+### fec\.type
+
+[2026-07-08 17:50:26,364]=19:50:26=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].fec.type: 1
+[2026-07-08 17:51:32,320]=19:51:32=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].fec.type: 1
+[2026-07-08 17:52:27,350]=19:52:27=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].fec.type: 1
+
+### fec\.enable
+
+[2026-07-08 17:50:26,364]=19:50:26=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].fec.enable: 1
+[2026-07-08 17:50:26,364]=19:50:26=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].bllFec.enable: 1
+[2026-07-08 17:51:32,320]=19:51:32=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].fec.enable: 1
+[2026-07-08 17:51:32,320]=19:51:32=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].bllFec.enable: 1
+[2026-07-08 17:52:27,350]=19:52:27=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].fec.enable: 1
+[2026-07-08 17:52:27,350]=19:52:27=    INFO [NVST:NvscClientConfig] {000064F8} -  vqos[0].bllFec.enable: 1
+
+### numTotalRxPkts
+
+[2026-07-08 17:50:51,548]=19:50:51=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numTotalRxPkts=9273, numOutOfOrderRxPkts=0, numDropEvent=     0, numRxDroppedPackets=       0]
+[2026-07-08 17:50:51,672]=19:50:51=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numTotalRxPkts=0, numOutOfOrderRxPkts=0, numDropEvent=     0, numRxDroppedPackets=       0]
+[2026-07-08 17:51:53,807]=19:51:53=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numTotalRxPkts=10361, numOutOfOrderRxPkts=1, numDropEvent=     0, numRxDroppedPackets=       0]
+[2026-07-08 17:51:54,031]=19:51:54=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numTotalRxPkts=0, numOutOfOrderRxPkts=0, numDropEvent=     0, numRxDroppedPackets=       0]
+[2026-07-08 18:14:20,178]=20:14:20=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numTotalRxPkts=4982140, numOutOfOrderRxPkts=233, numDropEvent=     0, numRxDroppedPackets=       0]
+[2026-07-08 18:14:20,396]=20:14:20=    INFO [NVST:RtpSourceQueue] {000064F8} -  RTP Stats: numTotalRxPkts=0, numOutOfOrderRxPkts=0, numDropEvent=     0, numRxDroppedPackets=       0]
+
+### percPacketsDropped
+
+[2026-07-08 17:50:51,557]=19:50:51=    INFO [NVST:UdpRtpSource] {000064F8} -  RtpStats percPacketsDroppedByReplayProtectionx1e6 0.000000, percPacketsDroppedByAuthFailx1e6 0.000000
+[2026-07-08 17:50:51,673]=19:50:51=    INFO [NVST:UdpRtpSource] {000064F8} -  RtpStats percPacketsDroppedByReplayProtectionx1e6 0.000000, percPacketsDroppedByAuthFailx1e6 0.000000
+[2026-07-08 17:51:53,815]=19:51:53=    INFO [NVST:UdpRtpSource] {000064F8} -  RtpStats percPacketsDroppedByReplayProtectionx1e6 0.000000, percPacketsDroppedByAuthFailx1e6 0.000000
+[2026-07-08 17:51:54,031]=19:51:54=    INFO [NVST:UdpRtpSource] {000064F8} -  RtpStats percPacketsDroppedByReplayProtectionx1e6 0.000000, percPacketsDroppedByAuthFailx1e6 0.000000
+[2026-07-08 18:14:20,181]=20:14:20=    INFO [NVST:UdpRtpSource] {000064F8} -  RtpStats percPacketsDroppedByReplayProtectionx1e6 0.000000, percPacketsDroppedByAuthFailx1e6 0.000000
+[2026-07-08 18:14:20,396]=20:14:20=    INFO [NVST:UdpRtpSource] {000064F8} -  RtpStats percPacketsDroppedByReplayProtectionx1e6 0.000000, percPacketsDroppedByAuthFailx1e6 0.000000

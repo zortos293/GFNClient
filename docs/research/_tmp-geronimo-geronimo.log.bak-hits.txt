@@ -1,0 +1,8 @@
+[2026-07-08 15:48:43,869]=17:48:43=    INFO [SessionControl] {00001B70} - nvbCreateClient( 000002782E1B4030 )
+[2026-07-08 15:48:43,869]=17:48:43=   DEBUG [BifrostClient: Interface] {00001B70} - nvbRegisterCallback( 000002782E1B4030 )
+[2026-07-08 15:48:43,869]=17:48:43=   DEBUG [BifrostClient: Interface] {00001B70} - nvbSetAvailableInputDevices( 000002782E1B4030 )
+[2026-07-08 15:48:43,872]=17:48:43=   DEBUG [BifrostClient: Interface] {00001B70} - nvbSetHttpClient( 000002782E1B4030 )
+[2026-07-08 15:48:44,690]=17:48:44=   ERROR [DisplayUtil] {00001B70} - Failed to get monitor handle for window handle: 000000A043DFAC90
+[2026-07-08 15:48:44,944]=17:48:44=   ERROR [DisplayUtil] {00001B70} - Failed to get monitor handle for window handle: 000000A043DFBC00
+[2026-07-08 17:16:03,747]=19:16:03=   ERROR [DisplayUtil] {00001B70} - Failed to get monitor handle for window handle: 000000A043DFBC00
+[2026-07-08 17:16:05,825]=19:16:05=   DEBUG [BifrostClient: Interface] {00001B70} - nvbDestroyClient( 000002782E1B4030 )

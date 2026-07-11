@@ -1,0 +1,346 @@
+=== Upgrade\0 sites ===
+Upgrade @0x1126568 refs=7 ['0x1b6020', '0xca6633', '0xca6aed', '0xca6bc3', '0xca70e8', '0xca7958', '0xca7a8b']
+  -- 0x1b6020 interesting --
+  @0x1b5d44 -> 'Failed to initialize network subsystem'
+  @0x1b5e30 -> 'CONNECT'
+  @0x1b5ee0 -> 'OPTIONS'
+  @0x1b6020 -> 'Upgrade'
+  @0x1b6170 -> 'Created'
+  @0x1b6390 -> 'IM Used'
+  -- 0xca6633 interesting --
+  @0xca6958 -> '13'
+  -- 0xca6aed interesting --
+  @0xca6958 -> '13'
+  @0xca6e62 -> 'No WebSocket handshake'
+  @0xca6ea2 -> 'Missing Sec-WebSocket-Version in handshake request'
+  @0xca6ed6 -> 'Unsupported WebSocket version requested'
+  -- 0xca6bc3 interesting --
+  @0xca6958 -> '13'
+  @0xca6e62 -> 'No WebSocket handshake'
+  @0xca6ea2 -> 'Missing Sec-WebSocket-Version in handshake request'
+  @0xca6ed6 -> 'Unsupported WebSocket version requested'
+  @0xca6f14 -> 'Missing Sec-WebSocket-Key in handshake request'
+  -- 0xca70e8 interesting --
+  @0xca6e62 -> 'No WebSocket handshake'
+  @0xca6ea2 -> 'Missing Sec-WebSocket-Version in handshake request'
+  @0xca6ed6 -> 'Unsupported WebSocket version requested'
+  @0xca6f14 -> 'Missing Sec-WebSocket-Key in handshake request'
+  -- 0xca7958 interesting --
+  @0xca757a -> 'No Upgrade: websocket header in handshake response'
+  @0xca75bc -> 'Invalid or missing Sec-WebSocket-Accept header in handshake response'
+  @0xca7b74 -> '13'
+  -- 0xca7a8b interesting --
+  @0xca7b74 -> '13'
+
+=== '13' cstring near WS ===
+thirteen @0x1127370
+
+=== dense disasm WebSocket handshake builder 0xca7800-0xca7c00 ===
+  0xca7800: add al, 0x8d
+  0xca7803: xchg ecx, eax
+  0xca7804: js 0xca7805
+
+=== calls into 0xca7000-0xca9000 from NVST-ish ranges ===
+call hits: 10
+  call @0x466e41 -> 0xca8f70
+  @0x466d7a -> 'Connecting to host %s, port %hu'
+  @0x466d86 -> 'WebSocket'
+  call @0x46730f -> 0xca82f0
+  @0x4671c6 -> 'list too long'
+  @0x467469 -> 'Failed to send too many times'
+  call @0x46757c -> 0xca8240
+  @0x467469 -> 'Failed to send too many times'
+  @0x467676 -> 'Cannot resize buffer which does not own its storage.'
+  call @0x467715 -> 0xca82f0
+  @0x467676 -> 'Cannot resize buffer which does not own its storage.'
+  @0x467780 -> 'WebSocket Loop Starting.'
+  @0x46778c -> 'WebSocket'
+  call @0x467a4c -> 0xca82f0
+  call @0x467b4f -> 0xca8320
+  @0x467cae -> 'WebSocket Loop Exiting.'
+  @0x467cba -> 'WebSocket'
+  call @0x6fc2b0 -> 0xca8f40
+  @0x6fc1df -> '2-way'
+  @0x6fc1e8 -> '1-way'
+  @0x6fc230 -> 'no'
+  @0x6fc265 -> '%s client using %s SSL'
+  @0x6fc271 -> 'RtspSessionPocoBase'
+  @0x6fc382 -> 'm_pRtspClientSessionLegacy'
+  @0x6fc389 -> 'Initialize'
+  @0x6fc3c3 -> 'clientHeaderVersion: %s'
+  @0x6fc3cf -> 'RtspSessionPocoBase'
+  call @0x6fc42a -> 0xca8f70
+  @0x6fc230 -> 'no'
+  @0x6fc265 -> '%s client using %s SSL'
+  @0x6fc271 -> 'RtspSessionPocoBase'
+  @0x6fc382 -> 'm_pRtspClientSessionLegacy'
+  @0x6fc389 -> 'Initialize'
+  @0x6fc3c3 -> 'clientHeaderVersion: %s'
+  @0x6fc3cf -> 'RtspSessionPocoBase'
+  call @0x6fdb57 -> 0xca8f70
+  @0x6fd9ae -> 'timed out. Retrying in %ums'
+  @0x6fd9ba -> 'RtspSessionPocoBase'
+  @0x6fda2f -> 'perform() failed: %d'
+  @0x6fda49 -> 'RtspSessionPocoBase'
+  call @0x6fe552 -> 0xca8be0
+  @0x6fe356 -> ' nWrote: %d, response.getContentLength():%d'
+  @0x6fe362 -> 'RtspSessionPocoBase'
+  @0x6fe3cc -> 'Not a valid request ID.'
+  @0x6fe3d8 -> 'NvWebSocketSession'
+  @0x6fe574 -> 'RtspClientSessionLegacy->abort()'
+  @0x6fe580 -> 'RtspSessionPocoBase'
+  @0x6fe632 -> 'RtspSessionPocoBase'
+  @0x6fe657 -> 'Attempting sendReq/receiveResponse(): %d'
+  @0x6fe6cb -> 'UnInitialized'
+  @0x6fe6d3 -> 'RequestPrepared'
+
+=== '/' loads near WS client code ===
+'/' @0x125de38 used @0x473b01
+  @0x473802 -> 'audio/Mic RED format first reg key is %s'
+  @0x47380e -> 'SdpConfigurator'
+  @0x473a34 -> 'server_side_nvscClientConfig.txt'
+  @0x473b01 -> '/'
+  0x473ac1: mov dword ptr [rsp + 0x120], eax
+  0x473ac8: mov qword ptr [rsp + 0x130], rbx
+  0x473ad0: mov qword ptr [rsp + 0x138], r14
+  0x473ad8: mov r8, rbx
+  0x473adb: mov rdx, r13
+  0x473ade: mov rcx, rax
+  0x473ae1: call 0xeb8d50
+  0x473ae6: mov byte ptr [r15 + rbx], 0
+  0x473aeb: mov rax, qword ptr [r12]
+  0x473aef: mov rdx, qword ptr [rax + 0x4038]
+  0x473af6: test rdx, rdx
+  0x473af9: je 0x473b01
+  0x473afb: mov rdx, qword ptr [rdx + 0x78]
+>>0x473aff: jmp 0x473b08
+>>0x473b01: lea rdx, [rip + 0xdeaf30]
+  0x473b08: xorps xmm0, xmm0
+  0x473b0b: movups xmmword ptr [rsp + 0xf8], xmm0
+  0x473b13: mov qword ptr [rsp + 0x108], rsi
+  0x473b1b: mov qword ptr [rsp + 0x110], rsi
+  0x473b23: mov r8, rdi
+  0x473b26: inc r8
+  0x473b29: cmp byte ptr [rdx + r8], 0
+  0x473b2e: jne 0x473b26
+  0x473b30: lea rcx, [rsp + 0xf8]
+  0x473b38: call 0x1bf5e0
+
+=== RtspClient CreateSession URL rewrite region ===
+ref 0x484ba1
+  @0x484b27 -> 'rtsps://'
+  @0x484ba1 -> 'RtspClient CreateSession set URL %s %d'
+  @0x484bad -> 'RtspClient'
+  @0x484bee -> 'rtsp://'
+  @0x484c4b -> 'ws://'
+  @0x484cad -> 'wss://'
+  @0x484d3b -> 'rtsp://'
+  @0x485384 -> '...'
+  @0x4853d7 -> 'Creating Secure RTSP handshake %hu %s %s using POCO RTSP client'
+  @0x4853e3 -> 'RtspClient'
+  @0x48549e -> ' Valid RTSP port was not received. Trying with default port: %hu'
+  @0x4854aa -> 'RtspClient'
+  @0x485700 -> 'Creating RTSP handshake client using POCO at port %hu'
+  @0x48570c -> 'RtspClient'
+fn~0x4848f0
+  0x4848f0: mov qword ptr [rsp + 8], rbx
+  0x4848f5: mov qword ptr [rsp + 0x10], rsi
+  0x4848fa: push rdi
+  0x4848fb: sub rsp, 0x20
+  0x4848ff: mov rdi, qword ptr [rcx]
+  0x484902: mov rsi, rcx
+  0x484905: mov rbx, qword ptr [rdi]
+  0x484908: cmp rbx, rdi
+  0x48490b: je 0x484987
+  0x48490d: nop dword ptr [rax]
+  0x484910: mov rcx, qword ptr [rbx + 0x20]
+  0x484914: test rcx, rcx
+  0x484917: je 0x48492a
+  0x484919: mov rax, qword ptr [rcx]
+  0x48491c: mov edx, 1
+  0x484921: mov rax, qword ptr [rax]
+  0x484924: call qword ptr [rip + 0xb5a81e]
+  0x48492a: mov rax, qword ptr [rbx + 0x10]
+  0x48492e: cmp byte ptr [rax + 0x19], 0
+  0x484932: je 0x484958
+  0x484934: mov rax, qword ptr [rbx + 8]
+  0x484938: cmp byte ptr [rax + 0x19], 0
+  0x48493c: jne 0x484953
+  0x48493e: nop 
+  0x484940: cmp rbx, qword ptr [rax + 0x10]
+  0x484944: jne 0x484953
+  0x484946: mov rbx, rax
+  0x484949: mov rax, qword ptr [rax + 8]
+  0x48494d: cmp byte ptr [rax + 0x19], 0
+  0x484951: je 0x484940
+  0x484953: mov rbx, rax
+  0x484956: jmp 0x48497f
+  0x484958: mov rcx, qword ptr [rax]
+  0x48495b: mov rbx, rax
+  0x48495e: cmp byte ptr [rcx + 0x19], 0
+  0x484962: jne 0x48497f
+  0x484964: nop dword ptr [rax]
+  0x484968: nop dword ptr [rax + rax]
+  0x484970: mov rax, qword ptr [rcx]
+  0x484973: mov rbx, rcx
+  0x484976: mov rcx, rax
+  0x484979: cmp byte ptr [rax + 0x19], 0
+  0x48497d: je 0x484970
+  0x48497f: mov rdi, qword ptr [rsi]
+  0x484982: cmp rbx, rdi
+  0x484985: jne 0x484910
+  0x484987: mov rbx, qword ptr [rdi + 8]
+  0x48498b: cmp byte ptr [rbx + 0x19], 0
+  0x48498f: jne 0x4849b6
+  0x484991: mov r8, qword ptr [rbx + 0x10]
+  0x484995: mov rdx, rsi
+  0x484998: mov rcx, rsi
+  0x48499b: call 0x4863e0
+  0x4849a0: mov rcx, rbx
+  0x4849a3: mov edx, 0x28
+  0x4849a8: mov rbx, qword ptr [rbx]
+  0x4849ab: call 0xe2be50
+  0x4849b0: cmp byte ptr [rbx + 0x19], 0
+  0x4849b4: je 0x484991
+  0x4849b6: mov qword ptr [rdi + 8], rdi
+  0x4849ba: mov rcx, rsi
+  0x4849bd: mov qword ptr [rdi], rdi
+  0x4849c0: mov qword ptr [rdi + 0x10], rdi
+  0x4849c4: mov qword ptr [rsi + 8], 0
+  0x4849cc: mov rbx, qword ptr [rsp + 0x30]
+  0x4849d1: mov rsi, qword ptr [rsp + 0x38]
+  0x4849d6: add rsp, 0x20
+  0x4849da: pop rdi
+  0x4849db: jmp 0x485b70
+  0x4849e0: push rbx
+  0x4849e2: push rsi
+  0x4849e3: push rdi
+  0x4849e4: push r12
+  0x4849e6: push r13
+  0x4849e8: push r14
+  0x4849ea: push r15
+  0x4849ec: sub rsp, 0x230
+  0x4849f3: mov rax, qword ptr [rip + 0xfbec86]
+  0x4849fa: xor rax, rsp
+  0x4849fd: mov qword ptr [rsp + 0x220], rax
+  0x484a05: mov rax, r9
+  0x484a08: mov qword ptr [rsp + 0x98], rax
+  0x484a10: mov word ptr [rsp + 0x8c], r8w
+  0x484a19: mov rbx, rdx
+  0x484a1c: mov qword ptr [rsp + 0xb8], rcx
+  0x484a24: mov qword ptr [rsp + 0xe0], rcx
+  0x484a2c: mov qword ptr [rsp + 0xe8], rax
+  0x484a34: mov r14d, dword ptr [rsp + 0x290]
+  0x484a3c: mov dword ptr [rsp + 0x90], r14d
+  0x484a44: mov rax, qword ptr [rsp + 0x298]
+  0x484a4c: mov qword ptr [rsp + 0xc0], rax
+  0x484a54: mov rax, qword ptr [rsp + 0x2a0]
+  0x484a5c: mov qword ptr [rsp + 0xa0], rax
+  0x484a64: mov rax, qword ptr [rsp + 0x2a8]
+  0x484a6c: mov qword ptr [rsp + 0xa8], rax
+  0x484a74: mov rax, qword ptr [rsp + 0x2b0]
+  0x484a7c: mov qword ptr [rsp + 0xc8], rax
+  0x484a84: mov rax, qword ptr [rsp + 0x2b8]
+  0x484a8c: mov qword ptr [rsp + 0xd0], rax
+  0x484a94: mov rax, qword ptr [rsp + 0x2c0]
+  0x484a9c: mov qword ptr [rsp + 0xd8], rax
+  0x484aa4: mov rax, qword ptr [rsp + 0x2c8]
+  0x484aac: mov qword ptr [rsp + 0xb0], rax
+  0x484ab4: xor edi, edi
+  0x484ab6: mov dword ptr [rsp + 0x74], edi
+  0x484aba: xorps xmm0, xmm0
+  0x484abd: movups xmmword ptr [rsp + 0x170], xmm0
+  0x484ac5: mov qword ptr [rsp + 0x180], rdi
+  0x484acd: mov qword ptr [rsp + 0x188], 0xf
+  0x484ad9: mov byte ptr [rsp + 0x170], dil
+  0x484ae1: movups xmmword ptr [rsp + 0x150], xmm0
+  0x484ae9: mov qword ptr [rsp + 0x160], rdi
+  0x484af1: mov qword ptr [rsp + 0x168], 0xf
+  0x484afd: mov byte ptr [rsp + 0x150], dil
+  0x484b05: mov qword ptr [rsp + 0x78], rdi
+  0x484b0a: xor r13b, r13b
+  0x484b0d: mov byte ptr [rsp + 0x70], r13b
+  0x484b12: mov rcx, rdx
+  0x484b15: cmp qword ptr [rdx + 0x18], 0xf
+  0x484b1a: jbe 0x484b1f
+  0x484b1c: mov rcx, qword ptr [rdx]
+  0x484b1f: mov esi, 8
+  0x484b24: mov r8d, esi
+  0x484b27: lea rdx, [rip + 0xde5baa]  ; 'rtsps://'
+  0x484b2e: call 0xe85ce4
+  0x484b33: test eax, eax
+  0x484b35: jne 0x484bd9
+  0x484b3b: lea rax, [rsp + 0x170]
+  0x484b43: cmp rax, rbx
+  0x484b46: je 0x484b66
+  0x484b48: mov r8, qword ptr [rbx + 0x10]
+  0x484b4c: cmp qword ptr [rbx + 0x18], 0xf
+  0x484b51: jbe 0x484b56
+  0x484b53: mov rbx, qword ptr [rbx]
+  0x484b56: mov rdx, rbx
+  0x484b59: lea rcx, [rsp + 0x170]
+  0x484b61: call 0x1c6400
+  0x484b66: lea r8, [rsp + 0x170]
+
+=== Connecting function full string map 0x466400-0x467200 ===
+  @0x466609 -> 'C:\\dvs\\p4\\build\\sw\\gcomp\\rel\\gs_04_89\\src\\Mjolnir\\_out\\vcpkg\\x64-windows-static-mt\\include\\Poco/Any.h'
+  @0x4666a6 -> 'HTTP/1.1'
+  @0x466d7a -> 'Connecting to host %s, port %hu'
+  @0x466d86 -> 'WebSocket'
+  @0x4671c6 -> 'list too long'
+
+=== disasm 0x466c80-0x467100 (connect+upgrade) ===
+
+=== Host header set sites (HTTP client) ===
+
+=== ' HTTP/1.1' / write request line ===
+b' HTTP/1.1\x00' @-0x1
+b'HTTP/1.1\r\n' @-0x1
+b' HTTP/\x00' @0x12a69c4
+  ref 0x6bb093
+  @0x6bb021 -> 'GET '
+  @0x6bb032 -> 'POST '
+  @0x6bb046 -> 'DELETE '
+  @0x6bb05a -> 'PUT '
+  @0x6bb093 -> ' HTTP/'
+  @0x6bb1a8 -> 'content-length: '
+  0x6bb033: lea edx, [rip + 0xbec64f]
+  0x6bb039: mov rcx, r13
+  0x6bb03c: call 0xe2f004
+  0x6bb041: cmp rax, r13
+  0x6bb044: je 0x6bb072
+  0x6bb046: lea rdx, [rip + 0xbec633]
+  0x6bb04d: mov rcx, r13
+  0x6bb050: call 0xe2f004
+  0x6bb055: cmp rax, r13
+  0x6bb058: je 0x6bb072
+  0x6bb05a: lea rdx, [rip + 0xbec613]
+  0x6bb061: mov rcx, r13
+  0x6bb064: call 0xe2f004
+  0x6bb069: cmp rax, r13
+  0x6bb06c: jne 0x6bb24d
+  0x6bb072: lea r11, [r13 + 4]
+  0x6bb076: lea r10, [rbx - 4]
+  0x6bb07a: test r11, r11
+  0x6bb07d: je 0x6bb24d
+  0x6bb083: test r10, r10
+  0x6bb086: je 0x6bb24d
+  0x6bb08c: mov r9, 0xffffffffffffffff
+>>0x6bb093: lea rdx, [rip + 0xbec52a]
+  0x6bb09a: mov rax, r9
+  0x6bb09d: nop dword ptr [rax]
+  0x6bb0a0: inc rax
+  0x6bb0a3: cmp byte ptr [rdx + rax], 0
+  0x6bb0a7: jne 0x6bb0a0
+  0x6bb0a9: cmp rax, r10
+  0x6bb0ac: ja 0x6bb24d
+  0x6bb0b2: sub r10, rax
+  0x6bb0b5: add r10, 1
+  0x6bb0b9: je 0x6bb24d
+  0x6bb0bf: mov r8, r11
+  0x6bb0c2: sub rdx, r11
+  0x6bb0c5: nop word ptr [rax + rax]
+  0x6bb0d0: mov rax, r8
+  0x6bb0d3: mov cl, 0x20
+  0x6bb0d5: cmp cl, byte ptr [rax]
+  0x6bb0d7: jne 0x6bb238

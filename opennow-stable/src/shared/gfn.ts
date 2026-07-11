@@ -14,6 +14,13 @@ export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
 export type NativeVideoBackendPreference = "auto" | "d3d11" | "d3d12";
 export type NativeQueueMode = "auto" | "fixed" | "adaptive" | "vrr";
+/**
+ * Media transport for native sessions.
+ * `webrtc` is the supported default.
+ * `nvst` (experimental, Windows): RTSPS handshake + classic Mjolnir UDP video
+ * (Moonlight-hypothesis scaffold) while WebRTC keeps SCTP input datachannels.
+ */
+export type StreamTransportMode = "webrtc" | "nvst";
 
 export const NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE =
   "Native streamer requires a supported desktop OS (Windows, macOS, or Linux).";
@@ -34,8 +41,49 @@ export function isNativeStreamerSupportedPlatform(platform: string): boolean {
   );
 }
 
+/** External floating GStreamer window is Windows-only; Linux/macOS stay Internal. */
+export function isNativeExternalRendererSupported(platform: string): boolean {
+  const normalized = platform.toLowerCase();
+  return (
+    normalized === "win32" ||
+    normalized.startsWith("win") ||
+    normalized.includes("windows")
+  );
+}
+
+/** DirectX video backend preference applies only on Windows. */
+export function isNativeDirectXBackendSupported(platform: string): boolean {
+  return isNativeExternalRendererSupported(platform);
+}
+
+/** Classic NVST RTSPS probe is Windows-first (matches Phase 0 research scope). */
+export function isNvstTransportSupported(platform: string): boolean {
+  return isNativeExternalRendererSupported(platform);
+}
+
 export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, platform: string): StreamClientMode {
   return mode === "native" && !isNativeStreamerSupportedPlatform(platform) ? "web" : mode;
+}
+
+export function normalizeNativeExternalRendererForPlatform(
+  enabled: boolean,
+  platform: string,
+): boolean {
+  return enabled && isNativeExternalRendererSupported(platform);
+}
+
+export function normalizeTransportModeForPlatform(
+  mode: StreamTransportMode,
+  platform: string,
+  streamClientMode: StreamClientMode = "native",
+): StreamTransportMode {
+  if (mode !== "nvst") {
+    return "webrtc";
+  }
+  if (streamClientMode !== "native" || !isNvstTransportSupported(platform)) {
+    return "webrtc";
+  }
+  return "nvst";
 }
 
 export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
@@ -349,6 +397,11 @@ export interface Settings {
   nativeCloudGsyncMode: NativeStreamerFeatureMode;
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   nativeExternalRenderer: boolean;
+  /**
+   * Native media transport. Default `webrtc`.
+   * `nvst` is experimental classic UDP video (GO-with-Moonlight-hypothesis) + SCTP input.
+   */
+  transportMode: StreamTransportMode;
   showNativeStreamerStats: boolean;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;
@@ -1069,6 +1122,10 @@ export interface StreamSettings {
   clientMode?: StreamClientMode;
   /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
   nativeStreamerBackend?: NativeStreamerBackendPreference;
+  /**
+   * Native transport preference. `nvst` runs RTSPS + UDP video handoff; input stays SCTP.
+   */
+  transportMode?: StreamTransportMode;
   /** Native-only override for Cloud G-Sync display detection. */
   nativeCloudGsyncMode?: NativeStreamerFeatureMode;
   /** User's raw Cloud G-Sync preference before main-process capability resolution. */
@@ -1263,6 +1320,11 @@ export interface SessionInfo {
   appLaunchMode?: number;
   /** Wire in-game settings persistence value the session was created with, kept session-stable for resumes */
   enablePersistingInGameSettings?: boolean;
+  /**
+   * Classic NVST RTSPS endpoints from CloudMatch `usage=14` (typically `:322` and `:48322`).
+   * Preserved with ports for the NVST handshake probe; peer WebRTC signaling still uses `signalingUrl`.
+   */
+  rtspsEndpoints?: string[];
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
   negotiatedStreamProfile?: NegotiatedStreamProfile;
@@ -1366,16 +1428,35 @@ export interface NativeStreamerShortcutBindings {
   toggleRecording: string;
 }
 
+export interface NvstVideoSession {
+  clientUdpPort: number;
+  videoPeerIp: string;
+  videoPeerPort: number;
+  /** 64 hex chars = 32-byte AES-256 key (do not log full value). */
+  srtpAesKeyHex: string;
+  srtpKeyId: number;
+  /** Optional SETUP `X-Nv-Ping-Payload`; defaults to hole-punch string `PING`. */
+  pingPayload?: string;
+  /** `H265` / `H264`; falls back to stream settings codec. */
+  codec?: string;
+}
+
 export interface NativeStreamerSessionContext {
   session: SessionInfo;
   settings: StreamSettings;
   shortcuts: NativeStreamerShortcutBindings;
+  /**
+   * Classic Mjolnir UDP video after SETUP. When set, native streamer receives
+   * video over UDP while keeping WebRTC for SCTP datachannels / input.
+   */
+  nvstVideo?: NvstVideoSession;
 }
 
 export function buildNativeStreamerSessionContext(
   session: SessionInfo,
   settings: StreamSettings,
   shortcuts: NativeStreamerShortcutBindings,
+  nvstVideo?: NvstVideoSession,
 ): NativeStreamerSessionContext {
   const negotiatedStreamProfile = session.negotiatedStreamProfile
     ? {
@@ -1395,6 +1476,7 @@ export function buildNativeStreamerSessionContext(
         session.negotiatedStreamProfile?.enableCloudGsync ?? settings.enableCloudGsync,
     },
     shortcuts,
+    ...(nvstVideo ? { nvstVideo } : {}),
   };
 }
 
@@ -1601,6 +1683,8 @@ export interface OpenNowApi {
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;
+  /** Listen for Escape-hold / explicit exit-fullscreen from main process */
+  onExitFullscreen(listener: () => void): () => void;
   quitApp(): Promise<void>;
   getUpdaterState(): Promise<AppUpdaterState>;
   checkForUpdates(): Promise<AppUpdaterState>;

@@ -875,7 +875,10 @@ export class NativeStreamerManager {
     if (videoBackendPreference !== "auto") {
       childEnv.OPENNOW_NATIVE_VIDEO_BACKEND = videoBackendPreference;
     }
-    if (process.platform === "win32") {
+    if (process.platform === "linux") {
+      // Linux ships Internal-only; never spawn the floating external renderer.
+      childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = "0";
+    } else if (process.platform === "win32") {
       childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = this.options.getExternalRendererEnabled() ? "1" : "0";
     }
     childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());

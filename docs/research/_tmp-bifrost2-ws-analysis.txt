@@ -1,0 +1,236 @@
+size=22371952 image_base=0x180000000
+  section ('.text', 4096, 16634772, 1024, 16634880)
+  section ('.rdata', 16642048, 4551992, 16635904, 4552192)
+  section ('.data', 21196800, 372636, 21188096, 202752)
+  section ('.pdata', 21569536, 878880, 21390848, 879104)
+  section ('_RDATA', 22450176, 500, 22269952, 512)
+  section ('.rsrc', 22454272, 1360, 22270464, 1536)
+  section ('.reloc', 22458368, 89484, 22272000, 89600)
+
+=== string locations ===
+Connecting to host: file=0x1268a68 rva=0x126a268
+WS upgrade failed: file=0x1268a88 rva=0x126a288
+/rtsp: file=0x12a9dd0 rva=0x12ab5d0
+RtspSessionPocoBase: file=0x12a9da8 rva=0x12ab5a8
+x-nv-sessionid: file=0x125ea10 rva=0x1260210
+streamingSessionId: file=0x12a6348 rva=0x12a7b48
+Sec-WebSocket-Key: file=0x1127418 rva=0x1128c18
+Sec-WebSocket-Protocol: file=MISSING rva=None
+upgrade forbidden: file=0x125dc90 rva=0x125f490
+HTTP/1.1: file=0xff0488 rva=0xff1c88
+GET : file=0x12a6a90 rva=0x12a8290
+setURI: file=MISSING rva=None
+setPath: file=MISSING rva=None
+HTTPRequest: file=0x14653cc rva=0x14675cc
+WebSocket: file=0xff3bdd rva=0xff53dd
+Creating Secure: file=0x1269b60 rva=0x126b360
+1-way: file=MISSING rva=None
+2-way: file=0x12a9d28 rva=0x12ab528
+Host: file=0x12a9fe8 rva=0x12ab7e8
+X-GS-Version: file=0x12a65c0 rva=0x12a7dc0
+rtsps://: file=0x125c270 rva=0x125da70
+wss://: file=0xfec208 rva=0xfeda08
+protocol TAG: file=0x12a9cd0 rva=0x12ab4d0
+
+=== scheme block bytes ===
+5274737053657373696f6e506f636f426173650057530000525453500000000052545350530000002f727473700000006e6574776f726b2065787063657074696f6e202f20526571756573742053656e64206661696c65640000000000000000
+  @0x12a9da8 rva=0x12ab5a8 b'RtspSessionPocoBase'
+  @0x12a9dbc rva=0x12ab5bc b'WS'
+  @0x12a9dc0 rva=0x12ab5c0 b'RTSP'
+  @0x12a9dc8 rva=0x12ab5c8 b'RTSPS'
+  @0x12a9dd0 rva=0x12ab5d0 b'/rtsp'
+  @0x12a9dd8 rva=0x12ab5d8 b'network expception / Request Send failed'
+
+=== absolute /rtsp ptr slot file=0x1204700 ===
+  0x12046c0: 0x000000018125f378 'OPTIONS'
+  0x12046c8: 0x000000018125f38c 'SETUP'
+  0x12046d0: 0x000010e000001680 None
+  0x12046d8: 0x000005a000001e00 None
+  0x12046e0: 0x0000043800000c80 None
+  0x12046e8: 0x00000001812ab5c0 'RTSP'
+  0x12046f0: 0x00000ca8000002d0 None
+  0x12046f8: 0x00000001812ab5c8 'RTSPS'
+  0x1204700: 0x00000001812ab5d0 '/rtsp'
+  0x1204708: 0x0000168000001e00 None
+  0x1204710: 0x00000f0000000a00 None
+  0x1204718: 0x0000030000000d70 None
+  0x1204720: 0x00000438000000c8 None
+  0x1204728: 0x0000043800000400 None
+  0x1204730: 0x0000087000000ca8 None
+  0x1204738: 0x0000087000000500 None
+  0x1204740: 0x0000140000000780 None
+  0x1204748: 0x000005a000000780 None
+  0x1204750: 0x00000b4000000a00 None
+  0x1204758: 0x00000001812ab460 'WSS'
+  0x1204760: 0x00000001812ab5bc 'WS'
+  0x1204768: 0x0000168000001400 None
+  0x1204770: 0x00000001812abec8 'FrameStatsUncommittedCount'
+  0x1204778: 0x00000001812abeb0 'FrameStatsDroppedCount'
+
+=== rip-relative code refs ===
+Connecting to host: 1 refs
+  code_file=0x466d7a code_rva=0x46797a
+WS upgrade failed: 2 refs
+  code_file=0xeeba0c code_rva=0xeec60c
+  code_file=0xeee482 code_rva=0xeef082
+/rtsp: 0 refs
+x-nv-sessionid: 0 refs
+streamingSessionId: 1 refs
+  code_file=0x6b659d code_rva=0x6b719d
+protocol TAG: 1 refs
+  code_file=0x6fbd0c code_rva=0x6fc90c
+upgrade forbidden: 1 refs
+  code_file=0xee207e code_rva=0xee2c7e
+WS @0x12a9dbc rva=0x12ab5bc: 1 refs
+  code_file=0x6fb95d code_rva=0x6fc55d
+RTSP @0x12a9dc0 rva=0x12ab5c0: 4 refs
+  code_file=0x6fba21 code_rva=0x6fc621
+  code_file=0x78b497 code_rva=0x78c097
+  code_file=0x793b0e code_rva=0x79470e
+  code_file=0x79cba1 code_rva=0x79d7a1
+RTSPS @0x12a9dc8 rva=0x12ab5c8: 4 refs
+  code_file=0x6fb9dc code_rva=0x6fc5dc
+  code_file=0x78b4df code_rva=0x78c0df
+  code_file=0x793b5f code_rva=0x79475f
+  code_file=0x79cbf2 code_rva=0x79d7f2
+/rtsp_in_block @0x12a9dd0 rva=0x12ab5d0: 0 refs
+
+=== bytes around Connecting refs (±128) ===
+--- at 0x466d7a ---
+  0x466cfa: dd ff 90 e8 ce 30 a0 00 cc cc cc cc cc cc cc cc  .....0..........
+  0x466d0a: cc cc cc cc cc cc 48 89 5c 24 10 48 89 74 24 18  ......H.\$.H.t$.
+  0x466d1a: 57 48 81 ec 90 01 00 00 48 8b 05 57 c9 fd 00 48  WH......H..W...H
+  0x466d2a: 33 c4 48 89 84 24 80 01 00 00 48 8b d9 48 81 c1  3.H..$....H..H..
+  0x466d3a: 58 01 00 00 e8 dd b2 83 00 44 0f b7 43 38 48 8d  X........D..C8H.
+  0x466d4a: 53 18 48 83 7b 30 0f 76 04 48 8b 53 18 8b 0d e3  S.H.{0.v.H.S....
+  0x466d5a: f1 00 01 65 48 8b 04 25 58 00 00 00 41 ba 1c 00  ...eH..%X...A...
+  0x466d6a: 00 00 48 8b 04 c8 44 89 44 24 30 48 89 54 24 28  ..H...D.D$0H.T$(
+  0x466d7a: 48 8d 0d e7 28 e0 00 48 89 4c 24 20 4c 8d 0d 9b  H...(..H.L$ L...
+  0x466d8a: 28 e0 00 ba 02 00 00 00 41 b8 ac bd 10 25 41 8b  (.......A....%A.
+  0x466d9a: 0c 02 e8 cf ac d6 ff 48 8d 8c 24 90 00 00 00 e8  .......H..$.....
+  0x466daa: 92 f1 82 00 90 80 7b 10 00 74 25 b9 40 03 00 00  ......{..t%.@...
+  0x466dba: e8 55 50 9c 00 48 89 44 24 40 44 0f b7 43 38 48  .UP..H.D$@D..C8H
+  0x466dca: 8d 53 18 48 8b c8 e8 2b f2 43 00 48 8b f8 eb 23  .S.H...+.C.H...#
+  0x466dda: b9 30 03 00 00 e8 30 50 9c 00 48 89 44 24 40 44  .0....0P..H.D$@D
+  0x466dea: 0f b7 43 38 48 8d 53 18 48 8b c8 e8 e6 4b 83 00  ..C8H.S.H....K..
+  lea/mov rip targets in window:
+    @0x466d7a -> 'Connecting to host %s, port %hu'
+    @0x466d86 -> 'WebSocket'
+
+=== Poco HTTP / path related ASCII near WebSocket ===
+b'HTTP/1.1': count=2 first=['0xff0488', '0x143d4e0']
+b'HTTP/1.0': count=5 first=['0x106a5bb', '0x106a988', '0x106a9a6', '0x11272d0', '0x143d4c0']
+b'Connection': count=86 first=['0xfec211', '0xfec6b9', '0xfefde0', '0xfefea8', '0xfefec0', '0xff0100', '0xff0860', '0xff0878']
+b'Upgrade': count=109 first=['0x1126568', '0x11269e8', '0x112750f', '0x112753b', '0x1222c60', '0x1222c8b', '0x1223bb9', '0x1223bf4']
+b'Sec-WebSocket-Key': count=2 first=['0x1127418', '0x1127438']
+b'Sec-WebSocket-Version': count=2 first=['0x11273a0', '0x11273c0']
+b'Sec-WebSocket-Protocol': count=0 first=[]
+b'Sec-WebSocket-Accept': count=2 first=['0x1127460', '0x1127583']
+b'Origin': count=2 first=['0x1027d10', '0x102e6fb']
+b'Host': count=25 first=['0x6fc6ff', '0xfee830', '0xfef757', '0xfef84a', '0xfeff18', '0xff0058', '0x104829d', '0x106c16d']
+b'GET': count=16 first=['0xfe8b20', '0xfe8b40', '0xfe9c40', '0xfeb9f4', '0x1091ed0', '0x1091f30', '0x1091f48', '0x1091f70']
+b'setURI': count=0 first=[]
+b'setHost': count=0 first=[]
+b'setPath': count=0 first=[]
+b'setVersion': count=0 first=[]
+b'HTTP_GET': count=0 first=[]
+b'HTTP_1_1': count=0 first=[]
+b'WEBSOCKET_VERSION': count=0 first=[]
+
+=== nearby format / URI strings to /rtsp ===
+  @0x12a9cd0: "Establishing RTSP session with protocol TAG '%s' and URL '%s' Domain Name %s"
+  @0x12a9d20: '1-way'
+  @0x12a9d28: '2-way'
+  @0x12a9d38: 'Invalid server URL.'
+  @0x12a9d50: "RTSP session requested scheme '%s' that does not match the expected scheme '%s'."
+  @0x12a9da8: 'RtspSessionPocoBase'
+  @0x12a9dc0: 'RTSP'
+  @0x12a9dc8: 'RTSPS'
+  @0x12a9dd0: '/rtsp'
+  @0x12a9dd8: 'network expception / Request Send failed'
+  @0x12a9e08: 'sendRequest error: %s'
+  @0x12a9e20: 'network expception / Response Recv failed'
+  @0x12a9e50: 'recv response Error: %s'
+  @0x12a9e70: 'res: %d, *pRc: %ld / statusMimiced: %d ,bPocoExceptionOccured: %d,currentRequestState: %s'
+
+=== standalone path-like cstrings in .rdata (filtered) ===
+  @0xff665f rva=0xff7e5f '/'
+  @0xff675f rva=0xff7f5f '/'
+  @0xffe906 rva=0x1000106 '/'
+  @0xffe9f8 rva=0x10001f8 '/'
+  @0xffea74 rva=0x1000274 '/'
+  @0x1002a0c rva=0x100420c '/'
+  @0x1014fe0 rva=0x10167e0 '/'
+  @0x1032c2c rva=0x103442c '/'
+  @0x1034524 rva=0x1035d24 '/'
+  @0x10354bc rva=0x1036cbc '/'
+  @0x1038b98 rva=0x103a398 '/'
+  @0x104c278 rva=0x104da78 '/'
+  @0x104c2bc rva=0x104dabc '//'
+  @0x1061f90 rva=0x1063790 '/'
+  @0x1075e08 rva=0x1077608 '/'
+  @0x10c12f8 rva=0x10c2af8 '///'
+  @0x10c20ad rva=0x10c38ad '///'
+  @0x10c2536 rva=0x10c3d36 '//'
+  @0x10c2b64 rva=0x10c4364 '//'
+  @0x10ca5bc rva=0x10cbdbc '/'
+  @0x1119ac8 rva=0x111b2c8 '/'
+  @0x1119b08 rva=0x111b308 '/'
+  @0x111dec8 rva=0x111f6c8 '/'
+  @0x112aa24 rva=0x112c224 'ws'
+  @0x112aa40 rva=0x112c240 'wss'
+  @0x112aa4c rva=0x112c24c 'rtsp'
+  @0x112e69c rva=0x112fe9c '/'
+  @0x113114c rva=0x113294c '/'
+  @0x11315ac rva=0x1132dac '/'
+  @0x1131a1c rva=0x113321c '/'
+  @0x1131e8c rva=0x113368c '/'
+  @0x11322fc rva=0x1133afc '/'
+  @0x113277c rva=0x1133f7c '/'
+  @0x1132bfc rva=0x11343fc '/'
+  @0x1137ec2 rva=0x11396c2 '/'
+  @0x113c3b2 rva=0x113dbb2 '/'
+  @0x113c3bc rva=0x113dbbc '/'
+  @0x11406b0 rva=0x1141eb0 '/'
+  @0x11407fe rva=0x1141ffe '/'
+  @0x114083c rva=0x114203c '/'
+  @0x114083e rva=0x114203e '/'
+  @0x1140844 rva=0x1142044 '/'
+  @0x1140850 rva=0x1142050 '/'
+  @0x1140852 rva=0x1142052 '/'
+  @0x1140854 rva=0x1142054 '/'
+  @0x1140bb4 rva=0x11423b4 '/'
+  @0x1140bb6 rva=0x11423b6 '/'
+  @0x1140c60 rva=0x1142460 '/'
+  @0x1140c62 rva=0x1142462 '/'
+  @0x1140c64 rva=0x1142464 '/'
+  @0x1140c66 rva=0x1142466 '/'
+  @0x1140c68 rva=0x1142468 '/'
+  @0x1140ca6 rva=0x11424a6 '/'
+  @0x1140cbe rva=0x11424be '/'
+  @0x1140cd2 rva=0x11424d2 '/'
+  @0x1140cd4 rva=0x11424d4 '/'
+  @0x1140d2c rva=0x114252c '/'
+  @0x1140d8a rva=0x114258a '/'
+  @0x1140d8c rva=0x114258c '/'
+  @0x1140d8e rva=0x114258e '/'
+  @0x1140d98 rva=0x1142598 '/'
+  @0x1140dc2 rva=0x11425c2 '/'
+  @0x1140e42 rva=0x1142642 '/'
+  @0x1140e50 rva=0x1142650 '/'
+  @0x1140e70 rva=0x1142670 '/'
+  @0x1140e72 rva=0x1142672 '/'
+  @0x1140e88 rva=0x1142688 '/'
+  @0x1140e8c rva=0x114268c '/'
+  @0x1140e9a rva=0x114269a '/'
+  @0x1140ea2 rva=0x11426a2 '/'
+  @0x1140ec6 rva=0x11426c6 '/'
+  @0x1140ec8 rva=0x11426c8 '/'
+  @0x1140ee8 rva=0x11426e8 '/'
+  @0x1140eee rva=0x11426ee '/'
+  @0x1140f26 rva=0x1142726 '/'
+  @0x1140f28 rva=0x1142728 '/'
+  @0x1140fa2 rva=0x11427a2 '/'
+  @0x114156a rva=0x1142d6a '/'
+  @0x114156c rva=0x1142d6c '/'
+  @0x114156e rva=0x1142d6e '/'

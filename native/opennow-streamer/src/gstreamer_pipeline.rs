@@ -22,9 +22,12 @@ use crate::gstreamer_platform::{
 };
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
 use crate::internal_renderer::InternalRenderer;
+use crate::nvst_video::{
+    annexb_appsrc_caps, spawn_nvst_udp_receive, NvstVideoReceiveHandle,
+};
 use crate::protocol::{
     Event, IceCandidatePayload, NativeRenderSurface, NativeStreamerSessionContext,
-    NativeVideoBackendCapability, NativeVideoCodecCapability,
+    NativeVideoBackendCapability, NativeVideoCodecCapability, NvstVideoSession,
 };
 use crate::sdp::IceCredentials;
 use gst::glib;
@@ -208,10 +211,22 @@ impl RtpVideoApi {
     fn sink_fallback_factories(self) -> &'static [&'static str] {
         match self {
             Self::VideoToolbox => &["osxvideosink", "autovideosink"],
+            // Prefer X11-capable sinks first: Internal Linux embeds via GstVideoOverlay
+            // into an X11 child. waylandsink cannot paint into that handle.
             Self::Vaapi | Self::V4L2 => {
-                &["waylandsink", "ximagesink", "xvimagesink", "autovideosink"]
+                &["ximagesink", "xvimagesink", "glimagesink", "waylandsink", "autovideosink"]
             }
-            Self::Software => &["glimagesink", "waylandsink", "ximagesink", "xvimagesink"],
+            Self::Software => &["ximagesink", "xvimagesink", "glimagesink", "waylandsink"],
+            _ => &[],
+        }
+    }
+
+    /// Sinks that can bind to the Internal X11 child via GstVideoOverlay.
+    fn internal_x11_sink_candidates(self) -> &'static [&'static str] {
+        match self {
+            Self::Vaapi | Self::V4L2 | Self::Software | Self::Vulkan => {
+                &["glimagesink", "ximagesink", "xvimagesink"]
+            }
             _ => &[],
         }
     }
@@ -385,6 +400,9 @@ pub(crate) struct GstreamerPipeline {
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
     d3d_fullscreen_sink: Arc<AtomicBool>,
+    /// When true, WebRTC RTP video pads are ignored (classic NVST UDP owns video).
+    skip_webrtc_video: Arc<AtomicBool>,
+    nvst_receive: Option<NvstVideoReceiveHandle>,
     video_liveness: VideoLivenessMonitor,
     event_sender: Option<Sender<Event>>,
     pub(crate) original_remote_ice_credentials: Option<IceCredentials>,
@@ -417,6 +435,7 @@ impl GstreamerPipeline {
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
         let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
+        let skip_webrtc_video = Arc::new(AtomicBool::new(false));
         wire_incoming_media_sink(
             &pipeline,
             &webrtc,
@@ -424,6 +443,7 @@ impl GstreamerPipeline {
             render_state.clone(),
             present_max_fps.clone(),
             d3d_fullscreen_sink.clone(),
+            skip_webrtc_video.clone(),
             video_liveness.clone(),
         );
 
@@ -444,6 +464,8 @@ impl GstreamerPipeline {
             render_state,
             present_max_fps,
             d3d_fullscreen_sink,
+            skip_webrtc_video,
+            nvst_receive: None,
             video_liveness,
             event_sender,
             original_remote_ice_credentials: None,
@@ -475,6 +497,238 @@ impl GstreamerPipeline {
         target_bitrate_kbps: u32,
     ) {
         self.video_liveness.configure(context, target_bitrate_kbps);
+    }
+
+    /// Attach classic NVST UDP video: appsrc → parse → decoder → sink, plus UDP recv thread.
+    /// Keeps webrtcbin for SCTP input; ignores WebRTC RTP video pads.
+    pub(crate) fn attach_nvst_video(
+        &mut self,
+        session: NvstVideoSession,
+        fallback_codec: &str,
+        requested_fps: Option<u32>,
+        d3d_fullscreen_sink: bool,
+    ) -> Result<(), String> {
+        if self.nvst_receive.is_some() {
+            return Ok(());
+        }
+
+        let codec = session
+            .codec
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .unwrap_or(fallback_codec);
+        let codec_upper = codec.to_ascii_uppercase();
+        let encoding = match codec_upper.as_str() {
+            "H264" => "H264",
+            "H265" | "HEVC" => "H265",
+            other => {
+                return Err(format!(
+                    "NVST classic UDP video scaffold supports H264/H265, got {other}"
+                ));
+            }
+        };
+
+        self.skip_webrtc_video.store(true, Ordering::SeqCst);
+
+        let (video_api, mut specs) = rtp_video_chain_specs(encoding, requested_fps).ok_or_else(|| {
+            format!(
+                "NVST Annex-B decode chain unavailable for {encoding}; install GStreamer plugins or set {NATIVE_VIDEO_BACKEND_ENV}=software."
+            )
+        })?;
+        // Drop RTP depayloader — appsrc feeds assembled Annex-B AUs.
+        specs.retain(|spec| spec.role != RtpVideoChainRole::Depayloader);
+        if specs
+            .first()
+            .is_none_or(|spec| spec.role != RtpVideoChainRole::Parser)
+        {
+            return Err(format!(
+                "NVST video chain for {encoding} is missing a parser after depayloader removal."
+            ));
+        }
+
+        let caps_str = annexb_appsrc_caps(encoding);
+        let appsrc = gst::ElementFactory::make("appsrc")
+            .name("nvst-annexb")
+            .build()
+            .map_err(|error| format!("Failed to create nvst-annexb appsrc: {error}"))?;
+        let caps = caps_str
+            .parse::<gst::Caps>()
+            .map_err(|error| format!("Invalid NVST appsrc caps: {error}"))?;
+        appsrc.set_property("caps", &caps);
+        set_property_if_supported(&appsrc, "is-live", true);
+        set_property_from_str_if_supported(&appsrc, "format", "time");
+        set_property_if_supported(&appsrc, "block", false);
+        set_property_if_supported(&appsrc, "max-bytes", 0u64);
+        set_property_from_str_if_supported(&appsrc, "stream-type", "stream");
+
+        let streaming_reported = Arc::new(AtomicBool::new(false));
+        let mut elements: Vec<gst::Element> = Vec::with_capacity(specs.len() + 1);
+
+        let result = (|| -> Result<(), String> {
+            send_log(
+                &self.event_sender,
+                "info",
+                format!(
+                    "Attaching NVST classic UDP video ({encoding}) via appsrc Annex-B → {}; {}",
+                    video_api.label(),
+                    format_video_chain_selection(encoding, video_api, &specs)
+                ),
+            );
+
+            let configured_present_max_fps = self.present_max_fps.load(Ordering::SeqCst);
+            let effective = effective_present_max_fps(
+                configured_present_max_fps,
+                requested_fps,
+                video_api,
+                primary_display_refresh_hz(),
+            );
+            self.present_max_fps.store(effective, Ordering::SeqCst);
+
+            self.pipeline
+                .add(&appsrc)
+                .map_err(|error| format!("Failed to add NVST appsrc: {error}"))?;
+            elements.push(appsrc.clone());
+
+            for spec in &specs {
+                let element = make_element(spec.factory)?;
+                configure_rtp_video_chain_element(
+                    &element,
+                    spec.clone(),
+                    video_api,
+                    d3d_fullscreen_sink,
+                );
+                if spec.role == RtpVideoChainRole::StatsOverlay {
+                    self.video_liveness.set_stats_overlay(Some(element.clone()));
+                }
+                self.pipeline.add(&element).map_err(|error| {
+                    format!(
+                        "Failed to add {} for NVST {encoding} video chain: {error}",
+                        spec.factory
+                    )
+                })?;
+                elements.push(element);
+            }
+
+            for pair in elements.windows(2) {
+                pair[0].link(&pair[1]).map_err(|error| {
+                    format!(
+                        "Failed to link {} -> {} for NVST {encoding}: {error:?}",
+                        element_factory_name(&pair[0]),
+                        element_factory_name(&pair[1])
+                    )
+                })?;
+            }
+
+            let sink = elements
+                .last()
+                .ok_or_else(|| format!("NVST {encoding} video chain has no sink."))?;
+            if let Some(post_decode_queue) =
+                specs
+                    .iter()
+                    .zip(elements.iter().skip(1))
+                    .find_map(|(spec, element)| {
+                        (spec.role == RtpVideoChainRole::PostDecodeQueue).then_some(element)
+                    })
+            {
+                self.video_liveness
+                    .set_post_decode_queue(post_decode_queue.clone());
+                watch_video_decoded_rate(
+                    post_decode_queue,
+                    &self.event_sender,
+                    Some(self.video_liveness.clone()),
+                );
+            }
+            if let Some(pre_decode_queue) =
+                specs
+                    .iter()
+                    .zip(elements.iter().skip(1))
+                    .find_map(|(spec, element)| {
+                        (spec.role == RtpVideoChainRole::PreDecodeQueue).then_some(element)
+                    })
+            {
+                self.video_liveness
+                    .set_pre_decode_queue(pre_decode_queue.clone());
+            }
+            if let Some(parser) = specs.iter().zip(elements.iter().skip(1)).find_map(
+                |(spec, element)| (spec.role == RtpVideoChainRole::Parser).then_some(element),
+            ) {
+                watch_video_caps_transitions(
+                    parser,
+                    "parser",
+                    &self.event_sender,
+                    self.video_liveness.clone(),
+                );
+            }
+            if let Some(decoder) = specs.iter().zip(elements.iter().skip(1)).find_map(
+                |(spec, element)| (spec.role == RtpVideoChainRole::Decoder).then_some(element),
+            ) {
+                self.video_liveness.set_decoder(decoder.clone());
+                watch_video_caps_transitions(
+                    decoder,
+                    "decoder",
+                    &self.event_sender,
+                    self.video_liveness.clone(),
+                );
+            }
+
+            self.render_state
+                .set_video_sink(sink.clone(), &self.event_sender);
+            install_present_limiter(
+                sink,
+                self.present_max_fps.clone(),
+                &self.event_sender,
+                Some(self.video_liveness.clone()),
+            );
+            watch_video_sink_caps_transitions(
+                sink,
+                &self.event_sender,
+                Some(self.video_liveness.clone()),
+            );
+            watch_first_sink_buffer(sink, "video", &self.event_sender, &streaming_reported);
+            watch_video_sink_rate(
+                sink,
+                &self.event_sender,
+                Some(self.video_liveness.clone()),
+            );
+
+            for element in &elements {
+                element.sync_state_with_parent().map_err(|error| {
+                    format!("Failed to sync NVST {encoding} video-chain element state: {error}")
+                })?;
+            }
+
+            self.video_liveness.update_hardware_acceleration(format!(
+                "GStreamer {} (NVST UDP)",
+                video_api.label()
+            ));
+            self.video_liveness.start(
+                self.pipeline.clone(),
+                sink.clone(),
+                self.event_sender.clone(),
+            );
+
+            let handle = spawn_nvst_udp_receive(
+                session,
+                appsrc,
+                self.event_sender.clone(),
+            )?;
+            self.nvst_receive = Some(handle);
+
+            // Ensure pipeline can run the appsrc branch even before WebRTC offer.
+            let _ = self.pipeline.set_state(gst::State::Playing);
+
+            Ok(())
+        })();
+
+        if result.is_err() {
+            self.skip_webrtc_video.store(false, Ordering::SeqCst);
+            for element in &elements {
+                let _ = element.set_state(gst::State::Null);
+                let _ = self.pipeline.remove(element);
+            }
+        }
+
+        result
     }
 
     fn ensure_input_data_channels(
@@ -829,6 +1083,10 @@ impl GstreamerPipeline {
     }
 
     pub(crate) fn stop(mut self) -> Result<(), String> {
+        if let Some(handle) = self.nvst_receive.take() {
+            handle.stop();
+        }
+        self.skip_webrtc_video.store(false, Ordering::SeqCst);
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
         self.render_state.destroy_internal_renderer();
@@ -925,6 +1183,9 @@ pub(crate) fn configure_queue(element: &gst::Element, max_buffers: u32, leaky_do
 }
 
 pub(crate) fn configure_sink_for_low_latency(element: &gst::Element) {
+    // GFN-aligned present: never clock-sync or QoS-throttle the sink. Latency
+    // comes from decode + a depth-1 leaky post-decode queue + optional present
+    // limiter, not from GstBaseSink pacing.
     set_property_if_supported(element, "sync", false);
     set_property_if_supported(element, "async", false);
     set_property_if_supported(element, "qos", false);
@@ -936,6 +1197,29 @@ pub(crate) fn configure_sink_for_low_latency(element: &gst::Element) {
     set_property_if_supported(element, "show-preroll-frame", false);
     set_property_if_supported(element, "redraw-on-update", true);
     set_property_if_supported(element, "force-aspect-ratio", true);
+}
+
+/// Configure d3d11/d3d12videosink for low-latency Internal/External present.
+///
+/// GStreamer docs: `fullscreen` is ignored unless `fullscreen-toggle-mode`
+/// includes `property`. Internal always keeps exclusive fullscreen off (caller
+/// passes `d3d_fullscreen_sink=false`); External + Cloud G-Sync may enable it.
+pub(crate) fn configure_d3d_video_sink(element: &gst::Element, d3d_fullscreen_sink: bool) {
+    configure_sink_for_low_latency(element);
+    // d3d12 only: attaching the swapchain directly to an external HWND can turn
+    // a present stall into upstream decode backpressure on the child-surface path.
+    set_property_if_supported(element, "direct-swapchain", false);
+    set_property_if_supported(element, "error-on-closed", false);
+    // RawInput owns mouse/keyboard; do not let the sink emit GstNavigation events.
+    set_property_if_supported(element, "enable-navigation-events", false);
+    set_property_if_supported(element, "fullscreen-on-alt-enter", false);
+    if d3d_fullscreen_sink {
+        set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "property");
+        set_property_if_supported(element, "fullscreen", true);
+    } else {
+        set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
+        set_property_if_supported(element, "fullscreen", false);
+    }
 }
 
 pub(crate) fn configure_stats_overlay_element(element: &gst::Element) {
@@ -1225,6 +1509,7 @@ fn wire_incoming_media_sink(
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
     d3d_fullscreen_sink: Arc<AtomicBool>,
+    skip_webrtc_video: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
 ) {
     let pipeline = pipeline.downgrade();
@@ -1248,6 +1533,21 @@ fn wire_incoming_media_sink(
         }
 
         if let Some(encoding) = rtp_video_encoding(src_pad) {
+            if skip_webrtc_video.load(Ordering::SeqCst) {
+                send_log(
+                    &event_sender,
+                    "info",
+                    format!(
+                        "Ignoring WebRTC RTP video pad ({encoding}); NVST classic UDP owns video."
+                    ),
+                );
+                if let Err(error) =
+                    link_decoded_media_to_fakesink(&pipeline, src_pad, "ignored webrtc video")
+                {
+                    send_log(&event_sender, "debug", error);
+                }
+                return;
+            }
             match link_rtp_video_pad(
                 &pipeline,
                 src_pad,
@@ -1613,6 +1913,19 @@ fn select_decoder_factory(video_api: RtpVideoApi, codec: &str) -> Option<&'stati
 }
 
 fn select_sink_factory(video_api: RtpVideoApi) -> Option<&'static str> {
+    // Internal Linux: never pick waylandsink for the X11 child overlay path.
+    #[cfg(target_os = "linux")]
+    if use_internal_renderer() {
+        let internal = video_api.internal_x11_sink_candidates();
+        if let Some(factory) = internal
+            .iter()
+            .copied()
+            .find(|factory| gst::ElementFactory::find(factory).is_some())
+        {
+            return Some(factory);
+        }
+    }
+
     std::iter::once(video_api.sink_factory())
         .chain(video_api.sink_fallback_factories().iter().copied())
         .find(|factory| gst::ElementFactory::find(factory).is_some())
@@ -1849,13 +2162,7 @@ fn configure_rtp_video_chain_element(
             configure_queue_for_low_latency(element, "video");
         }
         RtpVideoChainRole::Sink => {
-            configure_sink_for_low_latency(element);
-            // Direct swapchain can turn a window/present stall into upstream decode backpressure.
-            set_property_if_supported(element, "direct-swapchain", false);
-            set_property_if_supported(element, "error-on-closed", false);
-            set_property_if_supported(element, "fullscreen", d3d_fullscreen_sink);
-            set_property_if_supported(element, "fullscreen-on-alt-enter", false);
-            set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
+            configure_d3d_video_sink(element, d3d_fullscreen_sink);
         }
     }
 }
@@ -2234,7 +2541,12 @@ fn link_media_chain(
             }
         }
         if sync_property.is_some() || factory.ends_with("sink") {
-            configure_sink_for_low_latency(&element);
+            if factory == "d3d11videosink" || factory == "d3d12videosink" {
+                // Fallback decodebin path: never exclusive-fullscreen (Internal default).
+                configure_d3d_video_sink(&element, false);
+            } else {
+                configure_sink_for_low_latency(&element);
+            }
         }
         pipeline
             .add(&element)

@@ -1,0 +1,1677 @@
+
+=== 'wss://' @0xfec208 rva=0xfeda08 refs=0 [] ===
+
+=== 'wss://' @0x125c27c rva=0x125da7c refs=1 ['0x3a10fe'] ===
+-- strings near 0x3a10fe --
+  @0x3a0905 -> 'RTSP Version not supported'
+  @0x3a090d -> 'Option not supported'
+  @0x3a0915 -> 'Invalid CSeq Number'
+  @0x3a091d -> 'Malformed response'
+  @0x3a0925 -> 'Streamer communication failed'
+  @0x3a092d -> 'NOT FOUND'
+  @0x3a0fcd -> 'stoi argument out of range'
+  @0x3a0fda -> 'invalid stoi argument'
+  @0x3a0fed -> 'stoi argument out of range'
+  @0x3a0ffa -> 'invalid stoi argument'
+  @0x3a101c -> 'SignalingHandler'
+  @0x3a103f -> 'Timeout during RTSP command!'
+  @0x3a10ad -> 'rtsp://'
+  @0x3a10c8 -> 'rtsps://'
+  @0x3a10e3 -> 'ws://'
+  @0x3a10fe -> 'wss://'
+  @0x3a111b -> ':'
+  @0x3a1206 -> '...'
+  @0x3a1213 -> 'SignalingHandler'
+  @0x3a1244 -> 'getServerIpAndPort-- %s:%d'
+  @0x3a1405 -> 'duration'
+  @0x3a14a7 -> 'valueInt'
+-- disasm 0x3a10fe --
+  0x3a107e: int3 
+  0x3a107f: int3 
+  0x3a1080: mov qword ptr [rsp + 0x20], rbx
+  0x3a1085: push rsi
+  0x3a1086: push rdi
+  0x3a1087: push r14
+  0x3a1089: sub rsp, 0x90
+  0x3a1090: mov rax, qword ptr [rip + 0x10a25e9]
+  0x3a1097: xor rax, rsp
+  0x3a109a: mov qword ptr [rsp + 0x80], rax
+  0x3a10a2: mov r14, r8
+  0x3a10a5: mov rsi, rdx
+  0x3a10a8: mov ebx, 7
+  0x3a10ad: lea rdx, [rip + 0xebbdac]
+  0x3a10b4: mov r8d, ebx
+  0x3a10b7: mov rdi, rcx
+  0x3a10ba: call 0xe85ce4
+  0x3a10bf: test eax, eax
+  0x3a10c1: je 0x3a1118
+  0x3a10c3: mov ebx, 8
+  0x3a10c8: lea rdx, [rip + 0xebbdb9]
+  0x3a10cf: mov r8d, ebx
+  0x3a10d2: mov rcx, rdi
+  0x3a10d5: call 0xe85ce4
+  0x3a10da: test eax, eax
+  0x3a10dc: je 0x3a1118
+  0x3a10de: mov ebx, 5
+  0x3a10e3: lea rdx, [rip + 0xebbd26]
+  0x3a10ea: mov r8d, ebx
+  0x3a10ed: mov rcx, rdi
+  0x3a10f0: call 0xe85ce4
+  0x3a10f5: test eax, eax
+>>0x3a10f7: je 0x3a1118
+>>0x3a10f9: mov ebx, 6
+>>0x3a10fe: lea rdx, [rip + 0xebbd77]
+>>0x3a1105: mov r8d, ebx
+  0x3a1108: mov rcx, rdi
+  0x3a110b: call 0xe85ce4
+  0x3a1110: test eax, eax
+  0x3a1112: jne 0x3a129b
+  0x3a1118: add rbx, rdi
+  0x3a111b: lea rdx, [rip + 0xe69572]
+  0x3a1122: mov rcx, rbx
+  0x3a1125: call 0xe3ef50
+  0x3a112a: xorps xmm0, xmm0
+  0x3a112d: lea rcx, [rsp + 0x60]
+  0x3a1132: xorps xmm1, xmm1
+  0x3a1135: mov r8, rax
+  0x3a1138: mov rdx, rbx
+  0x3a113b: mov rdi, rax
+  0x3a113e: movups xmmword ptr [rsp + 0x60], xmm0
+  0x3a1143: movdqu xmmword ptr [rsp + 0x70], xmm1
+  0x3a1149: call 0x1bf5e0
+  0x3a114e: lea rdx, [rsp + 0x60]
+  0x3a1153: mov rcx, rsi
+  0x3a1156: call 0x1d14d0
+  0x3a115b: mov rdx, qword ptr [rsp + 0x78]
+  0x3a1160: cmp rdx, 0xf
+  0x3a1164: jbe 0x3a1198
+  0x3a1166: mov rcx, qword ptr [rsp + 0x60]
+
+=== 'wss://' @0x1269af0 rva=0x126b2f0 refs=1 ['0x484cad'] ===
+-- strings near 0x484cad --
+  @0x484b27 -> 'rtsps://'
+  @0x484ba1 -> 'RtspClient CreateSession set URL %s %d'
+  @0x484bad -> 'RtspClient'
+  @0x484bee -> 'rtsp://'
+  @0x484c4b -> 'ws://'
+  @0x484cad -> 'wss://'
+  @0x484d3b -> 'rtsp://'
+  @0x485384 -> '...'
+  @0x4853d7 -> 'Creating Secure RTSP handshake %hu %s %s using POCO RTSP client'
+  @0x4853e3 -> 'RtspClient'
+  @0x48549e -> ' Valid RTSP port was not received. Trying with default port: %hu'
+-- disasm 0x484cad --
+
+=== 'rtsps://' @0x125c270 rva=0x125da70 refs=1 ['0x3a3830'] ===
+-- strings near 0x3a3830 --
+  @0x3a312e -> "Could not find fmtp parameter delimeter ';'"
+  @0x3a313a -> 'SignalingHandler'
+  @0x3a3830 -> 'rtsps://'
+  @0x3a39e7 -> ','
+  @0x3a3a6b -> '...'
+  @0x3a3a94 -> '[RTSP Setup] Client Transport Entry: %s:%d'
+  @0x3a3ad8 -> 'SignalingHandler'
+  @0x3a3b0d -> '/%hu'
+  @0x3a3cea -> 'Client transport header: %s'
+  @0x3a3cf6 -> 'SignalingHandler'
+  @0x3a3e11 -> 'Control'
+-- disasm 0x3a3830 --
+  0x3a37b0: call 0x1c6b80
+  0x3a37b5: int3 
+  0x3a37b6: call 0x1bf2d0
+  0x3a37bb: nop 
+  0x3a37bc: call 0x1bf2d0
+  0x3a37c1: nop 
+  0x3a37c2: call 0x1bf4e0
+  0x3a37c7: nop 
+  0x3a37c8: call 0xe3ecc0
+  0x3a37cd: nop 
+  0x3a37ce: call 0xe3ecc0
+  0x3a37d3: int3 
+  0x3a37d4: int3 
+  0x3a37d5: int3 
+  0x3a37d6: int3 
+  0x3a37d7: int3 
+  0x3a37d8: int3 
+  0x3a37d9: int3 
+  0x3a37da: int3 
+  0x3a37db: int3 
+  0x3a37dc: int3 
+  0x3a37dd: int3 
+  0x3a37de: int3 
+  0x3a37df: int3 
+  0x3a37e0: add rcx, 8
+  0x3a37e4: jmp 0x1c6380
+  0x3a37e9: int3 
+  0x3a37ea: int3 
+  0x3a37eb: int3 
+  0x3a37ec: int3 
+  0x3a37ed: int3 
+  0x3a37ee: int3 
+  0x3a37ef: int3 
+  0x3a37f0: mov qword ptr [rsp + 0x18], rbx
+  0x3a37f5: push rdi
+  0x3a37f6: sub rsp, 0x50
+  0x3a37fa: mov rax, qword ptr [rip + 0x109fe7f]
+  0x3a3801: xor rax, rsp
+  0x3a3804: mov qword ptr [rsp + 0x48], rax
+  0x3a3809: mov rdi, rdx
+  0x3a380c: mov rbx, rcx
+  0x3a380f: xorps xmm0, xmm0
+  0x3a3812: movups xmmword ptr [rsp + 0x28], xmm0
+  0x3a3817: movdqa xmm1, xmmword ptr [rip + 0xf0d151]
+  0x3a381f: movdqu xmmword ptr [rsp + 0x38], xmm1
+  0x3a3825: mov byte ptr [rsp + 0x28], 0
+>>0x3a382a: mov r8d, 8
+>>0x3a3830: lea rdx, [rip + 0xeb9639]
+>>0x3a3837: mov rcx, rdi
+  0x3a383a: call 0xe85ce4
+  0x3a383f: test eax, eax
+  0x3a3841: jne 0x3a386b
+  0x3a3843: mov rax, qword ptr [rbx + 0x1f8]
+  0x3a384a: xor r9d, r9d
+  0x3a384d: lea edx, [r9 + 2]
+  0x3a3851: lea r8d, [r9 + 1]
+  0x3a3855: mov rcx, qword ptr [rax + 0x4020]
+  0x3a385c: call 0x26b6d0
+  0x3a3861: test rax, rax
+  0x3a3864: je 0x3a386b
+
+=== 'rtsps://' @0x125c288 rva=0x125da88 refs=1 ['0x3a10c8'] ===
+-- strings near 0x3a10c8 --
+  @0x3a08cd -> 'Not Enough Bandwidth'
+  @0x3a08d5 -> 'Session Not Found'
+  @0x3a08dd -> 'Method Not Valid in This State'
+  @0x3a08e5 -> 'Unsupported transport'
+  @0x3a08ed -> 'Destination unreachable'
+  @0x3a08f5 -> 'Internal Server Error'
+  @0x3a08fd -> 'Not implemented'
+  @0x3a0905 -> 'RTSP Version not supported'
+  @0x3a090d -> 'Option not supported'
+  @0x3a0915 -> 'Invalid CSeq Number'
+  @0x3a091d -> 'Malformed response'
+  @0x3a0925 -> 'Streamer communication failed'
+  @0x3a092d -> 'NOT FOUND'
+  @0x3a0fcd -> 'stoi argument out of range'
+  @0x3a0fda -> 'invalid stoi argument'
+  @0x3a0fed -> 'stoi argument out of range'
+  @0x3a0ffa -> 'invalid stoi argument'
+  @0x3a101c -> 'SignalingHandler'
+  @0x3a103f -> 'Timeout during RTSP command!'
+  @0x3a10ad -> 'rtsp://'
+  @0x3a10c8 -> 'rtsps://'
+  @0x3a10e3 -> 'ws://'
+  @0x3a10fe -> 'wss://'
+  @0x3a111b -> ':'
+  @0x3a1206 -> '...'
+  @0x3a1213 -> 'SignalingHandler'
+  @0x3a1244 -> 'getServerIpAndPort-- %s:%d'
+  @0x3a1405 -> 'duration'
+  @0x3a14a7 -> 'valueInt'
+-- disasm 0x3a10c8 --
+  0x3a1048: add byte ptr [rax], al
+  0x3a104a: add byte ptr [rax - 0x77], cl
+  0x3a104d: and al, 0x20
+  0x3a1050: mov ecx, dword ptr [rcx + r10]
+  0x3a1054: call 0x1d1a70
+  0x3a1059: mov rcx, qword ptr [rbx]
+  0x3a105c: test rcx, rcx
+  0x3a105f: je 0x3a106e
+  0x3a1061: mov rax, qword ptr [rcx]
+  0x3a1064: mov rax, qword ptr [rax + 0x40]
+  0x3a1068: call qword ptr [rip + 0xc3e0da]
+  0x3a106e: xor al, al
+  0x3a1070: add rsp, 0x30
+  0x3a1074: pop rbx
+  0x3a1075: ret 
+  0x3a1076: int3 
+  0x3a1077: int3 
+  0x3a1078: int3 
+  0x3a1079: int3 
+  0x3a107a: int3 
+  0x3a107b: int3 
+  0x3a107c: int3 
+  0x3a107d: int3 
+  0x3a107e: int3 
+  0x3a107f: int3 
+  0x3a1080: mov qword ptr [rsp + 0x20], rbx
+  0x3a1085: push rsi
+  0x3a1086: push rdi
+  0x3a1087: push r14
+  0x3a1089: sub rsp, 0x90
+  0x3a1090: mov rax, qword ptr [rip + 0x10a25e9]
+  0x3a1097: xor rax, rsp
+  0x3a109a: mov qword ptr [rsp + 0x80], rax
+  0x3a10a2: mov r14, r8
+  0x3a10a5: mov rsi, rdx
+  0x3a10a8: mov ebx, 7
+  0x3a10ad: lea rdx, [rip + 0xebbdac]
+  0x3a10b4: mov r8d, ebx
+  0x3a10b7: mov rdi, rcx
+  0x3a10ba: call 0xe85ce4
+  0x3a10bf: test eax, eax
+>>0x3a10c1: je 0x3a1118
+>>0x3a10c3: mov ebx, 8
+>>0x3a10c8: lea rdx, [rip + 0xebbdb9]
+>>0x3a10cf: mov r8d, ebx
+  0x3a10d2: mov rcx, rdi
+  0x3a10d5: call 0xe85ce4
+  0x3a10da: test eax, eax
+  0x3a10dc: je 0x3a1118
+  0x3a10de: mov ebx, 5
+  0x3a10e3: lea rdx, [rip + 0xebbd26]
+  0x3a10ea: mov r8d, ebx
+  0x3a10ed: mov rcx, rdi
+  0x3a10f0: call 0xe85ce4
+  0x3a10f5: test eax, eax
+  0x3a10f7: je 0x3a1118
+  0x3a10f9: mov ebx, 6
+  0x3a10fe: lea rdx, [rip + 0xebbd77]
+  0x3a1105: mov r8d, ebx
+  0x3a1108: mov rcx, rdi
+
+=== 'rtsps://' @0x1269ad8 rva=0x126b2d8 refs=1 ['0x484b27'] ===
+-- strings near 0x484b27 --
+  @0x484b27 -> 'rtsps://'
+  @0x484ba1 -> 'RtspClient CreateSession set URL %s %d'
+  @0x484bad -> 'RtspClient'
+  @0x484bee -> 'rtsp://'
+  @0x484c4b -> 'ws://'
+  @0x484cad -> 'wss://'
+  @0x484d3b -> 'rtsp://'
+-- disasm 0x484b27 --
+  0x484aa7: and al, 0xc8
+  0x484aa9: add al, byte ptr [rax]
+  0x484aab: add byte ptr [rax - 0x77], cl
+  0x484aae: test byte ptr [rax + rsi*4], ah
+  0x484ab1: add byte ptr [rax], al
+  0x484ab3: add byte ptr [rbx], dh
+  0x484ab5: dec dword ptr [rcx + 0xf74247c]
+  0x484abb: push rdi
+  0x484abc: ror byte ptr [rdi], 0x11
+  0x484abf: test byte ptr [rax + rsi*2], ah
+  0x484ac2: add dword ptr [rax], eax
+  0x484ac4: add byte ptr [rax - 0x77], cl
+  0x484ac7: mov esp, 0x18024
+  0x484acc: add byte ptr [rax - 0x39], cl
+  0x484acf: test byte ptr [rax + rcx*4], ah
+  0x484ad2: add dword ptr [rax], eax
+  0x484ad4: add byte ptr [rdi], cl
+  0x484ad6: add byte ptr [rax], al
+  0x484ad8: add byte ptr [rax - 0x78], al
+  0x484adb: mov esp, 0x17024
+  0x484ae0: add byte ptr [rdi], cl
+  0x484ae2: adc dword ptr [rsp + 0x150], eax
+  0x484ae9: mov qword ptr [rsp + 0x160], rdi
+  0x484af1: mov qword ptr [rsp + 0x168], 0xf
+  0x484afd: mov byte ptr [rsp + 0x150], dil
+  0x484b05: mov qword ptr [rsp + 0x78], rdi
+  0x484b0a: xor r13b, r13b
+  0x484b0d: mov byte ptr [rsp + 0x70], r13b
+  0x484b12: mov rcx, rdx
+  0x484b15: cmp qword ptr [rdx + 0x18], 0xf
+  0x484b1a: jbe 0x484b1f
+  0x484b1c: mov rcx, qword ptr [rdx]
+  0x484b1f: mov esi, 8
+>>0x484b24: mov r8d, esi
+>>0x484b27: lea rdx, [rip + 0xde5baa]
+>>0x484b2e: call 0xe85ce4
+  0x484b33: test eax, eax
+  0x484b35: jne 0x484bd9
+  0x484b3b: lea rax, [rsp + 0x170]
+  0x484b43: cmp rax, rbx
+  0x484b46: je 0x484b66
+  0x484b48: mov r8, qword ptr [rbx + 0x10]
+  0x484b4c: cmp qword ptr [rbx + 0x18], 0xf
+  0x484b51: jbe 0x484b56
+  0x484b53: mov rbx, qword ptr [rbx]
+  0x484b56: mov rdx, rbx
+  0x484b59: lea rcx, [rsp + 0x170]
+  0x484b61: call 0x1c6400
+  0x484b66: lea r8, [rsp + 0x170]
+  0x484b6e: cmp qword ptr [rsp + 0x188], 0xf
+  0x484b77: cmova r8, qword ptr [rsp + 0x170]
+  0x484b80: mov edx, dword ptr [rip + 0xff13ba]
+  0x484b86: mov rax, qword ptr gs:[0x58]
+  0x484b8f: mov ecx, 0x1c
+  0x484b94: mov rax, qword ptr [rax + rdx*8]
+  0x484b98: mov dword ptr [rsp + 0x30], esi
+  0x484b9c: mov qword ptr [rsp + 0x28], r8
+  0x484ba1: lea rdx, [rip + 0xde5ca8]
+  0x484ba8: mov qword ptr [rsp + 0x20], rdx
+  0x484bad: lea r9, [rip + 0xde5b44]
+
+=== 'ws://' @0x125c210 rva=0x125da10 refs=1 ['0x3a10e3'] ===
+-- strings near 0x3a10e3 --
+  @0x3a08e5 -> 'Unsupported transport'
+  @0x3a08ed -> 'Destination unreachable'
+  @0x3a08f5 -> 'Internal Server Error'
+  @0x3a08fd -> 'Not implemented'
+  @0x3a0905 -> 'RTSP Version not supported'
+  @0x3a090d -> 'Option not supported'
+  @0x3a0915 -> 'Invalid CSeq Number'
+  @0x3a091d -> 'Malformed response'
+  @0x3a0925 -> 'Streamer communication failed'
+  @0x3a092d -> 'NOT FOUND'
+  @0x3a0fcd -> 'stoi argument out of range'
+  @0x3a0fda -> 'invalid stoi argument'
+  @0x3a0fed -> 'stoi argument out of range'
+  @0x3a0ffa -> 'invalid stoi argument'
+  @0x3a101c -> 'SignalingHandler'
+  @0x3a103f -> 'Timeout during RTSP command!'
+  @0x3a10ad -> 'rtsp://'
+  @0x3a10c8 -> 'rtsps://'
+  @0x3a10e3 -> 'ws://'
+  @0x3a10fe -> 'wss://'
+  @0x3a111b -> ':'
+  @0x3a1206 -> '...'
+  @0x3a1213 -> 'SignalingHandler'
+  @0x3a1244 -> 'getServerIpAndPort-- %s:%d'
+  @0x3a1405 -> 'duration'
+  @0x3a14a7 -> 'valueInt'
+-- disasm 0x3a10e3 --
+  0x3a1063: add dword ptr [rax - 0x75], ecx
+  0x3a1066: call qword ptr [rip + 0xc3e0da]
+  0x3a106e: xor al, al
+  0x3a1070: add rsp, 0x30
+  0x3a1074: pop rbx
+  0x3a1075: ret 
+  0x3a1076: int3 
+  0x3a1077: int3 
+  0x3a1078: int3 
+  0x3a1079: int3 
+  0x3a107a: int3 
+  0x3a107b: int3 
+  0x3a107c: int3 
+  0x3a107d: int3 
+  0x3a107e: int3 
+  0x3a107f: int3 
+  0x3a1080: mov qword ptr [rsp + 0x20], rbx
+  0x3a1085: push rsi
+  0x3a1086: push rdi
+  0x3a1087: push r14
+  0x3a1089: sub rsp, 0x90
+  0x3a1090: mov rax, qword ptr [rip + 0x10a25e9]
+  0x3a1097: xor rax, rsp
+  0x3a109a: mov qword ptr [rsp + 0x80], rax
+  0x3a10a2: mov r14, r8
+  0x3a10a5: mov rsi, rdx
+  0x3a10a8: mov ebx, 7
+  0x3a10ad: lea rdx, [rip + 0xebbdac]
+  0x3a10b4: mov r8d, ebx
+  0x3a10b7: mov rdi, rcx
+  0x3a10ba: call 0xe85ce4
+  0x3a10bf: test eax, eax
+  0x3a10c1: je 0x3a1118
+  0x3a10c3: mov ebx, 8
+  0x3a10c8: lea rdx, [rip + 0xebbdb9]
+  0x3a10cf: mov r8d, ebx
+  0x3a10d2: mov rcx, rdi
+  0x3a10d5: call 0xe85ce4
+  0x3a10da: test eax, eax
+>>0x3a10dc: je 0x3a1118
+>>0x3a10de: mov ebx, 5
+>>0x3a10e3: lea rdx, [rip + 0xebbd26]
+>>0x3a10ea: mov r8d, ebx
+  0x3a10ed: mov rcx, rdi
+  0x3a10f0: call 0xe85ce4
+  0x3a10f5: test eax, eax
+  0x3a10f7: je 0x3a1118
+  0x3a10f9: mov ebx, 6
+  0x3a10fe: lea rdx, [rip + 0xebbd77]
+  0x3a1105: mov r8d, ebx
+  0x3a1108: mov rcx, rdi
+  0x3a110b: call 0xe85ce4
+  0x3a1110: test eax, eax
+  0x3a1112: jne 0x3a129b
+  0x3a1118: add rbx, rdi
+  0x3a111b: lea rdx, [rip + 0xe69572]
+  0x3a1122: mov rcx, rbx
+  0x3a1125: call 0xe3ef50
+  0x3a112a: xorps xmm0, xmm0
+  0x3a112d: lea rcx, [rsp + 0x60]
+
+=== 'ws://' @0x1269acc rva=0x126b2cc refs=1 ['0x484c4b'] ===
+-- strings near 0x484c4b --
+  @0x484b27 -> 'rtsps://'
+  @0x484ba1 -> 'RtspClient CreateSession set URL %s %d'
+  @0x484bad -> 'RtspClient'
+  @0x484bee -> 'rtsp://'
+  @0x484c4b -> 'ws://'
+  @0x484cad -> 'wss://'
+  @0x484d3b -> 'rtsp://'
+  @0x485384 -> '...'
+  @0x4853d7 -> 'Creating Secure RTSP handshake %hu %s %s using POCO RTSP client'
+  @0x4853e3 -> 'RtspClient'
+-- disasm 0x484c4b --
+  0x484bcb: mov edi, 0xffffffff
+
+=== 'rtsp://' @0x125c260 rva=0x125da60 refs=1 ['0x3a10ad'] ===
+-- strings near 0x3a10ad --
+  @0x3a08ad -> 'Not found'
+  @0x3a08b5 -> 'Method Not Allowed'
+  @0x3a08bd -> 'Proxy Authentication Required'
+  @0x3a08c5 -> 'Request Time-out'
+  @0x3a08cd -> 'Not Enough Bandwidth'
+  @0x3a08d5 -> 'Session Not Found'
+  @0x3a08dd -> 'Method Not Valid in This State'
+  @0x3a08e5 -> 'Unsupported transport'
+  @0x3a08ed -> 'Destination unreachable'
+  @0x3a08f5 -> 'Internal Server Error'
+  @0x3a08fd -> 'Not implemented'
+  @0x3a0905 -> 'RTSP Version not supported'
+  @0x3a090d -> 'Option not supported'
+  @0x3a0915 -> 'Invalid CSeq Number'
+  @0x3a091d -> 'Malformed response'
+  @0x3a0925 -> 'Streamer communication failed'
+  @0x3a092d -> 'NOT FOUND'
+  @0x3a0fcd -> 'stoi argument out of range'
+  @0x3a0fda -> 'invalid stoi argument'
+  @0x3a0fed -> 'stoi argument out of range'
+  @0x3a0ffa -> 'invalid stoi argument'
+  @0x3a101c -> 'SignalingHandler'
+  @0x3a103f -> 'Timeout during RTSP command!'
+  @0x3a10ad -> 'rtsp://'
+  @0x3a10c8 -> 'rtsps://'
+  @0x3a10e3 -> 'ws://'
+  @0x3a10fe -> 'wss://'
+  @0x3a111b -> ':'
+  @0x3a1206 -> '...'
+  @0x3a1213 -> 'SignalingHandler'
+  @0x3a1244 -> 'getServerIpAndPort-- %s:%d'
+  @0x3a1405 -> 'duration'
+  @0x3a14a7 -> 'valueInt'
+-- disasm 0x3a10ad --
+  0x3a102d: mov ebx, ecx
+  0x3a102f: mov r10d, 0x1c
+  0x3a1035: mov r8d, 0x40ca8831
+  0x3a103b: mov rcx, qword ptr [rax + rdx*8]
+  0x3a103f: lea rax, [rip + 0xebc232]
+  0x3a1046: mov edx, 5
+  0x3a104b: mov qword ptr [rsp + 0x20], rax
+  0x3a1050: mov ecx, dword ptr [rcx + r10]
+  0x3a1054: call 0x1d1a70
+  0x3a1059: mov rcx, qword ptr [rbx]
+  0x3a105c: test rcx, rcx
+  0x3a105f: je 0x3a106e
+  0x3a1061: mov rax, qword ptr [rcx]
+  0x3a1064: mov rax, qword ptr [rax + 0x40]
+  0x3a1068: call qword ptr [rip + 0xc3e0da]
+  0x3a106e: xor al, al
+  0x3a1070: add rsp, 0x30
+  0x3a1074: pop rbx
+  0x3a1075: ret 
+  0x3a1076: int3 
+  0x3a1077: int3 
+  0x3a1078: int3 
+  0x3a1079: int3 
+  0x3a107a: int3 
+  0x3a107b: int3 
+  0x3a107c: int3 
+  0x3a107d: int3 
+  0x3a107e: int3 
+  0x3a107f: int3 
+  0x3a1080: mov qword ptr [rsp + 0x20], rbx
+  0x3a1085: push rsi
+  0x3a1086: push rdi
+  0x3a1087: push r14
+  0x3a1089: sub rsp, 0x90
+  0x3a1090: mov rax, qword ptr [rip + 0x10a25e9]
+  0x3a1097: xor rax, rsp
+  0x3a109a: mov qword ptr [rsp + 0x80], rax
+  0x3a10a2: mov r14, r8
+  0x3a10a5: mov rsi, rdx
+>>0x3a10a8: mov ebx, 7
+>>0x3a10ad: lea rdx, [rip + 0xebbdac]
+>>0x3a10b4: mov r8d, ebx
+  0x3a10b7: mov rdi, rcx
+  0x3a10ba: call 0xe85ce4
+  0x3a10bf: test eax, eax
+  0x3a10c1: je 0x3a1118
+  0x3a10c3: mov ebx, 8
+  0x3a10c8: lea rdx, [rip + 0xebbdb9]
+  0x3a10cf: mov r8d, ebx
+  0x3a10d2: mov rcx, rdi
+  0x3a10d5: call 0xe85ce4
+  0x3a10da: test eax, eax
+  0x3a10dc: je 0x3a1118
+  0x3a10de: mov ebx, 5
+  0x3a10e3: lea rdx, [rip + 0xebbd26]
+  0x3a10ea: mov r8d, ebx
+  0x3a10ed: mov rcx, rdi
+  0x3a10f0: call 0xe85ce4
+  0x3a10f5: test eax, eax
+  0x3a10f7: je 0x3a1118
+
+=== 'rtsp://' @0x1269ae8 rva=0x126b2e8 refs=2 ['0x484bee', '0x484d3b'] ===
+-- strings near 0x484bee --
+  @0x484b27 -> 'rtsps://'
+  @0x484ba1 -> 'RtspClient CreateSession set URL %s %d'
+  @0x484bad -> 'RtspClient'
+  @0x484bee -> 'rtsp://'
+  @0x484c4b -> 'ws://'
+  @0x484cad -> 'wss://'
+  @0x484d3b -> 'rtsp://'
+  @0x485384 -> '...'
+  @0x4853d7 -> 'Creating Secure RTSP handshake %hu %s %s using POCO RTSP client'
+  @0x4853e3 -> 'RtspClient'
+-- disasm 0x484bee --
+  0x484b6e: cmp qword ptr [rsp + 0x188], 0xf
+  0x484b77: cmova r8, qword ptr [rsp + 0x170]
+  0x484b80: mov edx, dword ptr [rip + 0xff13ba]
+  0x484b86: mov rax, qword ptr gs:[0x58]
+  0x484b8f: mov ecx, 0x1c
+  0x484b94: mov rax, qword ptr [rax + rdx*8]
+  0x484b98: mov dword ptr [rsp + 0x30], esi
+  0x484b9c: mov qword ptr [rsp + 0x28], r8
+  0x484ba1: lea rdx, [rip + 0xde5ca8]
+  0x484ba8: mov qword ptr [rsp + 0x20], rdx
+  0x484bad: lea r9, [rip + 0xde5b44]
+  0x484bb4: mov edx, 2
+  0x484bb9: mov r8d, 0x223c43c5
+  0x484bbf: mov ecx, dword ptr [rcx + rax]
+  0x484bc2: call 0x1d1a70
+  0x484bc7: mov r13b, 1
+  0x484bca: movabs r15, 0x7fffffffffffffff
+  0x484bd4: jmp 0x484de6
+  0x484bd9: mov rcx, rbx
+  0x484bdc: cmp qword ptr [rbx + 0x18], 0xf
+  0x484be1: jbe 0x484be6
+  0x484be3: mov rcx, qword ptr [rbx]
+  0x484be6: mov esi, 7
+>>0x484beb: mov r8d, esi
+>>0x484bee: lea rdx, [rip + 0xde5af3]
+>>0x484bf5: call 0xe85ce4
+  0x484bfa: test eax, eax
+  0x484bfc: jne 0x484c38
+  0x484bfe: lea rax, [rsp + 0x170]
+  0x484c06: cmp rax, rbx
+  0x484c09: je 0x484c29
+  0x484c0b: mov r8, qword ptr [rbx + 0x10]
+  0x484c0f: cmp qword ptr [rbx + 0x18], 0xf
+  0x484c14: jbe 0x484c19
+  0x484c16: mov rbx, qword ptr [rbx]
+  0x484c19: mov rdx, rbx
+  0x484c1c: lea rcx, [rsp + 0x170]
+  0x484c24: call 0x1c6400
+  0x484c29: movabs r15, 0x7fffffffffffffff
+  0x484c33: jmp 0x484deb
+  0x484c38: mov rcx, rbx
+  0x484c3b: cmp qword ptr [rbx + 0x18], 0xf
+  0x484c40: jbe 0x484c45
+  0x484c42: mov rcx, qword ptr [rbx]
+  0x484c45: mov r8d, 5
+  0x484c4b: lea rdx, [rip + 0xde5a7a]
+  0x484c52: call 0xe85ce4
+  0x484c57: test eax, eax
+  0x484c59: jne 0x484c9a
+  0x484c5b: lea rax, [rsp + 0x170]
+  0x484c63: cmp rax, rbx
+  0x484c66: je 0x484c86
+  0x484c68: mov r8, qword ptr [rbx + 0x10]
+  0x484c6c: cmp qword ptr [rbx + 0x18], 0xf
+  0x484c71: jbe 0x484c76
+  0x484c73: mov rbx, qword ptr [rbx]
+  0x484c76: mov rdx, rbx
+  0x484c79: lea rcx, [rsp + 0x170]
+  0x484c81: call 0x1c6400
+  0x484c86: mov esi, 5
+-- strings near 0x484d3b --
+  @0x484b27 -> 'rtsps://'
+  @0x484ba1 -> 'RtspClient CreateSession set URL %s %d'
+  @0x484bad -> 'RtspClient'
+  @0x484bee -> 'rtsp://'
+  @0x484c4b -> 'ws://'
+  @0x484cad -> 'wss://'
+  @0x484d3b -> 'rtsp://'
+  @0x485384 -> '...'
+  @0x4853d7 -> 'Creating Secure RTSP handshake %hu %s %s using POCO RTSP client'
+  @0x4853e3 -> 'RtspClient'
+  @0x48549e -> ' Valid RTSP port was not received. Trying with default port: %hu'
+  @0x4854aa -> 'RtspClient'
+-- disasm 0x484d3b --
+  0x484cbb: jne 0x484cff
+  0x484cbd: lea rax, [rsp + 0x170]
+  0x484cc5: cmp rax, rbx
+  0x484cc8: je 0x484ce8
+  0x484cca: mov r8, qword ptr [rbx + 0x10]
+  0x484cce: cmp qword ptr [rbx + 0x18], 0xf
+  0x484cd3: jbe 0x484cd8
+  0x484cd5: mov rbx, qword ptr [rbx]
+  0x484cd8: mov rdx, rbx
+  0x484cdb: lea rcx, [rsp + 0x170]
+  0x484ce3: call 0x1c6400
+  0x484ce8: mov r13b, 1
+  0x484ceb: mov esi, 6
+  0x484cf0: movabs r15, 0x7fffffffffffffff
+  0x484cfa: jmp 0x484de6
+  0x484cff: mov rcx, qword ptr [rbx + 0x10]
+  0x484d03: movabs r15, 0x7fffffffffffffff
+  0x484d0d: mov rax, r15
+  0x484d10: sub rax, rcx
+  0x484d13: cmp rax, rsi
+  0x484d16: jb 0x485858
+  0x484d1c: lfence 
+  0x484d1f: mov rax, rbx
+  0x484d22: cmp qword ptr [rbx + 0x18], 0xf
+  0x484d27: jbe 0x484d2c
+  0x484d29: mov rax, qword ptr [rbx]
+  0x484d2c: mov qword ptr [rsp + 0x30], rcx
+  0x484d31: mov qword ptr [rsp + 0x28], rax
+>>0x484d36: mov qword ptr [rsp + 0x20], rsi
+>>0x484d3b: lea r9, [rip + 0xde59a6]
+>>0x484d42: mov r8, rbx
+  0x484d45: movzx edx, byte ptr [rsp + 0x70]
+  0x484d4a: lea rcx, [rsp + 0x190]
+  0x484d52: call 0x1c97c0
+  0x484d57: mov dword ptr [rsp + 0x74], 0x20
+  0x484d5f: mov rdx, qword ptr [rsp + 0x188]
+  0x484d67: cmp rdx, 0xf
+  0x484d6b: jbe 0x484da2
+  0x484d6d: inc rdx
+  0x484d70: mov rcx, qword ptr [rsp + 0x170]
+  0x484d78: mov rax, rcx
+  0x484d7b: cmp rdx, 0x1000
+  0x484d82: jb 0x484d9d
+  0x484d84: add rdx, 0x27
+  0x484d88: mov rcx, qword ptr [rcx - 8]
+  0x484d8c: sub rax, rcx
+  0x484d8f: add rax, -8
+  0x484d93: cmp rax, 0x1f
+  0x484d97: ja 0x48585e
+  0x484d9d: call 0xe2be50
+  0x484da2: movups xmm0, xmmword ptr [rsp + 0x190]
+  0x484daa: movups xmmword ptr [rsp + 0x170], xmm0
+  0x484db2: movups xmm1, xmmword ptr [rsp + 0x1a0]
+  0x484dba: movups xmmword ptr [rsp + 0x180], xmm1
+  0x484dc2: mov qword ptr [rsp + 0x1a0], rdi
+  0x484dca: mov qword ptr [rsp + 0x1a8], 0xf
+  0x484dd6: mov byte ptr [rsp + 0x190], r13b
+  0x484dde: cmp r14d, 3
+  0x484de2: sete r13b
+  0x484de6: mov byte ptr [rsp + 0x70], r13b
+
+=== /rtsp pointer slot table_rva=0x1205f00 ===
+lea of slot itself: 0 []
+RTSP_slot @0x12046e8 rva=0x1205ee8 lea_refs=0 []
+RTSPS_slot @0x12046f8 rva=0x1205ef8 lea_refs=0 []
+rtsp_path_slot @0x1204700 rva=0x1205f00 lea_refs=0 []
+WSS_slot @0x1204758 rva=0x1205f58 lea_refs=0 []
+WS_slot @0x1204760 rva=0x1205f60 lea_refs=0 []
+OPTIONS_slot @0x12046c0 rva=0x1205ec0 lea_refs=0 []
+table_base_guess @0x1204680 rva=0x1205e80 lea_refs=0 []
+
+=== rip-relative LOADS from pointer table region ===
+load hits: 0
+
+=== GET[space] @0x12a6a90 ===
+-- near 0x6bb021 --
+  @0x6bab3a -> 'Unknown error'
+  @0x6bb021 -> 'GET '
+  @0x6bb032 -> 'POST '
+  @0x6bb046 -> 'DELETE '
+  @0x6bb05a -> 'PUT '
+  @0x6bb093 -> ' HTTP/'
+  @0x6bb1a8 -> 'content-length: '
+-- near 0x946098 --
+  @0x945a9f -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945adc -> 'tls13_cipher'
+  @0x945ae8 -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945b10 -> 'tls13_cipher'
+  @0x945b1c -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945bcb -> 'tls13_validate_record_header'
+  @0x945bd7 -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945c0d -> 'tls13_validate_record_header'
+  @0x945c19 -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945c51 -> 'tls13_validate_record_header'
+  @0x945c5d -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945cfc -> 'tls13_post_process_record'
+  @0x945d08 -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945d34 -> 'tls13_post_process_record'
+  @0x945d40 -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945df9 -> 'tls13_add_record_padding'
+  @0x945e05 -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945ef9 -> 'tls13_add_record_padding'
+  @0x945f05 -> 'ssl\\record\\methods\\tls13_meth.c'
+  @0x945f66 -> 'tls_any_set_crypto_state'
+  @0x945f72 -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x945fef -> 'tls_validate_record_header'
+  @0x945ffb -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x946034 -> 'tls_validate_record_header'
+  @0x946040 -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x946098 -> 'GET '
+  @0x9460c2 -> 'POST '
+  @0x9460df -> 'HEAD '
+  @0x9460fc -> 'PATCH'
+  @0x946119 -> 'OPTIO'
+  @0x946136 -> 'DELET'
+  @0x946153 -> 'TRACE'
+  @0x946170 -> 'PUT '
+  @0x94618d -> 'CONNE'
+  @0x9461a5 -> 'tls_validate_record_header'
+  @0x9461b1 -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x9461e4 -> 'tls_validate_record_header'
+  @0x9461f0 -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x946210 -> 'tls_validate_record_header'
+  @0x94621c -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x946241 -> 'tls_validate_record_header'
+  @0x946248 -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x946297 -> 'tls_validate_record_header'
+  @0x9462a3 -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x9462da -> 'tls_validate_record_header'
+  @0x9462e6 -> 'ssl\\record\\methods\\tlsany_meth.c'
+  @0x9463e9 -> 'create_socket'
+  @0x9463f5 -> 'ssl\\rio\\rio_notifier.c'
+  @0x946404 -> 'calling WSASocketA() = %d'
+  @0x94644d -> 'create_socket'
+  @0x946459 -> 'ssl\\rio\\rio_notifier.c'
+  @0x94646b -> 'calling setsockopt()'
+  0x946038: insd dword ptr [rdi], dx
+  0x94603a: add byte ptr [rdx + 0x35], bh
+  0x946040: lea rcx, [rip + 0x6d44a9]
+  0x946047: call 0x9d1e20
+  0x94604c: xor r9d, r9d
+  0x94604f: mov rcx, rbx
+  0x946052: lea edx, [r9 + 0x32]
+  0x946056: lea r8d, [rdx + 0x6e]
+  0x94605a: call 0x91f020
+  0x94605f: xor eax, eax
+  0x946061: add rsp, 0x20
+  0x946065: pop rbx
+  0x946066: ret 
+  0x946067: cmp r8d, 0x10000
+  0x94606e: jne 0x946272
+  0x946074: and ecx, 0xffffff00
+  0x94607a: cmp ecx, 0x300
+  0x946080: je 0x9462cb
+  0x946086: cmp dword ptr [rbx + 0x10d4], 0
+  0x94608d: je 0x946237
+>>0x946093: mov qword ptr [rsp + 0x30], rdi
+>>0x946098: lea rdx, [rip + 0x9615f1]
+>>0x94609f: mov rdi, qword ptr [rbx + 0xff0]
+  0x9460a6: mov r8d, 4
+  0x9460ac: mov rcx, rdi
+  0x9460af: call 0xe86370
+  0x9460b4: test eax, eax
+  0x9460b6: je 0x94620b
+  0x9460bc: mov r8d, 5
+  0x9460c2: lea rdx, [rip + 0x9615bf]
+  0x9460c9: mov rcx, rdi
+  0x9460cc: call 0xe86370
+  0x9460d1: test eax, eax
+  0x9460d3: je 0x94620b
+  0x9460d9: mov r8d, 5
+  0x9460df: lea rdx, [rip + 0x6d444e]
+  0x9460e6: mov rcx, rdi
+  0x9460e9: call 0xe86370
+  0x9460ee: test eax, eax
+  0x9460f0: je 0x94620b
+  0x9460f6: mov r8d, 5
+  0x9460fc: lea rdx, [rip + 0x6d4439]
+  0x946103: mov rcx, rdi
+  0x946106: call 0xe86370
+  0x94610b: test eax, eax
+  0x94610d: je 0x94620b
+  0x946113: mov r8d, 5
+  0x946119: lea rdx, [rip + 0x6d4424]
+  0x946120: mov rcx, rdi
+  0x946123: call 0xe86370
+
+=== GET\0 @0xfeb9f4 rva=0xfed1f4 refs=[10891956, 10897522] ===
+-- near 0xa632b4 --
+  @0xa62aca -> 'error response content'
+  @0xa62af6 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62b02 -> 'crypto\\http\\http_client.c'
+  @0xa62b3f -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62b4b -> 'crypto\\http\\http_client.c'
+  @0xa62b85 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62b91 -> 'crypto\\http\\http_client.c'
+  @0xa62ba1 -> 'expected=%s, actual=%s'
+  @0xa62bc7 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62bd3 -> 'crypto\\http\\http_client.c'
+  @0xa62be4 -> 'input=%s'
+  @0xa62c00 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62c0c -> 'crypto\\http\\http_client.c'
+  @0xa62c27 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62c33 -> 'crypto\\http\\http_client.c'
+  @0xa62c43 -> 'expected=%s'
+  @0xa62c71 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62c7d -> 'crypto\\http\\http_client.c'
+  @0xa62cb6 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62cc2 -> 'crypto\\http\\http_client.c'
+  @0xa62cef -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62cfb -> 'crypto\\http\\http_client.c'
+  @0xa62d16 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62d22 -> 'crypto\\http\\http_client.c'
+  @0xa62d6c -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62da2 -> 'OSSL_HTTP_REQ_CTX_nbio'
+  @0xa62dae -> 'crypto\\http\\http_client.c'
+  @0xa62ee0 -> 'crypto\\http\\http_client.c'
+  @0xa62ef9 -> 'crypto\\http\\http_client.c'
+  @0xa62f3b -> 'crypto\\http\\http_client.c'
+  @0xa62f73 -> 'OSSL_HTTP_REQ_CTX_new'
+  @0xa62f7f -> 'crypto\\http\\http_client.c'
+  @0xa6305d -> 'OSSL_HTTP_REQ_CTX_set_expected'
+  @0xa63069 -> 'crypto\\http\\http_client.c'
+  @0xa630b4 -> 'OSSL_HTTP_REQ_CTX_set_expected'
+  @0xa630c0 -> 'crypto\\http\\http_client.c'
+  @0xa630e5 -> 'crypto\\http\\http_client.c'
+  @0xa6310d -> 'crypto\\http\\http_client.c'
+  @0xa63187 -> 'OSSL_HTTP_REQ_CTX_set_max_response_hdr_lines'
+  @0xa63193 -> 'crypto\\http\\http_client.c'
+  @0xa631d7 -> 'OSSL_HTTP_REQ_CTX_set_max_response_length'
+  @0xa631e3 -> 'crypto\\http\\http_client.c'
+  @0xa63252 -> 'OSSL_HTTP_REQ_CTX_set_request_line'
+  @0xa6325e -> 'crypto\\http\\http_client.c'
+  @0xa632b4 -> 'GET'
+  @0xa632bd -> '%s '
+  @0xa632cc -> 'POST'
+  @0xa632ec -> 'http://%s'
+  @0xa6330c -> ':%s'
+  @0xa6332d -> '/'
+  @0xa6333c -> 'http://'
+  @0xa63359 -> 'OSSL_HTTP_REQ_CTX_set_request_line'
+  @0xa63365 -> 'crypto\\http\\http_client.c'
+  @0xa63387 -> '/'
+  @0xa63482 -> 'OSSL_HTTP_exchange'
+  @0xa6348e -> 'crypto\\http\\http_client.c'
+  @0xa63521 -> 'OSSL_HTTP_REQ_CTX_exchange'
+  @0xa6352d -> 'crypto\\http\\http_client.c'
+  @0xa63545 -> 'OSSL_HTTP_REQ_CTX_exchange'
+  @0xa63551 -> 'crypto\\http\\http_client.c'
+  @0xa635a1 -> 'OSSL_HTTP_exchange'
+  @0xa635ad -> 'crypto\\http\\http_client.c'
+  @0xa635d2 -> 'crypto\\http\\http_client.c'
+  @0xa63662 -> ':'
+  @0xa6367a -> 's'
+  @0xa6369e -> 'server=http%s://%s%s%s'
+  @0xa636c2 -> ' proxy='
+  @0xa636da -> ' violating the protocol'
+  @0xa636e1 -> ', likely because it requires the use of TLS'
+  @0xa636f1 -> ' peer has disconnected%s'
+  @0xa637b0 -> 'OSSL_HTTP_get'
+  @0xa637bc -> 'crypto\\http\\http_client.c'
+  @0xa637ed -> 'crypto\\http\\http_client.c'
+  @0xa6391e -> 'crypto\\http\\http_client.c'
+  @0xa6395c -> 'https:'
+  @0xa63974 -> 'https:'
+  @0xa639c7 -> 'crypto\\http\\http_client.c'
+  @0xa639d9 -> 'crypto\\http\\http_client.c'
+  @0xa63a0c -> 'crypto\\http\\http_client.c'
+  @0xa63a22 -> 'crypto\\http\\http_client.c'
+  @0xa63a77 -> 'crypto\\http\\http_client.c'
+  @0xa63aa0 -> 'crypto\\http\\http_client.c'
+  0xa63234: add al, ch
+  0xa63236: not byte ptr [rsp + rdi - 0x1fd4b800]
+  0xa6323d: mov rdi, r9
+  0xa63240: mov rsi, r8
+  0xa63243: mov ebp, edx
+  0xa63245: mov rbx, rcx
+  0xa63248: test rcx, rcx
+  0xa6324b: jne 0xa63293
+  0xa6324d: call 0x9d1d00
+  0xa63252: lea r8, [rip + 0x607f17]
+  0xa63259: mov edx, 0xb8
+  0xa6325e: lea rcx, [rip + 0x607e7b]
+  0xa63265: call 0x9d1e20
+  0xa6326a: xor r8d, r8d
+  0xa6326d: mov edx, 0xc0102
+  0xa63272: mov ecx, 0x3d
+  0xa63277: call 0x9d1f80
+  0xa6327c: xor eax, eax
+  0xa6327e: mov rbx, qword ptr [rsp + 0x30]
+  0xa63283: mov rbp, qword ptr [rsp + 0x38]
+  0xa63288: mov rsi, qword ptr [rsp + 0x40]
+  0xa6328d: add rsp, 0x20
+  0xa63291: pop rdi
+  0xa63292: ret 
+  0xa63293: mov rcx, qword ptr [rcx + 0x58]
+  0xa63297: call 0x96b7f0
+  0xa6329c: call 0x96df70
+  0xa632a1: mov rcx, rax
+  0xa632a4: call 0x96c260
+  0xa632a9: mov qword ptr [rbx + 0x58], rax
+>>0xa632ad: test rax, rax
+>>0xa632b0: je 0xa6327c
+>>0xa632b2: xor ecx, ecx
+>>0xa632b4: lea r8, [rip + 0x589339]
+>>0xa632bb: test ebp, ebp
+  0xa632bd: lea rdx, [rip + 0x607ed8]
+  0xa632c4: setne cl
+  0xa632c7: test ebp, ebp
+  0xa632c9: mov dword ptr [rbx + 0x68], ecx
+  0xa632cc: lea rcx, [rip + 0x607ec1]
+  0xa632d3: cmovne r8, rcx
+  0xa632d7: mov rcx, rax
+  0xa632da: call 0x96e160
+  0xa632df: test eax, eax
+  0xa632e1: jle 0xa6327c
+  0xa632e3: test rsi, rsi
+  0xa632e6: je 0xa63323
+  0xa632e8: mov rcx, qword ptr [rbx + 0x58]
+  0xa632ec: lea rdx, [rip + 0x607ead]
+  0xa632f3: mov r8, rsi
+  0xa632f6: call 0x96e160
+  0xa632fb: test eax, eax
+  0xa632fd: jle 0xa6327c
+  0xa63303: test rdi, rdi
+  0xa63306: je 0xa63323
+  0xa63308: mov rcx, qword ptr [rbx + 0x58]
+  0xa6330c: lea rdx, [rip + 0x607e99]
+  0xa63313: mov r8, rdi
+  0xa63316: call 0x96e160
+  0xa6331b: test eax, eax
+-- near 0xa64872 --
+  @0xa640b3 -> 'crypto\\http\\http_client.c'
+  @0xa640de -> 'crypto\\http\\http_client.c'
+  @0xa640fe -> 'crypto\\http\\http_client.c'
+  @0xa64143 -> 'OSSL_HTTP_REQ_CTX_new'
+  @0xa6414f -> 'crypto\\http\\http_client.c'
+  @0xa641c8 -> 'crypto\\http\\http_client.c'
+  @0xa6425b -> '443'
+  @0xa64304 -> 'crypto\\http\\http_client.c'
+  @0xa6432d -> '%s:%s'
+  @0xa64376 -> 'crypto\\http\\http_client.c'
+  @0xa643dd -> 'crypto\\http\\http_client.c'
+  @0xa643f8 -> 'crypto\\http\\http_client.c'
+  @0xa644ae -> 'HTTP/'
+  @0xa644d3 -> '1.'
+  @0xa644ef -> 'OSSL_HTTP_proxy_connect'
+  @0xa644fb -> 'crypto\\http\\http_client.c'
+  @0xa6455e -> 'crypto\\http\\http_client.c'
+  @0xa64592 -> 'crypto\\http\\http_client.c'
+  @0xa645a7 -> 'crypto\\http\\http_client.c'
+  @0xa645c4 -> ' 2'
+  @0xa64639 -> 'OSSL_HTTP_proxy_connect'
+  @0xa64645 -> 'crypto\\http\\http_client.c'
+  @0xa64656 -> 'reason=%s'
+  @0xa646b0 -> 'OSSL_HTTP_proxy_connect'
+  @0xa646bc -> 'crypto\\http\\http_client.c'
+  @0xa646f0 -> 'timed out'
+  @0xa646f7 -> 'failed waiting for data'
+  @0xa6471c -> '%s: out of memory'
+  @0xa64732 -> 'OSSL_HTTP_proxy_connect'
+  @0xa6473e -> 'crypto\\http\\http_client.c'
+  @0xa647a2 -> 'OSSL_HTTP_set1_request'
+  @0xa647ae -> 'crypto\\http\\http_client.c'
+  @0xa64803 -> 'OSSL_HTTP_set1_request'
+  @0xa6480f -> 'crypto\\http\\http_client.c'
+  @0xa64872 -> 'GET'
+  @0xa6487e -> '%s '
+  @0xa6488b -> 'POST'
+  @0xa648ac -> 'http://%s'
+  @0xa648cc -> ':%s'
+  @0xa648e8 -> '/'
+  @0xa648f7 -> 'http://'
+  @0xa64914 -> 'OSSL_HTTP_REQ_CTX_set_request_line'
+  @0xa64920 -> 'crypto\\http\\http_client.c'
+  @0xa6494b -> '/'
+  @0xa649bd -> 'OSSL_HTTP_REQ_CTX_set_expected'
+  @0xa649c9 -> 'crypto\\http\\http_client.c'
+  @0xa649ef -> 'crypto\\http\\http_client.c'
+  @0xa64a19 -> 'crypto\\http\\http_client.c'
+  @0xa64ce6 -> 'host'
+  @0xa64d35 -> ': '
+  @0xa64db0 -> 'Host'
+  @0xa64dcd -> ': '
+  @0xa64e23 -> 'OSSL_HTTP_REQ_CTX_add1_header'
+  @0xa64e2f -> 'crypto\\http\\http_client.c'
+  @0xa64e55 -> 'OSSL_HTTP_REQ_CTX_add1_header'
+  @0xa64e61 -> 'crypto\\http\\http_client.c'
+  @0xa64ef8 -> 'crypto\\http\\http_client.c'
+  @0xa64f3c -> 'crypto\\http\\http_client.c'
+  @0xa64fa3 -> 'check_max_len'
+  @0xa64faf -> 'crypto\\http\\http_client.c'
+  @0xa64fcd -> '%s length=%zu, max=%zu'
+  @0xa65057 -> 'check_set_resp_len'
+  @0xa65063 -> 'crypto\\http\\http_client.c'
+  0xa647f2: jns 0xa6482c
+  0xa647f4: add byte ptr [rbp + 0x41], dh
+  0xa647f7: cmp qword ptr [rcx + 0x48], 0
+  0xa647fc: jne 0xa64832
+  0xa647fe: call 0x9d1d00
+  0xa64803: lea r8, [rip + 0x606c5e]
+  0xa6480a: mov edx, 0x495
+  0xa6480f: lea rcx, [rip + 0x6068ca]
+  0xa64816: call 0x9d1e20
+  0xa6481b: xor r8d, r8d
+  0xa6481e: lea ecx, [rbp + 0x3c]
+  0xa64821: mov edx, 0x80106
+  0xa64826: call 0x9d1f80
+  0xa6482b: xor eax, eax
+  0xa6482d: jmp 0xa64a85
+  0xa64832: mov rsi, qword ptr [rcx + 0x48]
+  0xa64836: jmp 0xa6483a
+  0xa64838: xor esi, esi
+  0xa6483a: mov qword ptr [rcx + 0x98], rax
+  0xa64841: mov qword ptr [rsp + 0x50], r14
+  0xa64846: mov r14, qword ptr [rcx + 0x50]
+  0xa6484a: mov rcx, qword ptr [rcx + 0x58]
+  0xa6484e: call 0x96b7f0
+  0xa64853: call 0x96df70
+  0xa64858: mov rcx, rax
+  0xa6485b: call 0x96c260
+  0xa64860: mov qword ptr [rbx + 0x58], rax
+  0xa64864: mov rcx, rax
+  0xa64867: test rax, rax
+  0xa6486a: je 0xa64a7c
+>>0xa64870: xor eax, eax
+>>0xa64872: lea r8, [rip + 0x587d7b]
+>>0xa64879: cmp qword ptr [rsp + 0x60], rax
+  0xa6487e: lea rdx, [rip + 0x606917]
+  0xa64885: setne al
+  0xa64888: mov dword ptr [rbx + 0x68], eax
+  0xa6488b: lea rax, [rip + 0x606902]
+  0xa64892: cmovne r8, rax
+  0xa64896: call 0x96e160
+  0xa6489b: test eax, eax
+  0xa6489d: jle 0xa64a7c
+  0xa648a3: test rsi, rsi
+  0xa648a6: je 0xa648e3
+  0xa648a8: mov rcx, qword ptr [rbx + 0x58]
+  0xa648ac: lea rdx, [rip + 0x6068ed]
+  0xa648b3: mov r8, rsi
+  0xa648b6: call 0x96e160
+  0xa648bb: test eax, eax
+  0xa648bd: jle 0xa64a7c
+  0xa648c3: test r14, r14
+  0xa648c6: je 0xa648e3
+  0xa648c8: mov rcx, qword ptr [rbx + 0x58]
+  0xa648cc: lea rdx, [rip + 0x6068d9]
+  0xa648d3: mov r8, r14
+  0xa648d6: call 0x96e160
+  0xa648db: test eax, eax
+  0xa648dd: jle 0xa64a7c
+  0xa648e3: test rdi, rdi
+  0xa648e6: jne 0xa648f1
+  0xa648e8: lea rdi, [rip + 0x7fa149]
+
+b'NvWebSocketSession\x00' @0x12ab658
+-- refs 0x6fe3d8 strings --
+  @0x6fdeeb -> 'sendRequest error: %s'
+  @0x6fdef7 -> 'RtspSessionPocoBase'
+  @0x6fe198 -> 'recv response Error: %s'
+  @0x6fe1a4 -> 'RtspSessionPocoBase'
+  @0x6fe356 -> ' nWrote: %d, response.getContentLength():%d'
+  @0x6fe362 -> 'RtspSessionPocoBase'
+  @0x6fe3cc -> 'Not a valid request ID.'
+  @0x6fe3d8 -> 'NvWebSocketSession'
+  @0x6fe574 -> 'RtspClientSessionLegacy->abort()'
+  @0x6fe580 -> 'RtspSessionPocoBase'
+  @0x6fe632 -> 'RtspSessionPocoBase'
+  @0x6fe657 -> 'Attempting sendReq/receiveResponse(): %d'
+  @0x6fe6cb -> 'UnInitialized'
+  @0x6fe6d3 -> 'RequestPrepared'
+  @0x6fe6db -> 'SendingRequest'
+  @0x6fe6e3 -> 'RequestSent'
+  @0x6fe6eb -> 'RequestingResponse'
+  @0x6fe6f3 -> 'ReceivingResponse'
+  @0x6fe6fb -> 'ReceivedResponseHdr'
+  @0x6fe703 -> 'ReceivedResponse'
+  @0x6fe70b -> 'Undefined RtspRequestState'
+-- refs 0x722310 strings --
+  @0x722310 -> 'NvWebSocketSession'
+  @0x7223bd -> 'RTSP web socket disconnected.'
+  @0x7223c9 -> 'NvWebSocketSession'
+  @0x722858 -> 'Not a valid request ID.'
+  @0x722864 -> 'NvWebSocketSession'
+-- refs 0x7223c9 strings --
+  @0x722310 -> 'NvWebSocketSession'
+  @0x7223bd -> 'RTSP web socket disconnected.'
+  @0x7223c9 -> 'NvWebSocketSession'
+  @0x722858 -> 'Not a valid request ID.'
+  @0x722864 -> 'NvWebSocketSession'
+-- refs 0x722864 strings --
+  @0x722310 -> 'NvWebSocketSession'
+  @0x7223bd -> 'RTSP web socket disconnected.'
+  @0x7223c9 -> 'NvWebSocketSession'
+  @0x722858 -> 'Not a valid request ID.'
+  @0x722864 -> 'NvWebSocketSession'
+  @0x722c70 -> 'WARNING!  %zu HTTP Responses have piled up!'
+  @0x722c7c -> 'NvWebSocketSession'
+  @0x722e37 -> 'invalid stoi argument'
+  @0x722e43 -> 'stoi argument out of range'
+  @0x722e4f -> 'Invalid request ID'
+
+b'WebSocket Loop Starting.\x00' @0x12688f0
+-- refs 0x467780 strings --
+  @0x4671c6 -> 'list too long'
+  @0x467469 -> 'Failed to send too many times'
+  @0x467676 -> 'Cannot resize buffer which does not own its storage.'
+  @0x467780 -> 'WebSocket Loop Starting.'
+  @0x46778c -> 'WebSocket'
+  @0x467cae -> 'WebSocket Loop Exiting.'
+  @0x467cba -> 'WebSocket'
+
+b'Creating Secure RTSP handshake' @0x1269b60
+-- refs 0x4853d7 strings --
+  @0x485384 -> '...'
+  @0x4853d7 -> 'Creating Secure RTSP handshake %hu %s %s using POCO RTSP client'
+  @0x4853e3 -> 'RtspClient'
+  @0x48549e -> ' Valid RTSP port was not received. Trying with default port: %hu'
+  @0x4854aa -> 'RtspClient'
+  @0x485700 -> 'Creating RTSP handshake client using POCO at port %hu'
+  @0x48570c -> 'RtspClient'
+
+b'WSS client using' @-0x1
+
+b'%s client using %s SSL\x00' @0x12a9c68
+-- refs 0x6fc265 strings --
+  @0x6fbccb -> '...'
+  @0x6fbd0c -> "Establishing RTSP session with protocol TAG '%s' and URL '%s' Domain Name %s"
+  @0x6fbd18 -> 'RtspSessionPocoBase'
+  @0x6fc08e -> 'result == RESULT_OK'
+  @0x6fc095 -> 'CNvEvent'
+  @0x6fc1df -> '2-way'
+  @0x6fc1e8 -> '1-way'
+  @0x6fc230 -> 'no'
+  @0x6fc265 -> '%s client using %s SSL'
+  @0x6fc271 -> 'RtspSessionPocoBase'
+  @0x6fc382 -> 'm_pRtspClientSessionLegacy'
+  @0x6fc389 -> 'Initialize'
+  @0x6fc3c3 -> 'clientHeaderVersion: %s'
+  @0x6fc3cf -> 'RtspSessionPocoBase'
+  @0x6fc64f -> 'Header version: %s'
+  @0x6fc65b -> 'RtspSessionPocoBase'
+  @0x6fc6be -> 'Header version empty!'
+  @0x6fc6ca -> 'RtspSessionPocoBase'
+
+b'HTTP/1.1\x00' @0xff0488
+-- refs 0x7c3252 strings --
+  @0x7c2d6e -> 'Unknown'
+  @0x7c2d77 -> 'ipv6'
+  @0x7c2f72 -> 'Success'
+  @0x7c3064 -> 'Connection termination. Connection state: %d, chunked: %d, length: %d'
+  @0x7c307e -> 'Common: http'
+  @0x7c3098 -> 'Connection closed unexpectedly'
+  @0x7c3123 -> 'Success'
+  @0x7c313b -> 'Request already issued'
+  @0x7c31be -> ' '
+  @0x7c320b -> ' '
+  @0x7c3252 -> 'HTTP/1.1'
+  @0x7c34c6 -> 'Host'
+  @0x7c34d5 -> 'identity'
+  @0x7c34dc -> 'Accept-Encoding'
+  @0x7c37c7 -> 'Success'
+  @0x7c37e8 -> 'Connection has been cancelled.'
+  @0x7c37ef -> 'Common: http'
+  @0x7c3813 -> 'Cancelled'
+
+=== Sec-WebSocket-Key refs (should be Poco WS handshake) ===
+abs VA hits for Sec-WebSocket-Key: []
+upgrade\0websocket block @0x1127388
+  b'upgrade\x00' @0x1127388 refs=1 ['0xca6566']
+  b'websocket\x00' @0x1127390 refs=0 []
+  b'13\x00' @0x1127370 refs=0 []
+  b'Sec-WebSocket-Version\x00' @0x11273a0 refs=0 []
+
+=== any RIP refs into Poco WS handshake string block ===
+  rva=0x1128b88 'upgrade' refs=['0xca6566']
+  0xca6526: add byte ptr [rax], al
+  0xca6528: mov rcx, rdi
+  0xca652b: call 0xe2be50
+  0xca6530: mov rbx, qword ptr [rsp + 0x30]
+  0xca6535: mov rax, rdi
+  0xca6538: add rsp, 0x20
+  0xca653c: pop rdi
+  0xca653d: ret 
+  0xca653e: int3 
+  0xca653f: int3 
+  0xca6540: mov qword ptr [rsp + 0x18], rbx
+  0xca6545: push rbp
+  0xca6546: push rsi
+  0xca6547: push rdi
+  0xca6548: push r14
+  0xca654a: push r15
+  0xca654c: lea rbp, [rsp - 0x50]
+  0xca6551: sub rsp, 0x150
+  0xca6558: mov rax, qword ptr [rip + 0x79d121]
+>>0xca655f: xor rax, rsp
+>>0xca6562: mov qword ptr [rbp + 0x40], rax
+>>0xca6566: mov rax, qword ptr [rip + 0x481a1b]
+>>0xca656d: lea r8, [rsp + 0x50]
+  0xca6572: movdqa xmm0, xmmword ptr [rip + 0x60a3e6]
+  0xca657a: xor r14d, r14d
+  0xca657d: movdqa xmm1, xmmword ptr [rip + 0x60a48b]
+  0xca6585: mov rsi, rdx
+  0xca6588: mov dword ptr [rsp + 0x50], eax
+  0xca658c: lea rdx, [rbp - 0x50]
+  0xca6590: movzx eax, word ptr [rip + 0x4819f5]
+  rva=0x1128c78 'No WebSocket handshake' refs=['0xca6e62']
+  rva=0x1128bb8 'Missing Sec-WebSocket-Version in handshake request' refs=['0xca6ea2']
+  0xca6e62: lea rdx, [rip + 0x48120f]
+  0xca6e69: lea rcx, [rbp - 0x30]
+  0xca6e6d: call 0x1bf510
+  0xca6e72: mov r8d, 1
+  0xca6e78: lea rdx, [rbp - 0x30]
+  0xca6e7c: lea rcx, [rbp - 0x10]
+  0xca6e80: call 0xc8f4e0
+  0xca6e85: lea rdx, [rip + 0x788bd4]
+  0xca6e8c: lea rcx, [rbp - 0x10]
+  0xca6e90: call 0xe2dbd0
+  0xca6e95: int3 
+  0xca6e96: call 0xe3ecc0
+>>0xca6e9b: int3 
+>>0xca6e9c: call 0xe3ecc0
+>>0xca6ea1: int3 
+>>0xca6ea2: lea rdx, [rip + 0x48110f]
+>>0xca6ea9: lea rcx, [rbp - 0x30]
+  0xca6ead: call 0x1bf510
+  0xca6eb2: mov r8d, 2
+  0xca6eb8: lea rdx, [rbp - 0x30]
+  0xca6ebc: lea rcx, [rbp - 0x10]
+  0xca6ec0: call 0xc8f4e0
+  0xca6ec5: lea rdx, [rip + 0x788b94]
+  0xca6ecc: lea rcx, [rbp - 0x10]
+  0xca6ed0: call 0xe2dbd0
+  0xca6ed5: int3 
+  0xca6ed6: lea rdx, [rip + 0x481113]
+  0xca6edd: lea rcx, [rbp - 0x30]
+  0xca6ee1: call 0x1bf510
+  0xca6ee6: mov r9d, 3
+  rva=0x1128bf0 'Unsupported WebSocket version requested' refs=['0xca6ed6']
+  0xca6e96: call 0xe3ecc0
+  0xca6e9b: int3 
+  0xca6e9c: call 0xe3ecc0
+  0xca6ea1: int3 
+  0xca6ea2: lea rdx, [rip + 0x48110f]
+  0xca6ea9: lea rcx, [rbp - 0x30]
+  0xca6ead: call 0x1bf510
+  0xca6eb2: mov r8d, 2
+  0xca6eb8: lea rdx, [rbp - 0x30]
+  0xca6ebc: lea rcx, [rbp - 0x10]
+  0xca6ec0: call 0xc8f4e0
+  0xca6ec5: lea rdx, [rip + 0x788b94]
+  0xca6ecc: lea rcx, [rbp - 0x10]
+>>0xca6ed0: call 0xe2dbd0
+>>0xca6ed5: int3 
+>>0xca6ed6: lea rdx, [rip + 0x481113]
+>>0xca6edd: lea rcx, [rbp - 0x30]
+  0xca6ee1: call 0x1bf510
+  0xca6ee6: mov r9d, 3
+  0xca6eec: lea r8, [rbp - 0x70]
+  0xca6ef0: lea rdx, [rbp - 0x30]
+  0xca6ef4: lea rcx, [rbp - 0x10]
+  0xca6ef8: call 0xc8f480
+  0xca6efd: lea rdx, [rip + 0x788b5c]
+  0xca6f04: lea rcx, [rbp - 0x10]
+  0xca6f08: call 0xe2dbd0
+  0xca6f0d: int3 
+  0xca6f0e: call 0xe3ecc0
+  0xca6f13: int3 
+  0xca6f14: lea rdx, [rip + 0x481115]
+  rva=0x1128c30 'Missing Sec-WebSocket-Key in handshake request' refs=['0xca6f14']
+  0xca6ed4: add ah, cl
+  0xca6ed6: lea rdx, [rip + 0x481113]
+  0xca6edd: lea rcx, [rbp - 0x30]
+  0xca6ee1: call 0x1bf510
+  0xca6ee6: mov r9d, 3
+  0xca6eec: lea r8, [rbp - 0x70]
+  0xca6ef0: lea rdx, [rbp - 0x30]
+  0xca6ef4: lea rcx, [rbp - 0x10]
+  0xca6ef8: call 0xc8f480
+  0xca6efd: lea rdx, [rip + 0x788b5c]
+  0xca6f04: lea rcx, [rbp - 0x10]
+  0xca6f08: call 0xe2dbd0
+>>0xca6f0d: int3 
+>>0xca6f0e: call 0xe3ecc0
+>>0xca6f13: int3 
+>>0xca6f14: lea rdx, [rip + 0x481115]
+>>0xca6f1b: lea rcx, [rbp - 0x30]
+  0xca6f1f: call 0x1bf510
+  0xca6f24: mov r8d, 4
+  0xca6f2a: lea rdx, [rbp - 0x30]
+  0xca6f2e: lea rcx, [rbp - 0x10]
+  0xca6f32: call 0xc8f4e0
+  0xca6f37: lea rdx, [rip + 0x788b22]
+  0xca6f3e: lea rcx, [rbp - 0x10]
+  0xca6f42: call 0xe2dbd0
+  0xca6f47: int3 
+  0xca6f48: call 0xe3ecc0
+  0xca6f4d: int3 
+  0xca6f4e: call 0xe3ecc0
+  0xca6f53: int3 
+  rva=0x1128d00 'No Connection: Upgrade header in handshake response' refs=['0xca753e']
+  0xca74fe: mov byte ptr [rcx], al
+  0xca7500: add byte ptr [rax], al
+  0xca7502: mov rax, rsi
+  0xca7505: mov rsi, qword ptr [rsp + 0x138]
+  0xca750d: mov rdi, qword ptr [rsp + 0x130]
+  0xca7515: mov rcx, qword ptr [rbp + 0x20]
+  0xca7519: xor rcx, rsp
+  0xca751c: call 0xe2bf80
+  0xca7521: add rsp, 0x140
+  0xca7528: pop r15
+  0xca752a: pop r14
+  0xca752c: pop r13
+  0xca752e: pop r12
+  0xca7530: pop rbp
+  0xca7531: ret 
+  0xca7532: call 0xe3ecc0
+>>0xca7537: int3 
+>>0xca7538: call 0xe3ecc0
+>>0xca753d: int3 
+>>0xca753e: lea rdx, [rip + 0x480bbb]
+>>0xca7545: lea rcx, [rsp + 0x68]
+  0xca754a: call 0x1bf510
+  0xca754f: mov r8d, 1
+  0xca7555: lea rdx, [rsp + 0x68]
+  0xca755a: lea rcx, [rbp - 0x30]
+  0xca755e: call 0xc8f4e0
+  0xca7563: lea rdx, [rip + 0x7884f6]
+  0xca756a: lea rcx, [rbp - 0x30]
+  0xca756e: call 0xe2dbd0
+  0xca7573: int3 
+  rva=0x1128d38 'No Upgrade: websocket header in handshake response' refs=['0xca757a']
+  0xca753a: ja 0xca7555
+  0xca753c: add ah, cl
+  0xca753e: lea rdx, [rip + 0x480bbb]
+  0xca7545: lea rcx, [rsp + 0x68]
+  0xca754a: call 0x1bf510
+  0xca754f: mov r8d, 1
+  0xca7555: lea rdx, [rsp + 0x68]
+  0xca755a: lea rcx, [rbp - 0x30]
+  0xca755e: call 0xc8f4e0
+  0xca7563: lea rdx, [rip + 0x7884f6]
+  0xca756a: lea rcx, [rbp - 0x30]
+  0xca756e: call 0xe2dbd0
+>>0xca7573: int3 
+>>0xca7574: call 0xe3ecc0
+>>0xca7579: int3 
+>>0xca757a: lea rdx, [rip + 0x480bb7]
+>>0xca7581: lea rcx, [rsp + 0x68]
+  0xca7586: call 0x1bf510
+  0xca758b: mov r8d, 1
+  0xca7591: lea rdx, [rsp + 0x68]
+  0xca7596: lea rcx, [rbp - 0x30]
+  0xca759a: call 0xc8f4e0
+  0xca759f: lea rdx, [rip + 0x7884ba]
+  0xca75a6: lea rcx, [rbp - 0x30]
+  0xca75aa: call 0xe2dbd0
+  0xca75af: int3 
+  0xca75b0: call 0xe3ecc0
+  0xca75b5: int3 
+  0xca75b6: call 0xe3ecc0
+  0xca75bb: int3 
+  rva=0x1128d70 'Invalid or missing Sec-WebSocket-Accept header in handshake response' refs=['0xca75bc']
+  0xca757c: adc eax, 0x480bb7
+  0xca7581: lea rcx, [rsp + 0x68]
+  0xca7586: call 0x1bf510
+  0xca758b: mov r8d, 1
+  0xca7591: lea rdx, [rsp + 0x68]
+  0xca7596: lea rcx, [rbp - 0x30]
+  0xca759a: call 0xc8f4e0
+  0xca759f: lea rdx, [rip + 0x7884ba]
+  0xca75a6: lea rcx, [rbp - 0x30]
+  0xca75aa: call 0xe2dbd0
+  0xca75af: int3 
+  0xca75b0: call 0xe3ecc0
+>>0xca75b5: int3 
+>>0xca75b6: call 0xe3ecc0
+>>0xca75bb: int3 
+>>0xca75bc: lea rdx, [rip + 0x480bad]
+>>0xca75c3: lea rcx, [rsp + 0x68]
+  0xca75c8: call 0x1bf510
+  0xca75cd: mov r8d, 5
+  0xca75d3: lea rdx, [rsp + 0x68]
+  0xca75d8: lea rcx, [rbp - 0x30]
+  0xca75dc: call 0xc8f4e0
+  0xca75e1: lea rdx, [rip + 0x788478]
+  0xca75e8: lea rcx, [rbp - 0x30]
+  0xca75ec: call 0xe2dbd0
+  0xca75f1: int3 
+  0xca75f2: int3 
+  0xca75f3: int3 
+  0xca75f4: int3 
+  0xca75f5: int3 
+  rva=0x1128c90 'Not authorized' refs=['0xca7e6a', '0xca7efd']
+  0xca7e2a: pop rdi
+  0xca7e2b: pop rsi
+  0xca7e2c: pop rbx
+  0xca7e2d: pop rbp
+  0xca7e2e: ret 
+  0xca7e2f: cmp eax, 0x191
+  0xca7e34: je 0xca7efd
+  0xca7e3a: lea rcx, [rbp - 0x58]
+  0xca7e3e: call 0xd61690
+  0xca7e43: lea rcx, [rip + 0x3408b6]
+  0xca7e4a: mov qword ptr [rbp - 0x58], rcx
+  0xca7e4e: lea rcx, [rbp - 0x58]
+  0xca7e52: call 0xdfb174
+  0xca7e57: cmp dword ptr [rdi + 0x50], 0xc8
+  0xca7e5e: lea rcx, [rbp + 0x10]
+  0xca7e62: je 0xca7f31
+>>0xca7e68: jmp 0xca7ea4
+>>0xca7e6a: lea rdx, [rip + 0x48021f]
+>>0xca7e71: lea rcx, [rbp + 0x10]
+  0xca7e75: call 0x1bf510
+  0xca7e7a: mov r8d, 6
+  0xca7e80: lea rdx, [rbp + 0x10]
+  0xca7e84: lea rcx, [rbp + 0x70]
+  0xca7e88: call 0xc8f4e0
+  0xca7e8d: lea rdx, [rip + 0x787bcc]
+  0xca7e94: lea rcx, [rbp + 0x70]
+  0xca7e98: call 0xe2dbd0
+  0xca7e9d: int3 
+  0xca7e9e: call 0xe3ecc0
+  0xca7ea3: int3 
+  rva=0x1128cd8 'Cannot upgrade to WebSocket connection' refs=['0xca7ea4']
+  0xca7e64: leave 
+  0xca7e65: add byte ptr [rax], al
+  0xca7e67: add bl, ch
+  0xca7e69: cmp cl, byte ptr [rax - 0x73]
+  0xca7e6c: adc eax, 0x48021f
+  0xca7e71: lea rcx, [rbp + 0x10]
+  0xca7e75: call 0x1bf510
+  0xca7e7a: mov r8d, 6
+  0xca7e80: lea rdx, [rbp + 0x10]
+  0xca7e84: lea rcx, [rbp + 0x70]
+  0xca7e88: call 0xc8f4e0
+  0xca7e8d: lea rdx, [rip + 0x787bcc]
+  0xca7e94: lea rcx, [rbp + 0x70]
+  0xca7e98: call 0xe2dbd0
+>>0xca7e9d: int3 
+>>0xca7e9e: call 0xe3ecc0
+>>0xca7ea3: int3 
+>>0xca7ea4: lea rdx, [rip + 0x48022d]
+>>0xca7eab: call 0x1bf510
+  0xca7eb0: mov rcx, rdi
+  0xca7eb3: call 0xc9cda0
+  0xca7eb8: mov r8, rax
+  0xca7ebb: lea rdx, [rbp + 0x10]
+  0xca7ebf: mov r9d, 1
+  0xca7ec5: lea rcx, [rbp + 0x70]
+  0xca7ec9: call 0xc8f480
+  0xca7ece: lea rdx, [rip + 0x787b8b]
+  0xca7ed5: lea rcx, [rbp + 0x70]
+  0xca7ed9: call 0xe2dbd0
+  0xca7ede: int3 
+  rva=0x1128ca0 'The server does not understand the WebSocket protocol' refs=['0xca7f31']
+  0xca7ef1: call 0xe3ecc0
+  0xca7ef6: int3 
+  0xca7ef7: call 0xe3ecc0
+  0xca7efc: int3 
+  0xca7efd: lea rdx, [rip + 0x48018c]
+  0xca7f04: lea rcx, [rbp + 0x10]
+  0xca7f08: call 0x1bf510
+  0xca7f0d: mov r8d, 6
+  0xca7f13: lea rdx, [rbp + 0x10]
+  0xca7f17: lea rcx, [rbp + 0x70]
+  0xca7f1b: call 0xc8f4e0
+  0xca7f20: lea rdx, [rip + 0x787b39]
+  0xca7f27: lea rcx, [rbp + 0x70]
+>>0xca7f2b: call 0xe2dbd0
+>>0xca7f30: int3 
+>>0xca7f31: lea rdx, [rip + 0x480168]
+>>0xca7f38: call 0x1bf510
+  0xca7f3d: mov r8d, 1
+  0xca7f43: lea rdx, [rbp + 0x10]
+  0xca7f47: lea rcx, [rbp + 0x70]
+  0xca7f4b: call 0xc8f4e0
+  0xca7f50: lea rdx, [rip + 0x787b09]
+  0xca7f57: lea rcx, [rbp + 0x70]
+  0xca7f5b: call 0xe2dbd0
+  0xca7f60: int3 
+  0xca7f61: int3 
+  0xca7f62: int3 
+  0xca7f63: int3 
+  0xca7f64: int3 
+  0xca7f65: int3 
+
+=== single-char '/' cstring refs near RTSP/WS code ===
+standalone '/' with refs: 2
+  '/' @0x11d6d58 refs=['0xe95e5b']
+  @0xe95da3 -> '-'
+  @0xe95e5b -> '/'
+  @0xe95fd4 -> '%'
+  '/' @0x125de38 refs=['0x473b01', '0x6a6dd3', '0x76d22b', '0x777379', '0x7c728a']
+  @0x473a34 -> 'server_side_nvscClientConfig.txt'
+  @0x473b01 -> '/'
+
+Cannot upgrade @0x11274d8 refs=[13270692]
+  @0xca6ed6 -> 'Unsupported WebSocket version requested'
+  @0xca6f14 -> 'Missing Sec-WebSocket-Key in handshake request'
+  @0xca70e8 -> 'Upgrade'
+  @0xca753e -> 'No Connection: Upgrade header in handshake response'
+  @0xca757a -> 'No Upgrade: websocket header in handshake response'
+  @0xca75bc -> 'Invalid or missing Sec-WebSocket-Accept header in handshake response'
+  @0xca7958 -> 'Upgrade'
+  @0xca7a8b -> 'Upgrade'
+  @0xca7b74 -> '13'
+  @0xca7e6a -> 'Not authorized'
+  @0xca7ea4 -> 'Cannot upgrade to WebSocket connection'
+  @0xca7efd -> 'Not authorized'
+  @0xca7f31 -> 'The server does not understand the WebSocket protocol'
+  @0xca88e8 -> 'C:\\bt\\poco\\src\\.1-release-4532f3f3b1.clean\\Foundation\\include\\Poco/Any.h'
+  @0xca8a59 -> 'Cannot resize buffer which does not own its storage.'
+  @0xca8cf1 -> 'Cannot resize buffer which does not own its storage.'
+  0xca7ca4: jne 0xca7cfb
+  0xca7ca6: lea r8, [rbp + 0x50]
+  0xca7caa: mov rdx, rdi
+  0xca7cad: mov rcx, rbx
+  0xca7cb0: call 0xca6fa0
+  0xca7cb5: mov rdx, qword ptr [rbp + 0x68]
+  0xca7cb9: mov rbx, rax
+  0xca7cbc: cmp rdx, 0xf
+  0xca7cc0: jbe 0xca7e07
+  0xca7cc6: mov rcx, qword ptr [rbp + 0x50]
+  0xca7cca: inc rdx
+  0xca7ccd: mov rax, rcx
+  0xca7cd0: cmp rdx, 0x1000
+  0xca7cd7: jb 0xca7e02
+  0xca7cdd: mov rcx, qword ptr [rcx - 8]
+  0xca7ce1: add rdx, 0x27
+  0xca7ce5: sub rax, rcx
+  0xca7ce8: add rax, -8
+  0xca7cec: cmp rax, 0x1f
+  0xca7cf0: ja 0xca7e9e
+  0xca7cf6: jmp 0xca7e02
+  0xca7cfb: cmp ecx, 0x191
+  0xca7d01: jne 0xca7e57
+  0xca7d07: cmp qword ptr [r14 + 0x10], 0
+  0xca7d0c: jne 0xca7d19
+  0xca7d0e: cmp qword ptr [r14 + 0x30], 0
+  0xca7d13: jne 0xca7d19
+  0xca7d15: mov al, 1
+  0xca7d17: jmp 0xca7d1b
+  0xca7d19: xor al, al
+  0xca7d1b: test al, al
+  0xca7d1d: jne 0xca7e6a
+  0xca7d23: mov edx, 1
+  0xca7d28: lea rcx, [rsp + 0x20]
+  0xca7d2d: call 0xd61380
+  0xca7d32: mov r8d, 0x2000
+  0xca7d38: lea rdx, [rbp - 0x68]
+  0xca7d3c: mov rcx, r15
+  0xca7d3f: call 0xcf5270
+  0xca7d44: mov r8, rdi
+  0xca7d47: mov rdx, rsi
+  0xca7d4a: mov rcx, r14
+  0xca7d4d: call 0xcc9060
+  0xca7d52: cmp qword ptr [rbx + 0x150], 0
+  0xca7d5a: je 0xca7d79
+  0xca7d5c: mov rax, qword ptr [rbx]
+  0xca7d5f: mov rcx, rbx
+  0xca7d62: call qword ptr [rax + 0x40]
+  0xca7d65: test al, al
+  0xca7d67: jne 0xca7d79
+  0xca7d69: mov rcx, rbx
+  0xca7d6c: call 0xc9dda0
+  0xca7d71: mov rcx, rbx
+  0xca7d74: call 0xc9d800
+  0xca7d79: mov rax, qword ptr [rbx]
+  0xca7d7c: mov rdx, rsi
+  0xca7d7f: mov rcx, rbx
+  0xca7d82: call qword ptr [rax + 0x28]
+  0xca7d85: mov rax, qword ptr [rbx]
+  0xca7d88: mov rdx, rdi
+  0xca7d8b: mov rcx, rbx
+  0xca7d8e: call qword ptr [rax + 0x30]
+  0xca7d91: mov eax, dword ptr [rdi + 0x50]
+  0xca7d94: cmp eax, 0x65
+  0xca7d97: jne 0xca7e2f
+  0xca7d9d: lea r8, [rbp + 0x50]
+  0xca7da1: mov rdx, rdi
+  0xca7da4: mov rcx, rbx
+  0xca7da7: call 0xca6fa0
+  0xca7dac: lea rcx, [rbp - 0x58]
+  0xca7db0: mov rbx, rax
+  0xca7db3: call 0xd61690
+  0xca7db8: lea rcx, [rip + 0x340941]
+  0xca7dbf: mov qword ptr [rbp - 0x58], rcx
+  0xca7dc3: lea rcx, [rbp - 0x58]
+  0xca7dc7: call 0xdfb174
+  0xca7dcc: mov rdx, qword ptr [rbp + 0x68]
+  0xca7dd0: cmp rdx, 0xf
+  0xca7dd4: jbe 0xca7e07
+  0xca7dd6: mov rcx, qword ptr [rbp + 0x50]
+
+=== geronimo session resourcePath / ports ===
+resourcePath[^,]{0,120}: 168
+  Protocol":5,"ip":"np-ams-07.cloudmatchbeta.nvidiagrid.net","resourcePath":"/v2/session/831d6617-ad5a-4eaf-838a-212cbf72d9be","usage":10,"port":443},"connectionInfo":[{"protocol":1,"app
+  nectionInfo":[{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"
+  4,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":48322}],"sessionRequestData":{"audioMode"
+  Protocol":5,"ip":"np-ams-07.cloudmatchbeta.nvidiagrid.net","resourcePath":"/v2/session/831d6617-ad5a-4eaf-838a-212cbf72d9be","usage":10,"port":443},"connectionInfo":[{"protocol":1,"app
+  nectionInfo":[{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"
+  4,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":48322}],"sessionRequestData":{"audioMode"
+  Protocol":5,"ip":"np-ams-07.cloudmatchbeta.nvidiagrid.net","resourcePath":"/v2/session/831d6617-ad5a-4eaf-838a-212cbf72d9be","usage":10,"port":443},"connectionInfo":[{"protocol":1,"app
+  nectionInfo":[{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"
+rtsps://[^\"'\\s]+: 148
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:48322","usage":14,"port":48322}],"sessionRequestData":{"audioMode
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:48322","usage":14,"port":48322}],"sessionRequestData":{"audioMode
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:48322","usage":14,"port":48322}],"sessionRequestData":{"audioMode
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,
+  "protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:48322","usage":14,"port":48322}],"sessionRequestData":{"audioMode
+\"port\":\s*322: 56
+  ppLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+  ppLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+  ppLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+  /80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+  /80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+  /80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+  /80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+  /80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath
+usage.:?\s*14: 112
+  ocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"r
+  ocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":48322}],"sessionRequestData":{"audioMode":0,"clientD
+  ocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"r
+  ocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":48322}],"sessionRequestData":{"audioMode":0,"clientD
+  ocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"r
+  ocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":48322}],"sessionRequestData":{"audioMode":0,"clientD
+  ":"rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:322","usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"r
+  "rtsps://80-250-97-37.cloudmatchbeta.nvidiagrid.net:48322","usage":14,"port":48322}],"sessionRequestData":{"audioMode":0,"clientD
+appLevelProtocol.:?\s*\d+: 168
+  ion":{"sessionAds":null,"sessionControlInfo":{"protocol":0,"appLevelProtocol":5,"ip":"np-ams-07.cloudmatchbeta.nvidiagrid.net","resourcePat
+  be","usage":10,"port":443},"connectionInfo":[{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"prot
+  l,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":48322}],"se
+  ns":[{"sessionAds":null,"sessionControlInfo":{"protocol":0,"appLevelProtocol":5,"ip":"np-ams-07.cloudmatchbeta.nvidiagrid.net","resourcePat
+  be","usage":10,"port":443},"connectionInfo":[{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"prot
+  l,"resourcePath":null,"usage":14,"port":322},{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":48322}],"se
+  ion":{"sessionAds":null,"sessionControlInfo":{"protocol":0,"appLevelProtocol":5,"ip":"np-ams-07.cloudmatchbeta.nvidiagrid.net","resourcePat
+  be","usage":10,"port":443},"connectionInfo":[{"protocol":1,"appLevelProtocol":6,"ip":null,"resourcePath":null,"usage":14,"port":322},{"prot
+x-nv-sessionid[^\\s,]{0,80}: 0
+Sec-WebSocket-Protocol: 0
+nvst/: 0

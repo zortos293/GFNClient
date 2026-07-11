@@ -560,16 +560,17 @@ export function buildNvstSdp(params: NvstParams): string {
     `a=general.dtlsFingerprint:${params.credentials.fingerprint}`,
     "m=video 0 RTP/AVP",
     "a=msid:fbc-video-0",
-    // FEC settings
+    // FEC settings — match official NvscClientConfigDefaults (repair 20/40, bllFec on).
     "a=vqos.fec.rateDropWindow:10",
     "a=vqos.fec.minRequiredFecPackets:2",
     "a=vqos.drc.minRequiredBitrateCheckEnabled:1",
     "a=vqos.fec.repairMinPercent:5",
-    "a=vqos.fec.repairPercent:5",
-    "a=vqos.fec.repairMaxPercent:35",
+    "a=vqos.fec.repairPercent:20",
+    "a=vqos.fec.repairMaxPercent:40",
     // Official dynamicStreamingMode=0 path disables server resolution/FPS switching.
     "a=vqos.dynamicStreamingMode:0",
     "a=vqos.drc.enable:0",
+    "a=vqos.calculateAvgVideoStreamingBitrate:1",
   ];
 
   if (isHighFps) {
@@ -589,19 +590,56 @@ export function buildNvstSdp(params: NvstParams): string {
     );
   }
 
+  // Frame pacing target: ~1/fps with a small headroom (official 240 FPS DESCRIBE used 7936 µs).
+  const minTargetFrameTimeUs = Math.max(
+    1000,
+    Math.floor((1_000_000 * 95) / (Math.max(1, params.fps) * 100)),
+  );
+
   // Video encoder settings
   lines.push(
     "a=video.dx9EnableNv12:1",
     "a=video.dx9EnableHdr:1",
     "a=vqos.qpg.enable:1",
     "a=vqos.resControl.qp.qpg.featureSetting:7",
+    // Official DESCRIBE adaptive quantization block (HEVC/AV1 sessions).
+    "a=video.adaptiveQuantization.spatialAQSetting:7",
+    "a=video.adaptiveQuantization.temporalAQSetting:0",
+    "a=video.adaptiveQuantization.spatialAQStrength:12",
+    "a=video.adaptiveQuantization.qpThresholdAdjPercent:2",
+    "a=video.adaptiveQuantization.saqAdaptMinQpThresholdPercent:40",
+    "a=video.adaptiveQuantization.saqAdaptMaxQpThresholdPercent:100",
+    "a=video.adaptiveQuantization.saqAdaptDecayStrengthX100:250",
+    "a=video.adaptiveQuantization.perfAdjEnablement:1",
+    "a=video.framePacing.mode:2",
+    `a=video.framePacing.pid.minTargetFrameTimeUs:${minTargetFrameTimeUs}`,
     "a=bwe.useOwdCongestionControl:1",
     "a=video.enableRtpNack:1",
     "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200",
     "a=vqos.drc.bitrateIirFilterFactor:18",
     "a=video.packetSize:1140",
-    "a=packetPacing.minNumPacketsPerGroup:15",
-    "a=vqos.bllFec.enable:0",
+    // Official packet pacing profile (Nvsc dumps + DESCRIBE enableAccurateSleep).
+    "a=packetPacing.version:3",
+    "a=packetPacing.mode:1",
+    "a=packetPacing.minNumPacketsPerGroup:0",
+    "a=packetPacing.enableAccurateSleep:1",
+    "a=packetPacing.enableSmoothTransition:1",
+    "a=packetPacing.allowFpsBasedToggle:1",
+    "a=vqos.bllFec.enable:1",
+    // Bitrate headroom / QP delta — present on official DESCRIBE ANNOUNCE path.
+    "a=vqos.relaxMaxBitrate.overrideAvgBitrateThresholdPercent:4",
+    "a=vqos.relaxMaxBitrate.customAvgBitrateThresholdPercent:65",
+    "a=vqos.relaxMaxBitrate.overrideAvgQpThresholdPercent:7",
+    "a=vqos.relaxMaxBitrate.customAvgQpThresholdPercent:51",
+    "a=vqos.relaxMaxBitrate.iirFilterFactor:120",
+    "a=vqos.qpDelta.qpDeltaMaxPercent:10",
+    "a=vqos.qpDelta.qpDeltaSurfaceAdjustmentStrengthPercent:70",
+    "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH264:100",
+    "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH265:100",
+    "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentAv1:100",
+    "a=vqos.qpDelta.qpDeltaMinPercent:60",
+    "a=vqos.qpDelta.qpDeltaIirFactor:60",
+    "a=vqos.qpDelta.qpDeltaThrottlePercent:100",
   );
 
   // High FPS optimizations
@@ -624,8 +662,9 @@ export function buildNvstSdp(params: NvstParams): string {
       "a=vqos.maxStreamFpsEstimate:240",
     );
     if (ENABLE_240_FPS_SPLIT_ENCODE) {
+      // Official 240 FPS DESCRIBE uses 63 strips (not the older web-client value of 3).
       lines.push(
-        "a=video.videoSplitEncodeStripsPerFrame:3",
+        "a=video.videoSplitEncodeStripsPerFrame:63",
         `a=video.updateSplitEncodeStateDynamically:${dynamicSplitEncodeUpdatesEnabled ? 1 : 0}`,
         "a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535",
         "a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535",
@@ -647,15 +686,18 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999",
   );
 
+  // Packet pacing group/delay + NACK queues (official Nvsc defaults).
+  lines.push(
+    `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
+    "a=packetPacing.maxDelayUs:1000",
+    "a=packetPacing.minNumPacketsFrame:10",
+    "a=video.rtpNackQueueLength:2048",
+    "a=video.rtpNackQueueMaxPackets:1024",
+    "a=video.rtpNackMaxPacketCount:64",
+  );
+
   if (useHighThroughputPacing) {
     lines.push(
-      `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
-      "a=packetPacing.maxDelayUs:1000",
-      "a=packetPacing.minNumPacketsFrame:10",
-      // NACK queue settings
-      "a=video.rtpNackQueueLength:1024",
-      "a=video.rtpNackQueueMaxPackets:512",
-      "a=video.rtpNackMaxPacketCount:25",
       // Resolution/quality thresholds — match the browser client's high-throughput profile.
       "a=vqos.drc.iirFilterFactor:100",
     );
@@ -727,6 +769,13 @@ export function buildNvstSdp(params: NvstParams): string {
     // Audio track (receive-only from server)
     "m=audio 0 RTP/AVP",
     "a=msid:audio",
+    // Official aqos redundancy + dynamic audio config (DESCRIBE / Nvsc dumps).
+    "a=aqos.enableRedundancy:1",
+    "a=aqos.redundancyLevel:2",
+    "a=aqos.enableRedundancyForMic:1",
+    "a=aqos.redundancyLevelForMic:3",
+    "a=audio.enableDynamicAudioConfig:1",
+    "a=audio.enableTimestampAudioBuffer:1",
     // Mic track (send to server)
     "m=mic 0 RTP/AVP",
     "a=msid:mic",
@@ -738,6 +787,8 @@ export function buildNvstSdp(params: NvstParams): string {
     `a=ri.hidDeviceMask:${hidDeviceMask}`,
     `a=ri.enablePartiallyReliableTransferGamepad:${enablePartiallyReliableTransferGamepad}`,
     `a=ri.enablePartiallyReliableTransferHid:${enablePartiallyReliableTransferHid}`,
+    "a=ri.timestampsEnabled:1",
+    "a=ri.useMultipleGamepads:1",
     "",
   );
 

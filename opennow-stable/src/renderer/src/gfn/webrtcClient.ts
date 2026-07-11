@@ -2061,6 +2061,32 @@ export class GfnWebRtcClient {
     this.diagnostics.mouseFlushIntervalMs = this.mouseFlushIntervalMs;
     this.diagnostics.mousePacketsPerSecond = this.mousePacketsPerSecond;
     this.diagnostics.mouseResidualMagnitude = Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat);
+
+    // Intentional adaptive coalesce: only when mouse moves ride the reliable
+    // channel (PR mouse keeps the fixed 4/8/16 ms official interval). Skip while
+    // pointerrawupdate forced immediate flush (interval 0).
+    if (this.mouseFlushIntervalMs <= 0 || this.mouseFlushBaseIntervalMs <= 0) {
+      this.mouseAdaptiveFlushActive = false;
+    } else if (this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)) {
+      // Official GFN keeps a fixed coalesce interval for PR mouse.
+      this.mouseFlushIntervalMs = this.mouseFlushBaseIntervalMs;
+      this.mouseAdaptiveFlushActive = false;
+      this.diagnostics.mouseFlushIntervalMs = this.mouseFlushIntervalMs;
+    } else {
+      const nextInterval = chooseAdaptiveMouseFlushInterval({
+        baseIntervalMs: this.mouseFlushBaseIntervalMs,
+        currentIntervalMs: this.mouseFlushIntervalMs,
+        reliableBufferedAmount,
+        schedulingDelayMs: this.inputQueueMaxSchedulingDelayMsWindow,
+        canUsePartiallyReliableMouse: false,
+        backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
+        minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
+        maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
+      });
+      this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
+      this.mouseFlushIntervalMs = nextInterval;
+      this.diagnostics.mouseFlushIntervalMs = this.mouseFlushIntervalMs;
+    }
     this.diagnostics.mouseAdaptiveFlushActive = this.mouseAdaptiveFlushActive;
 
     const lagClassification = classifyStreamLagReason({
@@ -2236,7 +2262,10 @@ export class GfnWebRtcClient {
     this.nativeInputActive = true;
     // Internal (one-window) mode: Electron owns capture and IPC-forwards packets.
     // External floating window: OS-level capture stays in the native streamer.
-    this.nativeElectronInputBridge = options?.electronInputBridge !== false;
+    // Linux is Internal-only: always use the Electron IPC bridge regardless of stale options.
+    const isLinuxHost = typeof navigator !== "undefined"
+      && /linux/i.test(`${navigator.platform} ${navigator.userAgent}`);
+    this.nativeElectronInputBridge = isLinuxHost || options?.electronInputBridge !== false;
     this.inputReady = true;
     const nativeProtocolVersion = GfnWebRtcClient.normalizeInputProtocolVersion(
       protocolVersion
@@ -3778,7 +3807,6 @@ export class GfnWebRtcClient {
       this.mouseCoalescedBatchEntries = 0;
       this.mouseFlushLastSendMs = tickNow;
       updateMousePacketRate();
-      this.mouseAdaptiveFlushActive = false;
       return true;
     };
 

@@ -1,0 +1,28 @@
+# Bifrost2 WS upgrade 400 follow-up
+
+Live OpenNOW (2026-07-09): empty-path `GET  HTTP/1.1` → **HTTP 400 Bad request**.
+Hex confirmed: `4745542020485454502f312e31`.
+
+## Verdict
+
+Empty request-target is **illegal** (RFC 7230) and matches the live 400. Prior “empty path on the wire” conclusion is **falsified**.
+
+Poco 1.14.1 `HTTPRequest::write` emits `_uri` as-is (no empty→`/` rewrite). Bifrost constructs with empty URI at `0x4666b0`, so something else must set the URI before send — most likely **absolute-form** `rtsps://host:322` (same as CloudMatch resourcePath / post-upgrade RTSP target), or a late set to `/` that we already know 404s.
+
+## Ranked next tries
+
+1. `GET rtsps://<host>:322 HTTP/1.1` — primary
+2. `GET wss://<host>:322 HTTP/1.1` / `GET https://<host>:322 HTTP/1.1`
+3. Header tweaks only after non-400
+
+## Already falsified
+
+| Request-target | Result |
+|----------------|--------|
+| empty (`GET  HTTP/1.1`) | 400 |
+| `/` | 404 |
+| `/rtsp` | 404 |
+
+## Headers (unchanged)
+
+`Host: host:322`, `Connection: Upgrade`, `Upgrade: websocket`, `Sec-WebSocket-Version: 13`, `Sec-WebSocket-Key`, `Content-Length: 0`. No subprotocol. No Origin.

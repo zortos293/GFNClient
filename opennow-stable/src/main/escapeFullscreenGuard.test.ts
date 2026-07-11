@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS,
   isEscapeKeyDownInput,
+  markEscapeHoldFired,
   nextPointerLockEscapeCaptureUntilMs,
   POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS,
+  resolveEscapeHoldCaptureAction,
   shouldCaptureEscapeFullscreenInput,
 } from "./escapeFullscreenGuard";
 
@@ -75,4 +78,53 @@ test("nextPointerLockEscapeCaptureUntilMs only arms grace for unsuppressed point
     nextPointerLockEscapeCaptureUntilMs(false, false, 1000),
     1000 + POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS,
   );
+});
+
+test("resolveEscapeHoldCaptureAction arms hold then taps on early keyup", () => {
+  const guard = {
+    allowEscapeToExitFullscreen: false,
+    pointerLockActive: true,
+    windowFullscreen: true,
+    pointerLockEscapeCaptureUntilMs: 0,
+    nowMs: 1000,
+  };
+  const armed = resolveEscapeHoldCaptureAction(
+    { type: "keyDown", key: "Escape" },
+    guard,
+    { keyDownCaptured: false, holdFired: false },
+  );
+  assert.equal(armed.action, "arm-hold");
+  assert.equal(ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS, 1500);
+
+  const tap = resolveEscapeHoldCaptureAction(
+    { type: "keyUp", key: "Escape" },
+    guard,
+    armed.nextHoldState,
+  );
+  assert.equal(tap.action, "tap");
+  assert.deepEqual(tap.nextHoldState, { keyDownCaptured: false, holdFired: false });
+});
+
+test("resolveEscapeHoldCaptureAction suppresses tap after hold fires", () => {
+  const guard = {
+    allowEscapeToExitFullscreen: false,
+    pointerLockActive: true,
+    windowFullscreen: true,
+    pointerLockEscapeCaptureUntilMs: 0,
+    nowMs: 1000,
+  };
+  const armed = resolveEscapeHoldCaptureAction(
+    { type: "keyDown", key: "Escape" },
+    guard,
+    { keyDownCaptured: false, holdFired: false },
+  );
+  const held = markEscapeHoldFired(armed.nextHoldState);
+  assert.equal(held.holdFired, true);
+
+  const keyup = resolveEscapeHoldCaptureAction(
+    { type: "keyUp", key: "Escape" },
+    guard,
+    held,
+  );
+  assert.equal(keyup.action, "hold-consumed-keyup");
 });

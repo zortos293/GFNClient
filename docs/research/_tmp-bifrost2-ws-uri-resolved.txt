@@ -1,0 +1,284 @@
+# Bifrost2 :322 WebSocket upgrade — URI RESOLVED
+
+Date: 2026-07-09
+Sources: Bifrost2.dll (Poco 1.14.1), Geronimo.dll, geronimo.log, Mall/*.js, live OpenNOW probes, upstream Poco WebSocket.cpp 1.14.1
+
+================================================================================
+EXECUTIVE VERDICT
+================================================================================
+
+The :322 path IS a real TLS + standard HTTP/1.1 WebSocket upgrade (Poco Net::WebSocket).
+It is NOT a custom non-HTTP framing.
+
+However: **every simple request-target OpenNOW has tried is live-falsified**, and static
+analysis shows NvWebSocketSession constructs the HTTPRequest with an **empty method and
+empty URI**, then Poco WebSocket::connect (confirmed in upstream 1.14.1 source) does
+**not** call setMethod(GET) or setURI("/"). Poco sendRequest only rewrites the URI to
+absolute-form when a **proxy host** is configured — NVST uses direct 1-way TLS, so no rewrite.
+
+That leaves a hard tension: official gets 101; empty-on-wire gets 400; `/` got 404.
+The remaining work is **not more path guessing from strings** — it is (1) prove what
+bytes official actually sends (pcap/SSLKEYLOG), and (2) re-test `/` under identical
+session/host/header conditions while hex-dumping our request-line.
+
+================================================================================
+ANSWERS TO FOCUS QUESTIONS
+================================================================================
+
+## A) After empty HTTPRequest construct, what SETS the URI before write?
+
+**Nothing in the NvWS → Poco WS → sendRequest path.**
+
+Evidence:
+- Caller `0x721e83` builds empty SSO (`xorps [rsp+0x78]`, size=0, cap=15) and passes it
+  into NvWebSocketSession ctor `0x466640`.
+- Ctor calls `HTTPRequest(method, uri, version)` at `0xc915c0` with:
+  - method = empty cstring (lea rdx → `""`)
+  - uri    = caller empty std::string
+  - version = `HTTP/1.1`
+- Then sets `Content-Length: 0`, copies optional header map, calls connect `0x466d10`.
+- Poco WS handshake `0xca7900` ≡ upstream WebSocket::connect: sets Connection/Upgrade/
+  Sec-WebSocket-Version/Key + setChunked(false) + setKeepAlive(true); **no setMethod/setURI**.
+- `setURI` (+0x70 string-assign) hits in Poco Net cluster: **0**.
+- Upstream Poco 1.14.1 WebSocket.cpp lines 196–209 confirm: no method/URI mutation.
+
+## B) Does Poco HTTPClientSession rewrite the request-line for non-proxy TLS?
+
+**No.** sendRequest `0xc9dea0` (shared by HTTP + HTTPS sessions, vtable +0x28):
+- Auto-sets `Host` from session host:port if missing.
+- If `proxyHost` (session+0x150) non-empty AND URI does not already start with
+  `http://` or `https://`, rewrites URI to absolute-form via helper `0x1f15c0`.
+- NVST connect uses SecureStreamSocket / HTTPSClientSession directly to :322 with
+  **no proxy** → absolute-form rewrite does **not** run.
+- No empty→`/` store found in the write path (`0xc9e070+`).
+
+## C) HTTP/1.0? Different Connection? Origin? Cookie?
+
+| Item | Finding |
+|------|---------|
+| Upgrade request version | **HTTP/1.1** (ctor) |
+| Post-upgrade RTSP status line | Logged as `HTTP/1.0 200 OK` (RTSP-over-WS layer, not upgrade) |
+| Connection | `Upgrade` (plus session keepAlive=1 via `0xca8f40`) |
+| Upgrade | `websocket` |
+| Sec-WebSocket-Version | `13` |
+| Sec-WebSocket-Key | random (createKey) |
+| Sec-WebSocket-Protocol | **absent** (0 strings in Bifrost2) |
+| Content-Length | `0` (set in NvWS ctor) |
+| Origin / Cookie | **not** set on this path |
+| Host | auto from session `host:port` |
+
+## D) Could `/` work when Sec-WebSocket-* are present?
+
+**Still the only simple path consistent with Poco defaults — but live-404 once.**
+
+Re-interpret:
+- Empty target → 400 matches RFC + our hex `GET  HTTP/1.1`.
+- Official cannot be sending empty (would 400).
+- Binary never sets `/rtsp` (0 code xrefs) or absolute rtsps/wss/https (live-404).
+- Default Poco HTTPRequest ctor uses `/`, but NvWS **bypasses** that ctor.
+- Therefore either (i) something outside the analyzed window sets URI to `/` or a
+  session path, or (ii) our prior `/` probe differed from official in host/session/
+  SNI/header bytes and the 404 was not a pure path rejection.
+
+**Must re-test `/` with hex dump on a fresh ConnectionInfo host.**
+
+## E) setURI / +0x70 / format strings
+
+- No setURI after construct.
+- No `GET %s` / `%s %s HTTP` formatters for the upgrade line.
+- `/rtsp` exists only as a dead string next to scheme tags.
+- `resourcePath` / `/v2/session` have **no code xrefs** into the WS path (JSON field
+  name only for GridServer parsing).
+
+## F) Pre-handshake / client certs
+
+Official sequence (geronimo.log):
+```
+Certificate bag (trust roots) 
+→ Connecting to host <h>, port 322
+→ WSS client using 1-way SSL
+→ streamingSessionId : <uuid>
+→ WSS Options: rtsps://h:322 → HTTP/1.0 200 OK
+```
+- **1-way SSL only** (not mutual/client-cert).
+- No prior HTTP exchange on :322 before Connecting.
+- Requires an already-created CloudMatch session (session poll → ConnectionInfo).
+
+## G) Mall JS
+
+**WebRTC-primary / not classic NVST wire.**
+- RTCPeerConnection ×358, webrtc ×186
+- rtsps:// ×0, :322 ×0, /rtsp ×0, wss:// ×0
+- Has `AppLevelProtocol.RTSPS` enum + `secureRTSPSupported` flag only
+- Classic :322 WSS lives entirely in **Bifrost2.dll** (Geronimo.dll has 0 WS/rtsps strings)
+
+================================================================================
+LIVE FALSIFICATIONS (do not retry same way)
+================================================================================
+
+| Request-target | Result |
+|----------------|--------|
+| empty (`GET  HTTP/1.1`) | 400 |
+| `/` | 404 (re-test under stricter conditions) |
+| `/rtsp` | 404 |
+| `rtsps://host:322` | 404 |
+| `wss://host:322` | 404 |
+| `https://host:322` | 404 |
+
+================================================================================
+RANKED NEXT EXPERIMENTS (exact request-line candidates)
+================================================================================
+
+1. **Packet-capture official** (highest value)
+   - Wireshark/npcap on the GFN process, or SSLKEYLOGFILE if obtainable
+   - Goal: exact request-line bytes + header order
+   - Candidate unknown until capture
+
+2. **`GET / HTTP/1.1`** — careful re-test
+   ```
+   GET / HTTP/1.1\r\n
+   Host: <ConnectionInfo-host>:322\r\n
+   Connection: Upgrade\r\n
+   Upgrade: websocket\r\n
+   Sec-WebSocket-Version: 13\r\n
+   Sec-WebSocket-Key: <24B-random-b64>\r\n
+   Content-Length: 0\r\n
+   \r\n
+   ```
+   Requirements: fresh session, exact NVB_PU_RTSPS host, hex-log request-line,
+   validate Sec-WebSocket-Accept. Do not use stale probe hosts.
+
+3. **`GET /v2/session/<sessionId> HTTP/1.1`**
+   - Use CloudMatch `resourcePath` (e.g. `/v2/session/<uuid>`) as request-target
+   - Low binary support (no xrefs) but only remaining structured path in the ecosystem
+
+4. **Exotic: empty method** `  HTTP/1.1` (two spaces) — only if capture suggests it;
+   binary constructs empty method+URI; unlikely to 101 but explains the empty construct.
+
+================================================================================
+TOP 3 OPENNOW CODE CHANGES
+================================================================================
+
+### 1. Kill absolute-form cascade; default to `/` with hex diagnostics
+**Confidence: 0.72**
+
+In `nvstRtspProbe.ts` / `buildNvstWssUpgradeRequest*`:
+- Remove `rtsps`/`wss`/`https` absolute-form attempts (live-falsified).
+- Default request-target to `/`.
+- Log the exact on-wire request-line as hex (first line only) before parse.
+- Bind probe host strictly to live `ConnectionInfo` address for port 322.
+
+### 2. Add `resourcePath` request-target probe form
+**Confidence: 0.40**
+
+Add form `sessionPath` -> `GET <resourcePath> HTTP/1.1` using the CloudMatch
+session resourcePath (`/v2/session/<id>`). Try only after `/` still 404s on a
+verified fresh host.
+
+### 3. Add official-capture helper (SSLKEYLOG / raw TLS mirror)
+**Confidence: 0.85 that this unblocks; 0.30 that code alone guesses the path**
+
+Ship a small main-process helper or doc'd script to:
+- launch/attach with SSLKEYLOGFILE if GFN/OpenSSL respects it, or
+- instruct Wireshark capture filtered to tcp/322 during official connect,
+then diff against OpenNOW's hex-logged upgrade.
+
+Without (3), path guessing has exhausted the binary's static evidence.
+
+================================================================================
+APPENDIX — key addresses (Bifrost2.dll file offsets)
+================================================================================
+
+| Symbol / role | Offset |
+|---------------|--------|
+| NvWebSocketSession ctor | 0x466640 |
+| NvWebSocketSession connect | 0x466d10 |
+| Caller (empty URI) | 0x721e83 |
+| HTTPRequest(method,uri,ver) | 0xc915c0 |
+| Default HTTPRequest (URI=`/`) | 0xc91680 (UNUSED by NvWS) |
+| Poco WebSocket::connect | 0xca7900 |
+| sendRequest (vtable +0x28) | 0xc9dea0 |
+| request body write | 0xc9e070 |
+| setKeepAlive | 0xca8f40 |
+
+================================================================================
+ANALYSIS NOTES (raw)
+================================================================================
+## HEAD/GET/POST static strings near sendRequest write
+b'HEAD\x00': ['0xff0930', '0x143ce90']
+b'GET\x00': ['0xfeb9f4', '0x1091f30']
+b'POST\x00': ['0x106a594', '0x143ced0']
+b'OPTIONS\x00': ['0x11ed5f3', '0x125db78', '0x125dc3d']
+b'HTTP/1.1\x00': ['0xff0488', '0x143d4e0']
+HEAD lea target va=0x18143f090 cstr='HEAD'
+  neighborhood ascii: b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x0f\x00\x00\x00\x00\x00\x00\x00HEAD\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x0f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x0f\x00\x00\x00\x00\x00\x00\x00'
+ctor rdx (method) va=0x18143f070 cstr=''
+  bytes=b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x0f\x00\x00\x00\x00\x00\x00\x00'
+
+## Assignments to HTTPRequest +0x50/+0x70 between NvWS ctor and connect
+
+## HTTPClientSession request write 0xc9e070 (method at rsi+0x50)
+0xc9e07a: mov rax, qword ptr [rip + 0x7a55ff]  ; va=0x181444280
+0xc9e0ab: call 0xc9c7b0  ; -> 0xc9c7b0
+0xc9e0b0: lea rcx, [rbp + 0x1f8]
+0xc9e0b9: call 0xc9c720  ; -> 0xc9c720
+0xc9e0c1: call 0xca8ae0  ; -> 0xca8ae0
+0xc9e0cd: lea rbx, [rsi + 0x50]
+0xc9e0d9: lea rdx, [rip + 0x7a03b0]  ; 'HEAD'
+0xc9e102: call 0xeb8c50  ; -> 0xeb8c50
+0xc9e11e: call 0xca5c00  ; -> 0xca5c00
+0xc9e131: lea rcx, [rsp + 0x20]
+0xc9e139: call 0xcc5e30  ; -> 0xcc5e30
+0xc9e141: lea rdx, [rsp + 0xb8]
+0xc9e14c: call qword ptr [rax + 8]
+0xc9e154: call 0xcc85e0  ; -> 0xcc85e0
+0xc9e160: lea r8, [rbp + 0x58]
+0xc9e167: lea r9d, [rdi + 1]
+0xc9e16e: call 0xcc8150  ; -> 0xcc8150
+0xc9e17b: lea rdx, [rax + 0xc8]
+0xc9e182: lea rcx, [rbp + 0x1e8]
+0xc9e18d: call 0xc9c7b0  ; -> 0xc9c7b0
+0xc9e192: lea rcx, [rsp + 0xc8]
+0xc9e19a: call 0xcc61e0  ; -> 0xcc61e0
+0xc9e19f: lea rax, [rip + 0x34a55a]  ; va=0x180fe9300
+0xc9e1a6: lea rcx, [rsp + 0xc8]
+0xc9e1b6: call 0xdfb174  ; -> 0xdfb174
+0xc9e1c0: lea rdx, [rip + 0x7a0999]  ; ''
+0xc9e1d2: call 0xca5140  ; -> 0xca5140
+0xc9e1e0: lea rcx, [rsp + 0x20]
+0xc9e1e5: call 0xd5f240  ; -> 0xd5f240
+0xc9e1ed: lea rdx, [rsp + 0xc0]
+0xc9e1f8: call qword ptr [rax + 8]
+0xc9e200: call 0xcc7ad0  ; -> 0xcc7ad0
+0xc9e21e: call 0xca5c30  ; -> 0xca5c30
+0xc9e223: lea r9d, [rdi + 1]
+0xc9e22d: lea r8, [rbx + rax]
+0xc9e231: call 0xcc76f0  ; -> 0xcc76f0
+0xc9e243: lea rdx, [rip + 0x7a0266]  ; ''
+0xc9e272: call 0xeb8c50  ; -> 0xeb8c50
+0xc9e283: lea rdx, [rip + 0x7a0246]  ; 'POST'
+0xc9e2aa: call 0xeb8c50  ; -> 0xeb8c50
+0xc9e2bb: lea rdx, [rip + 0x7a02ae]  ; ''
+0xc9e2e6: call 0xeb8c50  ; -> 0xeb8c50
+0xc9e2ef: lea rdx, [rip + 0x7a02fa]  ; ''
+0xc9e2f9: call 0xca5140  ; -> 0xca5140
+
+## Full write fn until first ret-ish (0xc9e070-0xc9e250)
+0xc9e0d9: lea rdx, [rip + 0x7a03b0]  ; 'HEAD'
+0xc9e102: call 0xeb8c50  ; -> 0xeb8c50
+0xc9e11e: call 0xca5c00  ; -> 0xca5c00
+0xc9e139: call 0xcc5e30  ; -> 0xcc5e30
+0xc9e14c: call qword ptr [rax + 8]
+0xc9e154: call 0xcc85e0  ; -> 0xcc85e0
+0xc9e16e: call 0xcc8150  ; -> 0xcc8150
+0xc9e18d: call 0xc9c7b0  ; -> 0xc9c7b0
+0xc9e19a: call 0xcc61e0  ; -> 0xcc61e0
+0xc9e1b6: call 0xdfb174  ; -> 0xdfb174
+0xc9e1d2: call 0xca5140  ; -> 0xca5140
+0xc9e1e5: call 0xd5f240  ; -> 0xd5f240
+0xc9e1f8: call qword ptr [rax + 8]
+0xc9e200: call 0xcc7ad0  ; -> 0xcc7ad0
+0xc9e21e: call 0xca5c30  ; -> 0xca5c30
+0xc9e231: call 0xcc76f0  ; -> 0xcc76f0
+
+## Scan 0xc9e070-0xc9e400 for 0x2f '/' immediate

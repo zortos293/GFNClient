@@ -498,6 +498,7 @@ export function App(): JSX.Element {
     nativeCloudGsyncMode: "auto",
     nativeD3dFullscreenMode: "auto",
     nativeExternalRenderer: false,
+    transportMode: "webrtc",
     showNativeStreamerStats: false,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
     decoderPreference: "auto",
@@ -862,6 +863,7 @@ export function App(): JSX.Element {
       enableCloudGsync: settings.enableCloudGsync,
       clientMode: settings.streamClientMode,
       nativeStreamerBackend: "gstreamer",
+      transportMode: settings.transportMode,
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
       appLaunchMode:
@@ -885,6 +887,7 @@ export function App(): JSX.Element {
     settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
+    settings.transportMode,
     subscriptionInfo?.entitledResolutions,
   ]);
 
@@ -1553,6 +1556,14 @@ export function App(): JSX.Element {
     });
     return () => unsubscribe();
   }, [toggleSessionFullscreen]);
+
+  // Escape-hold (and other explicit exit requests) from main — never toggle back on.
+  useEffect(() => {
+    const unsubscribe = window.openNow.onExitFullscreen(() => {
+      void setSessionFullscreen(false);
+    });
+    return () => unsubscribe();
+  }, [setSessionFullscreen]);
 
   const autoFullscreenRequestedRef = useRef(false);
 
@@ -3084,10 +3095,14 @@ export function App(): JSX.Element {
         },
         {
           // Windows internal: RawInput on the child HWND (Electron click-through is flaky).
-          // macOS/Linux internal: Electron → IPC. External floating window: always OS capture.
+          // Linux: always Electron → IPC (External floating renderer is unsupported).
+          // macOS internal: Electron → IPC. External floating window: always OS capture.
           electronInputBridge:
-            !settings.nativeExternalRenderer
-            && !navigator.platform.toLowerCase().includes("win"),
+            /linux/i.test(`${navigator.platform} ${navigator.userAgent}`)
+            || (
+              !settings.nativeExternalRenderer
+              && !navigator.platform.toLowerCase().includes("win")
+            ),
         },
       );
       setLaunchError(null);

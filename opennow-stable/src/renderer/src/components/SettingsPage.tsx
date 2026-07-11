@@ -27,7 +27,10 @@ import type {
 import {
   createUnsupportedNativeStreamerStatus,
   DEFAULT_VIDEO_SHADER_SETTINGS,
+  isNativeDirectXBackendSupported,
+  isNativeExternalRendererSupported,
   isNativeStreamerSupportedPlatform,
+  isNvstTransportSupported,
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
   colorQualityRequiresHevc,
   expandEntitledStreamResolutions,
@@ -423,9 +426,11 @@ const STATIC_FPS_PRESETS: FpsPreset[] = [
 ];
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
-const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(
-  `${navigator.platform} ${navigator.userAgent}`,
-);
+const nativeStreamerPlatformHint = `${navigator.platform} ${navigator.userAgent}`;
+const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(nativeStreamerPlatformHint);
+const supportsNativeExternalRenderer = isNativeExternalRendererSupported(nativeStreamerPlatformHint);
+const supportsNativeDirectXBackend = isNativeDirectXBackendSupported(nativeStreamerPlatformHint);
+const supportsNvstTransport = isNvstTransportSupported(nativeStreamerPlatformHint);
 /** @deprecated Prefer isNativeStreamerPlatform — kept for existing Windows-only UI branches. */
 const isWindows = isNativeStreamerPlatform;
 const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
@@ -3496,25 +3501,27 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </span>
                   </div>
 
-                  <div className="settings-row settings-row--column">
-                    <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
-                    <div className="settings-chip-row">
-                      {nativeVideoBackendOptions.map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
-                          onClick={() => handleChange("nativeVideoBackend", option.value)}
-                          title={option.description}
-                        >
-                          <span>{option.label}</span>
-                        </button>
-                      ))}
+                  {supportsNativeDirectXBackend && (
+                    <div className="settings-row settings-row--column">
+                      <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
+                      <div className="settings-chip-row">
+                        {nativeVideoBackendOptions.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
+                            onClick={() => handleChange("nativeVideoBackend", option.value)}
+                            title={option.description}
+                          >
+                            <span>{option.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <span className="settings-subtle-hint">
+                        {t("settings.nativeStreamer.directxBackendHint")}
+                      </span>
                     </div>
-                    <span className="settings-subtle-hint">
-                      {t("settings.nativeStreamer.directxBackendHint")}
-                    </span>
-                  </div>
+                  )}
 
                   <div className="settings-row settings-row--column">
                     <label className="settings-label">{t("settings.nativeStreamer.framePacing")}</label>
@@ -3539,26 +3546,66 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
                     </span>
                   </div>
 
+                  {supportsNativeExternalRenderer ? (
+                    <div className="settings-row settings-row--column">
+                      <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
+                      <div className="settings-chip-row">
+                        <button
+                          type="button"
+                          className={`settings-chip ${!settings.nativeExternalRenderer ? "active" : ""}`}
+                          onClick={() => handleChange("nativeExternalRenderer", false)}
+                        >
+                          <span>{t("settings.nativeStreamer.renderModeInternal")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`settings-chip ${settings.nativeExternalRenderer ? "active" : ""}`}
+                          onClick={() => handleChange("nativeExternalRenderer", true)}
+                        >
+                          <span>{t("settings.nativeStreamer.renderModeExternal")}</span>
+                        </button>
+                      </div>
+                      <span className="settings-subtle-hint">
+                        {t("settings.nativeStreamer.renderModeHint")}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="settings-row settings-row--column">
+                      <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
+                      <div className="settings-chip-row">
+                        <span className="settings-inline-badge">
+                          {t("settings.nativeStreamer.renderModeInternal")}
+                        </span>
+                      </div>
+                      <span className="settings-subtle-hint">
+                        {t("settings.nativeStreamer.renderModeInternalOnlyHint")}
+                      </span>
+                    </div>
+                  )}
+
                   <div className="settings-row settings-row--column">
-                    <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
+                    <label className="settings-label">{t("settings.nativeStreamer.transportMode")}</label>
                     <div className="settings-chip-row">
                       <button
                         type="button"
-                        className={`settings-chip ${!settings.nativeExternalRenderer ? "active" : ""}`}
-                        onClick={() => handleChange("nativeExternalRenderer", false)}
+                        className={`settings-chip ${settings.transportMode !== "nvst" ? "active" : ""}`}
+                        onClick={() => handleChange("transportMode", "webrtc")}
                       >
-                        <span>{t("settings.nativeStreamer.renderModeInternal")}</span>
+                        <span>{t("settings.nativeStreamer.transportModeWebrtc")}</span>
                       </button>
                       <button
                         type="button"
-                        className={`settings-chip ${settings.nativeExternalRenderer ? "active" : ""}`}
-                        onClick={() => handleChange("nativeExternalRenderer", true)}
+                        className={`settings-chip ${settings.transportMode === "nvst" ? "active" : ""}`}
+                        onClick={() => handleChange("transportMode", "nvst")}
+                        disabled={!supportsNvstTransport}
                       >
-                        <span>{t("settings.nativeStreamer.renderModeExternal")}</span>
+                        <span>{t("settings.nativeStreamer.transportModeNvst")}</span>
                       </button>
                     </div>
                     <span className="settings-subtle-hint">
-                      {t("settings.nativeStreamer.renderModeHint")}
+                      {supportsNvstTransport
+                        ? t("settings.nativeStreamer.transportModeHint")
+                        : t("settings.nativeStreamer.transportModeWindowsOnlyHint")}
                     </span>
                   </div>
                 </>

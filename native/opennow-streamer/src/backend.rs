@@ -576,6 +576,7 @@ mod tests {
                 native_transition_diagnostics: None,
             },
             shortcuts: NativeStreamerShortcutBindings::default(),
+            nvst_video: None,
         }
     }
 

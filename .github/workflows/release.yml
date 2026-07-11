@@ -294,6 +294,7 @@ jobs:
             rpm \
             build-essential \
             pkg-config \
+            libx11-dev \
             libglib2.0-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
@@ -306,6 +307,7 @@ jobs:
             gstreamer1.0-plugins-ugly \
             gstreamer1.0-vaapi \
             gstreamer1.0-gl \
+            gstreamer1.0-x \
             libva2 \
             libva-drm2 \
             libvulkan1 \

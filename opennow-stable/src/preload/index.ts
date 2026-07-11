@@ -177,6 +177,13 @@ const api: OpenNowApi = {
       ipcRenderer.off("app:toggle-fullscreen", wrapped);
     };
   },
+  onExitFullscreen: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on(IPC_CHANNELS.EXIT_FULLSCREEN, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.EXIT_FULLSCREEN, wrapped);
+    };
+  },
   quitApp: () => ipcRenderer.invoke(IPC_CHANNELS.QUIT_APP),
   getUpdaterState: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_GET_STATE),
   checkForUpdates: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_CHECK),

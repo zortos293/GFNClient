@@ -10,6 +10,8 @@ import {
   createUnsupportedNativeStreamerStatus,
   isEpicStore,
   isGameInLibrary,
+  isNativeDirectXBackendSupported,
+  isNativeExternalRendererSupported,
   isNativeStreamerSupportedPlatform,
   isOwnedLibraryStatus,
   isOwnedVariant,
@@ -17,6 +19,7 @@ import {
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   getDefaultStreamPreferences,
   normalizeGameStore,
+  normalizeNativeExternalRendererForPlatform,
   normalizeStreamPreferences,
   normalizeStreamClientModeForPlatform,
 } from "./gfn";
@@ -217,6 +220,18 @@ test("reports unsupported native streamer status on unknown platforms only", () 
   assert.equal(isNativeStreamerSupportedPlatform("linux"), true);
   assert.equal(isNativeStreamerSupportedPlatform("darwin"), true);
   assert.equal(isNativeStreamerSupportedPlatform("android"), false);
+});
+
+test("isNativeExternalRendererSupported is Windows-only", () => {
+  assert.equal(isNativeExternalRendererSupported("win32"), true);
+  assert.equal(isNativeExternalRendererSupported("windows"), true);
+  assert.equal(isNativeExternalRendererSupported("linux"), false);
+  assert.equal(isNativeExternalRendererSupported("darwin"), false);
+  assert.equal(isNativeDirectXBackendSupported("win32"), true);
+  assert.equal(isNativeDirectXBackendSupported("linux"), false);
+  assert.equal(normalizeNativeExternalRendererForPlatform(true, "linux"), false);
+  assert.equal(normalizeNativeExternalRendererForPlatform(true, "win32"), true);
+  assert.equal(normalizeNativeExternalRendererForPlatform(false, "win32"), false);
 
   const status = createUnsupportedNativeStreamerStatus();
   assert.equal(status.detected, false);

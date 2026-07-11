@@ -90,8 +90,11 @@ import {
   type BootstrapChromiumPreferences,
 } from "./chromiumCommandLine";
 import {
+  ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS,
+  markEscapeHoldFired,
   nextPointerLockEscapeCaptureUntilMs,
-  shouldCaptureEscapeFullscreenInput,
+  resolveEscapeHoldCaptureAction,
+  type EscapeHoldCaptureState,
 } from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
 import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowReleaseHighlights } from "./releaseHighlights";
@@ -192,6 +195,35 @@ let pendingDirectLaunchRequest: DirectLaunchRequest | null = createDirectLaunchR
 // Runtime pointer-lock state (updated by renderer)
 let isPointerLockActiveRuntime = false;
 let pointerLockEscapeCaptureUntilMs = 0;
+let escapeHoldCaptureState: EscapeHoldCaptureState = { keyDownCaptured: false, holdFired: false };
+let escapeHoldTimer: NodeJS.Timeout | null = null;
+
+function clearEscapeHoldTimer(): void {
+  if (escapeHoldTimer !== null) {
+    clearTimeout(escapeHoldTimer);
+    escapeHoldTimer = null;
+  }
+}
+
+function resetEscapeHoldCapture(): void {
+  clearEscapeHoldTimer();
+  escapeHoldCaptureState = { keyDownCaptured: false, holdFired: false };
+}
+
+function exitFullscreenFromEscapeHold(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  clearEscapeHoldTimer();
+  const isFullscreen = mainWindow.isFullScreen() || rendererControlledFullscreen;
+  if (!isFullscreen) {
+    // Not fullscreen: keep the pending Escape so keyup still taps the game.
+    return;
+  }
+  escapeHoldCaptureState = markEscapeHoldFired(escapeHoldCaptureState);
+  // Explicit exit (not toggle) so Escape-hold never re-enters fullscreen.
+  mainWindow.webContents.send(IPC_CHANNELS.EXIT_FULLSCREEN);
+}
 
 function createDirectLaunchRequest(args: DirectLaunchArgs): DirectLaunchRequest {
   return {
@@ -537,22 +569,60 @@ async function createMainWindow(): Promise<void> {
   );
 
   // Intercept Escape early to avoid Chromium exiting fullscreen before the
-  // renderer can forward the key to the remote session. Keep a short fullscreen
-  // grace window after pointer lock drops so rapid repeated Escape presses cannot
-  // win the race before the renderer re-locks the pointer.
+  // renderer can forward the key to the remote session. Tap → game; hold ~1.5s
+  // → exit fullscreen (mirrors native Internal Escape-hold). Keep a short
+  // fullscreen grace window after pointer lock drops so rapid Escape presses
+  // cannot win the race before the renderer re-locks the pointer.
   mainWindow.webContents.on("before-input-event", (event, input) => {
     try {
-      if (shouldCaptureEscapeFullscreenInput(input, {
+      const guardState = {
         allowEscapeToExitFullscreen: Boolean(settingsManager?.get("allowEscapeToExitFullscreen")),
         pointerLockActive: isPointerLockActiveRuntime,
         windowFullscreen: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()),
         pointerLockEscapeCaptureUntilMs,
         nowMs: Date.now(),
-      })) {
-        event.preventDefault();
+      };
+      const resolved = resolveEscapeHoldCaptureAction(
+        {
+          type: input.type,
+          key: input.key,
+          code: input.code,
+          isAutoRepeat: Boolean(input.isAutoRepeat),
+        },
+        guardState,
+        escapeHoldCaptureState,
+      );
+      escapeHoldCaptureState = resolved.nextHoldState;
+
+      if (resolved.action === "ignore") {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (resolved.action === "arm-hold") {
+        clearEscapeHoldTimer();
+        escapeHoldTimer = setTimeout(() => {
+          escapeHoldTimer = null;
+          exitFullscreenFromEscapeHold();
+        }, ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS);
+        return;
+      }
+
+      if (resolved.action === "hold-repeat") {
+        return;
+      }
+
+      if (resolved.action === "tap") {
+        clearEscapeHoldTimer();
         if (mainWindow && mainWindow.webContents) {
           mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
         }
+        return;
+      }
+
+      if (resolved.action === "hold-consumed-keyup") {
+        clearEscapeHoldTimer();
       }
     } catch {
       // ignore errors - interception is best-effort
@@ -573,6 +643,7 @@ async function createMainWindow(): Promise<void> {
     rendererControlledFullscreen = false;
     isPointerLockActiveRuntime = false;
     pointerLockEscapeCaptureUntilMs = 0;
+    resetEscapeHoldCapture();
   });
 }
 

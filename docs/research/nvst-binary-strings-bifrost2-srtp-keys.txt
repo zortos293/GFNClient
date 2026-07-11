@@ -1,0 +1,37 @@
+SRTP_AEAD_AES_256_GCM
+tls-sigalg-keytype
+tls-sigalg-keytype-oid
+aes key setup failed
+operation not supported for this keytype
+SRTP for video is enabled.
+runtime.encryptionKeyId
+].encryptionKeyId
+runtime.encryptionKey
+NetPacket::setEncryptionKey(Key) type %d
+AES Key set from raw key, keyLength %d
+NetPacket::setEncryptionKey(Key, KeyLen) keyLength %d
+AES Key set keyType %d
+Separate SRTP setup for Mjolnir video
+cryptoutils
+Failed to derive encryption key.
+AES 256 key and key ID to master key and salt directly
+Random HMAC seed: 
+Encryption key in RTSPS
+%s - failed to generate AesParams from (bogus?) NvstClientRuntimeEncryptionKey
+setEncryptionKey
+key ID %u
+%s - invalid NvstClientRuntimeEncryptionKey.streamId %u
+getEncryptionKey
+InitSrtp
+SRTP_AEAD_AES_256_GCM:SRTP_AEAD_AES_128_GCM:SRTP_AES128_CM_SHA1_80
+SSL_export_keying_material failed, closing.
+EXTRACTOR-dtls_srtp
+initSrtp
+encryptionKey
+set master key/salt to 
+SecureRtp
+x-nv-runtime.encryptionKey
+x-nv-runtime.encryptionKeyId
+Decryption failed Key ID %u input size %u
+.?AV<lambda_1>@?FE@??initialize@NvstStreamProcessor@@UEAA_NPEAVQosManager@@AEBVAesParams@@PEBX_K@Z@
+.?AV?$_Func_impl_no_alloc@V<lambda_1>@?FE@??initialize@NvstStreamProcessor@@UEAA_NPEAVQosManager@@AEBVAesParams@@PEBX_K@Z@X$$V@std@@

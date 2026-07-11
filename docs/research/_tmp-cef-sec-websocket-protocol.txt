@@ -1,0 +1,1 @@
+discord_partner_sdk.dll: @0x734d3b ctx=b'd subprotocol\x00id-mod-timestamp-protocol\x00Sec-WebSocket-Protocol\x00null\x00fs_poll\x00ntdll.dll\x00powrprof.dll\x00user32.dll\x00kernel32.d'

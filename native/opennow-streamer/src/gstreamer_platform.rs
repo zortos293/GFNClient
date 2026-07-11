@@ -1598,6 +1598,8 @@ pub(crate) mod win32_renderer_window {
     }
 
     fn emit_input_capture_changed(captured: bool) {
+        // Electron maps this to notifyPointerLockChange so main-process Escape
+        // interception stays in sync with RawInput capture (tap→GFN, hold→exit).
         let Some(sender) = INPUT_EVENT_SENDER
             .get()
             .and_then(|sender| sender.lock().ok().and_then(|sender| sender.clone()))

@@ -38,6 +38,7 @@ import {
   buildGfnCloudMatchHeaders,
 } from "./clientHeaders";
 import { getStableDeviceId } from "./deviceId";
+import { collectRtspsEndpoints } from "./nvstRtspProbe";
 import { fetchWithOptionalProxy } from "./proxyFetch";
 import {
   readCloudMatchJson,
@@ -468,6 +469,7 @@ function resolveSignaling(response: CloudMatchResponse): {
   signalingServer: string;
   signalingUrl: string;
   mediaConnectionInfo?: MediaConnectionInfo;
+  rtspsEndpoints: string[];
 } {
   const connections = response.session.connectionInfo ?? [];
   const signalingConnection =
@@ -494,6 +496,14 @@ function resolveSignaling(response: CloudMatchResponse): {
     ? effectiveHost
     : `${effectiveHost}:443`;
 
+  // Prefer host from any usage=14 rtsps resourcePath for synthesizing missing paths.
+  const rtspsHost =
+    connections
+      .map((conn) => (typeof conn.resourcePath === "string" ? extractHostFromUrl(conn.resourcePath) : null))
+      .find((host): host is string => Boolean(host)) ??
+    signalingHost ??
+    (isZoneHostname(serverIp) ? null : serverIp);
+
   return {
     serverIp,
     signalingServer,
@@ -501,6 +511,7 @@ function resolveSignaling(response: CloudMatchResponse): {
     mediaConnectionInfo: resolveMediaConnectionInfo(connections, serverIp, {
       logMissing: isReadySessionStatus(response.session.status),
     }),
+    rtspsEndpoints: collectRtspsEndpoints(connections, rtspsHost),
   };
 }
 
@@ -1272,6 +1283,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     `serverIp=${signaling.serverIp}, ` +
     `signalingServer=${signaling.signalingServer}, ` +
     `signalingUrl=${signaling.signalingUrl}, ` +
+    `rtspsEndpoints=${JSON.stringify(signaling.rtspsEndpoints)}, ` +
     `connections=[${connectionSummary}]`,
   );
   console.log(
@@ -1293,6 +1305,7 @@ async function toSessionInfo(options: ToSessionInfoOptions): Promise<SessionInfo
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     enablePersistingInGameSettings,
+    rtspsEndpoints: signaling.rtspsEndpoints.length > 0 ? signaling.rtspsEndpoints : undefined,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
     negotiatedStreamProfile,
@@ -1940,6 +1953,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         gpuType: sessionData.gpuType,
         appLaunchMode: echoedSessionAppLaunchMode(pollApiResponse) ?? input.appLaunchMode,
         enablePersistingInGameSettings,
+        rtspsEndpoints: signaling.rtspsEndpoints.length > 0 ? signaling.rtspsEndpoints : undefined,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,
         negotiatedStreamProfile: negotiatedStreamProfile ?? extractNegotiatedStreamProfile(pollApiResponse),

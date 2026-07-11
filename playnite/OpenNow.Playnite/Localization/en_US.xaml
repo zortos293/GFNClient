@@ -1,0 +1,39 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+  <sys:String x:Key="LOCOpenNow_SettingsHelpLabel">Help</sys:String>
+  <sys:String x:Key="LOCOpenNow_MenuItemUpdateStatusDescription">Update OpenNOW-compatible games</sys:String>
+  <sys:String x:Key="LOCOpenNow_MenuItemOpenDatabaseBrowserDescription">Open GeForce NOW database browser</sys:String>
+  <sys:String x:Key="LOCOpenNow_UpdatingProgressMessage">Updating OpenNOW-compatible games...</sys:String>
+  <sys:String x:Key="LOCOpenNow_DownloadingDatabaseProgressMessage">Downloading GeForce NOW database...</sys:String>
+  <sys:String x:Key="LOCOpenNow_UpdateResults1Message" xml:space="preserve">OpenNOW-compatible games in library: {0}
+
+Added &quot;{1}&quot; feature to {2} games.
+Removed &quot;{3}&quot; feature from {4} games.</sys:String>
+  <sys:String x:Key="LOCOpenNow_UpdateResults3Message" xml:space="preserve">
+
+Marked {0} games as installed.</sys:String>
+  <sys:String x:Key="LOCOpenNow_ExecuteOnStartupSetting">Update compatible games on Playnite startup</sys:String>
+  <sys:String x:Key="LOCOpenNow_ExecuteOnLibraryUpdateSetting">Update compatible games on library update</sys:String>
+  <sys:String x:Key="LOCOpenNow_ShowPlayActionsOnLaunchSetting">Show action to launch compatible games via OpenNOW</sys:String>
+  <sys:String x:Key="LOCOpenNow_ShowActionForAlreadyInstalledGamesSetting">Only show action for games that are not already installed by their libraries</sys:String>
+  <sys:String x:Key="LOCOpenNow_MarkCompatibleGamesAsInstalledSetting">Mark compatible games as installed during sync</sys:String>
+  <sys:String x:Key="LOCOpenNow_ShowPlayActionsOnLaunchSettingTooltip">Games without an installation directory set are treated as not installed by their libraries.</sys:String>
+  <sys:String x:Key="LOCOpenNow_SettingsImportDatabaseToLibrary">Import owned cloud-compatible games as separate OpenNOW library entries</sys:String>
+  <sys:String x:Key="LOCOpenNow_SettingsImportDatabaseToLibraryNote">Ownership is inferred from games already imported by other Playnite libraries.</sys:String>
+  <sys:String x:Key="LOCOpenNow_SettingsOpenNowExecutablePathLabel">OpenNOW executable path</sys:String>
+  <sys:String x:Key="LOCOpenNow_SettingsBrowseExecutableLabel">Browse...</sys:String>
+  <sys:String x:Key="LOCOpenNow_ControllerLaunchInOpenNow">Launch via OpenNOW</sys:String>
+  <sys:String x:Key="LOCOpenNow_NotificationMessageMarkedInstalledResults">OpenNOW Library: Marked {0} games as installed.</sys:String>
+  <sys:String x:Key="LOCOpenNow_NotificationMessage">OpenNOW executable not found at {0}.</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserWindowTitle">GeForce NOW database browser</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserContextMenuItemCopyVariantTitle">Copy name to clipboard</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserSearchLabel">Search:</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserStoreSearchLabel">Store:</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserNameLabel">Name</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserGeForceIdLabel">GeForce NOW Id</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserStoreLabel">Store</sys:String>
+  <sys:String x:Key="LOCOpenNow_DatabaseBrowserStoreIdLabel">Store Id</sys:String>
+  <sys:String x:Key="LOCOpenNow_SettingsLibraryHeaderLabel">Library</sys:String>
+  <sys:String x:Key="LOCOpenNow_SettingsOtherLibrariesHeaderLabel">Other libraries</sys:String>
+</ResourceDictionary>

@@ -1,0 +1,1745 @@
+00127F30 [ascii] /fA9.v
+0012E071 [ascii] /B8\%
+001332C3 [ascii] ResourceH
+0021B1AE [ascii] /5|R
+00273C73 [ascii] /F@v
+00345C6B [ascii] /03H
+003B2409 [ascii] RtspPlayH
+003EF65D [ascii] /tkA
+003EF76D [ascii] /t_A
+003EF858 [ascii] /u2H
+003F324F [ascii] /tDA
+003F3322 [ascii] /t3A
+00446D97 [ascii] /L9i
+006A4B47 [ascii] /@ v
+006A5C52 [ascii] /A H
+006A62CF [ascii] /J vmH
+006A6362 [ascii] /H H
+0072AE14 [ascii] /5ZT
+00734242 [ascii] /{,w]I
+00736BB1 [ascii] /B,w^H
+007474F8 [ascii] /8r,I;
+00805A5A [ascii] /L9o
+00821CC8 [ascii] /s-H+
+0083572E [ascii] /Kim
+00871F23 [ascii] /}+I
+0089FC9A [ascii] /ApwD
+0089FCBA [ascii] /Axw
+0091C47C [ascii] /H9E@
+009E7589 [ascii] /t#f
+00BBA423 [ascii] /H;u(
+00CE1AEA [ascii] /uMH
+00CE2814 [ascii] PATHD
+00CF0F57 [ascii] /uUH
+00CF1F32 [ascii] /t[L
+00CF92A0 [ascii] HOMEPATH
+00CFA6CC [ascii] /t+A
+00DA4102 [ascii] *uRI
+00DD9ACB [ascii] /u,H
+00EA7FAB [ascii] /H;C
+00FE8370 [ascii] Failed to get server info for initialization request. Request Id: %d, Error: %s (%d)
+00FE87B8 [ascii] Reconfiguring server details received via NVbSessionParams
+00FE8D58 [ascii] NVB_R_UPGRADE_RECOMMENDED
+00FE92F8 [ascii] NVB_R_INSUFFICIENT_RESOURCES
+00FE95F8 [ascii] NVB_R_SESSION_SETUP_CANCELLED_DURING_QUEUING
+00FE9DF8 [ascii] NVB_SSS_CONFIGURING
+00FEAC98 [ascii] secureRTSPSupported
+00FEB1B8 [ascii] serviceUri
+00FEB488 [ascii] RTSPRU
+00FEB590 [ascii] resourcePath
+00FEC208 [ascii] wss://
+00FEC660 [ascii] NVB_PU_RTSP
+00FEC670 [ascii] NVB_PU_RTSPRU
+00FEC698 [ascii] NVB_PU_RTSPS
+00FEC9C0 [ascii] Received response during polling is: '%s'
+00FEEC50 [ascii] Error in updateAdState. Unexpected call during session control state %d
+00FEF600 [ascii] http.path
+00FEFFB0 [ascii] Too many levels of remote in path
+00FF0488 [ascii] HTTP/1.1
+00FF08F0 [ascii] HTTP/1.
+00FF1128 [ascii] SSL_CTX_set_default_verify_paths() FAILS
+00FF22B0 [ascii] 00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899
+00FF2AA8 [ascii] Video playback file path: %s
+00FF2AD8 [ascii] Audio playback file path: %s
+00FF2AF8 [ascii] Video record file path: %s
+00FF2B18 [ascii] Audio record file path: %s
+00FF2B50 [ascii] Failed to open video file at path: %s
+00FF2B90 [ascii] Failed to open audio file at path: %s
+00FF2BE0 [ascii] Failed to open video record file at path: %s
+00FF2C10 [ascii] Failed to open audio record file at path: %s
+00FF3B28 [ascii] Exception thrown during destruction: %s
+00FF3BD0 [ascii] Using Secure WebSockets for Signaling
+00FF3BF8 [ascii] wssignaling
+00FF3D58 [ascii] Configuring multiStreamBitRateMode and allowLtr for CXR
+00FF5680 [ascii] Unable to get NVST_RUNTIME_PARAM_VIDEO_RECEIVER_STREAM_COUNT parameter
+00FF5778 [ascii] Unable to get NVST_RUNTIME_PARAM_WIFI_INFO_SETTINGS parameter
+00FF57B8 [ascii] Unable to get NVST_RUNTIME_PARAM_HID_DEVICES parameter
+00FF57F0 [ascii] Unable to get NVST_RUNTIME_PARAM_MIC_STREAM_COUNT parameter
+00FF5830 [ascii] Unable to get NVST_RUNTIME_PARAM_PREFILTER_PARAMS parameter
+00FF5870 [ascii] Unable to get NVST_RUNTIME_PARAM_HUD_STREAMING_MODE parameter
+00FFB958 [ascii] tls: %s: tcp_conn_peer_get failed: (%m).
+00FFE9F8 [utf16] /G_w
+01000D65 [ascii] /R?jjU?
+01004472 [ascii] />Oas
+01004532 [ascii] /=LZjw
+01004CCF [ascii] /Jc|
+01006E20 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/RefCountedObject.h
+01006F10 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\NetSSL_OpenSSL\src\Context.cpp
+01007700 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/Any.h
+010077B0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/String.h
+01007B80 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\include\Poco/Util/Application.h
+01007BE0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\NetSSL_OpenSSL\src\SSLManager.cpp
+01007CF0 [ascii] An application configuration is required to initialize the Poco::Net::SSLManager, but no Poco::Util::Application instance is available.
+01007D80 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/ScopedLock.h
+01007DD0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/ActiveMethod.h
+01008040 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\NetSSL_OpenSSL\src\PrivateKeyPassphraseHandler.cpp
+01008290 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\NetSSL_OpenSSL\src\SecureSocketImpl.cpp
+01008480 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\NetSSL_OpenSSL\src\PrivateKeyFactoryMgr.cpp
+01008560 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\NetSSL_OpenSSL\src\CertificateHandlerFactoryMgr.cpp
+01008740 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\NetSSL_OpenSSL\src\SecureStreamSocketImpl.cpp
+01008990 [ascii] An application configuration is required to obtain the private key passphrase, but no Poco::Util::Application instance is available.
+01009CD8 [ascii] insufficient security
+0100EEC0 [ascii] /:?*-
+01017390 [ascii] ChainCAPath
+010173A0 [ascii] chainCApath
+010173F0 [ascii] VerifyCAPath
+01017400 [ascii] verifyCApath
+01017480 [ascii] RequestCAPath
+01017490 [ascii] ClientCAPath
+01019FA8 [ascii] PATH_CHALLENGE
+01019FB8 [ascii] PATH_RESPONSE
+0101A1F8 [ascii] NO_VIABLE_PATH
+0101A710 [ascii] depack_do_frame_path_challenge
+0101A730 [ascii] depack_do_frame_path_response
+0101AA60 [ascii] PATH_CHALLENGE valid only in 0/1-RTT
+0101AA88 [ascii] PATH_CHALLENGE valid only in 1-RTT
+0101AE08 [ascii] no_viable_path
+0101B070 [ascii] path_challenge
+0101B080 [ascii] path_response
+0101BB98 [ascii] unable to get read lock
+0101BBB0 [ascii] unable to get write lock
+0101C218 [ascii] EVP_PKEY_get_security_bits
+0101C938 [ascii] unable to get issuer certificate
+0101C960 [ascii] unable to get certificate CRL
+0101CBA0 [ascii] unable to get local issuer certificate
+0101CC40 [ascii] path length constraint exceeded
+0101CD58 [ascii] unable to get CRL issuer certificate
+0101CE20 [ascii] proxy path length constraint exceeded
+0101CF78 [ascii] RFC 3779 resource not subset of parent's resources
+0101D0D0 [ascii] CRL path validation error
+0101D0F0 [ascii] path loop
+0101D488 [ascii] Path length invalid for non-CA cert
+0101D4B0 [ascii] Path length given without key usage keyCertSign
+01027858 [ascii] id-smime-aa-securityLabel
+01027CB8 [ascii] id-smime-spq-ets-sqt-uri
+01028848 [ascii] path
+01028938 [ascii] security
+01028948 [ascii] Security
+01028F48 [ascii] simpleSecurityObject
+01028FD0 [ascii] favouriteDrink
+0102C350 [ascii] jurisdictionL
+0102C360 [ascii] jurisdictionLocalityName
+0102C380 [ascii] jurisdictionST
+0102C390 [ascii] jurisdictionStateOrProvinceName
+0102C3B0 [ascii] jurisdictionC
+0102C3C0 [ascii] jurisdictionCountryName
+0102DF38 [ascii] IEEE Security in Storage Working Group
+0102E738 [ascii] id-ct-resourceTaggedAttest
+0102F700 [ascii] tcg-at-platformConfigUri
+0102F720 [ascii] TCG Platform Configuration URI
+0102F8C8 [ascii] tcg-at-securityQualities
+0102F8E8 [ascii] Security Qualities
+0102F938 [ascii] tcg-at-tpmSecurityTarget
+0102F958 [ascii] TPM Security Target
+0102F9A8 [ascii] tcg-at-tbbSecurityTarget
+0102F9C8 [ascii] TBB Security Target
+0102FA78 [ascii] tcg-at-tpmSecurityAssertions
+0102FA98 [ascii] TPM Security Assertions
+0102FAB0 [ascii] tcg-at-tbbSecurityAssertions
+0102FAD0 [ascii] TBB Security Assertions
+0102FBB8 [ascii] tcg-at-tbbSecurityAssertions-v3
+0102FBD8 [ascii] TCG TBB Security Assertions V3
+0102FD10 [ascii] tcg-at-platformConfigUri-v3
+0102FD30 [ascii] Platform Configuration URI Version 3
+010308B8 [ascii] tcg-tr-ID-URI
+010308C8 [ascii] Uniform Resource Identifier Trait
+01037A0D [ascii] /+ep+eqU
+01046CA0 [ascii] RSA Data Security, Inc.
+01046CC0 [ascii] RSA Data Security, Inc. PKCS
+01049240 [ascii] No decoders were found. For standard decoders you need at least one of the default or base providers available. Did you forget to load them?
+0104AE58 [ascii] Load certs from STORE URIs
+0104B900 [ascii] CRL path validation
+0104BFB0 [ascii] module=%s, path=%s
+01050DF8 [ascii] cipher get tag
+01051BD0 [ascii] relative path
+010542C8 [ascii] cannot get parameters
+01054538 [ascii] get raw key failed
+01054AE0 [ascii] unable to get maximum request size
+01054B08 [ascii] unable to get random strength
+01054BC0 [ascii] unknown security bits
+01056568 [ascii] unable to get parent reseed prop counter
+01056598 [ascii] unable to get parent strength
+01057498 [ascii] path must be absolute
+01057548 [ascii] uri authority unsupported
+01057CC8 [ascii] unknown ttyget errno value
+010582F0 [ascii] unable to get certs public key
+01058BE8 [ascii] negative pathlen
+01058CE8 [ascii] policy path length
+01058D00 [ascii] policy path length already defined
+01058D88 [ascii] unable to get issuer details
+01058DA8 [ascii] unable to get issuer keyid
+01059500 [ascii] SO_PATH
+01059508 [ascii] Specifies the path to the new ENGINE shared library
+01059838 [ascii] can't get key
+0105C178 [ascii] cannot get group name
+0105C7A8 [ascii] failed to get parameter
+0105D1C0 [ascii] path too long
+0105DB10 [ascii] tlsv1 alert insufficient security
+0105EA60 [ascii] No encoders were found. For standard encoders you need at least one of the default or base providers available. Did you forget to load them?
+0105EEC0 [ascii] security-bits
+010615F8 [ascii] [action:%d, state:%d] trying to get a BIGNUM via ctrl call
+01062CC8 [ascii] d.uniformResourceIdentifier
+010630AC [ascii] nc_uri
+010630B8 [ascii] x509: missing scheme in URI: %s
+01063930 [ascii] addr_validate_path_internal
+0106A5B8 [ascii] %s HTTP/1.0
+0106A978 [ascii] CONNECT [%s]:%s HTTP/1.0
+0106A998 [ascii] CONNECT %s:%s HTTP/1.0
+0106AA38 [ascii] HTTP/
+0106C480 [ascii] pcPathLengthConstraint
+0106C5B8 [ascii] pathlen
+0106C93C [ascii] URI:
+0106EAC0 [ascii] DSO_pathbyaddr
+0106EEB0 [ascii] No store loader found. For standard store loaders you need at least one of the default or base providers available. Did you forget to load them? Info: 
+010763B9 [ascii] /\HS7_
+01076745 [ascii] /I%j
+01081E10 [ascii] invalid url path
+01082FA0 [ascii] get itav
+01084378 [ascii] failed during derivation
+010849B0 [ascii] unable to get passphrase
+0108CDCF [ascii] /hex
+0108D988 [ascii] d.cpsuri
+0108E298 [ascii] abspath
+01090A98 [ascii] %*sPath Length Constraint: 
+010920C8 [ascii] Target Certificate:
+010920E0 [ascii] %*sTarget Name: 
+01092118 [ascii] %*sTarget Group: 
+01092130 [ascii] %*sTarget Cert:
+010946E8 [ascii] dynamic_path
+01094828 [ascii] win32_pathbyaddr
+0109877E [ascii] /s@:T
+01098FA9 [ascii] /A#i!&
+01099105 [ascii] /I]P
+0109E84D [ascii] /2x1
+010A1D2E [ascii] /V;"
+010A2D82 [ascii] /RIv
+010A38A0 [ascii] /[vS!
+010A76A7 [ascii] /!dq
+010AA286 [ascii] /p;i
+010AD2EB [ascii] /zt1
+010AD3CD [ascii] /5dJ
+010AE4D1 [ascii] /\U ?J
+010B17AC [ascii] /8.i
+010B1E70 [ascii] /%`A
+010B5D68 [ascii] /U$n
+010B6CD2 [ascii] /l?Y
+010B8ACD [ascii] /`P*d#
+010BD935 [ascii] /n[(
+010BFA01 [ascii] /C~A
+010CB0E7 [ascii] /'/)/A/E/K/M/Q/W/o/u/}/
+010DA01E [ascii] /%mm
+01101C00 [ascii] Given path=%s
+01116868 [ascii] providers\common\securitycheck.c
+0111A8B0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Crypto\src\OpenSSLInitializer.cpp
+0111AA10 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Crypto\src\X509Certificate.cpp
+0111B0B0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Crypto\include\Poco/Crypto/EVPPKey.h
+0111B110 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Crypto\src\EVPPKey.cpp
+0111B8B0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\src\Timer.cpp
+0111C020 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\src\Application.cpp
+0111C088 [ascii] application.path
+0111C228 [ascii] Cannot get application file name.
+0111C2F0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\src\ConfigurationView.cpp
+0111C3D0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\src\LocalConfigurationView.cpp
+0111C520 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\src\OptionSet.cpp
+0111CAB0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\src\XMLConfiguration.cpp
+0111CBF0 [ascii] Can not convert to Poco::UTF16String
+0111D5A0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/Dynamic/VarHolder.h
+0111D820 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Util\src\LoggingConfigurator.cpp
+0111DA30 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\Element.cpp
+0111DC00 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\DOMWriter.cpp
+0111E2B0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\AbstractContainerNode.cpp
+0111E320 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\NamePool.cpp
+0111EAB0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\ElementsByTagNameList.cpp
+0111ECF0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\AttrMap.cpp
+0111FBE0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\XMLWriter.cpp
+0111FDE0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\DOMSerializer.cpp
+01120370 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\ChildNodesList.cpp
+01120470 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\NamespaceSupport.cpp
+011206F0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\include\Poco/SAX/AttributesImpl.h
+01120780 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\AttributesImpl.cpp
+01120990 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\EntityResolverImpl.cpp
+01120B00 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\ParserEngine.cpp
+011214A0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\XMLFilterImpl.cpp
+01121550 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\XML\src\DTDMap.cpp
+01124E40 [ascii] Struct -> Poco::DateTime
+01124E60 [ascii] Struct -> Poco::LocalDateTime
+01124E80 [ascii] Struct -> Poco::Timestamp
+01125148 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\JSON\src\Object.cpp
+01125C98 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\Net.cpp
+01125CE8 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\Socket.cpp
+011264E0 [ascii] WebSocket Exception
+01126568 [ascii] Upgrade
+01126600 [ascii] HTTP request URI invalid or too long
+011268F8 [ascii] Request-URI Too Large
+011269E8 [ascii] Upgrade Required
+01126DD0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\SocketImpl.cpp
+01126E18 [ascii] _sockfd == POCO_INVALID_SOCKET
+01127210 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\HTTPClientSession.cpp
+011272D0 [ascii] HTTP/1.0
+01127388 [ascii] upgrade
+01127390 [ascii] websocket
+011273A0 [ascii] Sec-WebSocket-Version
+011273B8 [ascii] Missing Sec-WebSocket-Version in handshake request
+011273F0 [ascii] Unsupported WebSocket version requested
+01127418 [ascii] Sec-WebSocket-Key
+01127430 [ascii] Missing Sec-WebSocket-Key in handshake request
+01127460 [ascii] Sec-WebSocket-Accept
+01127478 [ascii] No WebSocket handshake
+011274A0 [ascii] The server does not understand the WebSocket protocol
+011274D8 [ascii] Cannot upgrade to WebSocket connection
+01127500 [ascii] No Connection: Upgrade header in handshake response
+01127538 [ascii] No Upgrade: websocket header in handshake response
+01127570 [ascii] Invalid or missing Sec-WebSocket-Accept header in handshake response
+011275F0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\HTTPSession.cpp
+01127638 [ascii] Cannot get host name
+01127870 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\HostEntry.cpp
+01127A00 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\SocketAddress.cpp
+01127CD0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\MessageHeader.cpp
+01127DA8 [ascii] ; path=
+01127E48 [ascii] ; Path="
+01128280 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\HTTPHeaderStream.cpp
+011282D0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/BufferedStreamBuf.h
+01128410 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\HTTPStream.cpp
+01128540 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\HTTPFixedLengthStream.cpp
+01128690 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\HTTPChunkedStream.cpp
+01128860 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\WebSocketImpl.cpp
+01128940 [ascii] Cannot acceptConnection() on a WebSocketImpl
+01128970 [ascii] Cannot connect() a WebSocketImpl
+01128998 [ascii] Cannot connectNB() a WebSocketImpl
+011289C0 [ascii] Cannot bind() a WebSocketImpl
+011289E0 [ascii] Cannot bind6() a WebSocketImpl
+01128A00 [ascii] Cannot listen() on a WebSocketImpl
+01128A28 [ascii] Cannot sendTo() on a WebSocketImpl
+01128A50 [ascii] Cannot receiveFrom() on a WebSocketImpl
+01128A78 [ascii] Cannot sendUrgent() on a WebSocketImpl
+01128AF0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\include\Poco/Net/HTTPServerRequestImpl.h
+01128DC0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\IPAddressImpl.cpp
+01129090 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\SocketAddressImpl.cpp
+011290E0 [ascii] std::strlen(path) < sizeof(_pAddr->sun_path)
+01129158 [ascii] length && length < sizeof(_pAddr->sun_path)
+011292E0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Net\src\NTLMCredentials.cpp
+01129360 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/HMACEngine.h
+011293D0 [ascii] security.dll
+011293E0 [ascii] InitSecurityInterfaceW
+01129468 [ascii] Failed to initialize NTLM security context
+0112A408 [ascii] Resource limit
+0112A450 [ascii] Bad path syntax
+0112A4B8 [ascii] Path not found
+0112A568 [ascii] Unknown URI scheme
+0112A580 [ascii] Too many URI redirects
+0112A598 [ascii] Bad URI syntax
+0112A690 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\NotificationCenter.cpp
+0112A740 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\File_WIN32U.cpp
+0112A790 [ascii] !_path.empty()
+0112A840 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\File.cpp
+0112A978 [ascii] URI encoding: no hex digit following percent sign
+0112A9B0 [ascii] URI encoding: two hex digits must follow percent sign
+0112A9E8 [ascii] URI encoding: not a hex digit
+0112AA4C [ascii] rtsp
+0112AA80 [ascii] URI scheme must be followed by authority or path
+0112AB00 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/StreamCopier.h
+0112AB78 [ascii] Cannot get path of the current process.
+0112ABA0 [ascii] Cannot get current directory
+0112ABC0 [ascii] Cannot get system directory long path name
+0112ABF0 [ascii] Cannot get temporary directory path
+0112AC40 [ascii] Cannot get temporary directory long path name
+0112AC80 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\Path.cpp
+0112ACF8 [ascii] !path.empty()
+0112AD10 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/Buffer.h
+0112ADC0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\RegularExpression.cpp
+0112B620 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\Event_WIN32.cpp
+0112B6A0 [ascii] cannot get system clock
+0112B6B8 [ascii] cannot get system clock accuracy
+0112B6E0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\TimedNotificationQueue.cpp
+0112B800 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\Thread.cpp
+0112B880 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\ErrorHandler.cpp
+0112C060 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\NumericString.cpp
+0112C1E0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/UTFString.h
+0112C468 [ascii] Cannot get OS version information
+0112C648 [ascii] Cannot get computer name
+0112C668 [ascii] cannot get network adapter list
+0112C7B0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\DateTime.cpp
+0112C900 [ascii] Cannot get exit code for process
+0112C968 [ascii] POCOTRM
+0112C970 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\Process.cpp
+0112D940 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\FileStream_WIN32.cpp
+0112DB48 [ascii] cannot get local time
+0112DC00 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\UUID.cpp
+0112E080 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\PatternFormatter.cpp
+0112E390 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/DynamicFactory.h
+0112E400 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\Random.cpp
+0112E580 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\StreamConverter.cpp
+0112EA70 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\URIStreamOpener.cpp
+0112EAD0 [ascii] An URIStreamFactory for the given scheme has already been registered
+0112EB18 [ascii] No URIStreamFactory has been registered for the given scheme
+0112EB70 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/RWLock.h
+0112ED90 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/MemoryStream.h
+0112EE00 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\BinaryWriter.cpp
+0112F0D0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\TextIterator.cpp
+0112F150 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\TextConverter.cpp
+0112FC40 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\MemoryPool.cpp
+011301C0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\UTF8String.cpp
+011303D0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\PipeImpl_WIN32.cpp
+01130470 [ascii] cannot get local time DST flag
+01130540 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\AsyncChannel.cpp
+011306C0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\FileChannel.cpp
+01130860 [ascii] secondaryPath
+011308C0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\SimpleFileChannel.cpp
+01130960 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\SplitterChannel.cpp
+01130B50 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\EventLogChannel.cpp
+01130BF0 [utf16] PocoMsg.dll
+01130E10 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\JSONFormatter.cpp
+01131010 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\FileStreamFactory.cpp
+01131060 [ascii] uri.isRelative() || uri.getScheme() == "file"
+01140D88 [utf16] ////
+01140E84 [utf16] /-/-/------/---/------
+01150FE0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\NotificationQueue.cpp
+01151090 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/ActiveResult.h
+01151130 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\ArchiveStrategy.cpp
+011511B0 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/ActiveRunnable.h
+01151210 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\include\Poco/ScopedUnlock.h
+01151380 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\PurgeStrategy.cpp
+01151570 [ascii] C:\bt\poco\src\.1-release-4532f3f3b1.clean\Foundation\src\ActiveDispatcher.cpp
+011564E6 [ascii] too many capturing groups (maximum 65535)
+01179FD4 [utf16] 3637383940414243444546474849501
+011C989D [ascii] I-FORWARD-TSN received, but not indicated during connection establishment
+011CD4FC [ascii] Out Of Resource
+011D1481 [ascii] /4*&{
+011D2548 [ascii] device or resource busy
+011D2760 [ascii] no stream resources
+011D28F8 [ascii] resource deadlock would occur
+011D2918 [ascii] resource unavailable try again
+011D3130 [ascii] GetTempPath2W
+011DA140 [utf16] api-ms-win-security-systemfunctions-l1-1-0
+011DAD40 [ascii] Resource temporarily unavailable
+011DAD80 [ascii] Resource device
+011DAEB0 [ascii] Resource deadlock avoided
+011DBD13 [ascii] /2GG>!B
+011DD79E [ascii] />58d%
+011E8E20 [ascii] NVST_R_ERROR_RTSP_STUN_FAILED
+011EA040 [ascii] NVST_DISCONN_SERVER_VIDEO_ENCODER_INIT_REGISTER_RESOURCE_FAILED
+011EABE0 [ascii] NVST_DISCONN_SERVER_VFP_DDA_ERROR_RESOURCE_ACQUIRE_FAILURE
+011EAD58 [ascii] NVST_DISCONN_SERVER_VIDEO_ENCODER_MAP_RESOURCE_FAILED
+011EAD90 [ascii] NVST_DISCONN_SERVER_VIDEO_ENCODER_UNMAP_RESOURCE_FAILED
+011EB160 [ascii] NVST_ENET_SECURITY_INVALID_READ
+011EB180 [ascii] NVST_ENET_SECURITY_INVALID_DISCONNECT
+011EB1A8 [ascii] NVST_ENET_SECURITY_INVALID_EVENT
+011EB1D0 [ascii] NVSTE_RTSP_SETUP_AUDIO
+011EB1E8 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_COULDNT_CONNECT
+011EB218 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_OPERATION_TIMEDOUT
+011EB248 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_SSL_CONNECT_ERROR
+011EB278 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_SEND_ERROR
+011EB2A0 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_RECV_ERROR
+011EB2C8 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_SSL_INVALIDCERTSTATUS
+011EB300 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EB340 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EB380 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EB3C0 [ascii] NVSTE_RTSP_SETUP_AUDIO_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EB410 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EB450 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_GATEWAY_TIMEOUT
+011EB488 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_BAD_REQUEST
+011EB4C0 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_UNAUTHORIZED
+011EB4F8 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_FORBIDDEN
+011EB528 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_NOT_FOUND
+011EB558 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_NOT_ALLOWED
+011EB590 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011EB5D0 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_TIMEOUT
+011EB600 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EB640 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_SESSION_NOT_FOUND
+011EB678 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EB6B8 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EB6F8 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EB738 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_INVALID_CSEQ
+011EB770 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_MALFORMED_RESPONSE
+011EB7A8 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EB7E8 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_NOT_IMPLEMENTED
+011EB820 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EB860 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_SETUP_AUDIO_NOT_SUPPORTED
+011EB8A0 [ascii] NVSTE_RTSP_SETUP_AUDIO_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EB8E8 [ascii] NVSTE_RTSP_SETUP_VIDEO
+011EB900 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_COULDNT_CONNECT
+011EB930 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_OPERATION_TIMEDOUT
+011EB960 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_SSL_CONNECT_ERROR
+011EB990 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_SEND_ERROR
+011EB9B8 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_RECV_ERROR
+011EB9E0 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_SSL_INVALIDCERTSTATUS
+011EBA18 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EBA58 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EBA98 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EBAE0 [ascii] NVSTE_RTSP_SETUP_VIDEO_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EBB30 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EBB70 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_GATEWAY_TIMEOUT
+011EBBA8 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_BAD_REQUEST
+011EBBE0 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_UNAUTHORIZED
+011EBC18 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_FORBIDDEN
+011EBC48 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_NOT_FOUND
+011EBC78 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_NOT_ALLOWED
+011EBCB0 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011EBCF0 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_TIMEOUT
+011EBD20 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EBD60 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_SESSION_NOT_FOUND
+011EBD98 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EBDD8 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EBE18 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EBE58 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_INVALID_CSEQ
+011EBE90 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_MALFORMED_RESPONSE
+011EBEC8 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EBF08 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_NOT_IMPLEMENTED
+011EBF40 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EBF80 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_SETUP_VIDEO_NOT_SUPPORTED
+011EBFC0 [ascii] NVSTE_RTSP_SETUP_VIDEO_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EC008 [ascii] NVSTE_RTSP_SETUP_CONTROL
+011EC028 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_COULDNT_CONNECT
+011EC058 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_OPERATION_TIMEDOUT
+011EC090 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_SSL_CONNECT_ERROR
+011EC0C8 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_SEND_ERROR
+011EC0F8 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_RECV_ERROR
+011EC128 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_SSL_INVALIDCERTSTATUS
+011EC160 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EC1A0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EC1E0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EC230 [ascii] NVSTE_RTSP_SETUP_CONTROL_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EC280 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EC2C0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_GATEWAY_TIMEOUT
+011EC2F8 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_BAD_REQUEST
+011EC330 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_UNAUTHORIZED
+011EC368 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_FORBIDDEN
+011EC3A0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_NOT_FOUND
+011EC3D8 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_NOT_ALLOWED
+011EC410 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011EC450 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_TIMEOUT
+011EC480 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EC4C0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_SESSION_NOT_FOUND
+011EC500 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EC540 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EC580 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EC5C0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_INVALID_CSEQ
+011EC5F8 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_MALFORMED_RESPONSE
+011EC638 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EC678 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_NOT_IMPLEMENTED
+011EC6B0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EC6F0 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_SETUP_CONTROL_NOT_SUPPORTED
+011EC740 [ascii] NVSTE_RTSP_SETUP_CONTROL_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EC788 [ascii] NVSTE_RTSP_SETUP_MIC
+011EC7A0 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_COULDNT_CONNECT
+011EC7D0 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_OPERATION_TIMEDOUT
+011EC800 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_SSL_CONNECT_ERROR
+011EC830 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_SEND_ERROR
+011EC858 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_RECV_ERROR
+011EC880 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_SSL_INVALIDCERTSTATUS
+011EC8B8 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EC8F0 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EC930 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EC970 [ascii] NVSTE_RTSP_SETUP_MIC_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EC9B8 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EC9F0 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_GATEWAY_TIMEOUT
+011ECA28 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_BAD_REQUEST
+011ECA58 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_UNAUTHORIZED
+011ECA88 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_FORBIDDEN
+011ECAB8 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_NOT_FOUND
+011ECAE8 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_NOT_ALLOWED
+011ECB18 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011ECB58 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_TIMEOUT
+011ECB88 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011ECBC0 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_SESSION_NOT_FOUND
+011ECBF8 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011ECC38 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011ECC78 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011ECCB8 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_INVALID_CSEQ
+011ECCE8 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_MALFORMED_RESPONSE
+011ECD20 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011ECD60 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_NOT_IMPLEMENTED
+011ECD98 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011ECDD8 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_SETUP_MIC_NOT_SUPPORTED
+011ECE20 [ascii] NVSTE_RTSP_SETUP_MIC_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011ECE68 [ascii] NVSTE_RTSP_EXTENDED
+011ECE80 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_COULDNT_CONNECT
+011ECEB0 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_OPERATION_TIMEDOUT
+011ECEE8 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_SSL_CONNECT_ERROR
+011ECF20 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_SEND_ERROR
+011ECF50 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_RECV_ERROR
+011ECF80 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_SSL_INVALIDCERTSTATUS
+011ECFB8 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011ECFF8 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011ED040 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011ED090 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011ED0E0 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011ED120 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_GATEWAY_TIMEOUT
+011ED158 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_BAD_REQUEST
+011ED190 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_UNAUTHORIZED
+011ED1C8 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_FORBIDDEN
+011ED200 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_NOT_FOUND
+011ED238 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_NOT_ALLOWED
+011ED270 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011ED2B0 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_TIMEOUT
+011ED2E0 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011ED320 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_SESSION_NOT_FOUND
+011ED360 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011ED3A0 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011ED3E0 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011ED420 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_INVALID_CSEQ
+011ED458 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_MALFORMED_RESPONSE
+011ED498 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011ED4D8 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_NOT_IMPLEMENTED
+011ED510 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011ED550 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_SETUP_EXTENDED_NOT_SUPPORTED
+011ED5A0 [ascii] NVSTE_RTSP_SETUP_EXTENDED_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011ED5E8 [ascii] NVSTE_RTSP_OPTIONS
+011ED600 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_COULDNT_CONNECT
+011ED630 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_OPERATION_TIMEDOUT
+011ED660 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_SSL_CONNECT_ERROR
+011ED690 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_SEND_ERROR
+011ED6B8 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_RECV_ERROR
+011ED6E0 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_SSL_INVALIDCERTSTATUS
+011ED710 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011ED748 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011ED780 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011ED7C0 [ascii] NVSTE_RTSP_OPTIONS_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011ED808 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011ED840 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_GATEWAY_TIMEOUT
+011ED878 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_BAD_REQUEST
+011ED8A8 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_UNAUTHORIZED
+011ED8D8 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_FORBIDDEN
+011ED908 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_NOT_FOUND
+011ED938 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_NOT_ALLOWED
+011ED968 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011ED9A8 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_TIMEOUT
+011ED9D8 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EDA10 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_SESSION_NOT_FOUND
+011EDA48 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EDA88 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EDAC0 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EDB00 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_INVALID_CSEQ
+011EDB30 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_MALFORMED_RESPONSE
+011EDB68 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EDBA0 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_NOT_IMPLEMENTED
+011EDBD8 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EDC10 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_OPTIONS_NOT_SUPPORTED
+011EDC48 [ascii] NVSTE_RTSP_OPTIONS_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EDC88 [ascii] NVST_RTSP_OPTIONS_OK
+011EDCA0 [ascii] NVST_RTSP_OPTIONS_BAD_REQUEST
+011EDCC0 [ascii] NVST_RTSP_OPTIONS_VERSION_NOT_SUPPORTED
+011EDCE8 [ascii] NVSTE_RTSP_DESCRIBE
+011EDD00 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_COULDNT_CONNECT
+011EDD30 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_OPERATION_TIMEDOUT
+011EDD60 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_SSL_CONNECT_ERROR
+011EDD90 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_SEND_ERROR
+011EDDB8 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_RECV_ERROR
+011EDDE0 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_SSL_INVALIDCERTSTATUS
+011EDE10 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EDE48 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EDE80 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EDEC0 [ascii] NVSTE_RTSP_DESCRIBE_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EDF08 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EDF40 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_GATEWAY_TIMEOUT
+011EDF78 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_BAD_REQUEST
+011EDFA8 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_UNAUTHORIZED
+011EDFD8 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_FORBIDDEN
+011EE008 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_NOT_FOUND
+011EE038 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_NOT_ALLOWED
+011EE068 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011EE0A8 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_TIMEOUT
+011EE0D8 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EE110 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_SESSION_NOT_FOUND
+011EE148 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EE188 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EE1C0 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EE200 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_INVALID_CSEQ
+011EE230 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_MALFORMED_RESPONSE
+011EE268 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EE2A0 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_NOT_IMPLEMENTED
+011EE2D8 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EE310 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_DESCRIBE_NOT_SUPPORTED
+011EE350 [ascii] NVSTE_RTSP_DESCRIBE_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EE390 [ascii] NVST_RTSP_DESCRIBE_OK
+011EE3A8 [ascii] NVST_RTSP_DESCRIBE_BAD_REQUEST
+011EE3C8 [ascii] NVST_RTSP_DESCRIBE_INTERNAL_SERVER_ERROR
+011EE3F8 [ascii] NVSTE_RTSP_PLAY
+011EE408 [ascii] NVSTE_RTSP_PLAY_RTSPE_COULDNT_CONNECT
+011EE430 [ascii] NVSTE_RTSP_PLAY_RTSPE_OPERATION_TIMEDOUT
+011EE460 [ascii] NVSTE_RTSP_PLAY_RTSPE_SSL_CONNECT_ERROR
+011EE488 [ascii] NVSTE_RTSP_PLAY_RTSPE_SEND_ERROR
+011EE4B0 [ascii] NVSTE_RTSP_PLAY_RTSPE_RECV_ERROR
+011EE4D8 [ascii] NVSTE_RTSP_PLAY_RTSPE_SSL_INVALIDCERTSTATUS
+011EE508 [ascii] NVSTE_RTSP_PLAY_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EE540 [ascii] NVSTE_RTSP_PLAY_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EE578 [ascii] NVSTE_RTSP_PLAY_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EE5B0 [ascii] NVSTE_RTSP_PLAY_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EE5F8 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EE630 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_GATEWAY_TIMEOUT
+011EE660 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_BAD_REQUEST
+011EE690 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_UNAUTHORIZED
+011EE6C0 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_FORBIDDEN
+011EE6E8 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_NOT_FOUND
+011EE710 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_NOT_ALLOWED
+011EE740 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011EE778 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_TIMEOUT
+011EE7A0 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EE7D8 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_SESSION_NOT_FOUND
+011EE808 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EE840 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EE878 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EE8B0 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_INVALID_CSEQ
+011EE8E0 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_MALFORMED_RESPONSE
+011EE918 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EE950 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_NOT_IMPLEMENTED
+011EE980 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EE9B8 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_PLAY_NOT_SUPPORTED
+011EE9F0 [ascii] NVSTE_RTSP_PLAY_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EEA30 [ascii] NVST_RTSP_PLAY_OK
+011EEA48 [ascii] NVST_RTSP_PLAY_BAD_REQUEST
+011EEA68 [ascii] NVST_RTSP_PLAY_NOT_VALID_IN_THIS_STATE
+011EEA90 [ascii] NVST_RTSP_PLAY_SESSION_NOT_FOUND
+011EEAB8 [ascii] NVSTE_RTSP_ANNOUNCE
+011EEAD0 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_COULDNT_CONNECT
+011EEB00 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_OPERATION_TIMEDOUT
+011EEB30 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_SSL_CONNECT_ERROR
+011EEB60 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_SEND_ERROR
+011EEB88 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_RECV_ERROR
+011EEBB0 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_SSL_INVALIDCERTSTATUS
+011EEBE0 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EEC18 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EEC50 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EEC90 [ascii] NVSTE_RTSP_ANNOUNCE_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EECD8 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EED10 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_GATEWAY_TIMEOUT
+011EED48 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_BAD_REQUEST
+011EED78 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_UNAUTHORIZED
+011EEDA8 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_FORBIDDEN
+011EEDD8 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_NOT_FOUND
+011EEE08 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_NOT_ALLOWED
+011EEE38 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011EEE78 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_TIMEOUT
+011EEEA8 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EEEE0 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_SESSION_NOT_FOUND
+011EEF18 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EEF58 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EEF90 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EEFD0 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_INVALID_CSEQ
+011EF000 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_MALFORMED_RESPONSE
+011EF038 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EF070 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_NOT_IMPLEMENTED
+011EF0A8 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EF0E0 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_ANNOUNCE_NOT_SUPPORTED
+011EF120 [ascii] NVSTE_RTSP_ANNOUNCE_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EF160 [ascii] NVST_RTSP_ANNOUNCE_OK
+011EF178 [ascii] NVST_RTSP_ANNOUNCE_BAD_REQUEST
+011EF198 [ascii] NVST_RTSP_ANNOUNCE_NOT_VALID_IN_THIS_STATE
+011EF1C8 [ascii] NVST_RTSP_ANNOUNCE_NOT_FOUND
+011EF1E8 [ascii] NVST_RTSP_ANNOUNCE_INTERNAL_SERVER_ERROR
+011EF218 [ascii] NVSTE_RTSP_TEARDOWN
+011EF230 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_COULDNT_CONNECT
+011EF260 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_OPERATION_TIMEDOUT
+011EF290 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_SSL_CONNECT_ERROR
+011EF2C0 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_SEND_ERROR
+011EF2E8 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_RECV_ERROR
+011EF310 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_SSL_INVALIDCERTSTATUS
+011EF340 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_NOT_AUTHENTICATED_EXCEPTION
+011EF378 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_POCO_NET_SSLCONTEXT_EXCEPTION
+011EF3B0 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_POCO_NET_CERTVALIDATION_EXCEPTION
+011EF3F0 [ascii] NVSTE_RTSP_TEARDOWN_RTSPE_POCO_NET_SSLCON_UNEXPECTEDLYCLOSED_EXCEPTION
+011EF438 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_SERVICE_UNAVAILABLE
+011EF470 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_GATEWAY_TIMEOUT
+011EF4A8 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_BAD_REQUEST
+011EF4D8 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_UNAUTHORIZED
+011EF508 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_FORBIDDEN
+011EF538 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_NOT_FOUND
+011EF568 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_NOT_ALLOWED
+011EF598 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_AUTHENTICATION_REQUIRED
+011EF5D8 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_TIMEOUT
+011EF608 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_NOT_ENOUGH_BANDWIDTH
+011EF640 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_SESSION_NOT_FOUND
+011EF678 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_NOT_VALID_IN_THIS_STATE
+011EF6B8 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_UNSUPPORTED_TRANSPORT
+011EF6F0 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_DESTINATION_UNREACHABLE
+011EF730 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_INVALID_CSEQ
+011EF760 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_MALFORMED_RESPONSE
+011EF798 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_INTERNAL_SERVER_ERROR
+011EF7D0 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_NOT_IMPLEMENTED
+011EF808 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_VERSION_NOT_SUPPORTED
+011EF840 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_TEARDOWN_NOT_SUPPORTED
+011EF880 [ascii] NVSTE_RTSP_TEARDOWN_RESPONSE_CODE_STREAMER_COMMUNICATION_FAILED
+011EF8C0 [ascii] NVST_RTSP_TEARDOWN_OK
+011EF8D8 [ascii] NVST_RTSP_TEARDOWN_BAD_REQUEST
+011EF8F8 [ascii] NVST_RTSP_TEARDOWN_NOT_VALID_IN_THIS_STATE
+011EF928 [ascii] NVSTE_RTSP_SETUP
+011EF940 [ascii] NVST_RTSP_SETUP_OK
+011EF958 [ascii] NVST_RTSP_SETUP_BAD_REQUEST
+011EF978 [ascii] NVST_RTSP_SETUP_NOT_VALID_IN_THIS_STATE
+011EF9A0 [ascii] NVST_RTSP_SETUP_SESSION_NOT_FOUND
+011EF9C8 [ascii] NVST_RTSP_SETUP_NOT_FOUND
+011EF9E8 [ascii] NVST_RTSP_SETUP_INTERNAL_SERVER_ERROR
+011F08F0 [ascii] NVST_INVALID_RTSP_SIGNALING_PORT
+011F0AC0 [ascii] NVST_R_SECURITY
+011F14F8 [ascii] Unexpected exception during API call '%s': %s
+011F1540 [ascii] Unexpected unknown exception during API call '%s'
+011F15C0 [ascii] POCO %d.%d.%d
+011F2916 [utf16] /104
+011F464C [ascii] /"58
+011F49B2 [ascii] />IXkz
+011F53BE [ascii] /4G\qj+0
+011F5852 [ascii] /0mrSL
+011F6EAF [ascii] /Gq+
+011F7165 [ascii] /g_*
+011F7277 [ascii] /Ul'
+011FB382 [ascii] /U.T
+011FB542 [ascii] /S:F
+01205170 [ascii] !m_path.str
+01205258 [ascii] Logger get configuration failed! (%s)
+012057C8 [ascii] Finished capture loop after capturing %u frames
+012057F8 [ascii] Stream:%u Finished with status %s after capturing %u frames.
+01205DC8 [ascii] Server is now configuring.
+01206418 [ascii] connectWithRtspHandshake: return %#010x
+012064B0 [ascii] Failed to create RTSP connection with error %#010X
+01206BF8 [ascii] File log target selected but given max file size of 0 bytes.
+01207ED0 [ascii] Error GetLogFileDirectory::PathAppendA buffer size not sufficient
+01207F28 [ascii] Get App Data Path: empty file name received, csidl: %d
+01207F80 [ascii] GetAppDataPath: CreateDirectoryA for [%s] path failed. Error %lu
+01207FC8 [ascii] Get App Data Path: SHGetFolderPathA failed
+01208730 [ascii] Ignoring connection config RTSP Scheme, overridden by previous endpoint or client config.
+012087A8 [ascii] RTSP Scheme set to WEBSOCKET
+012087C8 [ascii] RTSP Scheme set to LEGACY
+01208828 [ascii] RTSP Scheme set to SECURE WEBSOCKET
+01208FC8 [ascii] Failed to send server network capturing command (Error: %d)
+01209758 [ascii] Pcap File Path: %s
+01209830 [ascii] Stream config not updated after rtsp handshake
+0120A7E8 [ascii] Get invalid streaming format from client config
+0120B588 [ascii] Failed to get NvscStreamingSession TracingTx
+0120D090 [ascii] Socket Send: invalid target address %p
+0120D580 [ascii] Socket Get Parameter: invalid parameter: %p
+0120D5B0 [ascii] Socket Get Parameter: invalid socket
+0120D5E0 [ascii] Socket Get Parameter: insufficient buffer size %u, need %u for parameter %d
+0120D630 [ascii] Socket Get Parameter: %llu - %d, %p, %u, %p
+0120D660 [ascii] Socket Get Parameter: failed to query parameter %d for socket %llu (Error: %d)
+0120D6B0 [ascii] Socket Get Parameter: invalid parameter: %d
+0120DDB0 [ascii] RM_BLOB_DEF:{'1': {'7': {'rm_stream_index': 'uint16_t', 'rm_frame_number': 'uint32_t', 'rm_capture_input_ts_ms': 'double', 'rm_captured_frame_number': 'uint32_t', 'rm_va_sleep_target': 'uint16_t', 'rm_va_busy_wait': 'uint16_t', 'rm_encoder_input_drops': 'uint16_t', 'rm_encode_input_ts_ms': 'double', 'rm_encode_duration_ms': 'float', 'rm_tx_ts_ms': 'double', 'rm_frame_size': 'uint32_t', 'rm_vbv_size_kb': 'float', 'rm_encryption_ms': 'float', 'rm_frame_avg_qp': 'float', 'rm_drc_avg_qp': 'float', '...
+01215D80 [ascii] C:\dvs\p4\build\sw\gcomp\rel\gs_04_89\src\Mjolnir\_out\vcpkg\x64-windows-static-mt\include\Poco/ActiveMethod.h
+01215E00 [ascii] C:\dvs\p4\build\sw\gcomp\rel\gs_04_89\src\Mjolnir\_out\vcpkg\x64-windows-static-mt\include\Poco/ScopedLock.h
+01217CB8 [ascii] SecurityPolicyViolation
+01218120 [ascii] Control socket already closed during disconnection sequence
+01218378 [ascii] startStreamingWithRtsp
+01218460 [ascii] Server provides sps/pps via RTSP.
+01218488 [ascii] Server didn't provide sps/pps via RTSP. Carrying on.
+012196C0 [ascii] Falling through from RTSP_CONTROL_UDP_AG_ENCRYPT_INDEX to RTSP_CONTROL_UDP_ENCRYPT_INDEX
+01219720 [ascii] Falling through from RTSP_CONTROL_UDP_ENCRYPT_INDEX to RTSP_CONTROL_UDP_AG_INDEX
+01219790 [ascii] Falling through from RTSP_CONTROL_UDP_INDEX to RTSP_CONTROL_TCP_ENCRYPT_INDEX
+012197E0 [ascii] Falling through from RTSP_CONTROL_TCP_ENCRYPT_INDEX to RTSP_CONTROL_TCP_INDEX
+01219830 [ascii] Falling through from RTSP_CONTROL_UDP_AG_INDEX to RTSP_CONTROL_UDP_INDEX
+01219C20 [ascii] Folder path is longer than the maximum supported path.
+01219C60 [ascii] (void("Folder path is longer than the maximum supported path."), strlen(folder) < MAX_PATH_LENGTH)
+01219D20 [ascii] general.serverEndpoints: RTSP hanshake %hu control %hu UDP control %hu audio %hu input %hu bundle %hu stream 0: video stream %hu stream 1: video stream %hu stream 2: video stream %hu stream 3: video stream %hu
+0121C518 [ascii] general.rtspWebSocketPerConnection
+0121C5F8 [ascii] ].rtspWebSocketPerConnection
+0121C878 [ascii] general.RtspsClientFeature
+0121C898 [ascii] ].rtspScheme
+0121C8A8 [ascii] general.rtspScheme
+0121C928 [ascii] ].RtspsClientFeature
+0121CC98 [ascii] general.webSocketPingThrottleEnabled
+0121CD80 [ascii] ].webSocketPingThrottleEnabled
+0121D9A8 [ascii] general.transitSelectionSettings.multipath.maxPathsDownstream
+0121D9E8 [ascii] ].transitSelectionSettings.multipath.strategy
+0121DA18 [ascii] general.transitSelectionSettings.multipath.strategy
+0121DA90 [ascii] general.transitSelectionSettings.multipath.maxPathsDownstreamMetaParams.max
+0121DAE0 [ascii] ].transitSelectionSettings.multipath.maxPathsDownstreamMetaParams.min
+0121DB30 [ascii] general.transitSelectionSettings.multipath.maxPathsDownstreamMetaParams.min
+0121DB80 [ascii] ].transitSelectionSettings.multipath.maxPathsDownstream
+0121DBC0 [ascii] general.transitSelectionSettings.multipath.bwuConstraintNackMetaParams.min
+0121DC10 [ascii] ].transitSelectionSettings.multipath.bwuConstraintNack
+0121DC48 [ascii] general.transitSelectionSettings.multipath.bwuConstraintNack
+0121DC90 [ascii] ].transitSelectionSettings.multipath.maxPathsDownstreamMetaParams.max
+0121DD10 [ascii] ].transitSelectionSettings.multipath.bwuConstraintNackMetaParams.max
+0121DD60 [ascii] general.transitSelectionSettings.multipath.bwuConstraintNackMetaParams.max
+0121DDB0 [ascii] ].transitSelectionSettings.multipath.bwuConstraintNackMetaParams.min
+01222BF0 [ascii] ].resControl.dfc.upgradeCooldownMs
+01222C18 [ascii] vqos.resControl.dfc.upgradeCooldownMs
+01222C40 [ascii] ].resControl.dfc.minGoodMsBeforeUpgrade
+01222C68 [ascii] vqos.resControl.dfc.minGoodMsBeforeUpgrade
+01223B90 [ascii] ].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01223BC8 [ascii] vqos.resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01223CC8 [ascii] ].resControl.cpmRtc.resUpgradeDisableDurationMs
+01223CF8 [ascii] vqos.resControl.cpmRtc.resUpgradeDisableDurationMs
+01223D30 [ascii] ].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01223D68 [ascii] vqos.resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01224478 [ascii] ].resControl.perfHistory.decoder.fpsUpgradePercent
+012244B0 [ascii] vqos.resControl.perfHistory.decoder.fpsUpgradePercent
+01224E38 [ascii] ].gfc.minGoodMsBeforeUpgrade
+01224E58 [ascii] vqos.gfc.minGoodMsBeforeUpgrade
+01224EF0 [ascii] ].gfc.upgradeCooldownMs
+01224F08 [ascii] vqos.gfc.upgradeCooldownMs
+012253A0 [ascii] ].perfHistory.fpsUpgradePct
+012253C0 [ascii] vqos.perfHistory.fpsUpgradePct
+012258C0 [ascii] ].dfc.upgradeCooldownMs
+012258D8 [ascii] vqos.dfc.upgradeCooldownMs
+012258F8 [ascii] ].dfc.minGoodMsBeforeUpgrade
+01225918 [ascii] vqos.dfc.minGoodMsBeforeUpgrade
+01227CA8 [ascii] ].adjustStreamingFpsDuringOutOfFocus
+01227CD0 [ascii] vqos.adjustStreamingFpsDuringOutOfFocus
+01227DF0 [ascii] ].streamingFpsFloorDuringOutOfFocus
+01227E18 [ascii] vqos.streamingFpsFloorDuringOutOfFocus
+0123CAB8 [ascii] vqos[0].resControl.dfc.minGoodMsBeforeUpgrade
+0123CB60 [ascii] vqos[4].resControl.dfc.minGoodMsBeforeUpgrade
+0123CB90 [ascii] vqos[3].resControl.dfc.minGoodMsBeforeUpgrade
+0123CBC0 [ascii] vqos[2].resControl.dfc.minGoodMsBeforeUpgrade
+0123CBF0 [ascii] vqos[1].resControl.dfc.minGoodMsBeforeUpgrade
+0123CC20 [ascii] vqos[2].resControl.dfc.upgradeCooldownMs
+0123CC50 [ascii] vqos[1].resControl.dfc.upgradeCooldownMs
+0123CC80 [ascii] vqos[0].resControl.dfc.upgradeCooldownMs
+0123CCB0 [ascii] vqos[5].resControl.dfc.minGoodMsBeforeUpgrade
+0123CD10 [ascii] vqos[5].resControl.dfc.upgradeCooldownMs
+0123CD40 [ascii] vqos[4].resControl.dfc.upgradeCooldownMs
+0123CD70 [ascii] vqos[3].resControl.dfc.upgradeCooldownMs
+01240010 [ascii] vqos[2].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01240050 [ascii] vqos[1].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01240090 [ascii] vqos[0].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01240100 [ascii] vqos[0].resControl.cpmRtc.resUpgradeDisableDurationMs
+01240138 [ascii] vqos[5].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01240178 [ascii] vqos[4].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+012401B8 [ascii] vqos[3].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+012401F8 [ascii] vqos[4].resControl.cpmRtc.resUpgradeDisableDurationMs
+01240230 [ascii] vqos[3].resControl.cpmRtc.resUpgradeDisableDurationMs
+01240268 [ascii] vqos[2].resControl.cpmRtc.resUpgradeDisableDurationMs
+012402A0 [ascii] vqos[1].resControl.cpmRtc.resUpgradeDisableDurationMs
+01240380 [ascii] vqos[5].resControl.cpmRtc.resUpgradeDisableDurationMs
+012405A0 [ascii] vqos[2].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+012405E0 [ascii] vqos[1].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01240620 [ascii] vqos[0].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+012406F0 [ascii] vqos[5].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01240730 [ascii] vqos[4].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01240770 [ascii] vqos[3].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01241D40 [ascii] vqos[2].resControl.perfHistory.decoder.fpsUpgradePercent
+01241D80 [ascii] vqos[1].resControl.perfHistory.decoder.fpsUpgradePercent
+01241DC0 [ascii] vqos[0].resControl.perfHistory.decoder.fpsUpgradePercent
+01241E50 [ascii] vqos[5].resControl.perfHistory.decoder.fpsUpgradePercent
+01241E90 [ascii] vqos[4].resControl.perfHistory.decoder.fpsUpgradePercent
+01241ED0 [ascii] vqos[3].resControl.perfHistory.decoder.fpsUpgradePercent
+01243EB8 [ascii] vqos[2].gfc.minGoodMsBeforeUpgrade
+01243EE0 [ascii] vqos[1].gfc.minGoodMsBeforeUpgrade
+01243F08 [ascii] vqos[0].gfc.minGoodMsBeforeUpgrade
+01243F50 [ascii] vqos[0].gfc.upgradeCooldownMs
+01243F70 [ascii] vqos[5].gfc.minGoodMsBeforeUpgrade
+01243F98 [ascii] vqos[4].gfc.minGoodMsBeforeUpgrade
+01243FC0 [ascii] vqos[3].gfc.minGoodMsBeforeUpgrade
+01243FE8 [ascii] vqos[4].gfc.upgradeCooldownMs
+01244008 [ascii] vqos[3].gfc.upgradeCooldownMs
+01244028 [ascii] vqos[2].gfc.upgradeCooldownMs
+01244048 [ascii] vqos[1].gfc.upgradeCooldownMs
+012440C8 [ascii] vqos[5].gfc.upgradeCooldownMs
+01244F70 [ascii] vqos[0].perfHistory.fpsUpgradePct
+01245010 [ascii] vqos[4].perfHistory.fpsUpgradePct
+01245038 [ascii] vqos[3].perfHistory.fpsUpgradePct
+01245060 [ascii] vqos[2].perfHistory.fpsUpgradePct
+01245088 [ascii] vqos[1].perfHistory.fpsUpgradePct
+01245110 [ascii] vqos[5].perfHistory.fpsUpgradePct
+01246218 [ascii] vqos[0].dfc.minGoodMsBeforeUpgrade
+012462A0 [ascii] vqos[4].dfc.minGoodMsBeforeUpgrade
+012462C8 [ascii] vqos[3].dfc.minGoodMsBeforeUpgrade
+012462F0 [ascii] vqos[2].dfc.minGoodMsBeforeUpgrade
+01246318 [ascii] vqos[1].dfc.minGoodMsBeforeUpgrade
+01246340 [ascii] vqos[2].dfc.upgradeCooldownMs
+01246360 [ascii] vqos[1].dfc.upgradeCooldownMs
+01246380 [ascii] vqos[0].dfc.upgradeCooldownMs
+012463A0 [ascii] vqos[5].dfc.minGoodMsBeforeUpgrade
+012463E8 [ascii] vqos[5].dfc.upgradeCooldownMs
+01246408 [ascii] vqos[4].dfc.upgradeCooldownMs
+01246428 [ascii] vqos[3].dfc.upgradeCooldownMs
+0124DC30 [ascii] vqos[2].adjustStreamingFpsDuringOutOfFocus
+0124DC60 [ascii] vqos[1].adjustStreamingFpsDuringOutOfFocus
+0124DC90 [ascii] vqos[0].adjustStreamingFpsDuringOutOfFocus
+0124DD00 [ascii] vqos[5].adjustStreamingFpsDuringOutOfFocus
+0124DD30 [ascii] vqos[4].adjustStreamingFpsDuringOutOfFocus
+0124DD60 [ascii] vqos[3].adjustStreamingFpsDuringOutOfFocus
+0124DEE8 [ascii] vqos[0].streamingFpsFloorDuringOutOfFocus
+0124DFA8 [ascii] vqos[4].streamingFpsFloorDuringOutOfFocus
+0124DFD8 [ascii] vqos[3].streamingFpsFloorDuringOutOfFocus
+0124E008 [ascii] vqos[2].streamingFpsFloorDuringOutOfFocus
+0124E038 [ascii] vqos[1].streamingFpsFloorDuringOutOfFocus
+0124E0C8 [ascii] vqos[5].streamingFpsFloorDuringOutOfFocus
+01256888 [ascii] Failed to get active process name, error code 0x%lx
+012571C0 [ascii] Failed to get device list
+01257200 [ascii] Failed to get buffer chunk
+012572D0 [ascii] Failed to get buffer block from queue
+012575C0 [ascii] C:\dvs\p4\build\sw\gcomp\rel\gs_04_89\src\Mjolnir\_out\vcpkg\x64-windows-static-mt\include\Poco/RefCountedObject.h
+01258E98 [ascii] Leak detected: %zu buffer(s) still in use during destruction
+01259738 [ascii] STUN failed to get username
+01259848 [ascii] Get HMAC Ping failed
+0125A120 [ascii] External data channel ID %u was closed during onDataChannel callback, skipping handshake
+0125B7F0 [ascii] EVP_CIPHER_CTX_ctrl failed to get tag in GCM mode (Error: %d)
+0125C260 [ascii] rtsp://
+0125C270 [ascii] rtsps://
+0125C490 [ascii] RTSP Version not supported
+0125C658 [ascii] Not able to get stream type
+0125C678 [ascii] Timeout during RTSP command!
+0125C6B8 [ascii] rtspSessionId
+0125C718 [ascii] [RTSP Setup] Client Transport Entry: %s:%d
+0125C744 [ascii] /%hu
+0125C750 [ascii] Unexpectedly disconnected from server during RTSP handshake: SETUP stream %s
+0125C818 [ascii] Not able to get sps/pps key
+0125C868 [ascii] RtspSetup
+0125C878 [ascii] Not able to setup RTSP session for %s. Error: %u:%s
+0125CB38 [ascii]  MIC doRtspSetup failed streamIndex %d
+0125CC40 [ascii] Unified socket mode: Video RTSP SETUP using WebRtcTransport port %u
+0125D270 [ascii] Setup control stream using RTSP:SETUP and creating a dummy control source for STUN 
+0125DB58 [ascii] RtspDescribe
+0125DB68 [ascii] RtspOptions
+0125DBD8 [ascii] RTSP session is not valid 0x%x
+0125DC00 [ascii] Unexpectedly disconnected from server during RTSP handshake: OPTIONS
+0125DC68 [ascii] Server RTSP handshake port = %d
+0125DC90 [ascii] RTSP/WebSocket upgrade forbidden (403): %s
+0125DCC0 [ascii] RTSP session creation failed: %s (status=%d)
+0125DCF0 [ascii] Cannot connect to server - %s:%hu via RTSP, %s
+0125DD40 [ascii] Cannot get server options - %s:%hu via RTSP, %u:%s
+0125DD78 [ascii] Get server header version: %s
+0125DDA0 [ascii] Server %s:%hu does not support required option %s. RTSP error %u:%s
+0125DDF0 [ascii] Unexpectedly disconnected from server during RTSP handshake: DESCRIBE
+0125DE98 [ascii] Not able to get audio/control id
+0125E080 [ascii] Failed to get local address list
+0125E0C0 [ascii] Encryption key in RTSPS
+0125E1C8 [ascii] RTSP ANNOUNCE failed with error %u:%s
+0125E270 [ascii] Not able to set client config with rtsp.
+0125E2A0 [ascii] RtspAnnounce
+0125E2B0 [ascii] Unexpectedly disconnected from server during RTSP handshake: ANNOUNCE
+0125E318 [ascii] RtspTeardown
+0125E338 [ascii] RtspPlay
+0125E348 [ascii] RtspSession has been destroyed. Failed to start streaming.
+0125E420 [ascii] webSocketPingThrottle
+0125E468 [ascii] Failure with RTSP PLAY request. %u
+0125E4D8 [ascii] rtspHandshakeLatency
+0125E530 [ascii] Successfully connected with RTSP handshake
+0125E588 [ascii] m_pRtspsStats+++++
+0125E5A0 [ascii] m_pRtspsStats-----
+0125E5B8 [ascii] RtspConnectLatency
+0125E6F8 [ascii] Error in createRtspConnection: due to '%s' exception!
+0125E730 [ascii] Failed to connect to server using RTSP handshake (error codes: %#010X %#010X)
+0125EA10 [ascii] x-nv-sessionid
+0125FB90 [ascii] Failed to get config from SDP for type %s
+0125FBF0 [ascii] Failed to get SDP for type %s
+0125FE88 [ascii] SendHapticsState failed during teardown
+0125FF80 [ascii] Couldn't find valid utf-8 code point at the end of 1KB chunk in string during packetization
+01260AA0 [ascii] SHGetFolderPathW
+01261240 [ascii] Unable to retrieve path of the current executable! Defaulting GsSideLoadLibrary to requiring valid signature.
+01261320 [ascii] Path to current executable exceeds buffer length! Defaulting GsSideLoadLibrary to requiring valid signature.
+012622D0 [ascii] Failed to get (first/last) timestamp in updateState
+012623F8 [ascii] Failed to get last timestamp
+01262468 [ascii] Failed to get last timestamp before updateState
+01262778 [ascii] Failed to get first timestamp during pruning
+01262880 [ascii] Failed to get first valid timestamp (no packets in jitter buffer)
+012628D0 [ascii] Failed to get first valid timestamp (no packets with valid arrival timestamp in jitter buffer)
+01262F28 [ascii] Failed to get socket timeout value error:%08X
+01262FE0 [ascii] Failed to get port information
+012637B0 [ascii] Encountered congestion again during retries, pending packet queue size %zu
+012674A0 [ascii] X-GS-ServerPort
+01267520 [ascii] X-GS-ClientPort
+01267550 [ascii] RtspMessageParser
+01267568 [ascii] RTSP Message Parser: Server port is: %hu
+012675B8 [ascii] RTSP Message Parser: Client port is: %hu
+012678A8 [ascii] No certificate provided to get subject name
+012678F8 [ascii] No certificate provided to get issuer name
+01267948 [ascii] No certificate provided to get serial number
+01268538 [ascii] %s: insufficient resources
+01268790 [ascii] ClientCert during SSL handshake: %s
+012688F0 [ascii] WebSocket Loop Starting.
+01268910 [ascii] Exception during WebSocket operation: %s
+012689A8 [ascii] Exception was thrown during teardown!
+012689D0 [ascii] WebSocket Loop Exiting.
+01268A28 [ascii] WebSocket
+01268A68 [ascii] Connecting to host %s, port %hu
+01268A88 [ascii] WS upgrade failed: %s
+01268AE0 [ascii] C:\dvs\p4\build\sw\gcomp\rel\gs_04_89\src\Mjolnir\_out\vcpkg\x64-windows-static-mt\include\Poco/Any.h
+01269810 [ascii] Failed to get Rtc video bitrate config. Config: %s Config value: %s Error: %s
+012698F8 [ascii] Get Media Attributes: the requested media block doesn't exist
+01269938 [ascii] Get SDP Line: the requested media block doesn't exist
+01269AF8 [ascii] RtspClient
+01269B10 [ascii]  Valid RTSP port was not received. Trying with default port: %hu
+01269B60 [ascii] Creating Secure RTSP handshake %hu %s %s using POCO RTSP client
+01269BA0 [ascii] Creating RTSP handshake client using POCO at port %hu
+01269BE0 [ascii] Failed to create RTSP Session: %s. Retry counter: %d, Max Retries: %d
+01269C28 [ascii] Failed to create the RTSP session: %s
+01269C50 [ascii] RtspClient CreateSession set URL %s %d
+01269E00 [ascii] unknown security service requested
+01269E28 [ascii] Requested none security service
+0126CF40 [ascii] vqos[%d].resControl.dfc.upgradeCooldownMs: %d
+0126CF70 [ascii] vqos[%d].resControl.dfc.minGoodMsBeforeUpgrade: %d
+0126D888 [ascii] vqos[%d].resControl.cpmRtc.decTimeHeadroomForResUpgradePct: %d
+0126D940 [ascii] vqos[%d].resControl.cpmRtc.resUpgradeDisableDurationMs: %d
+0126D980 [ascii] vqos[%d].resControl.cpmRtc.skipDowngradeDuringStaticScenes: %d
+0126E1A0 [ascii] vqos[%d].resControl.perfHistory.decoder.fpsUpgradePercent: %d
+0126E548 [ascii] vqos[%d].gfc.upgradeCooldownMs: %d
+0126E570 [ascii] vqos[%d].gfc.minGoodMsBeforeUpgrade: %d
+0126E810 [ascii] vqos[%d].perfHistory.fpsUpgradePct: %d
+0126EE40 [ascii] vqos[%d].dfc.minGoodMsBeforeUpgrade: %d
+0126EEB0 [ascii] vqos[%d].dfc.upgradeCooldownMs: %d
+01270548 [ascii] vqos[%d].adjustStreamingFpsDuringOutOfFocus: %d
+01270578 [ascii] vqos[%d].streamingFpsFloorDuringOutOfFocus: %d
+01273440 [ascii] x-nv-general.RtspsClientFeature
+01273460 [ascii] x-nv-general.rtspScheme
+01273478 [ascii] x-nv-general.rtspWebSocketPerConnection
+01273878 [ascii] x-nv-general.webSocketPingThrottleEnabled
+01273F20 [ascii] x-nv-general.transitSelectionSettings.multipath.maxPathsDownstream
+01273F68 [ascii] x-nv-general.transitSelectionSettings.multipath.strategy
+01273FE0 [ascii] x-nv-general.transitSelectionSettings.multipath.bwuConstraintNack
+012851C8 [ascii] x-nv-vqos[5].resControl.dfc.minGoodMsBeforeUpgrade
+01285200 [ascii] x-nv-vqos[4].resControl.dfc.minGoodMsBeforeUpgrade
+01285238 [ascii] x-nv-vqos[1].resControl.dfc.upgradeCooldownMs
+01285268 [ascii] x-nv-vqos[0].resControl.dfc.upgradeCooldownMs
+01285298 [ascii] x-nv-vqos[3].resControl.dfc.upgradeCooldownMs
+012852C8 [ascii] x-nv-vqos[2].resControl.dfc.upgradeCooldownMs
+012852F8 [ascii] x-nv-vqos[5].resControl.dfc.upgradeCooldownMs
+01285328 [ascii] x-nv-vqos[4].resControl.dfc.upgradeCooldownMs
+01285418 [ascii] x-nv-vqos[1].resControl.dfc.minGoodMsBeforeUpgrade
+01285450 [ascii] x-nv-vqos[0].resControl.dfc.minGoodMsBeforeUpgrade
+01285488 [ascii] x-nv-vqos[3].resControl.dfc.minGoodMsBeforeUpgrade
+012854C0 [ascii] x-nv-vqos[2].resControl.dfc.minGoodMsBeforeUpgrade
+01288BD8 [ascii] x-nv-vqos[1].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01288C18 [ascii] x-nv-vqos[0].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01288E48 [ascii] x-nv-vqos[5].resControl.cpmRtc.resUpgradeDisableDurationMs
+01288E88 [ascii] x-nv-vqos[4].resControl.cpmRtc.resUpgradeDisableDurationMs
+01289048 [ascii] x-nv-vqos[3].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01289088 [ascii] x-nv-vqos[2].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+012890C8 [ascii] x-nv-vqos[5].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01289108 [ascii] x-nv-vqos[4].resControl.cpmRtc.decTimeHeadroomForResUpgradePct
+01289148 [ascii] x-nv-vqos[1].resControl.cpmRtc.resUpgradeDisableDurationMs
+01289188 [ascii] x-nv-vqos[0].resControl.cpmRtc.resUpgradeDisableDurationMs
+012891C8 [ascii] x-nv-vqos[3].resControl.cpmRtc.resUpgradeDisableDurationMs
+01289208 [ascii] x-nv-vqos[2].resControl.cpmRtc.resUpgradeDisableDurationMs
+01289248 [ascii] x-nv-vqos[3].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01289288 [ascii] x-nv-vqos[2].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+012892C8 [ascii] x-nv-vqos[5].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01289308 [ascii] x-nv-vqos[4].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+01289668 [ascii] x-nv-vqos[1].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+012896A8 [ascii] x-nv-vqos[0].resControl.cpmRtc.skipDowngradeDuringStaticScenes
+0128AC88 [ascii] x-nv-vqos[3].resControl.perfHistory.decoder.fpsUpgradePercent
+0128ACC8 [ascii] x-nv-vqos[2].resControl.perfHistory.decoder.fpsUpgradePercent
+0128AD08 [ascii] x-nv-vqos[5].resControl.perfHistory.decoder.fpsUpgradePercent
+0128AD48 [ascii] x-nv-vqos[4].resControl.perfHistory.decoder.fpsUpgradePercent
+0128AF68 [ascii] x-nv-vqos[1].resControl.perfHistory.decoder.fpsUpgradePercent
+0128AFA8 [ascii] x-nv-vqos[0].resControl.perfHistory.decoder.fpsUpgradePercent
+0128D268 [ascii] x-nv-vqos[3].gfc.minGoodMsBeforeUpgrade
+0128D290 [ascii] x-nv-vqos[2].gfc.minGoodMsBeforeUpgrade
+0128D2B8 [ascii] x-nv-vqos[5].gfc.minGoodMsBeforeUpgrade
+0128D2E0 [ascii] x-nv-vqos[4].gfc.minGoodMsBeforeUpgrade
+0128D308 [ascii] x-nv-vqos[1].gfc.upgradeCooldownMs
+0128D330 [ascii] x-nv-vqos[0].gfc.upgradeCooldownMs
+0128D358 [ascii] x-nv-vqos[3].gfc.upgradeCooldownMs
+0128D380 [ascii] x-nv-vqos[2].gfc.upgradeCooldownMs
+0128D498 [ascii] x-nv-vqos[1].gfc.minGoodMsBeforeUpgrade
+0128D4C0 [ascii] x-nv-vqos[0].gfc.minGoodMsBeforeUpgrade
+0128D5D8 [ascii] x-nv-vqos[5].gfc.upgradeCooldownMs
+0128D600 [ascii] x-nv-vqos[4].gfc.upgradeCooldownMs
+0128E508 [ascii] x-nv-vqos[1].perfHistory.fpsUpgradePct
+0128E530 [ascii] x-nv-vqos[0].perfHistory.fpsUpgradePct
+0128E558 [ascii] x-nv-vqos[3].perfHistory.fpsUpgradePct
+0128E580 [ascii] x-nv-vqos[2].perfHistory.fpsUpgradePct
+0128E5A8 [ascii] x-nv-vqos[5].perfHistory.fpsUpgradePct
+0128E5D0 [ascii] x-nv-vqos[4].perfHistory.fpsUpgradePct
+0128FA68 [ascii] x-nv-vqos[1].dfc.minGoodMsBeforeUpgrade
+0128FA90 [ascii] x-nv-vqos[0].dfc.minGoodMsBeforeUpgrade
+0128FAB8 [ascii] x-nv-vqos[3].dfc.minGoodMsBeforeUpgrade
+0128FAE0 [ascii] x-nv-vqos[2].dfc.minGoodMsBeforeUpgrade
+0128FB08 [ascii] x-nv-vqos[5].dfc.minGoodMsBeforeUpgrade
+0128FB30 [ascii] x-nv-vqos[4].dfc.minGoodMsBeforeUpgrade
+0128FB58 [ascii] x-nv-vqos[1].dfc.upgradeCooldownMs
+0128FB80 [ascii] x-nv-vqos[0].dfc.upgradeCooldownMs
+0128FDF8 [ascii] x-nv-vqos[3].dfc.upgradeCooldownMs
+0128FE20 [ascii] x-nv-vqos[2].dfc.upgradeCooldownMs
+0128FE48 [ascii] x-nv-vqos[5].dfc.upgradeCooldownMs
+0128FE70 [ascii] x-nv-vqos[4].dfc.upgradeCooldownMs
+01297D48 [ascii] x-nv-vqos[1].adjustStreamingFpsDuringOutOfFocus
+01297D78 [ascii] x-nv-vqos[0].adjustStreamingFpsDuringOutOfFocus
+01298028 [ascii] x-nv-vqos[3].adjustStreamingFpsDuringOutOfFocus
+01298058 [ascii] x-nv-vqos[2].adjustStreamingFpsDuringOutOfFocus
+01298088 [ascii] x-nv-vqos[5].adjustStreamingFpsDuringOutOfFocus
+012980B8 [ascii] x-nv-vqos[4].adjustStreamingFpsDuringOutOfFocus
+012982C8 [ascii] x-nv-vqos[1].streamingFpsFloorDuringOutOfFocus
+012982F8 [ascii] x-nv-vqos[0].streamingFpsFloorDuringOutOfFocus
+01298328 [ascii] x-nv-vqos[3].streamingFpsFloorDuringOutOfFocus
+01298358 [ascii] x-nv-vqos[2].streamingFpsFloorDuringOutOfFocus
+01298388 [ascii] x-nv-vqos[5].streamingFpsFloorDuringOutOfFocus
+012983B8 [ascii] x-nv-vqos[4].streamingFpsFloorDuringOutOfFocus
+012A36F0 [ascii] Failed to get a free queue from rivermax
+012A6338 [ascii] RtspSessionPoco
+012A6348 [ascii] streamingSessionId : %s
+012A65C0 [ascii] X-GS-Version
+012A69C4 [ascii]  HTTP/
+012A6A90 [ascii] GET 
+012A7B78 [ascii] Failed to get video buffer at frame=%u
+012A7EF0 [ascii] Failed to get frame header at frame=%u
+012A8F90 [ascii] Cannot get a handle to relevant structure or has zero length
+012A9C80 [ascii] m_pRtspClientSessionLegacy
+012A9CD0 [ascii] Establishing RTSP session with protocol TAG '%s' and URL '%s' Domain Name %s
+012A9D50 [ascii] RTSP session requested scheme '%s' that does not match the expected scheme '%s'.
+012A9DA8 [ascii] RtspSessionPocoBase
+012A9DC0 [ascii] RTSP
+012A9DC8 [ascii] RTSPS
+012A9DD0 [ascii] /rtsp
+012A9E70 [ascii] res: %d, *pRc: %ld / statusMimiced: %d ,bPocoExceptionOccured: %d,currentRequestState: %s
+012A9F60 [ascii] RTSP(s) coming breaking out at level :%d ; [reqType:%ld]
+012A9FF0 [ascii] Poco::SystemException is thrown at ~RtspSessionPocoBase %s
+012AA030 [ascii] closeConnection/PocoException: %s
+012AA058 [ascii] class Poco::Net::NetException
+012AA078 [ascii] class Poco::Net::InvalidAddressException
+012AA0A8 [ascii] class Poco::Net::InvalidSocketException
+012AA0D0 [ascii] class Poco::Net::ServiceNotFoundException
+012AA148 [ascii] Undefined RtspRequestState
+012AA1E0 [ascii] RtspClientSessionLegacy->abort()
+012AA248 [ascii] class Poco::Net::ConnectionResetException
+012AA278 [ascii] class Poco::Net::ConnectionRefusedException
+012AA2A8 [ascii] class Poco::Net::NotAuthenticatedException
+012AA2D8 [ascii] class Poco::Net::SSLException
+012AA2F8 [ascii] class Poco::Net::UnsupportedRedirectException
+012AA328 [ascii] class Poco::Net::UnsupportedFamilyException
+012AA358 [ascii] class Poco::Net::AddressFamilyMismatchException
+012AA388 [ascii] class Poco::Net::ConnectionAbortedException
+012AA3B8 [ascii] class Poco::Net::NoMessageException
+012AA3E0 [ascii] class Poco::Net::MessageException
+012AA408 [ascii] class Poco::Net::MultipartException
+012AA430 [ascii] class Poco::Net::HTTPException
+012AA450 [ascii] class Poco::Net::DNSException
+012AA470 [ascii] class Poco::Net::HostNotFoundException
+012AA498 [ascii] class Poco::Net::NoAddressFoundException
+012AA4C8 [ascii] class Poco::Net::InterfaceNotFoundException
+012AA588 [ascii] rtsp perform() returnCode:%s, [%s]
+012AA5D0 [ascii] Poco::Exception: %s, %s
+012AA5E8 [ascii] class Poco::Net::SSLContextException
+012AA610 [ascii] class Poco::Net::InvalidCertificateException
+012AA640 [ascii] class Poco::Net::CertificateValidationException
+012AA670 [ascii] class Poco::Net::SSLConnectionUnexpectedlyClosedException
+012AAF48 [ascii] Bitstream recorder dtor had error while removing outPath: %s
+012AB590 [ascii] RTSP web socket closed due to exception: %s
+012AB600 [ascii] WebSocket Frame to be Sent:
+012AB638 [ascii] RTSP web socket disconnected.
+012AB658 [ascii] NvWebSocketSession
+012ABD36 [ascii] /RPCRMarc9/BN1k5zwDbCtf+NMRgecTxt0YrZh7ejaN69hnlqE5K2AsvOHp11LNo
+012AD2D8 [ascii] PocoException: %s
+012ADFB0 [ascii] certStoreSaveItem: SHGetFolderPathA failed. Error %08lX
+012AE040 [ascii] Cert Store Load Item: get cert and key matching params failed
+012AE120 [ascii] Get Cert And Key Matching Params: certificate [%s] is not found
+01431580 [ascii] GetAppDataPath
+014315BC [ascii] GetLocalAppDataPath
+014315E4 [ascii] GetOutputFilePath
+014331A0 [ascii] PathAppendA
+014331AE [ascii] PathFileExistsA
+0143383A [ascii] GetFullPathNameW
+01433A34 [ascii] InitializeSecurityDescriptor
+01433A84 [ascii] SetSecurityDescriptorDacl
+01433C9A [ascii] SHGetKnownFolderPath
+01433CB2 [ascii] SHGetFolderPathA
+01434266 [ascii] GetLongPathNameW
+0143427A [ascii] GetTempPathW
+014345E8 [ascii] GetFinalPathNameByHandleW
+0143ED20 [ascii] .?AVOutOfResourceErrorCause@dcsctp@@
+0143ED60 [ascii] .?AV?$TLVTrait@UOutOfResourceParameterConfig@dcsctp@@@dcsctp@@
+01443430 [ascii] Pairing
+01449D28 [ascii] RTSP/2.0
+01449D48 [ascii] RTSP/1.0
+0144A6E0 [ascii] .?AVSSLConnectionUnexpectedlyClosedException@Net@Poco@@
+0144A728 [ascii] .?AVSSLContextException@Net@Poco@@
+0144A760 [ascii] .?AVSSLException@Net@Poco@@
+0144A790 [ascii] .?AVInvalidArgumentException@Poco@@
+0144A7C8 [ascii] .?AVOpenSSLException@Crypto@Poco@@
+0144A800 [ascii] .?AVCryptoException@Crypto@Poco@@
+0144A838 [ascii] .?AVNotImplementedException@Poco@@
+0144A870 [ascii] .?AVKeyPairImpl@Crypto@Poco@@
+0144A8A0 [ascii] .?AVRSAKeyImpl@Crypto@Poco@@
+0144A8D0 [ascii] .?AVIllegalStateException@Poco@@
+0144A908 [ascii] .?AVUnknownOptionException@Util@Poco@@
+0144A940 [ascii] .?AVOptionException@Util@Poco@@
+0144A970 [ascii] .?AVDataException@Poco@@
+0144A9A0 [ascii] .?AV?$AbstractDelegate@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Poco@@
+0144AA10 [ascii] .?AV?$Delegate@VPrivateKeyPassphraseHandler@Net@Poco@@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@$00@Poco@@
+0144AAA0 [ascii] .?AVSocketImpl@Net@Poco@@
+0144AAD0 [ascii] .?AVSecureStreamSocketImpl@Net@Poco@@
+0144AB08 [ascii] .?AVInvalidCertificateException@Net@Poco@@
+0144AB48 [ascii] .?AVCertificateValidationException@Net@Poco@@
+0144AB88 [ascii] .?AVEmptyOptionException@Util@Poco@@
+0144ABC0 [ascii] .?AVRangeException@Poco@@
+0144ABF0 [ascii] .?AVOpenFileException@Poco@@
+0144AC20 [ascii] .?AVFileException@Poco@@
+0144AC50 [ascii] .?AVReadFileException@Poco@@
+0144AC80 [ascii] .?AVCreateFileException@Poco@@
+0144ACB0 [ascii] .?AVWriteFileException@Poco@@
+0144ACE0 [ascii] .?AVFileNotFoundException@Poco@@
+0144AD18 [ascii] .?AVECKeyImpl@Crypto@Poco@@
+0144AD48 [ascii] .?AVTimerNotification@Util@Poco@@
+0144AD80 [ascii] .?AVStopNotification@Util@Poco@@
+0144ADB8 [ascii] .?AVCancelNotification@Util@Poco@@
+0144ADF0 [ascii] .?AVCircularReferenceException@Poco@@
+0144AE28 [ascii] .?AVSyntaxException@Poco@@
+0144AE58 [ascii] .?AVAmbiguousOptionException@Util@Poco@@
+0144AE98 [ascii] .?AVMissingOptionException@Util@Poco@@
+0144AED0 [ascii] .?AVMissingArgumentException@Util@Poco@@
+0144AF10 [ascii] .?AVInvalidArgumentException@Util@Poco@@
+0144AF50 [ascii] .?AVUnexpectedArgumentException@Util@Poco@@
+0144AF90 [ascii] .?AVIncompatibleOptionsException@Util@Poco@@
+0144AFD0 [ascii] .?AVDuplicateOptionException@Util@Poco@@
+0144B010 [ascii] .?AVNode@XML@Poco@@
+0144B038 [ascii] .?AVAttr@XML@Poco@@
+0144B060 [ascii] .?AVElement@XML@Poco@@
+0144B088 [ascii] .?AVBadCastException@Poco@@
+0144B1B0 [ascii] .?AV?$SharedPtr@VArray@JSON@Poco@@VReferenceCounter@3@V?$ReleasePolicy@VArray@JSON@Poco@@@3@@Poco@@
+0144B230 [ascii] .?AV?$SharedPtr@VObject@JSON@Poco@@VReferenceCounter@3@V?$ReleasePolicy@VObject@JSON@Poco@@@3@@Poco@@
+0144B2F8 [ascii] .?AVDOMException@XML@Poco@@
+0144B328 [ascii] .?AVXMLException@XML@Poco@@
+0144B358 [ascii] .?AVEventException@XML@Poco@@
+0144B388 [ascii] .?AVPoolOverflowException@Poco@@
+0144B3C0 [ascii] .?AVSAXNotSupportedException@XML@Poco@@
+0144B3F8 [ascii] .?AVSAXException@XML@Poco@@
+0144B428 [ascii] .?AVSAXNotRecognizedException@XML@Poco@@
+0144B468 [ascii] .?AVAttributes@XML@Poco@@
+0144B498 [ascii] .?AVAttributesImpl@XML@Poco@@
+0144B4C8 [ascii] .?AVSAXParseException@XML@Poco@@
+0144B500 [ascii] .?AV?$Struct@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@U?$less@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@@std@@@2@@2@V?$set@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@U?$less@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$a...
+0144B790 [ascii] .?AV?$vector@VVar@Dynamic@Poco@@V?$allocator@VVar@Dynamic@Poco@@@std@@@std@@
+0144B7F0 [ascii] .?AVArray@JSON@Poco@@
+0144B820 [ascii] .?AV?$Struct@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$ordered_map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@U?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@@std@@@2@V?$deque@U?$pair@V?$basic_string@DU?$char_traits@D@std@@V?$allocator...
+0144BCA0 [ascii] .?AVObject@JSON@Poco@@
+0144BCC8 [ascii] .?AVJSONException@JSON@Poco@@
+0144BD10 [ascii] .?AVInvalidAddressException@Net@Poco@@
+0144BD48 [ascii] .?AVInvalidSocketException@Net@Poco@@
+0144BD80 [ascii] .?AVServiceNotFoundException@Net@Poco@@
+0144BDB8 [ascii] .?AVConnectionAbortedException@Net@Poco@@
+0144BDF8 [ascii] .?AVConnectionResetException@Net@Poco@@
+0144BE30 [ascii] .?AVConnectionRefusedException@Net@Poco@@
+0144BE70 [ascii] .?AVDNSException@Net@Poco@@
+0144BEA0 [ascii] .?AVHostNotFoundException@Net@Poco@@
+0144BED8 [ascii] .?AVNoAddressFoundException@Net@Poco@@
+0144BF10 [ascii] .?AVInterfaceNotFoundException@Net@Poco@@
+0144BF50 [ascii] .?AVNoMessageException@Net@Poco@@
+0144BF88 [ascii] .?AVMessageException@Net@Poco@@
+0144BFB8 [ascii] .?AVMultipartException@Net@Poco@@
+0144BFF0 [ascii] .?AVNotAuthenticatedException@Net@Poco@@
+0144C030 [ascii] .?AVUnsupportedRedirectException@Net@Poco@@
+0144C070 [ascii] .?AVFTPException@Net@Poco@@
+0144C0A0 [ascii] .?AVSMTPException@Net@Poco@@
+0144C0D0 [ascii] .?AVPOP3Exception@Net@Poco@@
+0144C100 [ascii] .?AVICMPException@Net@Poco@@
+0144C130 [ascii] .?AVICMPFragmentationException@Net@Poco@@
+0144C170 [ascii] .?AVNTPException@Net@Poco@@
+0144C1A0 [ascii] .?AVHTMLFormException@Net@Poco@@
+0144C1D8 [ascii] .?AVUnsupportedFamilyException@Net@Poco@@
+0144C218 [ascii] .?AVAddressFamilyMismatchException@Net@Poco@@
+0144C258 [ascii] .?AVWebSocketImpl@Net@Poco@@
+0144C288 [ascii] .?AVDatagramSocketImpl@Net@Poco@@
+0144C2C0 [ascii] .?AVAssertionViolationException@Poco@@
+0144C2F8 [ascii] .?AVNullValueException@Poco@@
+0144C328 [ascii] .?AVBugcheckException@Poco@@
+0144C358 [ascii] .?AVSignalException@Poco@@
+0144C388 [ascii] .?AVUnhandledException@Poco@@
+0144C3B8 [ascii] .?AVExistsException@Poco@@
+0144C3E8 [ascii] .?AVRegularExpressionException@Poco@@
+0144C420 [ascii] .?AVLibraryLoadException@Poco@@
+0144C450 [ascii] .?AVLibraryAlreadyLoadedException@Poco@@
+0144C490 [ascii] .?AVNoThreadAvailableException@Poco@@
+0144C4C8 [ascii] .?AVPropertyNotSupportedException@Poco@@
+0144C508 [ascii] .?AVNoPermissionException@Poco@@
+0144C540 [ascii] .?AVOutOfMemoryException@Poco@@
+0144C570 [ascii] .?AVResourceLimitException@Poco@@
+0144C5A8 [ascii] .?AVDataFormatException@Poco@@
+0144C5D8 [ascii] .?AVPathSyntaxException@Poco@@
+0144C608 [ascii] .?AVProtocolException@Poco@@
+0144C638 [ascii] .?AVFileExistsException@Poco@@
+0144C668 [ascii] .?AVPathNotFoundException@Poco@@
+0144C6A0 [ascii] .?AVFileReadOnlyException@Poco@@
+0144C6D8 [ascii] .?AVFileAccessDeniedException@Poco@@
+0144C710 [ascii] .?AVExecuteFileException@Poco@@
+0144C740 [ascii] .?AVFileNotReadyException@Poco@@
+0144C778 [ascii] .?AVDirectoryNotEmptyException@Poco@@
+0144C7B0 [ascii] .?AVUnknownURISchemeException@Poco@@
+0144C7E8 [ascii] .?AVTooManyURIRedirectsException@Poco@@
+0144C820 [ascii] .?AVURISyntaxException@Poco@@
+0144C850 [ascii] .?AVApplicationException@Poco@@
+0144C8C8 [ascii] .?AVDateTime@Poco@@
+0144C8F0 [ascii] .?AVLocalDateTime@Poco@@
+0144C920 [ascii] .?AVTimestamp@Poco@@
+0144C948 [ascii] .?AVUUID@Poco@@
+0144C970 [ascii] .?AV?$Struct@HV?$map@HVVar@Dynamic@Poco@@U?$less@H@std@@V?$allocator@U?$pair@$$CBHVVar@Dynamic@Poco@@@std@@@5@@std@@V?$set@HU?$less@H@std@@V?$allocator@H@2@@2@@Dynamic@Poco@@
+0144CA30 [ascii] .?AV?$Struct@HV?$ordered_map@HVVar@Dynamic@Poco@@U?$hash@H@std@@U?$equal_to@H@5@V?$allocator@U?$pair@HVVar@Dynamic@Poco@@@std@@@5@V?$deque@U?$pair@HVVar@Dynamic@Poco@@@std@@V?$allocator@U?$pair@HVVar@Dynamic@Poco@@@std@@@2@@5@@tsl@@V?$ordered_set@HU?$hash@H@std@@U?$equal_to@H@2@V?$allocator@H@2@V?$deque@HV?$allocator@H@std@@@2@@2@@Dynamic@Poco@@
+0144CBC0 [ascii] .?AV?$deque@VVar@Dynamic@Poco@@V?$allocator@VVar@Dynamic@Poco@@@std@@@std@@
+0144CC20 [ascii] .?AV?$list@VVar@Dynamic@Poco@@V?$allocator@VVar@Dynamic@Poco@@@std@@@std@@
+0144CC80 [ascii] .?AVURIRedirection@Poco@@
+0144CCB0 [ascii] .?AVMessageNotification@Poco@@
+0144CCE0 [ascii] .?AVStopNotification@?A0xc1d12b50@Poco@@
+0144CD20 [ascii] .?AVMethodNotification@?A0xc1d12b50@Poco@@
+0144D860 [ascii] .?AVException@Poco@@
+0144DAE8 [ascii] .?AV?$AbstractDelegate@UPipelineEvent@@@Poco@@
+0144DB30 [ascii] .?AV?$Delegate@VPipelineEventSubscriber@@UPipelineEvent@@$00@Poco@@
+0144DB88 [ascii] .?AVNullPointerException@Poco@@
+0144DBB8 [ascii] .?AVRuntimeException@Poco@@
+0144DBE8 [ascii] .?AVLogicException@Poco@@
+0144DC18 [ascii] .?AVSystemException@Poco@@
+0144ECB0 [ascii] .?AV?$Observer@VServerControlReliableUdp@@VResumeSendingNotification@DataChannelInterface@@@Poco@@
+0144EDA8 [ascii] .?AVNotification@Poco@@
+0144EDD0 [ascii] .?AV?$Observer@VServerControlReliableUdp@@VConnectNotification@DataChannelInterface@@@Poco@@
+0144EE40 [ascii] .?AVAbstractObserver@Poco@@
+0144EEB0 [ascii] .?AV?$Observer@VServerControlReliableUdp@@VPeerDisconnectedNotification@DataChannelInterface@@@Poco@@
+0144EF30 [ascii] .?AV?$Observer@VServerControlReliableUdp@@VChannelCreatedNotification@DataChannelInterface@@@Poco@@
+0144EFB0 [ascii] .?AV?$Observer@VServerControlReliableUdp@@VTelemetryNotification@DataChannelInterface@@@Poco@@
+0144F1E0 [ascii] .?AV?$Observer@VServerControlReliableUdp@@VReadableNotification@DataChannelInterface@@@Poco@@
+0144F250 [ascii] .?AV?$Observer@VServerControlReliableUdp@@VErrorNotification@DataChannelInterface@@@Poco@@
+01450390 [ascii] .?AV<lambda_2>@?BH@??doRtspSetup@SignalingHandler@@AEAA?AW4NvstResult_t@@GAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBV?$vector@UTransport@@V?$allocator@UTransport@@@std@@@5@AEAV65@AEAV45@@Z@
+01450480 [ascii] .?AV<lambda_2>@?EL@??connectWithRtspHandshake@SignalingHandler@@AEAA?AW4NvstResult_t@@PEBD@Z@
+01450590 [ascii] .?AV<lambda_1>@?CL@??connectWithRtspHandshake@SignalingHandler@@AEAA?AW4NvstResult_t@@PEBD@Z@
+014506C0 [ascii] .?AV<lambda_1>@?9??createRtspConnection@SignalingHandler@@QEAA?AW4NvstResult_t@@PEBUNvstNatServer_t@@@Z@
+01450740 [ascii] .?AV<lambda_1>@?8??destroyRtspSession@SignalingHandler@@QEAAX_N0@Z@
+01450800 [ascii] .?AV<lambda_1>@?O@??startStreamingWithRtsp@SignalingHandler@@QEAA?AW4NvstResult_t@@XZ@
+01450868 [ascii] .?AVHTTPException@Net@Poco@@
+01451908 [ascii] .?AVInvalidAccessException@Poco@@
+01451940 [ascii] .?AVIOException@Poco@@
+01451968 [ascii] .?AVNetException@Net@Poco@@
+01451998 [ascii] .?AVTimeoutException@Poco@@
+014519C8 [ascii] .?AVWebSocketException@Net@Poco@@
+014522D0 [ascii] .?AVNotFoundException@Poco@@
+01452300 [ascii] .?AV<lambda_1>@?1??DataCallbackHelper@NvWebSocketSession@@AEAA?AV?$function@$$A6AXPEBDHW4DataType@WebSocket@StreamSdk@@@Z@std@@XZ@
+014523A0 [ascii] .?AV<lambda_1>@?1??DisconnectCallbackHelper@NvWebSocketSession@@AEAA?AV?$function@$$A6AXW4DisconnectType@WebSocket@StreamSdk@@@Z@std@@XZ@
+014545F0 [ascii] .?AVHTTPSClientSession@Net@Poco@@
+01454628 [ascii] .?AVHTTPClientSession@Net@Poco@@
+01454660 [ascii] .?AVHTTPSession@Net@Poco@@
+01454690 [ascii] .?AVContext@Net@Poco@@
+014546B8 [ascii] .?AV?$Holder@H@Any@Poco@@
+014546F0 [ascii] .?AV?$BasicEvent@VVerificationErrorArgs@Net@Poco@@VFastMutex@3@@Poco@@
+01454750 [ascii] .?AV?$AbstractEvent@VVerificationErrorArgs@Net@Poco@@V?$DefaultStrategy@VVerificationErrorArgs@Net@Poco@@V?$AbstractDelegate@VVerificationErrorArgs@Net@Poco@@@3@@3@V?$AbstractDelegate@VVerificationErrorArgs@Net@Poco@@@3@VFastMutex@3@@Poco@@
+01454860 [ascii] .?AV?$DefaultStrategy@VVerificationErrorArgs@Net@Poco@@V?$AbstractDelegate@VVerificationErrorArgs@Net@Poco@@@3@@Poco@@
+014548F0 [ascii] .?AV?$NotificationStrategy@VVerificationErrorArgs@Net@Poco@@V?$AbstractDelegate@VVerificationErrorArgs@Net@Poco@@@3@@Poco@@
+01454980 [ascii] .?AV?$BasicEvent@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VFastMutex@Poco@@@Poco@@
+01454A00 [ascii] .?AV?$AbstractEvent@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$DefaultStrategy@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$AbstractDelegate@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Poco@@@Poco@@V?$AbstractDelegate@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@4@VFastMutex@4@@Poco@@
+01454B80 [ascii] .?AV?$DefaultStrategy@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$AbstractDelegate@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Poco@@@Poco@@
+01454C50 [ascii] .?AV?$NotificationStrategy@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$AbstractDelegate@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Poco@@@Poco@@
+01454D20 [ascii] .?AVKeyConsoleHandler@Net@Poco@@
+01454D58 [ascii] .?AVConsoleCertificateHandler@Net@Poco@@
+01454D98 [ascii] .?AVSecureStreamSocket@Net@Poco@@
+01454DD0 [ascii] .?AVStreamSocket@Net@Poco@@
+01454E00 [ascii] .?AVSocket@Net@Poco@@
+01454E28 [ascii] .?AVSecureSocketImpl@Net@Poco@@
+01454E60 [ascii] .?AV?$PrivateKeyFactoryImpl@VKeyFileHandler@Net@Poco@@@Net@Poco@@
+01454EB8 [ascii] .?AVPrivateKeyFactory@Net@Poco@@
+01454EF0 [ascii] .?AV?$PrivateKeyFactoryImpl@VKeyConsoleHandler@Net@Poco@@@Net@Poco@@
+01454F50 [ascii] .?AV?$CertificateHandlerFactoryImpl@VConsoleCertificateHandler@Net@Poco@@@Net@Poco@@
+01454FB8 [ascii] .?AVCertificateHandlerFactory@Net@Poco@@
+01455000 [ascii] .?AV?$CertificateHandlerFactoryImpl@VAcceptCertificateHandler@Net@Poco@@@Net@Poco@@
+01455070 [ascii] .?AV?$CertificateHandlerFactoryImpl@VRejectCertificateHandler@Net@Poco@@@Net@Poco@@
+014550D8 [ascii] .?AVRejectCertificateHandler@Net@Poco@@
+01455110 [ascii] .?AVStreamSocketImpl@Net@Poco@@
+01455140 [ascii] .?AVSession@Net@Poco@@
+01455168 [ascii] .?AVPrivateKeyFactoryRegistrar@Net@Poco@@
+014551A8 [ascii] .?AVKeyFileHandler@Net@Poco@@
+014551E0 [ascii] .?AVCertificateHandlerFactoryRegistrar@Net@Poco@@
+01455228 [ascii] .?AVAcceptCertificateHandler@Net@Poco@@
+01455260 [ascii] .?AVRSAKey@Crypto@Poco@@
+01455290 [ascii] .?AVKeyPair@Crypto@Poco@@
+014552C0 [ascii] .?AVTimer@Util@Poco@@
+014552E8 [ascii] .?AVTaskNotification@Util@Poco@@
+01455320 [ascii] .?AVPeriodicTaskNotification@Util@Poco@@
+01455360 [ascii] .?AVFixedRateTaskNotification@Util@Poco@@
+014553A0 [ascii] .?AVAbstractConfiguration@Util@Poco@@
+014553E0 [ascii] .?AV?$BasicEvent@VKeyValue@AbstractConfiguration@Util@Poco@@VFastMutex@4@@Poco@@
+01455450 [ascii] .?AV?$AbstractEvent@VKeyValue@AbstractConfiguration@Util@Poco@@V?$DefaultStrategy@VKeyValue@AbstractConfiguration@Util@Poco@@V?$AbstractDelegate@VKeyValue@AbstractConfiguration@Util@Poco@@@4@@4@V?$AbstractDelegate@VKeyValue@AbstractConfiguration@Util@Poco@@@4@VFastMutex@4@@Poco@@
+01455580 [ascii] .?AV?$DefaultStrategy@VKeyValue@AbstractConfiguration@Util@Poco@@V?$AbstractDelegate@VKeyValue@AbstractConfiguration@Util@Poco@@@4@@Poco@@
+01455620 [ascii] .?AV?$NotificationStrategy@VKeyValue@AbstractConfiguration@Util@Poco@@V?$AbstractDelegate@VKeyValue@AbstractConfiguration@Util@Poco@@@4@@Poco@@
+014556C0 [ascii] .?AV?$BasicEvent@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@VFastMutex@4@@Poco@@
+01455730 [ascii] .?AV?$AbstractEvent@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@V?$DefaultStrategy@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@V?$AbstractDelegate@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@@4@@4@V?$AbstractDelegate@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@@4@VFastMutex@4@@Poco@@
+01455870 [ascii] .?AV?$DefaultStrategy@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@V?$AbstractDelegate@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@@4@@Poco@@
+01455920 [ascii] .?AV?$NotificationStrategy@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@V?$AbstractDelegate@$$CBVKeyValue@AbstractConfiguration@Util@Poco@@@4@@Poco@@
+014559D0 [ascii] .?AV?$BasicEvent@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VFastMutex@Poco@@@Poco@@
+01455A50 [ascii] .?AV?$AbstractEvent@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$DefaultStrategy@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$AbstractDelegate@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Poco@@@Poco@@V?$AbstractDelegate@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@4@VFastMutex@4@@Poco@@
+01455BE0 [ascii] .?AV?$DefaultStrategy@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$AbstractDelegate@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Poco@@@Poco@@
+01455CB0 [ascii] .?AV?$NotificationStrategy@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$AbstractDelegate@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Poco@@@Poco@@
+01455D88 [ascii] .?AVApplication@Util@Poco@@
+01455DB8 [ascii] .?AVSubsystem@Util@Poco@@
+01455DE8 [ascii] .?AVConfigurationView@Util@Poco@@
+01455E20 [ascii] .?AVLocalConfigurationView@Util@Poco@@
+01455E58 [ascii] .?AVLayeredConfiguration@Util@Poco@@
+01455E90 [ascii] .?AVSystemConfiguration@Util@Poco@@
+01455EC8 [ascii] .?AVMapConfiguration@Util@Poco@@
+01455F00 [ascii] .?AVPropertyFileConfiguration@Util@Poco@@
+01455F40 [ascii] .?AVIniFileConfiguration@Util@Poco@@
+01455F78 [ascii] .?AVXMLConfiguration@Util@Poco@@
+01455FB0 [ascii] .?AVVarHolder@Dynamic@Poco@@
+01455FE0 [ascii] .?AV?$VarHolderImpl@H@Dynamic@Poco@@
+01456018 [ascii] .?AV?$VarHolderImpl@_N@Dynamic@Poco@@
+01456050 [ascii] .?AV?$VarHolderImpl@N@Dynamic@Poco@@
+01456090 [ascii] .?AV?$VarHolderImpl@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Dynamic@Poco@@
+01456110 [ascii] .?AV?$VarHolderImpl@V?$SharedPtr@VArray@JSON@Poco@@VReferenceCounter@3@V?$ReleasePolicy@VArray@JSON@Poco@@@3@@Poco@@@Dynamic@Poco@@
+014561B0 [ascii] .?AV?$VarHolderImpl@V?$SharedPtr@VObject@JSON@Poco@@VReferenceCounter@3@V?$ReleasePolicy@VObject@JSON@Poco@@@3@@Poco@@@Dynamic@Poco@@
+01456248 [ascii] .?AVJSONConfiguration@Util@Poco@@
+01456280 [ascii] .?AV?$Holder@V?$basic_string_view@DU?$char_traits@D@std@@@std@@@Any@Poco@@
+014562E0 [ascii] .?AVLoggingSubsystem@Util@Poco@@
+01456318 [ascii] .?AVAbstractContainerNode@XML@Poco@@
+01456350 [ascii] .?AVAbstractNode@XML@Poco@@
+01456380 [ascii] .?AVEventTarget@XML@Poco@@
+014563B0 [ascii] .?AVDOMObject@XML@Poco@@
+014563E0 [ascii] .?AVDocument@XML@Poco@@
+01456408 [ascii] .?AVDocumentEvent@XML@Poco@@
+01456438 [ascii] .?AVXMLReader@XML@Poco@@
+01456468 [ascii] .?AVNodeList@XML@Poco@@
+01456490 [ascii] .?AVElementsByTagNameList@XML@Poco@@
+014564C8 [ascii] .?AVElementsByTagNameListNS@XML@Poco@@
+01456500 [ascii] .?AVCharacterData@XML@Poco@@
+01456530 [ascii] .?AVNamedNodeMap@XML@Poco@@
+01456560 [ascii] .?AVAttrMap@XML@Poco@@
+01456588 [ascii] .?AVMutationEvent@XML@Poco@@
+014565B8 [ascii] .?AVEvent@XML@Poco@@
+014565E0 [ascii] .?AVDocumentFragment@XML@Poco@@
+01456610 [ascii] .?AVText@XML@Poco@@
+01456638 [ascii] .?AVComment@XML@Poco@@
+01456660 [ascii] .?AVCDATASection@XML@Poco@@
+01456690 [ascii] .?AVProcessingInstruction@XML@Poco@@
+014566C8 [ascii] .?AVEntityReference@XML@Poco@@
+014566F8 [ascii] .?AVEntity@XML@Poco@@
+01456720 [ascii] .?AVNotation@XML@Poco@@
+01456748 [ascii] .?AVContentHandler@XML@Poco@@
+01456778 [ascii] .?AVLexicalHandler@XML@Poco@@
+014567A8 [ascii] .?AVDTDHandler@XML@Poco@@
+014567D8 [ascii] .?AVXMLWriter@XML@Poco@@
+01456808 [ascii] .?AVDOMSerializer@XML@Poco@@
+01456838 [ascii] .?AVSAXParser@XML@Poco@@
+01456868 [ascii] .?AVDOMBuilder@XML@Poco@@
+01456898 [ascii] .?AVWhitespaceFilter@XML@Poco@@
+014568C8 [ascii] .?AVXMLFilterImpl@XML@Poco@@
+014568F8 [ascii] .?AVXMLFilter@XML@Poco@@
+01456928 [ascii] .?AVEntityResolver@XML@Poco@@
+01456958 [ascii] .?AVErrorHandler@XML@Poco@@
+01456988 [ascii] .?AVChildNodesList@XML@Poco@@
+014569B8 [ascii] .?AVDocumentType@XML@Poco@@
+014569E8 [ascii] .?AVEntityResolverImpl@XML@Poco@@
+01456A20 [ascii] .?AVNamespaceStrategy@XML@Poco@@
+01456A58 [ascii] .?AVNoNamespacesStrategy@XML@Poco@@
+01456A90 [ascii] .?AVNoNamespacePrefixesStrategy@XML@Poco@@
+01456AD0 [ascii] .?AVNamespacePrefixesStrategy@XML@Poco@@
+01456B10 [ascii] .?AVLocator@XML@Poco@@
+01456B38 [ascii] .?AVContextLocator@XML@Poco@@
+01456B68 [ascii] .?AVParserEngine@XML@Poco@@
+01456B98 [ascii] .?AVDTDMap@XML@Poco@@
+01456BC0 [ascii] .?AVLocatorImpl@XML@Poco@@
+01456BF0 [ascii] .?AV?$VarHolderImpl@V?$Struct@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@U?$less@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@$$CBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@@std@@@2@@2@V?$set@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@U?$less@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@...
+01456E80 [ascii] .?AV?$VarHolderImpl@V?$vector@VVar@Dynamic@Poco@@V?$allocator@VVar@Dynamic@Poco@@@std@@@std@@@Dynamic@Poco@@
+01456F00 [ascii] .?AV?$VarHolderImpl@V?$Struct@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@V?$ordered_map@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@U?$hash@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@U?$equal_to@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@2@V?$allocator@U?$pair@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@VVar@Dynamic@Poco@@@std@@@2@V?$deque@U?$pair@V?$basic_string@DU?$char_traits@D@...
+014573A0 [ascii] .?AV?$VarHolderImpl@_J@Dynamic@Poco@@
+014573D8 [ascii] .?AV?$VarHolderImpl@I@Dynamic@Poco@@
+01457410 [ascii] .?AV?$VarHolderImpl@_K@Dynamic@Poco@@
+01457448 [ascii] .?AVParseHandler@JSON@Poco@@
+01457478 [ascii] .?AVHandler@JSON@Poco@@
+014574A0 [ascii] .?AVParserImpl@JSON@Poco@@
+014574D0 [ascii] .?AVParser@JSON@Poco@@
+014574F8 [ascii] .?AVQuery@JSON@Poco@@
+01457520 [ascii] .?AV?$DefaultStrategy@_NV?$AbstractDelegate@_N@Poco@@@Poco@@
+01457570 [ascii] .?AV?$NotificationStrategy@_NV?$AbstractDelegate@_N@Poco@@@Poco@@
+014575C8 [ascii] .?AVHTTPResponse@Net@Poco@@
+014575F8 [ascii] .?AVWebSocket@Net@Poco@@
+01457630 [ascii] .?AV?$BasicBufferedStreamBuf@DU?$char_traits@D@std@@VHTTPBufferAllocator@Net@Poco@@@Poco@@
+014576A0 [ascii] .?AVHTTPHeaderStreamBuf@Net@Poco@@
+014576D8 [ascii] .?AVHTTPHeaderIOS@Net@Poco@@
+01457708 [ascii] .?AVHTTPHeaderInputStream@Net@Poco@@
+01457740 [ascii] .?AVHTTPHeaderOutputStream@Net@Poco@@
+01457778 [ascii] .?AVHTTPStreamBuf@Net@Poco@@
+014577A8 [ascii] .?AVHTTPIOS@Net@Poco@@
+014577D0 [ascii] .?AVHTTPInputStream@Net@Poco@@
+01457800 [ascii] .?AVHTTPOutputStream@Net@Poco@@
+01457830 [ascii] .?AVHTTPFixedLengthStreamBuf@Net@Poco@@
+01457868 [ascii] .?AVHTTPFixedLengthIOS@Net@Poco@@
+014578A0 [ascii] .?AVHTTPFixedLengthInputStream@Net@Poco@@
+014578E0 [ascii] .?AVHTTPFixedLengthOutputStream@Net@Poco@@
+01457920 [ascii] .?AVHTTPChunkedStreamBuf@Net@Poco@@
+01457958 [ascii] .?AVHTTPChunkedIOS@Net@Poco@@
+01457988 [ascii] .?AVHTTPChunkedInputStream@Net@Poco@@
+014579C0 [ascii] .?AVHTTPChunkedOutputStream@Net@Poco@@
+014579F8 [ascii] .?AVDatagramSocket@Net@Poco@@
+01457A28 [ascii] .?AVHTTPServerRequestImpl@Net@Poco@@
+01457A60 [ascii] .?AVHTTPServerRequest@Net@Poco@@
+01457A98 [ascii] .?AVIPAddressImpl@Impl@Net@Poco@@
+01457AD0 [ascii] .?AVIPv4AddressImpl@Impl@Net@Poco@@
+01457B08 [ascii] .?AVIPv6AddressImpl@Impl@Net@Poco@@
+01457B40 [ascii] .?AVSocketAddressImpl@Impl@Net@Poco@@
+01457B78 [ascii] .?AVIPv4SocketAddressImpl@Impl@Net@Poco@@
+01457BB8 [ascii] .?AVIPv6SocketAddressImpl@Impl@Net@Poco@@
+01457BF8 [ascii] .?AVLocalSocketAddressImpl@Impl@Net@Poco@@
+01457C38 [ascii] .?AVHTTPAuthenticationParams@Net@Poco@@
+01457C70 [ascii] .?AV?$HMACEngine@VMD5Engine@Poco@@@Poco@@
+01457CB0 [ascii] .?AVDigestEngine@Poco@@
+01457CD8 [ascii] .?AVHTTPServerSession@Net@Poco@@
+01457D10 [ascii] .?AVNotificationCenter@Poco@@
+01457D40 [ascii] .?AVFileImpl@Poco@@
+01457D68 [ascii] .?AVFile@Poco@@
+01457D88 [ascii] .?AVRunnableHolder@?A0x5aceeb87@Poco@@
+01457DC0 [ascii] .?AVCallableHolder@?A0x5aceeb87@Poco@@
+01457DF8 [ascii] .?AVErrorHandler@Poco@@
+01457E20 [ascii] .?AVLogger@Poco@@
+01457E48 [ascii] .?AVChannel@Poco@@
+01457E70 [ascii] .?AVConfigurable@Poco@@
+01457E98 [ascii] .?AVConsoleChannel@Poco@@
+01457EC8 [ascii] .?AVColorConsoleChannel@Poco@@
+01457EF8 [ascii] .?AV?$Holder@F@Any@Poco@@
+01457F28 [ascii] .?AVProcessHandleImpl@Poco@@
+01457F60 [ascii] .?AV?$BasicBufferedBidirectionalStreamBuf@DU?$char_traits@D@std@@V?$BufferAllocator@D@Poco@@@Poco@@
+01457FD8 [ascii] .?AVFileStreamBuf@Poco@@
+01458008 [ascii] .?AVFileIOS@Poco@@
+01458030 [ascii] .?AVFileInputStream@Poco@@
+01458060 [ascii] .?AVFileOutputStream@Poco@@
+01458090 [ascii] .?AVFileStream@Poco@@
+014580C0 [ascii] .?AV?$BasicUnbufferedStreamBuf@DU?$char_traits@D@std@@@Poco@@
+01458110 [ascii] .?AVLineEndingConverterStreamBuf@Poco@@
+01458148 [ascii] .?AVLineEndingConverterIOS@Poco@@
+01458180 [ascii] .?AVInputLineEndingConverter@Poco@@
+014581B8 [ascii] .?AVOutputLineEndingConverter@Poco@@
+014581F0 [ascii] .?AVFormattingChannel@Poco@@
+01458220 [ascii] .?AVPatternFormatter@Poco@@
+01458250 [ascii] .?AVFormatter@Poco@@
+01458280 [ascii] .?AV?$AbstractInstantiator@VChannel@Poco@@@Poco@@
+014582D0 [ascii] .?AV?$AbstractInstantiator@VFormatter@Poco@@@Poco@@
+01458318 [ascii] .?AVJSONFormatter@Poco@@
+01458350 [ascii] .?AV?$Instantiator@VAsyncChannel@Poco@@VChannel@2@@Poco@@
+014583A0 [ascii] .?AV?$Instantiator@VWindowsConsoleChannel@Poco@@VChannel@2@@Poco@@
+01458400 [ascii] .?AV?$Instantiator@VWindowsColorConsoleChannel@Poco@@VChannel@2@@Poco@@
+01458460 [ascii] .?AV?$Instantiator@VFileChannel@Poco@@VChannel@2@@Poco@@
+014584B0 [ascii] .?AV?$Instantiator@VSimpleFileChannel@Poco@@VChannel@2@@Poco@@
+01458500 [ascii] .?AV?$Instantiator@VFormattingChannel@Poco@@VChannel@2@@Poco@@
+01458550 [ascii] .?AV?$Instantiator@VSplitterChannel@Poco@@VChannel@2@@Poco@@
+014585A0 [ascii] .?AV?$Instantiator@VNullChannel@Poco@@VChannel@2@@Poco@@
+014585F0 [ascii] .?AV?$Instantiator@VEventChannel@Poco@@VChannel@2@@Poco@@
+01458640 [ascii] .?AV?$Instantiator@VEventLogChannel@Poco@@VChannel@2@@Poco@@
+01458690 [ascii] .?AV?$Instantiator@VPatternFormatter@Poco@@VFormatter@2@@Poco@@
+014586E0 [ascii] .?AV?$Instantiator@VJSONFormatter@Poco@@VFormatter@2@@Poco@@
+01458730 [ascii] .?AVStreamConverterBuf@Poco@@
+01458760 [ascii] .?AVStreamConverterIOS@Poco@@
+01458790 [ascii] .?AVInputStreamConverter@Poco@@
+014587C0 [ascii] .?AVOutputStreamConverter@Poco@@
+014587F8 [ascii] .?AVTextEncoding@Poco@@
+01458820 [ascii] .?AVUTF8Encoding@Poco@@
+01458848 [ascii] .?AVCountingStreamBuf@Poco@@
+01458878 [ascii] .?AVCountingIOS@Poco@@
+014588A0 [ascii] .?AVCountingInputStream@Poco@@
+014588D0 [ascii] .?AVCountingOutputStream@Poco@@
+01458900 [ascii] .?AV?$BasicMemoryStreamBuf@DU?$char_traits@D@std@@@Poco@@
+01458950 [ascii] .?AVMemoryIOS@Poco@@
+01458978 [ascii] .?AVMemoryInputStream@Poco@@
+014589A8 [ascii] .?AVMemoryOutputStream@Poco@@
+014589D8 [ascii] .?AVNullStreamBuf@Poco@@
+01458A08 [ascii] .?AVNullIOS@Poco@@
+01458A30 [ascii] .?AVNullInputStream@Poco@@
+01458A60 [ascii] .?AVNullOutputStream@Poco@@
+01458A90 [ascii] .?AVSHA1Engine@Poco@@
+01458AB8 [ascii] .?AVBase64EncoderBuf@Poco@@
+01458AE8 [ascii] .?AVBase64EncoderIOS@Poco@@
+01458B18 [ascii] .?AVBase64Encoder@Poco@@
+01458B48 [ascii] .?AVUTF32Encoding@Poco@@
+01458B78 [ascii] .?AVBase64DecoderBuf@Poco@@
+01458BA8 [ascii] .?AVBase64DecoderIOS@Poco@@
+01458BD8 [ascii] .?AVBase64Decoder@Poco@@
+01458C08 [ascii] .?AV?$Holder@_K@Any@Poco@@
+01458C38 [ascii] .?AVMD5Engine@Poco@@
+01458C60 [ascii] .?AVSHA2Engine@Poco@@
+01458C88 [ascii] .?AVMD4Engine@Poco@@
+01458CB0 [ascii] .?AVUTF16Encoding@Poco@@
+01458CE0 [ascii] .?AVSharedLibrary@Poco@@
+01458D10 [ascii] .?AVSharedLibraryImpl@Poco@@
+01458D40 [ascii] .?AV?$Holder@K@Any@Poco@@
+01458D70 [ascii] .?AVDirectoryIterator@Poco@@
+01458DA0 [ascii] .?AVTLSAbstractSlot@Poco@@
+01458DD0 [ascii] .?AVPipeImpl@Poco@@
+01458DF8 [ascii] .?AVAsyncChannel@Poco@@
+01458E20 [ascii] .?AVFileChannel@Poco@@
+01458E48 [ascii] .?AVNullRotateStrategy@Poco@@
+01458E78 [ascii] .?AVRotateStrategy@Poco@@
+01458EB0 [ascii] .?AV?$RotateAtTimeStrategy@VDateTime@Poco@@@Poco@@
+01458F00 [ascii] .?AV?$RotateAtTimeStrategy@VLocalDateTime@Poco@@@Poco@@
+01458F50 [ascii] .?AV?$ArchiveByTimestampStrategy@VDateTime@Poco@@@Poco@@
+01458FA0 [ascii] .?AVArchiveStrategy@Poco@@
+01458FD0 [ascii] .?AV?$ArchiveByTimestampStrategy@VLocalDateTime@Poco@@@Poco@@
+01459020 [ascii] .?AVSimpleFileChannel@Poco@@
+01459050 [ascii] .?AVSplitterChannel@Poco@@
+01459080 [ascii] .?AVNullChannel@Poco@@
+014590A8 [ascii] .?AVEventChannel@Poco@@
+014590D0 [ascii] .?AV?$BasicEvent@$$CBVMessage@Poco@@VFastMutex@2@@Poco@@
+01459120 [ascii] .?AV?$AbstractEvent@$$CBVMessage@Poco@@V?$DefaultStrategy@$$CBVMessage@Poco@@V?$AbstractDelegate@$$CBVMessage@Poco@@@2@@2@V?$AbstractDelegate@$$CBVMessage@Poco@@@2@VFastMutex@2@@Poco@@
+014591F0 [ascii] .?AV?$DefaultStrategy@$$CBVMessage@Poco@@V?$AbstractDelegate@$$CBVMessage@Poco@@@2@@Poco@@
+01459260 [ascii] .?AV?$NotificationStrategy@$$CBVMessage@Poco@@V?$AbstractDelegate@$$CBVMessage@Poco@@@2@@Poco@@
+014592D0 [ascii] .?AVEventLogChannel@Poco@@
+01459300 [ascii] .?AVWindowsConsoleChannel@Poco@@
+01459338 [ascii] .?AVWindowsColorConsoleChannel@Poco@@
+01459370 [ascii] .?AV?$BasicBufferedStreamBuf@DU?$char_traits@D@std@@V?$BufferAllocator@D@Poco@@@Poco@@
+014593D8 [ascii] .?AVRandomBuf@Poco@@
+01459400 [ascii] .?AVRandomIOS@Poco@@
+01459428 [ascii] .?AVRandomInputStream@Poco@@
+01459458 [ascii] .?AVFileStreamFactory@Poco@@
+01459488 [ascii] .?AVURIStreamFactory@Poco@@
+014594B8 [ascii] .?AVASCIIEncoding@Poco@@
+014594E8 [ascii] .?AVLatin1Encoding@Poco@@
+01459518 [ascii] .?AVLatin2Encoding@Poco@@
+01459548 [ascii] .?AVLatin9Encoding@Poco@@
+01459578 [ascii] .?AVWindows1250Encoding@Poco@@
+014595A8 [ascii] .?AVWindows1251Encoding@Poco@@
+014595D8 [ascii] .?AVWindows1252Encoding@Poco@@
+01459608 [ascii] .?AVArchiveCompressor@Poco@@
+01459638 [ascii] .?AVActiveDispatcher@Poco@@
+01459668 [ascii] .?AVArchiveByNumberStrategy@Poco@@
+014596A0 [ascii] .?AV?$ActiveResultHolder@X@Poco@@
+014596D8 [ascii] .?AVActiveRunnableBase@Poco@@
+01459710 [ascii] .?AV?$ActiveRunnable@XUArchiveToCompress@ArchiveCompressor@Poco@@V23@@Poco@@
+01459770 [ascii] .?AVRotateByIntervalStrategy@Poco@@
+014597A8 [ascii] .?AVRotateBySizeStrategy@Poco@@
+014597D8 [ascii] .?AVPurgeStrategy@Poco@@
+01459808 [ascii] .?AVNullPurgeStrategy@Poco@@
+01459838 [ascii] .?AVPurgeByAgeStrategy@Poco@@
+01459868 [ascii] .?AVPurgeByCountStrategy@Poco@@
+01459898 [ascii] .?AVDeflatingStreamBuf@Poco@@
+014598C8 [ascii] .?AVDeflatingIOS@Poco@@
+014598F0 [ascii] .?AVDeflatingOutputStream@Poco@@
+01459928 [ascii] .?AVDeflatingInputStream@Poco@@
+0145C0A0 [ascii] .?AV?$NotificationStrategy@UPipelineEvent@@V?$AbstractDelegate@UPipelineEvent@@@Poco@@@Poco@@
+0145C110 [ascii] .?AV?$BasicEvent@UPipelineEvent@@VFastMutex@Poco@@@Poco@@
+0145C160 [ascii] .?AV?$DefaultStrategy@UPipelineEvent@@V?$AbstractDelegate@UPipelineEvent@@@Poco@@@Poco@@
+0145C1D0 [ascii] .?AV?$AbstractEvent@UPipelineEvent@@V?$DefaultStrategy@UPipelineEvent@@V?$AbstractDelegate@UPipelineEvent@@@Poco@@@Poco@@V?$AbstractDelegate@UPipelineEvent@@@3@VFastMutex@3@@Poco@@
+01460518 [ascii] .?AVRefCountedObject@Poco@@
+014610E0 [ascii] .?AVRunnable@Poco@@
+01461478 [ascii] .?AVTimerTask@Util@Poco@@
+014614B0 [ascii] .?AV?$TimerTaskAdapter@VWebRtcTransport@@@Util@Poco@@
+014615F0 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_1>@?CL@??connectWithRtspHandshake@SignalingHandler@@AEAA?AW4NvstResult_t@@PEBD@Z@XJ@std@@
+01461680 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_2>@?BH@??doRtspSetup@SignalingHandler@@AEAA?AW4NvstResult_t@@GAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBV?$vector@UTransport@@V?$allocator@UTransport@@@std@@@6@AEAV76@AEAV56@@Z@XJ@std@@
+014617D0 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_1>@?8??destroyRtspSession@SignalingHandler@@QEAAX_N0@Z@XJ@std@@
+01461850 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_2>@?EL@??connectWithRtspHandshake@SignalingHandler@@AEAA?AW4NvstResult_t@@PEBD@Z@XJ@std@@
+014619F0 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_1>@?9??createRtspConnection@SignalingHandler@@QEAA?AW4NvstResult_t@@PEBUNvstNatServer_t@@@Z@XJ@std@@
+01461E90 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_1>@?O@??startStreamingWithRtsp@SignalingHandler@@QEAA?AW4NvstResult_t@@XZ@XJ@std@@
+01462B00 [ascii] .?AV?$TimerTaskAdapter@VDcTimeout@@@Util@Poco@@
+01462C90 [ascii] .?AV?$TimerTaskAdapter@VDtlsTransport@@@Util@Poco@@
+01462D00 [ascii] .?AV?$TimerTaskAdapter@VWebRtcAudioRtpReceiver@@@Util@Poco@@
+01462F60 [ascii] .?AV?$TimerTaskAdapter@VWebRtcVideoRtpReceiver@@@Util@Poco@@
+014631D0 [ascii] .?AV?$TimerTaskAdapter@VStunConsent@@@Util@Poco@@
+01464448 [ascii] .?AVRtspSession@@
+01464470 [ascii] .?AVValueHolder@Any@Poco@@
+014644A0 [ascii] .?AV?$Holder@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Any@Poco@@
+01465338 [ascii] .?AVHTTPMessage@Net@Poco@@
+01465368 [ascii] .?AVNameValueCollection@Net@Poco@@
+014653A0 [ascii] .?AVRtspSessionPoco@@
+014653C8 [ascii] .?AVHTTPRequest@Net@Poco@@
+014653F8 [ascii] .?AVMessageHeader@Net@Poco@@
+01465428 [ascii] .?AVRtspSessionPocoBase@@
+01465458 [ascii] .?AVRTSPRequest@@
+01466150 [ascii] .?AV?$_Func_base@XW4DisconnectType@WebSocket@StreamSdk@@@std@@
+014661A0 [ascii] .?AV?$_Func_base@XPEBDHW4DataType@WebSocket@StreamSdk@@@std@@
+014661F0 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_1>@?1??DisconnectCallbackHelper@NvWebSocketSession@@AEAA?AV?$function@$$A6AXW4DisconnectType@WebSocket@StreamSdk@@@Z@std@@XZ@XW4DisconnectType@WebSocket@StreamSdk@@@std@@
+014662D0 [ascii] .?AV?$_Func_impl_no_alloc@V<lambda_1>@?1??DataCallbackHelper@NvWebSocketSession@@AEAA?AV?$function@$$A6AXPEBDHW4DataType@WebSocket@StreamSdk@@@Z@std@@XZ@XPEBDHW4DataType@WebSocket@StreamSdk@@@std@@
+014663A8 [ascii] .?AVPrivateKeyPassphraseHandler@Net@Poco@@
+01466420 [ascii] .?AVInvalidCertificateHandler@Net@Poco@@
+0153D68C [ascii]     <security>
+0153D71F [ascii]     </security>
+01553CE1 [ascii] /"lA
+01554783 [ascii] /yln
+01555C31 [ascii] /1(0&0$0"

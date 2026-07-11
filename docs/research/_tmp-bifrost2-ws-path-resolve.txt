@@ -1,0 +1,135 @@
+Host string @0x12a9fe8
+  refs=['0x7c34c6', '0xa64db0']
+  -- site 0x7c34c6 --
+    @0x7c34c6 -> 'Host'
+    @0x7c34d5 -> 'identity'
+    @0x7c34dc -> 'Accept-Encoding'
+  -- site 0xa64db0 --
+    @0xa64ce6 -> 'host'
+    @0xa64d35 -> ': '
+    @0xa64db0 -> 'Host'
+    @0xa64e23 -> 'OSSL_HTTP_REQ_CTX_add1_header'
+    @0xa64e2f -> 'crypto\\http\\http_client.c'
+    @0xa64fa3 -> 'check_max_len'
+
+=== scheme selection function ~0x6fb900 ===
+  @0x6fb95d -> 'WS'
+  @0x6fb992 -> 'WSS'
+  @0x6fb9dc -> 'RTSPS'
+  @0x6fba09 -> 'on / Request Send failed'
+  @0x6fba21 -> 'RTSP'
+  @0x6fba3b -> 'expception / Request Send failed'
+  @0x6fba9c -> 'm_pRtspClientSessionLegacy'
+  @0x6fbabf -> 'ork expception / Request Send failed'
+  @0x6fbb95 -> "RTSP session requested scheme '%s' that does not match the expected scheme '%s'."
+  @0x6fbba1 -> 'RtspSessionPocoBase'
+  @0x6fbc26 -> 'Invalid server URL.'
+  @0x6fbccb -> '...'
+  @0x6fbd0c -> "Establishing RTSP session with protocol TAG '%s' and URL '%s' Domain Name %s"
+  @0x6fc08e -> 'result == RESULT_OK'
+  @0x6fc095 -> 'CNvEvent'
+  @0x6fc1df -> '2-way'
+  @0x6fc1e8 -> '1-way'
+
+=== wide window before WS upgrade @0xeeba0c ===
+  @0xeeb817 -> 'Ignoring exceptions thrown at teardown: %s'
+  @0xeeb823 -> 'WebSocket'
+  @0xeeb916 -> 'Ignoring exceptions thrown at teardown: unknown'
+  @0xeeba0c -> 'WS upgrade failed: %s'
+
+=== wide window before WS upgrade @0xeee482 ===
+  @0xeed2f1 -> 'Failed to get Rtc video bitrate config. Config: %s Config value: %s Error: %s'
+  @0xeed2fd -> 'SdpConfigurator'
+  @0xeed64c -> "Error in AddSdpLine: due to '%s' exception!"
+  @0xeed658 -> 'SDP'
+  @0xeed70c -> "Error in addAttribute: due to '%s' exception!"
+  @0xeedcff -> "Error in SDP: due to '%s' exception!"
+  @0xeee2f4 -> 'Failed to create RTSP Session: %s. Retry counter: %d, Max Retries: %d'
+  @0xeee300 -> 'RtspClient'
+  @0xeee396 -> 'Failed to create the RTSP session: %s'
+  @0xeee436 -> 'Forbidden'
+  @0xeee482 -> 'WS upgrade failed: %s'
+
+=== wide connect function @0x466d7a ===
+approx fn start 0x466d10
+  @0x466d7a -> 'Connecting to host %s, port %hu'
+  @0x466d86 -> 'WebSocket'
+  @0x4671c6 -> 'list too long'
+b'WebSocket.cpp': MISSING
+b'HTTPRequest.cpp': MISSING
+b'HTTPClientSession.cpp': 0x1127243
+  full: 'C:\\bt\\poco\\src\\.1-release-4532f3f3b1.clean\\Net\\src\\HTTPClientSession.cpp'
+b'HTTPSClientSession.cpp': MISSING
+b'RTSPClientSession': MISSING
+b'RTSPSession': MISSING
+
+=== x-nv-sessionid neighborhood @0x125ea10 ===
+  @0x125e890: 'on disabled, encryption key not set'
+  @0x125e8b8: 'setEncryptionKey'
+  @0x125e8d0: '%s - setting encryption key for video'
+  @0x125e8f8: 'key ID %u'
+  @0x125e904: 'key: '
+  @0x125e910: 'Header version: %s'
+  @0x125e928: 'Invalid signaling handler'
+  @0x125e948: 'Certificate length is zero'
+  @0x125e968: 'Parser server RTP extension header version %u'
+  @0x125e998: '%s - setting encryption key for control'
+  @0x125e9c0: '%s - invalid NvstClientRuntimeEncryptionKey.streamId %u'
+  @0x125e9f8: 'getEncryptionKey'
+  @0x125ea10: 'x-nv-sessionid'
+  @0x125ea30: 'Received opus decoder params from the server: opus_channels = %u, client_channels = %u:'
+  @0x125ea88: 'Final opus params :'
+  @0x125eaa0: 'Setting opus mapping mode : channels %u - %u, audio quality - %u'
+  @0x125eae8: 'Number of channels(%u) is not valid for surround configuration'
+  @0x125eb28: 'config.Channels - %d, channels - %d , bSecondTry = %u'
+
+=== pointer table strings around /rtsp slot ===
+  0x12045f0: 'P'
+  0x12045f8: 'I'
+  0x1204600: 'Header'
+  0x1204608: 'IntraRefresh'
+  0x1204610: 'RefPicI'
+  0x1204618: 'NonRefP'
+  0x1204698: 'DESCRIBE'
+  0x12046a0: 'PLAY'
+  0x12046a8: 'SET_PARAMETER'
+  0x12046b0: 'ANNOUNCE'
+  0x12046b8: 'TEARDOWN'
+  0x12046c0: 'OPTIONS'
+  0x12046c8: 'SETUP'
+  0x12046e8: 'RTSP'
+  0x12046f8: 'RTSPS'
+  0x1204700: '/rtsp'
+  0x1204758: 'WSS'
+  0x1204760: 'WS'
+  0x1204770: 'FrameStatsUncommittedCount'
+  0x1204778: 'FrameStatsDroppedCount'
+  0x1204800: 'Final SA scores: SA_GPU_PERF:%.4f, SA_SERVER_PERF:%.4f,  SA_VISUAL:%.4f, SA_CLIENT_DECODER:%.4f, SA_DOWNLINK_LAG:%.4f, SA_DOWNLINK_CONGESTION:%.4f, SA_UPLINK:%.4f, SA_OVERALL:%.4f, SA_WIFI_SCAN:%.4f'
+
+=== '/' refs near connect fn ±0x2000 ===
+
+=== wss URL format strings ===
+b'wss://%s': MISSING
+b'wss://%s:%u': MISSING
+b'wss://%s:%d': MISSING
+b'wss://%s:%hu': MISSING
+b'%s://%s:%hu': MISSING
+b'%s://%s:%u/%s': MISSING
+b'%s://%s/%s': MISSING
+b'rtsps://%s': MISSING
+b'/rtsp': count=1 first=0x12a9dd0
+b'%s/rtsp': MISSING
+b'rtsp': count=18 first=0x112aa4c
+
+WebSocket.cpp path string @-0x1
+
+=== Forbidden / status mapping near upgrade ===
+  @0xeeb817 -> 'Ignoring exceptions thrown at teardown: %s'
+  @0xeeb823 -> 'WebSocket'
+  @0xeeb916 -> 'Ignoring exceptions thrown at teardown: unknown'
+  @0xeeba0c -> 'WS upgrade failed: %s'
+  @0xeee2f4 -> 'Failed to create RTSP Session: %s. Retry counter: %d, Max Retries: %d'
+  @0xeee300 -> 'RtspClient'
+  @0xeee396 -> 'Failed to create the RTSP session: %s'
+  @0xeee436 -> 'Forbidden'
+  @0xeee482 -> 'WS upgrade failed: %s'

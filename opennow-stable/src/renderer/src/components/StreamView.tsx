@@ -1562,7 +1562,7 @@ export function StreamView({
           <div className="sv-pointerlock-hint-sub">
             {allowEscapeToExitFullscreen
               ? "Press Escape will also exit fullscreen per your settings."
-              : "Escape is forwarded to the game while pointer-locked (see Settings)."}
+              : "Escape goes to the game while pointer-locked; hold Escape ~1.5s to exit fullscreen."}
           </div>
         </div>
       )}

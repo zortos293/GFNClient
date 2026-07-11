@@ -2084,10 +2084,10 @@ class NativeStreamClient(
             }
             it.setEnableHardwareScaler(false)
             it.setMirror(false)
-            // A SurfaceView is a separate native window layer. Keep its pre-frame
-            // buffer black and explicitly release it when Compose removes the view,
-            // otherwise some devices retain a pale surface above the next app screen.
-            it.setBackgroundColor(android.graphics.Color.BLACK)
+            // Do not give SurfaceViewRenderer an opaque View background. Its decoded
+            // frames are presented by a separate Surface layer, so a normal View
+            // background can cover every rendered frame on physical devices. The
+            // Compose stream container already supplies the black pre-frame backdrop.
             it.setStreamScaling(stretchToFill)
             renderer = it
             videoTrack?.addSink(it)

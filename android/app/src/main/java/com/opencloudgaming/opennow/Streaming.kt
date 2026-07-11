@@ -145,7 +145,20 @@ object CodecProbe {
             nativeRuntimeSummary = runCatching { NativeCodecProbe.nativeRuntimeSummary() }.getOrElse { "{\"nativeLibrary\":\"unavailable\"}" },
             androidTvProfile = isTv,
             lowPowerGpuProfile = lowPower,
-        )
+        ).also { report ->
+            NativeInputDiagnostics.add(
+                "codec probe device=${Build.MANUFACTURER}/${Build.MODEL} hardware=${Build.HARDWARE} tv=$isTv lowPower=$lowPower",
+            )
+            report.capabilities.forEach { capability ->
+                NativeInputDiagnostics.add(
+                    "codec probe codec=${capability.codec} platform=${capability.decoderName ?: "none"} " +
+                        "platformHw=${capability.hardwareDecoder} native=${capability.nativeDecoderAvailable} " +
+                        "webrtc=${capability.webRtcDecoderName ?: "none"} webrtcHw=${capability.webRtcHardwareDecoderAvailable} " +
+                        "profiles=${capability.webRtcCodecProfiles.joinToString("|").ifBlank { "none" }} " +
+                        "launch=${capability.streamingDecoderUsableForLaunch()}",
+                )
+            }
+        }
     }
 
     private fun codecInfos(mime: String, encoder: Boolean): List<MediaCodecInfo> {
@@ -1704,6 +1717,35 @@ internal class StreamLivenessWatchdog(
     }
 }
 
+internal class FirstVideoFrameWatchdog(
+    private val timeoutMs: Long = FIRST_VIDEO_FRAME_TIMEOUT_MS,
+) {
+    private var bytesWithoutFrameSinceMs: Long? = null
+    private var rendered = false
+
+    @Synchronized
+    fun reset() {
+        bytesWithoutFrameSinceMs = null
+        rendered = false
+    }
+
+    @Synchronized
+    fun markRendered() {
+        rendered = true
+        bytesWithoutFrameSinceMs = null
+    }
+
+    @Synchronized
+    fun shouldRecover(nowMs: Long, bytesReceived: Long?, connected: Boolean): Boolean {
+        if (!connected || rendered || bytesReceived == null || bytesReceived <= 0L) {
+            if (!connected) bytesWithoutFrameSinceMs = null
+            return false
+        }
+        val startedAt = bytesWithoutFrameSinceMs ?: nowMs.also { bytesWithoutFrameSinceMs = it }
+        return nowMs - startedAt >= timeoutMs
+    }
+}
+
 private class TouchMouseState {
     private var activePointerId = -1
     private var downX = 0f
@@ -1965,6 +2007,7 @@ class NativeStreamClient(
     private var physicalGamepadAxisLogged = false
     private var lastStatsSample: StreamStatsSample? = null
     private val livenessWatchdog = StreamLivenessWatchdog()
+    private val firstVideoFrameWatchdog = FirstVideoFrameWatchdog()
     private val textSendMutex = Mutex()
     private var guideAutoReleaseJob: Job? = null
     private val lastRumbleEffectAtMs = LongArray(GAMEPAD_MAX_CONTROLLERS)
@@ -2015,6 +2058,17 @@ class NativeStreamClient(
                 videoTrack?.removeSink(oldRenderer)
                 oldRenderer.release()
             }
+            firstVideoFrameWatchdog.reset()
+            val rendererEvents = object : RendererCommon.RendererEvents {
+                override fun onFirstFrameRendered() {
+                    firstVideoFrameWatchdog.markRendered()
+                    NativeInputDiagnostics.add("video renderer first frame codec=${this@NativeStreamClient.settings.codec}")
+                }
+
+                override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
+                    NativeInputDiagnostics.add("video renderer resolution=${videoWidth}x$videoHeight rotation=$rotation")
+                }
+            }
             val sharpnessDrawer = if (settings.streamSharpeningEnabled) {
                 StreamSharpnessGlDrawer().also { drawer ->
                     drawer.amount = streamSharpnessShaderStrength(true, settings.streamSharpeningAmount)
@@ -2024,9 +2078,9 @@ class NativeStreamClient(
             }
             rendererSharpnessDrawer = sharpnessDrawer
             if (sharpnessDrawer != null) {
-                it.init(eglBase.eglBaseContext, null, EglBase.CONFIG_PLAIN, sharpnessDrawer)
+                it.init(eglBase.eglBaseContext, rendererEvents, EglBase.CONFIG_PLAIN, sharpnessDrawer)
             } else {
-                it.init(eglBase.eglBaseContext, null)
+                it.init(eglBase.eglBaseContext, rendererEvents)
             }
             it.setEnableHardwareScaler(false)
             it.setMirror(false)
@@ -2093,6 +2147,7 @@ class NativeStreamClient(
         sessionRecoveryRequested = false
         lastStatsSample = null
         livenessWatchdog.reset()
+        firstVideoFrameWatchdog.reset()
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
         closeTransport(clearInputState = false)
@@ -2108,6 +2163,7 @@ class NativeStreamClient(
         reconnectAttempts = 0
         sessionRecoveryRequested = false
         livenessWatchdog.reset()
+        firstVideoFrameWatchdog.reset()
         closeTransport(clearInputState = true)
         emitState("Stopped")
     }
@@ -3168,6 +3224,17 @@ class NativeStreamClient(
     private fun handleMediaLiveness(snapshot: RuntimeStatsSnapshot) {
         val connected = lastIceState == PeerConnection.IceConnectionState.CONNECTED ||
             lastIceState == PeerConnection.IceConnectionState.COMPLETED
+        if (firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)) {
+            if (
+                requestSafeVideoFallback(
+                    message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",
+                    diagnosticReason = "first frame timeout",
+                    recreateWhenAlreadySafe = true,
+                )
+            ) {
+                return
+            }
+        }
         when (val action = livenessWatchdog.observe(SystemClock.elapsedRealtime(), snapshot.bytesReceived, snapshot.framesDecoded, connected)) {
             StreamLivenessAction.None -> Unit
             is StreamLivenessAction.RequestKeyframe -> {
@@ -4727,6 +4794,7 @@ private const val OFFER_TIMEOUT_MS = 12_000L
 private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
 private const val MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
 private const val MEDIA_STALL_RESTART_AFTER_MS = 14_000L
+private const val FIRST_VIDEO_FRAME_TIMEOUT_MS = 8_000L
 private const val GAMEPAD_GUIDE_AUTO_RELEASE_MS = 160L
 private const val STREAM_TEXT_SEND_MAX_CHARS = 4096
 private const val STREAM_TEXT_SEND_ATTEMPTS = 3

@@ -389,12 +389,12 @@ internal data class StreamResolutionChoice(
 
     fun isAvailableFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Boolean {
         if (requiredPlan == StreamResolutionPlan.Free) return true
-        return streamResolutionPlanRank(planForMembershipTier(subscriptionInfo?.membershipTier ?: fallbackMembershipTier)) >= streamResolutionPlanRank(requiredPlan)
+        return streamResolutionPlanRank(effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) >= streamResolutionPlanRank(requiredPlan)
     }
 }
 
 internal fun hasUltimateStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Boolean =
-    streamResolutionPlanRank(planForMembershipTier(subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier)) >=
+    streamResolutionPlanRank(effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) >=
         streamResolutionPlanRank(StreamResolutionPlan.Ultimate)
 
 internal fun maxStreamFpsFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Int =
@@ -407,8 +407,7 @@ internal fun StreamSettings.withFpsAllowed(subscriptionInfo: SubscriptionInfo?, 
 }
 
 internal fun smartSessionLimitFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): SmartSessionLimit {
-    val tier = subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier
-    return when (planForMembershipTier(tier)) {
+    return when (effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) {
         StreamResolutionPlan.Ultimate -> SmartSessionLimit("Ultimate", 8, SessionTimerMode.Stopwatch)
         StreamResolutionPlan.Priority -> SmartSessionLimit("Performance", 6, SessionTimerMode.Stopwatch)
         StreamResolutionPlan.Free -> SmartSessionLimit("Free", 1, SessionTimerMode.Countdown)
@@ -418,7 +417,7 @@ internal fun smartSessionLimitFor(subscriptionInfo: SubscriptionInfo?, fallbackM
 internal fun monthlyHourLimitFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Double? {
     val reported = subscriptionInfo?.totalHours?.takeIf { it > 0.0 }
     if (reported != null) return reported
-    return when (planForMembershipTier(subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() } ?: fallbackMembershipTier)) {
+    return when (effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) {
         StreamResolutionPlan.Free -> null
         StreamResolutionPlan.Priority,
         StreamResolutionPlan.Ultimate,
@@ -437,7 +436,7 @@ internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, 
     if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
 
 internal fun VideoCodec.availableForAndroidSettings(): Boolean =
-    this != VideoCodec.AV1
+    true
 
 internal fun ColorQuality.availableForAndroidSettings(): Boolean =
     !isChroma444()
@@ -619,6 +618,15 @@ private fun planForMembershipTier(membershipTier: String?): StreamResolutionPlan
         else -> StreamResolutionPlan.Free
     }
 }
+
+private fun effectiveStreamingPlan(
+    subscriptionInfo: SubscriptionInfo?,
+    fallbackMembershipTier: String?,
+): StreamResolutionPlan =
+    listOf(
+        planForMembershipTier(subscriptionInfo?.membershipTier),
+        planForMembershipTier(fallbackMembershipTier),
+    ).maxBy { streamResolutionPlanRank(it) }
 
 private fun streamResolutionPlanRank(plan: StreamResolutionPlan): Int =
     when (plan) {
@@ -1238,7 +1246,7 @@ internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean {
 }
 
 private fun RuntimeCodecReport.bestStreamingFallbackCodec(): VideoCodec =
-    listOf(VideoCodec.H264, VideoCodec.H265)
+    listOf(VideoCodec.H264, VideoCodec.H265, VideoCodec.AV1)
         .firstOrNull { codec -> capabilities.firstOrNull { it.codec == codec }?.streamingDecoderUsableForLaunch() == true }
         ?: VideoCodec.H264
 

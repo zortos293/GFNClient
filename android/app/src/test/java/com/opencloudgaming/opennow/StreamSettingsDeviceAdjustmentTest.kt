@@ -24,7 +24,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun fallsBackFromWithheldAv1EvenWhenWebRtcHardwareDecoderExists() {
+    fun preservesSelectedAv1WhenWebRtcHardwareDecoderExists() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
             .adjustedForDevice(
                 codecReport(
@@ -36,12 +36,12 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
             )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
     }
 
     @Test
-    fun withheldAv1DropsChroma444BeforeLaunch() {
+    fun av1DropsChroma444BeforeLaunch() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.EightBit444)
             .adjustedForDevice(
                 codecReport(
@@ -53,12 +53,12 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
             )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
     }
 
     @Test
-    fun withheldAv1HdrFallsBackToBasicH264Profile() {
+    fun av1HdrPreservesTenBit420Profile() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit444, hdrEnabled = true)
             .adjustedForDevice(
                 codecReport(
@@ -70,14 +70,14 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
             )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
-        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(false, adjusted.hdrEnabled)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(true, adjusted.hdrEnabled)
     }
 
     @Test
-    fun androidSettingsAvailabilityMarksAv1AndChroma444ComingSoon() {
-        assertFalse(VideoCodec.AV1.availableForAndroidSettings())
+    fun androidSettingsAvailabilityAllowsCodecsAndWithholdsChroma444() {
+        assertTrue(VideoCodec.AV1.availableForAndroidSettings())
         assertTrue(VideoCodec.H264.availableForAndroidSettings())
         assertTrue(VideoCodec.H265.availableForAndroidSettings())
         assertFalse(ColorQuality.EightBit444.availableForCodec(VideoCodec.H265))
@@ -104,7 +104,7 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals("21:9", low.aspectRatio)
         assertEquals(30, low.fps)
         assertEquals(12, low.maxBitrateMbps)
-        assertEquals(VideoCodec.H264, low.codec)
+        assertEquals(VideoCodec.AV1, low.codec)
         assertEquals(ColorQuality.EightBit420, low.colorQuality)
 
         val medium = base.applyingStreamPreset(StreamPreset.Medium)
@@ -158,7 +158,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(35, adjusted.maxBitrateMbps)
     }
 
     @Test
@@ -235,7 +235,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun doesNotSelectWithheldAv1WhenNativeAndWebRtcHardwarePathsExist() {
+    fun selectsAv1WhenNativeAndWebRtcHardwarePathsExist() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
             .adjustedForDevice(
                 codecReport(
@@ -248,7 +248,7 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
             )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
     }
 
@@ -284,7 +284,7 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
             )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(120, adjusted.fps)
         assertEquals(75, adjusted.maxBitrateMbps)
     }
@@ -456,13 +456,13 @@ class StreamSettingsDeviceAdjustmentTest {
             ),
         )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(35, adjusted.maxBitrateMbps)
         assertEquals(false, adjusted.streamSharpeningEnabled)
     }
 
     @Test
-    fun fallsBackFromWithheldAv1EvenIfPlatformProbeMissesIt() {
+    fun preservesAv1WhenWebRtcHardwarePathExistsAndPlatformProbeMissesIt() {
         val adjusted = StreamSettings(codec = VideoCodec.AV1, colorQuality = ColorQuality.TenBit420)
             .adjustedForDevice(
                 codecReport(
@@ -475,12 +475,12 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
         )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
     }
 
     @Test
-    fun doesNotUseWithheldAv1AsFallbackWhenH264ProbeFails() {
+    fun usesAv1HardwareFallbackWhenH264ProbeFails() {
         val report = RuntimeCodecReport(
             capabilities = listOf(
                 CodecCapability(
@@ -511,7 +511,7 @@ class StreamSettingsDeviceAdjustmentTest {
         val adjusted = StreamSettings(codec = VideoCodec.H264, colorQuality = ColorQuality.EightBit420)
             .adjustedForDevice(report)
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.AV1, adjusted.codec)
     }
 
     private fun codecReport(

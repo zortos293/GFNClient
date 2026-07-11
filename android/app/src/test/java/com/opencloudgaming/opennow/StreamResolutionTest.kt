@@ -274,6 +274,22 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun authenticatedUltimateTierWinsWhenSubscriptionPayloadDefaultsToFree() {
+        val incompleteSubscription = SubscriptionInfo(membershipTier = "FREE")
+        val fourK = streamResolutionChoicesForAspect("16:9").first { it.value == "3840x2160" }
+        val requested = StreamSettings(resolution = "3840x2160", aspectRatio = "16:9", fps = 360)
+
+        assertEquals(true, fourK.isAvailableFor(incompleteSubscription, "ULTIMATE"))
+        assertEquals(360, maxStreamFpsFor(incompleteSubscription, "ULTIMATE"))
+        assertEquals(
+            requested,
+            requested
+                .withResolutionAllowed(incompleteSubscription, "ULTIMATE")
+                .withFpsAllowed(incompleteSubscription, "ULTIMATE"),
+        )
+    }
+
+    @Test
     fun entitledResolutionDoesNotBypassMembershipPlanGate() {
         val subscription = SubscriptionInfo(
             membershipTier = "FREE",

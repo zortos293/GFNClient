@@ -7920,8 +7920,8 @@ private fun PortraitTouchControls(
                 horizontalAlignment = Alignment.Start,
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
-                    GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
+                    GamepadButton("L", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
+                    GamepadTriggerButton("ZL", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
                 }
                 Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
                 Row(
@@ -7955,8 +7955,8 @@ private fun PortraitTouchControls(
                 horizontalAlignment = Alignment.End,
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
-                    GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
+                    GamepadTriggerButton("ZR", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
+                    GamepadButton("R", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale, onButtonTone)
@@ -8011,22 +8011,30 @@ private fun BoxScope.LandscapeTouchControls(
         onOffsetChange = onLeftOffsetChange,
         modifier = Modifier.align(Alignment.TopStart),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            GamepadButton("LB", 0x0100, client, opacity, 46.dp * controlScale, onButtonTone)
-            GamepadTriggerButton("LT", left = true, client = client, opacity = opacity, size = 50.dp * controlScale, onPressTone = onButtonTone)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            GamepadTriggerButton(
+                "ZL",
+                left = true,
+                client = client,
+                opacity = opacity,
+                size = 50.dp * controlScale,
+                width = 116.dp * controlScale,
+                onPressTone = onButtonTone,
+            )
+            GamepadPillButton("L", 0x0100, client, opacity, width = 116.dp * controlScale, height = 46.dp * controlScale, onPressTone = onButtonTone)
         }
     }
     TouchControlGroup(
-        id = "landscape-top-center",
+        id = "landscape-bottom-center",
         layoutEditing = false,
         offsetX = 0.dp,
-        offsetY = topControlClearance,
+        offsetY = 0.dp,
         onOffsetChange = { _, _ -> },
-        modifier = Modifier.align(Alignment.TopCenter),
+        modifier = Modifier.align(Alignment.BottomCenter),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            GamepadPillButton("View", 0x0020, client, opacity, width = 76.dp * controlScale, height = 42.dp * controlScale, onPressTone = onButtonTone)
-            GamepadPillButton("Start", 0x0010, client, opacity, width = 84.dp * controlScale, height = 42.dp * controlScale, onPressTone = onButtonTone)
+        Row(horizontalArrangement = Arrangement.spacedBy(54.dp)) {
+            GamepadButton("−", 0x0020, client, opacity, 42.dp * controlScale, onButtonTone)
+            GamepadButton("+", 0x0010, client, opacity, 42.dp * controlScale, onButtonTone)
         }
     }
     TouchControlGroup(
@@ -8037,9 +8045,17 @@ private fun BoxScope.LandscapeTouchControls(
         onOffsetChange = onRightOffsetChange,
         modifier = Modifier.align(Alignment.TopEnd),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            GamepadTriggerButton("RT", left = false, client = client, opacity = opacity, size = 50.dp * controlScale, onPressTone = onButtonTone)
-            GamepadButton("RB", 0x0200, client, opacity, 46.dp * controlScale, onButtonTone)
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.End) {
+            GamepadTriggerButton(
+                "ZR",
+                left = false,
+                client = client,
+                opacity = opacity,
+                size = 50.dp * controlScale,
+                width = 116.dp * controlScale,
+                onPressTone = onButtonTone,
+            )
+            GamepadPillButton("R", 0x0200, client, opacity, width = 116.dp * controlScale, height = 46.dp * controlScale, onPressTone = onButtonTone)
         }
     }
     TouchControlGroup(
@@ -8283,13 +8299,13 @@ private fun VirtualStick(
 @Composable
 private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GamepadButton("Y", 0x8000, client, opacity, 54.dp * scale, onButtonTone)
+        GamepadButton("X", 0x4000, client, opacity, 54.dp * scale, onButtonTone)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            GamepadButton("X", 0x4000, client, opacity, 54.dp * scale, onButtonTone)
+            GamepadButton("Y", 0x8000, client, opacity, 54.dp * scale, onButtonTone)
             Spacer(Modifier.size(54.dp * scale))
-            GamepadButton("B", 0x2000, client, opacity, 54.dp * scale, onButtonTone)
+            GamepadButton("A", 0x1000, client, opacity, 54.dp * scale, onButtonTone)
         }
-        GamepadButton("A", 0x1000, client, opacity, 54.dp * scale, onButtonTone)
+        GamepadButton("B", 0x2000, client, opacity, 54.dp * scale, onButtonTone)
     }
 }
 
@@ -8314,6 +8330,7 @@ private fun GamepadTriggerButton(
     client: NativeStreamClient,
     opacity: Float,
     size: androidx.compose.ui.unit.Dp,
+    width: androidx.compose.ui.unit.Dp = size * 1.24f,
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
@@ -8321,7 +8338,7 @@ private fun GamepadTriggerButton(
     val idleSurface = MaterialTheme.colorScheme.surfaceVariant
     Box(
         Modifier
-            .width(size * 1.24f)
+            .width(width)
             .height(size * 0.78f)
             .clip(RoundedCornerShape(999.dp))
             .background((if (pressed) accent else idleSurface).copy(alpha = opacity))

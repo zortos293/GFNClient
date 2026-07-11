@@ -10,7 +10,7 @@ import type {
   SessionStopRequest,
 } from "@shared/gfn";
 import { formatErrorChainForLog } from "@shared/networkError";
-import type { AuthService } from "../gfn/auth";
+import type { AuthService } from "../platforms/gfn/auth";
 import {
   claimSession,
   createSession,
@@ -19,8 +19,8 @@ import {
   reportSessionAd,
   shouldEnableInGameSettingsPersistence,
   stopSession,
-} from "../gfn/cloudmatch";
-import { SessionError } from "../gfn/errorCodes";
+} from "../platforms/gfn/cloudmatch";
+import { SessionError } from "../platforms/gfn/errorCodes";
 import type { SettingsManager } from "../settings";
 import {
   rethrowSerializedSessionError,

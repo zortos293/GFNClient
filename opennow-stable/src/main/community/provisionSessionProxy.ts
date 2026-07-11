@@ -5,8 +5,8 @@ import {
   type CommunityProxyProvisionResult,
   ZORTOS_COMMUNITY_PROXY_PROVISION_URL,
 } from "@shared/communityProxy";
-import { getStableDeviceId } from "../gfn/deviceId";
-import { normalizeSessionProxyUrl } from "../gfn/proxyUrl";
+import { getStableDeviceId } from "../platforms/gfn/deviceId";
+import { normalizeSessionProxyUrl } from "../platforms/gfn/proxyUrl";
 import { fetchWithTimeout } from "../services/requestTimeout";
 
 const PROVISION_TIMEOUT_MS = 15_000;

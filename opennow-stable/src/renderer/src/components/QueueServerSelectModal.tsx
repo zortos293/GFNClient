@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import type { GameInfo, PrintedWasteQueueData, PrintedWasteZone } from "@shared/gfn";
+import { buildGfnZoneStreamingBaseUrl, isStandardGfnZone } from "@shared/gfn";
 import {
   loadStoredPrintedWastePingResults,
   saveStoredPrintedWastePingResults,
@@ -8,23 +9,16 @@ import {
 
 // ── Constants / helpers ───────────────────────────────────────────────────────
 
-/**
- * Only include standard NVIDIA zones (NP-*).
- * Alliance-partner zones start with NPA- and have their own routing
- * infrastructure that doesn't follow the cloudmatchbeta.nvidiagrid.net pattern.
- */
 function isStandardZone(zoneId: string): boolean {
-  return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
+  return isStandardGfnZone(zoneId);
 }
 
 /**
  * Build the direct cloudmatch URL from a zone ID.
- * "NP-AMS-08" → "https://np-ams-08.cloudmatchbeta.nvidiagrid.net/"
- * This URL is used as streamingBaseUrl in createSession to route the user
- * to that specific zone's load balancer.
+ * Used as streamingBaseUrl in createSession to route the user to that zone.
  */
 function constructZoneUrl(zoneId: string): string {
-  return `https://${zoneId.toLowerCase()}.cloudmatchbeta.nvidiagrid.net/`;
+  return buildGfnZoneStreamingBaseUrl(zoneId);
 }
 
 function formatWait(etaMs: number): string {

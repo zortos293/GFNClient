@@ -1,6 +1,6 @@
 import { useRef, useSyncExternalStore } from "react";
 
-import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { StreamDiagnostics } from "../platforms/gfn/webrtcClient";
 
 export interface StreamDiagnosticsStore {
   getSnapshot: () => StreamDiagnostics;

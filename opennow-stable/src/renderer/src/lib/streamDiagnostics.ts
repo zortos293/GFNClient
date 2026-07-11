@@ -1,6 +1,6 @@
 import type { NativeStreamStats } from "@shared/gfn";
 
-import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { StreamDiagnostics } from "../platforms/gfn/webrtcClient";
 
 export function defaultDiagnostics(): StreamDiagnostics {
   return {

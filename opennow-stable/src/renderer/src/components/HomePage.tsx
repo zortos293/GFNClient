@@ -6,6 +6,7 @@ import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
+import { appendImageType, appendUnique, gameMatchesActiveSession } from "../lib/controllerCatalogUi";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
@@ -60,17 +61,6 @@ export interface HomePageProps {
   markOwnedInFlightByVariantId?: Record<string, boolean>;
   onPreviousControllerPage?: () => void;
   onNextControllerPage?: () => void;
-}
-
-function appendUnique(values: string[], candidate: string | undefined): void {
-  if (!candidate || values.includes(candidate)) return;
-  values.push(candidate);
-}
-
-function appendImageType(values: string[], game: GameInfo, type: string): void {
-  for (const candidate of game.imageUrlsByType?.[type] ?? []) {
-    appendUnique(values, candidate);
-  }
 }
 
 function getSteamHeaderUrl(game: GameInfo): string | undefined {
@@ -130,14 +120,6 @@ function getNextVariantId(game: GameInfo, selectedVariantId?: string): string | 
   if (game.variants.length === 0) return undefined;
   const activeIndex = Math.max(0, game.variants.findIndex((variant) => variant.id === selectedVariantId));
   return game.variants[(activeIndex + 1) % game.variants.length]?.id;
-}
-
-function gameMatchesActiveSession(game: GameInfo, activeSessionAppIds: number[]): boolean {
-  if (activeSessionAppIds.length === 0) return false;
-  const appIds = new Set(activeSessionAppIds.map(String));
-  if (game.launchAppId && appIds.has(game.launchAppId)) return true;
-  if (appIds.has(game.id)) return true;
-  return game.variants.some((variant) => appIds.has(variant.id));
 }
 
 function getPrimaryGenre(game: GameInfo): string {

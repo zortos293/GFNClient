@@ -1,0 +1,991 @@
+import type { KeyboardLayout } from "@shared/gfn";
+
+
+import {
+  scancodeByCode,
+  specialVirtualKeyByCode,
+  keyFallbackMap,
+  baseCharCodeMap,
+  shiftedCharCodeMap,
+  germanBaseCharCodeMap,
+  germanShiftedCharCodeMap,
+} from "./keyboardScancodes";
+
+export const INPUT_HEARTBEAT = 2;
+export const INPUT_KEY_DOWN = 3;
+export const INPUT_KEY_UP = 4;
+/** Lock-key state sync (Caps/Num/Scroll), matches official GFN Cc()/Ic() type 19. */
+export const INPUT_LOCK_KEYS_SYNC = 19;
+export const INPUT_MOUSE_ABS = 5;
+export const INPUT_MOUSE_REL = 7;
+export const INPUT_MOUSE_BUTTON_DOWN = 8;
+export const INPUT_MOUSE_BUTTON_UP = 9;
+export const INPUT_MOUSE_WHEEL = 10;
+export const INPUT_GAMEPAD = 12;
+export const INPUT_HAPTICS_ENABLED = 13;
+export const INPUT_TEXT = 23;
+
+const TEXT_INPUT_CHUNK_MAX_BYTES = 1016;
+const TEXT_INPUT_HEADER_BYTES = 5;
+
+export const WRAPPER_VERSION_MARKER = 0x23;
+export const WRAPPER_SINGLE_INPUT = 0x22;
+const WRAPPER_VERSION_HEADER_BYTES = 9;
+const WRAPPER_SINGLE_BODY_OFFSET = WRAPPER_VERSION_HEADER_BYTES + 1;
+
+let inputSessionStartedAtMs = 0;
+
+/** Reset session-relative input clock when the input handshake completes. */
+export function startInputSessionClock(nowMs: number = performance.now()): void {
+  inputSessionStartedAtMs = nowMs;
+}
+
+/** Session-relative capture timestamp for inner event payloads (official GFN Or()). */
+export function captureTimestampUs(sourceTimestampMs?: number): bigint {
+  const baseMs =
+    typeof sourceTimestampMs === "number" && Number.isFinite(sourceTimestampMs) && sourceTimestampMs >= 0
+      ? sourceTimestampMs - inputSessionStartedAtMs
+      : performance.now() - inputSessionStartedAtMs;
+  return BigInt(Math.max(0, Math.floor(baseMs * 1000)));
+}
+
+/** Send-time session clock for v3 outer headers (official GFN ed()). */
+export function sendTimestampUs(nowMs: number = performance.now()): bigint {
+  return captureTimestampUs(nowMs);
+}
+
+function writeSessionTimestamp(view: DataView, offset: number, timestampUs: bigint): void {
+  const clamped = timestampUs < 0n ? 0n : timestampUs;
+  const lo = Number(clamped & 0xFFFFFFFFn);
+  const hi = Number(clamped >> 32n);
+  view.setUint32(offset, hi, false);
+  view.setUint32(offset + 4, lo, false);
+}
+
+/** Rewrite the protocol v3 `[0x23][timestamp]` header to the send-time session clock. */
+export function restampProtocolV3OuterTimestamp(packet: Uint8Array, timestampUs: bigint): boolean {
+  if (packet.length < WRAPPER_VERSION_HEADER_BYTES || packet[0] !== WRAPPER_VERSION_MARKER) {
+    return false;
+  }
+  writeSessionTimestamp(new DataView(packet.buffer, packet.byteOffset, packet.byteLength), 1, timestampUs);
+  return true;
+}
+
+/**
+ * Coalesce protocol v3 single-input packets into one datachannel payload.
+ * Official GFN batches multiple `[0x22][body]` frames under one `[0x23][timestamp]`
+ * header stamped with the send-time session clock (`ed()`).
+ */
+export function combineSingleInputPackets(
+  payloads: readonly Uint8Array[],
+  sendTimestampUsValue: bigint,
+): Uint8Array | null {
+  if (payloads.length === 0) {
+    return null;
+  }
+  if (payloads.length === 1) {
+    const packet = payloads[0].slice();
+    restampProtocolV3OuterTimestamp(packet, sendTimestampUsValue);
+    return packet;
+  }
+
+  const combinedBodies: number[] = [];
+  for (const payload of payloads) {
+    if (
+      payload.length >= WRAPPER_SINGLE_BODY_OFFSET
+      && payload[0] === WRAPPER_VERSION_MARKER
+      && payload[WRAPPER_VERSION_HEADER_BYTES] === WRAPPER_SINGLE_INPUT
+    ) {
+      combinedBodies.push(WRAPPER_SINGLE_INPUT);
+      combinedBodies.push(...payload.subarray(WRAPPER_SINGLE_BODY_OFFSET));
+      continue;
+    }
+    return null;
+  }
+
+  const bytes = new Uint8Array(WRAPPER_VERSION_HEADER_BYTES + combinedBodies.length);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = WRAPPER_VERSION_MARKER;
+  writeSessionTimestamp(view, 1, sendTimestampUsValue);
+  bytes.set(combinedBodies, WRAPPER_VERSION_HEADER_BYTES);
+  return bytes;
+}
+
+/** Finalize reliable keyboard/button packets, coalescing and restamping v3 headers at send time. */
+export function finalizeReliableSingleInputPackets(
+  payloads: readonly Uint8Array[],
+  sendTimestampUsValue: bigint,
+): Uint8Array[] {
+  if (payloads.length === 0) {
+    return [];
+  }
+
+  const combined = combineSingleInputPackets(payloads, sendTimestampUsValue);
+  if (combined) {
+    return [combined];
+  }
+
+  return payloads.map((payload) => {
+    const packet = payload.slice();
+    restampProtocolV3OuterTimestamp(packet, sendTimestampUsValue);
+    return packet;
+  });
+}
+
+// Mouse button constants (1-based for GFN protocol)
+// GFN uses: 1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
+export const MOUSE_LEFT = 1;
+export const MOUSE_MIDDLE = 2;
+export const MOUSE_RIGHT = 3;
+export const MOUSE_BACK = 4;
+export const MOUSE_FORWARD = 5;
+
+// XInput button flags (matching Windows XINPUT_GAMEPAD_* constants)
+export const GAMEPAD_DPAD_UP = 0x0001;
+export const GAMEPAD_DPAD_DOWN = 0x0002;
+export const GAMEPAD_DPAD_LEFT = 0x0004;
+export const GAMEPAD_DPAD_RIGHT = 0x0008;
+export const GAMEPAD_START = 0x0010;
+export const GAMEPAD_BACK = 0x0020;
+export const GAMEPAD_LS = 0x0040; // Left stick click (L3)
+export const GAMEPAD_RS = 0x0080; // Right stick click (R3)
+export const GAMEPAD_LB = 0x0100; // Left bumper
+export const GAMEPAD_RB = 0x0200; // Right bumper
+export const GAMEPAD_GUIDE = 0x0400; // Xbox/Guide button
+export const GAMEPAD_A = 0x1000;
+export const GAMEPAD_B = 0x2000;
+export const GAMEPAD_X = 0x4000;
+export const GAMEPAD_Y = 0x8000;
+
+// Axis indices for gamepad
+export const GAMEPAD_AXIS_LX = 0; // Left stick X
+export const GAMEPAD_AXIS_LY = 1; // Left stick Y
+export const GAMEPAD_AXIS_RX = 2; // Right stick X
+export const GAMEPAD_AXIS_RY = 3; // Right stick Y
+export const GAMEPAD_AXIS_LT = 4; // Left trigger
+export const GAMEPAD_AXIS_RT = 5; // Right trigger
+
+// Gamepad constants
+export const GAMEPAD_MAX_CONTROLLERS = 4;
+export const GAMEPAD_PACKET_SIZE = 38;
+export const GAMEPAD_DEADZONE = 0.15; // 15% radial deadzone
+export const PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = (1 << GAMEPAD_MAX_CONTROLLERS) - 1;
+export const PARTIALLY_RELIABLE_HID_DEVICE_MASK_ALL = 0xFFFFFFFF;
+
+export interface KeyboardPayload {
+  keycode: number;
+  scancode: number;
+  modifiers: number;
+  timestampUs: bigint;
+}
+
+export interface MouseMovePayload {
+  dx: number;
+  dy: number;
+  timestampUs: bigint;
+}
+
+/**
+ * Absolute mouse position (input type 5). Coordinates are expressed inside a
+ * client-defined extent (`width`/`height`) that the server uses to scale onto
+ * the remote desktop, mirroring the official client's Hc() encoder.
+ */
+export interface MouseAbsolutePayload {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  timestampUs: bigint;
+}
+
+export interface MouseButtonPayload {
+  button: number;
+  timestampUs: bigint;
+}
+
+export interface MouseWheelPayload {
+  delta: number;
+  timestampUs: bigint;
+}
+
+export interface GamepadInput {
+  controllerId: number; // 0-3
+  buttons: number; // 16-bit button flags
+  leftTrigger: number; // 0-255
+  rightTrigger: number; // 0-255
+  leftStickX: number; // -32768 to 32767
+  leftStickY: number; // -32768 to 32767 (inverted in XInput)
+  rightStickX: number; // -32768 to 32767
+  rightStickY: number; // -32768 to 32767 (inverted in XInput)
+  connected: boolean; // true = connected, false = disconnected
+  timestampUs: bigint;
+}
+
+export function partiallyReliableHidMaskForInputType(inputType: number): number {
+  if (!Number.isInteger(inputType) || inputType < 0 || inputType > 31) {
+    return 0;
+  }
+  return 1 << inputType;
+}
+
+export function isPartiallyReliableHidTransferEligible(inputType: number): boolean {
+  return inputType === INPUT_MOUSE_REL || inputType === INPUT_MOUSE_ABS;
+}
+
+export interface KeyMapping {
+  vk: number;
+  scancode: number;
+}
+
+export interface TextKeySpec extends KeyMapping {
+  shift?: boolean;
+}
+
+type KeyLike = Pick<KeyboardEvent, "code" | "key" | "keyCode" | "location">;
+
+const DOM_KEY_LOCATION_STANDARD = 0;
+const DOM_KEY_LOCATION_LEFT = 1;
+const DOM_KEY_LOCATION_RIGHT = 2;
+const DOM_KEY_LOCATION_NUMPAD = 3;
+
+function defaultVirtualKeyFromCode(code: string): number | null {
+  if (code.startsWith("Key") && code.length === 4) {
+    return code.charCodeAt(3);
+  }
+
+  if (code.startsWith("Digit") && code.length === 6) {
+    return code.charCodeAt(5);
+  }
+
+  if (code.startsWith("F")) {
+    const index = Number.parseInt(code.slice(1), 10);
+    if (index >= 1 && index <= 24) {
+      return 0x70 + index - 1;
+    }
+  }
+
+  if (code.startsWith("Numpad") && code.length === 7) {
+    const digit = Number.parseInt(code.slice(6), 10);
+    if (digit >= 0 && digit <= 9) {
+      return 0x60 + digit;
+    }
+  }
+
+  return specialVirtualKeyByCode[code] ?? null;
+}
+
+function keyMappingFromCode(code: string): KeyMapping | null {
+  const scancode = scancodeByCode[code];
+  if (scancode === undefined) {
+    return null;
+  }
+
+  const vk = defaultVirtualKeyFromCode(code);
+  if (vk === null) {
+    return null;
+  }
+
+  return { vk, scancode };
+}
+
+export const codeMap: Record<string, KeyMapping> = Object.freeze(
+  Object.fromEntries(Object.keys(scancodeByCode).map((code) => [code, keyMappingFromCode(code)!])),
+) as Record<string, KeyMapping>;
+
+function virtualKeyFromKeyCode(event: KeyLike): number | null {
+  const keyCode = event.keyCode;
+  if (!Number.isInteger(keyCode) || keyCode <= 0 || keyCode === 229) {
+    return null;
+  }
+
+  switch (event.code) {
+    case "ShiftLeft":
+      return 0xa0;
+    case "ShiftRight":
+      return 0xa1;
+    case "ControlLeft":
+      return 0xa2;
+    case "ControlRight":
+      return 0xa3;
+    case "AltLeft":
+      return 0xa4;
+    case "AltRight":
+      return 0xa5;
+    case "MetaLeft":
+      return 0x5b;
+    case "MetaRight":
+      return 0x5c;
+  }
+
+  if (event.location === DOM_KEY_LOCATION_NUMPAD) {
+    if (keyCode >= 0x60 && keyCode <= 0x69) {
+      return keyCode;
+    }
+    if (keyCode === 0x0d && event.code === "NumpadEnter") {
+      return keyCode;
+    }
+  }
+
+  return keyCode;
+}
+
+function virtualKeyFromKeyValue(key: string): number | null {
+  if (key.length === 1) {
+    const codePoint = key.toUpperCase().charCodeAt(0);
+    if ((codePoint >= 0x30 && codePoint <= 0x39) || (codePoint >= 0x41 && codePoint <= 0x5a)) {
+      return codePoint;
+    }
+  }
+
+  switch (key) {
+    case "Escape":
+    case "Esc":
+      return 0x1b;
+    case "Enter":
+      return 0x0d;
+    case "Tab":
+      return 0x09;
+    case "Backspace":
+      return 0x08;
+    case " ":
+    case "Spacebar":
+      return 0x20;
+    case "ArrowLeft":
+      return 0x25;
+    case "ArrowUp":
+      return 0x26;
+    case "ArrowRight":
+      return 0x27;
+    case "ArrowDown":
+      return 0x28;
+    case "Delete":
+      return 0x2e;
+    case "Insert":
+      return 0x2d;
+    case "Home":
+      return 0x24;
+    case "End":
+      return 0x23;
+    case "PageUp":
+      return 0x21;
+    case "PageDown":
+      return 0x22;
+  }
+
+  return null;
+}
+
+function virtualKeyFromEvent(event: KeyLike): number | null {
+  if (event.code) {
+    const codeVk = defaultVirtualKeyFromCode(event.code);
+    if (codeVk !== null) {
+      return codeVk;
+    }
+  }
+
+  return (
+    virtualKeyFromKeyCode(event)
+    ?? virtualKeyFromKeyValue(event.key)
+    ?? defaultVirtualKeyFromCode(event.code)
+  );
+}
+
+function textKeySpecFromCode(code: string, shift: boolean = false): TextKeySpec | null {
+  const mapped = keyMappingFromCode(code);
+  if (!mapped) {
+    return null;
+  }
+  return shift ? { ...mapped, shift: true } : mapped;
+}
+
+export function mapTextCharToKeySpec(char: string, layout?: KeyboardLayout): TextKeySpec | null {
+  const baseMap = layout === "de-DE" ? germanBaseCharCodeMap : baseCharCodeMap;
+  const shiftedMap = layout === "de-DE" ? germanShiftedCharCodeMap : shiftedCharCodeMap;
+
+  const baseCode = baseMap[char];
+  if (baseCode) {
+    return textKeySpecFromCode(baseCode);
+  }
+
+  const shiftedCode = shiftedMap[char];
+  if (shiftedCode) {
+    return textKeySpecFromCode(shiftedCode, true);
+  }
+
+  if (char >= "a" && char <= "z") {
+    return textKeySpecFromCode(`Key${char.toUpperCase()}`);
+  }
+
+  if (char >= "A" && char <= "Z") {
+    return textKeySpecFromCode(`Key${char}`, true);
+  }
+
+  return null;
+}
+
+/**
+ * Write an 8-byte big-endian session-relative timestamp into a DataView.
+ * Outer v3 headers are restamped again at send time via restampProtocolV3OuterTimestamp().
+ */
+function writeTimestamp(view: DataView, offset: number): void {
+  writeSessionTimestamp(view, offset, sendTimestampUs());
+}
+
+/**
+ * Protocol v3+ wrapper for SINGLE non-mouse events (keyboard, mouse button, wheel).
+ * Format: [0x23][8B timestamp][0x22][payload]
+ *
+ * 0x23 = outer timestamp wrapper (added by yc() in official client)
+ * 0x22 = single-event sub-message marker (added by Ec() allocator in official client)
+ *
+ * For protocol v1-v2, returns the raw payload unchanged.
+ */
+function wrapSingleEvent(payload: Uint8Array, protocolVersion: number): Uint8Array {
+  if (protocolVersion <= 2) {
+    return payload;
+  }
+  // [0x23][8B timestamp][0x22][payload]
+  const wrapped = new Uint8Array(9 + 1 + payload.length);
+  const view = new DataView(wrapped.buffer);
+  wrapped[0] = 0x23;
+  writeTimestamp(view, 1);
+  wrapped[9] = 0x22;  // single-event sub-message marker
+  wrapped.set(payload, 10);
+  return wrapped;
+}
+
+/**
+ * Protocol v3+ wrapper for MOUSE MOVE events.
+ * Format: [0x23][8B timestamp][0x21][2B event-length][payload]
+ *
+ * 0x23 = outer timestamp wrapper
+ * 0x21 = mouse/cursor event marker (used by Tc() coalescer in official client)
+ * 2B   = payload length (BE uint16) — official client's Wa() with no endian param = BE
+ *
+ * For protocol v1-v2, returns the raw payload unchanged.
+ */
+function wrapMouseMoveEvent(payload: Uint8Array, protocolVersion: number): Uint8Array {
+  if (protocolVersion <= 2) {
+    return payload;
+  }
+  // [0x23][8B timestamp][0x21][2B length][payload]
+  const wrapped = new Uint8Array(9 + 1 + 2 + payload.length);
+  const view = new DataView(wrapped.buffer);
+  wrapped[0] = 0x23;
+  writeTimestamp(view, 1);
+  wrapped[9] = 0x21;  // mouse/cursor event marker
+  view.setUint16(10, payload.length, false);  // event length (BE, matches official setUint16)
+  wrapped.set(payload, 12);
+  return wrapped;
+}
+
+/**
+ * Protocol v3+ wrapper for GAMEPAD events on the RELIABLE channel.
+ * Format: [0x23][8B timestamp][0x21][2B size BE][payload]
+ *
+ * Official GFN client's ul() with m=false writes [0x21][2B size] then yc() prepends [0x23][8B ts].
+ * Gamepad goes through the same batching system as other events.
+ *
+ * For protocol v1-v2, returns the raw payload unchanged.
+ */
+function wrapGamepadReliable(payload: Uint8Array, protocolVersion: number): Uint8Array {
+  if (protocolVersion <= 2) {
+    return payload;
+  }
+  // [0x23][8B timestamp][0x21][2B size][payload]
+  const wrapped = new Uint8Array(9 + 1 + 2 + payload.length);
+  const view = new DataView(wrapped.buffer);
+  wrapped[0] = 0x23;
+  writeTimestamp(view, 1);
+  wrapped[9] = 0x21;  // batched event marker (m=false path in ul())
+  view.setUint16(10, payload.length, false);  // size (BE, Wa() with no endian param)
+  wrapped.set(payload, 12);
+  return wrapped;
+}
+
+/**
+ * Protocol v3+ wrapper for GAMEPAD events on the PARTIALLY RELIABLE channel.
+ * Format: [0x23][8B timestamp][0x26][1B gamepadIdx][2B seqNum BE][0x21][2B size BE][payload]
+ *
+ * Official GFN client's ul() adds [0x26][idx][seq] header when gamepad index is specified
+ * (partially reliable path), then [0x21][2B size], then yc() prepends [0x23][8B ts].
+ *
+ * 0x26 = 38 decimal, PR sequence header byte (written by Va(38) in ul())
+ *
+ * For protocol v1-v2, returns the raw payload unchanged.
+ */
+function wrapGamepadPartiallyReliable(
+  payload: Uint8Array,
+  protocolVersion: number,
+  gamepadIndex: number,
+  sequenceNumber: number,
+): Uint8Array {
+  if (protocolVersion <= 2) {
+    return payload;
+  }
+  // [0x23][8B ts][0x26][1B idx][2B seq][0x21][2B size][payload]
+  const wrapped = new Uint8Array(9 + 1 + 1 + 2 + 1 + 2 + payload.length);
+  const view = new DataView(wrapped.buffer);
+  wrapped[0] = 0x23;
+  writeTimestamp(view, 1);
+  wrapped[9] = 0x26;  // PR sequence header (decimal 38, written by Va(38))
+  wrapped[10] = gamepadIndex & 0xFF;  // gamepad index byte
+  view.setUint16(11, sequenceNumber, false);  // sequence number (BE, Wa() with no endian param)
+  wrapped[13] = 0x21;  // batched event marker
+  view.setUint16(14, payload.length, false);  // size (BE)
+  wrapped.set(payload, 16);
+  return wrapped;
+}
+
+export class InputEncoder {
+  private protocolVersion = 2;
+  // Per-gamepad sequence numbers for partially reliable channel framing.
+  // Official GFN client tracks this per-gamepad-index via this.tc Map.
+  private gamepadSequence: Map<number, number> = new Map();
+
+  setProtocolVersion(version: number): void {
+    this.protocolVersion = version;
+  }
+
+  /** Get and increment the sequence number for a gamepad on the PR channel.
+   *  Wraps at 65536 (uint16 range), matching official client's cl() function. */
+  getNextGamepadSequence(gamepadIndex: number): number {
+    const current = this.gamepadSequence.get(gamepadIndex) ?? 1;
+    this.gamepadSequence.set(gamepadIndex, (current + 1) % 65536);
+    return current;
+  }
+
+  resetGamepadSequences(): void {
+    this.gamepadSequence.clear();
+  }
+
+  encodeLockKeysSync(state: number): Uint8Array {
+    const bytes = new Uint8Array(5);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, INPUT_LOCK_KEYS_SYNC, true);
+    view.setUint8(4, state & 0xff);
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
+  encodeHeartbeat(): Uint8Array {
+    // Heartbeat is sent RAW — no v3 wrapper.
+    // Official GFN client's Jc() sends [u32 LE = 2] directly, no 0x23/0x22 prefix.
+    const payload = new Uint8Array(4);
+    const view = new DataView(payload.buffer);
+    view.setUint32(0, INPUT_HEARTBEAT, true);
+    return payload;
+  }
+
+  encodeKeyDown(payload: KeyboardPayload): Uint8Array {
+    return this.encodeKey(INPUT_KEY_DOWN, payload);
+  }
+
+  encodeKeyUp(payload: KeyboardPayload): Uint8Array {
+    return this.encodeKey(INPUT_KEY_UP, payload);
+  }
+
+  encodeMouseMove(payload: MouseMovePayload): Uint8Array {
+    const bytes = new Uint8Array(22);
+    const view = new DataView(bytes.buffer);
+    // [type 4B LE][dx 2B BE][dy 2B BE][reserved 6B BE][timestamp 8B BE]
+    view.setUint32(0, INPUT_MOUSE_REL, true);        // type: LE
+    view.setInt16(4, payload.dx, false);              // dx: BE
+    view.setInt16(6, payload.dy, false);              // dy: BE
+    view.setUint16(8, 0, false);                      // reserved: BE
+    view.setUint32(10, 0, false);                     // reserved: BE
+    view.setBigUint64(14, payload.timestampUs, false); // timestamp: BE
+    return wrapMouseMoveEvent(bytes, this.protocolVersion);
+  }
+
+  encodeMouseAbsolute(payload: MouseAbsolutePayload): Uint8Array {
+    const bytes = new Uint8Array(26);
+    const view = new DataView(bytes.buffer);
+    // Official client Hc() with absolute flag (opcode 5, 26 bytes):
+    // [type 4B LE][x 2B BE][y 2B BE][reserved 2B BE][width 2B BE][height 2B BE][reserved 4B BE][timestamp 8B BE]
+    view.setUint32(0, INPUT_MOUSE_ABS, true);             // type: LE
+    view.setUint16(4, clampU16(payload.x), false);         // x: BE
+    view.setUint16(6, clampU16(payload.y), false);         // y: BE
+    view.setUint16(8, 0, false);                           // reserved: BE
+    view.setUint16(10, clampU16(payload.width), false);    // extent width: BE
+    view.setUint16(12, clampU16(payload.height), false);   // extent height: BE
+    view.setUint32(14, 0, false);                          // reserved: BE
+    view.setBigUint64(18, payload.timestampUs, false);     // timestamp: BE
+    return wrapMouseMoveEvent(bytes, this.protocolVersion);
+  }
+
+  encodeMouseButtonDown(payload: MouseButtonPayload): Uint8Array {
+    return this.encodeMouseButton(INPUT_MOUSE_BUTTON_DOWN, payload);
+  }
+
+  encodeMouseButtonUp(payload: MouseButtonPayload): Uint8Array {
+    return this.encodeMouseButton(INPUT_MOUSE_BUTTON_UP, payload);
+  }
+
+  encodeMouseWheel(payload: MouseWheelPayload): Uint8Array {
+    const bytes = new Uint8Array(22);
+    const view = new DataView(bytes.buffer);
+    // [type 4B LE][horiz 2B BE][vert 2B BE][reserved 6B BE][timestamp 8B BE]
+    view.setUint32(0, INPUT_MOUSE_WHEEL, true);        // type: LE
+    view.setInt16(4, 0, false);                         // horizontal: BE
+    view.setInt16(6, payload.delta, false);              // vertical: BE
+    view.setUint16(8, 0, false);                         // reserved: BE
+    view.setUint32(10, 0, false);                        // reserved: BE
+    view.setBigUint64(14, payload.timestampUs, false);   // timestamp: BE
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
+  encodeHapticsEnabled(enabled: boolean): Uint8Array {
+    const bytes = new Uint8Array(6);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(0, INPUT_HAPTICS_ENABLED, true);
+    view.setUint16(4, enabled ? 1 : 0, false);
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
+  encodeTextInput(text: string): Uint8Array[] {
+    const utf8 = new TextEncoder().encode(text);
+    const chunks: Uint8Array[] = [];
+
+    for (let offset = 0; offset < utf8.byteLength;) {
+      const chunkLength = textInputChunkLength(utf8, offset);
+      if (chunkLength <= 0) {
+        break;
+      }
+
+      const bytes = new Uint8Array(TEXT_INPUT_HEADER_BYTES + chunkLength);
+      const view = new DataView(bytes.buffer);
+      bytes[0] = 0x22;
+      view.setUint32(1, INPUT_TEXT, true);
+      bytes.set(utf8.subarray(offset, offset + chunkLength), TEXT_INPUT_HEADER_BYTES);
+      chunks.push(bytes);
+      offset += chunkLength;
+    }
+
+    return chunks;
+  }
+
+  encodeGamepadState(payload: GamepadInput, bitmap: number, usePartiallyReliable: boolean): Uint8Array {
+    const bytes = new Uint8Array(GAMEPAD_PACKET_SIZE);
+    const view = new DataView(bytes.buffer);
+
+    // Match official GFN client's gl() function exactly (vendor_beautified.js line 13469-13470):
+    // gl(i, u, m, w, P, L, $=0, ae=0) where:
+    //   i=DataView, u=base offset (0), m=gamepad index, w=buttons,
+    //   P=triggers, L=axes[4], $=timestamp, ae=bitmap
+    
+    // Offset 0x00: Type (u32 LE) - event type 12
+    view.setUint32(0, INPUT_GAMEPAD, true);
+    
+    // Offset 0x04: Payload size (u16 LE) = 26
+    view.setUint16(4, 26, true);
+    
+    // Offset 0x06: Gamepad index (u16 LE)
+    view.setUint16(6, payload.controllerId & 0x03, true);
+    
+    // Offset 0x08: Bitmap (u16 LE) — official this.nu bitmask.
+    // Bit i = gamepad i connected; bit (i+8) = Xbox/xinput style device.
+    // The high bit likely advertises the XInput/haptics-capable variant.
+    view.setUint16(8, bitmap, true);
+    
+    // Offset 0x0A: Inner payload size (u16 LE) = 20
+    view.setUint16(10, 20, true);
+    
+    // Offset 0x0C: Button flags (u16 LE) - XInput format
+    view.setUint16(12, payload.buttons, true);
+    
+    // Offset 0x0E: Packed triggers (u16 LE: low byte=LT, high byte=RT)
+    const packedTriggers = (payload.leftTrigger & 0xFF) | ((payload.rightTrigger & 0xFF) << 8);
+    view.setUint16(14, packedTriggers, true);
+    
+    // Offset 0x10: Left stick X (i16 LE)
+    view.setInt16(16, payload.leftStickX, true);
+    
+    // Offset 0x12: Left stick Y (i16 LE)
+    view.setInt16(18, payload.leftStickY, true);
+    
+    // Offset 0x14: Right stick X (i16 LE)
+    view.setInt16(20, payload.rightStickX, true);
+    
+    // Offset 0x16: Right stick Y (i16 LE)
+    view.setInt16(22, payload.rightStickY, true);
+    
+    // Offset 0x18: Reserved (u16 LE) = 0
+    view.setUint16(24, 0, true);
+    
+    // Offset 0x1A: Magic constant (u16 LE) = 85 (0x55)
+    view.setUint16(26, 85, true);
+    
+    // Offset 0x1C: Reserved (u16 LE) = 0
+    view.setUint16(28, 0, true);
+    
+    // Offset 0x1E: Timestamp (u64 LE)
+    view.setBigUint64(30, payload.timestampUs, true);
+
+    // Gamepad packets ARE wrapped in protocol v3+ — the official client's yc() function
+    // applies the 0x23 wrapper for ALL channels (the v2+ check does NOT exclude PR).
+    // The batching system also adds 0x21 inner framing.
+    if (usePartiallyReliable) {
+      // PR channel: [0x23][8B ts][0x26][1B idx][2B seq][0x21][2B size][38B payload]
+      const seq = this.getNextGamepadSequence(payload.controllerId);
+      return wrapGamepadPartiallyReliable(bytes, this.protocolVersion, payload.controllerId, seq);
+    }
+    // Reliable channel: [0x23][8B ts][0x21][2B size][38B payload]
+    return wrapGamepadReliable(bytes, this.protocolVersion);
+  }
+
+  private encodeKey(type: number, payload: KeyboardPayload): Uint8Array {
+    const bytes = new Uint8Array(18);
+    const view = new DataView(bytes.buffer);
+    // [type 4B LE][keycode 2B BE][modifiers 2B BE][scancode 2B BE][timestamp 8B BE]
+    view.setUint32(0, type, true);                       // type: LE
+    view.setUint16(4, payload.keycode, false);            // keycode: BE
+    view.setUint16(6, payload.modifiers, false);          // modifiers: BE
+    view.setUint16(8, payload.scancode, false);           // scancode: BE
+    view.setBigUint64(10, payload.timestampUs, false);    // timestamp: BE
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+
+  private encodeMouseButton(type: number, payload: MouseButtonPayload): Uint8Array {
+    const bytes = new Uint8Array(18);
+    const view = new DataView(bytes.buffer);
+    // [type 4B LE][button 1B][pad 1B][reserved 4B BE][timestamp 8B BE]
+    view.setUint32(0, type, true);                       // type: LE
+    view.setUint8(4, payload.button);
+    view.setUint8(5, 0);
+    view.setUint32(6, 0, false);                          // reserved: BE
+    view.setBigUint64(10, payload.timestampUs, false);    // timestamp: BE
+    return wrapSingleEvent(bytes, this.protocolVersion);
+  }
+}
+
+function clampU16(value: number): number {
+  return Math.max(0, Math.min(65535, Math.round(value)));
+}
+
+function textInputChunkLength(bytes: Uint8Array, offset: number): number {
+  const remaining = bytes.byteLength - offset;
+  if (remaining <= TEXT_INPUT_CHUNK_MAX_BYTES) {
+    return remaining;
+  }
+
+  let end = offset + TEXT_INPUT_CHUNK_MAX_BYTES;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if ((bytes[end] & 0xc0) !== 0x80) {
+      return end - offset;
+    }
+    end--;
+  }
+
+  return 0;
+}
+
+function isMacKeyboardLayout(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+/** Shift bit for per-key modifier byte (official GFN xb()). */
+export function shiftModifierByte(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
+  if (isMacLayout && event.key.length === 1) {
+    if ("!@#$%^&*()~_+{}|:\"<>?".includes(event.key)) {
+      return 1;
+    }
+    if ("1234567890`-=[]\\;',./".includes(event.key)) {
+      return 0;
+    }
+  }
+  if (event.shiftKey && !event.code.startsWith("Shift")) {
+    return 1;
+  }
+  return 0;
+}
+
+/** Per-key modifier byte (official GFN Cb(): ctrl/alt/meta + xb shift). */
+export function modifierFlags(event: KeyboardEvent, isMacLayout: boolean = isMacKeyboardLayout()): number {
+  let flags = 0;
+  if (event.ctrlKey && !event.code.startsWith("Control")) flags |= 0x02;
+  if (event.altKey && !event.code.startsWith("Alt")) flags |= 0x04;
+  if (event.metaKey && !event.code.startsWith("Meta")) flags |= 0x08;
+  flags |= shiftModifierByte(event, isMacLayout);
+  return flags;
+}
+
+/**
+ * Lock-key bitmask for INPUT_LOCK_KEYS_SYNC (official GFN iS() on Windows/desktop).
+ * Caps/Num/Scroll are not stuffed into per-key modifier bytes.
+ */
+export function lockKeysStateFromEvent(event: KeyboardEvent): number {
+  let state = 0x10;
+  if (event.getModifierState("CapsLock")) state |= 0x01;
+  state |= 0x20;
+  state |= 0x40;
+  if (event.getModifierState("NumLock")) state |= 0x02;
+  if (event.getModifierState("ScrollLock")) state |= 0x04;
+  return state;
+}
+
+export function mapKeyboardEvent(event: KeyboardEvent, _layout?: KeyboardLayout): KeyMapping | null {
+  const vk = virtualKeyFromEvent(event);
+  if (vk === null || vk === 0) {
+    return null;
+  }
+
+  // Official GFN Zc() always sends scancode 0; the server uses layout + VK instead.
+  return { vk, scancode: 0 };
+}
+
+/**
+ * Convert browser mouse button (0-based) to GFN protocol (1-based).
+ * Browser: 0=Left, 1=Middle, 2=Right, 3=Back, 4=Forward
+ * GFN:     1=Left, 2=Middle, 3=Right, 4=Back, 5=Forward
+ */
+export function toMouseButton(button: number): number {
+  // Convert 0-based browser button to 1-based GFN button
+  return button + 1;
+}
+
+/**
+ * Apply radial deadzone to analog stick values.
+ * Uses a circular deadzone where values inside the threshold are zeroed.
+ * @param x X-axis value (-1.0 to 1.0)
+ * @param y Y-axis value (-1.0 to 1.0)
+ * @param deadzone Deadzone threshold (0.0 to 1.0), default 15%
+ * @returns Adjusted {x, y} values
+ */
+export function applyDeadzone(
+  x: number,
+  y: number,
+  deadzone: number = GAMEPAD_DEADZONE
+): { x: number; y: number } {
+  // Calculate magnitude (distance from center)
+  const magnitude = Math.sqrt(x * x + y * y);
+
+  // If inside deadzone, return zero
+  if (magnitude < deadzone) {
+    return { x: 0, y: 0 };
+  }
+
+  // Normalize and rescale to full range
+  const normalizedX = x / magnitude;
+  const normalizedY = y / magnitude;
+
+  // Scale from deadzone edge to 1.0
+  const scaledMagnitude = (magnitude - deadzone) / (1.0 - deadzone);
+  const clampedMagnitude = Math.min(1.0, scaledMagnitude);
+
+  return {
+    x: normalizedX * clampedMagnitude,
+    y: normalizedY * clampedMagnitude,
+  };
+}
+
+/**
+ * Convert a normalized axis value (-1.0 to 1.0) to signed 16-bit integer.
+ * @param value Normalized value (-1.0 to 1.0)
+ * @returns Signed 16-bit integer (-32768 to 32767)
+ */
+export function normalizeToInt16(value: number): number {
+  return Math.max(-32768, Math.min(32767, Math.round(value * 32767)));
+}
+
+/**
+ * Convert a normalized trigger value (0.0 to 1.0) to unsigned 8-bit integer.
+ * @param value Normalized value (0.0 to 1.0)
+ * @returns Unsigned 8-bit integer (0 to 255)
+ */
+export function normalizeToUint8(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value * 255)));
+}
+
+/**
+ * Map Standard Gamepad API buttons to XInput button flags.
+ * Standard Gamepad: https://w3c.github.io/gamepad/#remapping
+ * 
+ * Uses button.value (not button.pressed) to match the official GFN client's NA() function.
+ * button.value is a float 0.0-1.0; any non-zero value counts as pressed.
+ * This catches partial analog button presses that button.pressed might miss.
+ */
+export function mapGamepadButtons(gamepad: Gamepad): number {
+  let buttons = 0;
+  const b = gamepad.buttons;
+
+  // Standard Gamepad mapping to XInput (matches official client's NA() exactly)
+  // Face buttons
+  if (b[0]?.value) buttons |= GAMEPAD_A;          // Bottom (A/Cross)
+  if (b[1]?.value) buttons |= GAMEPAD_B;          // Right (B/Circle)
+  if (b[2]?.value) buttons |= GAMEPAD_X;          // Left (X/Square)
+  if (b[3]?.value) buttons |= GAMEPAD_Y;          // Top (Y/Triangle)
+  
+  // Bumpers
+  if (b[4]?.value) buttons |= GAMEPAD_LB;         // Left Bumper
+  if (b[5]?.value) buttons |= GAMEPAD_RB;         // Right Bumper
+  
+  // buttons[6] and [7] are LT/RT as buttons — we use analog trigger values instead
+  
+  // Center buttons
+  if (b[8]?.value) buttons |= GAMEPAD_BACK;       // Back/Select
+  if (b[9]?.value) buttons |= GAMEPAD_START;      // Start
+  
+  // Stick clicks (L3/R3)
+  if (b[10]?.value) buttons |= GAMEPAD_LS;        // L3 (Left Stick click)
+  if (b[11]?.value) buttons |= GAMEPAD_RS;        // R3 (Right Stick click)
+  
+  // D-Pad
+  if (b[12]?.value) buttons |= GAMEPAD_DPAD_UP;
+  if (b[13]?.value) buttons |= GAMEPAD_DPAD_DOWN;
+  if (b[14]?.value) buttons |= GAMEPAD_DPAD_LEFT;
+  if (b[15]?.value) buttons |= GAMEPAD_DPAD_RIGHT;
+  
+  // Guide button
+  if (b[16]?.value) buttons |= GAMEPAD_GUIDE;     // Guide (Center/Xbox)
+
+  return buttons;
+}
+
+/**
+ * Read analog axes from Standard Gamepad API and apply deadzone.
+ * @param gamepad The Gamepad object from navigator.getGamepads()
+ * @returns Object with left/right stick and trigger values
+ */
+export function readGamepadAxes(gamepad: Gamepad): {
+  leftStickX: number;
+  leftStickY: number;
+  rightStickX: number;
+  rightStickY: number;
+  leftTrigger: number;
+  rightTrigger: number;
+} {
+  // Left stick (axes 0, 1)
+  const lx = gamepad.axes[0] ?? 0;
+  const ly = gamepad.axes[1] ?? 0;
+  const leftStick = applyDeadzone(lx, ly);
+
+  // Right stick (axes 2, 3)
+  const rx = gamepad.axes[2] ?? 0;
+  const ry = gamepad.axes[3] ?? 0;
+  const rightStick = applyDeadzone(rx, ry);
+
+  // Triggers - can be buttons (6, 7) or axes (4, 5) depending on browser
+  let leftTrigger = 0;
+  let rightTrigger = 0;
+
+  if (gamepad.buttons[6]) {
+    leftTrigger = gamepad.buttons[6].value;
+  } else if (gamepad.axes[4] !== undefined && gamepad.axes[4] > 0) {
+    leftTrigger = gamepad.axes[4];
+  }
+
+  if (gamepad.buttons[7]) {
+    rightTrigger = gamepad.buttons[7].value;
+  } else if (gamepad.axes[5] !== undefined && gamepad.axes[5] > 0) {
+    rightTrigger = gamepad.axes[5];
+  }
+
+  return {
+    leftStickX: leftStick.x,
+    leftStickY: -leftStick.y, // Invert Y to match XInput convention
+    rightStickX: rightStick.x,
+    rightStickY: -rightStick.y, // Invert Y to match XInput convention
+    leftTrigger,
+    rightTrigger,
+  };
+}

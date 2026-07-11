@@ -9,7 +9,7 @@ import {
   session,
   protocol,
 } from "electron";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 
@@ -20,10 +20,8 @@ import { existsSync, readFileSync } from "node:fs";
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
 import { IPC_CHANNELS } from "@shared/ipc";
-import type { CommunityProxyProvisionResult } from "@shared/communityProxy";
-import { provisionZortosCommunityProxy } from "./community/provisionSessionProxy";
 import { registerOpenNowMediaProtocol } from "./mediaPaths";
-import { initLogCapture, exportLogs } from "@shared/logger";
+import { initLogCapture } from "@shared/logger";
 import { cacheManager } from "./services/cacheManager";
 import { refreshScheduler } from "./services/refreshScheduler";
 import { cacheEventBus } from "./services/cacheEventBus";
@@ -31,25 +29,18 @@ import {
   fetchMainGamesUncached,
   fetchLibraryGamesUncached,
   fetchPublicGamesUncached,
-} from "./gfn/games";
+} from "./platforms/gfn/games";
 import type {
   AppUpdaterState,
   SessionConflictChoice,
-  Settings,
   DirectLaunchRequest,
-  PingResult,
-  StreamRegion,
-  MicrophonePermissionResult,
-  ThankYouContributor,
-  ThankYouDataResult,
-  ThankYouSupporter,
 } from "@shared/gfn";
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
-import { getActiveSessions } from "./gfn/cloudmatch";
-import { AuthService } from "./gfn/auth";
-import { initSessionProxyAuth } from "./gfn/proxyFetch";
+import { getActiveSessions } from "./platforms/gfn/cloudmatch";
+import { AuthService } from "./platforms/gfn/auth";
+import { initSessionProxyAuth } from "./platforms/gfn/proxyFetch";
 import {
   connectDiscordRpc,
   setActivity,
@@ -58,7 +49,6 @@ import {
   getCurrentActivity,
   isDiscordRpcConnected,
 } from "./discordRpc";
-import type { DiscordActivityUpdate } from "@shared/discord";
 import {
   discordMonitorActivityDecision,
 } from "./discordPresence";
@@ -66,9 +56,8 @@ import {
   createAppUpdaterController,
   type AppUpdaterController,
 } from "./updater";
-import { getAppBuildInfo } from "./appBuildInfo";
 import { registerAccountCatalogIpcHandlers } from "./ipc/accountCatalogHandlers";
-import { registerMediaIpcHandlers } from "./ipc/mediaHandlers";
+import { registerCoreIpcHandlers } from "./ipc/coreHandlers";
 import { registerSessionIpcHandlers } from "./ipc/sessionHandlers";
 import {
   registerSignalingIpcHandlers,
@@ -78,23 +67,14 @@ import {
   isSessionConflictError,
   showSessionConflictDialog as showSessionConflictDialogWithDeps,
 } from "./session/sessionConflict";
-import { fetchWithTimeout, withTimeout } from "./services/requestTimeout";
-import {
-  fetchPrintedWasteQueue,
-  fetchPrintedWasteServerMapping,
-} from "./services/printedWaste";
-import { pingRegions } from "./services/regionPing";
 import {
   buildChromiumCommandLine,
   normalizeBootstrapChromiumPreferences,
   type BootstrapChromiumPreferences,
 } from "./chromiumCommandLine";
-import {
-  nextPointerLockEscapeCaptureUntilMs,
-  shouldCaptureEscapeFullscreenInput,
-} from "./escapeFullscreenGuard";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
-import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowReleaseHighlights } from "./releaseHighlights";
+import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./releaseHighlights";
+import { createMainWindow } from "./window/mainWindow";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -160,6 +140,9 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
+if (!app.isPackaged && process.env.OPENNOW_REMOTE_DEBUG === "1") {
+  app.commandLine.appendSwitch("remote-debugging-port", "9222");
+}
 
 // file:// in &lt;video&gt; is blocked by Chromium for renderer pages; use a privileged custom scheme.
 protocol.registerSchemesAsPrivileged([
@@ -417,163 +400,29 @@ function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
   }
 }
 
-function parseExternalHttpUrl(url: string): URL {
-  const parsed = new URL(url);
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("Only HTTP(S) external URLs can be opened.");
-  }
-  return parsed;
-}
-
-function isAppNavigationUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (process.env.ELECTRON_RENDERER_URL) {
-      return parsed.origin === new URL(process.env.ELECTRON_RENDERER_URL).origin;
-    }
-    return parsed.toString() === pathToFileURL(join(__dirname, "../../dist/index.html")).toString();
-  } catch {
-    return false;
-  }
-}
-
-async function openExternalHttpUrl(url: string): Promise<void> {
-  await shell.openExternal(parseExternalHttpUrl(url).toString());
-}
-
-async function createMainWindow(): Promise<void> {
-  const preloadMjsPath = join(__dirname, "../preload/index.mjs");
-  const preloadJsPath = join(__dirname, "../preload/index.js");
-  const preloadPath = existsSync(preloadMjsPath)
-    ? preloadMjsPath
-    : preloadJsPath;
-
-  const settings = settingsManager.getAll();
-
-  // Console mode (big picture): mirror GeForce NOW's TV mode by launching
-  // fullscreen with the controller-oriented shell enabled.
-  if (settings.launchInConsoleMode && !settings.controllerMode) {
-    settingsManager.set("controllerMode", true);
-  }
-
-  // Direct-launch arguments always start fullscreen; the renderer applies the
-  // console shell for the run without persisting the Controller Mode setting.
-  const startFullscreen =
-    settings.launchInConsoleMode || pendingDirectLaunchRequest !== null;
-
-  mainWindow = new BrowserWindow({
-    width: settings.windowWidth || 1400,
-    height: settings.windowHeight || 900,
-    minWidth: 1024,
-    minHeight: 680,
-    fullscreen: startFullscreen,
-    autoHideMenuBar: true,
-    backgroundColor: "#0f172a",
-    webPreferences: {
-      preload: preloadPath,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
+function createMainWindowDeps() {
+  return {
+    mainDir: __dirname,
+    settingsManager,
+    getMainWindow: () => mainWindow,
+    setMainWindow: (window: BrowserWindow | null) => {
+      mainWindow = window;
     },
-  });
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void openExternalHttpUrl(url).catch((error) => {
-      console.warn("Blocked non-external window open:", error instanceof Error ? error.message : error);
-    });
-    return { action: "deny" };
-  });
-
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (isAppNavigationUrl(url)) {
-      return;
-    }
-
-    event.preventDefault();
-    void openExternalHttpUrl(url).catch((error) => {
-      console.warn("Blocked app window navigation:", error instanceof Error ? error.message : error);
-    });
-  });
-
-  if (process.platform === "win32") {
-    // Keep native window fullscreen in sync with HTML fullscreen so Windows treats
-    // stream playback like a real fullscreen window instead of only DOM fullscreen.
-    mainWindow.webContents.on("enter-html-full-screen", () => {
-      if (
-        mainWindow &&
-        !mainWindow.isDestroyed() &&
-        !mainWindow.isFullScreen()
-      ) {
-        mainWindow.setFullScreen(true);
-      }
-    });
-
-    mainWindow.webContents.on("leave-html-full-screen", () => {
-      if (rendererControlledFullscreen) {
-        return;
-      }
-      if (
-        mainWindow &&
-        !mainWindow.isDestroyed() &&
-        mainWindow.isFullScreen()
-      ) {
-        mainWindow.setFullScreen(false);
-      }
-    });
-  }
-
-  // Track pointer-lock state from renderer; used to decide whether to swallow
-  // Escape at the native level (before Chromium handles it).
-  ipcMain.on(
-    IPC_CHANNELS.POINTER_LOCK_CHANGE,
-    (_ev, active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
-      isPointerLockActiveRuntime = Boolean(active);
-      pointerLockEscapeCaptureUntilMs = nextPointerLockEscapeCaptureUntilMs(
-        isPointerLockActiveRuntime,
-        Boolean(suppressEscapeFullscreenGrace),
-        Date.now(),
-      );
+    getRendererControlledFullscreen: () => rendererControlledFullscreen,
+    setRendererControlledFullscreen: (value: boolean) => {
+      rendererControlledFullscreen = value;
     },
-  );
-
-  // Intercept Escape early to avoid Chromium exiting fullscreen before the
-  // renderer can forward the key to the remote session. Keep a short fullscreen
-  // grace window after pointer lock drops so rapid repeated Escape presses cannot
-  // win the race before the renderer re-locks the pointer.
-  mainWindow.webContents.on("before-input-event", (event, input) => {
-    try {
-      if (shouldCaptureEscapeFullscreenInput(input, {
-        allowEscapeToExitFullscreen: Boolean(settingsManager?.get("allowEscapeToExitFullscreen")),
-        pointerLockActive: isPointerLockActiveRuntime,
-        windowFullscreen: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen()),
-        pointerLockEscapeCaptureUntilMs,
-        nowMs: Date.now(),
-      })) {
-        event.preventDefault();
-        if (mainWindow && mainWindow.webContents) {
-          mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
-        }
-      }
-    } catch {
-      // ignore errors - interception is best-effort
-    }
-  });
-
-  if (process.env.ELECTRON_RENDERER_URL) {
-    await mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
-  } else {
-    await mainWindow.loadFile(join(__dirname, "../../dist/index.html"));
-  }
-  if (pendingDirectLaunchRequest) {
-    emitDirectLaunchRequest(pendingDirectLaunchRequest);
-  }
-
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-    rendererControlledFullscreen = false;
-    isPointerLockActiveRuntime = false;
-    pointerLockEscapeCaptureUntilMs = 0;
-  });
+    getPendingDirectLaunchRequest: () => pendingDirectLaunchRequest,
+    emitDirectLaunchRequest,
+    getPointerLockActive: () => isPointerLockActiveRuntime,
+    setPointerLockActive: (active: boolean) => {
+      isPointerLockActiveRuntime = active;
+    },
+    getPointerLockEscapeCaptureUntilMs: () => pointerLockEscapeCaptureUntilMs,
+    setPointerLockEscapeCaptureUntilMs: (value: number) => {
+      pointerLockEscapeCaptureUntilMs = value;
+    },
+  };
 }
 
 async function resolveJwt(token?: string): Promise<string> {
@@ -585,274 +434,6 @@ async function showSessionConflictDialog(): Promise<SessionConflictChoice> {
     dialog,
     getMainWindow: () => mainWindow,
   });
-}
-
-const THANKS_CONTRIBUTORS_URL =
-  "https://api.github.com/repos/OpenCloudGaming/OpenNOW/contributors?per_page=100";
-const THANKS_SUPPORTERS_URL = "https://github.com/sponsors/zortos293";
-const THANKS_REQUEST_HEADERS = {
-  Accept: "application/vnd.github+json",
-  "User-Agent": "OpenNOW-DesktopClient",
-} as const;
-const THANKS_EXCLUDED_PATTERN = /(copilot|claude|cappy)/i;
-const THANKS_FETCH_TIMEOUT_MS = 8000;
-const THANKS_CUSTOM_SUPPORTERS: readonly ThankYouSupporter[] = [
-  {
-    name: "DarkevilPT",
-    avatarUrl: "https://github.com/DarkevilPT.png?size=96",
-    profileUrl: "https://github.com/DarkevilPT",
-    isPrivate: false,
-    source: "custom",
-  },
-] as const;
-
-interface GitHubContributorResponse {
-  login?: string;
-  avatar_url?: string;
-  html_url?: string;
-  contributions?: number;
-  type?: string;
-  name?: string | null;
-}
-
-function decodeHtmlEntities(value: string): string {
-  return value
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-}
-
-function stripHtml(value: string): string {
-  return decodeHtmlEntities(value.replace(/<[^>]+>/g, " "))
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const decoded = decodeHtmlEntities(value.trim());
-  if (!decoded) return undefined;
-  if (decoded.startsWith("//")) return `https:${decoded}`;
-  if (decoded.startsWith("/")) return `https://github.com${decoded}`;
-  return decoded;
-}
-
-function shouldExcludeContributor(
-  contributor: GitHubContributorResponse,
-): boolean {
-  const login = contributor.login?.trim() ?? "";
-  const name = contributor.name?.trim() ?? "";
-  if (!login || !contributor.avatar_url || !contributor.html_url) return true;
-  if (contributor.type === "Bot") return true;
-  if (/\[bot\]$/i.test(login)) return true;
-  if (THANKS_EXCLUDED_PATTERN.test(login) || THANKS_EXCLUDED_PATTERN.test(name))
-    return true;
-  return false;
-}
-
-async function fetchThanksContributors(): Promise<ThankYouContributor[]> {
-  const response = await fetchWithTimeout(
-    THANKS_CONTRIBUTORS_URL,
-    { headers: THANKS_REQUEST_HEADERS },
-    THANKS_FETCH_TIMEOUT_MS,
-    "GitHub contributors request",
-  );
-  if (!response.ok) {
-    throw new Error(`GitHub contributors request failed (${response.status})`);
-  }
-
-  const payload = (await withTimeout(
-    response.json() as Promise<GitHubContributorResponse[]>,
-    THANKS_FETCH_TIMEOUT_MS,
-    "GitHub contributors response",
-  )) as GitHubContributorResponse[];
-  if (!Array.isArray(payload)) {
-    throw new Error("GitHub contributors response was not an array");
-  }
-
-  const contributors = payload
-    .filter((contributor) => !shouldExcludeContributor(contributor))
-    .map((contributor) => ({
-      login: contributor.login!.trim(),
-      avatarUrl: contributor.avatar_url!,
-      profileUrl: contributor.html_url!,
-      contributions:
-        typeof contributor.contributions === "number"
-          ? contributor.contributions
-          : 0,
-    }))
-    .sort(
-      (a, b) =>
-        b.contributions - a.contributions || a.login.localeCompare(b.login),
-    );
-  return contributors;
-}
-
-function parseSupporterName(entryHtml: string): {
-  name: string;
-  isPrivate: boolean;
-} {
-  const privateHrefMatch = entryHtml.match(
-    /href="https:\/\/docs\.github\.com\/sponsors\/sponsoring-open-source-contributors\/managing-your-sponsorship#managing-the-privacy-setting-for-your-sponsorship"/i,
-  );
-  const privateTooltipMatch = entryHtml.match(
-    /<tool-tip[^>]*>\s*Private Sponsor\s*<\/tool-tip>/i,
-  );
-  const privateAriaMatch = entryHtml.match(/aria-label="Private Sponsor"/i);
-  if (privateHrefMatch || privateTooltipMatch || privateAriaMatch) {
-    return { name: "Private", isPrivate: true };
-  }
-
-  const altMatch = entryHtml.match(/<img[^>]+alt="([^"]+)"/i);
-  const altText = altMatch ? stripHtml(altMatch[1]) : "";
-  const normalizedAlt = altText.replace(/^@/, "").trim();
-  if (normalizedAlt) {
-    return { name: normalizedAlt, isPrivate: false };
-  }
-
-  const ariaMatch = entryHtml.match(/aria-label="([^"]+)"/i);
-  const ariaText = ariaMatch ? stripHtml(ariaMatch[1]) : "";
-  const normalizedAria = ariaText.replace(/^@/, "").trim();
-  if (normalizedAria && !/private sponsor/i.test(normalizedAria)) {
-    return { name: normalizedAria, isPrivate: false };
-  }
-
-  const hrefMatch = entryHtml.match(/<a[^>]+href="\/([^"/?#]+)"/i);
-  const normalizedHref = hrefMatch
-    ? decodeHtmlEntities(hrefMatch[1]).trim()
-    : "";
-  if (normalizedHref && !/sponsors/i.test(normalizedHref)) {
-    return { name: normalizedHref.replace(/^@/, ""), isPrivate: false };
-  }
-
-  return { name: "Private", isPrivate: true };
-}
-
-function parseSupportersFromHtml(html: string): ThankYouSupporter[] {
-  const sponsorsSectionMatch = html.match(
-    /<div class="tmp-mt-3 tmp-pb-4" id="sponsors">([\s\S]*?)<\/remote-pagination>/i,
-  );
-  if (!sponsorsSectionMatch) {
-    return [];
-  }
-
-  const listHtml = sponsorsSectionMatch[1];
-  const entryMatches =
-    listHtml.match(/<div class="d-flex mb-1 mr-1"[^>]*>[\s\S]*?<\/div>/gi) ??
-    [];
-  const supporters: ThankYouSupporter[] = [];
-  const seenKeys = new Set<string>();
-
-  for (const entryHtml of entryMatches) {
-    const { name, isPrivate } = parseSupporterName(entryHtml);
-    const hrefMatch = entryHtml.match(/<a[^>]+href="([^"]+)"/i);
-    const profileUrl = isPrivate ? undefined : normalizeUrl(hrefMatch?.[1]);
-    const avatarMatch = entryHtml.match(/<img[^>]+src="([^"]+)"/i);
-    const avatarUrl = normalizeUrl(avatarMatch?.[1]);
-    const dedupeKey = `${name}|${profileUrl ?? ""}|${avatarUrl ?? ""}`;
-    if (seenKeys.has(dedupeKey)) continue;
-    seenKeys.add(dedupeKey);
-    supporters.push({
-      name: name || "Private",
-      avatarUrl,
-      profileUrl,
-      isPrivate: isPrivate || !name,
-      source: isPrivate || !name ? "private" : "github",
-    });
-  }
-
-  return supporters;
-}
-
-function getSupporterDedupeKey(supporter: ThankYouSupporter): string {
-  const profileUrl = supporter.profileUrl?.trim().toLowerCase();
-  if (profileUrl) return `profile:${profileUrl}`;
-  return `name:${supporter.name.trim().toLowerCase()}|private:${supporter.isPrivate}`;
-}
-
-function mergeThanksSupporters(
-  ...supporterGroups: readonly (readonly ThankYouSupporter[])[]
-): ThankYouSupporter[] {
-  const supporters: ThankYouSupporter[] = [];
-  const seenKeys = new Set<string>();
-
-  for (const group of supporterGroups) {
-    for (const supporter of group) {
-      const dedupeKey = getSupporterDedupeKey(supporter);
-      if (seenKeys.has(dedupeKey)) continue;
-      seenKeys.add(dedupeKey);
-      supporters.push({ ...supporter });
-    }
-  }
-
-  return supporters;
-}
-
-async function fetchThanksSupporters(): Promise<ThankYouSupporter[]> {
-  const response = await fetchWithTimeout(
-    THANKS_SUPPORTERS_URL,
-    {
-      headers: {
-        ...THANKS_REQUEST_HEADERS,
-        Accept: "text/html,application/xhtml+xml",
-      },
-    },
-    THANKS_FETCH_TIMEOUT_MS,
-    "GitHub sponsors request",
-  );
-  if (!response.ok) {
-    throw new Error(`GitHub sponsors page request failed (${response.status})`);
-  }
-
-  const html = await withTimeout(
-    response.text(),
-    THANKS_FETCH_TIMEOUT_MS,
-    "GitHub sponsors response",
-  );
-  const supporters = parseSupportersFromHtml(html);
-  return supporters;
-}
-
-async function fetchThanksData(): Promise<ThankYouDataResult> {
-  const result: ThankYouDataResult = {
-    contributors: [],
-    supporters: [],
-  };
-
-  const [contributorsResult, supportersResult] = await Promise.allSettled([
-    fetchThanksContributors(),
-    fetchThanksSupporters(),
-  ]);
-
-  if (contributorsResult.status === "fulfilled") {
-    result.contributors = contributorsResult.value;
-  } else {
-    result.contributorsError =
-      contributorsResult.reason instanceof Error
-        ? contributorsResult.reason.message
-        : "Unable to load contributors right now.";
-  }
-
-  if (supportersResult.status === "fulfilled") {
-    result.supporters = mergeThanksSupporters(
-      THANKS_CUSTOM_SUPPORTERS,
-      supportersResult.value,
-    );
-    if (result.supporters.length === 0) {
-      result.supportersError =
-        "No public supporters were found on GitHub Sponsors.";
-    }
-  } else {
-    result.supporters = mergeThanksSupporters(THANKS_CUSTOM_SUPPORTERS);
-    result.supportersError =
-      supportersResult.reason instanceof Error
-        ? supportersResult.reason.message
-        : "Unable to load supporters right now.";
-  }
-
-  return result;
 }
 
 function registerIpcHandlers(): void {
@@ -881,365 +462,27 @@ function registerIpcHandlers(): void {
     getMainWindow: () => mainWindow,
   });
 
-  ipcMain.handle(IPC_CHANNELS.DISCORD_CLEAR_ACTIVITY, async () => {
-    void clearActivity();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.DISCORD_SET_ACTIVITY, async (_event, activity: DiscordActivityUpdate) => {
-    if (!settingsManager.get("discordRichPresence")) {
-      return;
-    }
-
-    void setActivity({
-      ...activity,
-      startTimestamp: activity.startTimestampMs ? new Date(activity.startTimestampMs) : undefined,
-    });
-  });
-
-  // Toggle fullscreen via IPC (for completeness)
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_FULLSCREEN, async () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const isFullScreen = mainWindow.isFullScreen();
-      const nextFullscreen = !isFullScreen;
-      mainWindow.setFullScreen(nextFullscreen);
-      rendererControlledFullscreen = nextFullscreen;
-    }
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.SET_FULLSCREEN,
-    async (_event, value: boolean) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        try {
-          const nextFullscreen = Boolean(value);
-          mainWindow.setFullScreen(nextFullscreen);
-          rendererControlledFullscreen = nextFullscreen;
-        } catch (err) {
-          console.warn("Failed to set fullscreen:", err);
-        }
-      }
-    },
-  );
-
-  // Toggle pointer lock via IPC (F8 shortcut)
-  ipcMain.handle(IPC_CHANNELS.TOGGLE_POINTER_LOCK, async () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("app:toggle-pointer-lock");
-    }
-  });
-
-  ipcMain.handle(IPC_CHANNELS.QUIT_APP, async () => {
-    requestAppShutdown({
-      reason: "renderer-explicit-exit",
-      forceExitFallback: true,
-    });
-  });
-
-  ipcMain.handle(IPC_CHANNELS.OPEN_EXTERNAL_URL, async (_event, url: string): Promise<void> => {
-    await openExternalHttpUrl(url);
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.DIRECT_LAUNCH_GET_PENDING,
-    async (): Promise<DirectLaunchRequest | null> => {
-      const request = pendingDirectLaunchRequest;
-      pendingDirectLaunchRequest = null;
-      return request;
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.APP_UPDATER_GET_STATE,
-    async (): Promise<AppUpdaterState> => {
-      const buildInfo = getAppBuildInfo();
-      return (
-        appUpdater?.getState() ?? {
-          status: "disabled",
-          currentVersion: buildInfo.version,
-          currentDisplayVersion: buildInfo.displayVersion,
-          currentBuildNumber: buildInfo.buildNumber,
-          updateSource: "github-releases",
-          canCheck: false,
-          canDownload: false,
-          canInstall: false,
-          isPackaged: app.isPackaged,
-          message: "Updater is unavailable.",
-        }
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.APP_UPDATER_CHECK,
-    async (): Promise<AppUpdaterState> => {
-      const buildInfo = getAppBuildInfo();
-      return (
-        appUpdater?.checkForUpdates("manual") ?? {
-          status: "disabled",
-          currentVersion: buildInfo.version,
-          currentDisplayVersion: buildInfo.displayVersion,
-          currentBuildNumber: buildInfo.buildNumber,
-          updateSource: "github-releases",
-          canCheck: false,
-          canDownload: false,
-          canInstall: false,
-          isPackaged: app.isPackaged,
-          message: "Updater is unavailable.",
-        }
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.APP_UPDATER_DOWNLOAD,
-    async (): Promise<AppUpdaterState> => {
-      const buildInfo = getAppBuildInfo();
-      return (
-        appUpdater?.downloadUpdate() ?? {
-          status: "disabled",
-          currentVersion: buildInfo.version,
-          currentDisplayVersion: buildInfo.displayVersion,
-          currentBuildNumber: buildInfo.buildNumber,
-          updateSource: "github-releases",
-          canCheck: false,
-          canDownload: false,
-          canInstall: false,
-          isPackaged: app.isPackaged,
-          message: "Updater is unavailable.",
-        }
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.APP_UPDATER_INSTALL,
-    async (): Promise<AppUpdaterState> => {
-      const buildInfo = getAppBuildInfo();
-      return (
-        appUpdater?.quitAndInstall() ?? {
-          status: "disabled",
-          currentVersion: buildInfo.version,
-          currentDisplayVersion: buildInfo.displayVersion,
-          currentBuildNumber: buildInfo.buildNumber,
-          updateSource: "github-releases",
-          canCheck: false,
-          canDownload: false,
-          canInstall: false,
-          isPackaged: app.isPackaged,
-          message: "Updater is unavailable.",
-        }
-      );
-    },
-  );
-
-  // Settings IPC handlers
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<Settings> => {
-    return settingsManager.getAll();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.CLIPBOARD_READ_TEXT, async (): Promise<string> => {
-    return clipboard.readText();
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.SETTINGS_SET,
-    async <K extends keyof Settings>(
-      _event: Electron.IpcMainInvokeEvent,
-      key: K,
-      value: Settings[K],
-    ) => {
-      settingsManager.set(key, value);
-      const appliedValue = settingsManager.get(key);
-      // React to certain setting changes immediately in main process
-      try {
-        if (key === "autoCheckForUpdates") {
-          appUpdater?.setAutomaticChecksEnabled(appliedValue as boolean);
-        }
-        signalingCoordinator?.applySettingsChange(key, appliedValue);
-        if (key === "discordRichPresence") {
-          if (appliedValue) {
-            void connectDiscordRpc().then(() => discordMonitor.start());
-          } else {
-            discordMonitor.stop();
-            void destroyDiscordRpc();
-          }
-        }
-      } catch (err) {
-        console.warn("Failed to apply setting change in main process:", err);
-      }
-    },
-  );
-
-  ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
-    const resetSettings = settingsManager.reset();
-    appUpdater?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
-    signalingCoordinator?.stopNativeStreamer("settings reset");
-    signalingCoordinator?.resetNativeStreamerContext();
-    return resetSettings;
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE,
-    async (): Promise<string | null> => {
-      const filters =
-        process.platform === "win32"
-          ? [
-              { name: "Executable", extensions: ["exe"] },
-              { name: "All Files", extensions: ["*"] },
-            ]
-          : [{ name: "All Files", extensions: ["*"] }];
-
-      const options: Electron.OpenDialogOptions = {
-        title: "Select OpenNOW streamer executable",
-        properties: ["openFile"],
-        filters,
-      };
-      const result =
-        mainWindow && !mainWindow.isDestroyed()
-          ? await dialog.showOpenDialog(mainWindow, options)
-          : await dialog.showOpenDialog(options);
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return null;
-      }
-      return result.filePaths[0] ?? null;
-    },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.MICROPHONE_PERMISSION_GET,
-    async (): Promise<MicrophonePermissionResult> => {
-      if (process.platform !== "darwin") {
-        return {
-          platform: process.platform,
-          isMacOs: false,
-          status: "not-applicable",
-          granted: false,
-          canRequest: false,
-          shouldUseBrowserApi: true,
-        };
-      }
-
-      const currentStatus =
-        systemPreferences.getMediaAccessStatus("microphone");
-      console.log("[Main] macOS microphone permission status:", currentStatus);
-
-      if (currentStatus === "granted") {
-        return {
-          platform: process.platform,
-          isMacOs: true,
-          status: "granted",
-          granted: true,
-          canRequest: false,
-          shouldUseBrowserApi: true,
-        };
-      }
-
-      if (currentStatus === "not-determined") {
-        const granted = await systemPreferences.askForMediaAccess("microphone");
-        const nextStatus = systemPreferences.getMediaAccessStatus("microphone");
-        console.log(
-          "[Main] Requested macOS microphone permission:",
-          granted,
-          nextStatus,
-        );
-        return {
-          platform: process.platform,
-          isMacOs: true,
-          status: nextStatus,
-          granted,
-          canRequest: nextStatus === "not-determined",
-          shouldUseBrowserApi: granted,
-        };
-      }
-
-      return {
-        platform: process.platform,
-        isMacOs: true,
-        status: currentStatus,
-        granted: false,
-        canRequest: false,
-        shouldUseBrowserApi: false,
-      };
-    },
-  );
-
-  // Logs export IPC handler
-  ipcMain.handle(
-    IPC_CHANNELS.LOGS_EXPORT,
-    async (_event, format: "text" | "json" = "text"): Promise<string> => {
-      return exportLogs(format);
-    },
-  );
-
-  registerMediaIpcHandlers({
+  registerCoreIpcHandlers({
     ipcMain,
+    app,
     dialog,
     shell,
+    clipboard,
+    systemPreferences,
+    settingsManager,
+    refreshScheduler,
     getMainWindow: () => mainWindow,
-  });
-
-  ipcMain.handle(IPC_CHANNELS.CACHE_REFRESH_MANUAL, async (): Promise<void> => {
-    await refreshScheduler.manualRefresh();
-  });
-
-  ipcMain.handle(IPC_CHANNELS.CACHE_DELETE_ALL, async (): Promise<void> => {
-    await cacheManager.deleteAll();
-    console.log("[IPC] Cache deletion completed successfully");
-  });
-
-  ipcMain.handle(
-    IPC_CHANNELS.COMMUNITY_GET_THANKS,
-    async (): Promise<ThankYouDataResult> => {
-      return fetchThanksData();
+    setRendererControlledFullscreen: (value) => {
+      rendererControlledFullscreen = value;
     },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.COMMUNITY_PROVISION_SESSION_PROXY,
-    async (): Promise<CommunityProxyProvisionResult> => {
-      return provisionZortosCommunityProxy();
+    getPendingDirectLaunchRequest: () => pendingDirectLaunchRequest,
+    setPendingDirectLaunchRequest: (request) => {
+      pendingDirectLaunchRequest = request;
     },
-  );
-
-  ipcMain.handle(
-    IPC_CHANNELS.PING_REGIONS,
-    async (_event, regions: StreamRegion[]): Promise<PingResult[]> => {
-      return pingRegions(regions);
-    },
-  );
-
-  // PrintedWaste queue API — fetched from main process so User-Agent can be set
-  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_QUEUE_FETCH, async () => {
-    return fetchPrintedWasteQueue(app.getVersion());
-  });
-
-  ipcMain.handle(IPC_CHANNELS.PRINTEDWASTE_SERVER_MAPPING_FETCH, async () => {
-    return fetchPrintedWasteServerMapping(app.getVersion());
-  });
-
-  // Release highlights IPC handlers
-  ipcMain.handle(
-    IPC_CHANNELS.RELEASE_HIGHLIGHTS_GET,
-    async (_event, version?: string): Promise<import("@shared/gfn").ReleaseHighlightsPayload> => {
-      const appVersion = normalizeReleaseVersion(app.getVersion()) ?? "0.0.0";
-      const targetVersion = normalizeReleaseVersion(version ?? appVersion) ?? appVersion;
-      return getReleaseHighlightsPayload(targetVersion);
-    },
-  );
-
-  ipcMain.handle(IPC_CHANNELS.RELEASE_HIGHLIGHTS_ACK, async (): Promise<void> => {
-    settingsManager.set("lastSeenReleaseHighlightsVersion", app.getVersion().replace(/^v/, ""));
-  });
-
-  // Save window size when it changes (skip fullscreen so the saved size
-  // stays meaningful for windowed launches, e.g. after console mode)
-  mainWindow?.on("resize", () => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFullScreen()) {
-      const [width, height] = mainWindow.getSize();
-      settingsManager.set("windowWidth", width);
-      settingsManager.set("windowHeight", height);
-    }
+    getAppUpdater: () => appUpdater,
+    getSignalingCoordinator: () => signalingCoordinator,
+    discordMonitor,
+    requestAppShutdown,
   });
 }
 
@@ -1366,7 +609,7 @@ app.whenReady().then(async () => {
 
   refreshScheduler.start();
 
-  await createMainWindow();
+  await createMainWindow(createMainWindowDeps());
   appUpdater.initialize();
 
   // Fire-and-forget: check if we should show release highlights after the window loads
@@ -1401,7 +644,7 @@ app.whenReady().then(async () => {
       return;
     }
     if (BrowserWindow.getAllWindows().length === 0) {
-      await createMainWindow();
+      await createMainWindow(createMainWindowDeps());
     }
   });
 });

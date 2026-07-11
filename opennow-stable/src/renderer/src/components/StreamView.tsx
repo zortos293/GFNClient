@@ -2,24 +2,33 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence } from "motion/react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Gamepad2, Gauge, Images, Keyboard, MousePointer2, SlidersHorizontal } from "lucide-react";
+import { Maximize, Minimize, Loader2, LogOut, Clock3, AlertTriangle, Mic, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Gamepad2, Gauge, Images, Keyboard, MousePointer2, SlidersHorizontal } from "lucide-react";
 import SideBar from "./SideBar";
 import { SessionStartedSplash } from "./SessionStartedSplash";
 import { StreamStatsHud } from "./StreamStatsHud";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
-import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
 import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
-import { VideoShaderPipeline } from "../gfn/videoShaderPipeline";
+import { VideoShaderPipeline } from "../platforms/gfn/videoShaderPipeline";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { addStreamShortcutActionListener } from "../streamShortcutActions";
 import { useMicMeter } from "../hooks/useMicMeter";
 import { formatElapsed } from "../utils/timeFormat";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
+import { formatFileSize, formatSessionTimeRemaining, formatWarningSeconds } from "./stream/streamFormatters";
+import { AntiAfkIndicator, MicrophoneIndicator, RecordingIndicator } from "./stream/StreamIndicators";
+import { StreamTitleBar } from "./stream/StreamTitleBar";
+import {
+  hasVisibleStreamVideo,
+  SidebarMicMutedBadge,
+  StreamEmptyState,
+  StreamWaitingForVideo,
+  VideoFocusOnReady,
+} from "./stream/StreamEmptyStates";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 const CONTROLLER_MENU_REPEAT_MS = 180;
@@ -95,311 +104,6 @@ interface StreamViewProps {
   allowEscapeToExitFullscreen?: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
-}
-
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatWarningSeconds(value: number | undefined): string | null {
-  if (value === undefined || !Number.isFinite(value) || value < 0) {
-    return null;
-  }
-  const total = Math.floor(value);
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  if (minutes > 0) {
-    return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
-  }
-  return `${seconds}s`;
-}
-
-function formatSessionTimeRemaining(value: number | null): string | null {
-  if (value === null || !Number.isFinite(value) || value < 0) {
-    return null;
-  }
-  return formatElapsed(value);
-}
-
-type MicBadgeState = {
-  connectedGamepads: number;
-  micState: MicState;
-  micEnabled: boolean;
-};
-
-function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean {
-  return (
-    prev.connectedGamepads === next.connectedGamepads &&
-    prev.micState === next.micState &&
-    prev.micEnabled === next.micEnabled
-  );
-}
-
-function MicrophoneIndicator({
-  diagnosticsStore,
-  showAntiAfkIndicator,
-  hideStreamButtons,
-  isConnecting,
-  onToggleMicrophone,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  showAntiAfkIndicator: boolean;
-  hideStreamButtons: boolean;
-  isConnecting: boolean;
-  onToggleMicrophone?: () => void;
-}): JSX.Element | null {
-  const { connectedGamepads, micState, micEnabled } = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats): MicBadgeState => ({
-      connectedGamepads: stats.connectedGamepads,
-      micState: stats.micState ?? "uninitialized",
-      micEnabled: stats.micEnabled ?? false,
-    }),
-    isMicBadgeStateEqual,
-  );
-  const hasMicrophone = micState === "started" || micState === "stopped";
-  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons;
-
-  if (!showMicIndicator || !onToggleMicrophone) {
-    return null;
-  }
-
-  return (
-    <button
-      type="button"
-      className={`sv-mic${connectedGamepads > 0 || showAntiAfkIndicator ? " sv-mic--stacked" : ""}`}
-      onClick={onToggleMicrophone}
-      data-enabled={micEnabled}
-      title={micEnabled ? "Mute microphone" : "Unmute microphone"}
-      aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
-      aria-pressed={micEnabled}
-    >
-      {micEnabled ? <Mic size={18} /> : <MicOff size={18} />}
-    </button>
-  );
-}
-
-function AntiAfkIndicator({
-  diagnosticsStore,
-  antiAfkEnabled,
-  showAntiAfkIndicator,
-  isConnecting,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  antiAfkEnabled: boolean;
-  showAntiAfkIndicator: boolean;
-  isConnecting: boolean;
-}): JSX.Element | null {
-  const hasGamepad = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.connectedGamepads > 0,
-  );
-
-  if (!antiAfkEnabled || !showAntiAfkIndicator || isConnecting) {
-    return null;
-  }
-
-  return (
-    <div className={`sv-afk${hasGamepad ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
-      <span className="sv-afk-dot" />
-      <span className="sv-afk-label">ANTI-AFK ON</span>
-    </div>
-  );
-}
-
-function RecordingIndicator({
-  diagnosticsStore,
-  showAntiAfkIndicator,
-  hideStreamButtons,
-  isConnecting,
-  isRecording,
-  onToggleMicrophone,
-  recordingDurationMs,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  showAntiAfkIndicator: boolean;
-  hideStreamButtons: boolean;
-  isConnecting: boolean;
-  isRecording: boolean;
-  onToggleMicrophone?: () => void;
-  recordingDurationMs: number;
-}): JSX.Element | null {
-  const { connectedGamepads, micState } = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => ({
-      connectedGamepads: stats.connectedGamepads,
-      micState: stats.micState ?? "uninitialized",
-    }),
-    (prev, next) => prev.connectedGamepads === next.connectedGamepads && prev.micState === next.micState,
-  );
-  const hasMicrophone = micState === "started" || micState === "stopped";
-  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons && Boolean(onToggleMicrophone);
-  const stackedBadges = [connectedGamepads > 0, showAntiAfkIndicator, showMicIndicator].filter(Boolean).length;
-
-  if (!isRecording || isConnecting) {
-    return null;
-  }
-
-  return (
-    <div
-      className="sv-rec"
-      style={{ top: 14 + 42 * stackedBadges }}
-      title={`Recording · ${formatElapsed(Math.round(recordingDurationMs / 1000))}`}
-    >
-      <span className="sv-rec-dot" />
-      <span className="sv-rec-label">REC {formatElapsed(Math.round(recordingDurationMs / 1000))}</span>
-    </div>
-  );
-}
-
-function StreamTitleBar({
-  diagnosticsStore,
-  gameTitle,
-  platformName,
-  PlatformIcon,
-  showHints,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  gameTitle: string;
-  platformName: string;
-  PlatformIcon: (() => JSX.Element) | null;
-  showHints: boolean;
-}): JSX.Element | null {
-  const hasResolution = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.nativeRendererActive || stats.resolution !== "",
-  );
-
-  if (!hasResolution || !showHints) {
-    return null;
-  }
-
-  return (
-    <div className="sv-title-bar">
-      <span className="sv-title-game">{gameTitle}</span>
-      {PlatformIcon && (
-        <span className="sv-title-platform" title={platformName}>
-          <span className="sv-title-platform-icon">
-            <PlatformIcon />
-          </span>
-          <span>{platformName}</span>
-        </span>
-      )}
-    </div>
-  );
-}
-
-function hasVisibleStreamVideo(stats: {
-  nativeRendererActive: boolean;
-  framesDecoded: number;
-  resolution: string;
-}): boolean {
-  if (stats.nativeRendererActive) {
-    return true;
-  }
-  return stats.framesDecoded > 0;
-}
-
-function StreamEmptyState({
-  diagnosticsStore,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-}): JSX.Element | null {
-  const hasVisibleVideo = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => hasVisibleStreamVideo(stats),
-  );
-
-  if (hasVisibleVideo) {
-    return null;
-  }
-
-  return (
-    <div className="sv-empty">
-      <div className="sv-empty-grad" />
-    </div>
-  );
-}
-
-function StreamWaitingForVideo({
-  diagnosticsStore,
-  isConnecting,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  isConnecting: boolean;
-}): JSX.Element | null {
-  const { t } = useTranslation();
-  const waitingForFirstFrame = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => {
-      if (stats.nativeRendererActive || stats.framesDecoded > 0) {
-        return false;
-      }
-      return stats.connectionState === "connected" || stats.resolution !== "";
-    },
-  );
-
-  if (isConnecting || !waitingForFirstFrame) {
-    return null;
-  }
-
-  return (
-    <div className="sv-warm" role="status" aria-live="polite">
-      <Loader2 className="sv-warm-spin" size={34} />
-      <p className="sv-warm-text">{t("stream.stats.waitingForVideo")}</p>
-    </div>
-  );
-}
-
-function SidebarMicMutedBadge({
-  diagnosticsStore,
-  micTrack,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  micTrack?: MediaStreamTrack | null;
-}): JSX.Element | null {
-  const micEnabled = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.micEnabled ?? false,
-  );
-
-  if (!micTrack || micEnabled) {
-    return null;
-  }
-
-  return <span className="settings-value-badge">Muted</span>;
-}
-
-function VideoFocusOnReady({
-  diagnosticsStore,
-  isConnecting,
-  videoRef,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  isConnecting: boolean;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-}): null {
-  const shouldFocusVideo = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.resolution !== "" && !stats.nativeRendererActive,
-  );
-
-  useEffect(() => {
-    if (!isConnecting && videoRef.current && shouldFocusVideo) {
-      const timer = window.setTimeout(() => {
-        if (videoRef.current && document.activeElement !== videoRef.current) {
-          videoRef.current.focus({ preventScroll: true });
-          console.log("[StreamView] Focused video element");
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [isConnecting, shouldFocusVideo, videoRef]);
-
-  return null;
 }
 
 export function StreamView({

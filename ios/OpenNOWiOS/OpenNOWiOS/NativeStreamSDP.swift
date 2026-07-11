@@ -54,17 +54,86 @@ enum NativeStreamSDP {
     }
 
     static func fixServerIP(in sdp: String, serverIP: String?) -> String {
-        guard let ip = extractPublicIP(from: serverIP) else { return sdp }
+        fixServerEndpoint(
+            in: sdp,
+            serverIP: serverIP,
+            mediaIP: nil,
+            mediaPort: 0
+        )
+    }
+
+    static func fixServerEndpoint(
+        in sdp: String,
+        serverIP: String?,
+        mediaIP: String?,
+        mediaPort: Int
+    ) -> String {
+        guard let signalingIP = extractPublicIP(from: serverIP) else { return sdp }
+        let resolvedMediaIP = extractPublicIP(from: mediaIP) ?? signalingIP
+        let resolvedMediaPort = (1...65_535).contains(mediaPort) ? mediaPort : nil
+        let hasMediaEndpoint = mediaIP?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            && mediaPort > 0
         let lineEnding = sdp.contains("\r\n") ? "\r\n" : "\n"
         let lines = sdp.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false)
+        let candidatePattern = try? NSRegularExpression(
+            pattern: #"^(a=candidate:\S+\s+\d+\s+\w+\s+\d+\s+)([^\s]+)\s+(\d+)(\s+)"#
+        )
         let rewritten = lines.map { rawLine -> String in
             let line = String(rawLine)
-            if line.hasPrefix("a=candidate:") {
-                return line.replacingOccurrences(of: " 0.0.0.0 ", with: " \(ip) ")
+            if line.hasPrefix("c=IN IP4 ") {
+                let address = String(line.dropFirst("c=IN IP4 ".count))
+                return shouldRewriteRemoteEndpoint(address, hasMediaEndpoint: hasMediaEndpoint)
+                    ? "c=IN IP4 \(resolvedMediaIP)"
+                    : line
             }
-            return line
+            guard line.hasPrefix("a=candidate:"),
+                  let candidatePattern,
+                  let match = candidatePattern.firstMatch(
+                      in: line,
+                      range: NSRange(line.startIndex..<line.endIndex, in: line)
+                  ),
+                  let prefixRange = Range(match.range(at: 1), in: line),
+                  let addressRange = Range(match.range(at: 2), in: line),
+                  let portRange = Range(match.range(at: 3), in: line),
+                  let spacingRange = Range(match.range(at: 4), in: line),
+                  shouldRewriteRemoteEndpoint(
+                      String(line[addressRange]),
+                      hasMediaEndpoint: hasMediaEndpoint
+                  ) else {
+                return line
+            }
+            let suffixStart = spacingRange.upperBound
+            let port = resolvedMediaPort.map(String.init) ?? String(line[portRange])
+            return "\(line[prefixRange])\(resolvedMediaIP) \(port)\(line[spacingRange])\(line[suffixStart...])"
         }
         return rewritten.joined(separator: lineEnding)
+    }
+
+    private static func shouldRewriteRemoteEndpoint(_ address: String, hasMediaEndpoint: Bool) -> Bool {
+        guard let octets = parseIPv4Address(address) else { return false }
+        if octets.allSatisfy({ $0 == 0 }) {
+            return true
+        }
+        guard hasMediaEndpoint else { return false }
+        return octets[0] == 127
+            || octets[0] == 10
+            || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+            || (octets[0] == 169 && octets[1] == 254)
+            || (224...239).contains(octets[0])
+            || (octets[0] == 100 && (64...127).contains(octets[1]))
+    }
+
+    private static func parseIPv4Address(_ address: String) -> [Int]? {
+        let parts = address.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        let octets = parts.compactMap { part -> Int? in
+            guard !part.isEmpty, part.allSatisfy(\.isNumber), let value = Int(part), (0...255).contains(value) else {
+                return nil
+            }
+            return value
+        }
+        return octets.count == 4 ? octets : nil
     }
 
     static func extractIceCredentials(from sdp: String) -> NativeStreamIceCredentials {

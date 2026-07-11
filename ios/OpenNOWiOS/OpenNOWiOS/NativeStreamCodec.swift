@@ -617,7 +617,7 @@ enum NativeStreamSelfTest {
         a=fingerprint:sha-256 AA:BB
         """
         let fixed = NativeStreamSDP.fixServerIP(in: sampleOffer, serverIP: "1-2-3-4.foo")
-        assertSelfTest(fixed.contains("a=candidate:1 1 udp 2130706431 1.2.3.4 49003 typ host") && fixed.contains("c=IN IP4 0.0.0.0"), "candidate IP rewrite", failures: &failures)
+        assertSelfTest(fixed.contains("a=candidate:1 1 udp 2130706431 1.2.3.4 49003 typ host") && fixed.contains("c=IN IP4 1.2.3.4"), "candidate IP rewrite", failures: &failures)
         assertSelfTest(NativeStreamSDP.parseInputProtocolVersion(from: sampleOffer) == 3, "input protocol parse", failures: &failures)
         assertSelfTest(NativeStreamSDP.parsePartialReliableThresholdMs(from: sampleOffer) == 45, "partial reliable parse", failures: &failures)
         let preferred = NativeStreamSDP.preferCodec(in: sampleOffer, codec: .h265, preferTenBit: false)

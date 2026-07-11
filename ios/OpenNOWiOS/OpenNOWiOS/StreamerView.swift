@@ -2394,7 +2394,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func prepareRemoteOffer(_ offerSDP: String) -> String {
-        var prepared = NativeStreamSDP.fixServerIP(in: offerSDP, serverIP: session.mediaIp)
+        var prepared = NativeStreamSDP.fixServerEndpoint(
+            in: offerSDP,
+            serverIP: session.serverIp,
+            mediaIP: session.mediaIp,
+            mediaPort: session.mediaPort
+        )
         guard selectedCodec == .h265 else { return prepared }
 
         let maxLevels = h265ReceiverMaxLevelsByProfile()

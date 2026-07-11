@@ -3,6 +3,70 @@ import UIKit
 @testable import OpenNOWiOS
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    func testPlaceholderSDPEndpointsUseSignalingEndpointWithoutMediaMetadata() {
+        let offer = remoteOffer(address: "0.0.0.0", port: 47_998)
+
+        let fixed = NativeStreamSDP.fixServerIP(
+            in: offer,
+            serverIP: "66-22-131-132.cloudmatchbeta.nvidiagrid.net"
+        )
+
+        XCTAssertTrue(fixed.contains("c=IN IP4 66.22.131.132"))
+        XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 66.22.131.132 47998 typ host"))
+    }
+
+    func testPrivateSDPEndpointsUseCloudMatchMediaEndpoint() {
+        let offer = remoteOffer(address: "10.0.175.0", port: 47_998)
+
+        let fixed = NativeStreamSDP.fixServerEndpoint(
+            in: offer,
+            serverIP: "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+            mediaIP: "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+            mediaPort: 14_317
+        )
+
+        XCTAssertTrue(fixed.contains("c=IN IP4 183.78.14.231"))
+        XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 14317 typ host"))
+    }
+
+    func testPrivateSDPEndpointsStayAdvertisedWithoutMediaMetadata() {
+        let offer = remoteOffer(address: "10.0.175.0", port: 47_998)
+
+        let fixed = NativeStreamSDP.fixServerIP(
+            in: offer,
+            serverIP: "183-78-14-231.yes.geforcenow.nvidiagrid.net"
+        )
+
+        XCTAssertEqual(fixed, offer)
+    }
+
+    func testCarrierGradeNATSDPEndpointsUseCloudMatchMediaEndpoint() {
+        let offer = remoteOffer(address: "100.96.10.4", port: 47_998)
+
+        let fixed = NativeStreamSDP.fixServerEndpoint(
+            in: offer,
+            serverIP: "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+            mediaIP: "183.78.14.231",
+            mediaPort: 19_353
+        )
+
+        XCTAssertTrue(fixed.contains("c=IN IP4 183.78.14.231"))
+        XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 19353 typ host"))
+    }
+
+    func testPublicSDPEndpointsStayOnAdvertisedEndpoint() {
+        let offer = remoteOffer(address: "203.0.113.10", port: 47_998)
+
+        let fixed = NativeStreamSDP.fixServerEndpoint(
+            in: offer,
+            serverIP: "183-78-14-231.yes.geforcenow.nvidiagrid.net",
+            mediaIP: "183.78.14.231",
+            mediaPort: 19_353
+        )
+
+        XCTAssertEqual(fixed, offer)
+    }
+
     func testAndroidInputHandshakeIsAppliedAndPrimesReliableChannel() {
         let bridge = NativeStreamInputBridge()
         let sink = RecordingNativeStreamInputSink()
@@ -15,6 +79,16 @@ final class OpenNOWiOSParityTests: XCTestCase {
         let packetCount = sink.reliablePackets.count
         XCTAssertNil(bridge.handleServerHandshake(Data([0xff, 0x00])))
         XCTAssertEqual(sink.reliablePackets.count, packetCount)
+    }
+
+    private func remoteOffer(address: String, port: Int) -> String {
+        """
+        v=0
+        c=IN IP4 \(address)
+        m=video \(port) UDP/TLS/RTP/SAVPF 96
+        a=candidate:1 1 udp 2122260223 \(address) \(port) typ host generation 0
+        a=rtpmap:96 H264/90000
+        """
     }
 
     func testNvstRequestMatchesAndroidStartupAndPacingContract() {
@@ -195,6 +269,37 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(fallback.preferredColorQuality, StreamColorQuality.eightBit420.rawValue)
         XCTAssertFalse(fallback.hdrEnabled)
         XCTAssertFalse(fallback.enableCloudGsync)
+    }
+
+    func testInternalSessionProfileRejectionRetriesOnlyWithAChangedSafeProfile() {
+        let rejection = NSError(
+            domain: "OpenNOW.Session",
+            code: 400,
+            userInfo: [NSLocalizedDescriptionKey: #"{"requestStatus":{"statusCode":4,"statusDescription":"INTERNAL_ERROR_STATUS 8A8C0000"}}"#]
+        )
+        var unsafeSettings = AppSettings.default
+        unsafeSettings.preferredCodec = "AV1"
+        unsafeSettings.preferredColorQuality = StreamColorQuality.tenBit444.rawValue
+        unsafeSettings.enableCloudGsync = true
+
+        XCTAssertTrue(
+            SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
+                error: rejection,
+                settings: unsafeSettings
+            )
+        )
+        XCTAssertFalse(
+            SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
+                error: rejection,
+                settings: unsafeSettings.safeVideoFallback()
+            )
+        )
+        XCTAssertFalse(
+            SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
+                error: NSError(domain: "OpenNOW.Session", code: 500),
+                settings: unsafeSettings
+            )
+        )
     }
 
     func testCloudGameDecodesLegacyCachedPayloadWithoutNewCatalogFields() throws {

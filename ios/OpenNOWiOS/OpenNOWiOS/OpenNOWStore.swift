@@ -425,6 +425,17 @@ enum StreamColorQuality: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum SessionLaunchRecoveryPolicy {
+    static func shouldRetryWithSafeVideoProfile(error: Error, settings: AppSettings) -> Bool {
+        let error = error as NSError
+        guard error.domain == "OpenNOW.Session", error.code == 400 else { return false }
+        guard error.localizedDescription.localizedCaseInsensitiveContains("INTERNAL_ERROR_STATUS") else {
+            return false
+        }
+        return settings.safeVideoFallback() != settings
+    }
+}
+
 enum StreamPreset: String, Codable, CaseIterable, Identifiable {
     case custom
     case lowDataSaver = "low_data_saver"
@@ -6016,7 +6027,7 @@ final class OpenNOWStore: ObservableObject {
                 ($0.appId == nil || $0.appId?.isEmpty == true) && $0.status == 1
             }
 
-            let started: ActiveSession
+            var started: ActiveSession
             if let readyCandidate {
                 started = try await api.claimSession(
                     session: refreshed,
@@ -6068,21 +6079,39 @@ final class OpenNOWStore: ObservableObject {
                         logger.warning("Could not stop stale session before relaunch id=\(staleLaunchCandidate.id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                     }
                 }
-                started = try await api.startSession(
-                    session: refreshed,
-                    game: game,
-                    vpcId: cachedVpcId,
-                    settings: launchSettings,
-                    streamProfile: StreamSettingsResolver.profile(
-                        for: launchSettings,
-                        membershipTier: subscription?.membershipTier ?? user?.membershipTier
-                    ),
-                    streamingBaseUrl: baseUrl,
-                    launchAppIdOverride: launchAppId,
-                    launcherName: effectiveLaunchOption?.storefront ?? "Auto",
-                    deviceId: deviceId,
-                    accountLinked: shouldSendAccountLinked(game: game, launchOption: effectiveLaunchOption)
-                )
+                func startNewSession(using settings: AppSettings) async throws -> ActiveSession {
+                    try await api.startSession(
+                        session: refreshed,
+                        game: game,
+                        vpcId: cachedVpcId,
+                        settings: settings,
+                        streamProfile: StreamSettingsResolver.profile(
+                            for: settings,
+                            membershipTier: subscription?.membershipTier ?? user?.membershipTier
+                        ),
+                        streamingBaseUrl: baseUrl,
+                        launchAppIdOverride: launchAppId,
+                        launcherName: effectiveLaunchOption?.storefront ?? "Auto",
+                        deviceId: deviceId,
+                        accountLinked: shouldSendAccountLinked(game: game, launchOption: effectiveLaunchOption)
+                    )
+                }
+                do {
+                    started = try await startNewSession(using: launchSettings)
+                } catch {
+                    guard SessionLaunchRecoveryPolicy.shouldRetryWithSafeVideoProfile(
+                        error: error,
+                        settings: launchSettings
+                    ) else {
+                        throw error
+                    }
+                    let rejectedSettings = launchSettings
+                    launchSettings = launchSettings.safeVideoFallback()
+                    logger.notice(
+                        "GFN rejected the requested video profile; retrying safely requestedCodec=\(rejectedSettings.preferredCodec, privacy: .public) requestedColor=\(rejectedSettings.preferredColorQuality, privacy: .public) safeResolution=\(launchSettings.preferredResolution, privacy: .public)"
+                    )
+                    started = try await startNewSession(using: launchSettings)
+                }
             }
             activeSession = started
             activeStreamSettings = launchSettings

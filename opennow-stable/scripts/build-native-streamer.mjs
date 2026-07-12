@@ -128,6 +128,28 @@ function formatCandidateSources(candidates) {
   return candidates.map((candidate) => candidate.source).join(", ") || "none";
 }
 
+function configureGstreamerPluginDiscovery(env, sdkRoot) {
+  const pluginDir = join(sdkRoot, "lib", "gstreamer-1.0");
+  const scanner = join(
+    sdkRoot,
+    "libexec",
+    "gstreamer-1.0",
+    process.platform === "win32" ? "gst-plugin-scanner.exe" : "gst-plugin-scanner",
+  );
+
+  if (isExistingDirectory(pluginDir)) {
+    env.GST_PLUGIN_PATH = pluginDir;
+    env.GST_PLUGIN_PATH_1_0 = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH_1_0 = pluginDir;
+  }
+  if (isExistingFile(scanner)) {
+    env.GST_PLUGIN_SCANNER = scanner;
+    env.GST_PLUGIN_SCANNER_1_0 = scanner;
+  }
+  env.GST_REGISTRY_REUSE_PLUGIN_SCANNER = "no";
+}
+
 function configureGstreamerSdk(env) {
   if (process.platform === "win32") {
     const candidates = existingConfiguredCandidates([
@@ -158,6 +180,9 @@ function configureGstreamerSdk(env) {
     env.PKG_CONFIG = sdk.pkgConfigBinary;
     env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
     prependEnvPath(env, join(sdk.root, "bin"));
+    // The Windows MSI supports a custom INSTALLDIR, but a native executable outside
+    // the SDK cannot reliably infer that relocated plugin directory from its own path.
+    configureGstreamerPluginDiscovery(env, sdk.root);
     console.log(`Configured GStreamer SDK from ${sdk.source}.`);
     console.log("Configured pkg-config executable for GStreamer SDK.");
     return sdk.root;

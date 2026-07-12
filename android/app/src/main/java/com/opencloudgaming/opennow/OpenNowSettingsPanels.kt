@@ -1265,12 +1265,14 @@ internal fun StreamStatsStyle.next(): StreamStatsStyle =
 internal val StreamStatsPosition.label: String
     get() = when (this) {
         StreamStatsPosition.Left -> "Left"
+        StreamStatsPosition.Center -> "Center"
         StreamStatsPosition.Right -> "Right"
     }
 
 internal fun StreamStatsPosition.next(): StreamStatsPosition =
     when (this) {
-        StreamStatsPosition.Left -> StreamStatsPosition.Right
+        StreamStatsPosition.Left -> StreamStatsPosition.Center
+        StreamStatsPosition.Center -> StreamStatsPosition.Right
         StreamStatsPosition.Right -> StreamStatsPosition.Left
     }
 

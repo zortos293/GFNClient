@@ -2611,7 +2611,9 @@ private fun GameGrid(
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
-                    settings = settings,
+                    expressiveUi = settings.expressiveUi,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                    showGameStoreLabels = settings.showGameStoreLabels,
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
@@ -2720,7 +2722,9 @@ private fun StoreGameGrid(
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
-                    settings = settings,
+                    expressiveUi = settings.expressiveUi,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                    showGameStoreLabels = settings.showGameStoreLabels,
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
@@ -3005,7 +3009,8 @@ private fun StoreRailSection(
                 StoreRailGameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
-                    settings = settings,
+                    expressiveUi = settings.expressiveUi,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
                     width = cardWidth,
                     controllerActionMode = controllerActionMode,
                     onSelect = onSelect,
@@ -3023,7 +3028,8 @@ private fun StoreRailSection(
 private fun StoreRailGameCard(
     game: GameInfo,
     favorite: Boolean,
-    settings: AppSettings,
+    expressiveUi: Boolean,
+    controllerBackgroundAnimations: Boolean,
     width: Dp,
     controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
@@ -3033,11 +3039,11 @@ private fun StoreRailGameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val shape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
+    val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     val actionButtonSize = 34.dp
     val focusBorderColor = controllerFocusBorderColor(
         active = focused && controllerActionMode,
-        animate = settings.controllerBackgroundAnimations,
+        animate = controllerBackgroundAnimations,
     )
     Surface(
         modifier = Modifier
@@ -3083,11 +3089,7 @@ private fun StoreRailGameCard(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = 0.95f))
-                        )
-                    ),
+                    .background(GameCardOverlayGradient),
                 contentAlignment = Alignment.BottomStart
             ) {
                 Text(
@@ -3119,8 +3121,8 @@ private fun StoreRailGameCard(
                 )
             }
             ControllerFocusSheen(
-                visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
-                cornerRadius = if (settings.expressiveUi) 12.dp else 8.dp,
+                visible = focused && controllerActionMode && controllerBackgroundAnimations,
+                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
             )
         }
     }
@@ -3346,7 +3348,9 @@ private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp, minimumCo
 private fun GameCard(
     game: GameInfo,
     favorite: Boolean,
-    settings: AppSettings,
+    expressiveUi: Boolean,
+    controllerBackgroundAnimations: Boolean,
+    showGameStoreLabels: Boolean,
     cardHeight: androidx.compose.ui.unit.Dp,
     squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
@@ -3358,13 +3362,13 @@ private fun GameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val cardShape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
+    val cardShape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     val launcherTile = squareCard && thumbnailPlayOverlay
     val overlayActionSize = if (launcherTile) 34.dp else 44.dp
     val overlayActionPadding = if (launcherTile) 6.dp else 8.dp
     val focusBorderColor = controllerFocusBorderColor(
         active = focused && controllerActionMode,
-        animate = settings.controllerBackgroundAnimations,
+        animate = controllerBackgroundAnimations,
     )
     Card(
         modifier = Modifier
@@ -3396,7 +3400,7 @@ private fun GameCard(
             }
             .focusable(),
         colors = CardDefaults.cardColors(
-            containerColor = if (settings.expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
+            containerColor = if (expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = if (focused) 8.dp else 0.dp),
         shape = cardShape,
@@ -3410,11 +3414,7 @@ private fun GameCard(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = 0.95f))
-                        )
-                    ),
+                    .background(GameCardOverlayGradient),
                 contentAlignment = Alignment.BottomStart
             ) {
                 Text(
@@ -3456,8 +3456,8 @@ private fun GameCard(
                 )
             }
             ControllerFocusSheen(
-                visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
-                cornerRadius = if (settings.expressiveUi) 12.dp else 8.dp,
+                visible = focused && controllerActionMode && controllerBackgroundAnimations,
+                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
             )
         }
         if (!thumbnailPlayOverlay) {
@@ -3467,7 +3467,7 @@ private fun GameCard(
                     .padding(9.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                if (settings.showGameStoreLabels) {
+                if (showGameStoreLabels) {
                     Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
                 }
             }
@@ -9217,3 +9217,7 @@ internal val ColorQuality.label: String
         ColorQuality.TenBit420 -> "10-bit 4:2:0"
         ColorQuality.TenBit444 -> "10-bit 4:4:4"
     }
+
+private val GameCardOverlayGradient = Brush.verticalGradient(
+    colors = listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = 0.95f))
+)

@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import kotlinx.serialization.Serializable
+import androidx.compose.runtime.Immutable
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
@@ -770,6 +771,7 @@ val AccountConnector.isLinked: Boolean
         !syncState.isNullOrBlank() ||
         !syncDate.isNullOrBlank()
 
+@Immutable
 @Serializable
 data class GameVariant(
     val id: String,
@@ -781,6 +783,7 @@ data class GameVariant(
     val gfnStatus: String? = null,
 )
 
+@Immutable
 @Serializable
 data class GameInfo(
     val id: String,

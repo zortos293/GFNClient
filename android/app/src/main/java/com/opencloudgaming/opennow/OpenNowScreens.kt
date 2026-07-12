@@ -104,6 +104,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -147,6 +149,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.FocusRequester
@@ -3824,7 +3827,7 @@ private fun GameDetailsLandscapeContent(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f).height(48.dp)) {
                         Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     LongPressPlayButton(
@@ -3930,7 +3933,7 @@ private fun GameDetailsScrollableContent(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f).height(48.dp)) {
                     Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 LongPressPlayButton(
@@ -4818,7 +4821,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
         controlsOpen = true
     }
-    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen
+    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen || touchLayoutEditing
     val externalMousePassthroughActive = streamReady && !streamOverlayOpen
     val handleStreamBack = {
         when {
@@ -4887,7 +4890,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, streamOverlayOpen, streamGuideOpen, streamGuideStep) {
+    LaunchedEffect(streamReady, streamOverlayOpen, streamGuideOpen, streamGuideStep, touchLayoutEditing) {
         NativeStreamInputRouter.setStreamUiActive(streamReady && streamOverlayOpen)
         NativeStreamInputRouter.setSystemMenuHandler {
             openControlsForGuide()
@@ -5062,22 +5065,58 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     touch = state.settings.androidTouch.copy(enabled = true),
                     onButtonTone = playButtonTone,
                     layoutEditing = touchLayoutEditing,
-                    onLeftOffsetChange = { x, y ->
-                        viewModel.updateSettings(
-                            state.settings.copy(
-                                androidTouch = state.settings.androidTouch.copy(leftOffsetXDp = x, leftOffsetYDp = y),
-                            ),
-                        )
-                    },
-                    onRightOffsetChange = { x, y ->
-                        viewModel.updateSettings(
-                            state.settings.copy(
-                                androidTouch = state.settings.androidTouch.copy(rightOffsetXDp = x, rightOffsetYDp = y),
-                            ),
-                        )
+                    onSaveAllOffsets = { allOffsets ->
+                        var touch = state.settings.androidTouch
+                        allOffsets.forEach { (key, offset) ->
+                            touch = touch.withOffset(key, offset.x, offset.y)
+                        }
+                        viewModel.updateSettings(state.settings.copy(androidTouch = touch))
                     },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
+            }
+            if (touchLayoutEditing) {
+                val doneButtonTone = playButtonTone
+                Box(
+                    Modifier
+                        .align(Alignment.Center)
+                        .zIndex(999f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Button(
+                        onClick = {
+                            doneButtonTone()
+                            touchLayoutEditing = false
+                        },
+                        shape = RoundedCornerShape(999.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
+                        modifier = Modifier.pointerInteropFilter { event ->
+                            if (event.action == MotionEvent.ACTION_UP ||
+                                event.action == MotionEvent.ACTION_DOWN
+                            ) {
+                                false // let Button's click handling still work
+                            } else {
+                                false
+                            }
+                        },
+                    ) {
+                        Icon(
+                            Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Done",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
             }
             if (streamGuideOpen) {
                 AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
@@ -5237,12 +5276,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onTouchLayoutReset = {
                         viewModel.updateSettings(
                             state.settings.copy(
-                                androidTouch = state.settings.androidTouch.copy(
-                                    leftOffsetXDp = 0f,
-                                    leftOffsetYDp = 0f,
-                                    rightOffsetXDp = 0f,
-                                    rightOffsetYDp = 0f,
-                                )
+                                androidTouch = state.settings.androidTouch.withResetOffsets()
                             )
                         )
                     },
@@ -7863,8 +7897,7 @@ private fun TouchOverlay(
     touch: AndroidTouchSettings,
     onButtonTone: () -> Unit,
     layoutEditing: Boolean,
-    onLeftOffsetChange: (Float, Float) -> Unit,
-    onRightOffsetChange: (Float, Float) -> Unit,
+    onSaveAllOffsets: (Map<String, TouchOffset>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val opacity = touch.opacity
@@ -7872,23 +7905,32 @@ private fun TouchOverlay(
     val buttonScale = touch.buttonScale
     val stickScale = touch.stickScale
 
-    var localLeftOffsetX by remember(touch.leftOffsetXDp) { mutableFloatStateOf(touch.leftOffsetXDp) }
-    var localLeftOffsetY by remember(touch.leftOffsetYDp) { mutableFloatStateOf(touch.leftOffsetYDp) }
-    var localRightOffsetX by remember(touch.rightOffsetXDp) { mutableFloatStateOf(touch.rightOffsetXDp) }
-    var localRightOffsetY by remember(touch.rightOffsetYDp) { mutableFloatStateOf(touch.rightOffsetYDp) }
+    val localOffsets = remember(touch.offsets) {
+        androidx.compose.runtime.mutableStateMapOf<String, TouchOffset>().apply {
+            putAll(touch.offsets)
+        }
+    }
 
-    val currentLocalLeftX by rememberUpdatedState(localLeftOffsetX)
-    val currentLocalLeftY by rememberUpdatedState(localLeftOffsetY)
-    val currentLocalRightX by rememberUpdatedState(localRightOffsetX)
-    val currentLocalRightY by rememberUpdatedState(localRightOffsetY)
-    val currentOnLeftOffsetChange by rememberUpdatedState(onLeftOffsetChange)
-    val currentOnRightOffsetChange by rememberUpdatedState(onRightOffsetChange)
+    fun getLocalOffset(key: String): TouchOffset {
+        val saved = localOffsets[key]
+        if (saved != null) return saved
+        return when (key) {
+            "lt", "lb", "lstick", "dpad", "l3" -> TouchOffset(touch.leftOffsetXDp, touch.leftOffsetYDp)
+            "rt", "rb", "rstick", "face", "r3" -> TouchOffset(touch.rightOffsetXDp, touch.rightOffsetYDp)
+            else -> TouchOffset()
+        }
+    }
 
+    val onLocalOffsetChange = { key: String, x: Float, y: Float ->
+        localOffsets[key] = TouchOffset(x, y)
+    }
+
+    val currentLocalOffsets by rememberUpdatedState(localOffsets.toMap())
+    val currentOnSaveAllOffsets by rememberUpdatedState(onSaveAllOffsets)
     DisposableEffect(layoutEditing) {
         onDispose {
             if (layoutEditing) {
-                currentOnLeftOffsetChange(currentLocalLeftX, currentLocalLeftY)
-                currentOnRightOffsetChange(currentLocalRightX, currentLocalRightY)
+                currentOnSaveAllOffsets(currentLocalOffsets)
             }
         }
     }
@@ -7926,19 +7968,9 @@ private fun TouchOverlay(
                     stickScale = stickScale,
                     viewportHeight = maxHeight,
                     layoutEditing = layoutEditing,
-                    leftOffsetX = localLeftOffsetX.dp,
-                    leftOffsetY = localLeftOffsetY.dp,
-                    rightOffsetX = localRightOffsetX.dp,
-                    rightOffsetY = localRightOffsetY.dp,
+                    getLocalOffset = ::getLocalOffset,
+                    onLocalOffsetChange = onLocalOffsetChange,
                     onButtonTone = onButtonTone,
-                    onLeftOffsetChange = { x, y ->
-                        localLeftOffsetX = x
-                        localLeftOffsetY = y
-                    },
-                    onRightOffsetChange = { x, y ->
-                        localRightOffsetX = x
-                        localRightOffsetY = y
-                    }
                 )
             } else {
                 PortraitTouchControls(
@@ -7948,19 +7980,9 @@ private fun TouchOverlay(
                     buttonScale = buttonScale,
                     stickScale = stickScale,
                     layoutEditing = layoutEditing,
-                    leftOffsetX = localLeftOffsetX.dp,
-                    leftOffsetY = localLeftOffsetY.dp,
-                    rightOffsetX = localRightOffsetX.dp,
-                    rightOffsetY = localRightOffsetY.dp,
+                    getLocalOffset = ::getLocalOffset,
+                    onLocalOffsetChange = onLocalOffsetChange,
                     onButtonTone = onButtonTone,
-                    onLeftOffsetChange = { x, y ->
-                        localLeftOffsetX = x
-                        localLeftOffsetY = y
-                    },
-                    onRightOffsetChange = { x, y ->
-                        localRightOffsetX = x
-                        localRightOffsetY = y
-                    }
                 )
             }
         }
@@ -7975,107 +7997,181 @@ private fun PortraitTouchControls(
     buttonScale: Float,
     stickScale: Float,
     layoutEditing: Boolean,
-    leftOffsetX: Dp,
-    leftOffsetY: Dp,
-    rightOffsetX: Dp,
-    rightOffsetY: Dp,
+    getLocalOffset: (String) -> TouchOffset,
+    onLocalOffsetChange: (String, Float, Float) -> Unit,
     onButtonTone: () -> Unit,
-    onLeftOffsetChange: (Float, Float) -> Unit,
-    onRightOffsetChange: (Float, Float) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.Bottom,
+    val leftStickDiameter = 116.dp * stickScale * layoutScale
+    val rightStickDiameter = 104.dp * stickScale * layoutScale
+    val buttonSize48 = 48.dp * buttonScale * layoutScale
+    val buttonSize44 = 44.dp * buttonScale * layoutScale
+    val faceWidth = buttonSize48 * 2.44f
+
+    Box(
+        Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)
     ) {
         TouchControlGroup(
-            id = "portrait-left",
+            id = "portrait-lb",
             layoutEditing = layoutEditing,
-            offsetX = leftOffsetX,
-            offsetY = leftOffsetY,
-            onOffsetChange = onLeftOffsetChange,
+            offsetX = getLocalOffset("lb").x.dp,
+            offsetY = getLocalOffset("lb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
+            modifier = Modifier.align(Alignment.TopStart),
         ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.Start,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("LB", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
-                    GamepadTriggerButton(
-                        label = "LT",
-                        left = true,
-                        client = client,
-                        opacity = opacity,
-                        size = 48.dp * buttonScale * layoutScale,
-                        width = 48.dp * buttonScale * layoutScale,
-                        onPressTone = onButtonTone,
-                    )
-                }
-                Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    StickWithThumbButton(
-                        stickLabel = "L",
-                        thumbLabel = "L3",
-                        thumbMask = GamepadButtonMapping.LEFT_THUMB,
-                        client = client,
-                        opacity = opacity,
-                        diameter = 116.dp * stickScale * layoutScale,
-                        buttonScale = buttonScale * layoutScale,
-                        onButtonTone = onButtonTone,
-                        onChange = client::setVirtualLeftStick,
-                    )
-                    DpadCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
-                }
-            }
+            GamepadButton("LB", 0x0100, client, opacity, buttonSize48, onButtonTone)
         }
+
         TouchControlGroup(
-            id = "portrait-right",
+            id = "portrait-lt",
             layoutEditing = layoutEditing,
-            offsetX = rightOffsetX,
-            offsetY = rightOffsetY,
-            onOffsetChange = onRightOffsetChange,
+            offsetX = getLocalOffset("lt").x.dp,
+            offsetY = getLocalOffset("lt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lt", x, y) },
+            modifier = Modifier.align(Alignment.TopStart).padding(start = buttonSize48 + 8.dp),
         ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.End,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadTriggerButton(
-                        label = "RT",
-                        left = false,
-                        client = client,
-                        opacity = opacity,
-                        size = 48.dp * buttonScale * layoutScale,
-                        width = 48.dp * buttonScale * layoutScale,
-                        onPressTone = onButtonTone,
-                    )
-                    GamepadButton("RB", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("◀", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale, onButtonTone)
-                    GamepadButton("▶", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale, onButtonTone)
-                }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    StickWithThumbButton(
-                        stickLabel = "R",
-                        thumbLabel = "R3",
-                        thumbMask = GamepadButtonMapping.RIGHT_THUMB,
-                        client = client,
-                        opacity = opacity,
-                        diameter = 104.dp * stickScale * layoutScale,
-                        buttonScale = buttonScale * layoutScale,
-                        onButtonTone = onButtonTone,
-                        onChange = client::setVirtualRightStick,
-                    )
-                    FaceButtonCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
-                }
-            }
+            GamepadTriggerButton(
+                label = "LT",
+                left = true,
+                client = client,
+                opacity = opacity,
+                size = buttonSize48,
+                onPressTone = onButtonTone,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-lstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lstick").x.dp,
+            offsetY = getLocalOffset("lstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart),
+        ) {
+            VirtualStick(
+                label = "L",
+                client = client,
+                opacity = opacity,
+                diameter = leftStickDiameter,
+                onChange = client::setVirtualLeftStick,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-l3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("l3").x.dp,
+            offsetY = getLocalOffset("l3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("l3", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(
+                start = (leftStickDiameter - buttonSize48) / 2,
+                bottom = leftStickDiameter + 6.dp
+            ),
+        ) {
+            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, opacity, buttonSize48, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-dpad",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("dpad").x.dp,
+            offsetY = getLocalOffset("dpad").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("dpad", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = leftStickDiameter + 12.dp),
+        ) {
+            DpadCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-rt",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rt").x.dp,
+            offsetY = getLocalOffset("rt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rt", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(end = buttonSize48 + 8.dp),
+        ) {
+            GamepadTriggerButton(
+                label = "RT",
+                left = false,
+                client = client,
+                opacity = opacity,
+                size = buttonSize48,
+                onPressTone = onButtonTone,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-rb",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rb").x.dp,
+            offsetY = getLocalOffset("rb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd),
+        ) {
+            GamepadButton("RB", 0x0200, client, opacity, buttonSize48, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-select",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("select").x.dp,
+            offsetY = getLocalOffset("select").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("select", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = buttonSize48 + 8.dp, end = buttonSize44 + 8.dp),
+        ) {
+            GamepadButton("◀", 0x0020, client, opacity, buttonSize44, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-start",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("start").x.dp,
+            offsetY = getLocalOffset("start").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("start", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = buttonSize48 + 8.dp),
+        ) {
+            GamepadButton("▶", 0x0010, client, opacity, buttonSize44, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-rstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rstick").x.dp,
+            offsetY = getLocalOffset("rstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 12.dp),
+        ) {
+            VirtualStick(
+                label = "R",
+                client = client,
+                opacity = opacity,
+                diameter = rightStickDiameter,
+                onChange = client::setVirtualRightStick,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-r3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("r3").x.dp,
+            offsetY = getLocalOffset("r3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("r3", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(
+                end = faceWidth + 12.dp + (rightStickDiameter - buttonSize48) / 2,
+                bottom = rightStickDiameter + 6.dp
+            ),
+        ) {
+            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, opacity, buttonSize48, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-face",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("face").x.dp,
+            offsetY = getLocalOffset("face").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("face", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd),
+        ) {
+            FaceButtonCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
         }
     }
 }
@@ -8089,124 +8185,187 @@ private fun BoxScope.LandscapeTouchControls(
     stickScale: Float,
     viewportHeight: Dp,
     layoutEditing: Boolean,
-    leftOffsetX: Dp,
-    leftOffsetY: Dp,
-    rightOffsetX: Dp,
-    rightOffsetY: Dp,
+    getLocalOffset: (String) -> TouchOffset,
+    onLocalOffsetChange: (String, Float, Float) -> Unit,
     onButtonTone: () -> Unit,
-    onLeftOffsetChange: (Float, Float) -> Unit,
-    onRightOffsetChange: (Float, Float) -> Unit,
 ) {
     val controlScale = buttonScale * layoutScale
     val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, controlScale).dp
     Box(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp)) {
-    TouchControlGroup(
-        id = "landscape-top-left",
-        layoutEditing = layoutEditing,
-        offsetX = leftOffsetX,
-        offsetY = leftOffsetY,
-        onOffsetChange = onLeftOffsetChange,
-        modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        TouchControlGroup(
+            id = "landscape-lt",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lt").x.dp,
+            offsetY = getLocalOffset("lt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lt", x, y) },
+            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance),
+        ) {
             GamepadTriggerButton(
                 label = "LT",
                 left = true,
                 client = client,
                 opacity = opacity,
                 size = 54.dp * controlScale,
-                width = 54.dp * controlScale,
                 onPressTone = onButtonTone,
             )
+        }
+
+        TouchControlGroup(
+            id = "landscape-lb",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lb").x.dp,
+            offsetY = getLocalOffset("lb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
+            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance, start = 54.dp * controlScale + 10.dp),
+        ) {
             GamepadButton("LB", 0x0100, client, opacity, 54.dp * controlScale, onButtonTone)
         }
-    }
-    TouchControlGroup(
-        id = "landscape-bottom-center",
-        layoutEditing = false,
-        offsetX = 0.dp,
-        offsetY = 0.dp,
-        onOffsetChange = { _, _ -> },
-        modifier = Modifier.align(Alignment.BottomCenter),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(54.dp)) {
-            GamepadButton("◀", 0x0020, client, opacity, 42.dp * controlScale, onButtonTone)
-            GamepadButton("▶", 0x0010, client, opacity, 42.dp * controlScale, onButtonTone)
+
+        val selectSize = 42.dp * controlScale
+        TouchControlGroup(
+            id = "landscape-select",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("select").x.dp,
+            offsetY = getLocalOffset("select").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("select", x, y) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(end = selectSize / 2 + 27.dp),
+        ) {
+            GamepadButton("◀", 0x0020, client, opacity, selectSize, onButtonTone)
         }
-    }
-    TouchControlGroup(
-        id = "landscape-top-right",
-        layoutEditing = layoutEditing,
-        offsetX = rightOffsetX,
-        offsetY = rightOffsetY,
-        onOffsetChange = onRightOffsetChange,
-        modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+
+        TouchControlGroup(
+            id = "landscape-start",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("start").x.dp,
+            offsetY = getLocalOffset("start").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("start", x, y) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(start = selectSize / 2 + 27.dp),
+        ) {
+            GamepadButton("▶", 0x0010, client, opacity, selectSize, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "landscape-rb",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rb").x.dp,
+            offsetY = getLocalOffset("rb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance, end = 54.dp * controlScale + 10.dp),
+        ) {
             GamepadButton("RB", 0x0200, client, opacity, 54.dp * controlScale, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "landscape-rt",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rt").x.dp,
+            offsetY = getLocalOffset("rt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rt", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance),
+        ) {
             GamepadTriggerButton(
                 label = "RT",
                 left = false,
                 client = client,
                 opacity = opacity,
                 size = 54.dp * controlScale,
-                width = 54.dp * controlScale,
                 onPressTone = onButtonTone,
             )
         }
-    }
-    TouchControlGroup(
-        id = "landscape-bottom-left",
-        layoutEditing = layoutEditing,
-        offsetX = leftOffsetX,
-        offsetY = leftOffsetY,
-        onOffsetChange = onLeftOffsetChange,
-        modifier = Modifier.align(Alignment.BottomStart),
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.Bottom,
+
+        val dpadScale = controlScale * 0.88f
+        val dpadButtonSize = 54.dp * dpadScale
+        val dpadWidth = dpadButtonSize * 2.44f
+        TouchControlGroup(
+            id = "landscape-dpad",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("dpad").x.dp,
+            offsetY = getLocalOffset("dpad").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("dpad", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart),
         ) {
-            DpadCluster(client, opacity, controlScale * 0.88f, onButtonTone)
-            StickWithThumbButton(
-                stickLabel = "L",
-                thumbLabel = "L3",
-                thumbMask = GamepadButtonMapping.LEFT_THUMB,
+            DpadCluster(client, opacity, dpadScale, onButtonTone)
+        }
+
+        val leftStickDiameter = 112.dp * stickScale * layoutScale
+        TouchControlGroup(
+            id = "landscape-lstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lstick").x.dp,
+            offsetY = getLocalOffset("lstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = dpadWidth + 14.dp),
+        ) {
+            VirtualStick(
+                label = "L",
                 client = client,
                 opacity = opacity,
-                diameter = 112.dp * stickScale * layoutScale,
-                buttonScale = controlScale * 0.88f,
-                onButtonTone = onButtonTone,
+                diameter = leftStickDiameter,
                 onChange = client::setVirtualLeftStick,
             )
         }
-    }
-    TouchControlGroup(
-        id = "landscape-bottom-right",
-        layoutEditing = layoutEditing,
-        offsetX = rightOffsetX,
-        offsetY = rightOffsetY,
-        onOffsetChange = onRightOffsetChange,
-        modifier = Modifier.align(Alignment.BottomEnd),
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.Bottom,
+
+        val l3Size = 54.dp * controlScale
+        TouchControlGroup(
+            id = "landscape-l3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("l3").x.dp,
+            offsetY = getLocalOffset("l3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("l3", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(
+                start = dpadWidth + 14.dp + (leftStickDiameter - l3Size) / 2,
+                bottom = leftStickDiameter + 6.dp
+            ),
         ) {
-            StickWithThumbButton(
-                stickLabel = "R",
-                thumbLabel = "R3",
-                thumbMask = GamepadButtonMapping.RIGHT_THUMB,
+            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, opacity, l3Size, onButtonTone)
+        }
+
+        val faceScale = controlScale * 0.9f
+        val faceButtonSize = 54.dp * faceScale
+        val faceWidth = faceButtonSize * 2.44f
+        val rightStickDiameter = 112.dp * stickScale * layoutScale
+        TouchControlGroup(
+            id = "landscape-rstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rstick").x.dp,
+            offsetY = getLocalOffset("rstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 14.dp),
+        ) {
+            VirtualStick(
+                label = "R",
                 client = client,
                 opacity = opacity,
-                diameter = 112.dp * stickScale * layoutScale,
-                buttonScale = controlScale * 0.9f,
-                onButtonTone = onButtonTone,
+                diameter = rightStickDiameter,
                 onChange = client::setVirtualRightStick,
             )
-            FaceButtonCluster(client, opacity, controlScale * 0.9f, onButtonTone)
         }
-    }
+
+        val r3Size = 54.dp * controlScale
+        TouchControlGroup(
+            id = "landscape-r3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("r3").x.dp,
+            offsetY = getLocalOffset("r3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("r3", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(
+                end = faceWidth + 14.dp + (rightStickDiameter - r3Size) / 2,
+                bottom = rightStickDiameter + 6.dp
+            ),
+        ) {
+            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, opacity, r3Size, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "landscape-face",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("face").x.dp,
+            offsetY = getLocalOffset("face").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("face", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd),
+        ) {
+            FaceButtonCluster(client, opacity, faceScale, onButtonTone)
+        }
     }
 }
 
@@ -8393,28 +8552,43 @@ private fun VirtualStick(
 
 @Composable
 private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GamepadButton("Y", 0x8000, client, opacity, 54.dp * scale, onButtonTone)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            GamepadButton("X", 0x4000, client, opacity, 54.dp * scale, onButtonTone)
-            Spacer(Modifier.size(54.dp * scale))
-            GamepadButton("B", 0x2000, client, opacity, 54.dp * scale, onButtonTone)
+    val buttonSize = 54.dp * scale
+    val distance = buttonSize * 1.05f
+    val boxSize = distance * 2 + buttonSize
+    Box(Modifier.size(boxSize)) {
+        Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
+            GamepadButton("Y", 0x8000, client, opacity, buttonSize, onButtonTone)
         }
-        GamepadButton("A", 0x1000, client, opacity, 54.dp * scale, onButtonTone)
+        Box(Modifier.align(Alignment.Center).offset(y = distance)) {
+            GamepadButton("A", 0x1000, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
+            GamepadButton("X", 0x4000, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = distance)) {
+            GamepadButton("B", 0x2000, client, opacity, buttonSize, onButtonTone)
+        }
     }
 }
 
 @Composable
 private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
     val buttonSize = 54.dp * scale
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GamepadButton("^", 0x0001, client, opacity, buttonSize, onButtonTone)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    val distance = buttonSize * 1.05f
+    val boxSize = distance * 2 + buttonSize
+    Box(Modifier.size(boxSize)) {
+        Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
+            GamepadButton("^", 0x0001, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(y = distance)) {
+            GamepadButton("v", 0x0002, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
             GamepadButton("<", 0x0004, client, opacity, buttonSize, onButtonTone)
-            Spacer(Modifier.size(buttonSize))
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = distance)) {
             GamepadButton(">", 0x0008, client, opacity, buttonSize, onButtonTone)
         }
-        GamepadButton("v", 0x0002, client, opacity, buttonSize, onButtonTone)
     }
 }
 
@@ -8425,7 +8599,6 @@ private fun GamepadTriggerButton(
     client: NativeStreamClient,
     opacity: Float,
     size: androidx.compose.ui.unit.Dp,
-    width: androidx.compose.ui.unit.Dp = size * 1.24f,
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
@@ -8434,11 +8607,10 @@ private fun GamepadTriggerButton(
     val borderColor = Color.White.copy(alpha = opacity * 0.4f)
     Box(
         Modifier
-            .width(width)
-            .height(size * 0.78f)
-            .clip(RoundedCornerShape(999.dp))
+            .size(size)
+            .clip(CircleShape)
             .background(if (pressed) pressedColor else buttonColor)
-            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
+            .border(1.dp, borderColor, CircleShape)
             .pointerInput(client, left) {
                 awaitPointerEventScope {
                     while (true) {

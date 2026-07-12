@@ -187,6 +187,12 @@ class SettingsStore(context: Context) {
                 leftOffsetYDp = androidTouch.leftOffsetYDp.coerceIn(-160f, 160f),
                 rightOffsetXDp = androidTouch.rightOffsetXDp.coerceIn(-220f, 220f),
                 rightOffsetYDp = androidTouch.rightOffsetYDp.coerceIn(-160f, 160f),
+                offsets = androidTouch.offsets.mapValues { (_, offset) ->
+                    TouchOffset(
+                        x = offset.x.coerceIn(-320f, 320f),
+                        y = offset.y.coerceIn(-320f, 320f)
+                    )
+                },
             ),
             streamIntroMusic = streamIntroMusic,
             queueReadyMusic = queueReadyMusic,

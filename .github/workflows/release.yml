@@ -539,16 +539,7 @@ jobs:
 
       - name: Verify macOS code signatures
         if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          app_path=
-          app_count=0
-          while IFS= read -r path; do
-            app_path="$path"
-            app_count=$((app_count + 1))
-          done < <(find dist-release -type d -name OpenNOW.app -prune)
-          [ "$app_count" -eq 1 ] || { echo "Expected one packaged OpenNOW.app, found $app_count" >&2; exit 1; }
-          codesign --verify --deep --strict --verbose=2 "$app_path"
+        run: codesign --verify --deep --strict --verbose=2 dist-release/mac*/OpenNOW.app
 
       - name: Rename macOS update feed
         if: matrix.arch == 'arm64'

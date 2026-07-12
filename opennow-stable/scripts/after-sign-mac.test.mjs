@@ -6,7 +6,7 @@ import test from "node:test";
 
 import afterSign from "./after-sign-mac.mjs";
 
-test("re-signs only the outer macOS app bundle", async () => {
+test("re-signs only the outer macOS app bundle", { skip: process.platform !== "darwin" }, async () => {
   const root = await mkdtemp(join(tmpdir(), "opennow-after-sign-"));
   const binDir = join(root, "bin");
   const argsFile = join(root, "codesign-args");
@@ -16,7 +16,7 @@ test("re-signs only the outer macOS app bundle", async () => {
   try {
     await mkdir(binDir);
     await mkdir(join(appOutDir, "OpenNOW.app"), { recursive: true });
-    await writeFile(join(binDir, "codesign"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$CODESIGN_ARGS_FILE"\n');
+    await writeFile(join(binDir, "codesign"), '#!/bin/sh\nprintf "%s\\n" "$@" >> "$CODESIGN_ARGS_FILE"\n');
     await chmod(join(binDir, "codesign"), 0o755);
     process.env.PATH = `${binDir}:${process.env.PATH}`;
     process.env.CODESIGN_ARGS_FILE = argsFile;
@@ -30,6 +30,7 @@ test("re-signs only the outer macOS app bundle", async () => {
     });
 
     const args = (await readFile(argsFile, "utf8")).trim().split("\n");
+    assert.equal(args.length, 6);
     assert.equal(args.includes("--deep"), false);
     assert.deepEqual(args.slice(0, 4), ["--force", "--sign", "-", "--requirements"]);
     assert.equal(args[4], '=designated => identifier "com.zortos.opennow.stable"');

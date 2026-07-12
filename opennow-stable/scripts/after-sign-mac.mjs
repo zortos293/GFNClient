@@ -1,15 +1,40 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 const NESTED_CODE_BUNDLE_EXTENSIONS = [".app", ".appex", ".bundle", ".framework", ".xpc"];
+const MACH_O_MAGICS = new Set([
+  0xfeedface,
+  0xfeedfacf,
+  0xcafebabe,
+  0xcafebabf,
+  0xbebafeca,
+  0xbfbafeca,
+  0xcffaedfe,
+  0xcefaedfe,
+]);
 
 function isNestedCodeBundle(path) {
   return NESTED_CODE_BUNDLE_EXTENSIONS.some((extension) => path.endsWith(extension));
 }
 
-async function collectNestedCodeBundles(root) {
-  const bundles = [];
+async function isMachO(path) {
+  let file;
+  try {
+    file = await open(path, "r");
+    const header = Buffer.allocUnsafe(4);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    return bytesRead === header.length && MACH_O_MAGICS.has(header.readUInt32BE(0));
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  } finally {
+    await file?.close();
+  }
+}
+
+async function collectNestedCodeObjects(root) {
+  const codeObjects = [];
 
   async function walk(directory) {
     let entries;
@@ -21,19 +46,22 @@ async function collectNestedCodeBundles(root) {
     }
 
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
       const path = join(directory, entry.name);
-      await walk(path);
-      if (isNestedCodeBundle(path)) bundles.push(path);
+      if (entry.isDirectory()) {
+        await walk(path);
+        if (isNestedCodeBundle(path)) codeObjects.push(path);
+      } else if (entry.isFile() && await isMachO(path)) {
+        codeObjects.push(path);
+      }
     }
   }
 
   await walk(root);
-  return bundles;
+  return codeObjects;
 }
 
-function hasCodeSignature(path) {
-  return spawnSync("codesign", ["--display", "--verbose=0", path], {
+function hasValidCodeSignature(path) {
+  return spawnSync("codesign", ["--verify", "--strict", path], {
     stdio: "ignore",
   }).status === 0;
 }
@@ -42,16 +70,16 @@ function adHocSign(path, extraArgs = []) {
   execFileSync("codesign", ["--force", "--sign", "-", ...extraArgs, path]);
 }
 
-export async function signUnsignedMacApp(
+export async function signMacAppPreservingValidSignatures(
   appPath,
   bundleId,
-  { isSigned = hasCodeSignature, sign = adHocSign } = {},
+  { isSignatureValid = hasValidCodeSignature, sign = adHocSign } = {},
 ) {
-  // Ad-hoc sign only unsigned nested bundles, deepest first. This makes unsigned
-  // Electron distributions valid without replacing real signatures on helpers,
-  // frameworks, extensions, or plug-ins.
-  for (const nestedBundle of await collectNestedCodeBundles(join(appPath, "Contents"))) {
-    if (!isSigned(nestedBundle)) sign(nestedBundle);
+  // Sign nested Mach-O binaries and bundles inside-out. Valid signatures are
+  // preserved; unsigned or invalidated code (for example after relocation) gets
+  // a fresh ad-hoc signature before its containing bundle is signed.
+  for (const codeObject of await collectNestedCodeObjects(join(appPath, "Contents"))) {
+    if (!isSignatureValid(codeObject)) sign(codeObject);
   }
 
   sign(appPath, ["--requirements", `=designated => identifier "${bundleId}"`]);
@@ -64,5 +92,5 @@ export default async function afterSign({ appOutDir, packager }) {
   const appPath = join(appOutDir, `${packager.appInfo.productFilename}.app`);
   const bundleId = packager.appInfo.id;
 
-  await signUnsignedMacApp(appPath, bundleId);
+  await signMacAppPreservingValidSignatures(appPath, bundleId);
 }

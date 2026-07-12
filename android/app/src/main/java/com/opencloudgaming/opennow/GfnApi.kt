@@ -71,6 +71,9 @@ import kotlin.math.min
 private const val GFN_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173"
 private const val GFN_CLIENT_VERSION = "2.0.80.173"
+private const val GFN_BROWSER_USER_AGENT =
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
+private const val GFN_BROWSER_CLIENT_VERSION = "2.0.86.124"
 private const val LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab"
 private const val GFN_PLAY_ORIGIN = "https://play.geforcenow.com"
 private const val GFN_PLAY_REFERER = "https://play.geforcenow.com/"
@@ -200,37 +203,38 @@ private fun StreamSettings.requestProfile(): StreamRequestProfile {
 
 private fun monitorSettings(profile: StreamRequestProfile, fps: Int): JsonObject =
     buildJsonObject {
-        put("monitorId", 0)
-        put("positionX", 0)
-        put("positionY", 0)
         put("widthInPixels", profile.width)
         put("heightInPixels", profile.height)
         put("framesPerSecond", fps)
         put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
-        put("displayData", if (profile.hdrEnabled) hdrDisplayDataJson() else JsonNull)
-        put("hdr10PlusGamingData", JsonNull)
-        put("dpi", 100)
+        put(
+            "displayData",
+            if (profile.hdrEnabled) {
+                hdrDisplayDataJson()
+            } else {
+                buildJsonObject {
+                    put("desiredContentMaxLuminance", 0)
+                    put("desiredContentMinLuminance", 0)
+                    put("desiredContentMaxFrameAverageLuminance", 0)
+                }
+            },
+        )
+        put("dpi", 0)
     }
 
 private fun requestedStreamingFeatures(settings: StreamSettings, profile: StreamRequestProfile): JsonObject =
     buildJsonObject {
-        put("reflex", settings.enableCloudGsync || settings.fps >= 60)
+        put("reflex", false)
         put("bitDepth", profile.bitDepth)
         put("cloudGsync", settings.enableCloudGsync)
         put("enabledL4S", settings.enableL4S)
-        put("trueHdr", profile.hdrEnabled)
-        put("mouseMovementFlags", 0)
-        put("supportedHidDevices", 0)
         put("profile", 0)
         put("fallbackToLogicalResolution", false)
-        put("hidDevices", JsonNull)
         put("chromaFormat", profile.chroma)
         put("prefilterMode", 0)
         put("prefilterSharpness", 0)
         put("prefilterNoiseReduction", 0)
         put("hudStreamingMode", 0)
-        put("sdrColorSpace", 2)
-        put("hdrColorSpace", if (profile.hdrEnabled) 4 else 0)
     }
 
 private fun baseWebRtcSessionMetadata(): JsonArray = buildJsonArray {
@@ -242,15 +246,22 @@ private fun baseWebRtcSessionMetadata(): JsonArray = buildJsonArray {
     add(metadataEntry("surroundAudioInfo", "2"))
 }
 
-private fun webRtcSessionMetadata(settings: StreamSettings, profile: StreamRequestProfile): JsonArray = buildJsonArray {
+private fun webRtcSessionMetadata(
+    settings: StreamSettings,
+    profile: StreamRequestProfile,
+    physicalDisplayResolution: Pair<Int, Int>? = null,
+): JsonArray = buildJsonArray {
     baseWebRtcSessionMetadata().forEach { add(it) }
-    if (profile.width > 0 && profile.height > 0) {
+    val (physicalWidth, physicalHeight) = physicalDisplayResolution
+        ?.takeIf { (width, height) -> width > 0 && height > 0 }
+        ?: (profile.width to profile.height)
+    if (physicalWidth > 0 && physicalHeight > 0) {
         add(
             metadataEntry(
                 "clientPhysicalResolution",
                 buildJsonObject {
-                    put("horizontalPixels", profile.width)
-                    put("verticalPixels", profile.height)
+                    put("horizontalPixels", physicalWidth)
+                    put("verticalPixels", physicalHeight)
                 }.toString(),
             ),
         )
@@ -274,7 +285,12 @@ private fun JsonArray.metadataValue(key: String): String? =
             ?.takeIf(String::isNotBlank)
     }
 
-internal fun buildMinimalClaimRequestBody(appId: String, deviceId: String, settings: StreamSettings? = null): JsonObject {
+internal fun buildMinimalClaimRequestBody(
+    appId: String,
+    deviceId: String,
+    settings: StreamSettings? = null,
+    physicalDisplayResolution: Pair<Int, Int>? = null,
+): JsonObject {
     val profile = settings?.requestProfile()
     return buildJsonObject {
         put("action", 2)
@@ -288,27 +304,34 @@ internal fun buildMinimalClaimRequestBody(appId: String, deviceId: String, setti
             put("clientVersion", "30.0")
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
-            put("clientPlatformName", "windows")
+            put("clientPlatformName", "browser")
             if (settings != null && profile != null) {
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps))
                 }
             }
-            put("metaData", if (settings != null && profile != null) webRtcSessionMetadata(settings, profile) else baseWebRtcSessionMetadata())
+            put(
+                "metaData",
+                if (settings != null && profile != null) {
+                    webRtcSessionMetadata(settings, profile, physicalDisplayResolution)
+                } else {
+                    baseWebRtcSessionMetadata()
+                },
+            )
             put("surroundAudioInfo", 0)
             put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
             put("clientIdentification", "GFN-PC")
             put("parentSessionId", JsonNull)
             put("appId", appId.toIntOrNull() ?: 0)
             put("streamerVersion", 1)
-            put("appLaunchMode", 1)
+            put("appLaunchMode", 2)
             put("sdkVersion", "1.0")
             put("enhancedStreamMode", 1)
             put("useOps", true)
             put("clientDisplayHdrCapabilities", if (profile?.hdrEnabled == true) hdrCapabilitiesJson() else JsonNull)
             put("accountLinked", true)
             put("partnerCustomData", "")
-            put("enablePersistingInGameSettings", true)
+            put("enablePersistingInGameSettings", false)
             put("secureRTSPSupported", false)
             put("userAge", 26)
             if (settings != null && profile != null) {
@@ -537,18 +560,18 @@ private fun cloudMatchHeaders(
     includeOrigin: Boolean,
 ): Headers =
     Headers.Builder()
-        .add("User-Agent", GFN_USER_AGENT)
+        .add("User-Agent", GFN_BROWSER_USER_AGENT)
         .add("Authorization", gfnJwtAuthorization(token))
         .add("Content-Type", "application/json")
         .add("nv-browser-type", "CHROME")
         .add("nv-client-id", clientId)
-        .add("nv-client-streamer", "NVIDIA-CLASSIC")
-        .add("nv-client-type", "NATIVE")
-        .add("nv-client-version", GFN_CLIENT_VERSION)
+        .add("nv-client-streamer", "WEBRTC")
+        .add("nv-client-type", "BROWSER")
+        .add("nv-client-version", GFN_BROWSER_CLIENT_VERSION)
         .add("nv-device-make", "UNKNOWN")
         .add("nv-device-model", "UNKNOWN")
-        .add("nv-device-os", "WINDOWS")
-        .add("nv-device-type", "DESKTOP")
+        .add("nv-device-os", "ANDROID")
+        .add("nv-device-type", "PHONE")
         .add("x-device-id", deviceId)
         .apply {
             if (includeOrigin) {
@@ -2051,6 +2074,7 @@ data class GfnSessionDiagnosticResponse(
 class GfnSessionRepository(
     private val authStore: AuthStore,
     private val http: OkHttpClient = defaultHttpClient(),
+    private val physicalDisplayResolutionProvider: () -> Pair<Int, Int>? = { null },
     private val diagnosticsSink: (GfnSessionDiagnosticResponse) -> Unit = {},
 ) {
     suspend fun createSession(
@@ -2066,7 +2090,14 @@ class GfnSessionRepository(
         val clientId = UUID.randomUUID().toString()
         val deviceId = authStore.stableDeviceId()
         val base = resolveLaunchSessionBaseUrl(token, resolveStreamingBaseUrl(zone, streamingBaseUrl))
-        val body = buildSessionRequestBody(appId, internalTitle, settings, accountLinked, deviceId)
+        val body = buildSessionRequestBody(
+            appId = appId,
+            internalTitle = internalTitle,
+            settings = settings,
+            accountLinked = accountLinked,
+            deviceId = deviceId,
+            physicalDisplayResolution = physicalDisplayResolutionProvider(),
+        )
         val url = "$base/v2/session?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}"
         val host = Uri.parse(base).host.orEmpty()
         val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
@@ -2214,7 +2245,12 @@ class GfnSessionRepository(
         val validation = runCatching { OpenNowJson.parseToJsonElement(validationText).jsonObject }.getOrNull()
         val status = validation?.obj("session")?.int("status")
         if (status != 1) {
-            val claimBody = buildClaimRequestBody(active.appId.toString(), deviceId, settings)
+            val claimBody = buildClaimRequestBody(
+                appId = active.appId.toString(),
+                deviceId = deviceId,
+                settings = settings,
+                physicalDisplayResolution = physicalDisplayResolutionProvider(),
+            )
             val claimRequest = Request.Builder()
                 .url("$sessionBase/v2/session/${active.sessionId}?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}")
                 .headers(cloudMatchHeaders(token, clientId, deviceId, includeOrigin = true))
@@ -2334,6 +2370,7 @@ class GfnSessionRepository(
         settings: StreamSettings,
         accountLinked: Boolean,
         deviceId: String,
+        physicalDisplayResolution: Pair<Int, Int>?,
     ): JsonObject {
         val profile = settings.requestProfile()
         return buildJsonObject {
@@ -2348,32 +2385,37 @@ class GfnSessionRepository(
                 put("clientVersion", "30.0")
                 put("sdkVersion", "1.0")
                 put("streamerVersion", 1)
-                put("clientPlatformName", "windows")
+                put("clientPlatformName", "browser")
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps))
                 }
                 put("useOps", true)
                 put("audioMode", 2)
-                put("metaData", webRtcSessionMetadata(settings, profile))
+                put("metaData", webRtcSessionMetadata(settings, profile, physicalDisplayResolution))
                 put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
                 put("clientDisplayHdrCapabilities", if (profile.hdrEnabled) hdrCapabilitiesJson() else JsonNull)
                 put("surroundAudioInfo", 0)
                 put("remoteControllersBitmap", 0)
                 put("clientTimezoneOffset", java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()))
                 put("enhancedStreamMode", 1)
-                put("appLaunchMode", 1)
+                put("appLaunchMode", 2)
                 put("secureRTSPSupported", false)
                 put("partnerCustomData", "")
                 put("accountLinked", accountLinked)
-                put("enablePersistingInGameSettings", true)
+                put("enablePersistingInGameSettings", false)
                 put("userAge", 26)
                 put("requestedStreamingFeatures", requestedStreamingFeatures(settings, profile))
             }
         }
     }
 
-    private fun buildClaimRequestBody(appId: String, deviceId: String, settings: StreamSettings): JsonObject =
-        buildMinimalClaimRequestBody(appId, deviceId, settings)
+    private fun buildClaimRequestBody(
+        appId: String,
+        deviceId: String,
+        settings: StreamSettings,
+        physicalDisplayResolution: Pair<Int, Int>?,
+    ): JsonObject =
+        buildMinimalClaimRequestBody(appId, deviceId, settings, physicalDisplayResolution)
 
     private suspend fun toSessionInfo(zone: String, base: String, payload: JsonObject, clientId: String, deviceId: String): SessionInfo {
         val status = payload.obj("requestStatus")?.int("statusCode")

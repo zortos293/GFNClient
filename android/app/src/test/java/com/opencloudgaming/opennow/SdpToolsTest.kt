@@ -188,6 +188,22 @@ class SdpToolsTest {
     }
 
     @Test
+    fun nvstSdpDisablesHdrForSdrStream() {
+        val nvst = buildNvstSdp(StreamSettings(hdrEnabled = false))
+
+        assertTrue(nvst.contains("a=video.dx9EnableHdr:0"))
+        assertFalse(nvst.contains("a=video.dx9EnableHdr:1"))
+    }
+
+    @Test
+    fun nvstSdpEnablesHdrOnlyForHdrStream() {
+        val nvst = buildNvstSdp(StreamSettings(codec = VideoCodec.H265, hdrEnabled = true))
+
+        assertTrue(nvst.contains("a=video.dx9EnableHdr:1"))
+        assertFalse(nvst.contains("a=video.dx9EnableHdr:0"))
+    }
+
+    @Test
     fun nvstSdpCarriesRequested360FpsEstimate() {
         val nvst = SdpTools.buildNvstSdp(
             offerSdp = "a=ri.partialReliableThresholdMs:42",
@@ -202,6 +218,17 @@ class SdpToolsTest {
         assertTrue(nvst.contains("a=video.maxFPS:360"))
         assertTrue(nvst.contains("a=vqos.maxStreamFpsEstimate:360"))
     }
+
+    private fun buildNvstSdp(settings: StreamSettings): String =
+        SdpTools.buildNvstSdp(
+            offerSdp = "a=ri.partialReliableThresholdMs:42",
+            settings = settings,
+            localAnswer = """
+                a=ice-ufrag:testUfrag
+                a=ice-pwd:testPassword
+                a=fingerprint:sha-256 11:22:33
+            """.trimIndent(),
+        )
 
     private fun h265Offer(): String =
         """

@@ -88,10 +88,58 @@ class GfnApiTest {
             assertEquals(pixels.second, monitor.getValue("heightInPixels").jsonPrimitive.int)
             assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
             assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
-            assertEquals(true, features.getValue("reflex").jsonPrimitive.boolean)
+            assertEquals(false, features.getValue("reflex").jsonPrimitive.boolean)
             assertEquals(pixels.first, physicalResolution?.getValue("horizontalPixels")?.jsonPrimitive?.int)
             assertEquals(pixels.second, physicalResolution?.getValue("verticalPixels")?.jsonPrimitive?.int)
         }
+    }
+
+    @Test
+    fun ultrawideMetadataKeepsPhysicalDisplaySeparateFromStreamResolution() {
+        val settings = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            fps = 60,
+            codec = VideoCodec.H264,
+            colorQuality = ColorQuality.EightBit420,
+        )
+
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = settings,
+            physicalDisplayResolution = 1920 to 1080,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData
+            .getValue("clientRequestMonitorSettings").jsonArray
+            .single().jsonObject
+        val physicalResolution = sessionRequestData
+            .getValue("metaData").jsonArray
+            .firstNotNullOf { item ->
+                item.jsonObject.takeIf {
+                    it["key"]?.jsonPrimitive?.contentOrNull == "clientPhysicalResolution"
+                }?.get("value")?.jsonPrimitive?.contentOrNull
+            }
+            .let { OpenNowJson.parseToJsonElement(it).jsonObject }
+
+        assertEquals(1680, monitor.getValue("widthInPixels").jsonPrimitive.int)
+        assertEquals(720, monitor.getValue("heightInPixels").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("dpi").jsonPrimitive.int)
+        assertFalse(monitor.containsKey("monitorId"))
+        assertFalse(monitor.containsKey("positionX"))
+        assertFalse(monitor.containsKey("positionY"))
+        assertFalse(monitor.containsKey("hdr10PlusGamingData"))
+        assertEquals(
+            0,
+            monitor.getValue("displayData").jsonObject
+                .getValue("desiredContentMaxLuminance").jsonPrimitive.int,
+        )
+        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(2, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals(1920, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
+        assertEquals(1080, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
     }
 
     @Test

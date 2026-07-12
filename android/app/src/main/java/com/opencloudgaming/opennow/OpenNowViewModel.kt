@@ -123,7 +123,6 @@ data class OpenNowUiState(
     val launchPhase: String = "",
     val queuePosition: Int? = null,
     val queueAdActiveId: String? = null,
-    val queueAdPlaybackEpoch: Int = 0,
     val streamStatus: String = "idle",
     val error: String? = null,
     val deviceLoginPrompt: DeviceLoginPrompt? = null,
@@ -153,9 +152,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
     private val accountConnectorRepository = GfnAccountConnectorRepository(http)
     private val printedWasteRepository = PrintedWasteRepository(http)
-    private val sessionRepository = GfnSessionRepository(authStore, http) { response ->
-        recordSessionDiagnosticResponse(response)
-    }
+    private val sessionRepository = GfnSessionRepository(
+        authStore = authStore,
+        http = http,
+        physicalDisplayResolutionProvider = { application.physicalStreamDisplayResolution() },
+        diagnosticsSink = { response -> recordSessionDiagnosticResponse(response) },
+    )
     private val appUpdater = AndroidAppUpdater(application, http)
     private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
     private val queueAdReportMutex = Mutex()
@@ -1645,15 +1647,13 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         updated,
                         preserveMissingAdState = !isTerminalAction,
                     )
-                    val shouldRestartCompletedAd = isTerminalAction && shouldRestartCompletedQueueAd(merged, adId)
                     current.copy(
                         streamSession = merged,
                         queuePosition = queueDisplayPosition(merged),
-                        queueAdActiveId = chooseQueueAdActiveId(current.queueAdActiveId, merged),
-                        queueAdPlaybackEpoch = if (shouldRestartCompletedAd) {
-                            current.queueAdPlaybackEpoch + 1
+                        queueAdActiveId = if (isTerminalAction) {
+                            nextSessionAdId(merged.adState, adId) ?: adId
                         } else {
-                            current.queueAdPlaybackEpoch
+                            chooseQueueAdActiveId(current.queueAdActiveId, merged)
                         },
                     )
                 }

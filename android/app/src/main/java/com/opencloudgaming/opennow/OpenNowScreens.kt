@@ -6814,22 +6814,13 @@ private fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewMode
                     queueCopy = queueCopy,
                     queuePosition = visibleQueuePosition,
                     error = state.error,
-                    playbackKey = "${session?.sessionId.orEmpty()}:${state.queueAdPlaybackEpoch}",
+                    playbackKey = session?.sessionId.orEmpty(),
                     compact = useLandscapeAdLayout,
                     onMinimize = viewModel::minimizeStreamLaunch,
                     onCancel = viewModel::stopStream,
                     modifier = Modifier
                         .fillMaxWidth(if (useLandscapeAdLayout) 0.72f else 1f)
                         .widthIn(max = if (useLandscapeAdLayout) 900.dp else 620.dp),
-                    playerModifier = if (useLandscapeAdLayout) {
-                        Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(16f / 9f)
-                    } else {
-                        Modifier
-                            .fillMaxWidth()
-                            .height(220.dp)
-                    },
                 )
             } else {
                 QueueStatusPanel(
@@ -7467,7 +7458,6 @@ private fun QueueAdPanel(
     onMinimize: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
-    playerModifier: Modifier = Modifier,
 ) {
     Surface(
         modifier = modifier,
@@ -7475,67 +7465,150 @@ private fun QueueAdPanel(
         color = Panel.copy(alpha = 0.95f),
         tonalElevation = 8.dp,
     ) {
-        Column(
-            Modifier.padding(if (compact) 14.dp else 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
-        ) {
+        if (compact) {
             Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                Modifier.padding(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Advertisement",
-                        color = TextMuted,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
+                QueueAdPlayback(
+                    ad = ad,
+                    mediaUrl = mediaUrl,
+                    playbackKey = playbackKey,
+                    viewModel = viewModel,
+                    modifier = Modifier
+                        .weight(1.55f)
+                        .aspectRatio(16f / 9f),
+                )
+                Column(
+                    Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    QueueAdHeading(game = game, compact = true)
+                    QueueStatusAndActions(
+                        queueCopy = queueCopy,
+                        queuePosition = queuePosition,
+                        compact = true,
+                        stackActions = true,
+                        onMinimize = onMinimize,
+                        onCancel = onCancel,
                     )
-                    Text(
-                        game?.title ?: "Starting stream",
-                        style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                queuePosition?.let {
-                    Text(
-                        it.toString(),
-                        color = queueUrgencyColor(it),
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black),
-                        maxLines = 1,
-                    )
+                    error?.let {
+                        Text(it, color = Color(0xffff9f9f), textAlign = TextAlign.Center)
+                    }
                 }
             }
-            QueueAdPlayer(
-                adId = ad.adId,
-                url = mediaUrl,
-                playbackKey = playbackKey,
-                modifier = playerModifier,
-                onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
-                onPaused = { viewModel.reportQueueAd(ad.adId, "pause") },
-                onResumed = { viewModel.reportQueueAd(ad.adId, "resume") },
-                onFinished = { watchedTimeInMs ->
-                    viewModel.reportQueueAd(ad.adId, "finish", watchedTimeInMs = watchedTimeInMs)
-                },
-                onError = { watchedTimeInMs ->
-                    viewModel.reportQueueAd(
-                        ad.adId,
-                        "cancel",
-                        watchedTimeInMs = watchedTimeInMs,
-                        cancelReason = "error",
-                        errorInfo = "Error loading url",
-                    )
-                },
+        } else {
+            Column(
+                Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                QueueAdHeading(game = game, compact = false)
+                QueueAdPlayback(
+                    ad = ad,
+                    mediaUrl = mediaUrl,
+                    playbackKey = playbackKey,
+                    viewModel = viewModel,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp),
+                )
+                QueueStatusAndActions(
+                    queueCopy = queueCopy,
+                    queuePosition = queuePosition,
+                    compact = false,
+                    stackActions = false,
+                    onMinimize = onMinimize,
+                    onCancel = onCancel,
+                )
+                error?.let {
+                    Text(it, color = Color(0xffff9f9f), textAlign = TextAlign.Center)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueAdPlayback(
+    ad: SessionAdInfo,
+    mediaUrl: String,
+    playbackKey: String,
+    viewModel: OpenNowViewModel,
+    modifier: Modifier = Modifier,
+) {
+    QueueAdPlayer(
+        adId = ad.adId,
+        url = mediaUrl,
+        playbackKey = playbackKey,
+        modifier = modifier,
+        onStarted = { viewModel.reportQueueAd(ad.adId, "start") },
+        onPaused = { viewModel.reportQueueAd(ad.adId, "pause") },
+        onResumed = { viewModel.reportQueueAd(ad.adId, "resume") },
+        onFinished = { watchedTimeInMs ->
+            viewModel.reportQueueAd(ad.adId, "finish", watchedTimeInMs = watchedTimeInMs)
+        },
+        onError = { watchedTimeInMs ->
+            viewModel.reportQueueAd(
+                ad.adId,
+                "cancel",
+                watchedTimeInMs = watchedTimeInMs,
+                cancelReason = "error",
+                errorInfo = "Error loading url",
             )
-            AnimatedQueueStatusText(
-                queueCopy = queueCopy,
-                queuePosition = queuePosition,
-                compact = true,
-            )
+        },
+    )
+}
+
+@Composable
+private fun QueueAdHeading(game: GameInfo?, compact: Boolean) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            "Advertisement",
+            color = TextMuted,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+        Text(
+            game?.title ?: "Starting stream",
+            style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun QueueStatusAndActions(
+    queueCopy: String,
+    queuePosition: Int?,
+    compact: Boolean,
+    stackActions: Boolean,
+    onMinimize: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth(if (compact) 1f else 0.7f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
+    ) {
+        AnimatedQueueStatusText(
+            queueCopy = queueCopy,
+            queuePosition = queuePosition,
+            compact = compact,
+        )
+        LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (stackActions) {
+            OutlinedButton(onClick = onMinimize, modifier = Modifier.fillMaxWidth()) {
+                Text("Minimize", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
+                Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        } else {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -7546,9 +7619,6 @@ private fun QueueAdPanel(
                 OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
                     Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-            }
-            error?.let {
-                Text(it, color = Color(0xffff9f9f), textAlign = TextAlign.Center)
             }
         }
     }

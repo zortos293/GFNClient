@@ -4199,7 +4199,7 @@ object SdpTools {
             add("a=vqos.dynamicStreamingMode:0")
             add("a=vqos.drc.enable:0")
             add("a=video.dx9EnableNv12:1")
-            add("a=video.dx9EnableHdr:1")
+            add("a=video.dx9EnableHdr:${if (settings.hdrEnabled) 1 else 0}")
             add("a=vqos.qpg.enable:1")
             add("a=vqos.resControl.qp.qpg.featureSetting:7")
             add("a=bwe.useOwdCongestionControl:1")

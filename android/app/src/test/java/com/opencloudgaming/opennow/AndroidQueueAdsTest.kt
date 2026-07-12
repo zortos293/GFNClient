@@ -243,25 +243,18 @@ class AndroidQueueAdsTest {
     }
 
     @Test
-    fun shouldRestartCompletedQueueAdOnlyWhenServerReturnsIt() {
-        val cleared = session(
-            adState = SessionAdState(
-                isAdsRequired = false,
-                sessionAdsRequired = false,
-                serverSentEmptyAds = true,
-            ),
-        )
-        val explicitReplay = session(
-            adState = SessionAdState(
-                isAdsRequired = true,
-                sessionAdsRequired = true,
-                sessionAds = listOf(ad("ad-1")),
-                ads = listOf(ad("ad-1")),
-            ),
+    fun nextSessionAdIdOnlyAdvancesToADifferentAd() {
+        val ads = SessionAdState(
+            isAdsRequired = true,
+            sessionAdsRequired = true,
+            sessionAds = listOf(ad("ad-1"), ad("ad-2")),
+            ads = listOf(ad("ad-1"), ad("ad-2")),
         )
 
-        assertFalse(shouldRestartCompletedQueueAd(cleared, "ad-1"))
-        assertTrue(shouldRestartCompletedQueueAd(explicitReplay, "ad-1"))
+        assertEquals("ad-2", nextSessionAdId(ads, "ad-1"))
+        assertNull(nextSessionAdId(ads, "ad-2"))
+        assertNull(nextSessionAdId(ads.copy(sessionAds = listOf(ad("ad-1")), ads = emptyList()), "ad-1"))
+        assertEquals("ad-2", nextSessionAdId(ads.copy(sessionAds = listOf(ad("ad-2")), ads = emptyList()), "ad-1"))
     }
 
     @Test

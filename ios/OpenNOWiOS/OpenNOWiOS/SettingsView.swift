@@ -909,25 +909,19 @@ struct SettingsView: View {
 
                 Spacer(minLength: 8)
 
-                if selected {
-                    if store.refreshingAccountUserId == account.userId {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                            Text("Refreshing")
-                        }
+                if store.switchingAccountUserId == account.userId {
+                    ProgressView()
+                        .accessibilityLabel("Switching account")
+                } else if selected {
+                    Text("Active")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    } else {
-                        Text("Active")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.green)
-                    }
+                        .foregroundStyle(.green)
                 } else {
                     Button("Switch") {
                         Task { await store.switchAccount(to: account.userId) }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(store.refreshingAccountUserId != nil || store.isAuthenticating)
+                    .disabled(store.switchingAccountUserId != nil || store.isAuthenticating)
                 }
             }
         }

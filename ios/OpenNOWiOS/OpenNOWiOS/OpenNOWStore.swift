@@ -5290,7 +5290,7 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var availableRegions: [StreamRegion] = []
     @Published private(set) var loadingAccountConnectors = false
     @Published private(set) var connectorActionStore: String?
-    @Published private(set) var refreshingAccountUserId: String?
+    @Published private(set) var switchingAccountUserId: String?
     @Published var settings: AppSettings
     @Published var searchText = ""
     @Published var micEnabled = false
@@ -5317,6 +5317,7 @@ final class OpenNOWStore: ObservableObject {
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
     private var accountRefreshTask: Task<Void, Never>?
+    private var backgroundRefreshingAccountUserId: String?
     #if os(tvOS)
     private var sessionPollBackgroundTaskActive = false
     #else
@@ -5785,6 +5786,13 @@ final class OpenNOWStore: ObservableObject {
             scheduleAccountRefresh(for: userId)
             return
         }
+        switchingAccountUserId = userId
+        defer {
+            if switchingAccountUserId == userId {
+                switchingAccountUserId = nil
+            }
+        }
+        await Task.yield()
         var state = Self.loadAuthState(from: defaults)
         guard let nextSession = state.sessions.first(where: { $0.user.userId == userId }) else { return }
         state.activeUserId = nextSession.user.userId
@@ -5810,12 +5818,12 @@ final class OpenNOWStore: ObservableObject {
 
     private func scheduleAccountRefresh(for userId: String) {
         accountRefreshTask?.cancel()
-        refreshingAccountUserId = userId
+        backgroundRefreshingAccountUserId = userId
         accountRefreshTask = Task { [weak self] in
             guard let self else { return }
             await self.refreshCatalog()
-            guard self.refreshingAccountUserId == userId else { return }
-            self.refreshingAccountUserId = nil
+            guard self.backgroundRefreshingAccountUserId == userId else { return }
+            self.backgroundRefreshingAccountUserId = nil
             self.accountRefreshTask = nil
         }
     }
@@ -5823,7 +5831,7 @@ final class OpenNOWStore: ObservableObject {
     private func cancelAccountRefresh() {
         accountRefreshTask?.cancel()
         accountRefreshTask = nil
-        refreshingAccountUserId = nil
+        backgroundRefreshingAccountUserId = nil
     }
 
     private func clearAccountScopedState() {

@@ -713,7 +713,7 @@ export function App(): JSX.Element {
       enableCloudGsync: settings.enableCloudGsync,
       clientMode: settings.streamClientMode,
       nativeStreamerBackend: "gstreamer",
-      transportMode: settings.transportMode,
+      transportMode: "webrtc",
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
       appLaunchMode:
@@ -737,7 +737,6 @@ export function App(): JSX.Element {
     settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
-    settings.transportMode,
     subscriptionInfo?.entitledResolutions,
   ]);
 

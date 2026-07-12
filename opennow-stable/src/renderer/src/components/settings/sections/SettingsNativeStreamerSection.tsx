@@ -7,7 +7,6 @@ import {
   isNativeDirectXBackendSupported,
   isNativeExternalRendererSupported,
   isNativeStreamerSupportedPlatform,
-  isNvstTransportSupported,
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
 } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
@@ -26,7 +25,6 @@ const nativePlatformHint = `${navigator.platform} ${navigator.userAgent}`;
 const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(nativePlatformHint);
 const supportsNativeExternalRenderer = isNativeExternalRendererSupported(nativePlatformHint);
 const supportsNativeDirectXBackend = isNativeDirectXBackendSupported(nativePlatformHint);
-const supportsNvstTransport = isNvstTransportSupported(nativePlatformHint);
 
 export interface SettingsNativeStreamerSectionProps {
   settings: Settings;
@@ -469,18 +467,6 @@ export function SettingsNativeStreamerSection({
                 </div>
               )}
 
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">{t("settings.nativeStreamer.transportMode")}</label>
-                <div className="settings-chip-row">
-                  <button type="button" className={`settings-chip ${settings.transportMode !== "nvst" ? "active" : ""}`} onClick={() => handleChange("transportMode", "webrtc")}>
-                    <span>{t("settings.nativeStreamer.transportModeWebrtc")}</span>
-                  </button>
-                  <button type="button" className={`settings-chip ${settings.transportMode === "nvst" ? "active" : ""}`} onClick={() => handleChange("transportMode", "nvst")} disabled={!supportsNvstTransport}>
-                    <span>{t("settings.nativeStreamer.transportModeNvst")}</span>
-                  </button>
-                </div>
-                <span className="settings-subtle-hint">{t(supportsNvstTransport ? "settings.nativeStreamer.transportModeHint" : "settings.nativeStreamer.transportModeWindowsOnlyHint")}</span>
-              </div>
             </>
           )}
         </div>

@@ -116,14 +116,6 @@ app.commandLine.appendSwitch(
   chromiumCommandLine.disableFeatures.join(","),
 );
 
-app.commandLine.appendSwitch(
-  "force-fieldtrials",
-  [
-    // Disable send-side pacing — we are receive-only, pacing adds latency to RTCP feedback
-    "WebRTC-Video-Pacing/Disabled/",
-  ].join("/"),
-);
-
 for (const [name, value] of Object.entries(chromiumCommandLine.switches)) {
   if (value === true) {
     app.commandLine.appendSwitch(name);

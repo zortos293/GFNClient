@@ -560,13 +560,14 @@ export function buildNvstSdp(params: NvstParams): string {
     `a=general.dtlsFingerprint:${params.credentials.fingerprint}`,
     "m=video 0 RTP/AVP",
     "a=msid:fbc-video-0",
-    // FEC settings — match official NvscClientConfigDefaults (repair 20/40, bllFec on).
+    // Match the stable Android-native recovery profile. Large FEC/NACK bursts
+    // amplify congestion after packet loss instead of letting BWE recover.
     "a=vqos.fec.rateDropWindow:10",
     "a=vqos.fec.minRequiredFecPackets:2",
     "a=vqos.drc.minRequiredBitrateCheckEnabled:1",
     "a=vqos.fec.repairMinPercent:5",
-    "a=vqos.fec.repairPercent:20",
-    "a=vqos.fec.repairMaxPercent:40",
+    "a=vqos.fec.repairPercent:5",
+    "a=vqos.fec.repairMaxPercent:35",
     // Official dynamicStreamingMode=0 path disables server resolution/FPS switching.
     "a=vqos.dynamicStreamingMode:0",
     "a=vqos.drc.enable:0",
@@ -621,11 +622,10 @@ export function buildNvstSdp(params: NvstParams): string {
     // Official packet pacing profile (Nvsc dumps + DESCRIBE enableAccurateSleep).
     "a=packetPacing.version:3",
     "a=packetPacing.mode:1",
-    "a=packetPacing.minNumPacketsPerGroup:0",
+    "a=packetPacing.minNumPacketsPerGroup:15",
     "a=packetPacing.enableAccurateSleep:1",
     "a=packetPacing.enableSmoothTransition:1",
     "a=packetPacing.allowFpsBasedToggle:1",
-    "a=vqos.bllFec.enable:1",
     // Bitrate headroom / QP delta — present on official DESCRIBE ANNOUNCE path.
     "a=vqos.relaxMaxBitrate.overrideAvgBitrateThresholdPercent:4",
     "a=vqos.relaxMaxBitrate.customAvgBitrateThresholdPercent:65",
@@ -691,9 +691,9 @@ export function buildNvstSdp(params: NvstParams): string {
     `a=packetPacing.numGroups:${is120Fps ? 3 : 5}`,
     "a=packetPacing.maxDelayUs:1000",
     "a=packetPacing.minNumPacketsFrame:10",
-    "a=video.rtpNackQueueLength:2048",
-    "a=video.rtpNackQueueMaxPackets:1024",
-    "a=video.rtpNackMaxPacketCount:64",
+    "a=video.rtpNackQueueLength:1024",
+    "a=video.rtpNackQueueMaxPackets:512",
+    "a=video.rtpNackMaxPacketCount:25",
   );
 
   if (useHighThroughputPacing) {

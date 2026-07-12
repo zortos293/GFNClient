@@ -1360,15 +1360,22 @@ private fun AppNavigationRail(
 
 @Composable
 private fun AppNavigationRailItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String, iconSize: Dp = 24.dp) {
+    var focused by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
     NavigationRailItem(
         selected = selected,
         onClick = onClick,
+        modifier = Modifier
+            .onFocusChanged { focused = it.isFocused }
+            .then(
+                if (focused) Modifier.border(2.dp, accent, RoundedCornerShape(12.dp)) else Modifier
+            ),
         colors = NavigationRailItemDefaults.colors(
-            selectedIconColor = MaterialTheme.colorScheme.primary,
-            selectedTextColor = MaterialTheme.colorScheme.primary,
-            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-            unselectedIconColor = TextMuted,
-            unselectedTextColor = TextMuted,
+            selectedIconColor = accent,
+            selectedTextColor = accent,
+            indicatorColor = if (focused) accent.copy(alpha = 0.35f) else accent.copy(alpha = 0.18f),
+            unselectedIconColor = if (focused) Color.White else TextMuted,
+            unselectedTextColor = if (focused) Color.White else TextMuted,
         ),
         icon = {
             Icon(
@@ -3436,7 +3443,7 @@ private fun GameCard(
                         favorite = favorite,
                         onClick = { onFavorite(game.id) },
                         modifier = Modifier
-                            .align(if (launcherTile) Alignment.TopEnd else Alignment.TopStart)
+                            .align(Alignment.TopStart)
                             .padding(overlayActionPadding),
                         size = overlayActionSize,
                     )
@@ -3827,8 +3834,22 @@ private fun GameDetailsLandscapeContent(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f).height(48.dp)) {
-                        Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    var dismissFocused by remember { mutableStateOf(false) }
+                    val accent = MaterialTheme.colorScheme.primary
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        border = BorderStroke(1.dp, if (dismissFocused) accent else MaterialTheme.colorScheme.outline),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .onFocusChanged { dismissFocused = it.isFocused }
+                    ) {
+                        Text(
+                            "Dismiss", 
+                            color = if (dismissFocused) accent else TextPrimary,
+                            maxLines = 1, 
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     LongPressPlayButton(
                         onClick = {
@@ -3933,8 +3954,22 @@ private fun GameDetailsScrollableContent(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f).height(48.dp)) {
-                    Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                var dismissFocused by remember { mutableStateOf(false) }
+                val accent = MaterialTheme.colorScheme.primary
+                OutlinedButton(
+                    onClick = onDismiss,
+                    border = BorderStroke(1.dp, if (dismissFocused) accent else MaterialTheme.colorScheme.outline),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .onFocusChanged { dismissFocused = it.isFocused }
+                ) {
+                    Text(
+                        "Dismiss", 
+                        color = if (dismissFocused) accent else TextPrimary,
+                        maxLines = 1, 
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 LongPressPlayButton(
                     onClick = {
@@ -4029,6 +4064,9 @@ private fun LongPressPlayButton(
                 onClick = onClick,
                 onLongClick = onLongClick,
                 onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+            )
+            .then(
+                if (focused) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape) else Modifier
             ),
         shape = shape,
         color = MaterialTheme.colorScheme.primary,
@@ -4084,15 +4122,22 @@ private fun ImageCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier)
 @Composable
 private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, size: Dp = 44.dp) {
     val label = stringResource(if (favorite) R.string.action_saved else R.string.action_save)
+    var focused by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
     Surface(
         modifier = modifier
             .size(size)
+            .onFocusChanged { focused = it.isFocused }
             .semantics { contentDescription = label }
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .focusable()
+            .then(
+                if (focused) Modifier.border(2.dp, accent, CircleShape) else Modifier
+            ),
         shape = CircleShape,
         color = Color.Black.copy(alpha = 0.35f),
         tonalElevation = 0.dp,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+        border = BorderStroke(1.dp, if (focused) accent else Color.White.copy(alpha = 0.2f)),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(

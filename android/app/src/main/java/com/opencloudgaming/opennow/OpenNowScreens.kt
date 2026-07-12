@@ -9090,9 +9090,8 @@ private fun imageDataForSource(source: String): Any? {
     val scheme = uri.scheme.orEmpty().lowercase(Locale.US)
     return when {
         scheme == "http" || scheme == "https" -> key
-        scheme == "content" || scheme == "android.resource" -> uri
-        scheme == "file" -> uri.path?.let(::File)?.takeIf { it.isFile && it.canRead() } ?: uri
-        scheme.isBlank() && key.startsWith("/") -> File(key).takeIf { it.isFile && it.canRead() }
+        scheme == "content" || scheme == "android.resource" || scheme == "file" -> uri
+        scheme.isBlank() && key.startsWith("/") -> File(key)
         else -> uri
     }
 }

@@ -29,6 +29,7 @@
     <application
         android:name=".OpenNowApplication"
         android:allowBackup="false"
+        android:appCategory="game"
         android:banner="@drawable/opennow_banner"
         android:hardwareAccelerated="true"
         android:icon="@drawable/opennow_icon"
@@ -47,7 +48,8 @@
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:exported="true"
             android:launchMode="singleTask"
-            android:supportsPictureInPicture="true">
+            android:supportsPictureInPicture="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

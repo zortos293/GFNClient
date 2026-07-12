@@ -17,6 +17,9 @@ import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
 import java.io.File
 import java.io.FileInputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 private const val STORE_NAME = "opennow_native"
 private const val KEY_SETTINGS = "settings"
@@ -31,10 +34,14 @@ private const val QUEUED_GAME_LIMIT = 24
 class ExternalPrefs(context: Context, name: String) {
     private val file = File(context.getExternalFilesDir(null), "$name.xml")
     private val data = mutableMapOf<String, String>()
+    private val lock = Any()
+    private val ioScope = CoroutineScope(Dispatchers.IO)
 
     init {
-        migrateFromInternal(context, name)
-        load()
+        synchronized(lock) {
+            migrateFromInternal(context, name)
+            load()
+        }
     }
 
     private fun migrateFromInternal(context: Context, name: String) {
@@ -45,7 +52,7 @@ class ExternalPrefs(context: Context, name: String) {
             allInternal.forEach { (k, v) ->
                 if (v is String) data[k] = v
             }
-            save()
+            save(data.toMap())
             internalPrefs.edit().clear().apply()
         }
     }
@@ -71,22 +78,24 @@ class ExternalPrefs(context: Context, name: String) {
         }.onFailure { it.printStackTrace() }
     }
 
-    private fun save() {
-        runCatching {
-            file.parentFile?.mkdirs()
-            file.bufferedWriter().use { writer ->
-                writer.write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
-                writer.write("<map>\n")
-                for ((k, v) in data) {
-                    writer.write("    <string name=\"")
-                    writer.write(escapeXmlAttribute(k))
-                    writer.write("\">")
-                    writer.write(escapeXmlText(v))
-                    writer.write("</string>\n")
+    private fun save(mapSnapshot: Map<String, String>) {
+        synchronized(lock) {
+            runCatching {
+                file.parentFile?.mkdirs()
+                file.bufferedWriter().use { writer ->
+                    writer.write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
+                    writer.write("<map>\n")
+                    for ((k, v) in mapSnapshot) {
+                        writer.write("    <string name=\"")
+                        writer.write(escapeXmlAttribute(k))
+                        writer.write("\">")
+                        writer.write(escapeXmlText(v))
+                        writer.write("</string>\n")
+                    }
+                    writer.write("</map>\n")
                 }
-                writer.write("</map>\n")
-            }
-        }.onFailure { it.printStackTrace() }
+            }.onFailure { it.printStackTrace() }
+        }
     }
 
     private fun escapeXmlAttribute(str: String): String =
@@ -96,9 +105,9 @@ class ExternalPrefs(context: Context, name: String) {
     private fun escapeXmlText(str: String): String =
         str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    fun getString(key: String, defValue: String?): String? = data[key] ?: defValue
+    fun getString(key: String, defValue: String?): String? = synchronized(lock) { data[key] ?: defValue }
 
-    val all: Map<String, Any?> get() = data
+    val all: Map<String, Any?> get() = synchronized(lock) { data.toMap() }
 
     fun edit(): Editor = Editor()
 
@@ -118,8 +127,13 @@ class ExternalPrefs(context: Context, name: String) {
         }
 
         fun apply() {
-            actions.forEach { it() }
-            save()
+            val snapshot = synchronized(lock) {
+                actions.forEach { it() }
+                data.toMap()
+            }
+            ioScope.launch {
+                save(snapshot)
+            }
         }
     }
 }

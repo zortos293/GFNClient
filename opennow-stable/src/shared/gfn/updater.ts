@@ -8,6 +8,12 @@ export type AppUpdaterStatus =
   | "downloaded"
   | "error";
 
+export type UpdateChannel = "stable" | "nightly";
+
+export function normalizeUpdateChannel(value: unknown): UpdateChannel {
+  return value === "nightly" ? "nightly" : "stable";
+}
+
 /** Payload sent to the renderer for the What's New modal */
 export interface ReleaseHighlightsPayload {
   /** App version these notes are for (e.g. "0.4.2") */

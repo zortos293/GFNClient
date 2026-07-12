@@ -18,6 +18,7 @@ import type {
   AppAccentColor,
   AppTheme,
   VideoShaderSettings,
+  UpdateChannel,
 } from "@shared/gfn";
 import {
   DEFAULT_KEYBOARD_LAYOUT,
@@ -28,6 +29,7 @@ import {
   normalizeStreamPreferences,
   normalizeTransportModeForPlatform,
   normalizeVideoShaderSettings,
+  normalizeUpdateChannel,
 } from "@shared/gfn";
 
 export interface Settings {
@@ -156,6 +158,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** Release channel used for application updates */
+  updateChannel: UpdateChannel;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
   /** Last version for which the release highlights modal was acknowledged (empty = never) */
@@ -264,6 +268,7 @@ const DEFAULT_SETTINGS: Settings = {
   nativeTransitionDiagnostics: undefined,
   discordRichPresence: false,
   autoCheckForUpdates: true,
+  updateChannel: "stable",
   allowEscapeToExitFullscreen: false,
   lastSeenReleaseHighlightsVersion: "",
   videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
@@ -435,6 +440,11 @@ export class SettingsManager {
     const appTheme = normalizeAppTheme(settings.appTheme);
     if (settings.appTheme !== appTheme) {
       settings.appTheme = appTheme;
+      migrated = true;
+    }
+    const updateChannel = normalizeUpdateChannel(settings.updateChannel);
+    if (settings.updateChannel !== updateChannel) {
+      settings.updateChannel = updateChannel;
       migrated = true;
     }
     if (typeof settings.translucentUI !== "boolean") {

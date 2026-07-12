@@ -195,6 +195,6 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "gamepad",
     "big picture",
   ],
-  about: ["about", "update", "version", "logs", "cache", "download"],
+  about: ["about", "update", "version", "channel", "stable", "nightly", "preview", "logs", "cache", "download"],
   thanks: ["thanks", "contributors", "supporters", "sponsors", "community"],
 };

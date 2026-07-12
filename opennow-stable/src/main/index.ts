@@ -510,6 +510,7 @@ app.whenReady().then(async () => {
   appUpdater = createAppUpdaterController({
     onStateChanged: emitUpdaterStateToRenderer,
     automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
+    updateChannel: settingsManager.get("updateChannel"),
     onBeforeQuitAndInstall: () => {
       isUpdaterInstallQuitInProgress = true;
       clearExplicitShutdownFallback();

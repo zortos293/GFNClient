@@ -1,4 +1,4 @@
-import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
+import { Search, LayoutGrid, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
@@ -11,6 +11,7 @@ import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
 import { SelectDropdown } from "./ui/SelectDropdown";
+import { MotionSpinner } from "./MotionSpinner";
 
 const CONTROLLER_STORE_HERO_ROTATION_MS = 7000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -513,7 +514,7 @@ export const HomePage = memo(function HomePage({
       <div className="home-page controller-store-page">
         {showInitialLoading ? (
           <div className="home-empty-state controller-store-empty">
-            <Loader2 className="home-spinner" size={54} />
+            <MotionSpinner className="home-spinner" size={54} label={t("common.loading")} />
             <p>{t("home.empty.loadingGames")}</p>
           </div>
         ) : controllerSections.length === 0 ? (
@@ -762,7 +763,7 @@ export const HomePage = memo(function HomePage({
       <div className="home-grid-area">
         {showInitialLoading ? (
           <div className="home-empty-state">
-            <Loader2 className="home-spinner" size={36} />
+            <MotionSpinner className="home-spinner" size={36} label={t("common.loading")} />
             <p>{t("home.empty.loadingGames")}</p>
           </div>
         ) : !hasGames ? (

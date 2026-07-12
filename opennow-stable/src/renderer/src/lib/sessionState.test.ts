@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { toLaunchErrorState } from "./sessionState";
+import { isStreamVideoReady, toLaunchErrorState } from "./sessionState";
 
 const translations: Record<string, string> = {
   "errors.duplicateSessionTitle": "Duplicate Session Detected",
@@ -70,4 +70,11 @@ test("launch error state treats NVIDIA user storage failures as persistent stora
   assert.equal(state.codeLabel, "UserStorageNotAvailable (3237093721)");
   assert.equal(state.action, "persistent-storage-settings");
   assert.equal(state.actionLabel, "Open Storage Settings");
+});
+
+test("stream video stays covered until the session is streaming and a frame source is ready", () => {
+  assert.equal(isStreamVideoReady("connecting", true, true), false);
+  assert.equal(isStreamVideoReady("streaming", false, false), false);
+  assert.equal(isStreamVideoReady("streaming", true, false), true);
+  assert.equal(isStreamVideoReady("streaming", false, true), true);
 });

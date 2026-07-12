@@ -1,8 +1,9 @@
-import { Heart, Users, ExternalLink, Loader } from "lucide-react";
+import { Heart, Users, ExternalLink } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import type { ThankYouContributor, ThankYouDataResult, ThankYouSupporter } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import type { ThanksLoadState } from "../settingsTypes";
+import { MotionSpinner } from "../../MotionSpinner";
 
 let thanksDataCache: ThankYouDataResult | null = null;
 
@@ -177,7 +178,7 @@ export function SettingsThanksSection(): JSX.Element {
           </div>
           {thanksLoadState === "loading" && !thanksData ? (
             <div className="settings-thanks-state">
-              <Loader size={16} className="settings-loading-icon" />
+              <MotionSpinner size={16} className="settings-loading-icon" />
               <span>{t("settings.thanks.loadingContributors")}</span>
             </div>
           ) : thanksContributors.length > 0 ? (
@@ -203,7 +204,7 @@ export function SettingsThanksSection(): JSX.Element {
           </div>
           {thanksLoadState === "loading" && !thanksData ? (
             <div className="settings-thanks-state">
-              <Loader size={16} className="settings-loading-icon" />
+              <MotionSpinner size={16} className="settings-loading-icon" />
               <span>{t("settings.thanks.loadingSupporters")}</span>
             </div>
           ) : thanksSupporters.length > 0 ? (

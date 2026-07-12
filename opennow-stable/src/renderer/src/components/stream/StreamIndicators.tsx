@@ -1,5 +1,6 @@
 import type { JSX } from "react";
 import { Mic, MicOff } from "lucide-react";
+import { m } from "motion/react";
 import type { StreamDiagnosticsStore } from "../../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../../utils/streamDiagnosticsStore";
 import type { MicState } from "../../platforms/gfn/microphoneManager";
@@ -130,7 +131,11 @@ export function RecordingIndicator({
       style={{ top: 14 + 42 * stackedBadges }}
       title={`Recording · ${formatElapsed(Math.round(recordingDurationMs / 1000))}`}
     >
-      <span className="sv-rec-dot" />
+      <m.span
+        className="sv-rec-dot"
+        animate={{ opacity: [0.45, 1, 0.45], scale: [0.85, 1, 0.85] }}
+        transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+      />
       <span className="sv-rec-label">REC {formatElapsed(Math.round(recordingDurationMs / 1000))}</span>
     </div>
   );

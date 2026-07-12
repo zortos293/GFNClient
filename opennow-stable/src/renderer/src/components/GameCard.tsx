@@ -1,6 +1,7 @@
 import { Play, Monitor } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
 import type { JSX } from "react";
+import { m } from "motion/react";
 import { normalizeGameStore } from "@shared/gfn";
 import type { GameInfo } from "@shared/gfn";
 import { getActiveGameAvailabilityBadge } from "../lib/gameCardStatus";
@@ -187,8 +188,10 @@ export const GameCard = memo(function GameCard({
   };
 
   return (
-    <div
+    <m.div
       className={`game-card ${isSelected ? "selected" : ""}`}
+      whileHover={{ y: -2, scale: 1.01 }}
+      whileTap={{ scale: 0.985 }}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) {
@@ -294,6 +297,6 @@ export const GameCard = memo(function GameCard({
           </h3>
         </div>
       </div>
-    </div>
+    </m.div>
   );
 }, gameCardPropsAreEqual);

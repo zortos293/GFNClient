@@ -1,5 +1,7 @@
 import { AlertTriangle, Loader2, PauseCircle, PlayCircle, RefreshCcw, XCircle } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type JSX } from "react";
+import { m } from "motion/react";
+import { spinnerTransition } from "./MotionProvider";
 
 type QueueAdPlaybackState = "loading" | "playing" | "paused" | "stalled" | "blocked" | "timeout" | "error";
 export type QueueAdPlaybackEvent = "loadstart" | "playing" | "paused" | "ended" | "timeupdate" | "error";
@@ -280,7 +282,13 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
         {showFrameOverlay && (
           <div className="queue-ad-preview-overlay" aria-hidden="true">
             <div className="queue-ad-preview-overlay-inner">
-              <StatusIcon className={`queue-ad-preview-overlay-icon${playbackState === "loading" ? " queue-ad-preview-icon--spinning" : ""}`} size={18} />
+              <m.span
+                className="queue-ad-preview-overlay-icon"
+                animate={playbackState === "loading" ? { rotate: 360 } : { rotate: 0 }}
+                transition={playbackState === "loading" ? spinnerTransition : { duration: 0.16 }}
+              >
+                <StatusIcon size={18} />
+              </m.span>
             </div>
           </div>
         )}

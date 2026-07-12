@@ -52,7 +52,7 @@ import {
 } from "./hooks/useStreamSession";
 import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
-import { createStreamDiagnosticsStore } from "./utils/streamDiagnosticsStore";
+import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
 import type {
   LaunchErrorState,
   LocalSessionTimerWarningState,
@@ -95,6 +95,7 @@ import {
 import {
   isSessionInQueue,
   isSessionReadyForConnect,
+  isStreamVideoReady,
   streamStatusToLoadingStage,
   toLaunchErrorState,
   toLoadingStatus,
@@ -115,7 +116,8 @@ import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
-import { pageTransition } from "./components/MotionProvider";
+import { overlayMotion, pageTransition, standardEase } from "./components/MotionProvider";
+import { LazyShaderAtmosphere } from "./components/LazyShaderAtmosphere";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
@@ -172,7 +174,7 @@ export function App(): JSX.Element {
   const [settings, setSettings] = useState<Settings>({
     resolution: "1920x1080",
     aspectRatio: "16:9",
-    posterSizeScale: 1,
+    posterSizeScale: 1.05,
     fps: 60,
     maxBitrateMbps: 75,
     recordingBitrateMbps: null,
@@ -246,6 +248,10 @@ export function App(): JSX.Element {
   const diagnosticsStoreRef = useRef<ReturnType<typeof createStreamDiagnosticsStore> | null>(null);
   const diagnosticsStore =
     diagnosticsStoreRef.current ?? (diagnosticsStoreRef.current = createStreamDiagnosticsStore(defaultDiagnostics()));
+  const diagnosticsVideoReady = useStreamDiagnosticsSelector(
+    diagnosticsStore,
+    (stats) => stats.nativeRendererActive || stats.framesDecoded > 0,
+  );
 
   // Stream State
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -327,12 +333,48 @@ export function App(): JSX.Element {
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [videoElementHasFrame, setVideoElementHasFrame] = useState(false);
+  const [streamRevealComplete, setStreamRevealComplete] = useState(false);
   const clientRef = useRef<GfnWebRtcClient | null>(null);
   const isStreamingRef = useRef(streamStatus === "streaming");
 
   useEffect(() => {
     isStreamingRef.current = streamStatus === "streaming";
   }, [streamStatus]);
+
+  useEffect(() => {
+    if (streamStatus !== "streaming") {
+      setVideoElementHasFrame(false);
+      setStreamRevealComplete(false);
+    }
+
+    if (streamStatus === "idle") return undefined;
+
+    const video = videoRef.current;
+    if (!video) return undefined;
+
+    const syncVideoFrame = (): void => {
+      setVideoElementHasFrame(video.videoWidth > 0 && video.videoHeight > 0);
+    };
+
+    syncVideoFrame();
+    video.addEventListener("loadeddata", syncVideoFrame);
+    video.addEventListener("playing", syncVideoFrame);
+    video.addEventListener("resize", syncVideoFrame);
+    return () => {
+      video.removeEventListener("loadeddata", syncVideoFrame);
+      video.removeEventListener("playing", syncVideoFrame);
+      video.removeEventListener("resize", syncVideoFrame);
+    };
+  }, [streamStatus]);
+
+  const streamVideoReady = isStreamVideoReady(streamStatus, diagnosticsVideoReady, videoElementHasFrame);
+
+  useEffect(() => {
+    if (streamStatus === "idle" || !streamVideoReady || streamRevealComplete) return undefined;
+    const timer = window.setTimeout(() => setStreamRevealComplete(true), 680);
+    return () => window.clearTimeout(timer);
+  }, [streamRevealComplete, streamStatus, streamVideoReady]);
 
   useEffect(() => {
     if (streamStatus === "streaming" && audioRef.current) {
@@ -3533,10 +3575,14 @@ export function App(): JSX.Element {
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
   const hasActiveStreamView = streamStatus !== "idle";
   const showLaunchErrorOverlay = launchError !== null;
-  const showDesktopLaunchLoading = showLaunchErrorOverlay || (streamStatus !== "idle" && streamStatus !== "streaming");
+  const showDesktopLaunchLoading = showLaunchErrorOverlay || (streamStatus !== "idle" && !streamRevealComplete);
   // Show stream lifecycle (waiting/connecting/streaming/failure)
   if (showLaunchOverlay) {
-    const loadingStatus = launchError ? launchError.stage : toLoadingStatus(streamStatus);
+    const loadingStatus = launchError
+      ? launchError.stage
+      : streamStatus === "streaming"
+        ? "connecting"
+        : toLoadingStatus(streamStatus);
     return (
       <>
         {hasActiveStreamView && (
@@ -3615,55 +3661,84 @@ export function App(): JSX.Element {
             onVideoShaderChange={handleVideoShaderChange}
           />
         )}
-        {showDesktopLaunchLoading && (
-          <StreamLoading
-            gameTitle={streamingGame?.title ?? t("app.labels.game")}
-            gameCover={streamingGame?.imageUrl}
-            platformStore={streamingStore ?? undefined}
-            status={loadingStatus}
-            queuePosition={queuePosition}
-            adState={effectiveAdState}
-            activeAd={activeQueueAd}
-            activeAdMediaUrl={activeQueueAdMediaUrl}
-            onAdPlaybackEvent={handleQueueAdPlaybackEvent}
-            adPreviewRef={queueAdPreviewRef}
-            error={
-              launchError
-                ? {
-                    title: launchError.title,
-                    description: launchError.description,
-                    code: launchError.codeLabel,
-                    actionLabel: launchError.actionLabel,
+        <AnimatePresence>
+          {showDesktopLaunchLoading && (
+            <m.div
+              key="stream-loading-transition"
+              className={`stream-loading-transition${streamVideoReady && !launchError ? " stream-loading-transition--warping" : ""}`}
+              initial={false}
+              animate={streamVideoReady && !launchError
+                ? { opacity: 0, scale: 1.025 }
+                : { opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+              transition={streamVideoReady && !launchError
+                ? { duration: 0.62, ease: standardEase }
+                : { duration: 0.16, ease: standardEase }}
+            >
+              <StreamLoading
+                gameTitle={streamingGame?.title ?? t("app.labels.game")}
+                gameCover={streamingGame?.imageUrl}
+                platformStore={streamingStore ?? undefined}
+                status={loadingStatus}
+                queuePosition={queuePosition}
+                adState={effectiveAdState}
+                activeAd={activeQueueAd}
+                activeAdMediaUrl={activeQueueAdMediaUrl}
+                onAdPlaybackEvent={handleQueueAdPlaybackEvent}
+                adPreviewRef={queueAdPreviewRef}
+                error={
+                  launchError
+                    ? {
+                        title: launchError.title,
+                        description: launchError.description,
+                        code: launchError.codeLabel,
+                        actionLabel: launchError.actionLabel,
+                      }
+                    : undefined
+                }
+                onErrorAction={launchError?.action ? handleLaunchErrorAction : undefined}
+                onCancel={() => {
+                  if (launchError) {
+                    void handleDismissLaunchError();
+                    return;
                   }
-                : undefined
-            }
-            onErrorAction={launchError?.action ? handleLaunchErrorAction : undefined}
-            onCancel={() => {
-              if (launchError) {
-                void handleDismissLaunchError();
-                return;
-              }
-              void handlePromptedStopStream();
-            }}
-          />
-        )}
+                  void handlePromptedStopStream();
+                }}
+              />
+            </m.div>
+          )}
+        </AnimatePresence>
       </>
     );
   }
 
   // Main app layout
+  const showCatalogAtmosphere = currentPage === "home" || currentPage === "library";
   return (
-    <div className={`app-container${effectiveControllerMode ? " app-container--controller" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
-      {startupRefreshNotice && (
-        <div className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}>
-          {startupRefreshNotice.text}
-        </div>
-      )}
-      {catalogActionNotice && (
-        <div className={`auth-refresh-notice auth-refresh-notice--${catalogActionNotice.tone}`}>
-          {catalogActionNotice.text}
-        </div>
-      )}
+    <div className={`app-container${effectiveControllerMode ? " app-container--controller" : ""}${showCatalogAtmosphere ? " app-container--atmosphere" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
+      {showCatalogAtmosphere && <LazyShaderAtmosphere variant="controller" className="catalog-atmosphere" />}
+      <AnimatePresence>
+        {startupRefreshNotice && (
+          <m.div
+            key="startup-refresh-notice"
+            className={`auth-refresh-notice auth-refresh-notice--${startupRefreshNotice.tone}`}
+            {...overlayMotion}
+          >
+            {startupRefreshNotice.text}
+          </m.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {catalogActionNotice && (
+          <m.div
+            key="catalog-action-notice"
+            className={`auth-refresh-notice auth-refresh-notice--${catalogActionNotice.tone}`}
+            {...overlayMotion}
+          >
+            {catalogActionNotice.text}
+          </m.div>
+        )}
+      </AnimatePresence>
       <Navbar
         currentPage={currentPage}
         onNavigate={handleNavigate}

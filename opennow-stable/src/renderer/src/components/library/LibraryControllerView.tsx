@@ -1,4 +1,4 @@
-import { Search, Gamepad2, Loader2, MoreHorizontal, Menu } from "lucide-react";
+import { Search, Gamepad2, MoreHorizontal, Menu } from "lucide-react";
 import type { JSX, RefObject } from "react";
 import type { GameInfo } from "@shared/gfn";
 import {
@@ -12,6 +12,7 @@ import {
 import type { ControllerStoreFilterItem } from "../../lib/libraryFilters";
 import { useTranslation } from "../../i18n";
 import { ControllerGameCard } from "./ControllerGameCard";
+import { MotionSpinner } from "../MotionSpinner";
 
 export interface LibraryControllerViewProps {
   isLoading: boolean;
@@ -87,7 +88,7 @@ export function LibraryControllerView({
     <div className="library-page controller-library-page">
       {isLoading ? (
         <div className="library-empty-state controller-library-empty">
-          <Loader2 className="library-spinner" size={54} />
+            <MotionSpinner className="library-spinner" size={54} label={t("common.loading")} />
           <p>{t("library.empty.loadingLibrary")}</p>
         </div>
       ) : libraryCount === 0 ? (

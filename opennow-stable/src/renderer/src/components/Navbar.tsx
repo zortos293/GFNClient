@@ -1,9 +1,10 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, Timer, HardDrive, X, Loader2, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon } from "lucide-react";
+import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "../i18n";
 import { OpenNowLogoMark } from "./OpenNowLogoMark";
+import { MotionSpinner } from "./MotionSpinner";
 
 interface NavbarProps {
   currentPage: "home" | "library" | "settings";
@@ -334,7 +335,7 @@ export function Navbar({
               onClick={onResumeSession}
               disabled={isResumingSession || isTerminatingSession || !activeSession.serverIp}
             >
-              {isResumingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <PlayCircle size={14} />}
+              {isResumingSession ? <MotionSpinner size={14} label="Resuming session" /> : <PlayCircle size={14} />}
               <span className="navbar-session-resume-text">{t("app.actions.resume")}</span>
               {activeSessionTitle && <span className="navbar-session-resume-game">{activeSessionTitle}</span>}
             </button>
@@ -349,7 +350,7 @@ export function Navbar({
               onClick={onTerminateSession}
               disabled={isResumingSession || isTerminatingSession}
             >
-              {isTerminatingSession ? <Loader2 size={14} className="navbar-session-resume-spin" /> : <Square size={12} />}
+              {isTerminatingSession ? <MotionSpinner size={14} label="Ending session" /> : <Square size={12} />}
               <span className="navbar-session-terminate-text">{t("session.terminate")}</span>
             </button>
           </div>

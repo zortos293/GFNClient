@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Loader2, LogOut, Clock3, AlertTriangle, Mic, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Gamepad2, Gauge, Images, Keyboard, MousePointer2, SlidersHorizontal } from "lucide-react";
+import { Maximize, Minimize, LogOut, Clock3, AlertTriangle, Mic, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Gamepad2, Gauge, Images, Keyboard, MousePointer2, SlidersHorizontal } from "lucide-react";
 import SideBar from "./SideBar";
 import { SessionStartedSplash } from "./SessionStartedSplash";
 import { StreamStatsHud } from "./StreamStatsHud";
@@ -29,6 +29,7 @@ import {
   StreamWaitingForVideo,
   VideoFocusOnReady,
 } from "./stream/StreamEmptyStates";
+import { MotionSpinner } from "./MotionSpinner";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 const CONTROLLER_MENU_REPEAT_MS = 180;
@@ -1406,14 +1407,19 @@ export function StreamView({
   }, [exitPrompt.open, isConnecting, showSideBar]);
 
   return (
-    <div className={["sv", className].filter(Boolean).join(" ")}>
-      <video
+    <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", className].filter(Boolean).join(" ")}>
+      <m.video
         ref={setVideoRef}
         autoPlay
         playsInline
         muted
         tabIndex={-1}
         className="sv-video"
+        initial={false}
+        animate={streamVideoReady
+          ? { opacity: 1, scale: 1 }
+          : { opacity: 0, scale: 1.008 }}
+        transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
         onClick={() => {
           if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
             localVideoRef.current.focus({ preventScroll: true });
@@ -1438,14 +1444,24 @@ export function StreamView({
         </div>
       )}
 
-      {showSideBar && (
-        <>
-          <div
+      <AnimatePresence>
+        {showSideBar && (
+          <m.div
+            key="quick-menu-backdrop"
             className="sv-sidebar-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={() => setShowSideBar(false)}
           />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showSideBar && (
           <SideBar
+            key="quick-menu-sidebar"
             title="Quick menu"
             className="sv-sidebar"
             elementRef={sidebarRef}
@@ -2037,8 +2053,8 @@ export function StreamView({
               </div>
             )}
           </SideBar>
-        </>
-      )}
+        )}
+      </AnimatePresence>
 
       {selectedScreenshot && (
         <div className="sv-shot-modal" role="dialog" aria-modal="true" aria-label="Screenshot preview">
@@ -2099,7 +2115,7 @@ export function StreamView({
       {isConnecting && (
         <div className="sv-connect">
           <div className="sv-connect-inner">
-            <Loader2 className="sv-connect-spin" size={44} />
+            <MotionSpinner className="sv-connect-spin" size={44} label="Connecting to stream" />
             <p className="sv-connect-title">Connecting to {gameTitle}</p>
             {PlatformIcon && (
               <div className="sv-connect-platform" title={platformName}>

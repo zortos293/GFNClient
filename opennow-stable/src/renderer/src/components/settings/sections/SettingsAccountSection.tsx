@@ -1,4 +1,4 @@
-import { HardDrive, Users, ExternalLink, Loader, RefreshCcw, Trash2, AlertTriangle, Check } from "lucide-react";
+import { HardDrive, Users, ExternalLink, RefreshCcw, Trash2, AlertTriangle, Check } from "lucide-react";
 import { useCallback, useEffect, useState, type JSX } from "react";
 import type { GameAccountConnection, Settings, SubscriptionInfo } from "@shared/gfn";
 import { GFN_STORAGE_MANAGER_URL } from "@shared/gfn";
@@ -6,6 +6,7 @@ import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
 import { formatGameAccountSyncDate, formatStorageGb } from "../settingsFormatters";
 import type { GameAccountBusyAction, StorageResetState } from "../settingsTypes";
+import { MotionSpinner } from "../../MotionSpinner";
 
 export interface SettingsAccountSectionProps {
   settings: Settings;
@@ -272,7 +273,7 @@ export function SettingsAccountSection({
                 void handleGameAccountAction(account, "resync");
               }}
             >
-              {busyAction === "resync" ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+              {busyAction === "resync" ? <MotionSpinner size={15} label="Resyncing" /> : <RefreshCcw size={15} />}
               {busyAction === "resync"
                 ? t("settings.accountConnections.resyncing")
                 : t("settings.accountConnections.resync")}
@@ -289,7 +290,7 @@ export function SettingsAccountSection({
                 void handleGameAccountAction(account, primaryAction);
               }}
             >
-              {busyAction === primaryAction ? <Loader size={15} className="spin" /> : primaryIcon}
+              {busyAction === primaryAction ? <MotionSpinner size={15} label="Updating" /> : primaryIcon}
               {busyAction === primaryAction
                 ? primaryAction === "unlink"
                   ? t("settings.accountConnections.unlinking")
@@ -433,7 +434,7 @@ export function SettingsAccountSection({
             void loadGameAccounts();
           }}
         >
-          {gameAccountsLoading ? <Loader size={15} className="spin" /> : <RefreshCcw size={15} />}
+          {gameAccountsLoading ? <MotionSpinner size={15} label="Refreshing accounts" /> : <RefreshCcw size={15} />}
           {t("settings.accountConnections.refresh")}
         </button>
       </div>
@@ -452,7 +453,7 @@ export function SettingsAccountSection({
         ) : null}
         {gameAccountsLoading ? (
           <div className="settings-game-account-state settings-game-account-state--muted">
-            <Loader size={16} className="spin" />
+            <MotionSpinner size={16} />
             <span>{t("settings.accountConnections.loading")}</span>
           </div>
         ) : gameAccounts.length > 0 ? (

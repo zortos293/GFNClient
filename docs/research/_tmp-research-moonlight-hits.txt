@@ -1,5 +1,0 @@
-nvst-rtsps-wss-connect.md: moonlight=0 wss=6
-nvst-srtp-key-derivation.md: moonlight=1 wss=0
-nvst-wire-format.md: moonlight=19 wss=0
-_tmp-bifrost2-ws-upgrade.txt: moonlight=0 wss=0
-_tmp-bifrost2-wss-hits.txt: moonlight=0 wss=1

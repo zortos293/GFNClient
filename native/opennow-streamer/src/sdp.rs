@@ -697,8 +697,8 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         "a=vqos.fec.rateDropWindow:10".to_owned(),
         "a=vqos.fec.minRequiredFecPackets:2".to_owned(),
         "a=vqos.fec.repairMinPercent:5".to_owned(),
-        "a=vqos.fec.repairPercent:20".to_owned(),
-        "a=vqos.fec.repairMaxPercent:40".to_owned(),
+        "a=vqos.fec.repairPercent:5".to_owned(),
+        "a=vqos.fec.repairMaxPercent:35".to_owned(),
         "a=vqos.dynamicStreamingMode:0".to_owned(),
         "a=vqos.drc.enable:0".to_owned(),
         "a=vqos.calculateAvgVideoStreamingBitrate:1".to_owned(),
@@ -723,11 +723,10 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         "a=video.packetSize:1140".to_owned(),
         "a=packetPacing.version:3".to_owned(),
         "a=packetPacing.mode:1".to_owned(),
-        "a=packetPacing.minNumPacketsPerGroup:0".to_owned(),
+        "a=packetPacing.minNumPacketsPerGroup:15".to_owned(),
         "a=packetPacing.enableAccurateSleep:1".to_owned(),
         "a=packetPacing.enableSmoothTransition:1".to_owned(),
         "a=packetPacing.allowFpsBasedToggle:1".to_owned(),
-        "a=vqos.bllFec.enable:1".to_owned(),
         "a=vqos.relaxMaxBitrate.overrideAvgBitrateThresholdPercent:4".to_owned(),
         "a=vqos.relaxMaxBitrate.customAvgBitrateThresholdPercent:65".to_owned(),
         "a=vqos.relaxMaxBitrate.overrideAvgQpThresholdPercent:7".to_owned(),
@@ -824,9 +823,9 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         ),
         "a=packetPacing.maxDelayUs:1000".to_owned(),
         "a=packetPacing.minNumPacketsFrame:10".to_owned(),
-        "a=video.rtpNackQueueLength:2048".to_owned(),
-        "a=video.rtpNackQueueMaxPackets:1024".to_owned(),
-        "a=video.rtpNackMaxPacketCount:64".to_owned(),
+        "a=video.rtpNackQueueLength:1024".to_owned(),
+        "a=video.rtpNackQueueMaxPackets:512".to_owned(),
+        "a=video.rtpNackMaxPacketCount:25".to_owned(),
         "a=vqos.drc.qpMaxResThresholdAdj:4".to_owned(),
         "a=vqos.grc.qpMaxResThresholdAdj:4".to_owned(),
         "a=vqos.drc.iirFilterFactor:100".to_owned(),
@@ -1296,11 +1295,14 @@ mod tests {
         assert!(nvst.contains("a=video.bitDepth:10"));
         assert!(nvst.contains("a=packetPacing.numGroups:3"));
         assert!(nvst.contains("a=packetPacing.enableAccurateSleep:1"));
-        assert!(nvst.contains("a=packetPacing.minNumPacketsPerGroup:0"));
+        assert!(nvst.contains("a=packetPacing.minNumPacketsPerGroup:15"));
         assert!(nvst.contains("a=video.framePacing.mode:2"));
-        assert!(nvst.contains("a=vqos.fec.repairPercent:20"));
-        assert!(nvst.contains("a=vqos.bllFec.enable:1"));
-        assert!(nvst.contains("a=video.rtpNackQueueLength:2048"));
+        assert!(nvst.contains("a=vqos.fec.repairPercent:5"));
+        assert!(nvst.contains("a=vqos.fec.repairMaxPercent:35"));
+        assert!(!nvst.contains("a=vqos.bllFec.enable:1"));
+        assert!(nvst.contains("a=video.rtpNackQueueLength:1024"));
+        assert!(nvst.contains("a=video.rtpNackQueueMaxPackets:512"));
+        assert!(nvst.contains("a=video.rtpNackMaxPacketCount:25"));
         assert!(nvst.contains("a=aqos.enableRedundancy:1"));
         assert!(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:1"));
         assert!(!nvst.contains("a=video.updateSplitEncodeStateDynamically:1"));

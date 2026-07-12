@@ -233,10 +233,10 @@ export function SettingsStreamSection({
 
   const handleColorQualityChange = useCallback(
     (cq: ColorQuality) => {
-      handleChange("colorQuality", cq);
       if (colorQualityRequiresHevc(cq) && settings.codec === "H264") {
         handleChange("codec", "H265");
       }
+      handleChange("colorQuality", cq);
     },
     [handleChange, settings.codec]
   );

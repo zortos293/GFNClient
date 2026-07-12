@@ -35,7 +35,7 @@ export interface StreamSettings {
   clientMode?: StreamClientMode;
   /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
   nativeStreamerBackend?: NativeStreamerBackendPreference;
-  /** Native media transport; NVST is experimental and Windows-only. */
+  /** Native media transport; legacy NVST values normalize to WebRTC. */
   transportMode?: StreamTransportMode;
   /** Native-only override for Cloud G-Sync display detection. */
   nativeCloudGsyncMode?: NativeStreamerFeatureMode;

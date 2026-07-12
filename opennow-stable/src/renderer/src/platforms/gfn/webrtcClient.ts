@@ -382,8 +382,6 @@ export class GfnWebRtcClient {
   private static readonly DEFAULT_PARTIAL_RELIABLE_THRESHOLD_MS = 300;
   private static readonly RELIABLE_MOUSE_BACKPRESSURE_BYTES = 64 * 1024;
   private static readonly BACKPRESSURE_LOG_INTERVAL_MS = 2000;
-  private static readonly VIDEO_BASE_JITTER_TARGET_MS = 12;
-  private static readonly AUDIO_BASE_JITTER_TARGET_MS = 20;
   private static readonly VIDEO_PRESSURE_JITTER_TARGET_MS = 30;
   private static readonly AUDIO_PRESSURE_JITTER_TARGET_MS = 32;
   private static readonly DECODER_PRESSURE_CONSECUTIVE_POLLS = 3;
@@ -488,9 +486,9 @@ export class GfnWebRtcClient {
   private lastDecoderKeyframeRequestAtMs = 0;
   private negotiatedMaxBitrateKbps = 0;
   private currentBitrateCeilingKbps = 0;
-  private receiverLatencyTargets = {
-    video: GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS,
-    audio: GfnWebRtcClient.AUDIO_BASE_JITTER_TARGET_MS,
+  private receiverLatencyTargets: Record<"video" | "audio", number | null> = {
+    video: null,
+    audio: null,
   };
   private activeReceivers: Array<{ receiver: RTCRtpReceiver; kind: "audio" | "video" }> = [];
 
@@ -837,17 +835,9 @@ export class GfnWebRtcClient {
   }
 
   /**
-   * Configure an RTCRtpReceiver for minimum jitter buffer delay.
-   *
-   * jitterBufferTarget controls how long Chrome holds decoded frames before
-   * displaying them. Setting to 0 tells the browser to use the absolute
-   * minimum buffer — effectively "display as soon as decoded". This is
-   * aggressive but correct for cloud gaming where we prioritize latency
-   * over smoothness.
-   *
-   * The official GFN browser client doesn't set this at all (defaulting to
-   * ~100-200ms). As an Electron app we can be more aggressive.
-   *
+   * Keep the receiver on libwebrtc's adaptive jitter target during normal
+   * playback, matching the smooth Android-native path. A small explicit target
+   * is used only while recovering from decoder pressure.
    */
   private configureReceiverForLowLatency(receiver: RTCRtpReceiver, kind: string): void {
     if (kind !== "video" && kind !== "audio") {
@@ -862,13 +852,13 @@ export class GfnWebRtcClient {
 
       if ("jitterBufferTarget" in receiver) {
         rawReceiver.jitterBufferTarget = targetMs;
-        this.log(`${kind} receiver: jitterBufferTarget set to ${targetMs}ms`);
+        this.log(`${kind} receiver: jitterBufferTarget ${targetMs === null ? "adaptive" : `${targetMs}ms`}`);
       }
 
       if ("playoutDelayHint" in receiver) {
-        const playoutDelaySeconds = targetMs / 1000;
+        const playoutDelaySeconds = targetMs === null ? null : targetMs / 1000;
         rawReceiver.playoutDelayHint = playoutDelaySeconds;
-        this.log(`${kind} receiver: playoutDelayHint set to ${playoutDelaySeconds}s`);
+        this.log(`${kind} receiver: playoutDelayHint ${playoutDelaySeconds === null ? "adaptive" : `${playoutDelaySeconds}s`}`);
       }
 
       if (kind === "video" && "contentHint" in receiver.track) {
@@ -901,12 +891,12 @@ export class GfnWebRtcClient {
     this.diagnostics.decoderPressureActive = active;
     this.receiverLatencyTargets.video = active
       ? GfnWebRtcClient.VIDEO_PRESSURE_JITTER_TARGET_MS
-      : GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS;
+      : null;
     this.receiverLatencyTargets.audio = active
       ? GfnWebRtcClient.AUDIO_PRESSURE_JITTER_TARGET_MS
-      : GfnWebRtcClient.AUDIO_BASE_JITTER_TARGET_MS;
+      : null;
     this.log(
-      `Decoder pressure mode ${active ? "enabled" : "cleared"}; receiver targets video=${this.receiverLatencyTargets.video}ms audio=${this.receiverLatencyTargets.audio}ms`,
+      `Decoder pressure mode ${active ? "enabled" : "cleared"}; receiver targets video=${this.receiverLatencyTargets.video ?? "adaptive"} audio=${this.receiverLatencyTargets.audio ?? "adaptive"}`,
     );
     this.applyReceiverLatencyTargets();
   }
@@ -945,8 +935,8 @@ export class GfnWebRtcClient {
     this.lastDecoderKeyframeRequestAtMs = 0;
     this.negotiatedMaxBitrateKbps = 0;
     this.currentBitrateCeilingKbps = 0;
-    this.receiverLatencyTargets.video = GfnWebRtcClient.VIDEO_BASE_JITTER_TARGET_MS;
-    this.receiverLatencyTargets.audio = GfnWebRtcClient.AUDIO_BASE_JITTER_TARGET_MS;
+    this.receiverLatencyTargets.video = null;
+    this.receiverLatencyTargets.audio = null;
     this.activeReceivers = [];
     this.diagnostics.decoderPressureActive = false;
     this.diagnostics.decoderRecoveryAttempts = 0;

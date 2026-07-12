@@ -14,13 +14,11 @@ import type {
   SignalingConnectRequest,
 } from "@shared/gfn";
 import { GfnSignalingClient } from "../platforms/gfn/signaling";
-import { runNvstRtspHandshakeProbe } from "../platforms/gfn/nvstRtspProbe";
 import { NativeStreamerManager } from "../nativeStreamer/manager";
 import { normalizeNativeInputPacket } from "../nativeStreamer/input";
 import { normalizeNativeRenderSurface } from "../nativeStreamer/surface";
 import { getNativeCloudGsyncCapabilities } from "../nativeCloudGsync";
 import type { SettingsManager } from "../settings";
-import { normalizeTransportModeForPlatform } from "@shared/gfn";
 
 export interface SignalingCoordinatorDeps {
   ipcMain: IpcMain;
@@ -298,7 +296,6 @@ export class SignalingCoordinator {
       this.signalingClient.disconnect();
     }
     await this.resetNativeStreamerForSignalingReconnect();
-    await this.maybeRunNvstHandshakeProbe();
     await this.prepareNativeStreamerBeforeSignaling();
 
     this.signalingClient = new GfnSignalingClient(
@@ -457,68 +454,6 @@ export class SignalingCoordinator {
       this.nativeStreamerManager.hasActiveSession()
     ) {
       await this.nativeStreamerManager.stop("signaling reconnect");
-    }
-  }
-
-  /**
-   * GO-with-Moonlight-hypothesis: when transportMode is nvst, run RTSPS handshake,
-   * attach nvstVideo handoff to the native start context (UDP video), then continue
-   * WebRTC peer-signaling for SCTP input/datachannels. Probe failure is non-fatal —
-   * session falls back to full WebRTC video.
-   */
-  private async maybeRunNvstHandshakeProbe(): Promise<void> {
-    const context = this.nativeStreamerContext;
-    if (!context) {
-      return;
-    }
-
-    const transportMode = normalizeTransportModeForPlatform(
-      context.settings.transportMode === "nvst" ? "nvst" : "webrtc",
-      process.platform,
-      context.settings.clientMode ?? "native",
-    );
-    if (transportMode !== "nvst") {
-      return;
-    }
-
-    const endpoints = context.session.rtspsEndpoints ?? [];
-    this.emitToRenderer({
-      type: "log",
-      message:
-        "NVST transport selected: RTSPS handshake + classic UDP video (Moonlight-hypothesis); WebRTC keeps SCTP input.",
-    });
-
-    const result = await runNvstRtspHandshakeProbe({
-      sessionId: context.session.sessionId,
-      rtspsEndpoints: endpoints,
-      resolution: context.settings.resolution,
-      fps: context.settings.fps,
-      codec: context.settings.codec,
-      onLog: (message) => {
-        this.emitToRenderer({ type: "log", message: `[NVST] ${message}` });
-      },
-    });
-
-    if (result.ok && result.videoSession) {
-      this.nativeStreamerContext = {
-        ...context,
-        nvstVideo: result.videoSession,
-      };
-      this.emitToRenderer({
-        type: "log",
-        message: `NVST handshake ok (${result.steps.join("→")}); UDP video peer ${
-          result.videoSession.videoPeerIp
-        }:${result.videoSession.videoPeerPort} → native; WebRTC for input.`,
-      });
-    } else {
-      console.warn(
-        "[NvstRtspProbe] Handshake failed; falling back to full WebRTC video:",
-        result.error,
-      );
-      this.emitToRenderer({
-        type: "log",
-        message: `NVST handshake failed (${result.error ?? "unknown"}); using WebRTC for video+input.`,
-      });
     }
   }
 

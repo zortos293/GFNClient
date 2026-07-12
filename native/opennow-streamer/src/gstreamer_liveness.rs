@@ -291,6 +291,13 @@ impl VideoLivenessState {
     }
 
     pub(crate) fn set_stats_overlay(&self, overlay: Option<gst::Element>) {
+        if let Some(element) = overlay.as_ref() {
+            set_property_if_supported(
+                element,
+                "visible",
+                self.stats_overlay_visible.load(Ordering::Relaxed),
+            );
+        }
         if let Ok(mut current) = self.stats_overlay.lock() {
             *current = overlay;
         }

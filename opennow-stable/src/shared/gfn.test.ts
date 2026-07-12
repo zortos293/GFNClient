@@ -13,6 +13,7 @@ import {
   isNativeDirectXBackendSupported,
   isNativeExternalRendererSupported,
   isNativeStreamerSupportedPlatform,
+  isNvstTransportSupported,
   isOwnedLibraryStatus,
   isOwnedVariant,
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
@@ -20,6 +21,7 @@ import {
   getDefaultStreamPreferences,
   normalizeGameStore,
   normalizeNativeExternalRendererForPlatform,
+  normalizeTransportModeForPlatform,
   normalizeStreamPreferences,
   normalizeStreamClientModeForPlatform,
 } from "./gfn";
@@ -239,4 +241,10 @@ test("isNativeExternalRendererSupported is Windows-only", () => {
   assert.equal(status.supportsOfferAnswer, false);
   assert.equal(status.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
   assert.equal(status.gstreamerRuntime.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
+});
+
+test("NVST transport stays disabled and normalizes to WebRTC", () => {
+  assert.equal(isNvstTransportSupported("win32"), false);
+  assert.equal(normalizeTransportModeForPlatform("nvst", "win32", "native"), "webrtc");
+  assert.equal(normalizeTransportModeForPlatform("webrtc", "win32", "native"), "webrtc");
 });

@@ -266,8 +266,6 @@ pub(crate) mod win32_renderer_window {
     const SW_MINIMIZE: i32 = 6;
     const ESCAPE_SCANCODE: u16 = 0x0001;
     const ESCAPE_HOLD_TO_MINIMIZE: Duration = Duration::from_secs(5);
-    // Internal one-window: shorter hold exits Electron fullscreen (not minimize).
-    const ESCAPE_HOLD_TO_EXIT_FULLSCREEN: Duration = Duration::from_millis(1500);
 
     struct EnumState {
         process_id: u32,
@@ -839,14 +837,8 @@ pub(crate) mod win32_renderer_window {
             *held_hwnd = Some(hwnd);
         }
 
-        let hold = if crate::gstreamer_config::use_internal_renderer() {
-            ESCAPE_HOLD_TO_EXIT_FULLSCREEN
-        } else {
-            ESCAPE_HOLD_TO_MINIMIZE
-        };
-
         thread::spawn(move || {
-            thread::sleep(hold);
+            thread::sleep(ESCAPE_HOLD_TO_MINIMIZE);
             unsafe {
                 minimize_window_if_escape_still_held(hwnd, token);
             }
@@ -885,15 +877,6 @@ pub(crate) mod win32_renderer_window {
 
         let hwnd = hwnd as Hwnd;
         release_input_capture(hwnd);
-
-        if crate::gstreamer_config::use_internal_renderer() {
-            // Internal one-window mode: hold Escape exits Electron fullscreen
-            // (same as the toggle-fullscreen shortcut), not minimize a child HWND.
-            emit_input_event(NativeWindowInputEvent::Shortcut {
-                action: NativeStreamerShortcutAction::ToggleFullscreen,
-            });
-            return;
-        }
 
         ShowWindow(hwnd, SW_MINIMIZE);
     }
@@ -1220,13 +1203,16 @@ pub(crate) mod win32_renderer_window {
 
         if pressed {
             let should_start_hold_timer = if let Some(current) = escape_press.as_mut() {
-                let should_start = !current.hold_timer_armed && captured_hwnd().is_some();
+                let should_start = !crate::gstreamer_config::use_internal_renderer()
+                    && !current.hold_timer_armed
+                    && captured_hwnd().is_some();
                 if should_start {
                     current.hold_timer_armed = true;
                 }
                 should_start
             } else {
-                let hold_timer_armed = captured_hwnd().is_some();
+                let hold_timer_armed =
+                    !crate::gstreamer_config::use_internal_renderer() && captured_hwnd().is_some();
                 *escape_press = Some(EscapeKeyPress {
                     scancode,
                     hold_timer_armed,
@@ -1369,7 +1355,10 @@ pub(crate) mod win32_renderer_window {
 
     /// Per-key modifier byte from tracked pressed keys (official GFN yS()/Cb()).
     /// Lock keys sync separately via INPUT_LOCK_KEYS_SYNC, not here.
-    unsafe fn pressed_key_modifier_flags(keys: &HashMap<u16, PressedKey>, active_keycode: u16) -> u16 {
+    unsafe fn pressed_key_modifier_flags(
+        keys: &HashMap<u16, PressedKey>,
+        active_keycode: u16,
+    ) -> u16 {
         let mut modifiers = 0u16;
         let mut shift_tracked = false;
         let mut control_tracked = false;

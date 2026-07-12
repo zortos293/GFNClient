@@ -145,6 +145,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
@@ -2337,7 +2338,6 @@ private fun GameGridSkeleton(
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val shimmerBrush = rememberLoadingShimmerBrush(label = "game-grid-skeleton-shimmer")
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         val placeholderItems = remember(gridSpec.columns, storeLayout) {
@@ -2356,7 +2356,6 @@ private fun GameGridSkeleton(
                     StoreStartRailsSkeleton(
                         settings = settings,
                         tvProfile = tvProfile,
-                        shimmerBrush = shimmerBrush,
                     )
                 }
             }
@@ -2366,7 +2365,6 @@ private fun GameGridSkeleton(
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
                     showStoreLabels = settings.showGameStoreLabels,
-                    shimmerBrush = shimmerBrush,
                 )
             }
         }
@@ -2377,7 +2375,6 @@ private fun GameGridSkeleton(
 private fun StoreStartRailsSkeleton(
     settings: AppSettings,
     tvProfile: Boolean,
-    shimmerBrush: Brush,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
@@ -2391,7 +2388,6 @@ private fun StoreStartRailsSkeleton(
             StoreRailSectionSkeleton(
                 cardWidth = cardWidth,
                 expressiveUi = settings.expressiveUi,
-                shimmerBrush = shimmerBrush,
             )
         }
     }
@@ -2401,11 +2397,10 @@ private fun StoreStartRailsSkeleton(
 private fun StoreRailSectionSkeleton(
     cardWidth: Dp,
     expressiveUi: Boolean,
-    shimmerBrush: Brush,
 ) {
     val spacing = 10.dp
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SkeletonLine(widthFraction = 0.34f, height = 15.dp, shimmerBrush = shimmerBrush)
+        SkeletonLine(widthFraction = 0.34f, height = 15.dp)
         BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
@@ -2424,7 +2419,6 @@ private fun StoreRailSectionSkeleton(
                     StoreRailGameCardSkeleton(
                         width = fittedCardWidth,
                         expressiveUi = expressiveUi,
-                        shimmerBrush = shimmerBrush,
                     )
                 }
             }
@@ -2436,7 +2430,6 @@ private fun StoreRailSectionSkeleton(
 private fun StoreRailGameCardSkeleton(
     width: Dp,
     expressiveUi: Boolean,
-    shimmerBrush: Brush,
 ) {
     val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     Surface(
@@ -2450,20 +2443,18 @@ private fun StoreRailGameCardSkeleton(
         shadowElevation = 1.dp,
     ) {
         Box(Modifier.fillMaxSize().clip(shape)) {
-            LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+            LoadingShimmer(Modifier.fillMaxSize())
             SkeletonCircle(
                 size = 44.dp,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(6.dp),
-                shimmerBrush = shimmerBrush,
             )
             SkeletonCircle(
                 size = 44.dp,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(6.dp),
-                shimmerBrush = shimmerBrush,
             )
         }
     }
@@ -2475,7 +2466,6 @@ private fun GameCardSkeleton(
     squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
     showStoreLabels: Boolean,
-    shimmerBrush: Brush,
 ) {
     val cardShape = RoundedCornerShape(12.dp)
     Card(
@@ -2487,37 +2477,34 @@ private fun GameCardSkeleton(
     ) {
         if (thumbnailPlayOverlay) {
             Box(Modifier.fillMaxSize()) {
-                LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+                LoadingShimmer(Modifier.fillMaxSize())
                 SkeletonCircle(
                     size = 44.dp,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(8.dp),
-                    shimmerBrush = shimmerBrush,
                 )
                 SkeletonCircle(
                     size = 44.dp,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(8.dp),
-                    shimmerBrush = shimmerBrush,
                 )
             }
         } else {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                    LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+                    LoadingShimmer(Modifier.fillMaxSize())
                     SkeletonCircle(
                         size = 44.dp,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(8.dp),
-                        shimmerBrush = shimmerBrush,
                     )
                 }
                 if (showStoreLabels) {
                     Column(Modifier.padding(horizontal = 9.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        SkeletonLine(widthFraction = 0.62f, shimmerBrush = shimmerBrush)
+                        SkeletonLine(widthFraction = 0.62f)
                     }
                 }
                 Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
@@ -2526,7 +2513,6 @@ private fun GameCardSkeleton(
                             .fillMaxWidth()
                             .height(48.dp)
                             .clip(RoundedCornerShape(999.dp)),
-                        shimmerBrush = shimmerBrush,
                     )
                 }
             }
@@ -2535,23 +2521,21 @@ private fun GameCardSkeleton(
 }
 
 @Composable
-private fun SkeletonLine(widthFraction: Float, height: Dp = 9.dp, shimmerBrush: Brush) {
+private fun SkeletonLine(widthFraction: Float, height: Dp = 9.dp) {
     LoadingShimmer(
         Modifier
             .fillMaxWidth(widthFraction)
             .height(height)
             .clip(RoundedCornerShape(999.dp)),
-        shimmerBrush = shimmerBrush,
     )
 }
 
 @Composable
-private fun SkeletonCircle(size: Dp, modifier: Modifier = Modifier, shimmerBrush: Brush) {
+private fun SkeletonCircle(size: Dp, modifier: Modifier = Modifier) {
     LoadingShimmer(
         modifier
             .size(size)
             .clip(CircleShape),
-        shimmerBrush = shimmerBrush,
     )
 }
 
@@ -9168,36 +9152,40 @@ internal fun UrlImage(url: String?, modifier: Modifier = Modifier, fallbackUrl: 
 }
 
 @Composable
-private fun LoadingShimmer(modifier: Modifier = Modifier, shimmerBrush: Brush = rememberLoadingShimmerBrush()) {
-    Box(
-        modifier
-            .background(Color(0xff0d1216))
-            .background(shimmerBrush),
-    )
-}
-
-@Composable
-private fun rememberLoadingShimmerBrush(label: String = "loading-shimmer"): Brush {
-    val transition = rememberInfiniteTransition(label = label)
+private fun LoadingShimmer(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "shimmer")
     val shimmer by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1150, easing = LinearEasing),
         ),
-        label = "$label-offset",
+        label = "shimmer-offset",
     )
-    val base = Color(0xff0d1216)
-    return Brush.linearGradient(
-        colors = listOf(
-            base,
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
-            base,
-        ),
-        start = Offset(-720f + shimmer * 1440f, -120f),
-        end = Offset(-240f + shimmer * 1440f, 520f),
+    val baseColor = Color(0xff0d1216)
+    val highlightColor1 = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+    val highlightColor2 = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+
+    Spacer(
+        modifier = modifier
+            .background(baseColor)
+            .drawBehind {
+                val width = size.width
+                val height = size.height
+                val xOffset = -width + shimmer * (width * 2)
+                val brush = Brush.linearGradient(
+                    colors = listOf(
+                        baseColor,
+                        highlightColor1,
+                        highlightColor2,
+                        highlightColor1,
+                        baseColor,
+                    ),
+                    start = Offset(xOffset, 0f),
+                    end = Offset(xOffset + width, height),
+                )
+                drawRect(brush)
+            }
     )
 }
 

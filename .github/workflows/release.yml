@@ -3,8 +3,16 @@ name: release
 on:
   workflow_dispatch:
     inputs:
+      release_type:
+        description: Publish a stable release or a test-only nightly from dev
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - nightly
       version:
-        description: Version to release, e.g. 1.2.3 or v1.2.3
+        description: Target version (for a nightly, use the next stable version, e.g. 1.2.3)
         required: true
         type: string
   push:
@@ -22,13 +30,15 @@ permissions:
 jobs:
   preflight:
     name: preflight
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.release.outputs.version }}
       prerelease: ${{ steps.release.outputs.prerelease }}
       make_latest: ${{ steps.release.outputs.make_latest }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       source_ref: ${{ steps.release.outputs.source_ref }}
+      release_type: ${{ steps.release.outputs.release_type }}
+      release_name: ${{ steps.release.outputs.release_name }}
 
     steps:
       - name: Checkout
@@ -55,8 +65,16 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
           EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          release_type="${RELEASE_TYPE:-stable}"
           raw="${INPUT_VERSION:-$REF_NAME}"
           case "$raw" in
             opennow-stable-v*) version="${raw#opennow-stable-v}" ;;
@@ -66,6 +84,33 @@ jobs:
 
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid semver version: $raw" >&2
+            exit 1
+          fi
+
+          release_name="OpenNOW v${version}"
+          if [[ "$release_type" == "nightly" ]]; then
+            if [[ "$EVENT_NAME" != "workflow_dispatch" || "$REF_TYPE" != "branch" || "$REF_NAME" != "dev" ]]; then
+              echo "Nightly releases must be manually dispatched from the dev branch." >&2
+              exit 1
+            fi
+            if [[ "$version" == *-* || "$version" == *+* ]]; then
+              echo "Nightly target version must be a stable semver such as 1.2.3; the nightly suffix is added automatically." >&2
+              exit 1
+            fi
+            latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            latest_version="${latest_tag#opennow-stable-v}"
+            latest_version="${latest_version#v}"
+            if [[ "$latest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              highest_version="$(printf '%s\n%s\n' "$latest_version" "$version" | sort -V | tail -n 1)"
+              if [[ "$version" == "$latest_version" || "$highest_version" != "$version" ]]; then
+                echo "Nightly target $version must be newer than the latest stable release $latest_version." >&2
+                exit 1
+              fi
+            fi
+            version="${version}-nightly.${RUN_NUMBER}.${RUN_ATTEMPT}"
+            release_name="OpenNOW Nightly v${version}"
+          elif [[ "$release_type" != "stable" ]]; then
+            echo "Unsupported release type: $release_type" >&2
             exit 1
           fi
 
@@ -93,11 +138,13 @@ jobs:
             echo "make_latest=$make_latest"
             echo "release_tag=$release_tag"
             echo "source_ref=$source_ref"
+            echo "release_type=$release_type"
+            echo "release_name=$release_name"
           } >> "$GITHUB_OUTPUT"
 
   prepare-source:
     name: prepare-source
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: preflight
     permissions:
       contents: write
@@ -120,7 +167,14 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
           SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
+          RELEASE_TYPE: ${{ needs.preflight.outputs.release_type }}
         run: |
+          if [[ "$RELEASE_TYPE" == "nightly" ]]; then
+            echo "Nightly version is applied only inside build jobs; dev remains unchanged."
+            echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
             node opennow-stable/scripts/sync-release-version.mjs --check "$RELEASE_VERSION"
             echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -155,7 +209,7 @@ jobs:
       matrix:
         include:
           - label: windows-x64
-            os: blacksmith-2vcpu-windows-2025
+            os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --x64"
             native_build: "true"
             bundle_gstreamer: "1"
@@ -166,7 +220,7 @@ jobs:
               opennow-stable/dist-release/latest*.yml
               opennow-stable/dist-release/*.blockmap
           - label: windows-arm64
-            os: blacksmith-2vcpu-windows-2025
+            os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --arm64"
             native_build: "false"
             bundle_gstreamer: "0"
@@ -175,7 +229,7 @@ jobs:
             artifact_paths: |
               opennow-stable/dist-release/*-arm64.exe
           - label: macos-x64
-            os: blacksmith-6vcpu-macos-15
+            os: blacksmith-4vcpu-macos-15
             builder_args: "--mac dmg zip --x64"
             native_build: "true"
             bundle_gstreamer: "1"
@@ -187,7 +241,7 @@ jobs:
               opennow-stable/dist-release/*-x64.zip
               opennow-stable/dist-release/latest-mac.yml
           - label: macos-arm64
-            os: blacksmith-6vcpu-macos-15
+            os: blacksmith-4vcpu-macos-15
             builder_args: "--mac dmg zip --arm64"
             native_build: "true"
             bundle_gstreamer: "1"
@@ -199,7 +253,7 @@ jobs:
               opennow-stable/dist-release/*-arm64.zip
               opennow-stable/dist-release/latest-mac-arm64.yml
           - label: linux-x64
-            os: blacksmith-2vcpu-ubuntu-2404
+            os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
             native_build: "true"
             bundle_gstreamer: "0"
@@ -210,7 +264,7 @@ jobs:
               opennow-stable/dist-release/*-amd64.deb
               opennow-stable/dist-release/latest-linux.yml
           - label: linux-arm64
-            os: blacksmith-2vcpu-ubuntu-2404-arm
+            os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
             native_build: "true"
             bundle_gstreamer: "0"
@@ -555,7 +609,7 @@ jobs:
 
   release:
     name: publish-release
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       - preflight
       - prepare-source
@@ -624,7 +678,7 @@ jobs:
         with:
           tag_name: ${{ needs.preflight.outputs.release_tag }}
           target_commitish: ${{ needs.prepare-source.outputs.release_sha }}
-          name: OpenNOW v${{ needs.preflight.outputs.version }}
+          name: ${{ needs.preflight.outputs.release_name }}
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           generate_release_notes: true
@@ -632,7 +686,8 @@ jobs:
 
   finalize:
     name: finalize-version-bump
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    if: needs.preflight.outputs.release_type != 'nightly'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       - preflight
       - release

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { open, readdir } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 const NESTED_CODE_BUNDLE_EXTENSIONS = [".app", ".appex", ".bundle", ".framework", ".xpc"];
@@ -36,6 +36,17 @@ async function isMachO(path) {
 async function collectNestedCodeObjects(root) {
   const codeObjects = [];
 
+  async function isFileEntry(path, entry) {
+    if (entry.isFile()) return true;
+    if (!entry.isSymbolicLink()) return false;
+    try {
+      return (await stat(path)).isFile();
+    } catch (error) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
   async function walk(directory) {
     let entries;
     try {
@@ -50,14 +61,18 @@ async function collectNestedCodeObjects(root) {
       if (entry.isDirectory()) {
         await walk(path);
         if (isNestedCodeBundle(path)) codeObjects.push(path);
-      } else if (entry.isFile() && await isMachO(path)) {
+      } else if (await isFileEntry(path, entry) && await isMachO(path)) {
         codeObjects.push(path);
       }
     }
   }
 
   await walk(root);
-  return codeObjects;
+  return codeObjects.sort((left, right) => {
+    const leftDepth = left.split(/[\\/]+/).length;
+    const rightDepth = right.split(/[\\/]+/).length;
+    return rightDepth - leftDepth;
+  });
 }
 
 function hasValidCodeSignature(path) {

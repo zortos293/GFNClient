@@ -16,6 +16,7 @@ test("signs nested Mach-O code inside-out without replacing valid signatures", a
     const signedHelper = join(frameworksDir, "OpenNOW Helper.app");
     const unsignedHelper = join(frameworksDir, "OpenNOW Helper (Plugin).app");
     const electronFramework = join(frameworksDir, "Electron Framework.framework");
+    const frameworkBinary = join(electronFramework, "Versions", "A", "Electron Framework");
     const crashpadHandler = join(
       electronFramework,
       "Versions",
@@ -26,6 +27,7 @@ test("signs nested Mach-O code inside-out without replacing valid signatures", a
     await mkdir(signedHelper, { recursive: true });
     await mkdir(unsignedHelper, { recursive: true });
     await mkdir(join(crashpadHandler, ".."), { recursive: true });
+    await writeFile(frameworkBinary, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
     await writeFile(crashpadHandler, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
     const signCalls = [];
 
@@ -38,8 +40,11 @@ test("signs nested Mach-O code inside-out without replacing valid signatures", a
     assert.equal(signedPaths.includes(signedHelper), false);
     assert.equal(signedPaths.includes(unsignedHelper), true);
     assert.equal(signedPaths.includes(crashpadHandler), true);
+    assert.equal(signedPaths.includes(frameworkBinary), true);
     assert.equal(signedPaths.includes(electronFramework), true);
+    assert.ok(signedPaths.indexOf(crashpadHandler) < signedPaths.indexOf(frameworkBinary));
     assert.ok(signedPaths.indexOf(crashpadHandler) < signedPaths.indexOf(electronFramework));
+    assert.ok(signedPaths.indexOf(frameworkBinary) < signedPaths.indexOf(electronFramework));
     assert.deepEqual(signCalls.at(-1), {
       path: appPath,
       extraArgs: [

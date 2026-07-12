@@ -548,6 +548,7 @@ export function App(): JSX.Element {
     autoCheckForUpdates: true,
     lastSeenReleaseHighlightsVersion: "",
     videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
+    enableFastQueueJoin: false,
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [releaseHighlightsPayload, setReleaseHighlightsPayload] = useState<ReleaseHighlightsPayload | null>(null);
@@ -636,6 +637,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     streamingGameRef.current = streamingGame;
   }, [streamingGame]);
+
+  const handlePlayGameRef = useRef<((game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => Promise<void>) | null>(null);
+  const prePingSmartUrlRef = useRef<string | null>(null);
+  const prePingInFlightRef = useRef<boolean>(false);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -1672,6 +1677,46 @@ export function App(): JSX.Element {
 
     previousFreeTierRemainingSecondsRef.current = freeTierSessionRemainingSeconds;
   }, [freeTierSessionRemainingSeconds]);
+
+  // Auto-Rejoin: pre-ping best server using sessionTimeRemainingSeconds (works for ALL tiers, not just FREE)
+  useEffect(() => {
+    if (!settings.enableFastQueueJoin) return;
+
+    // Only log at key thresholds to avoid console spam
+    if (sessionTimeRemainingSeconds !== null) {
+      if (sessionTimeRemainingSeconds <= 60 && (sessionTimeRemainingSeconds % 5 === 0 || sessionTimeRemainingSeconds <= 15)) {
+        console.log("[AutoRejoin] Session time remaining:", sessionTimeRemainingSeconds, "s | cachedUrl:", prePingSmartUrlRef.current, "| inFlight:", prePingInFlightRef.current);
+      } else if (sessionTimeRemainingSeconds % 300 === 0) {
+        // Log every 5 minutes during normal play so user can verify it's alive
+        console.log("[AutoRejoin] ⏱ Session time remaining:", Math.round(sessionTimeRemainingSeconds / 60), "min");
+      }
+    } else {
+      // Only log this once — when it first becomes null
+      console.log("[AutoRejoin] sessionTimeRemainingSeconds is null (not streaming or tier unknown)");
+    }
+
+    if (
+      sessionTimeRemainingSeconds !== null &&
+      sessionTimeRemainingSeconds <= 15 &&
+      prePingSmartUrlRef.current === null &&
+      !prePingInFlightRef.current
+    ) {
+      prePingInFlightRef.current = true;
+      console.log("[AutoRejoin] *** TRIGGERING pre-fetch at", sessionTimeRemainingSeconds, "s remaining ***");
+      window.openNow.getSmartAutoJoinBaseUrl().then((smartUrl) => {
+        if (smartUrl) {
+          prePingSmartUrlRef.current = smartUrl;
+          console.log("[AutoRejoin] ✅ Cached best server URL:", smartUrl);
+        } else {
+          console.warn("[AutoRejoin] ⚠️ Pre-fetch returned no server URL");
+        }
+        prePingInFlightRef.current = false;
+      }).catch((err) => {
+        console.error("[AutoRejoin] ❌ Pre-ping failed:", err);
+        prePingInFlightRef.current = false;
+      });
+    }
+  }, [sessionTimeRemainingSeconds, settings.enableFastQueueJoin]);
 
   useEffect(() => {
     if (!localSessionTimerWarning) return;
@@ -2956,6 +3001,71 @@ export function App(): JSX.Element {
     resolveSubscriptionInfoForLaunch,
   ]);
 
+  const startAutoRejoin = useCallback((reason: string, testGameOverride?: GameInfo | null): boolean => {
+    const game = testGameOverride !== undefined ? testGameOverride : streamingGameRef.current;
+    const playGame = handlePlayGameRef.current;
+    const cachedUrl = prePingSmartUrlRef.current;
+
+    console.log("[AutoRejoin] *** startAutoRejoin called ***", {
+      reason,
+      enabled: settings.enableFastQueueJoin,
+      cachedUrl,
+      prefetchInFlight: prePingInFlightRef.current,
+      game: game?.title ?? null,
+      hasLaunchHandler: Boolean(playGame),
+    });
+
+    if (!settings.enableFastQueueJoin) {
+      console.log("[AutoRejoin] Skipping: enableFastQueueJoin is OFF");
+      return false;
+    }
+    if (!game) {
+      console.error("[AutoRejoin] Skipping: streamingGameRef is null (no active game)");
+      return false;
+    }
+    if (!playGame) {
+      console.error("[AutoRejoin] Skipping: handlePlayGameRef is null (ref not synced yet)");
+      return false;
+    }
+
+    const launch = (streamingBaseUrl: string | null): void => {
+      if (!streamingBaseUrl) {
+        console.error("[AutoRejoin] Cannot rejoin: getSmartAutoJoinBaseUrl returned null");
+        resetLaunchRuntime();
+        void refreshNavbarActiveSession();
+        return;
+      }
+      console.log("[AutoRejoin] ✅ Launching rejoin to:", streamingBaseUrl);
+      prePingSmartUrlRef.current = null;
+      prePingInFlightRef.current = false;
+      resetLaunchRuntime();
+      void refreshNavbarActiveSession();
+      launchInFlightRef.current = false;
+      window.setTimeout(() => {
+        void playGame(game, { bypassGuards: true, streamingBaseUrl }).catch((error) => {
+          console.error("[AutoRejoin] Rejoin launch failed:", error);
+        });
+      }, 500);
+    };
+
+    if (cachedUrl) {
+      console.log("[AutoRejoin] Using pre-fetched URL:", cachedUrl);
+      launch(cachedUrl);
+    } else {
+      console.warn("[AutoRejoin] No cached URL — fetching best server now (might be slower)");
+      void window.openNow.getSmartAutoJoinBaseUrl()
+        .then((url) => {
+          console.log("[AutoRejoin] Post-session fetch returned:", url);
+          launch(url);
+        })
+        .catch((error) => {
+          console.error("[AutoRejoin] Fallback fetch failed:", error);
+          launch(null);
+        });
+    }
+    return true;
+  }, [refreshNavbarActiveSession, resetLaunchRuntime, settings.enableFastQueueJoin]);
+
   const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
     console.log("[Recovery] Treating signaling close as ended session:", reason);
     const activeGameId = streamingGameRef.current?.id;
@@ -2966,9 +3076,12 @@ export function App(): JSX.Element {
     clientRef.current?.dispose();
     clientRef.current = null;
     launchInFlightRef.current = false;
-    resetLaunchRuntime();
-    void refreshNavbarActiveSession();
-  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime]);
+    const rejoining = startAutoRejoin(reason);
+    if (!rejoining) {
+      resetLaunchRuntime();
+      void refreshNavbarActiveSession();
+    }
+  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, startAutoRejoin]);
 
   // Signaling events
   useEffect(() => {
@@ -3316,14 +3429,16 @@ export function App(): JSX.Element {
             }
             clientRef.current?.dispose();
             clientRef.current = null;
-            setLaunchError({
-              stage: streamStatusToLoadingStage(streamStatusRef.current),
-              title: t("errors.sessionConnectionLostTitle"),
-              description: t("errors.sessionConnectionLostDescription"),
-            });
-            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
-            void refreshNavbarActiveSession();
-            launchInFlightRef.current = false;
+            if (!startAutoRejoin(event.reason)) {
+              setLaunchError({
+                stage: streamStatusToLoadingStage(streamStatusRef.current),
+                title: t("errors.sessionConnectionLostTitle"),
+                description: t("errors.sessionConnectionLostDescription"),
+              });
+              resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+              void refreshNavbarActiveSession();
+              launchInFlightRef.current = false;
+            }
           }
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
@@ -3356,7 +3471,7 @@ export function App(): JSX.Element {
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, markDiscordStreamStarted, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, markDiscordStreamStarted, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, startAutoRejoin, streamMicLevel, streamVolume, t]);
 
   // Play game handler
   const handlePlayGame = useCallback(async (game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => {
@@ -3678,6 +3793,10 @@ export function App(): JSX.Element {
     variantByGameId,
     warmNativeStreamerForLaunch,
   ]);
+
+  useEffect(() => {
+    handlePlayGameRef.current = handlePlayGame;
+  }, [handlePlayGame]);
 
   useEffect(() => {
     const request = pendingDirectLaunchRequest;
@@ -4177,6 +4296,65 @@ export function App(): JSX.Element {
       console.error("Stop failed:", error);
     }
   }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, resolveExitPrompt, stopSessionByTarget, streamingGame]);
+
+  // DEV ONLY: expose auto-rejoin test function so you can call window.__testAutoRejoin() in DevTools
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__testAutoRejoin = async () => {
+      console.log("[AutoRejoin] 🧪 Manual test triggered from DevTools console");
+      if (!settings.enableFastQueueJoin) {
+        console.warn("[AutoRejoin] ⚠️ enableFastQueueJoin is OFF — enable Auto-Rejoin in Settings first!");
+        return false;
+      }
+      const activeGame = streamingGameRef.current;
+      if (!activeGame) {
+        console.warn("[AutoRejoin] ⚠️ No active game is running right now to rejoin!");
+        return false;
+      }
+
+      // Step 1: Show "finding best server" notification while still streaming
+      setRemoteStreamWarning({ code: 1, message: "⏳ Finding best server...", tone: "warn" });
+      console.log("[AutoRejoin] 🧪 Fetching best server URL...");
+
+      // Step 2: Fetch best server URL BEFORE stopping the stream
+      let bestUrl: string | null = null;
+      try {
+        bestUrl = await window.openNow.getSmartAutoJoinBaseUrl();
+      } catch (e) {
+        console.warn("[AutoRejoin] ⚠️ Failed to pre-fetch best server:", e);
+      }
+
+      const serverName = bestUrl
+        ? new URL(bestUrl).hostname.split(".")[0].toUpperCase()
+        : "best server";
+
+      // Step 3: Show 5s countdown notification with the server name
+      for (let i = 5; i >= 1; i--) {
+        setRemoteStreamWarning({
+          code: 1,
+          message: `🔄 Reconnecting to ${serverName} in ${i}s...`,
+          tone: "warn",
+        });
+        console.log(`[AutoRejoin] 🧪 Reconnecting to ${serverName} in ${i}s...`);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
+      }
+
+      setRemoteStreamWarning(null);
+
+      // Step 4: Stop session and launch rejoin
+      console.log("[AutoRejoin] 🧪 Stopping existing stream session...");
+      await handleStopStream();
+      console.log("[AutoRejoin] 🧪 Triggering startAutoRejoin for game:", activeGame.title);
+      // Pass pre-fetched URL directly if available
+      if (bestUrl) {
+        prePingSmartUrlRef.current = bestUrl;
+      }
+      return startAutoRejoin("test", activeGame);
+    };
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__testAutoRejoin;
+    };
+  }, [startAutoRejoin, settings.enableFastQueueJoin, handleStopStream]);
 
   const handleDismissLaunchError = useCallback(async () => {
     markExplicitSignalingShutdown();

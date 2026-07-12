@@ -47,7 +47,7 @@ import type {
 
 import { getSettingsManager, type SettingsManager } from "./settings";
 
-import { getActiveSessions } from "./gfn/cloudmatch";
+import { getActiveSessions, getSmartAutoJoinBaseUrl } from "./gfn/cloudmatch";
 import { AuthService } from "./gfn/auth";
 import { initSessionProxyAuth } from "./gfn/proxyFetch";
 import {
@@ -96,8 +96,13 @@ import {
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
 import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowReleaseHighlights } from "./releaseHighlights";
 
+import { initDnsInterceptor } from "./services/dnsInterceptor";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Initialize the DNS interceptor before any connection is made
+initDnsInterceptor();
 
 // Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
@@ -1161,6 +1166,13 @@ function registerIpcHandlers(): void {
         canRequest: false,
         shouldUseBrowserApi: false,
       };
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.GET_SMART_AUTO_JOIN_BASE_URL,
+    async () => {
+      return await getSmartAutoJoinBaseUrl();
     },
   );
 

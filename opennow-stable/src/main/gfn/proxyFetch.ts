@@ -98,7 +98,7 @@ export async function fetchWithOptionalProxy(
 ): Promise<Response> {
   const normalizedProxyUrl = normalizeSessionProxyUrl(proxyUrl);
   if (!normalizedProxyUrl) {
-    return fetch(input, init);
+    return undiciFetch(input, init as any) as unknown as Response;
   }
 
   const protocol = new URL(normalizedProxyUrl).protocol;
@@ -112,7 +112,7 @@ export async function fetchWithOptionalProxy(
 
   const proxyConfig = parseSessionProxyForElectron(normalizedProxyUrl);
   if (!proxyConfig) {
-    return fetch(input, init);
+    return undiciFetch(input, init as any) as unknown as Response;
   }
 
   return fetchWithElectronSessionProxy(input, init, proxyConfig);

@@ -2821,6 +2821,22 @@ export function SettingsPage({ settings, regions, onSettingChange, codecResults,
               )}
                     </div>
                     </div>
+                    <div className="settings-row">
+                      <label className="settings-label">
+                        {"Auto-Rejoin (test)"}
+                        <span className="settings-hint">
+                          {"Automatically picks the best server using distance and queue, and auto-rejoins when your session ends."}
+                        </span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(settings.enableFastQueueJoin)}
+                          onChange={(e) => handleChange("enableFastQueueJoin", e.target.checked)}
+                        />
+                        <span className="settings-toggle-track" />
+                      </label>
+                    </div>
               </div>
             </section>
 

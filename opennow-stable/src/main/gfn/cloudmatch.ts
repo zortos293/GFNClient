@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import dns from "node:dns";
+import { tcpPing } from "../services/regionPing";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 
@@ -1958,4 +1959,161 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   }
 
   throw new Error("Session did not become ready after claiming");
+}
+
+interface QueueNodeInfo {
+  QueuePosition: number;
+  Region: string;
+  eta?: number;
+}
+
+interface QueueApiResponse {
+  status: boolean;
+  data: Record<string, QueueNodeInfo>;
+}
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function clusterPrefix(key: string): string {
+  const parts = key.split("-");
+  return parts.length > 2 ? parts.slice(0, parts.length - 1).join("-") : key;
+}
+
+async function isDnsResolvable(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    await fetch(url, { method: "HEAD", signal: controller.signal })
+      .finally(() => clearTimeout(timeoutId));
+    return true;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("ENOTFOUND") || msg.includes("getaddrinfo")) return false;
+    return true;
+  }
+}
+
+async function resolveIP(domain: string, proxyUrl?: string): Promise<string | null> {
+  try {
+    const url = `https://cloudflare-dns.com/dns-query?name=${domain}&type=A`;
+    const response = await fetchWithOptionalProxy(url, {
+      method: "GET",
+      headers: { "accept": "application/dns-json" }
+    }, proxyUrl);
+    if (!response.ok) return null;
+    const data = await response.json() as { Answer?: Array<{ data: string }> };
+    if (data.Answer && data.Answer.length > 0) {
+      return data.Answer[0].data;
+    }
+  } catch (e) {
+    console.warn(`[SmartAutoJoin] DNS lookup failed for ${domain}:`, e);
+  }
+  return null;
+}
+
+async function getGeoLocation(ip: string, proxyUrl?: string): Promise<{ lat: number; lon: number; city: string; country: string } | null> {
+  try {
+    const url = `https://freeipapi.com/api/json/${ip}`;
+    const response = await fetchWithOptionalProxy(url, { method: "GET" }, proxyUrl);
+    if (!response.ok) return null;
+    const data = await response.json() as { latitude?: number; longitude?: number; cityName?: string; regionName?: string; countryName?: string };
+    return {
+      lat: parseFloat(String(data.latitude)),
+      lon: parseFloat(String(data.longitude)),
+      city: data.cityName || data.regionName || "",
+      country: data.countryName || ""
+    };
+  } catch (e) {
+    console.warn(`[SmartAutoJoin] Geo-IP lookup failed for IP ${ip}:`, e);
+  }
+  return null;
+}
+
+export async function getSmartAutoJoinBaseUrl(proxyUrl?: string): Promise<string | null> {
+  const QUEUE_API_URL = "https://api.printedwaste.com/gfn/queue/";
+
+  try {
+    const queueRes = await fetchWithOptionalProxy(QUEUE_API_URL, { method: "GET" }, proxyUrl);
+    if (!queueRes.ok) return null;
+    const queueBody = (await queueRes.json()) as QueueApiResponse;
+    if (!queueBody.status || !queueBody.data) return null;
+
+    // Get unique datacenter prefixes
+    const prefixes = Array.from(
+      new Set(
+        Object.keys(queueBody.data).map((zoneId) => clusterPrefix(zoneId).toLowerCase())
+      )
+    );
+
+    const datacenters: Record<string, { prefix: string; pingMs: number }> = {};
+
+    // Ping all datacenters in parallel (takes only ~200-300ms total)
+    await Promise.all(
+      prefixes.map(async (prefix) => {
+        const matchingZone = Object.keys(queueBody.data).find(
+          (zoneId) => clusterPrefix(zoneId).toLowerCase() === prefix
+        );
+        if (!matchingZone) return;
+
+        const hostname = `${matchingZone.toLowerCase()}.cloudmatchbeta.nvidiagrid.net`;
+        try {
+          const ping = await tcpPing(hostname, 443, 1200);
+          if (ping !== null) {
+            datacenters[prefix] = { prefix, pingMs: ping };
+          } else {
+            datacenters[prefix] = { prefix, pingMs: 999 };
+          }
+        } catch {
+          datacenters[prefix] = { prefix, pingMs: 999 };
+        }
+      })
+    );
+
+    const candidateZones: Array<{ zoneId: string; queue: number; pingMs: number }> = [];
+    for (const [zoneId, zoneInfo] of Object.entries(queueBody.data)) {
+      const prefix = clusterPrefix(zoneId).toLowerCase();
+      const dc = datacenters[prefix];
+      if (dc) {
+        candidateZones.push({
+          zoneId,
+          queue: zoneInfo.QueuePosition ?? 0,
+          pingMs: dc.pingMs,
+        });
+      }
+    }
+
+    // Sort by ping bucket (rounded to nearest 15ms to group similar low pings) first, then by queue
+    candidateZones.sort((a, b) => Math.round(a.pingMs / 15) - Math.round(b.pingMs / 15) || a.queue - b.queue);
+
+    for (const cand of candidateZones) {
+      const hostname = `${cand.zoneId.toLowerCase()}.cloudmatchbeta.nvidiagrid.net`;
+      const ip = await resolveHostnameWithFallback(hostname);
+      if (ip) {
+        const url = `https://${hostname}`;
+        console.log(`[SmartAutoJoin] Selected candidate zone: ${cand.zoneId} (Ping: ${cand.pingMs}ms, Queue: ${cand.queue}) -> resolves to ${ip}`);
+        return url;
+      } else {
+        console.warn(`[SmartAutoJoin] Candidate zone ${cand.zoneId} (${hostname}) is offline or nxdomain, skipping.`);
+      }
+    }
+
+    // Final fallback if absolutely nothing resolved, try the first candidate anyway
+    if (candidateZones[0]) {
+      const hostname = `${candidateZones[0].zoneId.toLowerCase()}.cloudmatchbeta.nvidiagrid.net`;
+      console.warn(`[SmartAutoJoin] No candidates resolved, falling back to: ${hostname}`);
+      return `https://${hostname}`;
+    }
+  } catch (err) {
+    console.warn(`[SmartAutoJoin] Selection failed:`, err);
+  }
+  return null;
 }

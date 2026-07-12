@@ -677,16 +677,32 @@ jobs:
           mv /tmp/merged.yml "$x64_feed"
           rm "$arm64_feed"
 
-      - name: Publish GitHub release
+      - name: Stage GitHub release draft
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.preflight.outputs.release_tag }}
           target_commitish: ${{ needs.prepare-source.outputs.release_sha }}
           name: ${{ needs.preflight.outputs.release_name }}
+          draft: true
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           generate_release_notes: true
           files: release-artifacts/**/*
+
+      - name: Publish completed GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.preflight.outputs.make_latest }}
+        run: |
+          set -euo pipefail
+          args=(release edit "$RELEASE_TAG" "--draft=false" "--prerelease=$PRERELEASE")
+          if [[ "$MAKE_LATEST" == "true" ]]; then
+            args+=(--latest)
+          fi
+          gh "${args[@]}"
 
   finalize:
     name: finalize-version-bump

@@ -933,6 +933,11 @@ mod macos_child {
         bounds: *const c_void,
     }
 
+    // Objective-C selectors are process-global, immutable runtime tokens returned by
+    // sel_registerName. Sharing these non-null tokens does not share pointed-to data.
+    unsafe impl Send for Selectors {}
+    unsafe impl Sync for Selectors {}
+
     fn selectors() -> &'static Selectors {
         static SELECTORS: OnceLock<Selectors> = OnceLock::new();
         SELECTORS.get_or_init(|| unsafe {

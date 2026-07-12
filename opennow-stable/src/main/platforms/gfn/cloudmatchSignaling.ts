@@ -4,6 +4,7 @@ import type { IceServer, MediaConnectionInfo } from "@shared/gfn";
 
 import type { CloudMatchResponse } from "./types";
 import { collectRtspsEndpoints } from "./nvstRtspProbe";
+import { isZoneHostname } from "./cloudmatchTransport";
 
 const READY_SESSION_STATUSES = new Set([2, 3]);
 
@@ -212,9 +213,7 @@ export function resolveSignaling(response: CloudMatchResponse): {
         : null)
       .find((host): host is string => Boolean(host)) ??
     signalingHost ??
-    (serverIp.includes("cloudmatch.nvidiagrid.net") || serverIp.includes("cloudmatchbeta.nvidiagrid.net")
-      ? null
-      : serverIp);
+    (isZoneHostname(serverIp) ? null : serverIp);
 
   return {
     serverIp,

@@ -32,12 +32,16 @@ private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
 private const val QUEUED_GAME_LIMIT = 24
 
 class ExternalPrefs(context: Context, name: String) {
-    private val file = File(context.getExternalFilesDir(null), "$name.xml")
+    private val primaryFile: File
+    private val fallbackFile: File
     private val data = mutableMapOf<String, String>()
     private val lock = Any()
     private val ioScope = CoroutineScope(Dispatchers.IO)
 
     init {
+        val extDir = context.getExternalFilesDir(null)
+        primaryFile = File(extDir ?: context.filesDir, "$name.xml")
+        fallbackFile = File(context.filesDir, "$name.xml")
         synchronized(lock) {
             migrateFromInternal(context, name)
             load()
@@ -45,7 +49,7 @@ class ExternalPrefs(context: Context, name: String) {
     }
 
     private fun migrateFromInternal(context: Context, name: String) {
-        if (file.exists()) return
+        if (primaryFile.exists() || fallbackFile.exists()) return
         val internalPrefs = context.applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE)
         val allInternal = internalPrefs.all
         if (allInternal.isNotEmpty()) {
@@ -58,10 +62,14 @@ class ExternalPrefs(context: Context, name: String) {
     }
 
     private fun load() {
-        if (!file.exists()) return
+        val targetFile = when {
+            primaryFile.exists() -> primaryFile
+            fallbackFile.exists() -> fallbackFile
+            else -> return
+        }
         runCatching {
             val parser = Xml.newPullParser()
-            FileInputStream(file).use { fis ->
+            FileInputStream(targetFile).use { fis ->
                 parser.setInput(fis, "UTF-8")
                 var event = parser.eventType
                 while (event != XmlPullParser.END_DOCUMENT) {
@@ -75,27 +83,56 @@ class ExternalPrefs(context: Context, name: String) {
                     event = parser.next()
                 }
             }
-        }.onFailure { it.printStackTrace() }
+        }.onFailure {
+            it.printStackTrace()
+            if (targetFile == primaryFile && fallbackFile.exists()) {
+                runCatching {
+                    val parser = Xml.newPullParser()
+                    FileInputStream(fallbackFile).use { fis ->
+                        parser.setInput(fis, "UTF-8")
+                        var event = parser.eventType
+                        while (event != XmlPullParser.END_DOCUMENT) {
+                            if (event == XmlPullParser.START_TAG && parser.name == "string") {
+                                val name = parser.getAttributeValue(null, "name")
+                                val value = parser.nextText()
+                                if (name != null) {
+                                    data[name] = value
+                                }
+                            }
+                            event = parser.next()
+                        }
+                    }
+                }.onFailure { e -> e.printStackTrace() }
+            }
+        }
     }
 
     private fun save(mapSnapshot: Map<String, String>) {
         synchronized(lock) {
-            runCatching {
-                file.parentFile?.mkdirs()
-                file.bufferedWriter().use { writer ->
-                    writer.write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
-                    writer.write("<map>\n")
-                    for ((k, v) in mapSnapshot) {
-                        writer.write("    <string name=\"")
-                        writer.write(escapeXmlAttribute(k))
-                        writer.write("\">")
-                        writer.write(escapeXmlText(v))
-                        writer.write("</string>\n")
-                    }
-                    writer.write("</map>\n")
-                }
-            }.onFailure { it.printStackTrace() }
+            val success = writeToFile(primaryFile, mapSnapshot)
+            if (!success) {
+                writeToFile(fallbackFile, mapSnapshot)
+            }
         }
+    }
+
+    private fun writeToFile(file: File, mapSnapshot: Map<String, String>): Boolean {
+        return runCatching {
+            file.parentFile?.mkdirs()
+            file.bufferedWriter().use { writer ->
+                writer.write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
+                writer.write("<map>\n")
+                for ((k, v) in mapSnapshot) {
+                    writer.write("    <string name=\"")
+                    writer.write(escapeXmlAttribute(k))
+                    writer.write("\">")
+                    writer.write(escapeXmlText(v))
+                    writer.write("</string>\n")
+                }
+                writer.write("</map>\n")
+            }
+            true
+        }.getOrDefault(false)
     }
 
     private fun escapeXmlAttribute(str: String): String =
@@ -135,6 +172,21 @@ class ExternalPrefs(context: Context, name: String) {
                 save(snapshot)
             }
         }
+
+        fun commit(): Boolean {
+            val snapshot = synchronized(lock) {
+                actions.forEach { it() }
+                data.toMap()
+            }
+            synchronized(lock) {
+                val success = writeToFile(primaryFile, snapshot)
+                return if (!success) {
+                    writeToFile(fallbackFile, snapshot)
+                } else {
+                    true
+                }
+            }
+        }
     }
 }
 
@@ -150,13 +202,13 @@ class SettingsStore(context: Context) {
 
     fun update(transform: (AppSettings) -> AppSettings) {
         val next = transform(_settings.value).normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(next)).apply()
+        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(next)).commit()
         _settings.value = next
     }
 
     fun replace(next: AppSettings) {
         val normalized = next.normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(normalized)).apply()
+        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(normalized)).commit()
         _settings.value = normalized
     }
 
@@ -216,7 +268,7 @@ class AuthStore(context: Context) {
     }
 
     fun save(next: PersistedAuthState) {
-        prefs.edit().putString(KEY_AUTH, OpenNowJson.encodeToString(next)).apply()
+        prefs.edit().putString(KEY_AUTH, OpenNowJson.encodeToString(next)).commit()
         _state.value = next
     }
 
@@ -260,7 +312,7 @@ class AuthStore(context: Context) {
         val existing = prefs.getString(KEY_DEVICE_ID, null)
         if (!existing.isNullOrBlank()) return existing
         val next = UUID.randomUUID().toString()
-        prefs.edit().putString(KEY_DEVICE_ID, next).apply()
+        prefs.edit().putString(KEY_DEVICE_ID, next).commit()
         return next
     }
 }

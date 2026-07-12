@@ -543,7 +543,7 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     ) {
         OpenNowMark(88.dp)
         Spacer(Modifier.height(20.dp))
-        Text("OpenNOW", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+        Text("OpenNOW", color = TextPrimary, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
         Text("Native Android GeForce NOW client", color = TextMuted)
         Spacer(Modifier.height(28.dp))
         ProviderPicker(state.providers, state.selectedProvider, viewModel::selectProvider)
@@ -687,7 +687,7 @@ internal fun DeviceLoginPanel(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.login_tv_title), color = TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 DeviceLoginQr(qrCode = qrCode, qrMaxSize = qrMaxSize)
                 DeviceLoginControls(
                     launchUrl = launchUrl,
@@ -751,7 +751,7 @@ private fun DeviceLoginControls(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (showTitle) {
-            Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.login_tv_title), color = TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         }
         TextButton(
             onClick = {
@@ -4029,15 +4029,10 @@ private fun LongPressPlayButton(
                 onClick = onClick,
                 onLongClick = onLongClick,
                 onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
-            )
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) TextPrimary else Color.Transparent,
-                shape = shape,
             ),
         shape = shape,
         color = MaterialTheme.colorScheme.primary,
-        tonalElevation = 2.dp,
+        tonalElevation = 0.dp,
     ) {
         Row(
             Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -4046,12 +4041,12 @@ private fun LongPressPlayButton(
         ) {
             ZortosPlayMark(
                 modifier = Modifier.size(20.dp),
-                ringColor = Color.White,
+                ringColor = Color.Black,
             )
             Spacer(Modifier.width(8.dp))
             Text(
                 stringResource(R.string.action_play),
-                color = Color.White,
+                color = Color.Black,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -8671,7 +8666,12 @@ private fun GamepadButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
+        Text(
+            text = label,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White.copy(alpha = opacity * 0.9f),
+            modifier = if (label == "^") Modifier.offset(y = size * 0.08f) else Modifier
+        )
     }
     DisposableEffect(client, mask) {
         onDispose {

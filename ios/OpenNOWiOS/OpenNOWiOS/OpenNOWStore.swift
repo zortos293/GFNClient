@@ -2269,7 +2269,7 @@ private final class OAuthLoopbackServer: @unchecked Sendable {
     private var continuation: CheckedContinuation<URL, Error>?
     private var didComplete = false
 
-    func waitForCallback(port: UInt16, timeoutSeconds: TimeInterval = 120) async throws -> URL {
+    func waitForCallback(port: UInt16, timeoutSeconds: TimeInterval = 300) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [weak self] in
                 guard let self else {
@@ -2575,6 +2575,25 @@ private actor GFNAPIClient {
         return obj
     }
 
+    private func responseError(
+        domain: String,
+        response: HTTPURLResponse,
+        data: Data,
+        fallback: String
+    ) -> NSError {
+        let rawBody = String(data: data, encoding: .utf8) ?? ""
+        let rawError = NSError(
+            domain: domain,
+            code: response.statusCode,
+            userInfo: [NSLocalizedDescriptionKey: rawBody.isEmpty ? fallback : rawBody]
+        )
+        return NSError(
+            domain: domain,
+            code: response.statusCode,
+            userInfo: [NSLocalizedDescriptionKey: OpenNOWErrorPresenter.message(for: rawError, fallback: fallback)]
+        )
+    }
+
     private func headersForOAuth() -> [String: String] {
         [
             "Origin": "https://nvfile",
@@ -2759,15 +2778,16 @@ private actor GFNAPIClient {
             url: GFNConstants.tokenEndpoint,
             method: "POST",
             headers: tokenHeaders,
-            body: tokenBody.data(using: String.Encoding.utf8)
+            body: tokenBody.data(using: String.Encoding.utf8),
+            timeoutInterval: 90
         )
         TVAuthDiagnostics.record("Token exchange returned HTTP \(tokenResponse.statusCode).")
         guard tokenResponse.statusCode == 200 else {
-            let body = String(data: tokenData, encoding: .utf8) ?? "unknown error"
-            throw NSError(
+            throw responseError(
                 domain: "OpenNOW.Auth",
-                code: tokenResponse.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "Token exchange failed: \(body)"]
+                response: tokenResponse,
+                data: tokenData,
+                fallback: "NVIDIA could not finish the token exchange."
             )
         }
 
@@ -2936,7 +2956,12 @@ private actor GFNAPIClient {
             body: body.data(using: .utf8)
         )
         guard response.statusCode == 200 else {
-            throw NSError(domain: "OpenNOW.Auth", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "client_token refresh failed"])
+            throw responseError(
+                domain: "OpenNOW.Auth",
+                response: response,
+                data: data,
+                fallback: "The saved account session could not be refreshed."
+            )
         }
         let json = try parseJSON(data)
         guard let accessToken = json["access_token"] as? String else {
@@ -2978,7 +3003,12 @@ private actor GFNAPIClient {
             body: body.data(using: .utf8)
         )
         guard response.statusCode == 200 else {
-            throw NSError(domain: "OpenNOW.Auth", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "refresh_token exchange failed"])
+            throw responseError(
+                domain: "OpenNOW.Auth",
+                response: response,
+                data: data,
+                fallback: "The saved account session could not be refreshed."
+            )
         }
         let json = try parseJSON(data)
         guard let accessToken = json["access_token"] as? String else {
@@ -3045,7 +3075,12 @@ private actor GFNAPIClient {
             ]
         )
         guard response.statusCode == 200 else {
-            throw NSError(domain: "OpenNOW.Subscription", code: response.statusCode, userInfo: nil)
+            throw responseError(
+                domain: "OpenNOW.Subscription",
+                response: response,
+                data: data,
+                fallback: "Subscription details could not be refreshed."
+            )
         }
         let json = try parseJSON(data)
         let tier = (json["membershipTier"] as? String) ?? session.user.membershipTier
@@ -5255,6 +5290,7 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var availableRegions: [StreamRegion] = []
     @Published private(set) var loadingAccountConnectors = false
     @Published private(set) var connectorActionStore: String?
+    @Published private(set) var refreshingAccountUserId: String?
     @Published var settings: AppSettings
     @Published var searchText = ""
     @Published var micEnabled = false
@@ -5280,6 +5316,7 @@ final class OpenNOWStore: ObservableObject {
     private var sessionElapsedTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
+    private var accountRefreshTask: Task<Void, Never>?
     #if os(tvOS)
     private var sessionPollBackgroundTaskActive = false
     #else
@@ -5303,6 +5340,7 @@ final class OpenNOWStore: ObservableObject {
     private let activeStreamSettingsKey = "OpenNOW.iOS.activeStreamSettings"
     private let deviceIdKey = "OpenNOW.iOS.deviceId"
     private let catalogCacheKeyPrefix = "OpenNOW.iOS.catalog"
+    private let accountCacheKeyPrefix = "OpenNOW.iOS.accountSnapshot"
     private let legacyLibraryGamesCacheKeyPrefix = "OpenNOW.iOS.libraryGames"
     private let setupPhaseTimeoutSeconds: TimeInterval = 90
     private let sessionRestoreMaxAgeSeconds: TimeInterval = 12 * 60 * 60
@@ -5350,6 +5388,7 @@ final class OpenNOWStore: ObservableObject {
         user = authSession?.user
         if let authSession {
             hydrateCachedCatalog(for: authSession)
+            hydrateCachedAccount(for: authSession)
         }
         showStreamLoading = activeSession != nil
         if removedBlockedPreferredRegion {
@@ -5560,9 +5599,15 @@ final class OpenNOWStore: ObservableObject {
             }
         }
         if authSession != nil {
-            Task {
-                await refreshCatalog()
-                restoreTrackedSessionIfNeeded()
+            if let userId = authSession?.user.userId {
+                scheduleAccountRefresh(for: userId)
+                Task {
+                    restoreTrackedSessionIfNeeded()
+                }
+            } else {
+                Task {
+                    restoreTrackedSessionIfNeeded()
+                }
             }
         }
     }
@@ -5662,13 +5707,12 @@ final class OpenNOWStore: ObservableObject {
                 deviceId: persistentDeviceId(),
                 forceAccountSelection: forceAccountSelection
             )
-            authSession = session
-            user = session.user
             persistAuthSession(session)
-            await refreshCatalog()
+            activateAccount(session, hydrateCache: true)
+            scheduleAccountRefresh(for: session.user.userId)
         } catch {
             TVAuthDiagnostics.record("Store sign-in failed: \(error.localizedDescription)")
-            lastError = "Sign in failed: \(error.localizedDescription)"
+            lastError = "Sign in failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "NVIDIA could not complete sign-in."))"
         }
     }
 
@@ -5686,13 +5730,12 @@ final class OpenNOWStore: ObservableObject {
                 deviceId: persistentDeviceId(),
                 authenticate: authenticate
             )
-            authSession = session
-            user = session.user
             persistAuthSession(session)
-            await refreshCatalog()
+            activateAccount(session, hydrateCache: true)
+            scheduleAccountRefresh(for: session.user.userId)
         } catch {
             TVAuthDiagnostics.record("Store sign-in failed: \(error.localizedDescription)")
-            lastError = "Sign in failed: \(error.localizedDescription)"
+            lastError = "Sign in failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "NVIDIA could not complete sign-in."))"
         }
     }
     #endif
@@ -5704,22 +5747,21 @@ final class OpenNOWStore: ObservableObject {
         if let currentUserId {
             state.sessions.removeAll { $0.user.userId == currentUserId }
             removeCachedCatalog(forUserId: currentUserId)
+            removeCachedAccount(forUserId: currentUserId)
         } else {
             state.sessions.removeAll()
             removeAllCachedCatalog()
+            removeAllCachedAccounts()
         }
         state.activeUserId = state.sessions.first?.user.userId
         state.selectedProvider = state.sessions.first?.provider ?? state.selectedProvider
         persistAuthState(state)
-        clearAccountScopedState()
         if let nextSession = state.activeSession {
-            authSession = nextSession
-            user = nextSession.user
-            settings.selectedProviderIdpId = nextSession.provider.idpId
-            persistSettings()
-            hydrateCachedCatalog(for: nextSession)
-            Task { await refreshCatalog() }
+            activateAccount(nextSession, hydrateCache: true)
+            scheduleAccountRefresh(for: nextSession.user.userId)
         } else {
+            cancelAccountRefresh()
+            clearAccountScopedState()
             user = nil
             authSession = nil
         }
@@ -5731,27 +5773,61 @@ final class OpenNOWStore: ObservableObject {
         defaults.removeObject(forKey: authStateKey)
         defaults.removeObject(forKey: authSessionKey)
         removeAllCachedCatalog()
+        removeAllCachedAccounts()
+        cancelAccountRefresh()
         clearAccountScopedState()
         user = nil
         authSession = nil
     }
 
     func switchAccount(to userId: String) async {
+        guard authSession?.user.userId != userId else {
+            scheduleAccountRefresh(for: userId)
+            return
+        }
         var state = Self.loadAuthState(from: defaults)
         guard let nextSession = state.sessions.first(where: { $0.user.userId == userId }) else { return }
         state.activeUserId = nextSession.user.userId
         state.selectedProvider = nextSession.provider
         persistAuthState(state)
+        activateAccount(nextSession, hydrateCache: true)
+        scheduleAccountRefresh(for: nextSession.user.userId)
+    }
+
+    private func activateAccount(_ session: AuthSession, hydrateCache: Bool) {
+        cancelAccountRefresh()
         clearAccountScopedState()
-        authSession = nextSession
-        user = nextSession.user
-        settings.selectedProviderIdpId = nextSession.provider.idpId
+        authSession = session
+        user = session.user
+        settings.selectedProviderIdpId = session.provider.idpId
         persistSettings()
-        hydrateCachedCatalog(for: nextSession)
-        await refreshCatalog()
+        if hydrateCache {
+            hydrateCachedCatalog(for: session)
+            hydrateCachedAccount(for: session)
+        }
+        lastError = nil
+    }
+
+    private func scheduleAccountRefresh(for userId: String) {
+        accountRefreshTask?.cancel()
+        refreshingAccountUserId = userId
+        accountRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshCatalog()
+            guard self.refreshingAccountUserId == userId else { return }
+            self.refreshingAccountUserId = nil
+            self.accountRefreshTask = nil
+        }
+    }
+
+    private func cancelAccountRefresh() {
+        accountRefreshTask?.cancel()
+        accountRefreshTask = nil
+        refreshingAccountUserId = nil
     }
 
     private func clearAccountScopedState() {
+        isLoadingGames = false
         allGames = []
         featuredGames = []
         libraryGames = []
@@ -5771,6 +5847,7 @@ final class OpenNOWStore: ObservableObject {
         adStartedAtById = [:]
         accountConnectors = []
         availableRegions = []
+        cachedVpcId = "GFN-PC"
         loadingAccountConnectors = false
         connectorActionStore = nil
         syncTrackedSessionSurface()
@@ -5778,27 +5855,72 @@ final class OpenNOWStore: ObservableObject {
 
     func refreshCatalog() async {
         guard let session = authSession else { return }
+        let requestedUserId = session.user.userId
         isLoadingGames = true
-        defer { isLoadingGames = false }
+        defer {
+            if accountIsCurrent(requestedUserId) {
+                isLoadingGames = false
+            }
+        }
 
         do {
             let refreshed = try await api.refreshSession(session)
-            authSession = refreshed
-            user = refreshed.user
-            persistAuthSession(refreshed)
+            guard accountIsCurrent(requestedUserId) else { return }
             if allGames.isEmpty || libraryGames.isEmpty {
                 hydrateCachedCatalog(for: refreshed, onlyMissing: true)
             }
 
             let (fetchedMainGames, vpcId, regions) = try await api.fetchMainGames(session: refreshed)
-            cachedVpcId = vpcId
-            availableRegions = regions.filter { !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name) }
             let mainGames = preservingCatalogMetadata(in: fetchedMainGames, from: allGames)
             let fetchedLibrary = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
             let library = preservingCatalogMetadata(in: fetchedLibrary, from: libraryGames + allGames)
-            let sub = try? await api.fetchSubscription(session: refreshed, vpcId: vpcId)
-            let connectors = try? await api.fetchAccountConnectors(session: refreshed)
+            var accountWarnings: [String] = []
+            var refreshedSubscription = subscription
+            do {
+                refreshedSubscription = try await api.fetchSubscription(session: refreshed, vpcId: vpcId)
+            } catch {
+                accountWarnings.append(
+                    OpenNOWErrorPresenter.message(for: error, fallback: "Subscription details could not be refreshed.")
+                )
+            }
+            var refreshedConnectors = accountConnectors
+            do {
+                refreshedConnectors = try await api.fetchAccountConnectors(session: refreshed)
+            } catch {
+                accountWarnings.append(
+                    OpenNOWErrorPresenter.message(for: error, fallback: "Store connections could not be refreshed.")
+                )
+            }
 
+            let filteredRegions = regions.filter {
+                !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
+            }
+            let streamSettings = nativeLaunchSettings(for: activeStreamSettings ?? settings, context: "refreshCatalog")
+            var refreshedRemoteSessions: [RemoteSessionCandidate]?
+            do {
+                refreshedRemoteSessions = try await api.fetchActiveSessions(
+                    session: refreshed,
+                    streamingBaseUrl: refreshed.provider.streamingServiceUrl,
+                    vpcId: vpcId,
+                    settings: streamSettings,
+                    deviceId: persistentDeviceId()
+                )
+            } catch {
+                logger.warning("Could not refresh remote sessions during catalog refresh error=\(error.localizedDescription, privacy: .public)")
+            }
+
+            guard accountIsCurrent(requestedUserId) else { return }
+            var updatedUser = refreshed.user
+            if let refreshedSubscription {
+                updatedUser.membershipTier = refreshedSubscription.membershipTier
+            }
+            let updatedSession = AuthSession(provider: refreshed.provider, tokens: refreshed.tokens, user: updatedUser)
+            authSession = updatedSession
+            user = updatedUser
+            persistAuthSession(updatedSession)
+
+            cachedVpcId = vpcId
+            availableRegions = filteredRegions
             allGames = mainGames
             featuredGames = Array(mainGames.prefix(8))
             libraryGames = library
@@ -5807,38 +5929,22 @@ final class OpenNOWStore: ObservableObject {
                 featuredGames: featuredGames,
                 libraryGames: library,
                 vpcId: vpcId,
-                for: refreshed
+                for: updatedSession
             )
-            subscription = sub
-            if let connectors {
-                accountConnectors = connectors
-            }
-            let streamSettings = nativeLaunchSettings(for: activeStreamSettings ?? settings, context: "refreshCatalog")
-            do {
-                let remoteSessions = try await api.fetchActiveSessions(
-                    session: refreshed,
-                    streamingBaseUrl: refreshed.provider.streamingServiceUrl,
-                    vpcId: vpcId,
-                    settings: streamSettings,
-                    deviceId: persistentDeviceId()
-                )
-                resumableSessions = remoteSessions.filter {
+            subscription = refreshedSubscription
+            accountConnectors = refreshedConnectors
+            persistCachedAccount(for: updatedSession)
+            if let refreshedRemoteSessions {
+                resumableSessions = refreshedRemoteSessions.filter {
                     remoteSessionIsLaunchable($0) && remoteSessionIsAllowed($0)
                 }
                 remoteSessionsSnapshotLoaded = true
-            } catch {
+            } else {
                 remoteSessionsSnapshotLoaded = false
-                logger.warning("Could not refresh remote sessions during catalog refresh error=\(error.localizedDescription, privacy: .public)")
             }
-            if let sub {
-                var updatedUser = refreshed.user
-                updatedUser.membershipTier = sub.membershipTier
-                let updatedSession = AuthSession(provider: refreshed.provider, tokens: refreshed.tokens, user: updatedUser)
-                authSession = updatedSession
-                user = updatedUser
-                persistAuthSession(updatedSession)
-            }
-            lastError = nil
+            lastError = accountWarnings.isEmpty
+                ? nil
+                : "Some account details could not refresh: \(accountWarnings.joined(separator: " "))"
         } catch is CancellationError {
             // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
             return
@@ -5846,11 +5952,17 @@ final class OpenNOWStore: ObservableObject {
             where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return
         } catch {
+            guard accountIsCurrent(requestedUserId) else { return }
             if allGames.isEmpty || libraryGames.isEmpty {
                 hydrateCachedCatalog(for: session, onlyMissing: true)
             }
-            lastError = "Failed to load games: \(error.localizedDescription)"
+            hydrateCachedAccount(for: session, onlyMissing: true)
+            lastError = "Account refresh failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "Account data could not be refreshed."))"
         }
+    }
+
+    private func accountIsCurrent(_ userId: String) -> Bool {
+        authSession?.user.userId == userId
     }
 
     private func preservingCatalogMetadata(in games: [CloudGame], from fallbackGames: [CloudGame]) -> [CloudGame] {
@@ -5867,58 +5979,78 @@ final class OpenNOWStore: ObservableObject {
 
     func refreshAccountConnectors() async {
         guard let session = authSession else { return }
+        let requestedUserId = session.user.userId
         loadingAccountConnectors = true
-        defer { loadingAccountConnectors = false }
+        defer {
+            if accountIsCurrent(requestedUserId) {
+                loadingAccountConnectors = false
+            }
+        }
         do {
             let refreshed = try await api.refreshSession(session)
+            let connectors = try await api.fetchAccountConnectors(session: refreshed)
+            guard accountIsCurrent(requestedUserId) else { return }
             authSession = refreshed
             user = refreshed.user
             persistAuthSession(refreshed)
-            accountConnectors = try await api.fetchAccountConnectors(session: refreshed)
+            accountConnectors = connectors
+            persistCachedAccount(for: refreshed)
             lastError = nil
         } catch is CancellationError {
             return
         } catch {
-            lastError = "Failed to load account connections: \(error.localizedDescription)"
+            guard accountIsCurrent(requestedUserId) else { return }
+            hydrateCachedAccount(for: session, onlyMissing: true)
+            lastError = "Failed to load account connections: \(OpenNOWErrorPresenter.message(for: error, fallback: "Store connections could not be refreshed."))"
         }
     }
 
     func connectAccountConnector(_ connector: AccountConnector, openURL: @escaping (URL) -> Void) async {
         guard let session = authSession else { return }
+        let requestedUserId = session.user.userId
         connectorActionStore = connector.store
         defer { connectorActionStore = nil }
         do {
             let refreshed = try await api.refreshSession(session)
+            guard accountIsCurrent(requestedUserId) else { return }
             authSession = refreshed
             user = refreshed.user
             persistAuthSession(refreshed)
             let url = try await api.accountConnectorLoginURL(store: connector.store, session: refreshed)
+            guard accountIsCurrent(requestedUserId) else { return }
             openURL(url)
             scheduleAccountConnectorRefreshAfterLinking()
             lastError = nil
         } catch is CancellationError {
             return
         } catch {
-            lastError = "Failed to connect \(connector.label): \(error.localizedDescription)"
+            guard accountIsCurrent(requestedUserId) else { return }
+            lastError = "Failed to connect \(connector.label): \(OpenNOWErrorPresenter.message(for: error, fallback: "The store connection could not be started."))"
         }
     }
 
     func disconnectAccountConnector(_ connector: AccountConnector) async {
         guard let session = authSession else { return }
+        let requestedUserId = session.user.userId
         connectorActionStore = connector.store
         defer { connectorActionStore = nil }
         do {
             let refreshed = try await api.refreshSession(session)
+            guard accountIsCurrent(requestedUserId) else { return }
             authSession = refreshed
             user = refreshed.user
             persistAuthSession(refreshed)
             try await api.disconnectAccountConnector(store: connector.store, session: refreshed)
-            accountConnectors = try await api.fetchAccountConnectors(session: refreshed)
+            let connectors = try await api.fetchAccountConnectors(session: refreshed)
+            guard accountIsCurrent(requestedUserId) else { return }
+            accountConnectors = connectors
+            persistCachedAccount(for: refreshed)
             lastError = nil
         } catch is CancellationError {
             return
         } catch {
-            lastError = "Failed to disconnect \(connector.label): \(error.localizedDescription)"
+            guard accountIsCurrent(requestedUserId) else { return }
+            lastError = "Failed to disconnect \(connector.label): \(OpenNOWErrorPresenter.message(for: error, fallback: "The store connection could not be removed."))"
         }
     }
 
@@ -6873,6 +7005,8 @@ final class OpenNOWStore: ObservableObject {
         defaults.removeObject(forKey: activeStreamSettingsKey)
         defaults.removeObject(forKey: deviceIdKey)
         removeAllCachedCatalog()
+        removeAllCachedAccounts()
+        cancelAccountRefresh()
 
         authSession = nil
         user = nil
@@ -7834,6 +7968,54 @@ final class OpenNOWStore: ObservableObject {
         return try? JSONDecoder().decode(CachedCatalogSnapshot.self, from: data)
     }
 
+    private func hydrateCachedAccount(for session: AuthSession, onlyMissing: Bool = false) {
+        guard let snapshot = loadCachedAccount(for: session) else { return }
+        if !onlyMissing || subscription == nil {
+            subscription = snapshot.subscription
+        }
+        if !onlyMissing || accountConnectors.isEmpty {
+            accountConnectors = snapshot.accountConnectors
+        }
+        if !onlyMissing || availableRegions.isEmpty {
+            availableRegions = snapshot.availableRegions
+        }
+        if !snapshot.vpcId.isEmpty {
+            cachedVpcId = snapshot.vpcId
+        }
+        if accountIsCurrent(session.user.userId) {
+            var cachedUser = session.user
+            cachedUser.membershipTier = snapshot.membershipTier
+            let cachedSession = AuthSession(
+                provider: session.provider,
+                tokens: session.tokens,
+                user: cachedUser
+            )
+            authSession = cachedSession
+            user = cachedUser
+        }
+    }
+
+    private func loadCachedAccount(for session: AuthSession) -> CachedAccountSnapshot? {
+        guard let data = defaults.data(forKey: accountCacheKey(for: session.user.userId)) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(CachedAccountSnapshot.self, from: data)
+    }
+
+    private func persistCachedAccount(for session: AuthSession) {
+        let snapshot = CachedAccountSnapshot(
+            schemaVersion: 1,
+            cachedAt: Date().timeIntervalSince1970,
+            membershipTier: subscription?.membershipTier ?? user?.membershipTier ?? session.user.membershipTier,
+            subscription: subscription,
+            accountConnectors: accountConnectors,
+            availableRegions: availableRegions,
+            vpcId: cachedVpcId
+        )
+        guard let encoded = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(encoded, forKey: accountCacheKey(for: session.user.userId))
+    }
+
     private func persistCachedCatalog(
         allGames: [CloudGame],
         featuredGames: [CloudGame],
@@ -7866,6 +8048,10 @@ final class OpenNOWStore: ObservableObject {
         defaults.removeObject(forKey: legacyLibraryGamesCacheKey(for: userId))
     }
 
+    private func removeCachedAccount(forUserId userId: String) {
+        defaults.removeObject(forKey: accountCacheKey(for: userId))
+    }
+
     private func removeAllCachedCatalog() {
         let prefixes = [
             "\(catalogCacheKeyPrefix).",
@@ -7876,8 +8062,19 @@ final class OpenNOWStore: ObservableObject {
         }
     }
 
+    private func removeAllCachedAccounts() {
+        let prefix = "\(accountCacheKeyPrefix)."
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
     private func catalogCacheKey(for userId: String) -> String {
         "\(catalogCacheKeyPrefix).\(cacheDigest(for: userId))"
+    }
+
+    private func accountCacheKey(for userId: String) -> String {
+        "\(accountCacheKeyPrefix).\(cacheDigest(for: userId))"
     }
 
     private func legacyLibraryGamesCacheKey(for userId: String) -> String {

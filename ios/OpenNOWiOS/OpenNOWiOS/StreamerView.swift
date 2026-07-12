@@ -2588,8 +2588,16 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     private func addRemoteCandidate(_ candidate: String, sdpMid: String?, sdpMLineIndex: Int?) {
         guard let peerConnection else { return }
+        let rewrittenCandidate = NativeStreamSDP.rewriteIceCandidateEndpoint(
+            candidate,
+            mediaIP: session.mediaIp,
+            mediaPort: session.mediaPort
+        )
+        if rewrittenCandidate != candidate {
+            log("Rewrote remote ICE candidate to media endpoint \(session.mediaIp ?? "nil"):\(session.mediaPort)")
+        }
         let ice = RTCIceCandidate(
-            sdp: candidate,
+            sdp: rewrittenCandidate,
             sdpMLineIndex: Int32(sdpMLineIndex ?? 0),
             sdpMid: sdpMid
         )

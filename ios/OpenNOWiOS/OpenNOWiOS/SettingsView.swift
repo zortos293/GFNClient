@@ -311,8 +311,25 @@ struct SettingsView: View {
                 Spacer()
 
                 if store.isAuthenticating {
-                    ProgressView()
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Waiting for NVIDIA")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+            }
+
+            if store.isAuthenticating {
+                Text("Take your time completing sign-in. OpenNOW will wait up to five minutes for NVIDIA to return to the app.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let error = store.lastError, !error.isEmpty {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
 
             if store.user != nil {
@@ -893,14 +910,24 @@ struct SettingsView: View {
                 Spacer(minLength: 8)
 
                 if selected {
-                    Text("Active")
+                    if store.refreshingAccountUserId == account.userId {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                            Text("Refreshing")
+                        }
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text("Active")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.green)
+                    }
                 } else {
                     Button("Switch") {
                         Task { await store.switchAccount(to: account.userId) }
                     }
                     .buttonStyle(.bordered)
+                    .disabled(store.refreshingAccountUserId != nil || store.isAuthenticating)
                 }
             }
         }

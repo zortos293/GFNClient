@@ -3,6 +3,96 @@ import UIKit
 @testable import OpenNOWiOS
 
 final class OpenNOWiOSParityTests: XCTestCase {
+    func testAccountSnapshotRoundTripsSubscriptionStorageAndConnections() throws {
+        let storage = StorageAddon(
+            type: "STORAGE",
+            sizeGb: 200,
+            usedGb: 75,
+            regionName: "Malaysia",
+            regionCode: "MY-KUL",
+            status: "OK",
+            subType: "PERMANENT_STORAGE",
+            autoPayEnabled: true
+        )
+        let snapshot = CachedAccountSnapshot(
+            schemaVersion: 1,
+            cachedAt: 123,
+            membershipTier: "ULTIMATE",
+            subscription: SubscriptionSnapshot(
+                membershipTier: "ULTIMATE",
+                subscriptionType: "PAID",
+                subscriptionSubType: "UNLIMITED",
+                isGamePlayAllowed: true,
+                isUnlimited: true,
+                remainingHours: 80,
+                totalHours: 100,
+                storageAddon: storage
+            ),
+            accountConnectors: [
+                AccountConnector(
+                    store: "STEAM",
+                    label: "Steam",
+                    supported: true,
+                    required: false,
+                    userDisplayName: "Player",
+                    userIdentifier: "steam-user",
+                    expiresInSeconds: nil,
+                    syncedGameCount: 40,
+                    syncState: "DONE",
+                    syncDate: nil
+                )
+            ],
+            availableRegions: [StreamRegion(name: "Malaysia", url: "https://my.example/")],
+            vpcId: "MY-YES"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            CachedAccountSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+
+        XCTAssertEqual(decoded, snapshot)
+        XCTAssertEqual(decoded.subscription?.storageAddon?.usedGb, 75)
+        XCTAssertEqual(decoded.accountConnectors.first?.store, "STEAM")
+    }
+
+    func testAccountErrorsPreferParsedServerMessageOverRawJSON() {
+        let error = NSError(
+            domain: "OpenNOW.Auth",
+            code: 401,
+            userInfo: [
+                NSLocalizedDescriptionKey: #"{"errors":[{"errorMessage":"This saved account needs a fresh sign-in."}]}"#
+            ]
+        )
+
+        XCTAssertEqual(
+            OpenNOWErrorPresenter.message(for: error, fallback: "Sign-in failed."),
+            "This saved account needs a fresh sign-in."
+        )
+    }
+
+    func testAccountErrorsHumanizeGFNStatusCodes() {
+        let error = NSError(
+            domain: "OpenNOW.Account",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: #"{"requestStatus":{"statusDescription":"AUTHENTICATION_REQUIRED_STATUS"}}"#]
+        )
+
+        XCTAssertEqual(
+            OpenNOWErrorPresenter.message(for: error, fallback: "Refresh failed."),
+            "Authentication Required"
+        )
+    }
+
+    func testAccountTimeoutErrorIsActionable() {
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
+
+        XCTAssertEqual(
+            OpenNOWErrorPresenter.message(for: error, fallback: "Refresh failed."),
+            "The request timed out. Check your connection and try again."
+        )
+    }
+
     func testPlaceholderSDPEndpointsUseSignalingEndpointWithoutMediaMetadata() {
         let offer = remoteOffer(address: "0.0.0.0", port: 47_998)
 
@@ -11,7 +101,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
             serverIP: "66-22-131-132.cloudmatchbeta.nvidiagrid.net"
         )
 
-        XCTAssertTrue(fixed.contains("c=IN IP4 66.22.131.132"))
+        XCTAssertTrue(fixed.contains("c=IN IP4 0.0.0.0"))
         XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 66.22.131.132 47998 typ host"))
     }
 
@@ -25,8 +115,8 @@ final class OpenNOWiOSParityTests: XCTestCase {
             mediaPort: 14_317
         )
 
-        XCTAssertTrue(fixed.contains("c=IN IP4 183.78.14.231"))
-        XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 14317 typ host"))
+        XCTAssertTrue(fixed.contains("c=IN IP4 10.0.175.0"))
+        XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183-78-14-231.yes.geforcenow.nvidiagrid.net 14317 typ host"))
     }
 
     func testPrivateSDPEndpointsStayAdvertisedWithoutMediaMetadata() {
@@ -50,11 +140,11 @@ final class OpenNOWiOSParityTests: XCTestCase {
             mediaPort: 19_353
         )
 
-        XCTAssertTrue(fixed.contains("c=IN IP4 183.78.14.231"))
+        XCTAssertTrue(fixed.contains("c=IN IP4 100.96.10.4"))
         XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 19353 typ host"))
     }
 
-    func testPublicSDPEndpointsStayOnAdvertisedEndpoint() {
+    func testPublicSDPEndpointsUseExplicitCloudMatchMediaEndpoint() {
         let offer = remoteOffer(address: "203.0.113.10", port: 47_998)
 
         let fixed = NativeStreamSDP.fixServerEndpoint(
@@ -64,7 +154,36 @@ final class OpenNOWiOSParityTests: XCTestCase {
             mediaPort: 19_353
         )
 
-        XCTAssertEqual(fixed, offer)
+        XCTAssertTrue(fixed.contains("c=IN IP4 203.0.113.10"))
+        XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 19353 typ host"))
+    }
+
+    func testTrickledRemoteCandidateUsesCloudMatchMediaEndpoint() {
+        let candidate = "candidate:2 1 udp 2122260223 100.96.10.4 47998 typ host generation 0"
+
+        let fixed = NativeStreamSDP.rewriteIceCandidateEndpoint(
+            candidate,
+            mediaIP: "183.78.14.231",
+            mediaPort: 19_353
+        )
+
+        XCTAssertEqual(
+            fixed,
+            "candidate:2 1 udp 2122260223 183.78.14.231 19353 typ host generation 0"
+        )
+    }
+
+    func testExplicitMediaEndpointDoesNotDependOnSignalingHostnameShape() {
+        let offer = remoteOffer(address: "100.96.10.4", port: 47_998)
+
+        let fixed = NativeStreamSDP.fixServerEndpoint(
+            in: offer,
+            serverIP: "npa-yes-kul-01.yes.geforcenow.nvidiagrid.net",
+            mediaIP: "183.78.14.231",
+            mediaPort: 19_353
+        )
+
+        XCTAssertTrue(fixed.contains("a=candidate:1 1 udp 2122260223 183.78.14.231 19353 typ host"))
     }
 
     func testAndroidInputHandshakeIsAppliedAndPrimesReliableChannel() {

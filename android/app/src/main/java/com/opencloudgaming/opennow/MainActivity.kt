@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val viewModel: OpenNowViewModel by viewModels()
     private val queueStatusNotifier by lazy { AndroidQueueStatusNotifier(this) }
+    private val streamKeepAliveNotifier by lazy { AndroidStreamKeepAliveNotifier(this) }
     private var notificationPermissionRequested = false
     private var lastHatXKeyCode: Int? = null
     private var lastHatYKeyCode: Int? = null
@@ -60,6 +61,7 @@ class MainActivity : ComponentActivity() {
             viewModel.state.collect { state ->
                 requestQueueNotificationPermissionIfNeeded(state)
                 queueStatusNotifier.update(state)
+                streamKeepAliveNotifier.update(state)
                 val streamActive = state.page == AppPage.Stream && state.streamStatus != "idle"
                 applyPhoneStreamOrientationLock(
                     shouldLockPhoneStreamLandscape(state, resources.configuration.smallestScreenWidthDp),
@@ -178,6 +180,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         if (isFinishing) {
             queueStatusNotifier.cancel()
+            streamKeepAliveNotifier.cancel()
         }
         super.onDestroy()
     }

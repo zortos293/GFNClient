@@ -94,8 +94,10 @@
     <string name="settings_nerd_catalog_background">Catalog background</string>
     <string name="settings_nerd_catalog_background_desc">Shows a background image behind Store and Library on handheld screens.</string>
     <string name="settings_catalog_background_image">Background image</string>
-    <string name="settings_catalog_background_image_default">Default OpenNOW backdrop</string>
     <string name="settings_catalog_background_image_custom">Custom image</string>
+    <string name="settings_catalog_background_built_in">Built-in background</string>
+    <string name="catalog_background_colorful_abstract">Colorful abstract (default)</string>
+    <string name="catalog_background_original">Original OpenNOW</string>
     <string name="action_choose_image">Choose image</string>
     <string name="action_use_default">Use default</string>
     <string name="settings_tv_safe_area">TV screen padding</string>

@@ -17,11 +17,12 @@ internal data class AndroidRuntimeDiagnosticsSnapshot(
     val thermalStatus: AndroidThermalStatus = AndroidThermalStatus.Unknown,
     val networkKind: AndroidNetworkKind = AndroidNetworkKind.Unknown,
     val networkSignalBars: Int? = null,
+    val cellularGeneration: String? = null,
     val networkDownstreamKbps: Int? = null,
 ) {
     fun debugSummary(): String {
         val temperature = batteryTemperatureC?.let { "%.1f".format(java.util.Locale.US, it) } ?: "unknown"
-        return "battery=${batteryPercent?.toString() ?: "unknown"} charging=$batteryCharging batteryTempC=$temperature thermal=${thermalStatus.logValue} network=${networkKind.logValue} bars=${networkSignalBars?.toString() ?: "unknown"} downKbps=${networkDownstreamKbps ?: 0}"
+        return "battery=${batteryPercent?.toString() ?: "unknown"} charging=$batteryCharging batteryTempC=$temperature thermal=${thermalStatus.logValue} network=${networkKind.logValue} generation=${cellularGeneration ?: "unknown"} bars=${networkSignalBars?.toString() ?: "unknown"} downKbps=${networkDownstreamKbps ?: 0}"
     }
 }
 
@@ -57,6 +58,7 @@ internal object AndroidRuntimeDiagnostics {
             thermalStatus = readThermalStatus(appContext),
             networkKind = network.kind,
             networkSignalBars = network.signalBars,
+            cellularGeneration = network.cellularGeneration,
             networkDownstreamKbps = network.downstreamKbps,
         )
     }
@@ -115,7 +117,12 @@ internal object AndroidRuntimeDiagnostics {
         }
         return NetworkDiagnostics(
             kind = kind,
-            signalBars = networkBars(capabilities),
+            signalBars = if (kind == AndroidNetworkKind.Cellular) {
+                CellularNetworkStatus.signalBars(context) ?: networkBars(capabilities)
+            } else {
+                networkBars(capabilities)
+            },
+            cellularGeneration = if (kind == AndroidNetworkKind.Cellular) CellularNetworkStatus.displayLabel(context) else null,
             downstreamKbps = capabilities?.linkDownstreamBandwidthKbps?.takeIf { it > 0 },
         )
     }
@@ -158,6 +165,7 @@ internal object AndroidRuntimeDiagnostics {
     private data class NetworkDiagnostics(
         val kind: AndroidNetworkKind,
         val signalBars: Int?,
+        val cellularGeneration: String?,
         val downstreamKbps: Int?,
     )
 }

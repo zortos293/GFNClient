@@ -202,7 +202,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             settingsStore.settings.collect { next ->
-                OpenNowAnalytics.applyOptOut(next.analyticsOptOut)
+                OpenNowAnalytics.applyOptOut(!next.analyticsSharingEnabled)
                 _state.update { it.copy(settings = next) }
             }
         }
@@ -404,7 +404,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             page = defaultLaunchAppPage(),
                         )
                     }
-                    OpenNowAnalytics.identify(session)
                     OpenNowAnalytics.capture(
                         event = "user_logged_in",
                         properties = mapOf(
@@ -450,7 +449,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             page = defaultLaunchAppPage(),
                         )
                     }
-                    OpenNowAnalytics.identify(session)
                     OpenNowAnalytics.capture(
                         event = "user_logged_in",
                         properties = mapOf(
@@ -583,7 +581,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     page = AppPage.Home,
                 )
             }
-            OpenNowAnalytics.identify(session)
             OpenNowAnalytics.capture(
                 event = "account_switched",
                 properties = mapOf(

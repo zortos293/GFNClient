@@ -44,8 +44,8 @@ class InputHapticsParserTest {
     }
 
     @Test
-    fun parsesDirectBufferSliceWithoutChangingItsPosition() {
-        val packet = ByteBuffer.allocateDirect(18).order(ByteOrder.LITTLE_ENDIAN).apply {
+    fun parsesPacketCopiedFromDirectDataChannelBuffer() {
+        val dataChannelBuffer = ByteBuffer.allocateDirect(18).order(ByteOrder.LITTLE_ENDIAN).apply {
             position(3)
             putShort(267.toShort())
             putShort(1.toShort())
@@ -56,10 +56,13 @@ class InputHapticsParserTest {
             limit(position())
             position(3)
         }
+        val packet = dataChannelBuffer.duplicate().let { data ->
+            ByteArray(data.remaining()).also(data::get)
+        }
 
         val command = HapticsPacketParser.parse(packet)
 
-        assertEquals(3, packet.position())
+        assertEquals(3, dataChannelBuffer.position())
         assertEquals(3, command?.controllerId)
         assertEquals(0x2000, command?.weakMagnitude)
         assertEquals(0x6000, command?.strongMagnitude)

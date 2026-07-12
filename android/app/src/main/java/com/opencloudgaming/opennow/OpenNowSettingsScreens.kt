@@ -399,8 +399,13 @@ private fun SettingsContent(
                 AdvancedOptionsSettings(settings = settings, viewModel = viewModel)
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "Privacy", "privacy", "analytics", "telemetry", "posthog", "usage", "tracking", "opt out") {
-                SettingSwitch("Share usage analytics", !settings.analyticsOptOut) { enabled ->
-                    viewModel.updateSettings(settings.copy(analyticsOptOut = !enabled))
+                SettingSwitch("Share usage analytics", settings.analyticsSharingEnabled) { enabled ->
+                    viewModel.updateSettings(
+                        settings.copy(
+                            analyticsConsentAsked = true,
+                            analyticsOptOut = !enabled,
+                        ),
+                    )
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr") {
@@ -658,7 +663,7 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
                 }
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
-                ChoiceRow("Stats overlay style", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
+                ChoiceRow("Status bar appearance", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
                     StreamStatsStyle.entries.firstOrNull { it.label == label }?.let { style ->
                         viewModel.updateSettings(settings.copy(streamStatsStyle = style))
                     }
@@ -817,6 +822,10 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
     }
     val customBackgroundUri = settings.nerdCatalogBackgroundUri?.takeIf { it.isNotBlank() }
     val hasCustomBackground = customBackgroundUri != null
+    val presetOptions = listOf(
+        CatalogBackgroundPreset.ColorfulAbstract to stringResource(R.string.catalog_background_colorful_abstract),
+        CatalogBackgroundPreset.Original to stringResource(R.string.catalog_background_original),
+    )
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -840,7 +849,7 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
                         if (hasCustomBackground) {
                             stringResource(R.string.settings_catalog_background_image_custom)
                         } else {
-                            stringResource(R.string.settings_catalog_background_image_default)
+                            presetOptions.first { it.first == settings.catalogBackgroundPreset }.second
                         },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
@@ -848,6 +857,22 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+            }
+            ChoiceRow(
+                label = stringResource(R.string.settings_catalog_background_built_in),
+                options = presetOptions.map { it.second },
+                selected = presetOptions.first { it.first == settings.catalogBackgroundPreset }.second,
+            ) { selectedLabel ->
+                val selectedPreset = presetOptions.firstOrNull { it.second == selectedLabel }?.first
+                    ?: return@ChoiceRow
+                viewModel.updateSettings(
+                    settings.copy(
+                        catalogBackgroundPreset = selectedPreset,
+                        nerdCatalogBackgroundUri = null,
+                    ),
+                )
+                customBackgroundUri?.let { releasePersistableImageReadPermission(context, it) }
+                pruneStoredCatalogBackgroundImages(appContext)
             }
             Row(
                 Modifier.fillMaxWidth(),

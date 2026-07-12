@@ -9,16 +9,25 @@ import org.junit.Test
 
 class CatalogBackgroundTest {
     @Test
-    fun `blank custom source selects only the bundled default`() {
-        assertEquals(CatalogWallpaperSelection.Default, catalogWallpaperSelection(null))
-        assertEquals(CatalogWallpaperSelection.Default, catalogWallpaperSelection("   "))
+    fun `blank custom source selects the chosen built in background`() {
+        assertEquals(
+            CatalogWallpaperSelection.BuiltIn(CatalogBackgroundPreset.ColorfulAbstract),
+            catalogWallpaperSelection(CatalogBackgroundPreset.ColorfulAbstract, null),
+        )
+        assertEquals(
+            CatalogWallpaperSelection.BuiltIn(CatalogBackgroundPreset.Original),
+            catalogWallpaperSelection(CatalogBackgroundPreset.Original, "   "),
+        )
     }
 
     @Test
     fun `custom source replaces the bundled default`() {
         assertEquals(
             CatalogWallpaperSelection.Custom("file:///data/user/0/opennow/files/custom"),
-            catalogWallpaperSelection("  file:///data/user/0/opennow/files/custom  "),
+            catalogWallpaperSelection(
+                CatalogBackgroundPreset.ColorfulAbstract,
+                "  file:///data/user/0/opennow/files/custom  ",
+            ),
         )
     }
 

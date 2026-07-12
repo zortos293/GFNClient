@@ -52,10 +52,8 @@ class GfnApiTest {
     fun claimRequestCarriesRequestedMonitorSettings() {
         val cases = listOf(
             Triple("1280x720", "16:9", 1280 to 720),
-            Triple("1600x720", "20:9", 1600 to 720),
             Triple("1680x720", "21:9", 1680 to 720),
             Triple("1920x1200", "16:10", 1920 to 1200),
-            Triple("2400x1080", "20:9", 2400 to 1080),
             Triple("2560x1080", "21:9", 2560 to 1080),
         )
 
@@ -369,4 +367,5 @@ class GfnApiTest {
         assertTrue(exported.contains("device_id=%5Bredacted%5D"))
         assertTrue(exported.contains("requestType=session"))
     }
+
 }

@@ -24,7 +24,7 @@ internal object OpenNowAnalytics {
 
         runCatching {
             PostHogAndroid.setup(application, config)
-            applyOptOut(settings.analyticsOptOut)
+            applyOptOut(!settings.analyticsSharingEnabled)
         }.onFailure { error ->
             Log.w(ANALYTICS_LOG_TAG, "PostHog setup failed.", error)
         }
@@ -40,25 +40,11 @@ internal object OpenNowAnalytics {
         }
     }
 
-    fun identify(session: AuthSession) {
-        runPostHogOperation("identify") {
-            PostHog.identify(
-                distinctId = session.user.userId,
-                userProperties = mapOf(
-                    "display_name" to session.user.displayName,
-                    "membership_tier" to session.user.membershipTier,
-                    "provider" to session.provider.code,
-                ),
-            )
-            flushReleaseQueue()
-        }
-    }
-
     fun capture(event: String, properties: Map<String, Any>? = null) {
         runPostHogOperation("capture") {
             PostHog.capture(
                 event = event,
-                properties = properties,
+                properties = sanitizedAnalyticsProperties(properties),
             )
             flushReleaseQueue()
         }
@@ -85,16 +71,73 @@ internal object OpenNowAnalytics {
 }
 
 internal fun PostHogAndroidConfig.applyOpenNowSettings(settings: AppSettings) {
-    optOut = settings.analyticsOptOut
+    optOut = !settings.analyticsSharingEnabled
     captureApplicationLifecycleEvents = true
-    captureDeepLinks = true
+    captureDeepLinks = false
     captureScreenViews = true
     flushIntervalSeconds = ANALYTICS_FLUSH_INTERVAL_SECONDS
-    sessionReplay = true
+    sessionReplay = false
     sessionReplayConfig.apply {
         maskAllTextInputs = true
         maskAllImages = true
-        screenshot = true
+        screenshot = false
+        captureLogcat = false
     }
     errorTrackingConfig.autoCapture = true
+    addBeforeSend { event ->
+        event.copy(
+            properties = sanitizedAnalyticsProperties(
+                properties = event.properties,
+                redactExceptionText = event.event == "\$exception",
+            ).toMutableMap(),
+        )
+    }
+}
+
+internal fun sanitizedAnalyticsProperties(
+    properties: Map<String, Any>?,
+    redactExceptionText: Boolean = false,
+): Map<String, Any> =
+    buildMap {
+        put("\$geoip_disable", true)
+        properties.orEmpty().forEach { (key, value) ->
+            if (!isSensitiveAnalyticsProperty(key, redactExceptionText)) {
+                put(key, sanitizeAnalyticsValue(value, redactExceptionText))
+            }
+        }
+    }
+
+private fun sanitizeAnalyticsValue(value: Any, redactExceptionText: Boolean): Any =
+    when (value) {
+        is String -> sanitizeDiagnosticExport(value).take(500)
+        is Map<*, *> -> value.entries
+            .mapNotNull { (key, nestedValue) ->
+                val stringKey = key as? String ?: return@mapNotNull null
+                val presentValue = nestedValue ?: return@mapNotNull null
+                stringKey.takeUnless { isSensitiveAnalyticsProperty(it, redactExceptionText) }
+                    ?.let { it to sanitizeAnalyticsValue(presentValue, redactExceptionText) }
+            }
+            .toMap()
+        is Iterable<*> -> value.mapNotNull { it?.let { item -> sanitizeAnalyticsValue(item, redactExceptionText) } }
+        is Array<*> -> value.mapNotNull { it?.let { item -> sanitizeAnalyticsValue(item, redactExceptionText) } }
+        else -> value
+    }
+
+private fun isSensitiveAnalyticsProperty(key: String, redactExceptionText: Boolean): Boolean {
+    val normalized = key.lowercase().filter(Char::isLetterOrDigit)
+    return (redactExceptionText && normalized in setOf("message", "value", "exceptionmessage")) || normalized in setOf(
+        "authorization",
+        "credential",
+        "cookie",
+        "displayname",
+        "email",
+        "errormessage",
+        "password",
+        "query",
+        "searchquery",
+        "secret",
+        "token",
+        "userid",
+        "username",
+    ) || normalized.endsWith("token") || normalized.endsWith("credential")
 }

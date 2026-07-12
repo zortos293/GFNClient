@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal data class DisplayRefreshMode(
@@ -51,18 +52,26 @@ internal fun selectStreamDisplayMode(
         }
     }.orEmpty()
     val candidates = resolutionMatched.ifEmpty { supportedModes }
+    val cadenceMatched = candidates.filter { mode ->
+        mode.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target &&
+            streamCadenceError(mode.refreshRate, target) <= STREAM_CADENCE_TOLERANCE
+    }
     val currentCandidate = currentMode?.takeIf { current ->
-        candidates.any { mode ->
-            mode.id == current.id &&
-                current.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target
-        }
+        cadenceMatched.any { mode -> mode.id == current.id }
     }
     if (currentCandidate != null) return currentCandidate
 
-    return candidates
-        .filter { it.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target }
-        .minByOrNull { it.refreshRate }
+    return cadenceMatched.minByOrNull { it.refreshRate }
+        ?: candidates
+            .filter { it.refreshRate + STREAM_REFRESH_TOLERANCE_FPS >= target }
+            .minByOrNull { it.refreshRate }
         ?: candidates.maxByOrNull { it.refreshRate }
+}
+
+private fun streamCadenceError(refreshRate: Float, streamFps: Float): Float {
+    if (refreshRate <= 0f || streamFps <= 0f) return Float.MAX_VALUE
+    val ratio = refreshRate / streamFps
+    return abs(ratio - ratio.roundToInt().coerceAtLeast(1))
 }
 
 internal fun normalizedStreamDisplayFps(requestedFps: Int): Float =
@@ -87,3 +96,4 @@ private fun Float.formatRefreshRate(): String {
 private const val MIN_STREAM_DISPLAY_FPS = 30
 private const val MAX_STREAM_DISPLAY_FPS = 240
 private const val STREAM_REFRESH_TOLERANCE_FPS = 0.5f
+private const val STREAM_CADENCE_TOLERANCE = 0.01f

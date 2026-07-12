@@ -123,11 +123,12 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun streamResolutionPixelsMapsPhoneDisplayTierToTwentyByNineMode() {
-        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "20:9")
+    fun persistedUnsupportedAspectFallsBackToSupportedSixteenByNineMode() {
+        val adjusted = StreamSettings(resolution = "1600x720", aspectRatio = "20:9")
+            .withResolutionAllowed(SubscriptionInfo(membershipTier = "FREE"), null)
 
-        assertEquals(1600 to 720, streamResolutionPixels(settings))
-        assertEquals(20f / 9f, streamRendererAspectRatio(settings, decodedResolution = null), 0.0001f)
+        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals("1280x720", adjusted.resolution)
     }
 
     @Test
@@ -216,7 +217,7 @@ class StreamResolutionTest {
         )
         assertEquals(listOf("1024x768", "1112x834", "1600x1200"), streamResolutionOptionsForAspect("4:3"))
         assertEquals(listOf("1280x1024"), streamResolutionOptionsForAspect("5:4"))
-        assertEquals(listOf("1600x720", "2400x1080", "3200x1440", "4800x2160"), streamResolutionOptionsForAspect("20:9"))
+        assertEquals(emptyList<String>(), streamResolutionOptionsForAspect("20:9"))
         assertEquals(listOf("1680x720", "2560x1080", "3440x1440", "5120x2160"), streamResolutionOptionsForAspect("21:9"))
         assertEquals(listOf("3840x1080", "5120x1440"), streamResolutionOptionsForAspect("32:9"))
     }
@@ -234,9 +235,6 @@ class StreamResolutionTest {
         val prioritySubscription = SubscriptionInfo(membershipTier = "PRIORITY")
         val ultimateSubscription = SubscriptionInfo(membershipTier = "ULTIMATE")
         val fhd = streamResolutionChoicesForAspect("16:9").first { it.value == "1920x1080" }
-        val phoneHd = streamResolutionChoicesForAspect("20:9").first { it.value == "1600x720" }
-        val phoneFhd = streamResolutionChoicesForAspect("20:9").first { it.value == "2400x1080" }
-        val phone4k = streamResolutionChoicesForAspect("20:9").first { it.value == "4800x2160" }
         val whd = streamResolutionChoicesForAspect("21:9").first { it.value == "1680x720" }
         val wfhd = streamResolutionChoicesForAspect("21:9").first { it.value == "2560x1080" }
         val qhd = streamResolutionChoicesForAspect("16:9").first { it.value == "2560x1440" }
@@ -244,15 +242,10 @@ class StreamResolutionTest {
         val fiveK = streamResolutionChoicesForAspect("16:9").first { it.value == "5120x2880" }
 
         assertEquals(true, fhd.isAvailableFor(freeSubscription, null))
-        assertEquals(true, phoneHd.isAvailableFor(freeSubscription, null))
-        assertEquals(false, phoneFhd.isAvailableFor(freeSubscription, null))
         assertEquals(true, whd.isAvailableFor(freeSubscription, null))
         assertEquals(false, wfhd.isAvailableFor(freeSubscription, null))
         assertEquals(false, qhd.isAvailableFor(freeSubscription, null))
         assertEquals(true, fhd.isAvailableFor(prioritySubscription, null))
-        assertEquals(true, phoneHd.isAvailableFor(prioritySubscription, null))
-        assertEquals(true, phoneFhd.isAvailableFor(prioritySubscription, null))
-        assertEquals(false, phone4k.isAvailableFor(prioritySubscription, null))
         assertEquals(true, whd.isAvailableFor(prioritySubscription, null))
         assertEquals(true, wfhd.isAvailableFor(prioritySubscription, null))
         assertEquals(true, qhd.isAvailableFor(prioritySubscription, null))
@@ -260,7 +253,6 @@ class StreamResolutionTest {
         assertEquals(false, fiveK.isAvailableFor(prioritySubscription, null))
         assertEquals(true, fourK.isAvailableFor(ultimateSubscription, null))
         assertEquals(true, fiveK.isAvailableFor(ultimateSubscription, null))
-        assertEquals(true, phone4k.isAvailableFor(ultimateSubscription, null))
     }
 
     @Test

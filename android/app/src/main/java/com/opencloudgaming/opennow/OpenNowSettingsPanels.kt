@@ -1252,8 +1252,8 @@ private fun yesNo(value: Boolean): String = if (value) "yes" else "no"
 
 internal val StreamStatsStyle.label: String
     get() = when (this) {
-        StreamStatsStyle.Compact -> "Compact line"
-        StreamStatsStyle.Detailed -> "Detailed line"
+        StreamStatsStyle.Compact -> "Single line"
+        StreamStatsStyle.Detailed -> "Multiline"
     }
 
 internal fun StreamStatsStyle.next(): StreamStatsStyle =
@@ -1443,10 +1443,12 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
         }
     }
     state.error?.let { error ->
-        OutlinedButton(onClick = {
-            clipboard.setText(AnnotatedString(error))
-            copied = true
-        }) {
+        OutlinedButton(
+            onClick = {
+                clipboard.setText(AnnotatedString(error))
+                copied = true
+            },
+        ) {
             Text("Copy error")
         }
     }

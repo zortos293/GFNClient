@@ -122,6 +122,18 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BatteryFull
+import androidx.compose.material.icons.rounded.SignalCellular0Bar
+import androidx.compose.material.icons.rounded.SignalCellular4Bar
+import androidx.compose.material.icons.rounded.SignalCellularAlt
+import androidx.compose.material.icons.rounded.SignalCellularAlt1Bar
+import androidx.compose.material.icons.rounded.SignalCellularAlt2Bar
+import androidx.compose.material.icons.rounded.SignalWifi0Bar
+import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material.icons.rounded.Wifi1Bar
+import androidx.compose.material.icons.rounded.Wifi2Bar
+import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
@@ -293,8 +305,10 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     var lastStartCueSessionId by remember { mutableStateOf<String?>(null) }
     var hiddenUpdatePromptKey by remember { mutableStateOf<String?>(null) }
     val updatePromptKey = state.androidUpdate.visibleNoticeKey(state.dismissedAndroidUpdateNoticeKey)
+    val showAnalyticsConsent = !state.settings.analyticsConsentAsked
     val showUpdatePrompt = updatePromptKey != null &&
         updatePromptKey != hiddenUpdatePromptKey &&
+        !showAnalyticsConsent &&
         state.androidUpdate.status in setOf(AndroidUpdateStatus.Available, AndroidUpdateStatus.Downloaded)
 
     DisposableEffect(launchAudioController) {
@@ -423,8 +437,61 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                     onDismiss = viewModel::dismissAndroidUpdateNotice,
                 )
             }
+            if (showAnalyticsConsent) {
+                AnalyticsConsentDialog(
+                    onAllow = {
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                analyticsConsentAsked = true,
+                                analyticsOptOut = false,
+                            ),
+                        )
+                    },
+                    onDecline = {
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                analyticsConsentAsked = true,
+                                analyticsOptOut = true,
+                            ),
+                        )
+                    },
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun AnalyticsConsentDialog(
+    onAllow: () -> Unit,
+    onDecline: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDecline,
+        title = { Text("Share diagnostics?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Share anonymous diagnostics to help us find patterns in bugs, crashes, and performance problems. Sensitive data is removed, and we do not sell your data.",
+                )
+                Text(
+                    "If sharing is off during a crash, we may not have enough information to investigate your report. It is off by default and can be changed in Privacy settings.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onAllow) {
+                Text("Share analytics")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDecline) {
+                Text("Keep off")
+            }
+        },
+    )
 }
 
 @Composable
@@ -843,16 +910,19 @@ private fun hasConnectedPhysicalController(): Boolean =
     }
 
 internal sealed interface CatalogWallpaperSelection {
-    data object Default : CatalogWallpaperSelection
+    data class BuiltIn(val preset: CatalogBackgroundPreset) : CatalogWallpaperSelection
     data class Custom(val source: String) : CatalogWallpaperSelection
 }
 
-internal fun catalogWallpaperSelection(customSource: String?): CatalogWallpaperSelection =
+internal fun catalogWallpaperSelection(
+    preset: CatalogBackgroundPreset,
+    customSource: String?,
+): CatalogWallpaperSelection =
     customSource
         ?.trim()
         ?.takeIf { it.isNotBlank() }
         ?.let(CatalogWallpaperSelection::Custom)
-        ?: CatalogWallpaperSelection.Default
+        ?: CatalogWallpaperSelection.BuiltIn(preset)
 
 @Composable
 private fun CatalogWallpaperBackdrop(
@@ -865,7 +935,10 @@ private fun CatalogWallpaperBackdrop(
     if (!showBackdrop) {
         return
     }
-    val wallpaper = catalogWallpaperSelection(settings.nerdCatalogBackgroundUri)
+    val wallpaper = catalogWallpaperSelection(
+        preset = settings.catalogBackgroundPreset,
+        customSource = settings.nerdCatalogBackgroundUri,
+    )
     val scrimAlpha = when {
         tvProfile -> 0.48f
         width > height -> 0.28f
@@ -873,11 +946,11 @@ private fun CatalogWallpaperBackdrop(
     }
     Box(Modifier.fillMaxSize().clipToBounds()) {
         when (wallpaper) {
-            CatalogWallpaperSelection.Default -> {
-                CatalogDefaultWallpaperBackdrop(Modifier.matchParentSize())
+            is CatalogWallpaperSelection.BuiltIn -> {
+                CatalogBuiltInWallpaperBackdrop(wallpaper.preset, Modifier.matchParentSize())
             }
             is CatalogWallpaperSelection.Custom -> {
-                val fallbackPainter = painterResource(R.drawable.catalog_default_background)
+                val fallbackPainter = painterResource(settings.catalogBackgroundPreset.drawableRes)
                 AsyncImage(
                     model = imageDataForSource(wallpaper.source),
                     contentDescription = null,
@@ -897,10 +970,19 @@ private fun CatalogWallpaperBackdrop(
     }
 }
 
+private val CatalogBackgroundPreset.drawableRes: Int
+    get() = when (this) {
+        CatalogBackgroundPreset.ColorfulAbstract -> R.drawable.catalog_colorful_abstract_background
+        CatalogBackgroundPreset.Original -> R.drawable.catalog_default_background
+    }
+
 @Composable
-private fun CatalogDefaultWallpaperBackdrop(modifier: Modifier = Modifier) {
+private fun CatalogBuiltInWallpaperBackdrop(
+    preset: CatalogBackgroundPreset,
+    modifier: Modifier = Modifier,
+) {
     Image(
-        painter = painterResource(R.drawable.catalog_default_background),
+        painter = painterResource(preset.drawableRes),
         contentDescription = null,
         modifier = modifier.background(Color(0xff07100b)),
         contentScale = ContentScale.Crop,
@@ -5016,10 +5098,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             )
             if (statsVisible) {
                 StreamStatsPill(
-                    gameTitle = game?.title ?: "Stream",
                     streamStats = streamStats,
                     streamSettings = launchStreamSettings,
                     style = state.settings.streamStatsStyle,
+                    metrics = state.settings.streamStatsMetrics,
                     modifier = Modifier.align(statsAlignment),
                 )
             }
@@ -5121,6 +5203,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                     onStatsPositionCycle = {
                         viewModel.updateSettings(state.settings.copy(streamStatsPosition = state.settings.streamStatsPosition.next()))
+                    },
+                    onStatsMetricsChange = { metrics ->
+                        viewModel.updateSettings(state.settings.copy(streamStatsMetrics = metrics))
                     },
                     onPhoneRumbleFallbackToggle = {
                         viewModel.updateSettings(state.settings.copy(phoneRumbleFallback = !state.settings.phoneRumbleFallback))
@@ -6144,6 +6229,7 @@ private fun StreamControlsPanel(
     onStatsToggle: () -> Unit,
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
+    onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
     onPhoneRumbleFallbackToggle: () -> Unit,
     onTouchLayoutEditingToggle: () -> Unit,
     onKeyboardOpen: () -> Unit,
@@ -6170,6 +6256,10 @@ private fun StreamControlsPanel(
 ) {
     val doneFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    var statusBarOptionsOpen by remember { mutableStateOf(false) }
+    BackHandler(enabled = statusBarOptionsOpen) {
+        statusBarOptionsOpen = false
+    }
     LaunchedEffect(Unit) {
         delay(80)
         runCatching { doneFocusRequester.requestFocus() }
@@ -6197,7 +6287,21 @@ private fun StreamControlsPanel(
             contentPadding = PaddingValues(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
+            if (statusBarOptionsOpen) {
+                item {
+                    StatusBarSettingsPage(
+                        settings = settings,
+                        statsVisible = statsVisible,
+                        onStatsToggle = onStatsToggle,
+                        onStatsStyleCycle = onStatsStyleCycle,
+                        onStatsPositionCycle = onStatsPositionCycle,
+                        onStatsMetricsChange = onStatsMetricsChange,
+                        onButtonTone = onButtonTone,
+                        onBack = { statusBarOptionsOpen = false },
+                    )
+                }
+            } else {
+                item {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Column(Modifier.weight(1f)) {
                         Text("Stream Controls", fontWeight = FontWeight.Bold)
@@ -6269,17 +6373,12 @@ private fun StreamControlsPanel(
                         onButtonTone()
                         onAudioToggle()
                     }
-                    StreamControlSwitch("Stream stats", if (statsVisible) "On" else "Off", statsVisible) {
+                    StreamControlNavigation(
+                        "Status bar",
+                        if (!statsVisible) "Off" else "${settings.streamStatsStyle.label} · ${settings.streamStatsMetrics.enabledCount()} items",
+                    ) {
                         onButtonTone()
-                        onStatsToggle()
-                    }
-                    StreamControlAction("Stats style", settings.streamStatsStyle.label) {
-                        onButtonTone()
-                        onStatsStyleCycle()
-                    }
-                    StreamControlAction("Stats position", settings.streamStatsPosition.label) {
-                        onButtonTone()
-                        onStatsPositionCycle()
+                        statusBarOptionsOpen = true
                     }
                     StreamControlSwitch("Stream sharpening", if (settings.stream.streamSharpeningEnabled) "On" else "Off", settings.stream.streamSharpeningEnabled) {
                         onButtonTone()
@@ -6349,12 +6448,147 @@ private fun StreamControlsPanel(
                     CompactDpSlider("Right position", settings.androidTouch.rightOffsetYDp, -160f, 160f, onTouchRightOffsetChange)
                 }
             }
+            }
         }
     }
     DisposableEffect(Unit) {
         onDispose {
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StatusBarSettingsPage(
+    settings: AppSettings,
+    statsVisible: Boolean,
+    onStatsToggle: () -> Unit,
+    onStatsStyleCycle: () -> Unit,
+    onStatsPositionCycle: () -> Unit,
+    onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
+    onButtonTone: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val metrics = settings.streamStatsMetrics
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = {
+                    onButtonTone()
+                    onBack()
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_arrow_back),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Back")
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Status bar", fontWeight = FontWeight.Bold)
+                Text("Choose its layout and information", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        StreamControlSwitch("Visible", if (statsVisible) "On" else "Off", statsVisible) {
+            onButtonTone()
+            onStatsToggle()
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatusBarOptionAction("Appearance", settings.streamStatsStyle.label, Modifier.weight(1f)) {
+                onButtonTone()
+                onStatsStyleCycle()
+            }
+            StatusBarOptionAction("Position", settings.streamStatsPosition.label, Modifier.weight(1f)) {
+                onButtonTone()
+                onStatsPositionCycle()
+            }
+        }
+        Text("Items", color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val columns = when {
+                maxWidth >= 800.dp -> 5
+                maxWidth >= 620.dp -> 4
+                maxWidth >= 460.dp -> 3
+                else -> 2
+            }
+            val gap = 8.dp
+            val itemWidth = (maxWidth - gap * (columns - 1)) / columns.toFloat()
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                maxItemsInEachRow = columns,
+                horizontalArrangement = Arrangement.spacedBy(gap),
+                verticalArrangement = Arrangement.spacedBy(gap),
+            ) {
+                StatusBarMetricSwitch("FPS", metrics.fps, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(fps = !metrics.fps))
+                }
+                StatusBarMetricSwitch("Ping", metrics.ping, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(ping = !metrics.ping))
+                }
+                StatusBarMetricSwitch("Bitrate", metrics.bitrate, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(bitrate = !metrics.bitrate))
+                }
+                StatusBarMetricSwitch("Battery", metrics.battery, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(battery = !metrics.battery))
+                }
+                StatusBarMetricSwitch("Connection", metrics.connection, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(connection = !metrics.connection))
+                }
+                StatusBarMetricSwitch("Resolution", metrics.resolution, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(resolution = !metrics.resolution))
+                }
+                StatusBarMetricSwitch("Codec", metrics.codec, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(codec = !metrics.codec))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusBarOptionAction(label: String, value: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+    }
+}
+
+@Composable
+private fun StatusBarMetricSwitch(label: String, checked: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        Switch(checked = checked, onCheckedChange = { onClick() })
     }
 }
 
@@ -6382,6 +6616,30 @@ private fun StreamControlSwitch(label: String, value: String, checked: Boolean, 
             Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall)
         }
         Switch(checked = checked, onCheckedChange = { onClick() })
+    }
+}
+
+@Composable
+private fun StreamControlNavigation(label: String, value: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, fontWeight = FontWeight.SemiBold)
+            Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall)
+        }
+        Icon(
+            painter = painterResource(R.drawable.ic_chevron_right),
+            contentDescription = "Open $label options",
+            tint = TextPrimary,
+            modifier = Modifier.size(22.dp),
+        )
     }
 }
 
@@ -6502,51 +6760,86 @@ private fun StreamKeyboardBar(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StreamStatsPill(
-    gameTitle: String,
     streamStats: StreamRuntimeStats,
     streamSettings: StreamSettings,
     style: StreamStatsStyle,
+    metrics: StreamStatsMetrics,
     modifier: Modifier = Modifier,
 ) {
-    if (style == StreamStatsStyle.Compact) {
-        val deviceStatus = rememberCompactStreamDeviceStatus()
-        Surface(
-            modifier = modifier.padding(8.dp),
-            shape = RoundedCornerShape(999.dp),
-            color = Panel.copy(alpha = 0.48f),
-            tonalElevation = 0.dp,
-        ) {
+    if (metrics.enabledCount() == 0) return
+    val deviceStatus = rememberCompactStreamDeviceStatus()
+    Surface(
+        modifier = modifier.padding(8.dp).widthIn(max = if (style == StreamStatsStyle.Compact) 720.dp else 300.dp),
+        shape = RoundedCornerShape(if (style == StreamStatsStyle.Compact) 999.dp else 16.dp),
+        color = Panel.copy(alpha = 0.52f),
+        tonalElevation = 0.dp,
+    ) {
+        if (style == StreamStatsStyle.Compact) {
             Row(
                 Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("FPS ${streamStats.fps?.toString() ?: "--"}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                Text("Ping ${streamStats.pingMs?.let { "${it}ms" } ?: "--"}", color = TextPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                StreamBatteryIndicator(deviceStatus)
-                StreamNetworkIndicator(deviceStatus)
+                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus)
+            }
+        } else {
+            FlowRow(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                maxItemsInEachRow = 2,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus)
             }
         }
-        return
     }
-    Surface(
-        modifier = modifier.padding(8.dp).widthIn(max = 560.dp),
-        shape = RoundedCornerShape(999.dp),
-        color = Panel.copy(alpha = 0.56f),
-        tonalElevation = 0.dp,
-    ) {
-        Text(
-            streamStatsDetailedLine(gameTitle, streamStats, streamSettings),
-            color = TextPrimary,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+}
+
+@Composable
+private fun StreamStatsMetricItems(
+    streamStats: StreamRuntimeStats,
+    streamSettings: StreamSettings,
+    metrics: StreamStatsMetrics,
+    deviceStatus: CompactStreamDeviceStatus,
+) {
+    if (metrics.fps) {
+        StreamStatsText("FPS ${streamStats.fps?.toString() ?: streamSettings.fps}")
+    }
+    if (metrics.ping) {
+        StreamStatsText("Ping ${streamStats.pingMs?.let { "${it}ms" } ?: "--"}")
+    }
+    if (metrics.bitrate) {
+        StreamStatsText(formatRuntimeBitrate(streamStats.bitrateKbps))
+    }
+    if (metrics.battery) {
+        StreamBatteryIndicator(deviceStatus)
+    }
+    if (metrics.connection) {
+        StreamNetworkIndicator(deviceStatus)
+    }
+    if (metrics.resolution) {
+        StreamStatsText(
+            streamStats.resolution?.let(::formatRuntimeResolution)
+                ?: formatRuntimeResolution(normalizeStreamResolutionForAspect(streamSettings.resolution, streamSettings.aspectRatio)),
         )
     }
+    if (metrics.codec) {
+        StreamStatsText(streamStats.codec?.takeIf { it.isNotBlank() } ?: streamSettings.codec.name)
+    }
+}
+
+@Composable
+private fun StreamStatsText(value: String) {
+    Text(
+        value,
+        color = TextPrimary,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+    )
 }
 
 private data class CompactStreamDeviceStatus(
@@ -6554,6 +6847,7 @@ private data class CompactStreamDeviceStatus(
     val batteryCharging: Boolean = false,
     val networkKind: AndroidNetworkKind = AndroidNetworkKind.Unknown,
     val networkBars: Int? = null,
+    val cellularGeneration: String? = null,
 )
 
 @Composable
@@ -6577,6 +6871,7 @@ private fun readCompactStreamDeviceStatus(context: Context): CompactStreamDevice
         batteryCharging = diagnostics.batteryCharging,
         networkKind = diagnostics.networkKind,
         networkBars = diagnostics.networkSignalBars,
+        cellularGeneration = diagnostics.cellularGeneration,
     )
 }
 
@@ -6590,116 +6885,77 @@ private fun StreamBatteryIndicator(status: CompactStreamDeviceStatus) {
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CompactBatteryGlyph(status.batteryPercent, status.batteryCharging)
+        Icon(
+            imageVector = Icons.Rounded.BatteryFull,
+            contentDescription = null,
+            tint = TextPrimary,
+            modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = 90f },
+        )
         Text(
             status.batteryPercent?.let { "$it%" } ?: "--%",
-            color = compactBatteryColor(status.batteryPercent, status.batteryCharging),
+            color = TextPrimary,
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
         )
     }
-}
-
-@Composable
-private fun CompactBatteryGlyph(percent: Int?, charging: Boolean) {
-    val fillColor = compactBatteryColor(percent, charging)
-    Canvas(Modifier.size(width = 22.dp, height = 12.dp)) {
-        val capGap = size.width * 0.03f
-        val capWidth = size.width * 0.08f
-        val bodyWidth = size.width - capGap - capWidth
-        val cornerRadius = size.height * 0.22f
-        drawRoundRect(
-            color = TextPrimary.copy(alpha = 0.24f),
-            topLeft = Offset.Zero,
-            size = Size(bodyWidth, size.height),
-            cornerRadius = CornerRadius(cornerRadius, cornerRadius),
-        )
-        val inset = size.height * 0.18f
-        val fillWidth = (bodyWidth - inset * 2f) * ((percent ?: 0).coerceIn(0, 100) / 100f)
-        if (fillWidth > 0f) {
-            drawRoundRect(
-                color = fillColor,
-                topLeft = Offset(inset, inset),
-                size = Size(fillWidth, size.height - inset * 2f),
-                cornerRadius = CornerRadius(cornerRadius * 0.7f, cornerRadius * 0.7f),
-            )
-        }
-        drawRoundRect(
-            color = TextPrimary.copy(alpha = 0.58f),
-            topLeft = Offset(bodyWidth + capGap, size.height * 0.32f),
-            size = Size(capWidth, size.height * 0.36f),
-            cornerRadius = CornerRadius(capWidth, capWidth),
-        )
-    }
-}
-
-private fun compactBatteryColor(percent: Int?, charging: Boolean): Color = when {
-    charging -> Green
-    percent == null -> TextMuted
-    percent <= 15 -> Color(0xffff8d8d)
-    percent <= 30 -> Color(0xffffc95a)
-    else -> TextPrimary
 }
 
 @Composable
 private fun StreamNetworkIndicator(status: CompactStreamDeviceStatus) {
     val bars = status.networkBars?.coerceIn(0, 4)
-    val description = "${status.networkKind.label} signal ${bars?.toString() ?: "unknown"} bars"
+    val label = when (status.networkKind) {
+        AndroidNetworkKind.Cellular -> status.cellularGeneration ?: status.networkKind.label
+        AndroidNetworkKind.Ethernet,
+        AndroidNetworkKind.Other,
+        AndroidNetworkKind.None,
+        AndroidNetworkKind.Unknown,
+        -> status.networkKind.label
+        AndroidNetworkKind.Wifi -> null
+    }
+    val description = "${label ?: status.networkKind.label} signal ${bars?.toString() ?: "unknown"} bars"
     Row(
         modifier = Modifier.semantics { contentDescription = description },
         horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.Bottom,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            status.networkKind.label,
-            color = if (status.networkKind == AndroidNetworkKind.None) TextMuted else TextPrimary,
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-        )
-        CompactSignalBars(bars)
-    }
-}
-
-@Composable
-private fun CompactSignalBars(bars: Int?) {
-    val activeBars = bars?.coerceIn(0, 4) ?: 0
-    Canvas(Modifier.size(width = 18.dp, height = 14.dp)) {
-        val gap = size.width * 0.1f
-        val barWidth = (size.width - gap * 3f) / 4f
-        repeat(4) { index ->
-            val barHeight = size.height * (0.32f + index * 0.16f)
-            val x = index * (barWidth + gap)
-            val y = size.height - barHeight
-            drawRoundRect(
-                color = if (index < activeBars) TextPrimary else TextPrimary.copy(alpha = 0.22f),
-                topLeft = Offset(x, y),
-                size = Size(barWidth, barHeight),
-                cornerRadius = CornerRadius(barWidth * 0.45f, barWidth * 0.45f),
+        if (label != null) {
+            Text(
+                label,
+                color = TextPrimary,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
+        if (status.networkKind == AndroidNetworkKind.Wifi) {
+            Icon(
+                imageVector = when (bars) {
+                    4 -> Icons.Rounded.Wifi
+                    3 -> Icons.Rounded.Wifi
+                    2 -> Icons.Rounded.Wifi2Bar
+                    1 -> Icons.Rounded.Wifi1Bar
+                    0 -> Icons.Rounded.SignalWifi0Bar
+                    else -> Icons.Rounded.WifiOff
+                },
+                contentDescription = null,
+                tint = TextPrimary,
+                modifier = Modifier.size(20.dp),
+            )
+        } else if (status.networkKind == AndroidNetworkKind.Cellular || status.networkKind == AndroidNetworkKind.Other || status.networkKind == AndroidNetworkKind.Unknown) {
+            Icon(
+                imageVector = when (bars) {
+                    4 -> Icons.Rounded.SignalCellular4Bar
+                    3 -> Icons.Rounded.SignalCellularAlt
+                    2 -> Icons.Rounded.SignalCellularAlt2Bar
+                    1 -> Icons.Rounded.SignalCellularAlt1Bar
+                    else -> Icons.Rounded.SignalCellular0Bar
+                },
+                contentDescription = null,
+                tint = TextPrimary,
+                modifier = Modifier.size(20.dp),
             )
         }
     }
-}
-
-private fun streamStatsDetailedLine(
-    gameTitle: String,
-    streamStats: StreamRuntimeStats,
-    streamSettings: StreamSettings,
-): String {
-    val fps = streamStats.fps?.let { "$it Fps" } ?: "${streamSettings.fps} Fps"
-    val bitrate = formatRuntimeBitrate(streamStats.bitrateKbps)
-    val resolution = streamStats.resolution
-        ?.let(::formatRuntimeResolution)
-        ?: formatRuntimeResolution(normalizeStreamResolutionForAspect(streamSettings.resolution, streamSettings.aspectRatio))
-    val codec = streamStats.codec?.takeIf { it.isNotBlank() } ?: streamSettings.codec.name
-    val ping = streamStats.pingMs?.let { "Ping ${it}ms" } ?: "Ping --"
-    return listOf(
-        gameTitle.ifBlank { "Game" },
-        "$fps @ $bitrate",
-        resolution,
-        streamSettings.aspectRatio,
-        codec,
-        ping,
-    ).joinToString(" • ")
 }
 
 private fun formatRuntimeResolution(resolution: String): String {

@@ -77,6 +77,28 @@ enum class StreamStatsPosition {
 }
 
 @Serializable
+enum class CatalogBackgroundPreset {
+    @kotlinx.serialization.SerialName("colorful-abstract")
+    ColorfulAbstract,
+
+    @kotlinx.serialization.SerialName("original")
+    Original,
+}
+
+@Serializable
+data class StreamStatsMetrics(
+    val fps: Boolean = false,
+    val ping: Boolean = true,
+    val bitrate: Boolean = false,
+    val battery: Boolean = true,
+    val connection: Boolean = true,
+    val resolution: Boolean = false,
+    val codec: Boolean = false,
+) {
+    fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, connection, resolution, codec).count { it }
+}
+
+@Serializable
 enum class IntroMusicStartMode {
     @kotlinx.serialization.SerialName("muted")
     Muted,
@@ -177,6 +199,7 @@ data class AppSettings(
     val handheldLandscapeFourColumnGrid: Boolean = false,
     val handheldLandscapeSquareCards: Boolean = false,
     val nerdCatalogBackground: Boolean = false,
+    val catalogBackgroundPreset: CatalogBackgroundPreset = CatalogBackgroundPreset.ColorfulAbstract,
     val nerdCatalogBackgroundUri: String? = null,
     val tvSafeAreaPaddingDp: Float = 24f,
     val showGameStoreLabels: Boolean = true,
@@ -190,6 +213,7 @@ data class AppSettings(
     val showStatsOnLaunch: Boolean = false,
     val streamStatsStyle: StreamStatsStyle = StreamStatsStyle.Compact,
     val streamStatsPosition: StreamStatsPosition = StreamStatsPosition.Right,
+    val streamStatsMetrics: StreamStatsMetrics = StreamStatsMetrics(),
     val phoneRumbleFallback: Boolean = true,
     val hideServerSelector: Boolean = false,
     val controllerMode: Boolean = false,
@@ -215,9 +239,13 @@ data class AppSettings(
     val androidPhysicalControllerPromptDismissed: Boolean = false,
     val discordRichPresence: Boolean = false,
     val autoCheckForUpdates: Boolean = true,
-    val analyticsOptOut: Boolean = false,
+    val analyticsOptOut: Boolean = true,
+    val analyticsConsentAsked: Boolean = false,
     val allowEscapeToExitFullscreen: Boolean = false,
 )
+
+internal val AppSettings.analyticsSharingEnabled: Boolean
+    get() = analyticsConsentAsked && !analyticsOptOut
 
 internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
     if (!isKnownStreamResolution(settings.resolution)) {
@@ -296,7 +324,7 @@ internal fun normalizeStreamResolutionForAspectAndPlan(
     subscriptionInfo: SubscriptionInfo?,
     fallbackMembershipTier: String?,
 ): String {
-    val customResolution = parseResolutionPixelsOrNull(resolution)?.takeUnless { isKnownStreamResolution(resolution) }
+    val customResolution = customStreamResolutionOrNull(resolution)
     if (customResolution != null && customResolutionAllowedForPlan(customResolution, subscriptionInfo, fallbackMembershipTier)) {
         return "${customResolution.first}x${customResolution.second}"
     }
@@ -474,7 +502,7 @@ internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSe
 }
 
 internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
-    val customResolution = parseResolutionPixelsOrNull(resolution)?.takeUnless { isKnownStreamResolution(resolution) }
+    val customResolution = customStreamResolutionOrNull(resolution)
     if (customResolution != null && customResolutionAllowedForPlan(customResolution, subscriptionInfo, fallbackMembershipTier)) {
         val normalizedResolution = "${customResolution.first}x${customResolution.second}"
         return if (normalizedResolution == resolution) this else copy(resolution = normalizedResolution)
@@ -491,6 +519,18 @@ internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: Subscription
 
 private fun isKnownStreamResolution(resolution: String): Boolean =
     STREAM_RESOLUTION_OPTIONS.any { it.value == resolution }
+
+private fun customStreamResolutionOrNull(resolution: String): Pair<Int, Int>? =
+    parseResolutionPixelsOrNull(resolution)?.takeUnless {
+        isKnownStreamResolution(resolution) || resolution in UNSUPPORTED_LEGACY_STREAM_RESOLUTIONS
+    }
+
+private val UNSUPPORTED_LEGACY_STREAM_RESOLUTIONS = setOf(
+    "1600x720",
+    "2400x1080",
+    "3200x1440",
+    "4800x2160",
+)
 
 private fun customResolutionAllowedForPlan(
     resolution: Pair<Int, Int>,
@@ -522,33 +562,29 @@ private val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1112x834", "4:3", "834"),
     StreamResolutionOption("1600x1200", "4:3", "1080"),
     StreamResolutionOption("1280x1024", "5:4", "1050"),
-    StreamResolutionOption("1600x720", "20:9", "720"),
     StreamResolutionOption("1680x720", "21:9", "720"),
-    StreamResolutionOption("2400x1080", "20:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1080", "21:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("3840x1080", "32:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1440", "16:9", "1440", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1600", "16:10", "1440", StreamResolutionPlan.Priority),
-    StreamResolutionOption("3200x1440", "20:9", "1440", StreamResolutionPlan.Priority),
     StreamResolutionOption("3440x1440", "21:9", "1440", StreamResolutionPlan.Priority),
     StreamResolutionOption("5120x1440", "32:9", "1440", StreamResolutionPlan.Priority),
     StreamResolutionOption("3840x1600", "24:10", "1440", StreamResolutionPlan.Priority),
     StreamResolutionOption("3840x2160", "16:9", "2160", StreamResolutionPlan.Ultimate),
     StreamResolutionOption("3456x2160", "16:10", "2160", StreamResolutionPlan.Ultimate),
-    StreamResolutionOption("4800x2160", "20:9", "2160", StreamResolutionPlan.Ultimate),
     StreamResolutionOption("5120x2160", "21:9", "2160", StreamResolutionPlan.Ultimate),
     StreamResolutionOption("5120x2880", "16:9", "2880", StreamResolutionPlan.Ultimate),
 )
 
 private val PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT = mapOf(
-    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800", "4:3" to "1024x768", "20:9" to "1600x720", "21:9" to "1680x720"),
+    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800", "4:3" to "1024x768", "21:9" to "1680x720"),
     "768" to mapOf("16:9" to "1366x768", "4:3" to "1024x768"),
     "834" to mapOf("4:3" to "1112x834"),
     "900" to mapOf("16:9" to "1600x900", "16:10" to "1440x900"),
     "1050" to mapOf("16:10" to "1680x1050", "5:4" to "1280x1024"),
-    "1080" to mapOf("16:9" to "1920x1080", "16:10" to "1920x1200", "4:3" to "1600x1200", "20:9" to "2400x1080", "21:9" to "2560x1080", "32:9" to "3840x1080"),
-    "1440" to mapOf("16:9" to "2560x1440", "16:10" to "2560x1600", "20:9" to "3200x1440", "21:9" to "3440x1440", "24:10" to "3840x1600", "32:9" to "5120x1440"),
-    "2160" to mapOf("16:9" to "3840x2160", "16:10" to "3456x2160", "20:9" to "4800x2160", "21:9" to "5120x2160"),
+    "1080" to mapOf("16:9" to "1920x1080", "16:10" to "1920x1200", "4:3" to "1600x1200", "21:9" to "2560x1080", "32:9" to "3840x1080"),
+    "1440" to mapOf("16:9" to "2560x1440", "16:10" to "2560x1600", "21:9" to "3440x1440", "24:10" to "3840x1600", "32:9" to "5120x1440"),
+    "2160" to mapOf("16:9" to "3840x2160", "16:10" to "3456x2160", "21:9" to "5120x2160"),
     "2880" to mapOf("16:9" to "5120x2880"),
 )
 

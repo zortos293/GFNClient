@@ -34,6 +34,36 @@ class DisplayRefreshRateTest {
     }
 
     @Test
+    fun rejectsCadenceIncompatibleCurrentHighRefreshMode() {
+        val selected = selectStreamDisplayMode(
+            supportedModes = listOf(
+                mode(id = 1, refreshRate = 60f),
+                mode(id = 2, refreshRate = 90f),
+                mode(id = 3, refreshRate = 120f),
+            ),
+            currentMode = mode(id = 2, refreshRate = 90f),
+            requestedFps = 60,
+        )
+
+        assertEquals(1, selected?.id)
+    }
+
+    @Test
+    fun prefersCadenceCompatibleModeOverCloserIncompatibleMode() {
+        val selected = selectStreamDisplayMode(
+            supportedModes = listOf(
+                mode(id = 1, refreshRate = 90f),
+                mode(id = 2, refreshRate = 120f),
+                mode(id = 3, refreshRate = 144f),
+            ),
+            currentMode = mode(id = 3, refreshRate = 144f),
+            requestedFps = 60,
+        )
+
+        assertEquals(2, selected?.id)
+    }
+
+    @Test
     fun usesHighestModeWhenRequestedFpsExceedsDisplaySupport() {
         val selected = selectStreamDisplayMode(
             supportedModes = listOf(

@@ -108,6 +108,7 @@ internal object OpenNowHttpDiagnostics {
                 }
             }.trimEnd()
         }
+
 }
 
 internal fun sanitizeDiagnosticLogPayload(
@@ -174,6 +175,26 @@ private fun redactDiagnosticText(text: String): String {
     return sensitive.replace(text) { match ->
         "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
     }
+}
+
+internal fun sanitizeDiagnosticExport(raw: String): String {
+    var sanitized = Regex("""(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+""").replace(raw, "Bearer [redacted]")
+    sanitized = redactDiagnosticText(sanitized)
+    sanitized = Regex(
+        """(?i)\b(email|user|user[_-]?id|user[_-]?name|display[_-]?name|account|account[_-]?id|profile[_-]?id|session|session[_-]?id|server|server[_-]?ip|device|device[_-]?id|device[_-]?name|ip[_-]?address)(\s*[=:]\s*)([^\s,;&]+)""",
+    ).replace(sanitized) { match ->
+        "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
+    }
+    sanitized = Regex("""\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b""", RegexOption.IGNORE_CASE)
+        .replace(sanitized, "[redacted-email]")
+    sanitized = Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b""").replace(sanitized, "[redacted-ip]")
+    sanitized = Regex("""(?i)(?<![A-F0-9:])(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{1,4}(?![A-F0-9:])""")
+        .replace(sanitized, "[redacted-ip]")
+    sanitized = Regex("""(?i)(?<![A-F0-9:])(?:(?:[A-F0-9]{1,4}:){1,7}:(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?|::(?:[A-F0-9]{1,4}(?::[A-F0-9]{1,4}){0,6})?)(?![A-F0-9:])""")
+        .replace(sanitized, "[redacted-ip]")
+    sanitized = Regex("""\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b""")
+        .replace(sanitized, "[redacted-id]")
+    return sanitized
 }
 
 private fun singleLineDiagnosticPreview(raw: String): String =

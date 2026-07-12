@@ -16,6 +16,8 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.SurfaceHolder
+import android.view.View
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1116,7 +1118,8 @@ object NativeInputDiagnostics {
                 appendLine("input.diagnostics:")
                 lines.forEach { appendLine(it) }
             }.trimEnd()
-    }
+        }
+
 }
 
 enum class InputDataChannelRole {
@@ -1278,11 +1281,9 @@ internal data class GamepadRumbleCommand(
 )
 
 internal object HapticsPacketParser {
-    fun parse(bytes: ByteArray): GamepadRumbleCommand? = parse(ByteBuffer.wrap(bytes))
-
-    fun parse(buffer: ByteBuffer): GamepadRumbleCommand? {
-        val view = buffer.slice().order(ByteOrder.LITTLE_ENDIAN)
-        if (view.remaining() < 2) return null
+    fun parse(bytes: ByteArray): GamepadRumbleCommand? {
+        if (bytes.size < 2) return null
+        val view = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         val firstWord = view.getShort(0).toInt() and 0xffff
         if (firstWord == LEGACY_HAPTIC_SUBMESSAGE_TYPE) {
             return parseLegacy(view, 2)
@@ -1949,6 +1950,8 @@ class NativeStreamClient(
     private var audioTrack: AudioTrack? = null
     private var renderer: SurfaceViewRenderer? = null
     private var rendererSharpnessDrawer: StreamSharpnessGlDrawer? = null
+    private var rendererSurfaceCallback: SurfaceHolder.Callback? = null
+    private var rendererSinkAttached = false
     private var heartbeatJob: Job? = null
     private var gamepadKeepaliveJob: Job? = null
     private var statsJob: Job? = null
@@ -2055,8 +2058,7 @@ class NativeStreamClient(
     fun createRenderer(context: Context, settings: StreamSettings, stretchToFill: Boolean = false): SurfaceViewRenderer =
         SurfaceViewRenderer(context).also {
             renderer?.let { oldRenderer ->
-                videoTrack?.removeSink(oldRenderer)
-                oldRenderer.release()
+                releaseRendererInternal(oldRenderer)
             }
             firstVideoFrameWatchdog.reset()
             val rendererEvents = object : RendererCommon.RendererEvents {
@@ -2090,15 +2092,59 @@ class NativeStreamClient(
             // Compose stream container already supplies the black pre-frame backdrop.
             it.setStreamScaling(stretchToFill)
             renderer = it
-            videoTrack?.addSink(it)
+            rendererSurfaceCallback = object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    attachRendererSinkIfAvailable(it)
+                }
+
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    attachRendererSinkIfAvailable(it)
+                }
+
+                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    detachRendererSink(it)
+                }
+            }.also(it.holder::addCallback)
+            attachRendererSinkIfAvailable(it)
         }
 
     fun releaseRenderer(candidate: SurfaceViewRenderer) {
         if (renderer !== candidate) return
-        videoTrack?.removeSink(candidate)
-        candidate.release()
+        releaseRendererInternal(candidate)
         renderer = null
         rendererSharpnessDrawer = null
+    }
+
+    private fun attachRendererSinkIfAvailable(candidate: SurfaceViewRenderer) {
+        if (renderer !== candidate || rendererSinkAttached || candidate.holder.surface?.isValid != true) return
+        val track = videoTrack ?: return
+        firstVideoFrameWatchdog.reset()
+        track.addSink(candidate)
+        rendererSinkAttached = true
+        recordStreamDiagnostic("video renderer sink attached")
+    }
+
+    private fun detachRendererSink(candidate: SurfaceViewRenderer) {
+        if (renderer !== candidate || !rendererSinkAttached) return
+        videoTrack?.removeSink(candidate)
+        rendererSinkAttached = false
+        recordStreamDiagnostic("video renderer sink detached surface=${candidate.holder.surface?.isValid == true}")
+    }
+
+    private fun releaseRendererInternal(candidate: SurfaceViewRenderer) {
+        detachRendererSink(candidate)
+        rendererSurfaceCallback?.let(candidate.holder::removeCallback)
+        rendererSurfaceCallback = null
+        candidate.hideSurfaceBeforeRelease()
+        candidate.release()
+    }
+
+    private fun SurfaceViewRenderer.hideSurfaceBeforeRelease() {
+        // SurfaceView frames are composited in a separate native layer. Hide that
+        // layer before tearing down WebRTC so a stale/pre-frame buffer cannot remain
+        // above the next Compose screen while SurfaceFlinger processes the detach.
+        alpha = 0f
+        visibility = View.GONE
     }
 
     fun updateRendererSettings(settings: StreamSettings, stretchToFill: Boolean = false) {
@@ -2170,7 +2216,9 @@ class NativeStreamClient(
 
     fun release() {
         stop()
-        renderer?.release()
+        renderer?.let { activeRenderer ->
+            releaseRendererInternal(activeRenderer)
+        }
         renderer = null
         rendererSharpnessDrawer = null
         factory?.dispose()
@@ -2599,7 +2647,10 @@ class NativeStreamClient(
         hapticsAdvertised = null
         lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
-        videoTrack?.removeSink(renderer)
+        if (rendererSinkAttached) {
+            videoTrack?.removeSink(renderer)
+            rendererSinkAttached = false
+        }
         videoTrack = null
         audioTrack = null
         peerConnection?.close()
@@ -3029,11 +3080,14 @@ class NativeStreamClient(
     }
 
     private fun attachVideo(track: VideoTrack) {
-        videoTrack?.removeSink(renderer)
+        if (rendererSinkAttached) {
+            videoTrack?.removeSink(renderer)
+            rendererSinkAttached = false
+        }
         videoTrack = track
         track.setEnabled(true)
-        renderer?.let { track.addSink(it) }
-        recordStreamDiagnostic("video track attached id=${track.id()} state=${track.state()?.name ?: "unknown"} renderer=${renderer != null}")
+        renderer?.let(::attachRendererSinkIfAvailable)
+        recordStreamDiagnostic("video track attached id=${track.id()} state=${track.state()?.name ?: "unknown"} renderer=${renderer != null} sink=$rendererSinkAttached")
     }
 
     private fun attachDataChannel(channel: DataChannel) {
@@ -3064,10 +3118,12 @@ class NativeStreamClient(
     }
 
     private fun handleInputChannelMessage(buffer: DataChannel.Buffer) {
-        val data = buffer.data.duplicate().slice().order(ByteOrder.LITTLE_ENDIAN)
-        if (!data.hasRemaining()) return
-        if (handleInputHandshakeMessage(data)) return
-        HapticsPacketParser.parse(data)?.let { command ->
+        val bytes = buffer.data.duplicate().let { data ->
+            ByteArray(data.remaining()).also(data::get)
+        }
+        if (bytes.isEmpty()) return
+        if (handleInputHandshakeMessage(ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN))) return
+        HapticsPacketParser.parse(bytes)?.let { command ->
             applyGamepadRumble(command.controllerId, command.weakMagnitude, command.strongMagnitude)
         }
     }
@@ -3224,7 +3280,10 @@ class NativeStreamClient(
     private fun handleMediaLiveness(snapshot: RuntimeStatsSnapshot) {
         val connected = lastIceState == PeerConnection.IceConnectionState.CONNECTED ||
             lastIceState == PeerConnection.IceConnectionState.COMPLETED
-        if (firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)) {
+        if (
+            rendererSinkAttached &&
+            firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
+        ) {
             if (
                 requestSafeVideoFallback(
                     message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",

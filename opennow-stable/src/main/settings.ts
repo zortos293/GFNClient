@@ -10,6 +10,7 @@ import type {
   AspectRatio,
   KeyboardLayout,
   StreamClientMode,
+  StreamTransportMode,
   NativeStreamerBackendPreference,
   NativeVideoBackendPreference,
   NativeStreamerFeatureMode,
@@ -22,8 +23,10 @@ import {
   DEFAULT_KEYBOARD_LAYOUT,
   DEFAULT_VIDEO_SHADER_SETTINGS,
   getDefaultStreamPreferences,
+  normalizeNativeExternalRendererForPlatform,
   normalizeStreamClientModeForPlatform,
   normalizeStreamPreferences,
+  normalizeTransportModeForPlatform,
   normalizeVideoShaderSettings,
 } from "@shared/gfn";
 
@@ -54,6 +57,11 @@ export interface Settings {
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   /** Use the native GStreamer renderer window instead of Electron HWND embedding */
   nativeExternalRenderer: boolean;
+  /**
+   * Native media transport. Default webrtc.
+   * nvst is experimental classic UDP video + SCTP input (GO-with-Moonlight-hypothesis).
+   */
+  transportMode: StreamTransportMode;
   /** Show the native streamer's own stats overlay while native streaming */
   showNativeStreamerStats: boolean;
   /** Preferred video codec */
@@ -208,7 +216,8 @@ const DEFAULT_SETTINGS: Settings = {
   nativeStreamerExecutablePath: "",
   nativeCloudGsyncMode: "auto",
   nativeD3dFullscreenMode: "auto",
-  nativeExternalRenderer: true,
+  nativeExternalRenderer: false,
+  transportMode: "webrtc",
   showNativeStreamerStats: false,
   codec: DEFAULT_STREAM_PREFERENCES.codec,
   decoderPreference: "auto",
@@ -435,8 +444,25 @@ export class SettingsManager {
       settings.translucentUI = false;
       migrated = true;
     }
-    if (!settings.nativeExternalRenderer) {
-      settings.nativeExternalRenderer = true;
+    if (typeof settings.nativeExternalRenderer !== "boolean") {
+      settings.nativeExternalRenderer = false;
+      migrated = true;
+    }
+    const nativeExternalRenderer = normalizeNativeExternalRendererForPlatform(
+      settings.nativeExternalRenderer,
+      process.platform,
+    );
+    if (settings.nativeExternalRenderer !== nativeExternalRenderer) {
+      settings.nativeExternalRenderer = nativeExternalRenderer;
+      migrated = true;
+    }
+    const transportMode = normalizeTransportModeForPlatform(
+      settings.transportMode === "nvst" ? "nvst" : "webrtc",
+      process.platform,
+      settings.streamClientMode,
+    );
+    if (settings.transportMode !== transportMode) {
+      settings.transportMode = transportMode;
       migrated = true;
     }
     const nativeVideoBackend = normalizeNativeVideoBackendPreference(settings.nativeVideoBackend);

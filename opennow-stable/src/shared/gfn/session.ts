@@ -10,6 +10,7 @@ import type {
 import type {
   NativeStreamerBackendPreference,
   NativeStreamerFeatureMode,
+  StreamTransportMode,
 } from "./nativeStreamer";
 import type { GameLanguage, KeyboardLayout } from "./keyboard";
 
@@ -34,6 +35,8 @@ export interface StreamSettings {
   clientMode?: StreamClientMode;
   /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
   nativeStreamerBackend?: NativeStreamerBackendPreference;
+  /** Native media transport; NVST is experimental and Windows-only. */
+  transportMode?: StreamTransportMode;
   /** Native-only override for Cloud G-Sync display detection. */
   nativeCloudGsyncMode?: NativeStreamerFeatureMode;
   /** User's raw Cloud G-Sync preference before main-process capability resolution. */
@@ -228,6 +231,8 @@ export interface SessionInfo {
   appLaunchMode?: number;
   /** Wire in-game settings persistence value the session was created with, kept session-stable for resumes */
   enablePersistingInGameSettings?: boolean;
+  /** Classic NVST RTSPS endpoints from CloudMatch usage=14 connections. */
+  rtspsEndpoints?: string[];
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
   negotiatedStreamProfile?: NegotiatedStreamProfile;

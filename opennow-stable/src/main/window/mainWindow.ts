@@ -5,8 +5,11 @@ import { IPC_CHANNELS } from "@shared/ipc";
 import type { DirectLaunchRequest } from "@shared/gfn";
 import type { SettingsManager } from "../settings";
 import {
+  ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS,
+  markEscapeHoldFired,
   nextPointerLockEscapeCaptureUntilMs,
-  shouldCaptureEscapeFullscreenInput,
+  resolveEscapeHoldCaptureAction,
+  type EscapeHoldCaptureState,
 } from "../escapeFullscreenGuard";
 import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
 
@@ -35,6 +38,14 @@ export async function createMainWindow(
     : preloadJsPath;
 
   const settings = deps.settingsManager.getAll();
+  let escapeHoldState: EscapeHoldCaptureState = { keyDownCaptured: false, holdFired: false };
+  let escapeHoldTimer: NodeJS.Timeout | null = null;
+  const clearEscapeHoldTimer = (): void => {
+    if (escapeHoldTimer !== null) {
+      clearTimeout(escapeHoldTimer);
+      escapeHoldTimer = null;
+    }
+  };
 
   // Console mode (big picture): mirror GeForce NOW's TV mode by launching
   // fullscreen with the controller-oriented shell enabled.
@@ -150,8 +161,9 @@ export async function createMainWindow(
   window.webContents.on("before-input-event", (event, input) => {
     try {
       const mainWindow = deps.getMainWindow();
-      if (
-        shouldCaptureEscapeFullscreenInput(input, {
+      const resolved = resolveEscapeHoldCaptureAction(
+        input,
+        {
           allowEscapeToExitFullscreen: Boolean(
             deps.settingsManager?.get("allowEscapeToExitFullscreen"),
           ),
@@ -164,12 +176,32 @@ export async function createMainWindow(
           pointerLockEscapeCaptureUntilMs:
             deps.getPointerLockEscapeCaptureUntilMs(),
           nowMs: Date.now(),
-        })
-      ) {
-        event.preventDefault();
-        if (mainWindow && mainWindow.webContents) {
-          mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
-        }
+        },
+        escapeHoldState,
+      );
+      escapeHoldState = resolved.nextHoldState;
+
+      if (resolved.action === "ignore") return;
+      event.preventDefault();
+
+      if (resolved.action === "arm-hold") {
+        clearEscapeHoldTimer();
+        escapeHoldTimer = setTimeout(() => {
+          escapeHoldTimer = null;
+          const activeWindow = deps.getMainWindow();
+          if (!activeWindow || activeWindow.isDestroyed()) return;
+          if (!activeWindow.isFullScreen() && !deps.getRendererControlledFullscreen()) return;
+          escapeHoldState = markEscapeHoldFired(escapeHoldState);
+          activeWindow.webContents.send(IPC_CHANNELS.EXIT_FULLSCREEN);
+        }, ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS);
+        return;
+      }
+
+      if (resolved.action === "tap") {
+        clearEscapeHoldTimer();
+        mainWindow?.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+      } else if (resolved.action === "hold-consumed-keyup") {
+        clearEscapeHoldTimer();
       }
     } catch {
       // ignore errors - interception is best-effort
@@ -187,6 +219,8 @@ export async function createMainWindow(
   }
 
   window.on("closed", () => {
+    clearEscapeHoldTimer();
+    escapeHoldState = { keyDownCaptured: false, holdFired: false };
     deps.setMainWindow(null);
     deps.setRendererControlledFullscreen(false);
     deps.setPointerLockActive(false);

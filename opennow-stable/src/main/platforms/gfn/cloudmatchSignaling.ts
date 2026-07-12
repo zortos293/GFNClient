@@ -3,6 +3,8 @@ import dns from "node:dns";
 import type { IceServer, MediaConnectionInfo } from "@shared/gfn";
 
 import type { CloudMatchResponse } from "./types";
+import { collectRtspsEndpoints } from "./nvstRtspProbe";
+import { isZoneHostname } from "./cloudmatchTransport";
 
 const READY_SESSION_STATUSES = new Set([2, 3]);
 
@@ -177,6 +179,7 @@ export function resolveSignaling(response: CloudMatchResponse): {
   signalingServer: string;
   signalingUrl: string;
   mediaConnectionInfo?: MediaConnectionInfo;
+  rtspsEndpoints: string[];
 } {
   const connections = response.session.connectionInfo ?? [];
   const signalingConnection =
@@ -203,6 +206,15 @@ export function resolveSignaling(response: CloudMatchResponse): {
     ? effectiveHost
     : `${effectiveHost}:443`;
 
+  const rtspsHost =
+    connections
+      .map((connection) => typeof connection.resourcePath === "string"
+        ? extractHostFromUrl(connection.resourcePath)
+        : null)
+      .find((host): host is string => Boolean(host)) ??
+    signalingHost ??
+    (isZoneHostname(serverIp) ? null : serverIp);
+
   return {
     serverIp,
     signalingServer,
@@ -210,6 +222,7 @@ export function resolveSignaling(response: CloudMatchResponse): {
     mediaConnectionInfo: resolveMediaConnectionInfo(connections, serverIp, {
       logMissing: isReadySessionStatus(response.session.status),
     }),
+    rtspsEndpoints: collectRtspsEndpoints(connections, rtspsHost),
   };
 }
 

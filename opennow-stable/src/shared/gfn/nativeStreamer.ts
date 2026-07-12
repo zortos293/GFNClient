@@ -4,16 +4,46 @@ export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
 export type NativeVideoBackendPreference = "auto" | "d3d11" | "d3d12";
+export type StreamTransportMode = "webrtc" | "nvst";
 
-export const NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE = "experimental feature: Windows only. Mac and Linux support is being worked on";
+export const NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE =
+  "Native streamer requires a supported desktop OS (Windows, macOS, or Linux).";
+/** @deprecated Use NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE. */
+export const NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE = NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE;
 
 export function isNativeStreamerSupportedPlatform(platform: string): boolean {
+  const normalized = platform.toLowerCase();
+  return (
+    normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows") ||
+    normalized === "darwin" || normalized.includes("mac") ||
+    normalized === "linux" || normalized.includes("linux")
+  );
+}
+
+export function isNativeExternalRendererSupported(platform: string): boolean {
   const normalized = platform.toLowerCase();
   return normalized === "win32" || normalized.startsWith("win") || normalized.includes("windows");
 }
 
+export const isNativeDirectXBackendSupported = isNativeExternalRendererSupported;
+export const isNvstTransportSupported = isNativeExternalRendererSupported;
+
 export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, platform: string): StreamClientMode {
   return mode === "native" && !isNativeStreamerSupportedPlatform(platform) ? "web" : mode;
+}
+
+export function normalizeNativeExternalRendererForPlatform(enabled: boolean, platform: string): boolean {
+  return enabled && isNativeExternalRendererSupported(platform);
+}
+
+export function normalizeTransportModeForPlatform(
+  mode: StreamTransportMode,
+  platform: string,
+  streamClientMode: StreamClientMode = "native",
+): StreamTransportMode {
+  return mode === "nvst" && streamClientMode === "native" && isNvstTransportSupported(platform)
+    ? "nvst"
+    : "webrtc";
 }
 
 export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {
@@ -65,9 +95,9 @@ export function createUnsupportedNativeStreamerStatus(): NativeStreamerStatus {
     gstreamerRuntime: {
       source: "unknown",
       bundled: false,
-      message: NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+      message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
     },
-    message: NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+    message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
   };
 }
 

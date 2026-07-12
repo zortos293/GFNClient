@@ -6678,6 +6678,22 @@ button.game-card-store-chip.owned.active:hover {
   box-shadow: none;
 }
 
+/* Transparent hole so the streamer-owned child HWND/NSView/X11 surface shows
+   through Chromium while React overlays (sidebar, HUD) stay above. */
+.sv--native-hole {
+  background: transparent;
+  /* Ensure the stream root remains the focus/pointer-lock target. */
+  pointer-events: auto;
+}
+
+.sv-video--native-hole {
+  background: transparent !important;
+  /* Keep a tiny opacity so Chromium still hit-tests the element for mouse/keyboard
+     while the native child HWND paints underneath (HWND_BOTTOM + clip styles). */
+  opacity: 0.01;
+  pointer-events: auto;
+}
+
 .sv-video:focus,
 .sv-video:focus-visible,
 .sv-video:focus-within {

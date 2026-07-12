@@ -45,6 +45,7 @@ interface StreamViewProps {
   showNativeStats?: boolean;
   nativeInputCaptureActive?: boolean;
   gstreamerEnabled: boolean;
+  nativeExternalRenderer?: boolean;
   shortcuts: {
     toggleStats: string;
     togglePointerLock: string;
@@ -115,6 +116,7 @@ export function StreamView({
   showNativeStats = false,
   nativeInputCaptureActive = false,
   gstreamerEnabled,
+  nativeExternalRenderer = false,
   shortcuts,
   serverRegion,
   antiAfkEnabled,
@@ -945,7 +947,7 @@ export function StreamView({
       const rect = element.getBoundingClientRect();
       const width = Math.round(rect.width * dpr);
       const height = Math.round(rect.height * dpr);
-      const visible = width >= 2 && height >= 2;
+      const visible = width >= 2 && height >= 2 && !showSideBar && !exitPrompt.open;
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
@@ -1000,7 +1002,7 @@ export function StreamView({
         showStats: false,
       });
     };
-  }, [showNativeStats, showStats]);
+  }, [exitPrompt.open, showNativeStats, showSideBar, showStats]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
@@ -1406,15 +1408,18 @@ export function StreamView({
     };
   }, [exitPrompt.open, isConnecting, showSideBar]);
 
+  const nativeInternalHole =
+    (nativeRendererActive || gstreamerEnabled) && !nativeExternalRenderer;
+
   return (
-    <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", className].filter(Boolean).join(" ")}>
+    <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", nativeInternalHole ? "sv--native-hole" : "", className].filter(Boolean).join(" ")}>
       <m.video
         ref={setVideoRef}
         autoPlay
         playsInline
         muted
         tabIndex={-1}
-        className="sv-video"
+        className={["sv-video", nativeInternalHole ? "sv-video--native-hole" : ""].filter(Boolean).join(" ")}
         initial={false}
         animate={streamVideoReady
           ? { opacity: 1, scale: 1 }
@@ -1439,7 +1444,7 @@ export function StreamView({
           <div className="sv-pointerlock-hint-sub">
             {allowEscapeToExitFullscreen
               ? "Press Escape will also exit fullscreen per your settings."
-              : "Escape is forwarded to the game while pointer-locked (see Settings)."}
+              : "Escape goes to the game while pointer-locked; hold Escape ~1.5s to exit fullscreen."}
           </div>
         </div>
       )}

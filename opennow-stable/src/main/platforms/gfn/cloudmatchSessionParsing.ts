@@ -399,6 +399,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     `serverIp=${signaling.serverIp}, ` +
     `signalingServer=${signaling.signalingServer}, ` +
     `signalingUrl=${signaling.signalingUrl}, ` +
+    `rtspsEndpoints=${JSON.stringify(signaling.rtspsEndpoints)}, ` +
     `connections=[${connectionSummary}]`,
   );
   console.log(
@@ -420,6 +421,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     enablePersistingInGameSettings,
+    rtspsEndpoints: signaling.rtspsEndpoints.length > 0 ? signaling.rtspsEndpoints : undefined,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,
     negotiatedStreamProfile,

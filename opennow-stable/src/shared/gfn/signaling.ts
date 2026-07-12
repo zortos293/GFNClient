@@ -45,12 +45,24 @@ export interface NativeStreamerSessionContext {
   session: SessionInfo;
   settings: StreamSettings;
   shortcuts: NativeStreamerShortcutBindings;
+  nvstVideo?: NvstVideoSession;
+}
+
+export interface NvstVideoSession {
+  clientUdpPort: number;
+  videoPeerIp: string;
+  videoPeerPort: number;
+  srtpAesKeyHex: string;
+  srtpKeyId: number;
+  pingPayload?: string;
+  codec?: string;
 }
 
 export function buildNativeStreamerSessionContext(
   session: SessionInfo,
   settings: StreamSettings,
   shortcuts: NativeStreamerShortcutBindings,
+  nvstVideo?: NvstVideoSession,
 ): NativeStreamerSessionContext {
   const negotiatedStreamProfile = session.negotiatedStreamProfile
     ? {
@@ -70,6 +82,7 @@ export function buildNativeStreamerSessionContext(
         session.negotiatedStreamProfile?.enableCloudGsync ?? settings.enableCloudGsync,
     },
     shortcuts,
+    ...(nvstVideo ? { nvstVideo } : {}),
   };
 }
 

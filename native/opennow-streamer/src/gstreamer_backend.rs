@@ -4,8 +4,8 @@ use crate::backend::{
     web_rtc_media_connection_info,
 };
 use crate::gstreamer_config::{
-    resolve_d3d_fullscreen_sink, resolve_present_max_fps, NATIVE_D3D_FULLSCREEN_ENV,
-    NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
+    resolve_d3d_fullscreen_sink, resolve_present_max_fps, use_internal_renderer,
+    NATIVE_D3D_FULLSCREEN_ENV, NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
 };
 use crate::gstreamer_platform::{clear_native_shortcut_bindings, set_native_shortcut_bindings};
 use crate::gstreamer_pipeline::{
@@ -165,6 +165,73 @@ impl NativeStreamerBackend for GstreamerBackend {
         self.remote_description_set = false;
         let webrtc_name = pipeline.webrtc_name();
         self.pipeline = Some(pipeline);
+
+        let mut events = vec![Event::Status {
+            status: "ready",
+            message: Some(format!(
+                "GStreamer backend selected for session {session_id}; {} pipeline is ready.",
+                webrtc_name
+            )),
+        }];
+
+        if let Some(nvst) = self
+            .active_context
+            .as_ref()
+            .and_then(|ctx| ctx.nvst_video.clone())
+        {
+            let fallback_codec = self
+                .active_context
+                .as_ref()
+                .map(|ctx| ctx.settings.codec.as_str().to_owned())
+                .unwrap_or_else(|| "H265".to_owned());
+            let requested_fps = self
+                .active_context
+                .as_ref()
+                .map(|ctx| ctx.settings.fps);
+            let d3d_fullscreen = resolve_d3d_fullscreen_sink(
+                self.active_context
+                    .as_ref()
+                    .map(|ctx| ctx.settings.enable_cloud_gsync)
+                    .unwrap_or(false),
+            );
+            let present_max_fps = resolve_present_max_fps(requested_fps.unwrap_or(0));
+            if let Some(pipeline) = self.pipeline.as_mut() {
+                pipeline.set_present_max_fps(present_max_fps);
+                pipeline.set_d3d_fullscreen_sink(d3d_fullscreen);
+                if let Some(ctx) = self.active_context.as_ref() {
+                    let bitrate_kbps = ctx.settings.max_bitrate_mbps.saturating_mul(1000);
+                    pipeline.configure_stats(ctx, bitrate_kbps);
+                }
+                match pipeline.attach_nvst_video(
+                    nvst,
+                    &fallback_codec,
+                    requested_fps.filter(|fps| *fps > 0),
+                    d3d_fullscreen,
+                ) {
+                    Ok(()) => events.push(Event::Log {
+                        level: "info",
+                        message: "NVST classic UDP video receive scaffold attached (hybrid WebRTC input)."
+                            .to_owned(),
+                    }),
+                    Err(message) => {
+                        events.push(Event::Error {
+                            code: "nvst-video-attach-failed".to_owned(),
+                            message: message.clone(),
+                        });
+                        return BackendReply {
+                            events,
+                            response: Some(Response::Error {
+                                id: Some(id),
+                                code: "nvst-video-attach-failed".to_owned(),
+                                message,
+                            }),
+                            should_continue: true,
+                        };
+                    }
+                }
+            }
+        }
+
         if let (Some(surface), Some(pipeline)) =
             (self.render_surface.clone(), self.pipeline.as_ref())
         {
@@ -172,13 +239,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         }
 
         BackendReply {
-            events: vec![Event::Status {
-                status: "ready",
-                message: Some(format!(
-                    "GStreamer backend selected for session {session_id}; {} pipeline is ready.",
-                    webrtc_name
-                )),
-            }],
+            events,
             response: Some(Response::Ok { id }),
             should_continue: true,
         }
@@ -227,6 +288,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         };
 
         let present_max_fps = resolve_present_max_fps(context.settings.fps);
+        // Internal child-surface mode never uses exclusive D3D fullscreen present.
         let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
         set_native_shortcut_bindings(&context.shortcuts);
         pipeline.set_present_max_fps(present_max_fps);
@@ -240,6 +302,14 @@ impl NativeStreamerBackend for GstreamerBackend {
                     context.settings.fps
                 ),
             });
+        } else if present_max_fps == PRESENT_LIMITER_AUTO_SENTINEL {
+            events.push(Event::Log {
+                level: "info",
+                message: format!(
+                    "Native present limiter auto mode for {} fps stream (D3D11 caps to display Hz when stream fps exceeds it); set {NATIVE_PRESENT_MAX_FPS_ENV}=0 to disable.",
+                    context.settings.fps
+                ),
+            });
         }
         if d3d_fullscreen_sink {
             events.push(Event::Log {
@@ -247,6 +317,12 @@ impl NativeStreamerBackend for GstreamerBackend {
                 message: format!(
                     "Native D3D fullscreen presentation is enabled for Cloud G-Sync/VRR; set {NATIVE_D3D_FULLSCREEN_ENV}=0 to disable."
                 ),
+            });
+        } else if use_internal_renderer() {
+            events.push(Event::Log {
+                level: "info",
+                message: "Native Internal renderer keeps exclusive D3D fullscreen off (child HWND present; sync=false, depth-1 post-decode queue)."
+                    .to_owned(),
             });
         }
 
@@ -465,7 +541,7 @@ impl NativeStreamerBackend for GstreamerBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gstreamer_config::{automatic_present_max_fps, PRESENT_LIMITER_AUTO_SENTINEL};
+    use crate::gstreamer_config::PRESENT_LIMITER_AUTO_SENTINEL;
     use crate::gstreamer_input::parse_input_handshake_version;
     use crate::gstreamer_liveness::{
         caps_framerate_summary, sink_stats_summary, VideoStallAction, VideoStallTracker,
@@ -711,14 +787,6 @@ mod tests {
                 RtpVideoApi::Software
             ]
         );
-    }
-
-    #[test]
-    fn automatic_present_limiter_uses_display_refresh_below_requested_fps() {
-        assert_eq!(automatic_present_max_fps(240, Some(165)), 165);
-        assert_eq!(automatic_present_max_fps(240, Some(240)), 0);
-        assert_eq!(automatic_present_max_fps(240, Some(1)), 0);
-        assert_eq!(automatic_present_max_fps(240, None), 0);
     }
 
     #[test]

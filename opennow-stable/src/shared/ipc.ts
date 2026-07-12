@@ -48,6 +48,7 @@ export const IPC_CHANNELS = {
   SIGNALING_EVENT: "gfn:signaling-event",
   TOGGLE_FULLSCREEN: "window:toggle-fullscreen",
   SET_FULLSCREEN: "window:set-fullscreen",
+  EXIT_FULLSCREEN: "app:exit-fullscreen",
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",
   POINTER_LOCK_CHANGE: "window:pointer-lock-change",
   EXTERNAL_ESCAPE: "app:external-escape",

@@ -1,0 +1,53 @@
+<UserControl x:Class="OpenNow.Playnite.Views.DatabaseBrowserView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="800">
+  <Grid Margin="20">
+    <Grid.Resources>
+      <Style TargetType="TextBlock" BasedOn="{StaticResource BaseTextBlockStyle}" />
+    </Grid.Resources>
+    <DockPanel>
+      <StackPanel Orientation="Horizontal" DockPanel.Dock="Top">
+        <TextBlock Text="{DynamicResource LOCOpenNow_DatabaseBrowserSearchLabel}" VerticalAlignment="Center" />
+        <TextBox Margin="10,0,0,0"
+                 MinWidth="220"
+                 Text="{Binding SearchString, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Delay=200}"
+                 VerticalAlignment="Center" />
+        <TextBlock Margin="10,0,0,0"
+                   VerticalAlignment="Center"
+                   Text="{DynamicResource LOCOpenNow_DatabaseBrowserStoreSearchLabel}" />
+        <TextBox Margin="10,0,0,0"
+                 MinWidth="220"
+                 Text="{Binding StoreSearchString, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Delay=200}"
+                 VerticalAlignment="Center" />
+      </StackPanel>
+
+      <DataGrid Margin="0,10,0,0"
+                DockPanel.Dock="Top"
+                ItemsSource="{Binding VariantsList}"
+                SelectionMode="Single"
+                CanUserAddRows="False"
+                CanUserResizeRows="True"
+                AutoGenerateColumns="False"
+                CanUserSortColumns="True"
+                SelectedItem="{Binding SelectedVariant}"
+                IsSynchronizedWithCurrentItem="True">
+        <DataGrid.Columns>
+          <DataGridTextColumn Header="{DynamicResource LOCOpenNow_DatabaseBrowserNameLabel}" Binding="{Binding Title}" IsReadOnly="True" />
+          <DataGridTextColumn Header="{DynamicResource LOCOpenNow_DatabaseBrowserGeForceIdLabel}" Binding="{Binding Id}" IsReadOnly="True" />
+          <DataGridTextColumn Header="{DynamicResource LOCOpenNow_DatabaseBrowserStoreLabel}" Binding="{Binding AppStore}" IsReadOnly="True" />
+          <DataGridTextColumn Header="{DynamicResource LOCOpenNow_DatabaseBrowserStoreIdLabel}" Binding="{Binding StoreId}" IsReadOnly="True" />
+        </DataGrid.Columns>
+        <DataGrid.ContextMenu>
+          <ContextMenu>
+            <MenuItem Header="{DynamicResource LOCOpenNow_DatabaseBrowserContextMenuItemCopyVariantTitle}"
+                      Command="{Binding CopyVariantTitleToClipboardCommand}" />
+          </ContextMenu>
+        </DataGrid.ContextMenu>
+      </DataGrid>
+    </DockPanel>
+  </Grid>
+</UserControl>

@@ -4,7 +4,11 @@ import { m } from "motion/react";
 import type { NativeStreamerStatus, Settings } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
-  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
+  isNativeDirectXBackendSupported,
+  isNativeExternalRendererSupported,
+  isNativeStreamerSupportedPlatform,
+  isNvstTransportSupported,
+  NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
 } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import {
@@ -12,12 +16,17 @@ import {
   formatNativeVideoBackendName,
   getAvailableNativeCodecLabels,
   getGstreamerRuntimeBadgeClass,
-  isWindows,
   nativeVideoBackendOptions,
   NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS,
 } from "../settingsFormatters";
 import { dialogMotion, overlayMotion } from "../../MotionProvider";
 import { MotionSpinner } from "../../MotionSpinner";
+
+const nativePlatformHint = `${navigator.platform} ${navigator.userAgent}`;
+const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(nativePlatformHint);
+const supportsNativeExternalRenderer = isNativeExternalRendererSupported(nativePlatformHint);
+const supportsNativeDirectXBackend = isNativeDirectXBackendSupported(nativePlatformHint);
+const supportsNvstTransport = isNvstTransportSupported(nativePlatformHint);
 
 export interface SettingsNativeStreamerSectionProps {
   settings: Settings;
@@ -47,7 +56,7 @@ export function SettingsNativeStreamerSection({
     nativeStreamerEnablePromptOpen || nativeStreamerEnablePromptClosing;
 
   const refreshNativeStreamerStatus = useCallback(async () => {
-    if (!isWindows) {
+    if (!isNativeStreamerPlatform) {
       setNativeStreamerStatus(createUnsupportedNativeStreamerStatus());
       setNativeStreamerStatusLoading(false);
       return;
@@ -236,7 +245,7 @@ export function SettingsNativeStreamerSection({
           <h2>{t("settings.nativeStreamer.title")}</h2>
         </div>
         <div className="settings-rows">
-          {!isWindows ? (
+          {!isNativeStreamerPlatform ? (
             <div className="settings-row settings-row--column">
               <div className="settings-row-top settings-row-top--compact">
                 <label className="settings-label settings-label--wrap">
@@ -247,7 +256,7 @@ export function SettingsNativeStreamerSection({
                 </label>
               </div>
               <span className="settings-input-hint">
-                {NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE}
+                {NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE}
               </span>
             </div>
           ) : (
@@ -396,7 +405,7 @@ export function SettingsNativeStreamerSection({
                 </span>
               </div>
 
-              <div className="settings-row settings-row--column">
+              {supportsNativeDirectXBackend && <div className="settings-row settings-row--column">
                 <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
                 <div className="settings-chip-row">
                   {nativeVideoBackendOptions.map((option) => (
@@ -414,7 +423,7 @@ export function SettingsNativeStreamerSection({
                 <span className="settings-subtle-hint">
                   {t("settings.nativeStreamer.directxBackendHint")}
                 </span>
-              </div>
+              </div>}
 
               <div className="settings-row settings-row--column">
                 <label className="settings-label">{t("settings.nativeStreamer.framePacing")}</label>
@@ -437,6 +446,40 @@ export function SettingsNativeStreamerSection({
                 <span className="settings-subtle-hint">
                   {t("settings.nativeStreamer.framePacingHint")}
                 </span>
+              </div>
+
+              {supportsNativeExternalRenderer ? (
+                <div className="settings-row settings-row--column">
+                  <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
+                  <div className="settings-chip-row">
+                    <button type="button" className={`settings-chip ${!settings.nativeExternalRenderer ? "active" : ""}`} onClick={() => handleChange("nativeExternalRenderer", false)}>
+                      <span>{t("settings.nativeStreamer.renderModeInternal")}</span>
+                    </button>
+                    <button type="button" className={`settings-chip ${settings.nativeExternalRenderer ? "active" : ""}`} onClick={() => handleChange("nativeExternalRenderer", true)}>
+                      <span>{t("settings.nativeStreamer.renderModeExternal")}</span>
+                    </button>
+                  </div>
+                  <span className="settings-subtle-hint">{t("settings.nativeStreamer.renderModeHint")}</span>
+                </div>
+              ) : (
+                <div className="settings-row settings-row--column">
+                  <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
+                  <div className="settings-chip-row"><span className="settings-inline-badge">{t("settings.nativeStreamer.renderModeInternal")}</span></div>
+                  <span className="settings-subtle-hint">{t("settings.nativeStreamer.renderModeInternalOnlyHint")}</span>
+                </div>
+              )}
+
+              <div className="settings-row settings-row--column">
+                <label className="settings-label">{t("settings.nativeStreamer.transportMode")}</label>
+                <div className="settings-chip-row">
+                  <button type="button" className={`settings-chip ${settings.transportMode !== "nvst" ? "active" : ""}`} onClick={() => handleChange("transportMode", "webrtc")}>
+                    <span>{t("settings.nativeStreamer.transportModeWebrtc")}</span>
+                  </button>
+                  <button type="button" className={`settings-chip ${settings.transportMode === "nvst" ? "active" : ""}`} onClick={() => handleChange("transportMode", "nvst")} disabled={!supportsNvstTransport}>
+                    <span>{t("settings.nativeStreamer.transportModeNvst")}</span>
+                  </button>
+                </div>
+                <span className="settings-subtle-hint">{t(supportsNvstTransport ? "settings.nativeStreamer.transportModeHint" : "settings.nativeStreamer.transportModeWindowsOnlyHint")}</span>
               </div>
             </>
           )}

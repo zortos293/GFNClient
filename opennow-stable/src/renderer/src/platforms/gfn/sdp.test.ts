@@ -166,7 +166,18 @@ test("buildNvstSdp includes stream quality and partially reliable input paramete
     "a=vqos.bw.minimumBitrateKbps:4000",
     "a=vqos.bw.peakBitrateKbps:80000",
     "a=vqos.drc.minRequiredBitrateCheckEnabled:1",
-    "a=vqos.bllFec.enable:0",
+    "a=vqos.bllFec.enable:1",
+    "a=vqos.fec.repairPercent:20",
+    "a=vqos.fec.repairMaxPercent:40",
+    "a=packetPacing.enableAccurateSleep:1",
+    "a=packetPacing.minNumPacketsPerGroup:0",
+    "a=video.framePacing.mode:2",
+    "a=video.framePacing.pid.minTargetFrameTimeUs:7916",
+    "a=video.adaptiveQuantization.spatialAQSetting:7",
+    "a=video.rtpNackQueueLength:2048",
+    "a=aqos.enableRedundancy:1",
+    "a=aqos.redundancyLevel:2",
+    "a=ri.timestampsEnabled:1",
     "a=video.bitDepth:10",
     "a=vqos.drc.enable:0",
     "a=vqos.dfc.enable:1",
@@ -214,5 +225,7 @@ test("buildNvstSdp keeps dynamic split encode updates enabled for 240 FPS by def
   });
 
   assert.match(defaultSdp, /a=video\.updateSplitEncodeStateDynamically:1/);
+  assert.match(defaultSdp, /a=video\.videoSplitEncodeStripsPerFrame:63/);
+  assert.match(defaultSdp, /a=vqos\.relaxMaxBitrate\.iirFilterFactor:120/);
   assert.match(diagnosticOffSdp, /a=video\.updateSplitEncodeStateDynamically:0/);
 });

@@ -176,7 +176,10 @@ export function shouldUseServerIp(baseUrl: string): boolean {
  *   np-ams-06.cloudmatchbeta.nvidiagrid.net
  */
 export function isZoneHostname(ip: string): boolean {
-  return ip.includes("cloudmatchbeta.nvidiagrid.net") || ip.includes("cloudmatch.nvidiagrid.net");
+  const hostname = ip.trim().toLowerCase().replace(/\.$/, "");
+  return ["cloudmatchbeta.nvidiagrid.net", "cloudmatch.nvidiagrid.net"].some(
+    (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+  );
 }
 
 export function resolvePollStopBase(zone: string, provided?: string, serverIp?: string): string {

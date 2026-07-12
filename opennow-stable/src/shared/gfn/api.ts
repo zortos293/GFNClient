@@ -133,6 +133,7 @@ export interface OpenNowApi {
   onSignalingEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void;
   /** Listen for F11 fullscreen toggle from main process */
   onToggleFullscreen(listener: () => void): () => void;
+  onExitFullscreen(listener: () => void): () => void;
   quitApp(): Promise<void>;
   getUpdaterState(): Promise<AppUpdaterState>;
   checkForUpdates(): Promise<AppUpdaterState>;

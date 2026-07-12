@@ -9,6 +9,7 @@ import type {
   NativeStreamerBackendPreference,
   NativeStreamerFeatureMode,
   NativeVideoBackendPreference,
+  StreamTransportMode,
 } from "./nativeStreamer";
 import type { GameLanguage, KeyboardLayout } from "./keyboard";
 import type { VideoShaderSettings } from "./videoShader";
@@ -58,6 +59,7 @@ export interface Settings {
   nativeCloudGsyncMode: NativeStreamerFeatureMode;
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   nativeExternalRenderer: boolean;
+  transportMode: StreamTransportMode;
   showNativeStreamerStats: boolean;
   codec: VideoCodec;
   decoderPreference: VideoAccelerationPreference;

@@ -77,6 +77,7 @@ import {
   codecLabelFromMimeType,
   detectGpuType,
 } from "./webrtc/streamStatsHelpers";
+import { chooseAdaptiveMouseFlushInterval } from "./webrtc/mouseInput";
 
 export type {
   StreamDiagnostics,
@@ -329,6 +330,12 @@ export class GfnWebRtcClient {
   private controlChannel: RTCDataChannel | null = null;
   private cursorOverlay: GfnCursorOverlayController | null = null;
   private nativeInputActive = false;
+  /**
+   * When true, Electron captures keyboard/mouse/gamepad and forwards packets to
+   * the native streamer over IPC (internal child-surface renderer).
+   * When false, the floating external GStreamer window owns OS-level input.
+   */
+  private nativeElectronInputBridge = false;
   private remoteIceEndpoint: SessionInfo["mediaConnectionInfo"] | null = null;
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
@@ -1026,6 +1033,7 @@ export class GfnWebRtcClient {
     this.inputReady = false;
     this.lastLockKeysState = -1;
     this.nativeInputActive = false;
+    this.nativeElectronInputBridge = false;
     this.inputProtocolVersion = 2;
     this.hapticsAdvertised = false;
     this.inputEncoder.setProtocolVersion(2);
@@ -1543,6 +1551,32 @@ export class GfnWebRtcClient {
     this.diagnostics.mouseFlushIntervalMs = this.mouseFlushIntervalMs;
     this.diagnostics.mousePacketsPerSecond = this.mousePacketsPerSecond;
     this.diagnostics.mouseResidualMagnitude = Math.hypot(this.pendingMouseDxFloat, this.pendingMouseDyFloat);
+
+    // Intentional adaptive coalesce: only when mouse moves ride the reliable
+    // channel (PR mouse keeps the fixed 4/8/16 ms official interval). Skip while
+    // pointerrawupdate forced immediate flush (interval 0).
+    if (this.mouseFlushIntervalMs <= 0 || this.mouseFlushBaseIntervalMs <= 0) {
+      this.mouseAdaptiveFlushActive = false;
+    } else if (this.canSendInputTypePartiallyReliable(INPUT_MOUSE_REL)) {
+      // Official GFN keeps a fixed coalesce interval for PR mouse.
+      this.mouseFlushIntervalMs = this.mouseFlushBaseIntervalMs;
+      this.mouseAdaptiveFlushActive = false;
+      this.diagnostics.mouseFlushIntervalMs = this.mouseFlushIntervalMs;
+    } else {
+      const nextInterval = chooseAdaptiveMouseFlushInterval({
+        baseIntervalMs: this.mouseFlushBaseIntervalMs,
+        currentIntervalMs: this.mouseFlushIntervalMs,
+        reliableBufferedAmount,
+        schedulingDelayMs: this.inputQueueMaxSchedulingDelayMsWindow,
+        canUsePartiallyReliableMouse: false,
+        backpressureThresholdBytes: GfnWebRtcClient.RELIABLE_MOUSE_BACKPRESSURE_BYTES,
+        minIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MIN_MS,
+        maxIntervalMs: GfnWebRtcClient.MOUSE_FLUSH_MAX_MS,
+      });
+      this.mouseAdaptiveFlushActive = nextInterval !== this.mouseFlushBaseIntervalMs;
+      this.mouseFlushIntervalMs = nextInterval;
+      this.diagnostics.mouseFlushIntervalMs = this.mouseFlushIntervalMs;
+    }
     this.diagnostics.mouseAdaptiveFlushActive = this.mouseAdaptiveFlushActive;
 
     const lagClassification = classifyStreamLagReason({
@@ -1709,9 +1743,19 @@ export class GfnWebRtcClient {
     this.inputEncoder.resetGamepadSequences();
   }
 
-  public activateNativeInput(protocolVersion?: number, settings?: OfferSettings): void {
+  public activateNativeInput(
+    protocolVersion?: number,
+    settings?: OfferSettings,
+    options?: { electronInputBridge?: boolean },
+  ): void {
     this.cleanupPeerConnection();
     this.nativeInputActive = true;
+    // Internal (one-window) mode: Electron owns capture and IPC-forwards packets.
+    // External floating window: OS-level capture stays in the native streamer.
+    // Linux is Internal-only: always use the Electron IPC bridge regardless of stale options.
+    const isLinuxHost = typeof navigator !== "undefined"
+      && /linux/i.test(`${navigator.platform} ${navigator.userAgent}`);
+    this.nativeElectronInputBridge = isLinuxHost || options?.electronInputBridge !== false;
     this.inputReady = true;
     const nativeProtocolVersion = GfnWebRtcClient.normalizeInputProtocolVersion(
       protocolVersion
@@ -1731,7 +1775,9 @@ export class GfnWebRtcClient {
       this.diagnostics.codec = this.currentCodec || "Native";
     }
     this.diagnostics.lagReason = "stable";
-    this.diagnostics.lagReasonDetail = "Native streamer input bridge active";
+    this.diagnostics.lagReasonDetail = this.nativeElectronInputBridge
+      ? "Native streamer Electron input bridge active"
+      : "Native streamer external-window input active";
     this.diagnostics.inputQueueBufferedBytes = 0;
     this.diagnostics.inputQueuePeakBufferedBytes = 0;
     this.diagnostics.partiallyReliableInputQueueBufferedBytes = 0;
@@ -1746,13 +1792,39 @@ export class GfnWebRtcClient {
       ? "partially_reliable"
       : "reliable";
     this.emitStats();
-    this.detachInputCapture();
     this.inputPaused = false;
-    // Restart the polling loop for Meta/Home button detection. Full gamepad
-    // state forwarding is suppressed inside pollGamepads() when nativeInputActive
-    // is true so the native renderer remains the sole source for controller input.
-    this.setupGamepadPolling();
-    this.log(`Native DX11 input forwarding active (protocol v${nativeProtocolVersion}); controller overlay shortcut detection active, gamepad forwarding handled by native renderer.`);
+    this.windowStateInputPaused = false;
+
+    if (this.nativeElectronInputBridge) {
+      // Native mode never runs handleOffer() in the renderer, so input listeners
+      // were never installed. Re-attach capture and forward via sendNativeInput.
+      // Defer one frame so the StreamView native-hole DOM is painted and focusable.
+      this.installInputCapture(this.options.videoElement);
+      this.setupGamepadPolling();
+      const video = this.options.videoElement;
+      const focusTarget = (video.parentElement as HTMLElement | null) ?? video;
+      requestAnimationFrame(() => {
+        try {
+          focusTarget.focus({ preventScroll: true });
+        } catch {
+          focusTarget.focus();
+        }
+        // Kick pointer lock so relative mouse works immediately in internal mode.
+        void this.requestPointerLockCompat(focusTarget, { unadjustedMovement: true }).catch(() => {
+          void this.requestPointerLockCompat(focusTarget).catch(() => {});
+        });
+      });
+      this.log(
+        `Native internal input bridge active (protocol v${nativeProtocolVersion}); Electron keyboard/mouse/gamepad → IPC → streamer.`,
+      );
+    } else {
+      this.detachInputCapture();
+      // Overlay Meta/Home detection only; gamepad state is owned by the floating window.
+      this.setupGamepadPolling();
+      this.log(
+        `Native external-window input active (protocol v${nativeProtocolVersion}); OS capture handled by streamer, Electron overlay shortcuts only.`,
+      );
+    }
   }
 
   public setNativeInputProtocolVersion(protocolVersion: number): void {
@@ -2038,10 +2110,14 @@ export class GfnWebRtcClient {
           this.emitStats();
         }
 
-        // Read and encode gamepad state
-        // Skip forwarding to the stream if input is blocked (dashboard open) or
-        // the native renderer is handling controller input directly.
-        if (streamInputBlocked || this.nativeInputActive || overlayShortcutGate.preemptInput) {
+        // Read and encode gamepad state.
+        // Skip when blocked, overlay chord preempts, or external native window owns pads.
+        // Internal native mode still forwards gamepads through the Electron bridge.
+        if (
+          streamInputBlocked
+          || (this.nativeInputActive && !this.nativeElectronInputBridge)
+          || overlayShortcutGate.preemptInput
+        ) {
           continue;
         }
         const gamepadInput = this.readGamepadState(gamepad, i);
@@ -3221,7 +3297,6 @@ export class GfnWebRtcClient {
       this.mouseCoalescedBatchEntries = 0;
       this.mouseFlushLastSendMs = tickNow;
       updateMousePacketRate();
-      this.mouseAdaptiveFlushActive = false;
       return true;
     };
 
@@ -3885,9 +3960,18 @@ export class GfnWebRtcClient {
     } else {
       window.addEventListener("mousemove", onMouseMove);
     }
-    pointerLockTarget.addEventListener("mousedown", onMouseDown);
-    pointerLockTarget.addEventListener("mouseup", onMouseUp);
-    pointerLockTarget.addEventListener("wheel", onWheel, { passive: false });
+    // Use document capture for buttons/wheel in native internal mode so clicks
+    // still reach us even if the native child HWND is topmost for a frame.
+    const buttonTarget: HTMLElement | Document = this.nativeElectronInputBridge
+      ? document
+      : pointerLockTarget;
+    const buttonCapture = this.nativeElectronInputBridge;
+    buttonTarget.addEventListener("mousedown", onMouseDown as EventListener, buttonCapture);
+    buttonTarget.addEventListener("mouseup", onMouseUp as EventListener, buttonCapture);
+    buttonTarget.addEventListener("wheel", onWheel as EventListener, {
+      passive: false,
+      capture: buttonCapture,
+    } as AddEventListenerOptions);
     pointerLockTarget.addEventListener("mouseenter", onPointerLockTargetMouseEnter);
     pointerLockTarget.addEventListener("mouseleave", onPointerLockTargetMouseLeave);
     // Detect when the mouse enters the application window (from outside the
@@ -4011,9 +4095,13 @@ export class GfnWebRtcClient {
     } else {
       this.inputCleanup.push(() => window.removeEventListener("mousemove", onMouseMove));
     }
-    this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mousedown", onMouseDown));
-    this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mouseup", onMouseUp));
-    this.inputCleanup.push(() => pointerLockTarget.removeEventListener("wheel", onWheel));
+    this.inputCleanup.push(() => {
+      buttonTarget.removeEventListener("mousedown", onMouseDown as EventListener, buttonCapture);
+      buttonTarget.removeEventListener("mouseup", onMouseUp as EventListener, buttonCapture);
+      buttonTarget.removeEventListener("wheel", onWheel as EventListener, {
+        capture: buttonCapture,
+      } as EventListenerOptions);
+    });
     this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mouseenter", onPointerLockTargetMouseEnter));
     this.inputCleanup.push(() => pointerLockTarget.removeEventListener("mouseleave", onPointerLockTargetMouseLeave));
     if (typeof PointerEvent !== "undefined") {

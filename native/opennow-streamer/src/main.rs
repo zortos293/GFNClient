@@ -23,6 +23,8 @@ mod nvst_video;
 mod protocol;
 mod shortcuts;
 mod sdp;
+#[cfg(target_os = "windows")]
+mod windows_dpi;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -127,6 +129,9 @@ fn handle_command(
 }
 
 fn main() -> io::Result<()> {
+    #[cfg(target_os = "windows")]
+    windows_dpi::enable_per_monitor_awareness();
+
     let stdin = io::stdin();
     let (event_sender, event_receiver) = mpsc::channel::<Event>();
     let event_writer = thread::spawn(move || {

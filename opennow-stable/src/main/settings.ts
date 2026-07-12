@@ -57,10 +57,7 @@ export interface Settings {
   nativeD3dFullscreenMode: NativeStreamerFeatureMode;
   /** Use the native GStreamer renderer window instead of Electron HWND embedding */
   nativeExternalRenderer: boolean;
-  /**
-   * Native media transport. Default webrtc.
-   * nvst is experimental classic UDP video + SCTP input (GO-with-Moonlight-hypothesis).
-   */
+  /** Native media transport. Legacy NVST values normalize to WebRTC. */
   transportMode: StreamTransportMode;
   /** Show the native streamer's own stats overlay while native streaming */
   showNativeStreamerStats: boolean;

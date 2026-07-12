@@ -13,6 +13,10 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.encodeToString
 import java.security.MessageDigest
 import java.util.UUID
+import android.util.Xml
+import org.xmlpull.v1.XmlPullParser
+import java.io.File
+import java.io.FileInputStream
 
 private const val STORE_NAME = "opennow_native"
 private const val KEY_SETTINGS = "settings"
@@ -24,8 +28,104 @@ private const val KEY_QUEUED_GAME_KEYS = "queued_game_keys"
 private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
 private const val QUEUED_GAME_LIMIT = 24
 
+class ExternalPrefs(context: Context, name: String) {
+    private val file = File(context.getExternalFilesDir(null), "$name.xml")
+    private val data = mutableMapOf<String, String>()
+
+    init {
+        migrateFromInternal(context, name)
+        load()
+    }
+
+    private fun migrateFromInternal(context: Context, name: String) {
+        if (file.exists()) return
+        val internalPrefs = context.applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE)
+        val allInternal = internalPrefs.all
+        if (allInternal.isNotEmpty()) {
+            allInternal.forEach { (k, v) ->
+                if (v is String) data[k] = v
+            }
+            save()
+            internalPrefs.edit().clear().apply()
+        }
+    }
+
+    private fun load() {
+        if (!file.exists()) return
+        runCatching {
+            val parser = Xml.newPullParser()
+            FileInputStream(file).use { fis ->
+                parser.setInput(fis, "UTF-8")
+                var event = parser.eventType
+                while (event != XmlPullParser.END_DOCUMENT) {
+                    if (event == XmlPullParser.START_TAG && parser.name == "string") {
+                        val name = parser.getAttributeValue(null, "name")
+                        val value = parser.nextText()
+                        if (name != null) {
+                            data[name] = value
+                        }
+                    }
+                    event = parser.next()
+                }
+            }
+        }.onFailure { it.printStackTrace() }
+    }
+
+    private fun save() {
+        runCatching {
+            file.parentFile?.mkdirs()
+            file.bufferedWriter().use { writer ->
+                writer.write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
+                writer.write("<map>\n")
+                for ((k, v) in data) {
+                    writer.write("    <string name=\"")
+                    writer.write(escapeXmlAttribute(k))
+                    writer.write("\">")
+                    writer.write(escapeXmlText(v))
+                    writer.write("</string>\n")
+                }
+                writer.write("</map>\n")
+            }
+        }.onFailure { it.printStackTrace() }
+    }
+
+    private fun escapeXmlAttribute(str: String): String =
+        str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace("\"", "&quot;").replace("'", "&apos;")
+
+    private fun escapeXmlText(str: String): String =
+        str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    fun getString(key: String, defValue: String?): String? = data[key] ?: defValue
+
+    val all: Map<String, Any?> get() = data
+
+    fun edit(): Editor = Editor()
+
+    inner class Editor {
+        private val actions = mutableListOf<() -> Unit>()
+
+        fun putString(key: String, value: String?): Editor {
+            actions.add {
+                if (value == null) data.remove(key) else data[key] = value
+            }
+            return this
+        }
+
+        fun remove(key: String): Editor {
+            actions.add { data.remove(key) }
+            return this
+        }
+
+        fun apply() {
+            actions.forEach { it() }
+            save()
+        }
+    }
+}
+
 class SettingsStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs(context, STORE_NAME)
     private val _settings = MutableStateFlow(load())
     val settings: StateFlow<AppSettings> = _settings
 
@@ -86,7 +186,7 @@ class SettingsStore(context: Context) {
 }
 
 class AuthStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs(context, STORE_NAME)
     private val _state = MutableStateFlow(load())
     val state: StateFlow<PersistedAuthState> = _state
 
@@ -146,7 +246,7 @@ class AuthStore(context: Context) {
 }
 
 class CatalogCacheStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs(context, STORE_NAME)
 
     fun loadMainGames(userId: String, providerStreamingBaseUrl: String): List<GameInfo>? =
         loadGameList(key("main", userId, providerStreamingBaseUrl))
@@ -246,7 +346,7 @@ class CatalogCacheStore(context: Context) {
 }
 
 class QueuedGameStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs(context, STORE_NAME)
 
     fun load(): List<String> {
         val raw = prefs.getString(KEY_QUEUED_GAME_KEYS, null) ?: return emptyList()
@@ -269,7 +369,7 @@ class QueuedGameStore(context: Context) {
 }
 
 class AndroidUpdateNoticeStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs(context, STORE_NAME)
 
     fun dismissedKey(): String? =
         prefs.getString(KEY_ANDROID_UPDATE_DISMISSED_NOTICE, null)?.takeIf { it.isNotBlank() }

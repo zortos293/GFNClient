@@ -1,4 +1,7 @@
 {
+  "common": {
+    "loading": "Loading..."
+  },
   "app": {
     "name": "OpenNOW",
     "tagline": "Open-source cloud gaming client",
@@ -745,6 +748,11 @@
       "checkForUpdates": "Check for Updates",
       "downloadUpdate": "Download Update",
       "restartToInstall": "Restart to Install",
+      "updateChannel": "Update Channel",
+      "updateChannelHint": "Choose Stable for regular releases or Nightly to preview the latest builds from the dev branch.",
+      "updateChannelStable": "Stable (Default)",
+      "updateChannelNightly": "Nightly",
+      "updateChannelNightlyHint": "Nightly builds may be less reliable. Switching channels immediately checks for an available update.",
       "automaticallyCheckForUpdates": "Automatically Check for Updates",
       "automaticallyCheckForUpdatesOnHint": "When on, packaged builds check GitHub Releases in the background after startup and periodically while OpenNOW is running.",
       "automaticallyCheckForUpdatesOffHint": "When off, OpenNOW stays on the current version unless you use the manual update buttons below.",

@@ -13,6 +13,7 @@ import type {
 } from "./nativeStreamer";
 import type { GameLanguage, KeyboardLayout } from "./keyboard";
 import type { VideoShaderSettings } from "./videoShader";
+import type { UpdateChannel } from "./updater";
 import { normalizeStreamPreferences } from "./stream";
 
 export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
@@ -127,6 +128,8 @@ export interface Settings {
   discordRichPresence: boolean;
   /** Automatically check GitHub Releases for app updates in the background */
   autoCheckForUpdates: boolean;
+  /** Release channel used for application updates */
+  updateChannel: UpdateChannel;
   /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
   allowEscapeToExitFullscreen?: boolean;
   /** Last version for which the release highlights modal was acknowledged (empty = never) */

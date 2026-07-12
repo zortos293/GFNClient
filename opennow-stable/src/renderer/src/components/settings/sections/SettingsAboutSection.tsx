@@ -4,6 +4,7 @@ import type { AppUpdaterState, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { formatBytes, formatUpdaterTimestamp, getUpdaterBadgeLabel } from "../settingsFormatters";
 import { MotionSpinner } from "../../MotionSpinner";
+import { SelectDropdown } from "../../ui/SelectDropdown";
 
 export interface SettingsAboutSectionProps {
   settings: Settings;
@@ -78,6 +79,29 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
             <Info size={16} />
             {t("settings.about.whatsNew")}
           </button>
+        </div>
+
+        <div className="settings-row">
+          <label className="settings-label settings-label--wrap" htmlFor="updateChannel">
+            {t("settings.about.updateChannel")}
+            <span className="settings-hint">{t("settings.about.updateChannelHint")}</span>
+            {settings.updateChannel === "nightly" ? (
+              <span className="settings-hint settings-hint--updater-message">
+                {t("settings.about.updateChannelNightlyHint")}
+              </span>
+            ) : null}
+          </label>
+          <SelectDropdown
+            id="updateChannel"
+            value={settings.updateChannel}
+            options={[
+              { value: "stable", label: t("settings.about.updateChannelStable") },
+              { value: "nightly", label: t("settings.about.updateChannelNightly") },
+            ]}
+            onChange={(value) => handleChange("updateChannel", value as Settings["updateChannel"])}
+            disabled={updaterState.status === "checking" || updaterState.status === "downloading"}
+            ariaLabel={t("settings.about.updateChannel")}
+          />
         </div>
 
         <div className="settings-row">

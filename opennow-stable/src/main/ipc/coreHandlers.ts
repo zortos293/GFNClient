@@ -231,6 +231,9 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
         if (key === "autoCheckForUpdates") {
           deps.getAppUpdater()?.setAutomaticChecksEnabled(appliedValue as boolean);
         }
+        if (key === "updateChannel") {
+          deps.getAppUpdater()?.setUpdateChannel(appliedValue as Settings["updateChannel"]);
+        }
         deps.getSignalingCoordinator()?.applySettingsChange(key, appliedValue);
         if (key === "discordRichPresence") {
           if (appliedValue) {
@@ -251,6 +254,7 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
     deps
       .getAppUpdater()
       ?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
+    deps.getAppUpdater()?.setUpdateChannel(resetSettings.updateChannel);
     deps.getSignalingCoordinator()?.stopNativeStreamer("settings reset");
     deps.getSignalingCoordinator()?.resetNativeStreamerContext();
     return resetSettings;

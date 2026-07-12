@@ -234,6 +234,7 @@ export function App(): JSX.Element {
     enableCloudGsync: false,
     discordRichPresence: false,
     autoCheckForUpdates: true,
+    updateChannel: "stable",
     lastSeenReleaseHighlightsVersion: "",
     videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
   });

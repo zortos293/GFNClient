@@ -1,5 +1,5 @@
 import { Monitor, Wifi, Activity, Gamepad2, AlertTriangle } from "lucide-react";
-import type { StreamDiagnostics } from "../gfn/webrtcClient";
+import type { StreamDiagnostics } from "../platforms/gfn/webrtcClient";
 import type { JSX } from "react";
 import { useTranslation } from "../i18n";
 import { formatBitrate, getRttColor } from "../utils/streamDiagnosticsFormat";

@@ -1,4 +1,4 @@
-import { Search, LayoutGrid, Loader2, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
+import { Search, LayoutGrid, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { AnimatePresence, m } from "motion/react";
@@ -6,10 +6,12 @@ import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
+import { appendImageType, appendUnique, gameMatchesActiveSession } from "../lib/controllerCatalogUi";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
 import { SelectDropdown } from "./ui/SelectDropdown";
+import { MotionSpinner } from "./MotionSpinner";
 
 const CONTROLLER_STORE_HERO_ROTATION_MS = 7000;
 const CONTROLLER_MOVE_REPEAT_MS = 140;
@@ -60,17 +62,6 @@ export interface HomePageProps {
   markOwnedInFlightByVariantId?: Record<string, boolean>;
   onPreviousControllerPage?: () => void;
   onNextControllerPage?: () => void;
-}
-
-function appendUnique(values: string[], candidate: string | undefined): void {
-  if (!candidate || values.includes(candidate)) return;
-  values.push(candidate);
-}
-
-function appendImageType(values: string[], game: GameInfo, type: string): void {
-  for (const candidate of game.imageUrlsByType?.[type] ?? []) {
-    appendUnique(values, candidate);
-  }
 }
 
 function getSteamHeaderUrl(game: GameInfo): string | undefined {
@@ -130,14 +121,6 @@ function getNextVariantId(game: GameInfo, selectedVariantId?: string): string | 
   if (game.variants.length === 0) return undefined;
   const activeIndex = Math.max(0, game.variants.findIndex((variant) => variant.id === selectedVariantId));
   return game.variants[(activeIndex + 1) % game.variants.length]?.id;
-}
-
-function gameMatchesActiveSession(game: GameInfo, activeSessionAppIds: number[]): boolean {
-  if (activeSessionAppIds.length === 0) return false;
-  const appIds = new Set(activeSessionAppIds.map(String));
-  if (game.launchAppId && appIds.has(game.launchAppId)) return true;
-  if (appIds.has(game.id)) return true;
-  return game.variants.some((variant) => appIds.has(variant.id));
 }
 
 function getPrimaryGenre(game: GameInfo): string {
@@ -531,7 +514,7 @@ export const HomePage = memo(function HomePage({
       <div className="home-page controller-store-page">
         {showInitialLoading ? (
           <div className="home-empty-state controller-store-empty">
-            <Loader2 className="home-spinner" size={54} />
+            <MotionSpinner className="home-spinner" size={54} label={t("common.loading")} />
             <p>{t("home.empty.loadingGames")}</p>
           </div>
         ) : controllerSections.length === 0 ? (
@@ -780,7 +763,7 @@ export const HomePage = memo(function HomePage({
       <div className="home-grid-area">
         {showInitialLoading ? (
           <div className="home-empty-state">
-            <Loader2 className="home-spinner" size={36} />
+            <MotionSpinner className="home-spinner" size={36} label={t("common.loading")} />
             <p>{t("home.empty.loadingGames")}</p>
           </div>
         ) : !hasGames ? (

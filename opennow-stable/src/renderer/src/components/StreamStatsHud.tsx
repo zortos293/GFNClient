@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
 import { AlertTriangle, ChevronDown } from "lucide-react";
 import type { JSX } from "react";
-import type { StreamLagReason } from "../gfn/webrtcClient";
+import type { StreamLagReason } from "../platforms/gfn/webrtcClient";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import {
@@ -198,9 +198,14 @@ export function StreamStatsHud({
             {inputLive ? t("stream.stats.live") : t("stream.stats.sync")}
           </span>
           {hasIssues && (
-            <span className="sv-stats-alert-dot" aria-hidden>
+            <m.span
+              className="sv-stats-alert-dot"
+              aria-hidden
+              animate={{ opacity: [0.6, 1, 0.6], scale: [0.94, 1.06, 0.94] }}
+              transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+            >
               <AlertTriangle size={11} />
-            </span>
+            </m.span>
           )}
           <m.span
             className="sv-stats-chevron"

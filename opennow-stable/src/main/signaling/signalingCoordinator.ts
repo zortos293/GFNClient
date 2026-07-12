@@ -13,8 +13,8 @@ import type {
   Settings,
   SignalingConnectRequest,
 } from "@shared/gfn";
-import { GfnSignalingClient } from "../gfn/signaling";
-import { runNvstRtspHandshakeProbe } from "../gfn/nvstRtspProbe";
+import { GfnSignalingClient } from "../platforms/gfn/signaling";
+import { runNvstRtspHandshakeProbe } from "../platforms/gfn/nvstRtspProbe";
 import { NativeStreamerManager } from "../nativeStreamer/manager";
 import { normalizeNativeInputPacket } from "../nativeStreamer/input";
 import { normalizeNativeRenderSurface } from "../nativeStreamer/surface";

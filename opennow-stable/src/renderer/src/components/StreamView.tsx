@@ -1,27 +1,41 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import type { JSX } from "react";
-import { Maximize, Minimize, Loader2, LogOut, Clock3, AlertTriangle, Mic, MicOff, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen } from "lucide-react";
+import { Maximize, Minimize, LogOut, Clock3, AlertTriangle, Mic, Camera, ChevronLeft, ChevronRight, Save, Trash2, X, Circle, Square, Video, FolderOpen, Gamepad2, Gauge, Images, Keyboard, MousePointer2, SlidersHorizontal } from "lucide-react";
 import SideBar from "./SideBar";
 import { SessionStartedSplash } from "./SessionStartedSplash";
 import { StreamStatsHud } from "./StreamStatsHud";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
-import type { MicState } from "../gfn/microphoneManager";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { RemainingPlaytimeIndicator, SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import type { MicrophoneMode, ScreenshotEntry, RecordingEntry, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
 import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
-import { VideoShaderPipeline } from "../gfn/videoShaderPipeline";
+import { VideoShaderPipeline } from "../platforms/gfn/videoShaderPipeline";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut, shortcutFromKeyboardEvent } from "../shortcuts";
 import { addStreamShortcutActionListener } from "../streamShortcutActions";
 import { useMicMeter } from "../hooks/useMicMeter";
 import { formatElapsed } from "../utils/timeFormat";
 import { useTranslation } from "../i18n";
+import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
+import { formatFileSize, formatSessionTimeRemaining, formatWarningSeconds } from "./stream/streamFormatters";
+import { AntiAfkIndicator, MicrophoneIndicator, RecordingIndicator } from "./stream/StreamIndicators";
+import { StreamTitleBar } from "./stream/StreamTitleBar";
+import {
+  hasVisibleStreamVideo,
+  SidebarMicMutedBadge,
+  StreamEmptyState,
+  StreamWaitingForVideo,
+  VideoFocusOnReady,
+} from "./stream/StreamEmptyStates";
+import { MotionSpinner } from "./MotionSpinner";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
+const CONTROLLER_MENU_REPEAT_MS = 180;
 const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
+const STREAM_MENU_TABS = ["session", "controls", "media", "shortcuts"] as const;
+type StreamMenuTab = (typeof STREAM_MENU_TABS)[number];
 
 interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
@@ -31,7 +45,6 @@ interface StreamViewProps {
   showNativeStats?: boolean;
   nativeInputCaptureActive?: boolean;
   gstreamerEnabled: boolean;
-  /** When false, native mode uses the internal child-surface renderer (one window). */
   nativeExternalRenderer?: boolean;
   shortcuts: {
     toggleStats: string;
@@ -93,311 +106,6 @@ interface StreamViewProps {
   allowEscapeToExitFullscreen?: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
-}
-
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatWarningSeconds(value: number | undefined): string | null {
-  if (value === undefined || !Number.isFinite(value) || value < 0) {
-    return null;
-  }
-  const total = Math.floor(value);
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  if (minutes > 0) {
-    return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
-  }
-  return `${seconds}s`;
-}
-
-function formatSessionTimeRemaining(value: number | null): string | null {
-  if (value === null || !Number.isFinite(value) || value < 0) {
-    return null;
-  }
-  return formatElapsed(value);
-}
-
-type MicBadgeState = {
-  connectedGamepads: number;
-  micState: MicState;
-  micEnabled: boolean;
-};
-
-function isMicBadgeStateEqual(prev: MicBadgeState, next: MicBadgeState): boolean {
-  return (
-    prev.connectedGamepads === next.connectedGamepads &&
-    prev.micState === next.micState &&
-    prev.micEnabled === next.micEnabled
-  );
-}
-
-function MicrophoneIndicator({
-  diagnosticsStore,
-  showAntiAfkIndicator,
-  hideStreamButtons,
-  isConnecting,
-  onToggleMicrophone,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  showAntiAfkIndicator: boolean;
-  hideStreamButtons: boolean;
-  isConnecting: boolean;
-  onToggleMicrophone?: () => void;
-}): JSX.Element | null {
-  const { connectedGamepads, micState, micEnabled } = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats): MicBadgeState => ({
-      connectedGamepads: stats.connectedGamepads,
-      micState: stats.micState ?? "uninitialized",
-      micEnabled: stats.micEnabled ?? false,
-    }),
-    isMicBadgeStateEqual,
-  );
-  const hasMicrophone = micState === "started" || micState === "stopped";
-  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons;
-
-  if (!showMicIndicator || !onToggleMicrophone) {
-    return null;
-  }
-
-  return (
-    <button
-      type="button"
-      className={`sv-mic${connectedGamepads > 0 || showAntiAfkIndicator ? " sv-mic--stacked" : ""}`}
-      onClick={onToggleMicrophone}
-      data-enabled={micEnabled}
-      title={micEnabled ? "Mute microphone" : "Unmute microphone"}
-      aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
-      aria-pressed={micEnabled}
-    >
-      {micEnabled ? <Mic size={18} /> : <MicOff size={18} />}
-    </button>
-  );
-}
-
-function AntiAfkIndicator({
-  diagnosticsStore,
-  antiAfkEnabled,
-  showAntiAfkIndicator,
-  isConnecting,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  antiAfkEnabled: boolean;
-  showAntiAfkIndicator: boolean;
-  isConnecting: boolean;
-}): JSX.Element | null {
-  const hasGamepad = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.connectedGamepads > 0,
-  );
-
-  if (!antiAfkEnabled || !showAntiAfkIndicator || isConnecting) {
-    return null;
-  }
-
-  return (
-    <div className={`sv-afk${hasGamepad ? " sv-afk--stacked" : ""}`} title="Anti-AFK is enabled">
-      <span className="sv-afk-dot" />
-      <span className="sv-afk-label">ANTI-AFK ON</span>
-    </div>
-  );
-}
-
-function RecordingIndicator({
-  diagnosticsStore,
-  showAntiAfkIndicator,
-  hideStreamButtons,
-  isConnecting,
-  isRecording,
-  onToggleMicrophone,
-  recordingDurationMs,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  showAntiAfkIndicator: boolean;
-  hideStreamButtons: boolean;
-  isConnecting: boolean;
-  isRecording: boolean;
-  onToggleMicrophone?: () => void;
-  recordingDurationMs: number;
-}): JSX.Element | null {
-  const { connectedGamepads, micState } = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => ({
-      connectedGamepads: stats.connectedGamepads,
-      micState: stats.micState ?? "uninitialized",
-    }),
-    (prev, next) => prev.connectedGamepads === next.connectedGamepads && prev.micState === next.micState,
-  );
-  const hasMicrophone = micState === "started" || micState === "stopped";
-  const showMicIndicator = hasMicrophone && !isConnecting && !hideStreamButtons && Boolean(onToggleMicrophone);
-  const stackedBadges = [connectedGamepads > 0, showAntiAfkIndicator, showMicIndicator].filter(Boolean).length;
-
-  if (!isRecording || isConnecting) {
-    return null;
-  }
-
-  return (
-    <div
-      className="sv-rec"
-      style={{ top: 14 + 42 * stackedBadges }}
-      title={`Recording · ${formatElapsed(Math.round(recordingDurationMs / 1000))}`}
-    >
-      <span className="sv-rec-dot" />
-      <span className="sv-rec-label">REC {formatElapsed(Math.round(recordingDurationMs / 1000))}</span>
-    </div>
-  );
-}
-
-function StreamTitleBar({
-  diagnosticsStore,
-  gameTitle,
-  platformName,
-  PlatformIcon,
-  showHints,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  gameTitle: string;
-  platformName: string;
-  PlatformIcon: (() => JSX.Element) | null;
-  showHints: boolean;
-}): JSX.Element | null {
-  const hasResolution = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.nativeRendererActive || stats.resolution !== "",
-  );
-
-  if (!hasResolution || !showHints) {
-    return null;
-  }
-
-  return (
-    <div className="sv-title-bar">
-      <span className="sv-title-game">{gameTitle}</span>
-      {PlatformIcon && (
-        <span className="sv-title-platform" title={platformName}>
-          <span className="sv-title-platform-icon">
-            <PlatformIcon />
-          </span>
-          <span>{platformName}</span>
-        </span>
-      )}
-    </div>
-  );
-}
-
-function hasVisibleStreamVideo(stats: {
-  nativeRendererActive: boolean;
-  framesDecoded: number;
-  resolution: string;
-}): boolean {
-  if (stats.nativeRendererActive) {
-    return true;
-  }
-  return stats.framesDecoded > 0;
-}
-
-function StreamEmptyState({
-  diagnosticsStore,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-}): JSX.Element | null {
-  const hasVisibleVideo = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => hasVisibleStreamVideo(stats),
-  );
-
-  if (hasVisibleVideo) {
-    return null;
-  }
-
-  return (
-    <div className="sv-empty">
-      <div className="sv-empty-grad" />
-    </div>
-  );
-}
-
-function StreamWaitingForVideo({
-  diagnosticsStore,
-  isConnecting,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  isConnecting: boolean;
-}): JSX.Element | null {
-  const { t } = useTranslation();
-  const waitingForFirstFrame = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => {
-      if (stats.nativeRendererActive || stats.framesDecoded > 0) {
-        return false;
-      }
-      return stats.connectionState === "connected" || stats.resolution !== "";
-    },
-  );
-
-  if (isConnecting || !waitingForFirstFrame) {
-    return null;
-  }
-
-  return (
-    <div className="sv-warm" role="status" aria-live="polite">
-      <Loader2 className="sv-warm-spin" size={34} />
-      <p className="sv-warm-text">{t("stream.stats.waitingForVideo")}</p>
-    </div>
-  );
-}
-
-function SidebarMicMutedBadge({
-  diagnosticsStore,
-  micTrack,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  micTrack?: MediaStreamTrack | null;
-}): JSX.Element | null {
-  const micEnabled = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.micEnabled ?? false,
-  );
-
-  if (!micTrack || micEnabled) {
-    return null;
-  }
-
-  return <span className="settings-value-badge">Muted</span>;
-}
-
-function VideoFocusOnReady({
-  diagnosticsStore,
-  isConnecting,
-  videoRef,
-}: {
-  diagnosticsStore: StreamDiagnosticsStore;
-  isConnecting: boolean;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-}): null {
-  const shouldFocusVideo = useStreamDiagnosticsSelector(
-    diagnosticsStore,
-    (stats) => stats.resolution !== "" && !stats.nativeRendererActive,
-  );
-
-  useEffect(() => {
-    if (!isConnecting && videoRef.current && shouldFocusVideo) {
-      const timer = window.setTimeout(() => {
-        if (videoRef.current && document.activeElement !== videoRef.current) {
-          videoRef.current.focus({ preventScroll: true });
-          console.log("[StreamView] Focused video element");
-        }
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [isConnecting, shouldFocusVideo, videoRef]);
-
-  return null;
 }
 
 export function StreamView({
@@ -467,7 +175,14 @@ export function StreamView({
   const [selectedScreenshotId, setSelectedScreenshotId] = useState<string | null>(null);
   const [screenshotShortcutInput, setScreenshotShortcutInput] = useState(shortcuts.screenshot);
   const [screenshotShortcutError, setScreenshotShortcutError] = useState<string | null>(null);
-  const [activeSidebarTab, setActiveSidebarTab] = useState<"preferences" | "shortcuts">("preferences");
+  const [activeSidebarTab, setActiveSidebarTab] = useState<StreamMenuTab>("session");
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const sidebarGamepadFrameRef = useRef<number | null>(null);
+  const sidebarGamepadPreviousButtonsRef = useRef(0);
+  const sidebarGamepadLastMoveAtRef = useRef(0);
+  const exitPromptGamepadFrameRef = useRef<number | null>(null);
+  const exitPromptGamepadPreviousButtonsRef = useRef(0);
+  const suppressVideoFocusOnSidebarCloseRef = useRef(false);
   const screenshotApiAvailable =
     typeof window.openNow?.saveScreenshot === "function" &&
     typeof window.openNow?.listScreenshots === "function" &&
@@ -1232,10 +947,7 @@ export function StreamView({
       const rect = element.getBoundingClientRect();
       const width = Math.round(rect.width * dpr);
       const height = Math.round(rect.height * dpr);
-      // Hide the child surface while the stream sidebar or exit prompt is open so
-      // Chromium UI is not covered by the topmost native child window.
-      const overlaysOpen = showSideBar || exitPrompt.open;
-      const visible = width >= 2 && height >= 2 && !overlaysOpen;
+      const visible = width >= 2 && height >= 2 && !showSideBar && !exitPrompt.open;
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
@@ -1358,6 +1070,10 @@ export function StreamView({
         } catch {}
       };
     }
+    if (suppressVideoFocusOnSidebarCloseRef.current) {
+      suppressVideoFocusOnSidebarCloseRef.current = false;
+      return undefined;
+    }
     // Sidebar just closed — restore focus to the video so clicks register
     // immediately. Without this, focus stays on the last sidebar element and
     // mousedown's preventDefault() blocks the browser from re-focusing on click.
@@ -1393,9 +1109,176 @@ export function StreamView({
   }, [onReleasePointerLock]);
 
   const handleSidebarExitSession = useCallback(() => {
+    suppressVideoFocusOnSidebarCloseRef.current = true;
     setShowSideBar(false);
     onEndSession();
   }, [onEndSession]);
+
+  const selectAdjacentSidebarTab = useCallback((direction: -1 | 1) => {
+    setActiveSidebarTab((current) => {
+      const index = STREAM_MENU_TABS.indexOf(current);
+      return STREAM_MENU_TABS[(index + direction + STREAM_MENU_TABS.length) % STREAM_MENU_TABS.length];
+    });
+    window.requestAnimationFrame(() => {
+      sidebarRef.current?.querySelector<HTMLElement>(".sidebar-tab--active")?.focus({ preventScroll: true });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!showSideBar || exitPrompt.open) return;
+
+    const getMenuItems = (): HTMLElement[] => {
+      const scope = selectedScreenshotId
+        ? document.querySelector<HTMLElement>(".sv-shot-modal-card")
+        : sidebarRef.current;
+      if (!scope) return [];
+      return Array.from(scope.querySelectorAll<HTMLElement>(
+        "button:not(:disabled), input:not(:disabled):not([type='checkbox']), label.sidebar-mini-toggle, [tabindex='0']",
+      )).filter((element) => {
+        const style = window.getComputedStyle(element);
+        const isInactiveTab = element.getAttribute("role") === "tab" && element.getAttribute("aria-selected") !== "true";
+        return !isInactiveTab && style.display !== "none" && style.visibility !== "hidden";
+      });
+    };
+
+    const focusItem = (direction: -1 | 1): void => {
+      const items = getMenuItems();
+      if (items.length === 0) return;
+      const currentIndex = items.findIndex((item) => item === document.activeElement);
+      const nextIndex = currentIndex < 0
+        ? 0
+        : (currentIndex + direction + items.length) % items.length;
+      items[nextIndex]?.focus({ preventScroll: true });
+      items[nextIndex]?.scrollIntoView({ block: "nearest" });
+    };
+
+    const changeRange = (input: HTMLInputElement, direction: -1 | 1): void => {
+      const min = Number(input.min || 0);
+      const max = Number(input.max || 100);
+      const step = Number(input.step || 1);
+      const value = Math.max(min, Math.min(max, Number(input.value) + step * direction));
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, String(value));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+
+    const readButtons = (): number => {
+      const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
+      return readControllerGamepadButtons(pad);
+    };
+
+    const handleGamepadFrame = (): void => {
+      const buttons = readButtons();
+      let pressed = buttons & ~sidebarGamepadPreviousButtonsRef.current;
+      const moveMask = controllerButton.up | controllerButton.down | controllerButton.left | controllerButton.right;
+      const activeMoves = buttons & moveMask;
+      const now = performance.now();
+      if (pressed & moveMask) {
+        sidebarGamepadLastMoveAtRef.current = now;
+      } else if (activeMoves && now - sidebarGamepadLastMoveAtRef.current > CONTROLLER_MENU_REPEAT_MS) {
+        pressed |= activeMoves;
+        sidebarGamepadLastMoveAtRef.current = now;
+      }
+
+      const active = document.activeElement as HTMLElement | null;
+      const range = active instanceof HTMLInputElement && active.type === "range" ? active : null;
+      if (pressed & controllerButton.up) focusItem(-1);
+      if (pressed & controllerButton.down) focusItem(1);
+      if (pressed & controllerButton.left) {
+        if (range) changeRange(range, -1);
+        else if (active?.getAttribute("role") === "tab") selectAdjacentSidebarTab(-1);
+        else focusItem(-1);
+      }
+      if (pressed & controllerButton.right) {
+        if (range) changeRange(range, 1);
+        else if (active?.getAttribute("role") === "tab") selectAdjacentSidebarTab(1);
+        else focusItem(1);
+      }
+      if (pressed & controllerButton.leftShoulder) selectAdjacentSidebarTab(-1);
+      if (pressed & controllerButton.rightShoulder) selectAdjacentSidebarTab(1);
+      if (pressed & controllerButton.south) {
+        if (active && !range) active.click();
+      }
+      if (pressed & controllerButton.east) {
+        if (selectedScreenshotId) setSelectedScreenshotId(null);
+        else setShowSideBar(false);
+      }
+      if (pressed & controllerButton.menu) setShowSideBar(false);
+
+      sidebarGamepadPreviousButtonsRef.current = buttons;
+      sidebarGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+    };
+
+    const initialFocusTimer = window.setTimeout(() => {
+      const initialFocus = selectedScreenshotId
+        ? document.querySelector<HTMLElement>(".sv-shot-modal-btn:not(:disabled), .sv-shot-modal-close")
+        : sidebarRef.current?.querySelector<HTMLElement>(".sidebar-tab--active");
+      initialFocus?.focus({ preventScroll: true });
+    }, 0);
+    sidebarGamepadPreviousButtonsRef.current = readButtons();
+    sidebarGamepadLastMoveAtRef.current = performance.now();
+    sidebarGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+
+    return () => {
+      window.clearTimeout(initialFocusTimer);
+      if (sidebarGamepadFrameRef.current !== null) {
+        window.cancelAnimationFrame(sidebarGamepadFrameRef.current);
+        sidebarGamepadFrameRef.current = null;
+      }
+      sidebarGamepadPreviousButtonsRef.current = 0;
+      sidebarGamepadLastMoveAtRef.current = 0;
+    };
+  }, [exitPrompt.open, selectAdjacentSidebarTab, selectedScreenshotId, showSideBar]);
+
+  useEffect(() => {
+    if (!exitPrompt.open) return;
+
+    const focusExitButton = (confirm: boolean): void => {
+      document.querySelector<HTMLButtonElement>(
+        confirm ? ".sv-exit-btn-confirm" : ".sv-exit-btn-cancel",
+      )?.focus({ preventScroll: true });
+    };
+    const readButtons = (): number => {
+      const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
+      return readControllerGamepadButtons(pad);
+    };
+    const handleGamepadFrame = (): void => {
+      const buttons = readButtons();
+      const pressed = buttons & ~exitPromptGamepadPreviousButtonsRef.current;
+      if (pressed & (controllerButton.left | controllerButton.up)) focusExitButton(false);
+      if (pressed & (controllerButton.right | controllerButton.down)) focusExitButton(true);
+      if (pressed & controllerButton.south) {
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.closest(".sv-exit-card")) active.click();
+      }
+      if (pressed & (controllerButton.east | controllerButton.menu)) onCancelExit();
+      exitPromptGamepadPreviousButtonsRef.current = buttons;
+      exitPromptGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+    };
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancelExit();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        onConfirmExit();
+      }
+    };
+
+    const focusTimer = window.setTimeout(() => focusExitButton(false), 0);
+    exitPromptGamepadPreviousButtonsRef.current = readButtons();
+    exitPromptGamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", handleKeyDown, true);
+      if (exitPromptGamepadFrameRef.current !== null) {
+        window.cancelAnimationFrame(exitPromptGamepadFrameRef.current);
+        exitPromptGamepadFrameRef.current = null;
+      }
+      exitPromptGamepadPreviousButtonsRef.current = 0;
+    };
+  }, [exitPrompt.open, onCancelExit, onConfirmExit]);
 
   useEffect(() => {
     return addStreamShortcutActionListener((action) => {
@@ -1529,20 +1412,19 @@ export function StreamView({
     (nativeRendererActive || gstreamerEnabled) && !nativeExternalRenderer;
 
   return (
-    <div
-      className={["sv", nativeInternalHole ? "sv--native-hole" : "", className]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      <video
+    <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", nativeInternalHole ? "sv--native-hole" : "", className].filter(Boolean).join(" ")}>
+      <m.video
         ref={setVideoRef}
         autoPlay
         playsInline
         muted
         tabIndex={-1}
-        className={["sv-video", nativeInternalHole ? "sv-video--native-hole" : ""]
-          .filter(Boolean)
-          .join(" ")}
+        className={["sv-video", nativeInternalHole ? "sv-video--native-hole" : ""].filter(Boolean).join(" ")}
+        initial={false}
+        animate={streamVideoReady
+          ? { opacity: 1, scale: 1 }
+          : { opacity: 0, scale: 1.008 }}
+        transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
         onClick={() => {
           if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
             localVideoRef.current.focus({ preventScroll: true });
@@ -1567,75 +1449,76 @@ export function StreamView({
         </div>
       )}
 
-      {showSideBar && (
-        <>
-          <div
+      <AnimatePresence>
+        {showSideBar && (
+          <m.div
+            key="quick-menu-backdrop"
             className="sv-sidebar-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={() => setShowSideBar(false)}
           />
-          <SideBar title="Stream Control" className="sv-sidebar" onClose={() => setShowSideBar(false)}>
-            <section className="sidebar-session-card" aria-label="Current stream session">
-              <div className="sidebar-session-card-head">
-                <span className="sidebar-session-kicker">Now streaming</span>
-                <strong className="sidebar-session-title">{gameTitle}</strong>
-                {PlatformIcon && platformName && (
-                  <span className="sidebar-session-platform" title={platformName}>
-                    <span className="sidebar-session-platform-icon"><PlatformIcon /></span>
-                    <span>{platformName}</span>
-                  </span>
-                )}
-              </div>
-              <div className="sidebar-session-shortcuts" aria-label="Open this panel shortcuts">
-                <span className="sidebar-session-shortcut"><kbd>{sidebarToggleShortcutDisplay}</kbd><span>Keyboard</span></span>
-                <span className="sidebar-session-shortcut"><kbd>{CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</kbd><span>Controller</span></span>
-              </div>
-              <button
-                type="button"
-                className="sidebar-exit-session-button"
-                onClick={handleSidebarExitSession}
-              >
-                <LogOut size={15} />
-                <span>Exit session</span>
-              </button>
-            </section>
-            <div className="sidebar-stat-line" title="Total remaining playtime from subscription">
-              <span className="sidebar-stat-label">Remaining Playtime</span>
-              <RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="settings-value-badge" />
-            </div>
-            {sessionTimeRemainingText !== null && (
-              <div className="sidebar-stat-line sidebar-stat-line--stacked" title={t("sidebar.sessionTimeRemainingTitle")}>
-                <span className="sidebar-stat-label">{t("sidebar.sessionTimeRemaining")}</span>
-                <div className="sidebar-session-time-controls">
-                  <span className="settings-value-badge sidebar-session-time-left">
-                    <Clock3 size={10} />
-                    <span>{sessionTimeRemainingText}</span>
-                  </span>
-                  <label
-                    className="sidebar-mini-toggle"
-                    title={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={showSessionTimeRemainingInStatsOverlay}
-                      aria-label={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
-                      onChange={(event) => onShowSessionTimeRemainingInStatsOverlayChange(event.target.checked)}
-                    />
-                    <span className="sidebar-mini-toggle-track" />
-                    <span>{t("sidebar.statsOverlay")}</span>
-                  </label>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showSideBar && (
+          <SideBar
+            key="quick-menu-sidebar"
+            title="Quick menu"
+            className="sv-sidebar"
+            elementRef={sidebarRef}
+            onClose={() => setShowSideBar(false)}
+            footer={(
+              <>
+                <div className="sidebar-controller-hints" aria-hidden="true">
+                  <span><kbd>A</kbd> Select</span>
+                  <span><kbd>B</kbd> Back</span>
+                  <span><kbd>LB</kbd><kbd>RB</kbd> Pages</span>
                 </div>
-              </div>
+                <button
+                  type="button"
+                  className="sidebar-exit-session-button"
+                  onClick={handleSidebarExitSession}
+                >
+                  <LogOut size={16} />
+                  <span>End session</span>
+                </button>
+              </>
             )}
-            <div className="sidebar-tabs" role="tablist" aria-label="Sidebar sections">
+          >
+            <div className="sidebar-tabs" role="tablist" aria-label="Quick menu pages">
               <button
                 type="button"
                 role="tab"
-                aria-selected={activeSidebarTab === "preferences"}
-                className={`sidebar-tab${activeSidebarTab === "preferences" ? " sidebar-tab--active" : ""}`}
-                onClick={() => setActiveSidebarTab("preferences")}
+                aria-selected={activeSidebarTab === "session"}
+                className={`sidebar-tab${activeSidebarTab === "session" ? " sidebar-tab--active" : ""}`}
+                onClick={() => setActiveSidebarTab("session")}
               >
-                Preferences
+                <Gauge size={16} />
+                <span>Session</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeSidebarTab === "controls"}
+                className={`sidebar-tab${activeSidebarTab === "controls" ? " sidebar-tab--active" : ""}`}
+                onClick={() => setActiveSidebarTab("controls")}
+              >
+                <SlidersHorizontal size={16} />
+                <span>Controls</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeSidebarTab === "media"}
+                className={`sidebar-tab${activeSidebarTab === "media" ? " sidebar-tab--active" : ""}`}
+                onClick={() => setActiveSidebarTab("media")}
+              >
+                <Images size={16} />
+                <span>Media</span>
               </button>
               <button
                 type="button"
@@ -1644,17 +1527,100 @@ export function StreamView({
                 className={`sidebar-tab${activeSidebarTab === "shortcuts" ? " sidebar-tab--active" : ""}`}
                 onClick={() => setActiveSidebarTab("shortcuts")}
               >
-                Shortcuts
+                <Keyboard size={16} />
+                <span>Keys</span>
               </button>
             </div>
 
-            {activeSidebarTab === "preferences" && (
-              <>
-                <div className="sidebar-separator" aria-hidden="true" />
+            {activeSidebarTab === "session" && (
+              <div className="sidebar-page sidebar-page--session" role="tabpanel">
+                <section className="sidebar-session-card" aria-label="Current stream session">
+                  <div className="sidebar-session-card-head">
+                    <span className="sidebar-session-kicker">Now streaming</span>
+                    <strong className="sidebar-session-title">{gameTitle}</strong>
+                    {PlatformIcon && platformName && (
+                      <span className="sidebar-session-platform" title={platformName}>
+                        <span className="sidebar-session-platform-icon"><PlatformIcon /></span>
+                        <span>{platformName}</span>
+                      </span>
+                    )}
+                  </div>
+                </section>
+                <section className="sidebar-session-metrics" aria-label="Session time">
+                  <div className="sidebar-metric">
+                    <span>Total playtime left</span>
+                    <RemainingPlaytimeIndicator subscriptionInfo={subscriptionInfo} startedAtMs={sessionStartedAtMs} active={isStreaming} className="sidebar-metric-value" />
+                  </div>
+                  {sessionTimeRemainingText !== null && (
+                    <div className="sidebar-metric">
+                      <span>{t("sidebar.sessionTimeRemaining")}</span>
+                      <strong className="sidebar-metric-value">
+                        <Clock3 size={14} />
+                        {sessionTimeRemainingText}
+                      </strong>
+                    </div>
+                  )}
+                </section>
+                <section className="sidebar-section">
+                  <div className="sidebar-section-header">
+                    <span>Session controls</span>
+                    <span className="sidebar-section-sub">Manage the active stream.</span>
+                  </div>
+                  <div className="sidebar-quick-actions">
+                    <button type="button" className="sidebar-action-card" onClick={handleFullscreenToggle}>
+                      {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+                      <span>{isFullscreen ? "Windowed" : "Fullscreen"}</span>
+                    </button>
+                    <button type="button" className="sidebar-action-card" onClick={handlePointerLockToggle}>
+                      <MousePointer2 size={16} />
+                      <span>{isPointerLocked ? "Release mouse" : "Capture mouse"}</span>
+                    </button>
+                    {onToggleMicrophone && (
+                      <button type="button" className="sidebar-action-card" onClick={onToggleMicrophone}>
+                        <Mic size={16} />
+                        <span>Toggle mic</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="sidebar-action-card"
+                      onClick={() => { void captureScreenshot(); }}
+                      disabled={isSavingScreenshot || !screenshotApiAvailable}
+                    >
+                      <Camera size={16} />
+                      <span>{isSavingScreenshot ? "Capturing" : "Screenshot"}</span>
+                    </button>
+                  </div>
+                </section>
+                {sessionTimeRemainingText !== null && (
+                  <label className="sidebar-setting-card sidebar-mini-toggle" tabIndex={0}>
+                    <span>
+                      <strong>Show time in stats</strong>
+                      <small>Keep session time visible in the performance overlay.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      name="show-session-time-in-stats"
+                      checked={showSessionTimeRemainingInStatsOverlay}
+                      aria-label={t("sidebar.showSessionTimeRemainingInStatsOverlay")}
+                      onChange={(event) => onShowSessionTimeRemainingInStatsOverlayChange(event.target.checked)}
+                    />
+                    <span className="sidebar-mini-toggle-track" />
+                  </label>
+                )}
+                <div className="sidebar-open-shortcuts">
+                  <span><kbd>{sidebarToggleShortcutDisplay}</kbd> Keyboard</span>
+                  <span><Gamepad2 size={14} /> {CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY}</span>
+                </div>
+              </div>
+            )}
+
+            {activeSidebarTab === "controls" && (
+              <div className="sidebar-page" role="tabpanel">
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Mouse Preferences</span>
-                    <span className="sidebar-section-sub">Fine-tune cursor movement</span>
+                    <span className="sidebar-section-sub">Fine-tune cursor movement.</span>
                   </div>
                   <div className="sidebar-row sidebar-row--column">
                     <div className="sidebar-row-top">
@@ -1663,6 +1629,8 @@ export function StreamView({
                     </div>
                     <input
                       type="range"
+                      name="mouse-sensitivity"
+                      aria-label="Mouse sensitivity"
                       className="settings-slider"
                       min={0.1}
                       max={4}
@@ -1684,6 +1652,8 @@ export function StreamView({
                     </div>
                     <input
                       type="range"
+                      name="mouse-acceleration"
+                      aria-label="Mouse accelerator"
                       className="settings-slider"
                       min={1}
                       max={150}
@@ -1703,7 +1673,7 @@ export function StreamView({
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Video Filters</span>
-                    <span className="sidebar-section-sub">GPU shaders applied to the stream</span>
+                    <span className="sidebar-section-sub">GPU shaders applied to the stream.</span>
                   </div>
                   {gstreamerEnabled ? (
                     <span className="sidebar-hint">Video filters are unavailable while the native streamer renders the video.</span>
@@ -1711,9 +1681,10 @@ export function StreamView({
                     <>
                       <div className="sidebar-row sidebar-row--aligned">
                         <span className="sidebar-label">Enable Filters</span>
-                        <label className="sidebar-mini-toggle" title="Enable GPU post-processing filters">
+                        <label className="sidebar-mini-toggle" title="Enable GPU post-processing filters" tabIndex={0}>
                           <input
                             type="checkbox"
+                            name="enable-video-filters"
                             checked={videoShader.enabled}
                             aria-label="Enable video filters"
                             onChange={(event) => onVideoShaderChange({ ...videoShader, enabled: event.target.checked })}
@@ -1738,6 +1709,8 @@ export function StreamView({
                               </div>
                               <input
                                 type="range"
+                                name={`video-filter-${control.key}`}
+                                aria-label={`${control.label} video filter`}
                                 className="settings-slider"
                                 min={control.min}
                                 max={control.max}
@@ -1776,7 +1749,7 @@ export function StreamView({
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Audio</span>
-                    <span className="sidebar-section-sub">Microphone handling</span>
+                    <span className="sidebar-section-sub">Configure microphone handling.</span>
                   </div>
                   <div className="sidebar-row sidebar-row--column">
                     <div className="sidebar-row-top">
@@ -1816,14 +1789,18 @@ export function StreamView({
                     </div>
                   )}
                 </section>
-                <div className="sidebar-separator" aria-hidden="true" />
+              </div>
+            )}
+
+            {activeSidebarTab === "media" && (
+              <div className="sidebar-page" role="tabpanel">
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Gallery</span>
-                    <span className="sidebar-section-sub">ScreensShot key: {shortcuts.screenshot}</span>
+                    <span className="sidebar-section-sub">Screenshot key: {shortcuts.screenshot}</span>
                   </div>
                   <div className="sidebar-row sidebar-row--aligned">
-                    <span className="sidebar-label">ScreensShot</span>
+                    <span className="sidebar-label">Screenshots</span>
                     <button
                       type="button"
                       className="sidebar-button sidebar-screenshot-button"
@@ -1968,12 +1945,11 @@ export function StreamView({
                     </div>
                   )}
                 </section>
-              </>
+              </div>
             )}
 
             {activeSidebarTab === "shortcuts" && (
-              <>
-                <div className="sidebar-separator" aria-hidden="true" />
+              <div className="sidebar-page" role="tabpanel">
                 <section className="sidebar-section">
                   <div className="sidebar-section-header">
                     <span>Shortcut Bindings</span>
@@ -1985,6 +1961,8 @@ export function StreamView({
                     </div>
                     <input
                       type="text"
+                      name="screenshot-shortcut"
+                      aria-label="Screenshot shortcut"
                       className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${screenshotShortcutError ? "error" : ""}`}
                       value={screenshotShortcutInput}
                       readOnly
@@ -2020,6 +1998,8 @@ export function StreamView({
                     </div>
                     <input
                       type="text"
+                      name="recording-shortcut"
+                      aria-label="Recording shortcut"
                       className={`settings-text-input settings-shortcut-input sidebar-shortcut-input ${recordingShortcutError ? "error" : ""}`}
                       value={recordingShortcutInput}
                       readOnly
@@ -2075,11 +2055,11 @@ export function StreamView({
                     </span>
                   </div>
                 </section>
-              </>
+              </div>
             )}
           </SideBar>
-        </>
-      )}
+        )}
+      </AnimatePresence>
 
       {selectedScreenshot && (
         <div className="sv-shot-modal" role="dialog" aria-modal="true" aria-label="Screenshot preview">
@@ -2140,7 +2120,7 @@ export function StreamView({
       {isConnecting && (
         <div className="sv-connect">
           <div className="sv-connect-inner">
-            <Loader2 className="sv-connect-spin" size={44} />
+            <MotionSpinner className="sv-connect-spin" size={44} label="Connecting to stream" />
             <p className="sv-connect-title">Connecting to {gameTitle}</p>
             {PlatformIcon && (
               <div className="sv-connect-platform" title={platformName}>
@@ -2256,7 +2236,8 @@ export function StreamView({
               </button>
             </div>
             <div className="sv-exit-hint">
-              <kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel
+              <span><kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel</span>
+              <span><kbd>A</kbd> select · <kbd>B</kbd> cancel</span>
             </div>
           </div>
         </div>,

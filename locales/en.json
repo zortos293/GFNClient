@@ -261,11 +261,13 @@
     "labels": {
       "launchError": "Launch Error",
       "nowLoading": "Now Loading",
-      "adQueue": "Ad Queue"
+      "adQueue": "Ad Queue",
+      "launchProgress": "Game launch progress"
     },
     "steps": {
       "queue": "Queue",
       "setup": "Setup",
+      "connect": "Connect",
       "ready": "Ready"
     },
     "status": {
@@ -278,6 +280,28 @@
       "connectingToServer": "Connecting to server...",
       "settingUpStream": "Setting up stream...",
       "loading": "Loading..."
+    },
+    "detail": {
+      "queueMoving": "The live queue is moving. Your place is secured at #{{position}}.",
+      "findingCapacity": "Finding the best available cloud rig for this session.",
+      "rigReserved": "A gaming rig is reserved. Applying your session configuration now.",
+      "servicesStarting": "Starting game services and preparing the remote display.",
+      "mediaHandshake": "Negotiating the low-latency video and input channels."
+    },
+    "cozy": {
+      "queue": "Settle in. We'll keep your place and bring the game in when it's ready.",
+      "setup": "Your cloud rig is reserved and getting comfortable for you.",
+      "starting": "The game is starting on your cloud rig.",
+      "connecting": "The game is ready. Waiting for the first clear frame.",
+      "next": "Up next"
+    },
+    "telemetry": {
+      "queuePosition": "Queue position",
+      "calculating": "Calculating",
+      "cleared": "Cleared",
+      "elapsed": "Elapsed",
+      "session": "Session",
+      "protected": "Secured"
     },
     "ads": {
       "resumeToStayInQueue": "Resume ads to stay in queue.",

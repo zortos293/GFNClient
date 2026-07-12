@@ -2,9 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
 import QRCode from "qrcode";
 import { LogIn, ChevronDown, QrCode } from "lucide-react";
+import { AnimatePresence, m } from "motion/react";
 import type { AuthDeviceLoginChallenge, LoginProvider } from "@shared/gfn";
 import { useTranslation } from "../i18n";
 import { OpenNowLogoMark } from "./OpenNowLogoMark";
+import { MotionSpinner } from "./MotionSpinner";
+import { dialogMotion, smoothEase } from "./MotionProvider";
 
 export interface LoginScreenProps {
   providers: LoginProvider[];
@@ -96,13 +99,25 @@ export function LoginScreen({
   return (
     <div className="login-screen">
       <div className="login-bg">
-        <div className="login-bg-orb login-bg-orb--1" />
-        <div className="login-bg-orb login-bg-orb--2" />
-        <div className="login-bg-orb login-bg-orb--3" />
+        <m.div
+          className="login-bg-orb login-bg-orb--1"
+          animate={{ x: [0, -40, 0], y: [0, 30, 0], scale: [1, 1.15, 1] }}
+          transition={{ duration: 22, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <m.div
+          className="login-bg-orb login-bg-orb--2"
+          animate={{ x: [0, 50, 0], y: [0, -35, 0], scale: [1, 1.1, 1] }}
+          transition={{ duration: 28, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <m.div
+          className="login-bg-orb login-bg-orb--3"
+          animate={{ x: [0, 30, 0], y: [0, 20, 0], scale: [1, 0.9, 1] }}
+          transition={{ duration: 18, repeat: Infinity, ease: "easeInOut" }}
+        />
         <div className="login-bg-noise" />
       </div>
 
-      <div className="login-content">
+      <m.div className="login-content" {...dialogMotion}>
         {/* Brand */}
         <div className="login-brand">
           <div className="login-brand-mark">
@@ -127,7 +142,11 @@ export function LoginScreen({
 
           {isInitializing && statusMessage && (
             <div className="login-status" role="status" aria-live="polite">
-              <span className="login-status-dot" />
+              <m.span
+                className="login-status-dot"
+                animate={{ opacity: [0.55, 1, 0.55], scale: [0.9, 1.12, 0.9] }}
+                transition={{ duration: 1.7, repeat: Infinity, ease: "easeInOut" }}
+              />
               {statusMessage}
             </div>
           )}
@@ -151,8 +170,15 @@ export function LoginScreen({
               />
             </button>
 
-            {isDropdownOpen && (
-              <div className="login-dropdown">
+            <AnimatePresence>
+              {isDropdownOpen && (
+              <m.div
+                className="login-dropdown"
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.14, ease: smoothEase }}
+              >
                 {providers.map((provider) => (
                   <button
                     key={provider.idpId}
@@ -168,8 +194,9 @@ export function LoginScreen({
                     )}
                   </button>
                 ))}
-              </div>
-            )}
+              </m.div>
+              )}
+            </AnimatePresence>
           </div>
 
           {isQrLoginActive && (
@@ -178,7 +205,7 @@ export function LoginScreen({
                 {qrLoginChallenge && qrCodeDataUrl ? (
                   <img src={qrCodeDataUrl} alt={t("auth.qr.alt")} />
                 ) : (
-                  <span className="login-spinner" />
+                  <MotionSpinner className="login-motion-spinner" size={16} label={t("common.loading")} />
                 )}
               </div>
               <div className="login-qr-copy">
@@ -209,7 +236,7 @@ export function LoginScreen({
             >
               {isLoading || isInitializing ? (
                 <>
-                  <span className="login-spinner" />
+                  <MotionSpinner className="login-motion-spinner" size={16} label={t("common.loading")} />
                   <span>{isInitializing ? t("auth.actions.restoringSession") : t("auth.actions.connecting")}</span>
                 </>
               ) : (
@@ -232,7 +259,7 @@ export function LoginScreen({
         </div>
 
         <p className="login-footer">{t("app.tagline")}</p>
-      </div>
+      </m.div>
     </div>
   );
 }

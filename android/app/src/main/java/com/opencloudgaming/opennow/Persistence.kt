@@ -13,8 +13,16 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.encodeToString
 import java.security.MessageDigest
 import java.util.UUID
+import android.util.Xml
+import org.xmlpull.v1.XmlPullParser
+import java.io.File
+import java.io.FileInputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 private const val STORE_NAME = "opennow_native"
+private const val SECURE_STORE_NAME = "opennow_auth_secure"
 private const val KEY_SETTINGS = "settings"
 private const val KEY_AUTH = "auth"
 private const val KEY_DEVICE_ID = "gfn_device_id"
@@ -23,9 +31,239 @@ private const val KEY_ANDROID_UPDATE_DISMISSED_NOTICE = "android_update_dismisse
 private const val KEY_QUEUED_GAME_KEYS = "queued_game_keys"
 private const val CATALOG_CACHE_TTL_MS = 12L * 60L * 60L * 1000L
 private const val QUEUED_GAME_LIMIT = 24
+// Keys that must never be written to the external (potentially world-readable) file.
+private val SENSITIVE_KEYS = setOf(KEY_AUTH, KEY_DEVICE_ID)
+
+class ExternalPrefs private constructor(context: Context, val name: String) {
+    private val primaryFile: File
+    private val fallbackFile: File
+    private val data = mutableMapOf<String, String>()
+    private val lock = Any()
+    // Single-thread dispatcher: apply() writes are serialized in submission order
+    // (last-write-wins) without blocking the caller.
+    private val writeScope = CoroutineScope(Dispatchers.IO.limitedParallelism(1))
+
+    init {
+        val extDir = context.getExternalFilesDir(null)
+        primaryFile = File(extDir ?: context.filesDir, "$name.xml")
+        fallbackFile = File(context.filesDir, "$name.xml")
+        synchronized(lock) {
+            migrateFromInternal(context, name)
+            load()
+        }
+    }
+
+    companion object {
+        private val instances = mutableMapOf<String, ExternalPrefs>()
+        private val globalLock = Any()
+
+        fun get(context: Context, name: String): ExternalPrefs {
+            return synchronized(globalLock) {
+                instances.getOrPut(name) {
+                    ExternalPrefs(context.applicationContext, name)
+                }
+            }
+        }
+    }
+
+    private fun migrateFromInternal(context: Context, name: String) {
+        if (primaryFile.exists() || fallbackFile.exists()) return
+        val internalPrefs = context.applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE)
+        val allInternal = internalPrefs.all
+        if (allInternal.isNotEmpty()) {
+            // Sensitive keys must not land in the external (world-readable) file.
+            // Migrate them directly into the secure internal store instead,
+            // skipping any key that is already present there.
+            val securePrefs = context.applicationContext
+                .getSharedPreferences(SECURE_STORE_NAME, Context.MODE_PRIVATE)
+            val secureEdit = securePrefs.edit()
+            var hasSensitive = false
+            allInternal.forEach { (k, v) ->
+                if (v is String && k in SENSITIVE_KEYS && !securePrefs.contains(k)) {
+                    secureEdit.putString(k, v)
+                    hasSensitive = true
+                }
+            }
+            if (hasSensitive) secureEdit.commit()
+
+            // Migrate non-sensitive keys to the external file
+            allInternal.forEach { (k, v) ->
+                if (v is String && k !in SENSITIVE_KEYS) data[k] = v
+            }
+            val primarySuccess = writeToFile(primaryFile, data.toMap())
+            val fallbackSuccess = if (!primarySuccess) writeToFile(fallbackFile, data.toMap()) else true
+            if (primarySuccess || fallbackSuccess) {
+                internalPrefs.edit().clear().commit()
+            }
+        }
+    }
+
+    private fun load() {
+        val hasPrimary = primaryFile.exists()
+        val hasFallback = fallbackFile.exists()
+        val targetFile = when {
+            hasPrimary && hasFallback -> {
+                if (primaryFile.lastModified() >= fallbackFile.lastModified()) {
+                    primaryFile
+                } else {
+                    fallbackFile
+                }
+            }
+            hasPrimary -> primaryFile
+            hasFallback -> fallbackFile
+            else -> return
+        }
+        // Snapshot existing data so we can restore it if parsing fails mid-way
+        val existing = data.toMap()
+        runCatching {
+            val parser = Xml.newPullParser()
+            FileInputStream(targetFile).use { fis ->
+                parser.setInput(fis, "UTF-8")
+                var event = parser.eventType
+                while (event != XmlPullParser.END_DOCUMENT) {
+                    if (event == XmlPullParser.START_TAG && parser.name == "string") {
+                        val name = parser.getAttributeValue(null, "name")
+                        val value = parser.nextText()
+                        if (name != null) {
+                            data[name] = value
+                        }
+                    }
+                    event = parser.next()
+                }
+            }
+        }.onFailure {
+            it.printStackTrace()
+            // Restore pre-parse snapshot to avoid leaving data in a partial state
+            data.clear()
+            data.putAll(existing)
+            val alternativeFile = if (targetFile == primaryFile) fallbackFile else primaryFile
+            if (alternativeFile.exists()) {
+                val existingBeforeAlt = data.toMap()
+                runCatching {
+                    val parser = Xml.newPullParser()
+                    FileInputStream(alternativeFile).use { fis ->
+                        parser.setInput(fis, "UTF-8")
+                        var event = parser.eventType
+                        while (event != XmlPullParser.END_DOCUMENT) {
+                            if (event == XmlPullParser.START_TAG && parser.name == "string") {
+                                val name = parser.getAttributeValue(null, "name")
+                                val value = parser.nextText()
+                                if (name != null) {
+                                    data[name] = value
+                                }
+                            }
+                            event = parser.next()
+                        }
+                    }
+                }.onFailure { e ->
+                    e.printStackTrace()
+                    // Restore again if the alternative file also failed mid-parse
+                    data.clear()
+                    data.putAll(existingBeforeAlt)
+                }
+            }
+        }
+    }
+
+    private fun save(mapSnapshot: Map<String, String>) {
+        synchronized(lock) {
+            val success = writeToFile(primaryFile, mapSnapshot)
+            if (!success) {
+                writeToFile(fallbackFile, mapSnapshot)
+            }
+        }
+    }
+
+    private fun writeToFile(file: File, mapSnapshot: Map<String, String>): Boolean {
+        return runCatching {
+            val parent = file.parentFile ?: return false
+            parent.mkdirs()
+            val tmpFile = File(parent, "${file.name}.tmp")
+            tmpFile.bufferedWriter().use { writer ->
+                writer.write("<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n")
+                writer.write("<map>\n")
+                for ((k, v) in mapSnapshot) {
+                    writer.write("    <string name=\"")
+                    writer.write(escapeXmlAttribute(k))
+                    writer.write("\">")
+                    writer.write(escapeXmlText(v))
+                    writer.write("</string>\n")
+                }
+                writer.write("</map>\n")
+            }
+            if (tmpFile.exists()) {
+                if (tmpFile.renameTo(file)) {
+                    true
+                } else {
+                    tmpFile.copyTo(file, overwrite = true)
+                    tmpFile.delete()
+                    true
+                }
+            } else {
+                false
+            }
+        }.getOrElse {
+            it.printStackTrace()
+            false
+        }
+    }
+
+    private fun escapeXmlAttribute(str: String): String =
+        str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace("\"", "&quot;").replace("'", "&apos;")
+
+    private fun escapeXmlText(str: String): String =
+        str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    fun getString(key: String, defValue: String?): String? = synchronized(lock) { data[key] ?: defValue }
+
+    val all: Map<String, Any?> get() = synchronized(lock) { data.toMap() }
+
+    fun edit(): Editor = Editor()
+
+    inner class Editor {
+        private val actions = mutableListOf<() -> Unit>()
+
+        fun putString(key: String, value: String?): Editor {
+            actions.add {
+                if (value == null) data.remove(key) else data[key] = value
+            }
+            return this
+        }
+
+        fun remove(key: String): Editor {
+            actions.add { data.remove(key) }
+            return this
+        }
+
+        // Captures snapshot synchronously under the lock then dispatches the write
+        // on a single-thread background scope, so:
+        //   - The caller is never blocked by IO
+        //   - Writes are still dispatched in submission order (last-write-wins guaranteed)
+        fun apply() {
+            val snapshot = synchronized(lock) {
+                actions.forEach { it() }
+                actions.clear()
+                data.toMap()
+            }
+            writeScope.launch { save(snapshot) }
+        }
+
+        // Single synchronized block keeps action application, snapshot capture, and file
+        // write atomic — eliminating the interleaving window where a concurrent commit()
+        // could write a newer snapshot between our two previously-separate lock sections.
+        fun commit(): Boolean = synchronized(lock) {
+            actions.forEach { it() }
+            actions.clear()
+            val snapshot = data.toMap()
+            val success = writeToFile(primaryFile, snapshot)
+            if (!success) writeToFile(fallbackFile, snapshot) else true
+        }
+    }
+}
 
 class SettingsStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs.get(context, STORE_NAME)
     private val _settings = MutableStateFlow(load())
     val settings: StateFlow<AppSettings> = _settings
 
@@ -36,13 +274,13 @@ class SettingsStore(context: Context) {
 
     fun update(transform: (AppSettings) -> AppSettings) {
         val next = transform(_settings.value).normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(next)).apply()
+        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(next)).commit()
         _settings.value = next
     }
 
     fun replace(next: AppSettings) {
         val normalized = next.normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(normalized)).apply()
+        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(normalized)).commit()
         _settings.value = normalized
     }
 
@@ -73,6 +311,12 @@ class SettingsStore(context: Context) {
                 leftOffsetYDp = androidTouch.leftOffsetYDp.coerceIn(-160f, 160f),
                 rightOffsetXDp = androidTouch.rightOffsetXDp.coerceIn(-220f, 220f),
                 rightOffsetYDp = androidTouch.rightOffsetYDp.coerceIn(-160f, 160f),
+                offsets = androidTouch.offsets.mapValues { (_, offset) ->
+                    TouchOffset(
+                        x = offset.x.coerceIn(-320f, 320f),
+                        y = offset.y.coerceIn(-320f, 320f)
+                    )
+                },
             ),
             streamIntroMusic = streamIntroMusic,
             queueReadyMusic = queueReadyMusic,
@@ -86,17 +330,55 @@ class SettingsStore(context: Context) {
 }
 
 class AuthStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
-    private val _state = MutableStateFlow(load())
+    private val sharedPrefs = context.applicationContext.getSharedPreferences(SECURE_STORE_NAME, Context.MODE_PRIVATE)
+    private val _state = MutableStateFlow(loadAndMigrate(context))
     val state: StateFlow<PersistedAuthState> = _state
 
+    private fun loadAndMigrate(context: Context): PersistedAuthState {
+        val legacyPrefs = ExternalPrefs.get(context, STORE_NAME)
+
+        // Migrate auth credentials if not yet in secure storage
+        val hasSecureAuth = sharedPrefs.contains(KEY_AUTH)
+        var migratedState: PersistedAuthState? = null
+        if (!hasSecureAuth) {
+            val legacyRaw = legacyPrefs.getString(KEY_AUTH, null)
+            if (!legacyRaw.isNullOrBlank()) {
+                val parsed = runCatching { OpenNowJson.decodeFromString<PersistedAuthState>(legacyRaw) }.getOrNull()
+                if (parsed != null) {
+                    val secureCommitSuccess = sharedPrefs.edit().putString(KEY_AUTH, legacyRaw).commit()
+                    if (secureCommitSuccess) {
+                        migratedState = parsed
+                        legacyPrefs.edit().remove(KEY_AUTH).commit()
+                    }
+                }
+            }
+        }
+
+        // Migrate device ID independently — always run even if auth was already migrated,
+        // since hasSecureAuth being true does not guarantee KEY_DEVICE_ID is in secure storage.
+        if (!sharedPrefs.contains(KEY_DEVICE_ID)) {
+            val legacyDeviceId = legacyPrefs.getString(KEY_DEVICE_ID, null)
+            if (!legacyDeviceId.isNullOrBlank()) {
+                val secureCommitSuccess = sharedPrefs.edit().putString(KEY_DEVICE_ID, legacyDeviceId).commit()
+                if (secureCommitSuccess) {
+                    legacyPrefs.edit().remove(KEY_DEVICE_ID).commit()
+                }
+            }
+        }
+
+        if (migratedState != null) {
+            return migratedState
+        }
+        return load()
+    }
+
     private fun load(): PersistedAuthState {
-        val raw = prefs.getString(KEY_AUTH, null) ?: return PersistedAuthState()
+        val raw = sharedPrefs.getString(KEY_AUTH, null) ?: return PersistedAuthState()
         return runCatching { OpenNowJson.decodeFromString<PersistedAuthState>(raw) }.getOrElse { PersistedAuthState() }
     }
 
     fun save(next: PersistedAuthState) {
-        prefs.edit().putString(KEY_AUTH, OpenNowJson.encodeToString(next)).apply()
+        sharedPrefs.edit().putString(KEY_AUTH, OpenNowJson.encodeToString(next)).commit()
         _state.value = next
     }
 
@@ -137,16 +419,16 @@ class AuthStore(context: Context) {
     }
 
     fun stableDeviceId(): String {
-        val existing = prefs.getString(KEY_DEVICE_ID, null)
+        val existing = sharedPrefs.getString(KEY_DEVICE_ID, null)
         if (!existing.isNullOrBlank()) return existing
         val next = UUID.randomUUID().toString()
-        prefs.edit().putString(KEY_DEVICE_ID, next).apply()
+        sharedPrefs.edit().putString(KEY_DEVICE_ID, next).commit()
         return next
     }
 }
 
 class CatalogCacheStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs.get(context, STORE_NAME)
 
     fun loadMainGames(userId: String, providerStreamingBaseUrl: String): List<GameInfo>? =
         loadGameList(key("main", userId, providerStreamingBaseUrl))
@@ -246,7 +528,7 @@ class CatalogCacheStore(context: Context) {
 }
 
 class QueuedGameStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs.get(context, STORE_NAME)
 
     fun load(): List<String> {
         val raw = prefs.getString(KEY_QUEUED_GAME_KEYS, null) ?: return emptyList()
@@ -269,7 +551,7 @@ class QueuedGameStore(context: Context) {
 }
 
 class AndroidUpdateNoticeStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(STORE_NAME, Context.MODE_PRIVATE)
+    private val prefs = ExternalPrefs.get(context, STORE_NAME)
 
     fun dismissedKey(): String? =
         prefs.getString(KEY_ANDROID_UPDATE_DISMISSED_NOTICE, null)?.takeIf { it.isNotBlank() }

@@ -104,6 +104,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -122,7 +124,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryFull
 import androidx.compose.material.icons.rounded.SignalCellular0Bar
 import androidx.compose.material.icons.rounded.SignalCellular4Bar
@@ -151,12 +152,17 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.focus.FocusRequester
@@ -412,8 +418,26 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     )
 
     OpenNowTheme(state.settings) {
-        Box(Modifier.fillMaxSize()) {
-            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        val primaryColor = MaterialTheme.colorScheme.primary
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .drawWithCache {
+                    val brush = Brush.radialGradient(
+                        colors = listOf(
+                            primaryColor.copy(alpha = 0.15f),
+                            Color.Transparent
+                        ),
+                        center = Offset(size.width, 0f),
+                        radius = size.width.coerceAtLeast(size.height) * 0.8f
+                    )
+                    onDrawBehind {
+                        drawRect(brush)
+                    }
+                }
+        ) {
+            Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
                 when {
                     state.authSession != null -> MainShell(state, viewModel, musicControl)
                     else -> LoginScreen(state, viewModel)
@@ -587,7 +611,7 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     ) {
         OpenNowMark(88.dp)
         Spacer(Modifier.height(20.dp))
-        Text("OpenNOW", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+        Text("OpenNOW", color = TextPrimary, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
         Text("Native Android GeForce NOW client", color = TextMuted)
         Spacer(Modifier.height(28.dp))
         ProviderPicker(state.providers, state.selectedProvider, viewModel::selectProvider)
@@ -731,7 +755,7 @@ internal fun DeviceLoginPanel(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.login_tv_title), color = TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 DeviceLoginQr(qrCode = qrCode, qrMaxSize = qrMaxSize)
                 DeviceLoginControls(
                     launchUrl = launchUrl,
@@ -795,7 +819,7 @@ private fun DeviceLoginControls(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (showTitle) {
-            Text(stringResource(R.string.login_tv_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.login_tv_title), color = TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         }
         TextButton(
             onClick = {
@@ -1419,15 +1443,22 @@ private fun AppNavigationRail(
 
 @Composable
 private fun AppNavigationRailItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String, iconSize: Dp = 24.dp) {
+    var focused by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
     NavigationRailItem(
         selected = selected,
         onClick = onClick,
+        modifier = Modifier
+            .onFocusChanged { focused = it.isFocused }
+            .then(
+                if (focused) Modifier.border(2.dp, accent, RoundedCornerShape(12.dp)) else Modifier
+            ),
         colors = NavigationRailItemDefaults.colors(
-            selectedIconColor = MaterialTheme.colorScheme.primary,
-            selectedTextColor = MaterialTheme.colorScheme.primary,
-            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-            unselectedIconColor = TextMuted,
-            unselectedTextColor = TextMuted,
+            selectedIconColor = accent,
+            selectedTextColor = accent,
+            indicatorColor = if (focused) accent.copy(alpha = 0.35f) else accent.copy(alpha = 0.18f),
+            unselectedIconColor = if (focused) Color.White else TextMuted,
+            unselectedTextColor = if (focused) Color.White else TextMuted,
         ),
         icon = {
             Icon(
@@ -2390,6 +2421,8 @@ private fun RefreshingGamesPlaceholder(
     )
 }
 
+private val LocalShimmerOffset = staticCompositionLocalOf<Float?> { null }
+
 @Composable
 private fun GameGridSkeleton(
     settings: AppSettings,
@@ -2400,37 +2433,47 @@ private fun GameGridSkeleton(
     val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val shimmerBrush = rememberLoadingShimmerBrush(label = "game-grid-skeleton-shimmer")
-    BoxWithConstraints(modifier.fillMaxSize()) {
-        val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
-        val placeholderItems = remember(gridSpec.columns, storeLayout) {
-            List(gridSpec.columns * if (storeLayout) 4 else 3) { it }
-        }
-        LazyVerticalGrid(
-            modifier = Modifier.fillMaxSize(),
-            columns = GridCells.Fixed(gridSpec.columns),
-            contentPadding = gridSpec.contentPadding,
-            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
-            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
-            userScrollEnabled = false,
-        ) {
-            if (storeLayout) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    StoreStartRailsSkeleton(
-                        settings = settings,
-                        tvProfile = tvProfile,
-                        shimmerBrush = shimmerBrush,
+
+    val transition = rememberInfiniteTransition(label = "shimmer-global")
+    val shimmerOffset by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1150, easing = LinearEasing),
+        ),
+        label = "shimmer-offset-global",
+    )
+
+    CompositionLocalProvider(LocalShimmerOffset provides shimmerOffset) {
+        BoxWithConstraints(modifier.fillMaxSize()) {
+            val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
+            val placeholderItems = remember(gridSpec.columns, storeLayout) {
+                List(gridSpec.columns * if (storeLayout) 4 else 3) { it }
+            }
+            LazyVerticalGrid(
+                modifier = Modifier.fillMaxSize(),
+                columns = GridCells.Fixed(gridSpec.columns),
+                contentPadding = gridSpec.contentPadding,
+                horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
+                verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
+                userScrollEnabled = false,
+            ) {
+                if (storeLayout) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        StoreStartRailsSkeleton(
+                            settings = settings,
+                            tvProfile = tvProfile,
+                        )
+                    }
+                }
+                gridItems(placeholderItems, key = { it }) {
+                    GameCardSkeleton(
+                        cardHeight = gridSpec.cardHeight * scale,
+                        squareCard = gridSpec.squareCards,
+                        thumbnailPlayOverlay = !tvProfile,
+                        showStoreLabels = settings.showGameStoreLabels,
                     )
                 }
-            }
-            gridItems(placeholderItems, key = { it }) {
-                GameCardSkeleton(
-                    cardHeight = gridSpec.cardHeight * scale,
-                    squareCard = gridSpec.squareCards,
-                    thumbnailPlayOverlay = !tvProfile,
-                    showStoreLabels = settings.showGameStoreLabels,
-                    shimmerBrush = shimmerBrush,
-                )
             }
         }
     }
@@ -2440,7 +2483,6 @@ private fun GameGridSkeleton(
 private fun StoreStartRailsSkeleton(
     settings: AppSettings,
     tvProfile: Boolean,
-    shimmerBrush: Brush,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
@@ -2454,7 +2496,6 @@ private fun StoreStartRailsSkeleton(
             StoreRailSectionSkeleton(
                 cardWidth = cardWidth,
                 expressiveUi = settings.expressiveUi,
-                shimmerBrush = shimmerBrush,
             )
         }
     }
@@ -2464,11 +2505,10 @@ private fun StoreStartRailsSkeleton(
 private fun StoreRailSectionSkeleton(
     cardWidth: Dp,
     expressiveUi: Boolean,
-    shimmerBrush: Brush,
 ) {
     val spacing = 10.dp
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SkeletonLine(widthFraction = 0.34f, height = 15.dp, shimmerBrush = shimmerBrush)
+        SkeletonLine(widthFraction = 0.34f, height = 15.dp)
         BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
@@ -2487,7 +2527,6 @@ private fun StoreRailSectionSkeleton(
                     StoreRailGameCardSkeleton(
                         width = fittedCardWidth,
                         expressiveUi = expressiveUi,
-                        shimmerBrush = shimmerBrush,
                     )
                 }
             }
@@ -2499,7 +2538,6 @@ private fun StoreRailSectionSkeleton(
 private fun StoreRailGameCardSkeleton(
     width: Dp,
     expressiveUi: Boolean,
-    shimmerBrush: Brush,
 ) {
     val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     Surface(
@@ -2513,20 +2551,18 @@ private fun StoreRailGameCardSkeleton(
         shadowElevation = 1.dp,
     ) {
         Box(Modifier.fillMaxSize().clip(shape)) {
-            LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+            LoadingShimmer(Modifier.fillMaxSize())
             SkeletonCircle(
                 size = 44.dp,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(6.dp),
-                shimmerBrush = shimmerBrush,
             )
             SkeletonCircle(
                 size = 44.dp,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(6.dp),
-                shimmerBrush = shimmerBrush,
             )
         }
     }
@@ -2538,7 +2574,6 @@ private fun GameCardSkeleton(
     squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
     showStoreLabels: Boolean,
-    shimmerBrush: Brush,
 ) {
     val cardShape = RoundedCornerShape(12.dp)
     Card(
@@ -2550,37 +2585,34 @@ private fun GameCardSkeleton(
     ) {
         if (thumbnailPlayOverlay) {
             Box(Modifier.fillMaxSize()) {
-                LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+                LoadingShimmer(Modifier.fillMaxSize())
                 SkeletonCircle(
                     size = 44.dp,
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(8.dp),
-                    shimmerBrush = shimmerBrush,
                 )
                 SkeletonCircle(
                     size = 44.dp,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(8.dp),
-                    shimmerBrush = shimmerBrush,
                 )
             }
         } else {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f).fillMaxWidth()) {
-                    LoadingShimmer(Modifier.fillMaxSize(), shimmerBrush = shimmerBrush)
+                    LoadingShimmer(Modifier.fillMaxSize())
                     SkeletonCircle(
                         size = 44.dp,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(8.dp),
-                        shimmerBrush = shimmerBrush,
                     )
                 }
                 if (showStoreLabels) {
                     Column(Modifier.padding(horizontal = 9.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        SkeletonLine(widthFraction = 0.62f, shimmerBrush = shimmerBrush)
+                        SkeletonLine(widthFraction = 0.62f)
                     }
                 }
                 Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
@@ -2589,7 +2621,6 @@ private fun GameCardSkeleton(
                             .fillMaxWidth()
                             .height(48.dp)
                             .clip(RoundedCornerShape(999.dp)),
-                        shimmerBrush = shimmerBrush,
                     )
                 }
             }
@@ -2598,23 +2629,21 @@ private fun GameCardSkeleton(
 }
 
 @Composable
-private fun SkeletonLine(widthFraction: Float, height: Dp = 9.dp, shimmerBrush: Brush) {
+private fun SkeletonLine(widthFraction: Float, height: Dp = 9.dp) {
     LoadingShimmer(
         Modifier
             .fillMaxWidth(widthFraction)
             .height(height)
             .clip(RoundedCornerShape(999.dp)),
-        shimmerBrush = shimmerBrush,
     )
 }
 
 @Composable
-private fun SkeletonCircle(size: Dp, modifier: Modifier = Modifier, shimmerBrush: Brush) {
+private fun SkeletonCircle(size: Dp, modifier: Modifier = Modifier) {
     LoadingShimmer(
         modifier
             .size(size)
             .clip(CircleShape),
-        shimmerBrush = shimmerBrush,
     )
 }
 
@@ -2690,7 +2719,9 @@ private fun GameGrid(
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
-                    settings = settings,
+                    expressiveUi = settings.expressiveUi,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                    showGameStoreLabels = settings.showGameStoreLabels,
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
@@ -2784,11 +2815,24 @@ private fun StoreGameGrid(
                     onChooseStore = onChooseStore,
                 )
             }
+            if (games.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        text = "Recommendations",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.ExtraBold,
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                    )
+                }
+            }
             gridItems(games, key = { it.id }) { game ->
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
-                    settings = settings,
+                    expressiveUi = settings.expressiveUi,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                    showGameStoreLabels = settings.showGameStoreLabels,
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
@@ -2905,7 +2949,7 @@ private fun StoreComingNextCarousel(
                 Text(
                     title,
                     color = TextPrimary,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.ExtraBold,
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
@@ -3060,8 +3104,8 @@ private fun StoreRailSection(
         Text(
             title,
             color = TextPrimary,
-            fontWeight = FontWeight.SemiBold,
-            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.ExtraBold,
+            style = MaterialTheme.typography.titleLarge,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -3073,7 +3117,8 @@ private fun StoreRailSection(
                 StoreRailGameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
-                    settings = settings,
+                    expressiveUi = settings.expressiveUi,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
                     width = cardWidth,
                     controllerActionMode = controllerActionMode,
                     onSelect = onSelect,
@@ -3091,7 +3136,8 @@ private fun StoreRailSection(
 private fun StoreRailGameCard(
     game: GameInfo,
     favorite: Boolean,
-    settings: AppSettings,
+    expressiveUi: Boolean,
+    controllerBackgroundAnimations: Boolean,
     width: Dp,
     controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
@@ -3101,11 +3147,11 @@ private fun StoreRailGameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val shape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
+    val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     val actionButtonSize = 34.dp
     val focusBorderColor = controllerFocusBorderColor(
         active = focused && controllerActionMode,
-        animate = settings.controllerBackgroundAnimations,
+        animate = controllerBackgroundAnimations,
     )
     Surface(
         modifier = Modifier
@@ -3148,7 +3194,22 @@ private fun StoreRailGameCard(
     ) {
         Box(Modifier.fillMaxSize().clip(shape)) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.06f)))
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(GameCardOverlayGradient),
+                contentAlignment = Alignment.BottomStart
+            ) {
+                Text(
+                    text = game.title,
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                )
+            }
             if (!controllerActionMode) {
                 ThumbnailPlayButton(
                     onClick = { onPlay(game) },
@@ -3162,14 +3223,14 @@ private fun StoreRailGameCard(
                     favorite = favorite,
                     onClick = { onFavorite(game.id) },
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
+                        .align(Alignment.TopStart)
                         .padding(6.dp),
                     size = actionButtonSize,
                 )
             }
             ControllerFocusSheen(
-                visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
-                cornerRadius = if (settings.expressiveUi) 12.dp else 8.dp,
+                visible = focused && controllerActionMode && controllerBackgroundAnimations,
+                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
             )
         }
     }
@@ -3395,7 +3456,9 @@ private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp, minimumCo
 private fun GameCard(
     game: GameInfo,
     favorite: Boolean,
-    settings: AppSettings,
+    expressiveUi: Boolean,
+    controllerBackgroundAnimations: Boolean,
+    showGameStoreLabels: Boolean,
     cardHeight: androidx.compose.ui.unit.Dp,
     squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
@@ -3407,13 +3470,13 @@ private fun GameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val cardShape = RoundedCornerShape(if (settings.expressiveUi) 12.dp else 8.dp)
+    val cardShape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     val launcherTile = squareCard && thumbnailPlayOverlay
     val overlayActionSize = if (launcherTile) 34.dp else 44.dp
     val overlayActionPadding = if (launcherTile) 6.dp else 8.dp
     val focusBorderColor = controllerFocusBorderColor(
         active = focused && controllerActionMode,
-        animate = settings.controllerBackgroundAnimations,
+        animate = controllerBackgroundAnimations,
     )
     Card(
         modifier = Modifier
@@ -3445,7 +3508,7 @@ private fun GameCard(
             }
             .focusable(),
         colors = CardDefaults.cardColors(
-            containerColor = if (settings.expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
+            containerColor = if (expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = if (focused) 8.dp else 0.dp),
         shape = cardShape,
@@ -3456,13 +3519,29 @@ private fun GameCard(
                 .clickable { onSelect(game) },
         ) {
             UrlImage(game.imageUrl, Modifier.fillMaxSize())
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(GameCardOverlayGradient),
+                contentAlignment = Alignment.BottomStart
+            ) {
+                Text(
+                    text = game.title,
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                )
+            }
             if (thumbnailPlayOverlay) {
                 if (!controllerActionMode) {
                     FavoriteIconButton(
                         favorite = favorite,
                         onClick = { onFavorite(game.id) },
                         modifier = Modifier
-                            .align(if (launcherTile) Alignment.TopEnd else Alignment.BottomStart)
+                            .align(Alignment.TopStart)
                             .padding(overlayActionPadding),
                         size = overlayActionSize,
                     )
@@ -3470,7 +3549,7 @@ private fun GameCard(
                         onClick = { onPlay(game) },
                         onLongClick = { onChooseStore(game) },
                         modifier = Modifier
-                            .align(Alignment.BottomEnd)
+                            .align(Alignment.TopEnd)
                             .padding(overlayActionPadding),
                         buttonSize = overlayActionSize,
                     )
@@ -3485,8 +3564,8 @@ private fun GameCard(
                 )
             }
             ControllerFocusSheen(
-                visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
-                cornerRadius = if (settings.expressiveUi) 12.dp else 8.dp,
+                visible = focused && controllerActionMode && controllerBackgroundAnimations,
+                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
             )
         }
         if (!thumbnailPlayOverlay) {
@@ -3496,17 +3575,7 @@ private fun GameCard(
                     .padding(9.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                /*
-                Text(
-                    game.title,
-                    fontWeight = FontWeight.Bold,
-                    minLines = 2,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                */
-                if (settings.showGameStoreLabels) {
+                if (showGameStoreLabels) {
                     Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
                 }
             }
@@ -3641,13 +3710,14 @@ private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, mo
                 onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
             ),
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.94f),
-        tonalElevation = 3.dp,
-        shadowElevation = 3.dp,
+        color = Color.Black.copy(alpha = 0.35f),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
     ) {
         ZortosPlayMark(
             modifier = Modifier.fillMaxSize().padding(buttonSize * 0.13f),
-            ringColor = MaterialTheme.colorScheme.onPrimary,
+            ringColor = Color.White,
         )
     }
 }
@@ -3659,24 +3729,10 @@ private fun ZortosPlayMark(
     playColor: Color = ringColor,
 ) {
     Canvas(modifier) {
-        val stroke = (size.minDimension * 0.105f).coerceAtLeast(1f)
-        val gapAngle = 13f
-        listOf(0.44f, 0.30f).forEach { radiusFraction ->
-            val radius = size.minDimension * radiusFraction
-            drawArc(
-                color = ringColor,
-                startAngle = -90f + gapAngle,
-                sweepAngle = 360f - gapAngle * 2f,
-                useCenter = false,
-                topLeft = Offset(center.x - radius, center.y - radius),
-                size = Size(radius * 2f, radius * 2f),
-                style = Stroke(width = stroke),
-            )
-        }
         val play = Path().apply {
-            moveTo(size.width * 0.43f, size.height * 0.34f)
-            lineTo(size.width * 0.43f, size.height * 0.66f)
-            lineTo(size.width * 0.68f, size.height * 0.5f)
+            moveTo(size.width * 0.35f, size.height * 0.25f)
+            lineTo(size.width * 0.35f, size.height * 0.75f)
+            lineTo(size.width * 0.75f, size.height * 0.5f)
             close()
         }
         drawPath(play, playColor)
@@ -3876,8 +3932,22 @@ private fun GameDetailsLandscapeContent(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
-                        Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    var dismissFocused by remember { mutableStateOf(false) }
+                    val accent = MaterialTheme.colorScheme.primary
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        border = BorderStroke(1.dp, if (dismissFocused) accent else MaterialTheme.colorScheme.outline),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .onFocusChanged { dismissFocused = it.isFocused }
+                    ) {
+                        Text(
+                            "Dismiss", 
+                            color = if (dismissFocused) accent else TextPrimary,
+                            maxLines = 1, 
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     LongPressPlayButton(
                         onClick = {
@@ -3889,7 +3959,7 @@ private fun GameDetailsLandscapeContent(
                             onChooseStore(game)
                         },
                         modifier = Modifier
-                            .weight(1.2f)
+                            .weight(1f)
                             .focusRequester(playFocusRequester),
                     )
                 }
@@ -3982,8 +4052,22 @@ private fun GameDetailsScrollableContent(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(0.8f)) {
-                    Text("Dismiss", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                var dismissFocused by remember { mutableStateOf(false) }
+                val accent = MaterialTheme.colorScheme.primary
+                OutlinedButton(
+                    onClick = onDismiss,
+                    border = BorderStroke(1.dp, if (dismissFocused) accent else MaterialTheme.colorScheme.outline),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .onFocusChanged { dismissFocused = it.isFocused }
+                ) {
+                    Text(
+                        "Dismiss", 
+                        color = if (dismissFocused) accent else TextPrimary,
+                        maxLines = 1, 
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 LongPressPlayButton(
                     onClick = {
@@ -3995,7 +4079,7 @@ private fun GameDetailsScrollableContent(
                         onChooseStore(game)
                     },
                     modifier = Modifier
-                        .weight(1.2f)
+                        .weight(1f)
                         .focusRequester(playFocusRequester),
                 )
             }
@@ -4024,6 +4108,7 @@ private fun LaunchOptionsList(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
                 color = if (isDefault) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
+                contentColor = TextPrimary,
             ) {
                 Row(
                     Modifier.padding(horizontal = if (compact) 10.dp else 12.dp, vertical = if (compact) 8.dp else 10.dp),
@@ -4078,14 +4163,12 @@ private fun LongPressPlayButton(
                 onLongClick = onLongClick,
                 onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
             )
-            .border(
-                width = if (focused) 2.dp else 0.dp,
-                color = if (focused) TextPrimary else Color.Transparent,
-                shape = shape,
+            .then(
+                if (focused) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape) else Modifier
             ),
         shape = shape,
         color = MaterialTheme.colorScheme.primary,
-        tonalElevation = 2.dp,
+        tonalElevation = 0.dp,
     ) {
         Row(
             Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -4093,13 +4176,13 @@ private fun LongPressPlayButton(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ZortosPlayMark(
-                modifier = Modifier.size(26.dp),
-                ringColor = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(20.dp),
+                ringColor = Color.Black,
             )
             Spacer(Modifier.width(8.dp))
             Text(
                 stringResource(R.string.action_play),
-                color = MaterialTheme.colorScheme.onPrimary,
+                color = Color.Black,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -4137,14 +4220,22 @@ private fun ImageCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier)
 @Composable
 private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, size: Dp = 44.dp) {
     val label = stringResource(if (favorite) R.string.action_saved else R.string.action_save)
+    var focused by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
     Surface(
         modifier = modifier
             .size(size)
+            .onFocusChanged { focused = it.isFocused }
             .semantics { contentDescription = label }
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick)
+            .focusable()
+            .then(
+                if (focused) Modifier.border(2.dp, accent, CircleShape) else Modifier
+            ),
         shape = CircleShape,
-        color = Color.Black.copy(alpha = 0.52f),
-        tonalElevation = 3.dp,
+        color = Color.Black.copy(alpha = 0.35f),
+        tonalElevation = 0.dp,
+        border = BorderStroke(1.dp, if (focused) accent else Color.White.copy(alpha = 0.2f)),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(
@@ -4580,7 +4671,7 @@ private fun StoreLaunchSelector(
                                 .fillMaxHeight(if (landscape) 0.86f else 0.64f)
                         },
                     ),
-                colors = CardDefaults.cardColors(containerColor = Panel),
+                colors = CardDefaults.cardColors(containerColor = Panel, contentColor = TextPrimary),
                 shape = RoundedCornerShape(22.dp),
             ) {
                 if (phoneLandscape) {
@@ -4734,7 +4825,7 @@ private fun StoreLaunchOptionsColumn(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onDismiss, modifier = Modifier.weight(0.85f)) {
+            OutlinedButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
                 Text(stringResource(R.string.action_cancel))
             }
             Button(
@@ -4744,7 +4835,7 @@ private fun StoreLaunchOptionsColumn(
                 },
                 enabled = selectedVariant != null,
                 modifier = Modifier
-                    .weight(1.15f)
+                    .weight(1f)
                     .focusRequester(continueFocusRequester),
             ) {
                 Text(stringResource(R.string.action_continue), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -4767,6 +4858,7 @@ private fun StoreLaunchVariantRow(
             .clickable { onClick() },
         shape = RoundedCornerShape(14.dp),
         color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
+        contentColor = TextPrimary,
     ) {
         Row(
             Modifier.padding(14.dp),
@@ -4848,6 +4940,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     )
     val statsAlignment = when (state.settings.streamStatsPosition) {
         StreamStatsPosition.Left -> Alignment.TopStart
+        StreamStatsPosition.Center -> Alignment.TopCenter
         StreamStatsPosition.Right -> Alignment.TopEnd
     }
     var resolutionMismatchStats by remember(session?.sessionId, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) { mutableStateOf(0) }
@@ -4867,7 +4960,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
         controlsOpen = true
     }
-    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen
+    val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen || touchLayoutEditing
     val externalMousePassthroughActive = streamReady && !streamOverlayOpen
     val handleStreamBack = {
         when {
@@ -4936,7 +5029,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, streamOverlayOpen, streamGuideOpen, streamGuideStep) {
+    LaunchedEffect(streamReady, streamOverlayOpen, streamGuideOpen, streamGuideStep, touchLayoutEditing) {
         NativeStreamInputRouter.setStreamUiActive(streamReady && streamOverlayOpen)
         NativeStreamInputRouter.setSystemMenuHandler {
             openControlsForGuide()
@@ -5111,22 +5204,58 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     touch = state.settings.androidTouch.copy(enabled = true),
                     onButtonTone = playButtonTone,
                     layoutEditing = touchLayoutEditing,
-                    onLeftOffsetChange = { x, y ->
-                        viewModel.updateSettings(
-                            state.settings.copy(
-                                androidTouch = state.settings.androidTouch.copy(leftOffsetXDp = x, leftOffsetYDp = y),
-                            ),
-                        )
-                    },
-                    onRightOffsetChange = { x, y ->
-                        viewModel.updateSettings(
-                            state.settings.copy(
-                                androidTouch = state.settings.androidTouch.copy(rightOffsetXDp = x, rightOffsetYDp = y),
-                            ),
-                        )
+                    onSaveAllOffsets = { allOffsets ->
+                        var touch = state.settings.androidTouch
+                        allOffsets.forEach { (key, offset) ->
+                            touch = touch.withOffset(key, offset.x, offset.y)
+                        }
+                        viewModel.updateSettings(state.settings.copy(androidTouch = touch))
                     },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
+            }
+            if (touchLayoutEditing) {
+                val doneButtonTone = playButtonTone
+                Box(
+                    Modifier
+                        .align(Alignment.Center)
+                        .zIndex(999f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Button(
+                        onClick = {
+                            doneButtonTone()
+                            touchLayoutEditing = false
+                        },
+                        shape = RoundedCornerShape(999.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                        ),
+                        contentPadding = PaddingValues(horizontal = 28.dp, vertical = 14.dp),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
+                        modifier = Modifier.pointerInteropFilter { event ->
+                            if (event.action == MotionEvent.ACTION_UP ||
+                                event.action == MotionEvent.ACTION_DOWN
+                            ) {
+                                false // let Button's click handling still work
+                            } else {
+                                false
+                            }
+                        },
+                    ) {
+                        Icon(
+                            Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Done",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
             }
             if (streamGuideOpen) {
                 AnimatedLaunchOverlay(Modifier.align(Alignment.Center)) {
@@ -5285,6 +5414,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                     onTouchRightOffsetChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(rightOffsetYDp = value)))
+                    },
+                    onTouchLayoutReset = {
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.withResetOffsets()
+                            )
+                        )
                     },
                     onButtonTone = playButtonTone,
                     highlightDone = streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone,
@@ -6250,6 +6386,7 @@ private fun StreamControlsPanel(
     onTouchBottomPaddingChange: (Float) -> Unit,
     onTouchLeftOffsetChange: (Float) -> Unit,
     onTouchRightOffsetChange: (Float) -> Unit,
+    onTouchLayoutReset: () -> Unit,
     onButtonTone: () -> Unit,
     highlightDone: Boolean = false,
     onClose: () -> Unit,
@@ -6280,6 +6417,7 @@ private fun StreamControlsPanel(
             },
         shape = RoundedCornerShape(18.dp),
         color = Panel.copy(alpha = 0.93f),
+        contentColor = TextPrimary,
         tonalElevation = 6.dp,
     ) {
         LazyColumn(
@@ -6437,6 +6575,10 @@ private fun StreamControlsPanel(
                     StreamControlSwitch("Drag edit mode", if (touchLayoutEditing) "On" else "Off", touchLayoutEditing) {
                         onButtonTone()
                         onTouchLayoutEditingToggle()
+                    }
+                    StreamControlAction("Reset touch layout", "Reset positions to default", "Reset") {
+                        onButtonTone()
+                        onTouchLayoutReset()
                     }
                     CompactSlider("Layout scale", settings.androidTouch.scale, 0.6f, 1.4f, onTouchScaleChange)
                     CompactSlider("Button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, onButtonScaleChange)
@@ -6644,7 +6786,7 @@ private fun StreamControlNavigation(label: String, value: String, onClick: () ->
 }
 
 @Composable
-private fun StreamControlAction(label: String, value: String, onClick: () -> Unit) {
+private fun StreamControlAction(label: String, value: String, action: String = "Change", onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -6658,7 +6800,7 @@ private fun StreamControlAction(label: String, value: String, onClick: () -> Uni
             Text(label, fontWeight = FontWeight.SemiBold)
             Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall)
         }
-        Text("Change", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+        Text(action, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -7603,6 +7745,7 @@ private fun QueueStatusPanel(
         Spacer(Modifier.height(if (compact) 12.dp else 16.dp))
         Text(
             game?.title ?: "Starting stream",
+            color = TextPrimary,
             style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             maxLines = 2,
@@ -8138,18 +8281,44 @@ private fun TouchOverlay(
     touch: AndroidTouchSettings,
     onButtonTone: () -> Unit,
     layoutEditing: Boolean,
-    onLeftOffsetChange: (Float, Float) -> Unit,
-    onRightOffsetChange: (Float, Float) -> Unit,
+    onSaveAllOffsets: (Map<String, TouchOffset>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val opacity = touch.opacity
     val layoutScale = touch.scale
     val buttonScale = touch.buttonScale
     val stickScale = touch.stickScale
-    val leftOffsetX = touch.leftOffsetXDp.dp
-    val leftOffsetY = touch.leftOffsetYDp.dp
-    val rightOffsetX = touch.rightOffsetXDp.dp
-    val rightOffsetY = touch.rightOffsetYDp.dp
+
+    val localOffsets = remember(touch.offsets) {
+        androidx.compose.runtime.mutableStateMapOf<String, TouchOffset>().apply {
+            putAll(touch.offsets)
+        }
+    }
+
+    fun getLocalOffset(key: String): TouchOffset {
+        val saved = localOffsets[key]
+        if (saved != null) return saved
+        val baseKey = key.substringBeforeLast("_")
+        return when (baseKey) {
+            "lt", "lb", "lstick", "dpad", "l3" -> TouchOffset(touch.leftOffsetXDp, touch.leftOffsetYDp)
+            "rt", "rb", "rstick", "face", "r3" -> TouchOffset(touch.rightOffsetXDp, touch.rightOffsetYDp)
+            else -> TouchOffset()
+        }
+    }
+
+    val onLocalOffsetChange = { key: String, x: Float, y: Float ->
+        localOffsets[key] = TouchOffset(x, y)
+    }
+
+    val currentLocalOffsets by rememberUpdatedState(localOffsets.toMap())
+    val currentOnSaveAllOffsets by rememberUpdatedState(onSaveAllOffsets)
+    DisposableEffect(layoutEditing) {
+        onDispose {
+            if (layoutEditing) {
+                currentOnSaveAllOffsets(currentLocalOffsets)
+            }
+        }
+    }
 
     LaunchedEffect(client, touch.enabled) {
         client.setVirtualControllerVisible(touch.enabled)
@@ -8175,6 +8344,12 @@ private fun TouchOverlay(
     ) {
         if (touch.enabled) {
             val landscape = maxWidth > maxHeight
+            val suffix = if (landscape) "_landscape" else "_portrait"
+            val getOrientationLocalOffset = { key: String -> getLocalOffset(key + suffix) }
+            val onOrientationLocalOffsetChange = { key: String, x: Float, y: Float ->
+                onLocalOffsetChange(key + suffix, x, y)
+            }
+
             if (landscape) {
                 LandscapeTouchControls(
                     client = client,
@@ -8184,13 +8359,9 @@ private fun TouchOverlay(
                     stickScale = stickScale,
                     viewportHeight = maxHeight,
                     layoutEditing = layoutEditing,
-                    leftOffsetX = leftOffsetX,
-                    leftOffsetY = leftOffsetY,
-                    rightOffsetX = rightOffsetX,
-                    rightOffsetY = rightOffsetY,
+                    getLocalOffset = getOrientationLocalOffset,
+                    onLocalOffsetChange = onOrientationLocalOffsetChange,
                     onButtonTone = onButtonTone,
-                    onLeftOffsetChange = onLeftOffsetChange,
-                    onRightOffsetChange = onRightOffsetChange,
                 )
             } else {
                 PortraitTouchControls(
@@ -8200,13 +8371,9 @@ private fun TouchOverlay(
                     buttonScale = buttonScale,
                     stickScale = stickScale,
                     layoutEditing = layoutEditing,
-                    leftOffsetX = leftOffsetX,
-                    leftOffsetY = leftOffsetY,
-                    rightOffsetX = rightOffsetX,
-                    rightOffsetY = rightOffsetY,
+                    getLocalOffset = getOrientationLocalOffset,
+                    onLocalOffsetChange = onOrientationLocalOffsetChange,
                     onButtonTone = onButtonTone,
-                    onLeftOffsetChange = onLeftOffsetChange,
-                    onRightOffsetChange = onRightOffsetChange,
                 )
             }
         }
@@ -8221,91 +8388,181 @@ private fun PortraitTouchControls(
     buttonScale: Float,
     stickScale: Float,
     layoutEditing: Boolean,
-    leftOffsetX: Dp,
-    leftOffsetY: Dp,
-    rightOffsetX: Dp,
-    rightOffsetY: Dp,
+    getLocalOffset: (String) -> TouchOffset,
+    onLocalOffsetChange: (String, Float, Float) -> Unit,
     onButtonTone: () -> Unit,
-    onLeftOffsetChange: (Float, Float) -> Unit,
-    onRightOffsetChange: (Float, Float) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxSize(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.Bottom,
+    val leftStickDiameter = 116.dp * stickScale * layoutScale
+    val rightStickDiameter = 104.dp * stickScale * layoutScale
+    val buttonSize48 = 48.dp * buttonScale * layoutScale
+    val buttonSize44 = 44.dp * buttonScale * layoutScale
+    val faceWidth = buttonSize48 * 2.44f
+
+    Box(
+        Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)
     ) {
         TouchControlGroup(
-            id = "portrait-left",
+            id = "portrait-lb",
             layoutEditing = layoutEditing,
-            offsetX = leftOffsetX,
-            offsetY = leftOffsetY,
-            onOffsetChange = onLeftOffsetChange,
+            offsetX = getLocalOffset("lb").x.dp,
+            offsetY = getLocalOffset("lb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
+            modifier = Modifier.align(Alignment.TopStart),
         ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.Start,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("L", 0x0100, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
-                    GamepadTriggerButton("ZL", left = true, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
-                }
-                Spacer(Modifier.height(44.dp * buttonScale * layoutScale))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    StickWithThumbButton(
-                        stickLabel = "L",
-                        thumbLabel = "L3",
-                        thumbMask = GamepadButtonMapping.LEFT_THUMB,
-                        client = client,
-                        opacity = opacity,
-                        diameter = 116.dp * stickScale * layoutScale,
-                        buttonScale = buttonScale * layoutScale,
-                        onButtonTone = onButtonTone,
-                        onChange = client::setVirtualLeftStick,
-                    )
-                    DpadCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
-                }
-            }
+            GamepadButton("LB", 0x0100, client, opacity, buttonSize48, onButtonTone)
         }
+
         TouchControlGroup(
-            id = "portrait-right",
+            id = "portrait-lt",
             layoutEditing = layoutEditing,
-            offsetX = rightOffsetX,
-            offsetY = rightOffsetY,
-            onOffsetChange = onRightOffsetChange,
+            offsetX = getLocalOffset("lt").x.dp,
+            offsetY = getLocalOffset("lt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lt", x, y) },
+            modifier = Modifier.align(Alignment.TopStart).padding(start = buttonSize48 + 8.dp),
         ) {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.End,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadTriggerButton("ZR", left = false, client = client, opacity = opacity, size = 48.dp * buttonScale * layoutScale, onPressTone = onButtonTone)
-                    GamepadButton("R", 0x0200, client, opacity, 48.dp * buttonScale * layoutScale, onButtonTone)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GamepadButton("View", 0x0020, client, opacity, 44.dp * buttonScale * layoutScale, onButtonTone)
-                    GamepadButton("Menu", 0x0010, client, opacity, 44.dp * buttonScale * layoutScale, onButtonTone)
-                }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    StickWithThumbButton(
-                        stickLabel = "R",
-                        thumbLabel = "R3",
-                        thumbMask = GamepadButtonMapping.RIGHT_THUMB,
-                        client = client,
-                        opacity = opacity,
-                        diameter = 104.dp * stickScale * layoutScale,
-                        buttonScale = buttonScale * layoutScale,
-                        onButtonTone = onButtonTone,
-                        onChange = client::setVirtualRightStick,
-                    )
-                    FaceButtonCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
-                }
-            }
+            GamepadTriggerButton(
+                label = "LT",
+                left = true,
+                client = client,
+                opacity = opacity,
+                size = buttonSize48,
+                onPressTone = onButtonTone,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-lstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lstick").x.dp,
+            offsetY = getLocalOffset("lstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart),
+        ) {
+            VirtualStick(
+                label = "L",
+                client = client,
+                opacity = opacity,
+                diameter = leftStickDiameter,
+                onChange = client::setVirtualLeftStick,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-l3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("l3").x.dp,
+            offsetY = getLocalOffset("l3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("l3", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(
+                start = (leftStickDiameter - buttonSize48) / 2,
+                bottom = leftStickDiameter + 6.dp
+            ),
+        ) {
+            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, opacity, buttonSize48, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-dpad",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("dpad").x.dp,
+            offsetY = getLocalOffset("dpad").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("dpad", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = leftStickDiameter + 12.dp),
+        ) {
+            DpadCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-rt",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rt").x.dp,
+            offsetY = getLocalOffset("rt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rt", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(end = buttonSize48 + 8.dp),
+        ) {
+            GamepadTriggerButton(
+                label = "RT",
+                left = false,
+                client = client,
+                opacity = opacity,
+                size = buttonSize48,
+                onPressTone = onButtonTone,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-rb",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rb").x.dp,
+            offsetY = getLocalOffset("rb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd),
+        ) {
+            GamepadButton("RB", 0x0200, client, opacity, buttonSize48, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-select",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("select").x.dp,
+            offsetY = getLocalOffset("select").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("select", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = buttonSize48 + 8.dp, end = buttonSize44 + 8.dp),
+        ) {
+            GamepadButton("◀", 0x0020, client, opacity, buttonSize44, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-start",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("start").x.dp,
+            offsetY = getLocalOffset("start").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("start", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = buttonSize48 + 8.dp),
+        ) {
+            GamepadButton("▶", 0x0010, client, opacity, buttonSize44, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-rstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rstick").x.dp,
+            offsetY = getLocalOffset("rstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 12.dp),
+        ) {
+            VirtualStick(
+                label = "R",
+                client = client,
+                opacity = opacity,
+                diameter = rightStickDiameter,
+                onChange = client::setVirtualRightStick,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-r3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("r3").x.dp,
+            offsetY = getLocalOffset("r3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("r3", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(
+                end = faceWidth + 12.dp + (rightStickDiameter - buttonSize48) / 2,
+                bottom = rightStickDiameter + 6.dp
+            ),
+        ) {
+            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, opacity, buttonSize48, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "portrait-face",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("face").x.dp,
+            offsetY = getLocalOffset("face").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("face", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd),
+        ) {
+            FaceButtonCluster(client, opacity, buttonScale * layoutScale, onButtonTone)
         }
     }
 }
@@ -8319,121 +8576,186 @@ private fun BoxScope.LandscapeTouchControls(
     stickScale: Float,
     viewportHeight: Dp,
     layoutEditing: Boolean,
-    leftOffsetX: Dp,
-    leftOffsetY: Dp,
-    rightOffsetX: Dp,
-    rightOffsetY: Dp,
+    getLocalOffset: (String) -> TouchOffset,
+    onLocalOffsetChange: (String, Float, Float) -> Unit,
     onButtonTone: () -> Unit,
-    onLeftOffsetChange: (Float, Float) -> Unit,
-    onRightOffsetChange: (Float, Float) -> Unit,
 ) {
     val controlScale = buttonScale * layoutScale
     val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, controlScale).dp
-    TouchControlGroup(
-        id = "landscape-top-left",
-        layoutEditing = layoutEditing,
-        offsetX = leftOffsetX,
-        offsetY = leftOffsetY + topControlClearance,
-        onOffsetChange = onLeftOffsetChange,
-        modifier = Modifier.align(Alignment.TopStart),
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Box(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp)) {
+        TouchControlGroup(
+            id = "landscape-lt",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lt").x.dp,
+            offsetY = getLocalOffset("lt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lt", x, y) },
+            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance),
+        ) {
             GamepadTriggerButton(
-                "ZL",
+                label = "LT",
                 left = true,
                 client = client,
                 opacity = opacity,
-                size = 50.dp * controlScale,
-                width = 116.dp * controlScale,
+                size = 54.dp * controlScale,
                 onPressTone = onButtonTone,
             )
-            GamepadPillButton("L", 0x0100, client, opacity, width = 116.dp * controlScale, height = 46.dp * controlScale, onPressTone = onButtonTone)
         }
-    }
-    TouchControlGroup(
-        id = "landscape-bottom-center",
-        layoutEditing = false,
-        offsetX = 0.dp,
-        offsetY = 0.dp,
-        onOffsetChange = { _, _ -> },
-        modifier = Modifier.align(Alignment.BottomCenter),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(54.dp)) {
-            GamepadButton("−", 0x0020, client, opacity, 42.dp * controlScale, onButtonTone)
-            GamepadButton("+", 0x0010, client, opacity, 42.dp * controlScale, onButtonTone)
+
+        TouchControlGroup(
+            id = "landscape-lb",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lb").x.dp,
+            offsetY = getLocalOffset("lb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
+            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance, start = 54.dp * controlScale + 10.dp),
+        ) {
+            GamepadButton("LB", 0x0100, client, opacity, 54.dp * controlScale, onButtonTone)
         }
-    }
-    TouchControlGroup(
-        id = "landscape-top-right",
-        layoutEditing = layoutEditing,
-        offsetX = rightOffsetX,
-        offsetY = rightOffsetY + topControlClearance,
-        onOffsetChange = onRightOffsetChange,
-        modifier = Modifier.align(Alignment.TopEnd),
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.End) {
+
+        val selectSize = 42.dp * controlScale
+        TouchControlGroup(
+            id = "landscape-select",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("select").x.dp,
+            offsetY = getLocalOffset("select").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("select", x, y) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(end = selectSize / 2 + 27.dp),
+        ) {
+            GamepadButton("◀", 0x0020, client, opacity, selectSize, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "landscape-start",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("start").x.dp,
+            offsetY = getLocalOffset("start").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("start", x, y) },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(start = selectSize / 2 + 27.dp),
+        ) {
+            GamepadButton("▶", 0x0010, client, opacity, selectSize, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "landscape-rb",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rb").x.dp,
+            offsetY = getLocalOffset("rb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance, end = 54.dp * controlScale + 10.dp),
+        ) {
+            GamepadButton("RB", 0x0200, client, opacity, 54.dp * controlScale, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "landscape-rt",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rt").x.dp,
+            offsetY = getLocalOffset("rt").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rt", x, y) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance),
+        ) {
             GamepadTriggerButton(
-                "ZR",
+                label = "RT",
                 left = false,
                 client = client,
                 opacity = opacity,
-                size = 50.dp * controlScale,
-                width = 116.dp * controlScale,
+                size = 54.dp * controlScale,
                 onPressTone = onButtonTone,
             )
-            GamepadPillButton("R", 0x0200, client, opacity, width = 116.dp * controlScale, height = 46.dp * controlScale, onPressTone = onButtonTone)
         }
-    }
-    TouchControlGroup(
-        id = "landscape-bottom-left",
-        layoutEditing = layoutEditing,
-        offsetX = leftOffsetX,
-        offsetY = leftOffsetY,
-        onOffsetChange = onLeftOffsetChange,
-        modifier = Modifier.align(Alignment.BottomStart),
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.Bottom,
+
+        val dpadScale = controlScale * 0.88f
+        val dpadButtonSize = 54.dp * dpadScale
+        val dpadWidth = dpadButtonSize * 2.44f
+        TouchControlGroup(
+            id = "landscape-dpad",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("dpad").x.dp,
+            offsetY = getLocalOffset("dpad").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("dpad", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart),
         ) {
-            StickWithThumbButton(
-                stickLabel = "L",
-                thumbLabel = "L3",
-                thumbMask = GamepadButtonMapping.LEFT_THUMB,
+            DpadCluster(client, opacity, dpadScale, onButtonTone)
+        }
+
+        val leftStickDiameter = 112.dp * stickScale * layoutScale
+        TouchControlGroup(
+            id = "landscape-lstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lstick").x.dp,
+            offsetY = getLocalOffset("lstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = dpadWidth + 14.dp),
+        ) {
+            VirtualStick(
+                label = "L",
                 client = client,
                 opacity = opacity,
-                diameter = 112.dp * stickScale * layoutScale,
-                buttonScale = controlScale * 0.88f,
-                onButtonTone = onButtonTone,
+                diameter = leftStickDiameter,
                 onChange = client::setVirtualLeftStick,
             )
-            DpadCluster(client, opacity, controlScale * 0.88f, onButtonTone)
         }
-    }
-    TouchControlGroup(
-        id = "landscape-bottom-right",
-        layoutEditing = layoutEditing,
-        offsetX = rightOffsetX,
-        offsetY = rightOffsetY,
-        onOffsetChange = onRightOffsetChange,
-        modifier = Modifier.align(Alignment.BottomEnd),
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-            FaceButtonCluster(client, opacity, controlScale * 0.9f, onButtonTone)
-            StickWithThumbButton(
-                stickLabel = "R",
-                thumbLabel = "R3",
-                thumbMask = GamepadButtonMapping.RIGHT_THUMB,
+
+        val l3Size = 54.dp * controlScale
+        TouchControlGroup(
+            id = "landscape-l3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("l3").x.dp,
+            offsetY = getLocalOffset("l3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("l3", x, y) },
+            modifier = Modifier.align(Alignment.BottomStart).padding(
+                start = dpadWidth + 14.dp + (leftStickDiameter - l3Size) / 2,
+                bottom = leftStickDiameter + 6.dp
+            ),
+        ) {
+            GamepadButton("LS", GamepadButtonMapping.LEFT_THUMB, client, opacity, l3Size, onButtonTone)
+        }
+
+        val faceScale = controlScale * 0.9f
+        val faceButtonSize = 54.dp * faceScale
+        val faceWidth = faceButtonSize * 2.44f
+        val rightStickDiameter = 112.dp * stickScale * layoutScale
+        TouchControlGroup(
+            id = "landscape-rstick",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("rstick").x.dp,
+            offsetY = getLocalOffset("rstick").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 14.dp),
+        ) {
+            VirtualStick(
+                label = "R",
                 client = client,
                 opacity = opacity,
-                diameter = 98.dp * stickScale * layoutScale,
-                buttonScale = controlScale * 0.9f,
-                onButtonTone = onButtonTone,
+                diameter = rightStickDiameter,
                 onChange = client::setVirtualRightStick,
             )
+        }
+
+        val r3Size = 54.dp * controlScale
+        TouchControlGroup(
+            id = "landscape-r3",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("r3").x.dp,
+            offsetY = getLocalOffset("r3").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("r3", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(
+                end = faceWidth + 14.dp + (rightStickDiameter - r3Size) / 2,
+                bottom = rightStickDiameter + 6.dp
+            ),
+        ) {
+            GamepadButton("RS", GamepadButtonMapping.RIGHT_THUMB, client, opacity, r3Size, onButtonTone)
+        }
+
+        TouchControlGroup(
+            id = "landscape-face",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("face").x.dp,
+            offsetY = getLocalOffset("face").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("face", x, y) },
+            modifier = Modifier.align(Alignment.BottomEnd),
+        ) {
+            FaceButtonCluster(client, opacity, faceScale, onButtonTone)
         }
     }
 }
@@ -8455,6 +8777,9 @@ private fun TouchControlGroup(
     content: @Composable BoxScope.() -> Unit,
 ) {
     val density = LocalDensity.current
+    val currentOffsetX by rememberUpdatedState(offsetX)
+    val currentOffsetY by rememberUpdatedState(offsetY)
+    val currentOnOffsetChange by rememberUpdatedState(onOffsetChange)
     Box(
         modifier
             .offset(x = offsetX, y = offsetY)
@@ -8478,14 +8803,14 @@ private fun TouchControlGroup(
                     .clip(RoundedCornerShape(18.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
                     .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.72f), RoundedCornerShape(18.dp))
-                    .pointerInput(offsetX, offsetY) {
+                    .pointerInput(Unit) {
                         detectDragGestures { change, dragAmount ->
                             change.consume()
                             val deltaXDp = with(density) { dragAmount.x.toDp().value }
                             val deltaYDp = with(density) { dragAmount.y.toDp().value }
-                            onOffsetChange(
-                                (offsetX.value + deltaXDp).coerceIn(-220f, 220f),
-                                (offsetY.value + deltaYDp).coerceIn(-160f, 160f),
+                            currentOnOffsetChange(
+                                (currentOffsetX.value + deltaXDp).coerceIn(-280f, 280f),
+                                (currentOffsetY.value + deltaYDp).coerceIn(-280f, 280f),
                             )
                         }
                     },
@@ -8564,8 +8889,6 @@ private fun VirtualStick(
     onChange: (Float, Float) -> Unit,
 ) {
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
-    val accent = MaterialTheme.colorScheme.primary
-    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
 
     DisposableEffect(client, onChange) {
         onDispose {
@@ -8577,8 +8900,8 @@ private fun VirtualStick(
         Modifier
             .size(diameter)
             .clip(CircleShape)
-            .background(idleSurface.copy(alpha = opacity * 0.72f))
-            .border(1.dp, accent.copy(alpha = opacity), CircleShape)
+            .background(Color.Transparent)
+            .border(1.dp, Color.White.copy(alpha = opacity * 0.3f), CircleShape)
             .pointerInput(client, onChange) {
                 awaitPointerEventScope {
                     while (true) {
@@ -8613,39 +8936,50 @@ private fun VirtualStick(
                     translationY = knobOffset.y
                 }
                 .clip(CircleShape)
-                .background(accent.copy(alpha = opacity))
-                .border(1.dp, Color.White.copy(alpha = opacity * 0.65f), CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(label, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
-        }
+                .background(Color.LightGray.copy(alpha = opacity * 0.8f))
+        )
     }
 }
 
 @Composable
 private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GamepadButton("X", 0x4000, client, opacity, 54.dp * scale, onButtonTone)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            GamepadButton("Y", 0x8000, client, opacity, 54.dp * scale, onButtonTone)
-            Spacer(Modifier.size(54.dp * scale))
-            GamepadButton("A", 0x1000, client, opacity, 54.dp * scale, onButtonTone)
+    val buttonSize = 54.dp * scale
+    val distance = buttonSize * 1.05f
+    val boxSize = distance * 2 + buttonSize
+    Box(Modifier.size(boxSize)) {
+        Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
+            GamepadButton("Y", 0x8000, client, opacity, buttonSize, onButtonTone)
         }
-        GamepadButton("B", 0x2000, client, opacity, 54.dp * scale, onButtonTone)
+        Box(Modifier.align(Alignment.Center).offset(y = distance)) {
+            GamepadButton("A", 0x1000, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
+            GamepadButton("X", 0x4000, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = distance)) {
+            GamepadButton("B", 0x2000, client, opacity, buttonSize, onButtonTone)
+        }
     }
 }
 
 @Composable
 private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
     val buttonSize = 54.dp * scale
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GamepadButton("↑", 0x0001, client, opacity, buttonSize, onButtonTone)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            GamepadButton("←", 0x0004, client, opacity, buttonSize, onButtonTone)
-            Spacer(Modifier.size(buttonSize))
-            GamepadButton("→", 0x0008, client, opacity, buttonSize, onButtonTone)
+    val distance = buttonSize * 1.05f
+    val boxSize = distance * 2 + buttonSize
+    Box(Modifier.size(boxSize)) {
+        Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
+            GamepadButton("^", 0x0001, client, opacity, buttonSize, onButtonTone)
         }
-        GamepadButton("↓", 0x0002, client, opacity, buttonSize, onButtonTone)
+        Box(Modifier.align(Alignment.Center).offset(y = distance)) {
+            GamepadButton("v", 0x0002, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
+            GamepadButton("<", 0x0004, client, opacity, buttonSize, onButtonTone)
+        }
+        Box(Modifier.align(Alignment.Center).offset(x = distance)) {
+            GamepadButton(">", 0x0008, client, opacity, buttonSize, onButtonTone)
+        }
     }
 }
 
@@ -8656,19 +8990,18 @@ private fun GamepadTriggerButton(
     client: NativeStreamClient,
     opacity: Float,
     size: androidx.compose.ui.unit.Dp,
-    width: androidx.compose.ui.unit.Dp = size * 1.24f,
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val accent = MaterialTheme.colorScheme.primary
-    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
+    val buttonColor = Color.Black.copy(alpha = opacity * 0.6f)
+    val pressedColor = Color.White.copy(alpha = opacity * 0.2f)
+    val borderColor = Color.White.copy(alpha = opacity * 0.4f)
     Box(
         Modifier
-            .width(width)
-            .height(size * 0.78f)
-            .clip(RoundedCornerShape(999.dp))
-            .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
-            .border(1.dp, accent.copy(alpha = opacity), RoundedCornerShape(999.dp))
+            .size(size)
+            .clip(CircleShape)
+            .background(if (pressed) pressedColor else buttonColor)
+            .border(1.dp, borderColor, CircleShape)
             .pointerInput(client, left) {
                 awaitPointerEventScope {
                     while (true) {
@@ -8685,7 +9018,7 @@ private fun GamepadTriggerButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontWeight = FontWeight.Bold, color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary)
+        Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
     }
     DisposableEffect(client, left) {
         onDispose {
@@ -8704,14 +9037,15 @@ private fun GamepadButton(
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val accent = MaterialTheme.colorScheme.primary
-    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
+    val buttonColor = Color.Black.copy(alpha = opacity * 0.6f)
+    val pressedColor = Color.White.copy(alpha = opacity * 0.2f)
+    val borderColor = Color.White.copy(alpha = opacity * 0.4f)
     Box(
         Modifier
             .size(size)
             .clip(CircleShape)
-            .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
-            .border(1.dp, accent.copy(alpha = opacity), CircleShape)
+            .background(if (pressed) pressedColor else buttonColor)
+            .border(1.dp, borderColor, CircleShape)
             .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
@@ -8728,7 +9062,12 @@ private fun GamepadButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, fontWeight = FontWeight.Bold, color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary)
+        Text(
+            text = label,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White.copy(alpha = opacity * 0.9f),
+            modifier = if (label == "^") Modifier.offset(y = size * 0.08f) else Modifier
+        )
     }
     DisposableEffect(client, mask) {
         onDispose {
@@ -8748,15 +9087,16 @@ private fun GamepadPillButton(
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val accent = MaterialTheme.colorScheme.primary
-    val idleSurface = MaterialTheme.colorScheme.surfaceVariant
+    val buttonColor = Color.Black.copy(alpha = opacity * 0.6f)
+    val pressedColor = Color.White.copy(alpha = opacity * 0.2f)
+    val borderColor = Color.White.copy(alpha = opacity * 0.4f)
     Box(
         Modifier
             .width(width)
             .height(height)
             .clip(RoundedCornerShape(999.dp))
-            .background((if (pressed) accent else idleSurface).copy(alpha = opacity))
-            .border(1.dp, accent.copy(alpha = opacity), RoundedCornerShape(999.dp))
+            .background(if (pressed) pressedColor else buttonColor)
+            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
             .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
@@ -8775,8 +9115,8 @@ private fun GamepadPillButton(
     ) {
         Text(
             label,
-            fontWeight = FontWeight.Bold,
-            color = if (pressed) MaterialTheme.colorScheme.onPrimary else TextPrimary,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White.copy(alpha = opacity * 0.9f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -8800,12 +9140,13 @@ private fun SortPicker(
     val selectedLabel = labels.firstOrNull { it.id == selected }?.label ?: labels.first().label
     var expanded by remember { mutableStateOf(false) }
     val controlShape = RoundedCornerShape(999.dp)
-    val controlColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f)
+    val controlColor = Color.White.copy(alpha = 0.1f)
     Box(modifier) {
         OutlinedButton(
             onClick = { expanded = true },
             modifier = Modifier.fillMaxWidth().height(if (compact) TopBarCompactControlHeight else 40.dp),
             shape = controlShape,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = controlColor,
                 contentColor = TextPrimary,
@@ -8868,12 +9209,13 @@ private fun FilterMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val filterControlShape = RoundedCornerShape(999.dp)
-    val filterControlColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f)
+    val filterControlColor = Color.White.copy(alpha = 0.1f)
     Box {
         OutlinedButton(
             onClick = { expanded = true },
             modifier = Modifier.height(if (compact) TopBarCompactControlHeight else 36.dp),
             shape = filterControlShape,
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
             colors = ButtonDefaults.outlinedButtonColors(
                 containerColor = filterControlColor,
                 contentColor = TextPrimary,
@@ -9316,9 +9658,8 @@ private fun imageDataForSource(source: String): Any? {
     val scheme = uri.scheme.orEmpty().lowercase(Locale.US)
     return when {
         scheme == "http" || scheme == "https" -> key
-        scheme == "content" || scheme == "android.resource" -> uri
-        scheme == "file" -> uri.path?.let(::File)?.takeIf { it.isFile && it.canRead() } ?: uri
-        scheme.isBlank() && key.startsWith("/") -> File(key).takeIf { it.isFile && it.canRead() }
+        scheme == "content" || scheme == "android.resource" || scheme == "file" -> uri
+        scheme.isBlank() && key.startsWith("/") -> File(key)
         else -> uri
     }
 }
@@ -9378,36 +9719,46 @@ internal fun UrlImage(url: String?, modifier: Modifier = Modifier, fallbackUrl: 
 }
 
 @Composable
-private fun LoadingShimmer(modifier: Modifier = Modifier, shimmerBrush: Brush = rememberLoadingShimmerBrush()) {
-    Box(
-        modifier
-            .background(Color(0xff0d1216))
-            .background(shimmerBrush),
-    )
-}
+private fun LoadingShimmer(modifier: Modifier = Modifier) {
+    // Use the shared shimmer offset from GameGridSkeleton if available; fall back to a
+    // local animation only when LoadingShimmer is used outside a GameGridSkeleton context.
+    // Using nullable avoids treating 0f (a valid animation start value) as "not provided".
+    val shimmer = LocalShimmerOffset.current ?: run {
+        val transition = rememberInfiniteTransition(label = "shimmer-local")
+        val localOffset by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1150, easing = LinearEasing),
+            ),
+            label = "shimmer-offset-local",
+        )
+        localOffset
+    }
+    val baseColor = Color(0xff0d1216)
+    val highlightColor1 = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
+    val highlightColor2 = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
 
-@Composable
-private fun rememberLoadingShimmerBrush(label: String = "loading-shimmer"): Brush {
-    val transition = rememberInfiniteTransition(label = label)
-    val shimmer by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1150, easing = LinearEasing),
-        ),
-        label = "$label-offset",
-    )
-    val base = Color(0xff0d1216)
-    return Brush.linearGradient(
-        colors = listOf(
-            base,
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f),
-            base,
-        ),
-        start = Offset(-720f + shimmer * 1440f, -120f),
-        end = Offset(-240f + shimmer * 1440f, 520f),
+    Spacer(
+        modifier = modifier
+            .background(baseColor)
+            .drawBehind {
+                val width = size.width
+                val height = size.height
+                val xOffset = -width + shimmer * (width * 2)
+                val brush = Brush.linearGradient(
+                    colors = listOf(
+                        baseColor,
+                        highlightColor1,
+                        highlightColor2,
+                        highlightColor1,
+                        baseColor,
+                    ),
+                    start = Offset(xOffset, 0f),
+                    end = Offset(xOffset + width, height),
+                )
+                drawRect(brush)
+            }
     )
 }
 
@@ -9440,3 +9791,7 @@ internal val ColorQuality.label: String
         ColorQuality.TenBit420 -> "10-bit 4:2:0"
         ColorQuality.TenBit444 -> "10-bit 4:4:4"
     }
+
+private val GameCardOverlayGradient = Brush.verticalGradient(
+    colors = listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = 0.95f))
+)

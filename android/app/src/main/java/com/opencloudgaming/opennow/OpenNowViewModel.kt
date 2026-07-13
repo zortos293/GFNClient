@@ -7,6 +7,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -86,6 +87,7 @@ private data class PendingActiveSessionLaunch(
     val returnPage: AppPage,
 )
 
+@Immutable
 data class OpenNowUiState(
     val initializing: Boolean = false,
     val page: AppPage = AppPage.Home,

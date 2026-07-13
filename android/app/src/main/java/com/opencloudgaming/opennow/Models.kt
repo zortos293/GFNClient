@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import kotlinx.serialization.Serializable
+import androidx.compose.runtime.Immutable
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
@@ -73,6 +74,7 @@ enum class StreamStatsStyle {
 @Serializable
 enum class StreamStatsPosition {
     Left,
+    Center,
     Right,
 }
 
@@ -175,6 +177,9 @@ data class StreamSettings(
 )
 
 @Serializable
+data class TouchOffset(val x: Float = 0f, val y: Float = 0f)
+
+@Serializable
 data class AndroidTouchSettings(
     val enabled: Boolean = true,
     val mousePad: Boolean = true,
@@ -188,7 +193,26 @@ data class AndroidTouchSettings(
     val leftOffsetYDp: Float = 0f,
     val rightOffsetXDp: Float = 0f,
     val rightOffsetYDp: Float = 0f,
-)
+    val offsets: Map<String, TouchOffset> = emptyMap(),
+) {
+    fun getOffset(key: String): TouchOffset = offsets[key] ?: TouchOffset()
+
+    fun withOffset(key: String, x: Float, y: Float): AndroidTouchSettings {
+        val newOffsets = offsets.toMutableMap()
+        newOffsets[key] = TouchOffset(x, y)
+        return this.copy(offsets = newOffsets)
+    }
+
+    fun withResetOffsets(): AndroidTouchSettings {
+        return this.copy(
+            leftOffsetXDp = 0f,
+            leftOffsetYDp = 0f,
+            rightOffsetXDp = 0f,
+            rightOffsetYDp = 0f,
+            offsets = emptyMap()
+        )
+    }
+}
 
 @Serializable
 data class AppSettings(
@@ -806,6 +830,7 @@ val AccountConnector.isLinked: Boolean
         !syncState.isNullOrBlank() ||
         !syncDate.isNullOrBlank()
 
+@Immutable
 @Serializable
 data class GameVariant(
     val id: String,
@@ -817,6 +842,7 @@ data class GameVariant(
     val gfnStatus: String? = null,
 )
 
+@Immutable
 @Serializable
 data class GameInfo(
     val id: String,

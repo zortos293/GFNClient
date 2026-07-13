@@ -693,12 +693,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
           MAKE_LATEST: ${{ needs.preflight.outputs.make_latest }}
         run: |
           set -euo pipefail
-          args=(release edit "$RELEASE_TAG" "--draft=false" "--prerelease=$PRERELEASE")
+          args=(release edit "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" "--draft=false" "--prerelease=$PRERELEASE")
           if [[ "$MAKE_LATEST" == "true" ]]; then
             args+=(--latest)
           fi

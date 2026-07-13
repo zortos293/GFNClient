@@ -124,7 +124,9 @@ impl RtpVideoApi {
         match self {
             Self::D3D11 | Self::D3D12 => "windows",
             Self::VideoToolbox => "macos",
-            Self::Vaapi | Self::V4L2 | Self::Vulkan => "linux",
+            Self::Vaapi | Self::V4L2 => "linux",
+            Self::Vulkan if current_platform_label() == "windows" => "windows",
+            Self::Vulkan => "linux",
             Self::Software => "cross-platform",
         }
     }
@@ -1770,7 +1772,14 @@ pub(crate) fn rtp_video_chain_definition(
 
 fn preferred_rtp_video_apis(requested_fps: Option<u32>) -> Vec<RtpVideoApi> {
     let requested = requested_video_backend();
-    match requested.as_str() {
+    preferred_rtp_video_apis_for(requested.as_str(), requested_fps)
+}
+
+pub(crate) fn preferred_rtp_video_apis_for(
+    requested: &str,
+    requested_fps: Option<u32>,
+) -> Vec<RtpVideoApi> {
+    match requested {
         "d3d11" => vec![RtpVideoApi::D3D11],
         "d3d12" => vec![RtpVideoApi::D3D12],
         "videotoolbox" | "vt" => vec![RtpVideoApi::VideoToolbox],
@@ -1973,7 +1982,17 @@ pub(crate) fn current_platform_label() -> &'static str {
 }
 
 fn backend_runs_on_current_platform(video_api: RtpVideoApi) -> bool {
-    video_api.platform() == current_platform_label() || video_api.platform() == "cross-platform"
+    backend_runs_on_platform(video_api, current_platform_label())
+}
+
+pub(crate) fn backend_runs_on_platform(video_api: RtpVideoApi, platform: &str) -> bool {
+    match video_api {
+        RtpVideoApi::D3D11 | RtpVideoApi::D3D12 => platform == "windows",
+        RtpVideoApi::VideoToolbox => platform == "macos",
+        RtpVideoApi::Vaapi | RtpVideoApi::V4L2 => platform == "linux",
+        RtpVideoApi::Vulkan => matches!(platform, "windows" | "linux"),
+        RtpVideoApi::Software => true,
+    }
 }
 
 pub(crate) fn native_video_backend_capabilities() -> Vec<NativeVideoBackendCapability> {
@@ -2109,7 +2128,7 @@ fn zero_copy_modes_for_backend(video_api: RtpVideoApi) -> Vec<String> {
 fn configure_rtp_video_chain_element(
     element: &gst::Element,
     spec: RtpVideoChainSpec,
-    _video_api: RtpVideoApi,
+    video_api: RtpVideoApi,
     d3d_fullscreen_sink: bool,
 ) {
     match spec.role {
@@ -2162,7 +2181,11 @@ fn configure_rtp_video_chain_element(
             configure_queue_for_low_latency(element, "video");
         }
         RtpVideoChainRole::Sink => {
-            configure_d3d_video_sink(element, d3d_fullscreen_sink);
+            if matches!(video_api, RtpVideoApi::D3D11 | RtpVideoApi::D3D12) {
+                configure_d3d_video_sink(element, d3d_fullscreen_sink);
+            } else {
+                configure_sink_for_low_latency(element);
+            }
         }
     }
 }

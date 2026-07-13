@@ -49,7 +49,7 @@ export interface Settings {
   streamClientMode: StreamClientMode;
   /** Native streamer backend preference for new native sessions */
   nativeStreamerBackend: NativeStreamerBackendPreference;
-  /** Native GStreamer video backend preference for Windows DirectX paths */
+  /** Native GStreamer video backend preference for Windows GPU paths */
   nativeVideoBackend: NativeVideoBackendPreference;
   /** Optional path to a custom native streamer executable */
   nativeStreamerExecutablePath: string;
@@ -175,7 +175,12 @@ const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
-const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
+const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>([
+  "auto",
+  "d3d11",
+  "d3d12",
+  "vulkan",
+]);
 const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
 const APP_THEMES = new Set<AppTheme>(["light", "dark", "auto"]);
 

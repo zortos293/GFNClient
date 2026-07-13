@@ -547,8 +547,9 @@ mod tests {
         caps_framerate_summary, sink_stats_summary, VideoStallAction, VideoStallTracker,
     };
     use crate::gstreamer_pipeline::{
-        configure_stats_overlay_element, effective_present_max_fps, format_video_chain_selection,
-        rtp_video_chain_definition, RtpVideoApi, RtpVideoChainRole,
+        backend_runs_on_platform, configure_stats_overlay_element, effective_present_max_fps,
+        format_video_chain_selection, preferred_rtp_video_apis_for, rtp_video_chain_definition,
+        RtpVideoApi, RtpVideoChainRole,
     };
     use crate::gstreamer_transitions::resolve_queue_mode;
     use crate::protocol::{NativeQueueMode, StreamSettings, VideoCodec};
@@ -765,6 +766,26 @@ mod tests {
         assert_eq!(
             software.last().map(|spec| spec.factory),
             Some("autovideosink")
+        );
+    }
+
+    #[test]
+    fn exposes_vulkan_on_windows_and_linux_only() {
+        assert!(backend_runs_on_platform(RtpVideoApi::Vulkan, "windows"));
+        assert!(backend_runs_on_platform(RtpVideoApi::Vulkan, "linux"));
+        assert!(!backend_runs_on_platform(RtpVideoApi::Vulkan, "macos"));
+        assert!(!backend_runs_on_platform(RtpVideoApi::Vulkan, "other"));
+    }
+
+    #[test]
+    fn explicit_vulkan_selection_does_not_fall_back() {
+        assert_eq!(
+            preferred_rtp_video_apis_for("vulkan", Some(240)),
+            vec![RtpVideoApi::Vulkan]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("vk", Some(120)),
+            vec![RtpVideoApi::Vulkan]
         );
     }
 

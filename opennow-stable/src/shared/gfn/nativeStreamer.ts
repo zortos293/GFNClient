@@ -3,7 +3,7 @@ import type { StreamClientMode } from "./stream";
 export type NativeStreamerBackend = "stub" | "gstreamer";
 export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
-export type NativeVideoBackendPreference = "auto" | "d3d11" | "d3d12";
+export type NativeVideoBackendPreference = "auto" | "d3d11" | "d3d12" | "vulkan";
 export type StreamTransportMode = "webrtc" | "nvst";
 
 export const NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE =

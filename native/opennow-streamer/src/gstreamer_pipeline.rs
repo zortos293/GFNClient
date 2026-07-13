@@ -26,7 +26,7 @@ use crate::nvst_video::{
     annexb_appsrc_caps, spawn_nvst_udp_receive, NvstVideoReceiveHandle,
 };
 use crate::protocol::{
-    Event, IceCandidatePayload, NativeRenderSurface, NativeStreamerSessionContext,
+    Event, IceCandidatePayload, IceServer, NativeRenderSurface, NativeStreamerSessionContext,
     NativeVideoBackendCapability, NativeVideoCodecCapability, NvstVideoSession,
 };
 use crate::sdp::IceCredentials;
@@ -43,6 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 const WEBRTC_LATENCY_MS: u32 = 2;
+const DEFAULT_GFN_STUN_SERVER: &str = "stun://stun2.l.google.com:19302";
 const VIDEO_COMPRESSED_QUEUE_MAX_BUFFERS: u32 = 6;
 pub(crate) const VIDEO_QUEUE_MAX_BUFFERS: u32 = DEFAULT_VIDEO_QUEUE_DEPTH;
 const AUDIO_QUEUE_MAX_BUFFERS: u32 = 2;
@@ -412,7 +413,10 @@ pub(crate) struct GstreamerPipeline {
 }
 
 impl GstreamerPipeline {
-    pub(crate) fn build(event_sender: Option<Sender<Event>>) -> Result<Self, String> {
+    pub(crate) fn build(
+        event_sender: Option<Sender<Event>>,
+        ice_servers: &[IceServer],
+    ) -> Result<Self, String> {
         init_gstreamer()?;
 
         let pipeline = gst::Pipeline::new();
@@ -422,6 +426,13 @@ impl GstreamerPipeline {
             .build()
             .map_err(|error| format!("Failed to create webrtcbin: {error}"))?;
         configure_webrtc_low_latency(&webrtc);
+        let stun_server = resolve_gstreamer_stun_server(ice_servers);
+        webrtc.set_property("stun-server", &stun_server);
+        send_log(
+            &event_sender,
+            "info",
+            format!("Configured GStreamer ICE with STUN server {stun_server}."),
+        );
 
         let input_state = GstreamerInputState::default();
         let render_state = GstreamerRenderState::default();
@@ -1103,6 +1114,22 @@ impl GstreamerPipeline {
             .map(|_| ())
             .map_err(|error| format!("Failed to stop GStreamer pipeline: {error:?}"))
     }
+}
+
+pub(crate) fn resolve_gstreamer_stun_server(ice_servers: &[IceServer]) -> String {
+    ice_servers
+        .iter()
+        .flat_map(|server| server.urls.iter())
+        .find_map(|url| {
+            let url = url.trim();
+            if url.starts_with("stun://") {
+                Some(url.to_owned())
+            } else {
+                url.strip_prefix("stun:")
+                    .map(|endpoint| format!("stun://{endpoint}"))
+            }
+        })
+        .unwrap_or_else(|| DEFAULT_GFN_STUN_SERVER.to_owned())
 }
 
 fn nice_stream_from_ice_transport(

@@ -72,6 +72,8 @@ pub struct SessionInfo {
     pub session_id: String,
     pub server_ip: String,
     #[serde(default)]
+    pub ice_servers: Vec<IceServer>,
+    #[serde(default)]
     pub media_connection_info: Option<MediaConnectionInfo>,
     #[allow(dead_code)]
     #[serde(default)]
@@ -82,6 +84,18 @@ pub struct SessionInfo {
     #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     #[serde(default)]
     pub finalized_streaming_features: Option<StreamingFeatures>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub username: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub credential: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

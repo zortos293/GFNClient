@@ -557,6 +557,7 @@ mod tests {
             session: SessionInfo {
                 session_id: "session-1".to_owned(),
                 server_ip: "80-250-97-40.cloudmatchbeta.nvidiagrid.net".to_owned(),
+                ice_servers: Vec::new(),
                 media_connection_info: Some(MediaConnectionInfo {
                     ip: "10.0.0.7".to_owned(),
                     port: 49003,

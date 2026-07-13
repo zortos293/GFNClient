@@ -409,7 +409,6 @@ pub(crate) struct GstreamerPipeline {
     video_liveness: VideoLivenessMonitor,
     event_sender: Option<Sender<Event>>,
     pub(crate) original_remote_ice_credentials: Option<IceCredentials>,
-    original_remote_ice_credentials_restored: bool,
 }
 
 impl GstreamerPipeline {
@@ -482,7 +481,6 @@ impl GstreamerPipeline {
             video_liveness,
             event_sender,
             original_remote_ice_credentials: None,
-            original_remote_ice_credentials_restored: false,
         })
     }
 
@@ -841,10 +839,6 @@ impl GstreamerPipeline {
         &mut self,
         stage: &str,
     ) -> Result<bool, String> {
-        if self.original_remote_ice_credentials_restored {
-            return Ok(true);
-        }
-
         let Some(credentials) = self.original_remote_ice_credentials.clone() else {
             return Ok(false);
         };
@@ -922,7 +916,6 @@ impl GstreamerPipeline {
             return Ok(false);
         }
 
-        self.original_remote_ice_credentials_restored = true;
         send_log(
             &self.event_sender,
             "info",

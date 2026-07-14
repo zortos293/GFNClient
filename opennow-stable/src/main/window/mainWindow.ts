@@ -68,7 +68,7 @@ export async function createMainWindow(
     height: settings.windowHeight || 900,
     minWidth: 1024,
     minHeight: 680,
-    fullscreen: startFullscreen,
+    ...(startFullscreen ? { fullscreen: true } : {}),
     autoHideMenuBar: true,
     backgroundColor: "#0f172a",
     webPreferences: {

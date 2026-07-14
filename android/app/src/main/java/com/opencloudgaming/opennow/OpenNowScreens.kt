@@ -209,6 +209,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
@@ -2320,7 +2321,7 @@ private fun ActiveSessionResumeCard(
                     .clip(RoundedCornerShape(10.dp)),
             )
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Resume cloud session", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("Resume cloud session", color = TextPrimary, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     game?.title ?: "App ${active.appId}",
                     color = TextMuted,
@@ -2422,6 +2423,7 @@ private fun RefreshingGamesPlaceholder(
 }
 
 private val LocalShimmerOffset = staticCompositionLocalOf<Float?> { null }
+private val LocalTouchControllerStyle = staticCompositionLocalOf { TouchControllerStyle.V1 }
 
 @Composable
 private fun GameGridSkeleton(
@@ -4893,6 +4895,7 @@ private fun StoreLaunchVariantRow(
 private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val context = LocalContext.current
     val activity = context as? Activity
+    val view = LocalView.current
     val audioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     val session = state.streamSession
     val game = state.streamGame
@@ -4928,6 +4931,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val smartSessionLimit = smartSessionLimitFor(state.subscriptionInfo, state.authSession?.user?.membershipTier)
     val buttonToneEnabled = state.settings.controllerUiSounds
     val stretchToFill = state.settings.stretchStreamToFill
+    val stretchToZoom = state.settings.stretchStreamToZoom
     val playButtonTone = {
         audioController.playButtonTone(buttonToneEnabled)
     }
@@ -5103,6 +5107,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad) {
         NativeStreamInputRouter.setTouchMouseEnabled(streamReady && touchInputEnabled && state.settings.androidTouch.mousePad)
     }
+    LaunchedEffect(state.settings.androidTouch.mouseDirectClick) {
+        NativeStreamInputRouter.setMouseDirectClick(state.settings.androidTouch.mouseDirectClick)
+    }
+
     LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad, controlsOpen, exitConfirmOpen, keyboardOpen, streamGuideOpen, touchControlsVisible) {
         NativeStreamInputRouter.setCaptureAllTouch(
             streamReady &&
@@ -5119,6 +5127,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             NativeStreamInputRouter.setCaptureAllTouch(false)
         }
     }
+
     LaunchedEffect(state.settings.phoneRumbleFallback) {
         client.updateHapticsSettings(state.settings.phoneRumbleFallback)
     }
@@ -5147,11 +5156,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 resolutionMismatchStats += 1
                 if (resolutionMismatchStats >= 3 && !resolutionMismatchRestartRequested) {
                     resolutionMismatchRestartRequested = true
-                    client.stop()
                     viewModel.restartStreamForResolutionMismatch(
                         actualResolution = mismatch.actualResolution,
                         expectedResolution = mismatch.expectedResolution,
                     )
+                    client.stop()
                 }
             }
         }
@@ -5187,7 +5196,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 touchMouseEnabled = touchInputEnabled && state.settings.androidTouch.mousePad,
                 externalMouseRoot = activity?.window?.decorView,
                 onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
-                stretchToFill = stretchToFill,
+                stretchToFill = stretchToZoom,
+                stretchToZoom = stretchToFill,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -5195,6 +5205,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     streamSettings = launchStreamSettings,
                     style = state.settings.streamStatsStyle,
                     metrics = state.settings.streamStatsMetrics,
+                    serverLocation = session.zone,
                     modifier = Modifier.align(statsAlignment),
                 )
             }
@@ -5202,7 +5213,14 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 TouchOverlay(
                     client = client,
                     touch = state.settings.androidTouch.copy(enabled = true),
-                    onButtonTone = playButtonTone,
+                    onButtonTone = {
+                        if (state.settings.phoneRumbleFallback) {
+                            view.performHapticFeedback(
+                                android.view.HapticFeedbackConstants.KEYBOARD_TAP,
+                                android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING
+                            )
+                        }
+                    },
                     layoutEditing = touchLayoutEditing,
                     onSaveAllOffsets = { allOffsets ->
                         var touch = state.settings.androidTouch
@@ -5218,8 +5236,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 val doneButtonTone = playButtonTone
                 Box(
                     Modifier
-                        .align(Alignment.Center)
-                        .zIndex(999f),
+                        .align(Alignment.Center),
                     contentAlignment = Alignment.Center,
                 ) {
                     Button(
@@ -5378,6 +5395,25 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             ),
                         )
                     },
+                    onMouseDirectClickToggle = {
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(mouseDirectClick = !state.settings.androidTouch.mouseDirectClick),
+                            ),
+                        )
+                    },
+                    onToggleTouchControllerStyle = {
+                        val nextStyle = if (state.settings.androidTouch.touchControllerStyle == TouchControllerStyle.V1) {
+                            TouchControllerStyle.V2
+                        } else {
+                            TouchControllerStyle.V1
+                        }
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(touchControllerStyle = nextStyle),
+                            ),
+                        )
+                    },
                     onSharpeningToggle = {
                         viewModel.updateStreamSettings { settings ->
                             settings.copy(streamSharpeningEnabled = !settings.streamSharpeningEnabled)
@@ -5389,7 +5425,24 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         }
                     },
                     onStretchToFillToggle = {
-                        viewModel.updateSettings(state.settings.copy(stretchStreamToFill = !state.settings.stretchStreamToFill))
+                        // Mutually exclusive: turning on fill clears zoom.
+                        val next = !state.settings.stretchStreamToFill
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                stretchStreamToFill = next,
+                                stretchStreamToZoom = if (next) false else state.settings.stretchStreamToZoom,
+                            )
+                        )
+                    },
+                    onStretchToZoomToggle = {
+                        // Mutually exclusive: turning on zoom clears fill.
+                        val next = !state.settings.stretchStreamToZoom
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                stretchStreamToZoom = next,
+                                stretchStreamToFill = if (next) false else state.settings.stretchStreamToFill,
+                            )
+                        )
                     },
                     onTouchScaleChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
@@ -5585,6 +5638,7 @@ private fun StreamVideoSurface(
     externalMouseRoot: android.view.View?,
     onMouseCaptureInput: () -> Unit,
     stretchToFill: Boolean,
+    stretchToZoom: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
@@ -5605,20 +5659,49 @@ private fun StreamVideoSurface(
         }
     }
     val rendererModifier = if (stretchToFill || viewportAspectRatio <= 0f) {
+        // For stretchToFill (native zoom), the View must fill all space.
         Modifier.fillMaxSize()
     } else if (viewportAspectRatio > streamAspectRatio) {
+        // Screen is wider than stream (e.g. 2400×1080 screen, 1920×1080 stream).
+        // Fit by height so the renderer has no black bars internally; horizontal
+        // stretch (if enabled) is applied later via View.scaleX.
         Modifier
             .fillMaxHeight()
             .aspectRatio(streamAspectRatio)
     } else {
+        // Screen is taller than stream — fit by width; vertical stretch via scaleY.
         Modifier
             .fillMaxWidth()
             .aspectRatio(streamAspectRatio)
+    }
+
+    // Non-uniform scale factors used to stretch the renderer view to fill the
+    // viewport when stretchToZoom is active. SCALE_ASPECT_FIT keeps content
+    // intact inside the renderer; these View-level scales expand it to screen
+    // edges without any cropping.
+    val stretchScaleX = remember(stretchToZoom, viewportAspectRatio, streamAspectRatio) {
+        if (stretchToZoom && viewportAspectRatio > 0f && streamAspectRatio > 0f &&
+            viewportAspectRatio > streamAspectRatio
+        ) {
+            (viewportAspectRatio / streamAspectRatio).coerceIn(1f, 3f)
+        } else {
+            1f
+        }
+    }
+    val stretchScaleY = remember(stretchToZoom, viewportAspectRatio, streamAspectRatio) {
+        if (stretchToZoom && viewportAspectRatio > 0f && streamAspectRatio > 0f &&
+            viewportAspectRatio < streamAspectRatio
+        ) {
+            (streamAspectRatio / viewportAspectRatio).coerceIn(1f, 3f)
+        } else {
+            1f
+        }
     }
     LaunchedEffect(
         settings.resolution,
         settings.aspectRatio,
         stretchToFill,
+        stretchToZoom,
         streamAspectRatio,
         configuration.orientation,
         configuration.screenWidthDp,
@@ -5626,6 +5709,12 @@ private fun StreamVideoSurface(
     ) {
         zoomScale = 1f
         zoomOffset = Offset.Zero
+    }
+    LaunchedEffect(stretchToFill, stretchToZoom) {
+        NativeStreamInputRouter.setStretchToFill(stretchToFill || stretchToZoom)
+    }
+    LaunchedEffect(streamAspectRatio) {
+        NativeStreamInputRouter.setRenderingAspectRatio(streamAspectRatio)
     }
     DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
         pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
@@ -5678,10 +5767,14 @@ private fun StreamVideoSurface(
                             isFocusable = false
                             isFocusableInTouchMode = false
                             hideAndroidPointerTree()
+                            scaleX = stretchScaleX
+                            scaleY = stretchScaleY
                         }
                     },
                     update = { renderer ->
                         client.updateRendererSettings(settings, stretchToFill)
+                        renderer.scaleX = stretchScaleX
+                        renderer.scaleY = stretchScaleY
                         renderer.isFocusable = false
                         renderer.isFocusableInTouchMode = false
                         pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
@@ -5861,6 +5954,16 @@ private fun FingerMouseInputLayer(
                     return@pointerInteropFilter true
                 }
                 if (event.pointerCount >= 2) {
+                    // 3-finger touch is reserved for the Direct Click toggle gesture
+                    // (handled in NativeStreamInputRouter.dispatchTouch). Do not
+                    // interpret it as a pinch-zoom — reset pinch state and let it through.
+                    if (event.pointerCount >= 3) {
+                        pinchActive = false
+                        lastPinchDistance = 0f
+                        lastPinchCentroid = Offset.Zero
+                        NativeStreamInputRouter.dispatchTouch(event, width, height)
+                        return@pointerInteropFilter true
+                    }
                     NativeStreamInputRouter.cancelTouchMouse()
                     val distance = event.firstTwoPointerDistance()
                     val centroid = event.firstTwoPointerCentroid()
@@ -5926,6 +6029,7 @@ private fun ActiveSessionDecisionScreen(
             modifier = Modifier.fillMaxWidth().widthIn(max = 560.dp),
             shape = RoundedCornerShape(18.dp),
             color = PanelAlt.copy(alpha = 0.96f),
+            contentColor = TextPrimary,
             tonalElevation = 4.dp,
         ) {
             Column(
@@ -6155,6 +6259,7 @@ private fun StreamGuideCard(
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
         color = Panel.copy(alpha = 0.96f),
+        contentColor = TextPrimary,
         tonalElevation = 8.dp,
     ) {
         Column(
@@ -6375,9 +6480,12 @@ private fun StreamControlsPanel(
     onExit: () -> Unit,
     onTouchControlsToggle: () -> Unit,
     onMousePadToggle: () -> Unit,
+    onMouseDirectClickToggle: () -> Unit,
+    onToggleTouchControllerStyle: () -> Unit,
     onSharpeningToggle: () -> Unit,
     onSharpeningAmountChange: (Float) -> Unit,
     onStretchToFillToggle: () -> Unit,
+    onStretchToZoomToggle: () -> Unit,
     onTouchScaleChange: (Float) -> Unit,
     onButtonScaleChange: (Float) -> Unit,
     onStickScaleChange: (Float) -> Unit,
@@ -6529,6 +6637,10 @@ private fun StreamControlsPanel(
                         onButtonTone()
                         onStretchToFillToggle()
                     }
+                    StreamControlSwitch("Stretch to zoom", if (settings.stretchStreamToZoom) "On" else "Off", settings.stretchStreamToZoom) {
+                        onButtonTone()
+                        onStretchToZoomToggle()
+                    }
                 }
             }
             item {
@@ -6560,9 +6672,23 @@ private fun StreamControlsPanel(
                         onButtonTone()
                         onMousePadToggle()
                     }
+                    if (settings.androidTouch.mousePad) {
+                        Box(Modifier.padding(start = 24.dp)) {
+                            StreamControlSwitch("Direct click", if (settings.androidTouch.mouseDirectClick) "On" else "Off", settings.androidTouch.mouseDirectClick) {
+                                onButtonTone()
+                                onMouseDirectClickToggle()
+                            }
+                        }
+                    }
                     StreamControlSwitch("Touch controller", if (touchControlsVisible) "Visible" else "Hidden", touchControlsVisible) {
                         onButtonTone()
                         onTouchControlsToggle()
+                    }
+                    if (touchControlsVisible) {
+                        StreamControlSwitch("Clean style", if (settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2) "On" else "Off", settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2) {
+                            onButtonTone()
+                            onToggleTouchControllerStyle()
+                        }
                     }
                     StreamControlSwitch("Phone rumble fallback", if (settings.phoneRumbleFallback) "On" else "Off", settings.phoneRumbleFallback) {
                         onButtonTone()
@@ -6699,6 +6825,18 @@ private fun StatusBarSettingsPage(
                 StatusBarMetricSwitch("Codec", metrics.codec, Modifier.width(itemWidth)) {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(codec = !metrics.codec))
+                }
+                StatusBarMetricSwitch("Server", metrics.location, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(location = !metrics.location))
+                }
+                StatusBarMetricSwitch("Dec / Enc", metrics.latency, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(latency = !metrics.latency))
+                }
+                StatusBarMetricSwitch("Loss", metrics.packetLoss, Modifier.width(itemWidth)) {
+                    onButtonTone()
+                    onStatsMetricsChange(metrics.copy(packetLoss = !metrics.packetLoss))
                 }
             }
         }
@@ -6909,6 +7047,7 @@ private fun StreamStatsPill(
     streamSettings: StreamSettings,
     style: StreamStatsStyle,
     metrics: StreamStatsMetrics,
+    serverLocation: String?,
     modifier: Modifier = Modifier,
 ) {
     if (metrics.enabledCount() == 0) return
@@ -6925,7 +7064,7 @@ private fun StreamStatsPill(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus)
+                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, serverLocation)
             }
         } else {
             FlowRow(
@@ -6934,7 +7073,7 @@ private fun StreamStatsPill(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus)
+                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, serverLocation)
             }
         }
     }
@@ -6946,12 +7085,34 @@ private fun StreamStatsMetricItems(
     streamSettings: StreamSettings,
     metrics: StreamStatsMetrics,
     deviceStatus: CompactStreamDeviceStatus,
+    serverLocation: String?,
 ) {
     if (metrics.fps) {
         StreamStatsText("FPS ${streamStats.fps?.toString() ?: streamSettings.fps}")
     }
     if (metrics.ping) {
-        StreamStatsText("Ping ${streamStats.pingMs?.let { "${it}ms" } ?: "--"}")
+        val ping = streamStats.pingMs
+        val color = when {
+            ping == null -> TextPrimary
+            ping >= 100 -> Color(0xffff4f4f) // Bright red
+            ping >= 50 -> Color(0xffffa500) // Orange
+            else -> TextPrimary
+        }
+        StreamStatsText("Ping ${ping?.let { "${it}ms" } ?: "--"}", color = color)
+    }
+    if (metrics.latency) {
+        streamStats.decodeMs?.let {
+            StreamStatsText("Dec %.1fms".format(java.util.Locale.US, it))
+        }
+        streamStats.encodeMs?.let {
+            StreamStatsText("Enc %.1fms".format(java.util.Locale.US, it))
+        }
+    }
+    if (metrics.packetLoss) {
+        streamStats.packetLossPct?.let { loss ->
+            val color = if (loss > 1.0) Color(0xffff4f4f) else TextPrimary
+            StreamStatsText("Loss %.1f%%".format(java.util.Locale.US, loss), color = color)
+        }
     }
     if (metrics.bitrate) {
         StreamStatsText(formatRuntimeBitrate(streamStats.bitrateKbps))
@@ -6971,13 +7132,17 @@ private fun StreamStatsMetricItems(
     if (metrics.codec) {
         StreamStatsText(streamStats.codec?.takeIf { it.isNotBlank() } ?: streamSettings.codec.name)
     }
+    if (metrics.location && !serverLocation.isNullOrBlank()) {
+        val displayName = serverLocation.removePrefix("NPA-").removePrefix("NP-").uppercase()
+        StreamStatsText(displayName)
+    }
 }
 
 @Composable
-private fun StreamStatsText(value: String) {
+private fun StreamStatsText(value: String, color: Color = TextPrimary) {
     Text(
         value,
-        color = TextPrimary,
+        color = color,
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
@@ -7150,6 +7315,7 @@ private fun StreamExitConfirmation(
                 .fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
             color = Panel.copy(alpha = 0.95f),
+            contentColor = TextPrimary,
             tonalElevation = 8.dp,
         ) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -7972,6 +8138,7 @@ private fun QueueAdHeading(game: GameInfo?, compact: Boolean) {
         )
         Text(
             game?.title ?: "Starting stream",
+            color = TextPrimary,
             style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
@@ -8050,6 +8217,7 @@ private fun MinimizedQueueDock(
             Column(Modifier.weight(1f)) {
                 Text(
                     state.streamGame?.title ?: "Starting stream",
+                    color = TextPrimary,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -8332,49 +8500,51 @@ private fun TouchOverlay(
         }
     }
 
-    BoxWithConstraints(
-        modifier
-            .fillMaxSize()
-            .padding(
-                start = touch.edgePaddingDp.dp,
-                top = 10.dp,
-                end = touch.edgePaddingDp.dp,
-                bottom = touch.bottomPaddingDp.dp,
-            ),
-    ) {
-        if (touch.enabled) {
-            val landscape = maxWidth > maxHeight
-            val suffix = if (landscape) "_landscape" else "_portrait"
-            val getOrientationLocalOffset = { key: String -> getLocalOffset(key + suffix) }
-            val onOrientationLocalOffsetChange = { key: String, x: Float, y: Float ->
-                onLocalOffsetChange(key + suffix, x, y)
-            }
+    CompositionLocalProvider(LocalTouchControllerStyle provides touch.touchControllerStyle) {
+        BoxWithConstraints(
+            modifier
+                .fillMaxSize()
+                .padding(
+                    start = touch.edgePaddingDp.dp,
+                    top = 10.dp,
+                    end = touch.edgePaddingDp.dp,
+                    bottom = touch.bottomPaddingDp.dp,
+                ),
+        ) {
+            if (touch.enabled) {
+                val landscape = maxWidth > maxHeight
+                val suffix = if (landscape) "_landscape" else "_portrait"
+                val getOrientationLocalOffset = { key: String -> getLocalOffset(key + suffix) }
+                val onOrientationLocalOffsetChange = { key: String, x: Float, y: Float ->
+                    onLocalOffsetChange(key + suffix, x, y)
+                }
 
-            if (landscape) {
-                LandscapeTouchControls(
-                    client = client,
-                    opacity = opacity,
-                    layoutScale = layoutScale,
-                    buttonScale = buttonScale,
-                    stickScale = stickScale,
-                    viewportHeight = maxHeight,
-                    layoutEditing = layoutEditing,
-                    getLocalOffset = getOrientationLocalOffset,
-                    onLocalOffsetChange = onOrientationLocalOffsetChange,
-                    onButtonTone = onButtonTone,
-                )
-            } else {
-                PortraitTouchControls(
-                    client = client,
-                    opacity = opacity,
-                    layoutScale = layoutScale,
-                    buttonScale = buttonScale,
-                    stickScale = stickScale,
-                    layoutEditing = layoutEditing,
-                    getLocalOffset = getOrientationLocalOffset,
-                    onLocalOffsetChange = onOrientationLocalOffsetChange,
-                    onButtonTone = onButtonTone,
-                )
+                if (landscape) {
+                    LandscapeTouchControls(
+                        client = client,
+                        opacity = opacity,
+                        layoutScale = layoutScale,
+                        buttonScale = buttonScale,
+                        stickScale = stickScale,
+                        viewportHeight = maxHeight,
+                        layoutEditing = layoutEditing,
+                        getLocalOffset = getOrientationLocalOffset,
+                        onLocalOffsetChange = onOrientationLocalOffsetChange,
+                        onButtonTone = onButtonTone,
+                    )
+                } else {
+                    PortraitTouchControls(
+                        client = client,
+                        opacity = opacity,
+                        layoutScale = layoutScale,
+                        buttonScale = buttonScale,
+                        stickScale = stickScale,
+                        layoutEditing = layoutEditing,
+                        getLocalOffset = getOrientationLocalOffset,
+                        onLocalOffsetChange = onOrientationLocalOffsetChange,
+                        onButtonTone = onButtonTone,
+                    )
+                }
             }
         }
     }
@@ -8401,16 +8571,9 @@ private fun PortraitTouchControls(
     Box(
         Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)
     ) {
-        TouchControlGroup(
-            id = "portrait-lb",
-            layoutEditing = layoutEditing,
-            offsetX = getLocalOffset("lb").x.dp,
-            offsetY = getLocalOffset("lb").y.dp,
-            onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
-            modifier = Modifier.align(Alignment.TopStart),
-        ) {
-            GamepadButton("LB", 0x0100, client, opacity, buttonSize48, onButtonTone)
-        }
+        val scale = buttonScale * layoutScale
+        val triggerWidth = 64.dp * scale
+        val bumperHeight = 32.dp * scale
 
         TouchControlGroup(
             id = "portrait-lt",
@@ -8418,14 +8581,35 @@ private fun PortraitTouchControls(
             offsetX = getLocalOffset("lt").x.dp,
             offsetY = getLocalOffset("lt").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("lt", x, y) },
-            modifier = Modifier.align(Alignment.TopStart).padding(start = buttonSize48 + 8.dp),
+            modifier = Modifier.align(Alignment.TopStart),
         ) {
             GamepadTriggerButton(
                 label = "LT",
                 left = true,
                 client = client,
                 opacity = opacity,
-                size = buttonSize48,
+                width = triggerWidth,
+                height = bumperHeight,
+                shape = RoundedCornerShape(50),
+                onPressTone = onButtonTone,
+            )
+        }
+
+        TouchControlGroup(
+            id = "portrait-lb",
+            layoutEditing = layoutEditing,
+            offsetX = getLocalOffset("lb").x.dp,
+            offsetY = getLocalOffset("lb").y.dp,
+            onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
+            modifier = Modifier.align(Alignment.TopStart).padding(top = bumperHeight + 6.dp),
+        ) {
+            GamepadBumperButton(
+                label = "LB",
+                mask = 0x0100,
+                client = client,
+                opacity = opacity,
+                width = triggerWidth,
+                height = bumperHeight,
                 onPressTone = onButtonTone,
             )
         }
@@ -8478,14 +8662,16 @@ private fun PortraitTouchControls(
             offsetX = getLocalOffset("rt").x.dp,
             offsetY = getLocalOffset("rt").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("rt", x, y) },
-            modifier = Modifier.align(Alignment.TopEnd).padding(end = buttonSize48 + 8.dp),
+            modifier = Modifier.align(Alignment.TopEnd),
         ) {
             GamepadTriggerButton(
                 label = "RT",
                 left = false,
                 client = client,
                 opacity = opacity,
-                size = buttonSize48,
+                width = triggerWidth,
+                height = bumperHeight,
+                shape = RoundedCornerShape(50),
                 onPressTone = onButtonTone,
             )
         }
@@ -8496,9 +8682,17 @@ private fun PortraitTouchControls(
             offsetX = getLocalOffset("rb").x.dp,
             offsetY = getLocalOffset("rb").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
-            modifier = Modifier.align(Alignment.TopEnd),
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = bumperHeight + 6.dp),
         ) {
-            GamepadButton("RB", 0x0200, client, opacity, buttonSize48, onButtonTone)
+            GamepadBumperButton(
+                label = "RB",
+                mask = 0x0200,
+                client = client,
+                opacity = opacity,
+                width = triggerWidth,
+                height = bumperHeight,
+                onPressTone = onButtonTone,
+            )
         }
 
         TouchControlGroup(
@@ -8582,7 +8776,10 @@ private fun BoxScope.LandscapeTouchControls(
 ) {
     val controlScale = buttonScale * layoutScale
     val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, controlScale).dp
-    Box(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp)) {
+    Box(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
+        val triggerWidth = 76.dp * controlScale
+        val bumperHeight = 36.dp * controlScale
+
         TouchControlGroup(
             id = "landscape-lt",
             layoutEditing = layoutEditing,
@@ -8596,7 +8793,9 @@ private fun BoxScope.LandscapeTouchControls(
                 left = true,
                 client = client,
                 opacity = opacity,
-                size = 54.dp * controlScale,
+                width = triggerWidth,
+                height = bumperHeight,
+                shape = RoundedCornerShape(50),
                 onPressTone = onButtonTone,
             )
         }
@@ -8607,9 +8806,17 @@ private fun BoxScope.LandscapeTouchControls(
             offsetX = getLocalOffset("lb").x.dp,
             offsetY = getLocalOffset("lb").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("lb", x, y) },
-            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance, start = 54.dp * controlScale + 10.dp),
+            modifier = Modifier.align(Alignment.TopStart).padding(top = topControlClearance + bumperHeight + 6.dp),
         ) {
-            GamepadButton("LB", 0x0100, client, opacity, 54.dp * controlScale, onButtonTone)
+            GamepadBumperButton(
+                label = "LB",
+                mask = 0x0100,
+                client = client,
+                opacity = opacity,
+                width = triggerWidth,
+                height = bumperHeight,
+                onPressTone = onButtonTone,
+            )
         }
 
         val selectSize = 42.dp * controlScale
@@ -8641,9 +8848,17 @@ private fun BoxScope.LandscapeTouchControls(
             offsetX = getLocalOffset("rb").x.dp,
             offsetY = getLocalOffset("rb").y.dp,
             onOffsetChange = { x, y -> onLocalOffsetChange("rb", x, y) },
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance, end = 54.dp * controlScale + 10.dp),
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = topControlClearance + bumperHeight + 6.dp),
         ) {
-            GamepadButton("RB", 0x0200, client, opacity, 54.dp * controlScale, onButtonTone)
+            GamepadBumperButton(
+                label = "RB",
+                mask = 0x0200,
+                client = client,
+                opacity = opacity,
+                width = triggerWidth,
+                height = bumperHeight,
+                onPressTone = onButtonTone,
+            )
         }
 
         TouchControlGroup(
@@ -8659,7 +8874,9 @@ private fun BoxScope.LandscapeTouchControls(
                 left = false,
                 client = client,
                 opacity = opacity,
-                size = 54.dp * controlScale,
+                width = triggerWidth,
+                height = bumperHeight,
+                shape = RoundedCornerShape(50),
                 onPressTone = onButtonTone,
             )
         }
@@ -8889,6 +9106,7 @@ private fun VirtualStick(
     onChange: (Float, Float) -> Unit,
 ) {
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
+    val style = LocalTouchControllerStyle.current
 
     DisposableEffect(client, onChange) {
         onDispose {
@@ -8928,6 +9146,16 @@ private fun VirtualStick(
             },
         contentAlignment = Alignment.Center,
     ) {
+        val knobBackground = if (style == TouchControllerStyle.V2) {
+            Color.White.copy(alpha = opacity * 0.2f)
+        } else {
+            Color.LightGray.copy(alpha = opacity * 0.8f)
+        }
+        val knobBorderModifier = if (style == TouchControllerStyle.V2) {
+            Modifier.border(1.dp, Color.White.copy(alpha = opacity * 0.5f), CircleShape)
+        } else {
+            Modifier
+        }
         Box(
             Modifier
                 .size(diameter * 0.44f)
@@ -8936,7 +9164,8 @@ private fun VirtualStick(
                     translationY = knobOffset.y
                 }
                 .clip(CircleShape)
-                .background(Color.LightGray.copy(alpha = opacity * 0.8f))
+                .background(knobBackground)
+                .then(knobBorderModifier)
         )
     }
 }
@@ -8963,22 +9192,213 @@ private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale:
 }
 
 @Composable
+private fun DpadArrowhead(
+    label: String,
+    pressed: Boolean,
+    opacity: Float,
+) {
+    val arrowColor = if (pressed) {
+        Color.White
+    } else {
+        Color.White.copy(alpha = opacity * 0.8f)
+    }
+    Text(
+        text = label,
+        fontWeight = FontWeight.Bold,
+        fontSize = 18.sp,
+        color = arrowColor
+    )
+}
+
+@Composable
 private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {
+    val currentOnButtonTone by rememberUpdatedState(onButtonTone)
     val buttonSize = 54.dp * scale
     val distance = buttonSize * 1.05f
     val boxSize = distance * 2 + buttonSize
-    Box(Modifier.size(boxSize)) {
+
+    var upPressed by remember { mutableStateOf(false) }
+    var downPressed by remember { mutableStateOf(false) }
+    var leftPressed by remember { mutableStateOf(false) }
+    var rightPressed by remember { mutableStateOf(false) }
+
+    val style = LocalTouchControllerStyle.current
+    val crossColor = if (style == TouchControllerStyle.V2) Color.Transparent else Color.Black.copy(alpha = opacity * 0.6f)
+    val crossBorderColor = if (style == TouchControllerStyle.V2) Color.White.copy(alpha = opacity * 0.5f) else Color.White.copy(alpha = opacity * 0.4f)
+    val crossBorderWidth = 1.dp
+
+    DisposableEffect(client) {
+        onDispose {
+            client.setVirtualButton(0x0001, false)
+            client.setVirtualButton(0x0002, false)
+            client.setVirtualButton(0x0004, false)
+            client.setVirtualButton(0x0008, false)
+        }
+    }
+
+    Box(
+        Modifier
+            .size(boxSize)
+            .pointerInput(client) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.pressed }
+                        
+                        if (change == null) {
+                            if (upPressed) { client.setVirtualButton(0x0001, false); upPressed = false }
+                            if (downPressed) { client.setVirtualButton(0x0002, false); downPressed = false }
+                            if (leftPressed) { client.setVirtualButton(0x0004, false); leftPressed = false }
+                            if (rightPressed) { client.setVirtualButton(0x0008, false); rightPressed = false }
+                            continue
+                        }
+                        
+                        val w = size.width
+                        val h = size.height
+                        val cx = w / 2f
+                        val cy = h / 2f
+                        val px = change.position.x
+                        val py = change.position.y
+                        val dx = px - cx
+                        val dy = py - cy
+                        val touchDist = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                        
+                        val deadzone = 12.dp.toPx()
+                        
+                        var newUp = false
+                        var newDown = false
+                        var newLeft = false
+                        var newRight = false
+                        
+                        if (touchDist > deadzone) {
+                            val absDx = Math.abs(dx)
+                            val absDy = Math.abs(dy)
+                            if (dy < 0 && absDy > absDx * 0.414f) newUp = true
+                            if (dy > 0 && absDy > absDx * 0.414f) newDown = true
+                            if (dx < 0 && absDx > absDy * 0.414f) newLeft = true
+                            if (dx > 0 && absDx > absDy * 0.414f) newRight = true
+                        }
+                        
+                        val playTone = (!upPressed && newUp) || (!downPressed && newDown) || 
+                                       (!leftPressed && newLeft) || (!rightPressed && newRight)
+                        
+                        if (upPressed != newUp) { client.setVirtualButton(0x0001, newUp); upPressed = newUp }
+                        if (downPressed != newDown) { client.setVirtualButton(0x0002, newDown); downPressed = newDown }
+                        if (leftPressed != newLeft) { client.setVirtualButton(0x0004, newLeft); leftPressed = newLeft }
+                        if (rightPressed != newRight) { client.setVirtualButton(0x0008, newRight); rightPressed = newRight }
+                        
+                        if (playTone) currentOnButtonTone()
+                        change.consume()
+                    }
+                }
+            }
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val armSize = buttonSize.toPx()
+            val cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx())
+
+            val crossPath = Path().apply {
+                addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = (w - armSize) / 2f,
+                        top = 0f,
+                        right = (w + armSize) / 2f,
+                        bottom = h,
+                        cornerRadius = cornerRadius
+                    )
+                )
+                addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = 0f,
+                        top = (h - armSize) / 2f,
+                        right = w,
+                        bottom = (h + armSize) / 2f,
+                        cornerRadius = cornerRadius
+                    )
+                )
+            }
+
+            if (style != TouchControllerStyle.V2) {
+                drawPath(crossPath, crossColor)
+            }
+
+            val pressedColor = if (style == TouchControllerStyle.V2) {
+                Color.White.copy(alpha = opacity * 0.15f)
+            } else {
+                Color.White.copy(alpha = opacity * 0.2f)
+            }
+
+            val pressedPath = Path()
+            if (upPressed) {
+                pressedPath.addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = (w - armSize) / 2f,
+                        top = 0f,
+                        right = (w + armSize) / 2f,
+                        bottom = h / 2f,
+                        topLeftCornerRadius = cornerRadius,
+                        topRightCornerRadius = cornerRadius
+                    )
+                )
+            }
+            if (downPressed) {
+                pressedPath.addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = (w - armSize) / 2f,
+                        top = h / 2f,
+                        right = (w + armSize) / 2f,
+                        bottom = h,
+                        bottomLeftCornerRadius = cornerRadius,
+                        bottomRightCornerRadius = cornerRadius
+                    )
+                )
+            }
+            if (leftPressed) {
+                pressedPath.addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = 0f,
+                        top = (h - armSize) / 2f,
+                        right = w / 2f,
+                        bottom = (h + armSize) / 2f,
+                        topLeftCornerRadius = cornerRadius,
+                        bottomLeftCornerRadius = cornerRadius
+                    )
+                )
+            }
+            if (rightPressed) {
+                pressedPath.addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = w / 2f,
+                        top = (h - armSize) / 2f,
+                        right = w,
+                        bottom = (h + armSize) / 2f,
+                        topRightCornerRadius = cornerRadius,
+                        bottomRightCornerRadius = cornerRadius
+                    )
+                )
+            }
+            drawPath(pressedPath, pressedColor)
+
+            drawPath(
+                path = crossPath,
+                color = crossBorderColor,
+                style = Stroke(width = crossBorderWidth.toPx())
+            )
+        }
+
         Box(Modifier.align(Alignment.Center).offset(y = -distance)) {
-            GamepadButton("^", 0x0001, client, opacity, buttonSize, onButtonTone)
+            DpadArrowhead("▲", upPressed, opacity)
         }
         Box(Modifier.align(Alignment.Center).offset(y = distance)) {
-            GamepadButton("v", 0x0002, client, opacity, buttonSize, onButtonTone)
+            DpadArrowhead("▼", downPressed, opacity)
         }
         Box(Modifier.align(Alignment.Center).offset(x = -distance)) {
-            GamepadButton("<", 0x0004, client, opacity, buttonSize, onButtonTone)
+            DpadArrowhead("◀", leftPressed, opacity)
         }
         Box(Modifier.align(Alignment.Center).offset(x = distance)) {
-            GamepadButton(">", 0x0008, client, opacity, buttonSize, onButtonTone)
+            DpadArrowhead("▶", rightPressed, opacity)
         }
     }
 }
@@ -8989,19 +9409,36 @@ private fun GamepadTriggerButton(
     left: Boolean,
     client: NativeStreamClient,
     opacity: Float,
-    size: androidx.compose.ui.unit.Dp,
+    width: androidx.compose.ui.unit.Dp,
+    height: androidx.compose.ui.unit.Dp,
+    shape: androidx.compose.ui.graphics.Shape,
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val buttonColor = Color.Black.copy(alpha = opacity * 0.6f)
-    val pressedColor = Color.White.copy(alpha = opacity * 0.2f)
-    val borderColor = Color.White.copy(alpha = opacity * 0.4f)
+    val style = LocalTouchControllerStyle.current
+    val buttonColor = if (style == TouchControllerStyle.V2) {
+        Color.Transparent
+    } else {
+        Color.Black.copy(alpha = opacity * 0.6f)
+    }
+    val pressedColor = if (style == TouchControllerStyle.V2) {
+        Color.White.copy(alpha = opacity * 0.15f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.2f)
+    }
+    val borderColor = if (style == TouchControllerStyle.V2) {
+        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.4f)
+    }
+    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
     Box(
         Modifier
-            .size(size)
-            .clip(CircleShape)
+            .width(width)
+            .height(height)
+            .clip(shape)
             .background(if (pressed) pressedColor else buttonColor)
-            .border(1.dp, borderColor, CircleShape)
+            .border(borderWidth, borderColor, shape)
             .pointerInput(client, left) {
                 awaitPointerEventScope {
                     while (true) {
@@ -9028,24 +9465,41 @@ private fun GamepadTriggerButton(
 }
 
 @Composable
-private fun GamepadButton(
+private fun GamepadBumperButton(
     label: String,
     mask: Int,
     client: NativeStreamClient,
     opacity: Float,
-    size: androidx.compose.ui.unit.Dp,
+    width: androidx.compose.ui.unit.Dp,
+    height: androidx.compose.ui.unit.Dp,
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
-    val buttonColor = Color.Black.copy(alpha = opacity * 0.6f)
-    val pressedColor = Color.White.copy(alpha = opacity * 0.2f)
-    val borderColor = Color.White.copy(alpha = opacity * 0.4f)
+    val style = LocalTouchControllerStyle.current
+    val buttonColor = if (style == TouchControllerStyle.V2) {
+        Color.Transparent
+    } else {
+        Color.Black.copy(alpha = opacity * 0.6f)
+    }
+    val pressedColor = if (style == TouchControllerStyle.V2) {
+        Color.White.copy(alpha = opacity * 0.15f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.2f)
+    }
+    val borderColor = if (style == TouchControllerStyle.V2) {
+        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.4f)
+    }
+    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
+    val shape = RoundedCornerShape(50)
     Box(
         Modifier
-            .size(size)
-            .clip(CircleShape)
+            .width(width)
+            .height(height)
+            .clip(shape)
             .background(if (pressed) pressedColor else buttonColor)
-            .border(1.dp, borderColor, CircleShape)
+            .border(borderWidth, borderColor, shape)
             .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
@@ -9062,11 +9516,69 @@ private fun GamepadButton(
             },
         contentAlignment = Alignment.Center,
     ) {
+        Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
+    }
+    DisposableEffect(client, mask) {
+        onDispose {
+            client.setVirtualButton(mask, false)
+        }
+    }
+}
+
+@Composable
+private fun GamepadButton(
+    label: String,
+    mask: Int,
+    client: NativeStreamClient,
+    opacity: Float,
+    size: androidx.compose.ui.unit.Dp,
+    onPressTone: () -> Unit = {},
+) {
+    val currentOnPressTone by rememberUpdatedState(onPressTone)
+    var pressed by remember { mutableStateOf(false) }
+    val style = LocalTouchControllerStyle.current
+    val buttonColor = if (style == TouchControllerStyle.V2) {
+        Color.Transparent
+    } else {
+        Color.Black.copy(alpha = opacity * 0.6f)
+    }
+    val pressedColor = if (style == TouchControllerStyle.V2) {
+        Color.White.copy(alpha = opacity * 0.15f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.2f)
+    }
+    val borderColor = if (style == TouchControllerStyle.V2) {
+        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.4f)
+    }
+    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
+    Box(
+        Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(if (pressed) pressedColor else buttonColor)
+            .border(borderWidth, borderColor, CircleShape)
+            .pointerInput(client, mask) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val down = event.changes.any { it.pressed }
+                        if (down != pressed) {
+                            client.setVirtualButton(mask, down)
+                            pressed = down
+                            if (down) currentOnPressTone()
+                        }
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
         Text(
             text = label,
             fontWeight = FontWeight.SemiBold,
             color = Color.White.copy(alpha = opacity * 0.9f),
-            modifier = if (label == "^") Modifier.offset(y = size * 0.08f) else Modifier
         )
     }
     DisposableEffect(client, mask) {
@@ -9086,17 +9598,32 @@ private fun GamepadPillButton(
     height: androidx.compose.ui.unit.Dp,
     onPressTone: () -> Unit = {},
 ) {
+    val currentOnPressTone by rememberUpdatedState(onPressTone)
     var pressed by remember { mutableStateOf(false) }
-    val buttonColor = Color.Black.copy(alpha = opacity * 0.6f)
-    val pressedColor = Color.White.copy(alpha = opacity * 0.2f)
-    val borderColor = Color.White.copy(alpha = opacity * 0.4f)
+    val style = LocalTouchControllerStyle.current
+    val buttonColor = if (style == TouchControllerStyle.V2) {
+        Color.Transparent
+    } else {
+        Color.Black.copy(alpha = opacity * 0.6f)
+    }
+    val pressedColor = if (style == TouchControllerStyle.V2) {
+        Color.White.copy(alpha = opacity * 0.15f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.2f)
+    }
+    val borderColor = if (style == TouchControllerStyle.V2) {
+        if (pressed) Color.White.copy(alpha = opacity * 0.9f) else Color.White.copy(alpha = opacity * 0.5f)
+    } else {
+        Color.White.copy(alpha = opacity * 0.4f)
+    }
+    val borderWidth = if (style == TouchControllerStyle.V2 && pressed) 2.dp else 1.dp
     Box(
         Modifier
             .width(width)
             .height(height)
             .clip(RoundedCornerShape(999.dp))
             .background(if (pressed) pressedColor else buttonColor)
-            .border(1.dp, borderColor, RoundedCornerShape(999.dp))
+            .border(borderWidth, borderColor, RoundedCornerShape(999.dp))
             .pointerInput(client, mask) {
                 awaitPointerEventScope {
                     while (true) {
@@ -9105,7 +9632,7 @@ private fun GamepadPillButton(
                         if (down != pressed) {
                             client.setVirtualButton(mask, down)
                             pressed = down
-                            if (down) onPressTone()
+                            if (down) currentOnPressTone()
                         }
                         event.changes.forEach { it.consume() }
                     }
@@ -9224,18 +9751,51 @@ private fun FilterMenu(
         ) {
             Text(if (selectedIds.isEmpty()) "Filters" else "Filters ${selectedIds.size}", maxLines = 1, style = MaterialTheme.typography.labelMedium)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { option ->
-                DropdownMenuItem(
-                    text = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (option.id in selectedIds) "✓" else "", modifier = Modifier.width(24.dp))
-                            Text(option.label)
+        if (expanded) {
+            AlertDialog(
+                onDismissRequest = { expanded = false },
+                title = {
+                    Text(
+                        "Filters",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                    )
+                },
+                text = {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxHeight(0.6f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(options) { option ->
+                            val isSelected = option.id in selectedIds
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onToggle(option.id) }
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = isSelected,
+                                    onCheckedChange = null
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    option.label,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = TextPrimary
+                                )
+                            }
                         }
-                    },
-                    onClick = { onToggle(option.id) },
-                )
-            }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = { expanded = false }) {
+                        Text("Done")
+                    }
+                }
+            )
         }
     }
 }

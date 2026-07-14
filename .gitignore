@@ -22,7 +22,7 @@ native/opennow-streamer/bin/*/*
 .serena/
 *.xcuserstate
 xcuserdata/
-
+.logs/
 # Xcode build outputs
 DerivedData/
 

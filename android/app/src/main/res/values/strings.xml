@@ -117,6 +117,7 @@
     <string name="settings_queue_ready_music">Play music when queue finishes</string>
     <string name="action_mute_music">Mute music</string>
     <string name="settings_stretch_stream_to_fill">Stretch stream to fill</string>
+    <string name="settings_stretch_stream_to_zoom">Stretch stream to zoom</string>
     <string name="settings_session_counter">Smart session timer</string>
     <string name="settings_thanks_body">Thanks to the people helping improve OpenNOW for everyone.</string>
     <string name="settings_thanks_darkevilpt">DarkevilPT</string>

@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -188,7 +190,15 @@ internal fun SessionProxyWarningDialog(onCancel: () -> Unit, onEnable: () -> Uni
 }
 
 @Composable
-internal fun NumberSlider(label: String, value: Float, min: Float, max: Float, step: Float, onChange: (Float) -> Unit) {
+internal fun NumberSlider(
+    label: String,
+    value: Float,
+    min: Float,
+    max: Float,
+    step: Float,
+    descriptionProvider: ((Float) -> String?)? = null,
+    onChange: (Float) -> Unit
+) {
     var local by remember(value) { mutableFloatStateOf(value) }
     val focusManager = LocalFocusManager.current
     Column(
@@ -209,6 +219,17 @@ internal fun NumberSlider(label: String, value: Float, min: Float, max: Float, s
             onValueChangeFinished = { onChange(local) },
             valueRange = min..max,
         )
+        val description = descriptionProvider?.invoke(local)
+        if (description != null) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                description,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 

@@ -56,6 +56,14 @@ import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
+import android.os.PowerManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.Spacer
+import kotlinx.coroutines.delay
 
 @Composable
 internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
@@ -1456,5 +1464,77 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
     }
     saveError?.let {
         Text(it, color = Color(0xffff9f9f), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+internal fun BatteryOptimizationPanel() {
+    val context = LocalContext.current
+    var isIgnoring by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        while (true) {
+            isIgnoring = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+            delay(1000L)
+        }
+    }
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = "Android battery optimization restricts the app's background activity, which can cause connection timeouts or pause GFN queue progress when the app is minimized.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = SettingsTextMuted
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Background activity",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    text = if (isIgnoring) "Unlimited (Allowed in background)" else "Optimized (May timeout in background)",
+                    color = if (isIgnoring) Color(0xff81c784) else Color(0xffffb74d),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (!isIgnoring) {
+                Button(
+                    onClick = {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        try {
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            try {
+                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            } catch (_: Exception) {}
+                        }
+                    }
+                ) {
+                    Text("Allow")
+                }
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        } catch (_: Exception) {}
+                    }
+                ) {
+                    Text("Settings")
+                }
+            }
+        }
     }
 }

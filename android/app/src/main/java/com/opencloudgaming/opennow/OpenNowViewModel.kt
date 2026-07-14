@@ -195,6 +195,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private var gamesJob: Job? = null
     private var launchJob: Job? = null
+    private var checkSessionJob: Job? = null
+    private var activeSubscriptionJob: Job? = null
     private var pendingActiveSessionLaunch: PendingActiveSessionLaunch? = null
     private var loginJob: Job? = null
     private var androidUpdateJob: Job? = null
@@ -1031,6 +1033,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent("launch", "Play request ignored without an auth session game=${game.title}")
                 return@launch
             }
+            // Wait for active subscription fetch to finish so we have accurate membership info to allow resolutions
+            activeSubscriptionJob?.join()
             val returnPage = state.value.page.takeUnless { it == AppPage.Stream } ?: state.value.streamReturnPage ?: AppPage.Home
             if (!skipPrintedWaste && streamingBaseUrlOverride == null && shouldUsePrintedWasteQueue(auth)) {
                 recordDebugEvent("queue", "Opening PrintedWaste selector game=${game.title}")
@@ -1191,6 +1195,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         )
         launchJob?.cancel()
         launchJob = null
+        checkSessionJob?.cancel()
+        checkSessionJob = null
         pendingActiveSessionLaunch = null
         viewModelScope.launch {
             val auth = state.value.authSession
@@ -1732,6 +1738,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun recordNativeStreamState(message: String) {
         recordDebugEvent("native", "state=$message session=${state.value.streamSession?.shortDebugId().orEmpty()}")
+        if (message.startsWith("Reconnecting stream")) {
+            val currentSession = state.value.streamSession ?: return
+            val auth = state.value.authSession ?: return
+            val token = auth.tokens.idToken ?: auth.tokens.accessToken
+            val baseUrl = effectiveStreamingBaseUrl(auth)
+            val settings = state.value.activeStreamSettings ?: effectiveStreamSettings()
+
+            if (checkSessionJob?.isActive != true) {
+                checkSessionJob = viewModelScope.launch {
+                    runCatching {
+                        val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, settings)
+                        val isActive = activeSessions.any { it.sessionId == currentSession.sessionId }
+                        if (!isActive) {
+                            recordDebugEvent("stream", "Session is no longer active on the GFN server; exiting stream cleanly")
+                            stopStream()
+                        }
+                    }.onFailure { error ->
+                        recordDebugEvent("stream", "Failed to check session validity during reconnect: ${error.debugMessage()}")
+                    }
+                }
+            }
+        }
     }
 
     fun restartStreamWithSafeVideoProfile(reason: String) {
@@ -1851,6 +1879,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
+        val actualAspect = streamAspectRatioForResolution(actualResolution) ?: currentSettings.aspectRatio
+        val targetSettings = currentSettings.copy(
+            resolution = actualResolution,
+            aspectRatio = actualAspect,
+        )
         val restartKey = listOf(
             initial.streamGame?.id ?: initial.activeSession?.appId?.toString() ?: initial.streamSession?.sessionId.orEmpty(),
             streamSettingsSessionSignature(currentSettings),
@@ -1885,7 +1918,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(
                     streamSession = null,
                     activeSession = null,
-                    activeStreamSettings = currentSettings,
+                    activeStreamSettings = targetSettings,
                     streamStatus = "queue",
                     launchPhase = "Restarting at requested resolution",
                     page = AppPage.Stream,
@@ -1920,17 +1953,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     appId = launchAppId,
                     internalTitle = game?.title ?: "Cloud session",
                     zone = previousSession?.zone?.takeIf { it.isNotBlank() } ?: "prod",
-                    settings = currentSettings,
+                    settings = targetSettings,
                     accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true,
                 )
                 recordDebugEvent("recovery", "Created requested-resolution session ${created.debugSummary()}")
-                pollUntilReady(token, created, currentSettings)
+                pollUntilReady(token, created, targetSettings)
             }.onSuccess { readySession ->
                 recordDebugEvent("recovery", "Requested-resolution session ready ${readySession.debugSummary()}")
                 _state.update {
                     it.copy(
                         streamSession = readySession,
-                        activeStreamSettings = currentSettings,
+                        activeStreamSettings = targetSettings,
                         streamStatus = "connecting",
                         launchPhase = "Connecting requested-resolution stream",
                         streamLaunchMinimized = false,
@@ -2244,6 +2277,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
         }
+        activeSubscriptionJob = subscriptionJob
         val accountConnectorsJob = viewModelScope.launch {
             _state.update { it.copy(loadingAccountConnectors = true) }
             val connectors = runCatching { accountConnectorRepository.fetchConnectors(token) }.getOrDefault(emptyList())
@@ -2559,16 +2593,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 break
             }
             pollCount += 1
-            val polled = sessionRepository.pollSession(
-                token = token,
-                streamingBaseUrl = latest.streamingBaseUrl ?: effectiveStreamingBaseUrl(),
-                serverIp = latest.serverIp,
-                zone = latest.zone,
-                sessionId = latest.sessionId,
-                clientId = latest.clientId,
-                deviceId = latest.deviceId,
-                settings = settings,
-            )
+            val polled = try {
+                sessionRepository.pollSession(
+                    token = token,
+                    streamingBaseUrl = latest.streamingBaseUrl ?: effectiveStreamingBaseUrl(),
+                    serverIp = latest.serverIp,
+                    zone = latest.zone,
+                    sessionId = latest.sessionId,
+                    clientId = latest.clientId,
+                    deviceId = latest.deviceId,
+                    settings = settings,
+                )
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                recordDebugEvent("queue", "Poll #$pollCount failed due to network error: ${e.message}. Retrying in 2 seconds...")
+                kotlinx.coroutines.delay(2_000L)
+                continue
+            }
             latest = mergeQueueSessionState(latest, polled)
             recordDebugEvent("queue", "Poll #$pollCount result ${latest.debugSummary()}")
             _state.update {

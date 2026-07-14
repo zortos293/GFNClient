@@ -473,14 +473,36 @@ private fun SettingsContent(
                     }
                 }
                 SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToFill) { enabled ->
-                    viewModel.updateSettings(settings.copy(stretchStreamToFill = enabled))
+                    viewModel.updateSettings(
+                        settings.copy(
+                            stretchStreamToFill = enabled,
+                            stretchStreamToZoom = if (enabled) false else settings.stretchStreamToZoom
+                        )
+                    )
+                }
+                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_zoom), settings.stretchStreamToZoom) { enabled ->
+                    viewModel.updateSettings(
+                        settings.copy(
+                            stretchStreamToZoom = enabled,
+                            stretchStreamToFill = if (enabled) false else settings.stretchStreamToFill
+                        )
+                    )
                 }
                 val maxFps = maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
                 NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.coerceAtMost(maxFps).toFloat(), 30f, maxFps.toFloat(), 30f) {
                     val fps = it.roundToInt().coerceIn(30, maxFps)
                     viewModel.updateStreamSettings { s -> s.copy(fps = fps) }
                 }
-                NumberSlider(stringResource(R.string.settings_bitrate), settings.stream.maxBitrateMbps.toFloat(), 1f, 150f, 1f) {
+                NumberSlider(
+                    label = stringResource(R.string.settings_bitrate),
+                    value = settings.stream.maxBitrateMbps.toFloat(),
+                    min = 1f,
+                    max = 150f,
+                    step = 1f,
+                    descriptionProvider = { mbps ->
+                        "Est. data usage: %.1f GB/hour".format((mbps * 3600f) / (8f * 1000f))
+                    }
+                ) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
                 }
                 val comingSoonLabel = stringResource(R.string.option_coming_soon)
@@ -618,7 +640,20 @@ private fun SettingsContent(
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
                 SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
                 SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
+                val touchStyleOptions = listOf(
+                    SettingsChoiceOption(TouchControllerStyle.V1.name, "V1 (Solid)"),
+                    SettingsChoiceOption(TouchControllerStyle.V2.name, "V2 (Clean Outline)")
+                )
+                ChoiceOptionRow("Touch controller style", touchStyleOptions, settings.androidTouch.touchControllerStyle.name) { styleName ->
+                    val style = TouchControllerStyle.valueOf(styleName)
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(touchControllerStyle = style)))
+                }
                 SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
+                if (settings.androidTouch.mousePad) {
+                    Box(Modifier.padding(start = 24.dp)) {
+                        SettingSwitch("Direct click", settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
+                    }
+                }
                 NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
                 NumberSlider("Touch button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(buttonScale = value))) }
                 NumberSlider("Touch stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(stickScale = value))) }
@@ -715,6 +750,9 @@ private fun SettingsContent(
                 }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Debug Logs", "debug", "logs", "logcat", "events", "export", "json", "cloudmatch", "queue", "stream") {
                     DebugLogsPanel(state = state, viewModel = viewModel)
+                }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Battery Optimization", "battery", "optimization", "background", "activity", "ignore", "allow", "run") {
+                    BatteryOptimizationPanel()
                 }
     CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
                 AppVersionPanel()

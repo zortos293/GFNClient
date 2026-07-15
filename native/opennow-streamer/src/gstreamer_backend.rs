@@ -6,6 +6,7 @@ use crate::backend::{
 use crate::gstreamer_config::{
     resolve_d3d_fullscreen_sink, resolve_present_max_fps, use_internal_renderer,
     NATIVE_D3D_FULLSCREEN_ENV, NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
+    PRESENT_LIMITER_VRR_SENTINEL,
 };
 use crate::gstreamer_platform::{clear_native_shortcut_bindings, set_native_shortcut_bindings};
 use crate::gstreamer_pipeline::{
@@ -197,7 +198,12 @@ impl NativeStreamerBackend for GstreamerBackend {
                     .map(|ctx| ctx.settings.enable_cloud_gsync)
                     .unwrap_or(false),
             );
-            let present_max_fps = resolve_present_max_fps(requested_fps.unwrap_or(0));
+            let cloud_gsync_enabled = self
+                .active_context
+                .as_ref()
+                .map(|ctx| ctx.settings.enable_cloud_gsync)
+                .unwrap_or(false);
+            let present_max_fps = resolve_present_max_fps(cloud_gsync_enabled);
             if let Some(pipeline) = self.pipeline.as_mut() {
                 pipeline.set_present_max_fps(present_max_fps);
                 pipeline.set_d3d_fullscreen_sink(d3d_fullscreen);
@@ -290,14 +296,17 @@ impl NativeStreamerBackend for GstreamerBackend {
             };
         };
 
-        let present_max_fps = resolve_present_max_fps(context.settings.fps);
+        let present_max_fps = resolve_present_max_fps(context.settings.enable_cloud_gsync);
         // Internal child-surface mode never uses exclusive D3D fullscreen present.
         let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
         set_native_shortcut_bindings(&context.shortcuts);
         pipeline.set_present_max_fps(present_max_fps);
         pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
         pipeline.configure_stats(&context, prepared.nvst_params.max_bitrate_kbps);
-        if present_max_fps > 0 && present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL {
+        if present_max_fps > 0
+            && present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL
+            && present_max_fps != PRESENT_LIMITER_VRR_SENTINEL
+        {
             events.push(Event::Log {
                 level: "info",
                 message: format!(
@@ -312,6 +321,20 @@ impl NativeStreamerBackend for GstreamerBackend {
                     "Native present limiter auto mode for {} fps stream (D3D11 caps to display Hz when stream fps exceeds it); set {NATIVE_PRESENT_MAX_FPS_ENV}=0 to disable.",
                     context.settings.fps
                 ),
+            });
+        } else if present_max_fps == PRESENT_LIMITER_VRR_SENTINEL {
+            events.push(Event::Log {
+                level: "info",
+                message: format!(
+                    "Native VRR present limiter auto mode for {} fps stream (caps below the display refresh ceiling when needed).",
+                    context.settings.fps
+                ),
+            });
+        } else {
+            events.push(Event::Log {
+                level: "info",
+                message: "Native present limiter disabled for uncapped VSync-off presentation."
+                    .to_owned(),
             });
         }
         if d3d_fullscreen_sink {
@@ -891,6 +914,24 @@ mod tests {
         );
         assert_eq!(
             effective_present_max_fps(0, Some(240), RtpVideoApi::D3D11, Some(165)),
+            0
+        );
+        assert_eq!(
+            effective_present_max_fps(
+                PRESENT_LIMITER_VRR_SENTINEL,
+                Some(240),
+                RtpVideoApi::D3D11,
+                Some(165)
+            ),
+            162
+        );
+        assert_eq!(
+            effective_present_max_fps(
+                PRESENT_LIMITER_VRR_SENTINEL,
+                Some(120),
+                RtpVideoApi::D3D11,
+                Some(165)
+            ),
             0
         );
     }

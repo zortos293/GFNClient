@@ -885,6 +885,7 @@ export class NativeStreamerManager {
       childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = "0";
     } else if (process.platform === "win32") {
       childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = this.options.getExternalRendererEnabled() ? "1" : "0";
+      childEnv.OPENNOW_NATIVE_D3D_ALLOW_TEARING = "1";
     }
     childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());
     childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());

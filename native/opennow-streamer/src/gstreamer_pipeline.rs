@@ -1,9 +1,9 @@
 use crate::gstreamer_backend::send_log;
 use crate::gstreamer_config::{
     automatic_present_max_fps, requested_video_backend, use_external_renderer_window,
-    use_internal_renderer, zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_D3D_FULLSCREEN_ENV,
-    NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV,
-    PRESENT_LIMITER_AUTO_SENTINEL,
+    use_internal_renderer, vrr_present_max_fps, zero_copy_requested, EXTERNAL_RENDERER_ENV,
+    NATIVE_D3D_FULLSCREEN_ENV, NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV,
+    NATIVE_VIDEO_BACKEND_ENV, PRESENT_LIMITER_AUTO_SENTINEL, PRESENT_LIMITER_VRR_SENTINEL,
 };
 #[cfg(target_os = "windows")]
 use crate::gstreamer_input::NativeWindowInputBridge;
@@ -1929,6 +1929,16 @@ pub(crate) fn effective_present_max_fps(
     video_api: RtpVideoApi,
     display_hz: Option<u32>,
 ) -> u32 {
+    if configured_present_max_fps == PRESENT_LIMITER_VRR_SENTINEL {
+        if !matches!(video_api, RtpVideoApi::D3D11 | RtpVideoApi::D3D12) {
+            return 0;
+        }
+        return requested_fps
+            .filter(|fps| *fps > 0)
+            .map(|fps| vrr_present_max_fps(fps, display_hz))
+            .unwrap_or(0);
+    }
+
     if configured_present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL {
         return configured_present_max_fps;
     }
@@ -2516,6 +2526,8 @@ fn link_rtp_video_pad(
             let reason = if configured_present_max_fps == PRESENT_LIMITER_AUTO_SENTINEL {
                 "auto-enabled for the D3D present path to prevent display-rate present backpressure"
                     .to_owned()
+            } else if configured_present_max_fps == PRESENT_LIMITER_VRR_SENTINEL {
+                "kept below the display refresh ceiling for VRR".to_owned()
             } else {
                 format!("configured by {NATIVE_PRESENT_MAX_FPS_ENV}")
             };

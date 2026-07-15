@@ -9,6 +9,8 @@ pub(crate) const NATIVE_ZERO_COPY_ENV: &str = "OPENNOW_NATIVE_ZERO_COPY";
 pub(crate) const NATIVE_PRESENT_MAX_FPS_ENV: &str = "OPENNOW_NATIVE_PRESENT_MAX_FPS";
 pub(crate) const NATIVE_D3D_FULLSCREEN_ENV: &str = "OPENNOW_NATIVE_D3D_FULLSCREEN";
 pub(crate) const PRESENT_LIMITER_AUTO_SENTINEL: u32 = u32::MAX;
+pub(crate) const PRESENT_LIMITER_VRR_SENTINEL: u32 = u32::MAX - 1;
+const VRR_REFRESH_HEADROOM_FPS: u32 = 3;
 
 pub(crate) fn use_external_renderer_window() -> bool {
     std::env::var(EXTERNAL_RENDERER_ENV)
@@ -43,7 +45,7 @@ pub(crate) fn zero_copy_requested() -> bool {
     )
 }
 
-pub(crate) fn resolve_present_max_fps(requested_fps: u32) -> u32 {
+pub(crate) fn resolve_present_max_fps(cloud_gsync_enabled: bool) -> u32 {
     if let Ok(value) = std::env::var(NATIVE_PRESENT_MAX_FPS_ENV) {
         let value = value.trim().to_ascii_lowercase();
         if value == "0" || value == "off" || value == "false" || value == "unlimited" {
@@ -56,13 +58,23 @@ pub(crate) fn resolve_present_max_fps(requested_fps: u32) -> u32 {
             return fps;
         }
     }
-    let _ = requested_fps;
-    PRESENT_LIMITER_AUTO_SENTINEL
+    if cloud_gsync_enabled {
+        PRESENT_LIMITER_VRR_SENTINEL
+    } else {
+        0
+    }
 }
 
 pub(crate) fn automatic_present_max_fps(requested_fps: u32, display_hz: Option<u32>) -> u32 {
     display_hz
         .filter(|display_hz| *display_hz >= 30 && *display_hz < requested_fps)
+        .unwrap_or(0)
+}
+
+pub(crate) fn vrr_present_max_fps(requested_fps: u32, display_hz: Option<u32>) -> u32 {
+    display_hz
+        .filter(|display_hz| *display_hz >= 30 && *display_hz <= requested_fps)
+        .map(|display_hz| display_hz.saturating_sub(VRR_REFRESH_HEADROOM_FPS))
         .unwrap_or(0)
 }
 
@@ -111,6 +123,23 @@ mod tests {
         assert_eq!(automatic_present_max_fps(240, Some(240)), 0);
         assert_eq!(automatic_present_max_fps(240, Some(1)), 0);
         assert_eq!(automatic_present_max_fps(240, None), 0);
+    }
+
+    #[test]
+    fn default_present_policy_is_uncapped_without_vrr() {
+        assert_eq!(resolve_present_max_fps(false), 0);
+        assert_eq!(
+            resolve_present_max_fps(true),
+            PRESENT_LIMITER_VRR_SENTINEL
+        );
+    }
+
+    #[test]
+    fn vrr_present_limiter_stays_below_refresh_ceiling() {
+        assert_eq!(vrr_present_max_fps(240, Some(165)), 162);
+        assert_eq!(vrr_present_max_fps(165, Some(165)), 162);
+        assert_eq!(vrr_present_max_fps(120, Some(165)), 0);
+        assert_eq!(vrr_present_max_fps(240, None), 0);
     }
 
     #[test]

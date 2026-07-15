@@ -550,6 +550,11 @@ jobs:
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
+      - name: Build patched Windows GStreamer D3D11 plugin
+        if: matrix.native_build == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-patched-gstreamer-d3d11.ps1 -GStreamerRoot "$env:GSTREAMER_1_0_ROOT_MSVC_X86_64" -Version "$env:GSTREAMER_WINDOWS_VERSION"
+
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
         run: sudo apt-get install -y ruby ruby-dev build-essential && sudo gem install fpm

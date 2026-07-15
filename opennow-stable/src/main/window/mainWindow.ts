@@ -26,6 +26,10 @@ export interface CreateMainWindowDeps {
   setPointerLockActive(active: boolean): void;
   getPointerLockEscapeCaptureUntilMs(): number;
   setPointerLockEscapeCaptureUntilMs(value: number): void;
+  getStreamInputActive(): boolean;
+  setStreamInputActive(active: boolean): void;
+  getNativeRawInputOwnsEscape(): boolean;
+  setNativeRawInputOwnsEscape(ownsEscape: boolean): void;
 }
 
 export async function createMainWindow(
@@ -154,6 +158,17 @@ export async function createMainWindow(
     },
   );
 
+  ipcMain.on(
+    IPC_CHANNELS.NATIVE_INPUT_MODE_CHANGE,
+    (_ev, active: boolean, rawInputOwnsEscape: boolean) => {
+      const streamInputActive = Boolean(active);
+      deps.setStreamInputActive(streamInputActive);
+      deps.setNativeRawInputOwnsEscape(
+        streamInputActive && Boolean(rawInputOwnsEscape),
+      );
+    },
+  );
+
   // Intercept Escape early to avoid Chromium exiting fullscreen before the
   // renderer can forward the key to the remote session. Keep a short fullscreen
   // grace window after pointer lock drops so rapid repeated Escape presses cannot
@@ -167,7 +182,9 @@ export async function createMainWindow(
           allowEscapeToExitFullscreen: Boolean(
             deps.settingsManager?.get("allowEscapeToExitFullscreen"),
           ),
+          streamInputActive: deps.getStreamInputActive(),
           pointerLockActive: deps.getPointerLockActive(),
+          rendererControlledFullscreen: deps.getRendererControlledFullscreen(),
           windowFullscreen: Boolean(
             mainWindow &&
               !mainWindow.isDestroyed() &&
@@ -199,7 +216,13 @@ export async function createMainWindow(
 
       if (resolved.action === "tap") {
         clearEscapeHoldTimer();
-        mainWindow?.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+        // Windows internal native mode receives the same physical key through
+        // its persistent RawInput keyboard sink. Forward only when Electron is
+        // the input owner so the remote session sees exactly one Escape tap.
+        if (!deps.getNativeRawInputOwnsEscape()) {
+          console.log("[EscapeInput] Forwarding captured Escape tap to the stream session");
+          mainWindow?.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+        }
       } else if (resolved.action === "hold-consumed-keyup") {
         clearEscapeHoldTimer();
       }
@@ -225,5 +248,7 @@ export async function createMainWindow(
     deps.setRendererControlledFullscreen(false);
     deps.setPointerLockActive(false);
     deps.setPointerLockEscapeCaptureUntilMs(0);
+    deps.setStreamInputActive(false);
+    deps.setNativeRawInputOwnsEscape(false);
   });
 }

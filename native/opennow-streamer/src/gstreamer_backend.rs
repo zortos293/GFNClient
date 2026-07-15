@@ -550,8 +550,9 @@ mod tests {
         caps_framerate_summary, sink_stats_summary, VideoStallAction, VideoStallTracker,
     };
     use crate::gstreamer_pipeline::{
-        backend_runs_on_platform, configure_stats_overlay_element, effective_present_max_fps,
-        format_video_chain_selection, preferred_rtp_video_apis_for, resolve_gstreamer_stun_server,
+        backend_runs_on_platform, configure_stats_overlay_element,
+        default_rtp_video_api_priority, effective_present_max_fps, format_video_chain_selection,
+        preferred_rtp_video_apis_for, resolve_gstreamer_stun_server,
         rtp_video_chain_definition, RtpVideoApi, RtpVideoChainRole,
     };
     use crate::gstreamer_transitions::resolve_queue_mode;
@@ -789,11 +790,28 @@ mod tests {
         assert!(v4l2.iter().any(|spec| spec.factory == "videoconvert"));
 
         let vulkan = rtp_video_chain_definition("H265", RtpVideoApi::Vulkan).expect("Vulkan H265");
-        assert_eq!(vulkan[3].factory, "vulkanh265dec");
-        assert!(vulkan
-            .iter()
-            .any(|spec| spec.factory == "vulkancolorconvert"));
-        assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(vulkan[3].factory, "d3d12h265dec");
+            assert!(!vulkan.iter().any(|spec| spec.factory == "vulkanh265dec"));
+            // Default Internal renderer: Electron cannot composite vulkansink.
+            assert_eq!(
+                vulkan.last().map(|spec| spec.factory),
+                Some("d3d12videosink")
+            );
+            assert!(vulkan.iter().any(|spec| {
+                spec.role == RtpVideoChainRole::StatsOverlay && spec.factory == "dwritetextoverlay"
+            }));
+            assert!(!vulkan.iter().any(|spec| spec.factory == "vulkanupload"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(vulkan[3].factory, "vulkanh265dec");
+            assert!(vulkan
+                .iter()
+                .any(|spec| spec.factory == "vulkancolorconvert"));
+            assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
+        }
         assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).is_none());
 
         let software =
@@ -848,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_present_limiter_only_targets_d3d11() {
+    fn automatic_present_limiter_targets_d3d_present_paths() {
         assert_eq!(
             effective_present_max_fps(
                 PRESENT_LIMITER_AUTO_SENTINEL,
@@ -865,7 +883,7 @@ mod tests {
                 RtpVideoApi::D3D12,
                 Some(165)
             ),
-            0
+            165
         );
         assert_eq!(
             effective_present_max_fps(144, Some(240), RtpVideoApi::D3D12, Some(165)),

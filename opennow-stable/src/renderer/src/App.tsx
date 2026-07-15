@@ -648,6 +648,7 @@ export function App(): JSX.Element {
     setLocalSessionTimerWarning(null);
     resetStatsOverlayToPreference();
     nativeStreamingRef.current = false;
+    window.openNow.notifyNativeInputModeChange(false, false);
     diagnosticsStore.set(defaultDiagnostics());
 
     if (!options?.keepStreamingContext) {
@@ -1242,18 +1243,8 @@ export function App(): JSX.Element {
 
     if (canUseNativeFullscreen) {
       try {
-        if (nextFullscreen) {
-          if (!document.fullscreenElement) {
-            await document.documentElement.requestFullscreen();
-          }
-        } else if (document.fullscreenElement) {
-          await document.exitFullscreen();
-        }
-      } catch (error) {
-        console.warn(`Failed to set DOM fullscreen state (${nextFullscreen ? "enter" : "exit"}):`, error);
-      }
-
-      try {
+        // Electron owns desktop fullscreen. Stacking HTML fullscreen on top lets
+        // Chromium force-exit the DOM layer on Escape before stream input runs.
         await window.openNow.setFullscreen(nextFullscreen);
         setSessionFullscreenState(nextFullscreen);
       } catch (error) {
@@ -2144,6 +2135,10 @@ export function App(): JSX.Element {
 
       nativeStreamingRef.current = true;
       pendingControlledDisconnectsRef.current = 0;
+      const isWindowsHost = navigator.platform.toLowerCase().includes("win");
+      const electronInputBridge =
+        /linux/i.test(`${navigator.platform} ${navigator.userAgent}`)
+        || (!settings.nativeExternalRenderer && !isWindowsHost);
       client.activateNativeInput(
         protocolVersion,
         {
@@ -2157,13 +2152,15 @@ export function App(): JSX.Element {
           // Windows internal: RawInput on the child HWND (Electron click-through is flaky).
           // Linux: always Electron → IPC (External floating renderer is unsupported).
           // macOS internal: Electron → IPC. External floating window: always OS capture.
-          electronInputBridge:
-            /linux/i.test(`${navigator.platform} ${navigator.userAgent}`)
-            || (
-              !settings.nativeExternalRenderer
-              && !navigator.platform.toLowerCase().includes("win")
-            ),
+          electronInputBridge,
         },
+      );
+      // The external native window exclusively owns Escape through RawInput.
+      // Internal mode leaves Escape with Electron so it can prevent Chromium's
+      // fullscreen exit and forward one synthetic tap to the native streamer.
+      window.openNow.notifyNativeInputModeChange(
+        true,
+        isWindowsHost && settings.nativeExternalRenderer,
       );
       setLaunchError(null);
       setStreamStatus("streaming");
@@ -2294,6 +2291,7 @@ export function App(): JSX.Element {
           nativeInputProtocolVersionRef.current = null;
           setNativeInputBridgeReady(false);
           setNativeInputCaptureActive(false);
+          window.openNow.notifyNativeInputModeChange(false, false);
           try {
             window.openNow.notifyPointerLockChange(false, true);
           } catch {

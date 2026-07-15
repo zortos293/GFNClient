@@ -258,7 +258,27 @@ function bundleGstreamerRuntime(sdkRoot, nativeFeatures) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+
+  if (process.platform === "win32") {
+    injectWindowsVulkanPlugins(join(packagePlatformBinaryDir, "gstreamer"));
+  }
+
   return true;
+}
+
+function injectWindowsVulkanPlugins(runtimeRoot) {
+  const result = spawnSync(
+    process.execPath,
+    [join(__dirname, "inject-gstreamer-vulkan-windows.mjs"), "--dest", runtimeRoot],
+    {
+      cwd: packageRoot,
+      stdio: "inherit",
+      env: process.env,
+    },
+  );
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
 }
 
 function isExistingFile(path) {

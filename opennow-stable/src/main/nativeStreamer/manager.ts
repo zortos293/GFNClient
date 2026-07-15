@@ -44,6 +44,7 @@ import {
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
 import type { NativeStreamerShortcutBindings } from "@shared/gfn";
+import { NativeSurfaceUpdateQueue } from "./surfaceUpdateQueue";
 
 type NativeStreamerCommandInput = NativeStreamerCommand extends infer T
   ? T extends NativeStreamerCommand
@@ -497,11 +498,14 @@ export class NativeStreamerManager {
   private queuedLocalIce: IceCandidatePayload[] = [];
   private queuedRemoteIceSessionId: string | null = null;
   private queuedRemoteIce: IceCandidatePayload[] = [];
-  private lastSurface: NativeRenderSurface | null = null;
-  private surfaceUpdateInFlight = false;
-  private surfaceUpdateQueued = false;
+  private readonly surfaceUpdates: NativeSurfaceUpdateQueue;
 
-  constructor(private readonly options: NativeStreamerManagerOptions) {}
+  constructor(private readonly options: NativeStreamerManagerOptions) {
+    this.surfaceUpdates = new NativeSurfaceUpdateQueue(
+      (surface) => this.request({ type: "surface", surface }, SURFACE_UPDATE_TIMEOUT_MS).then(() => undefined),
+      (error) => console.warn("[NativeStreamer] Failed to update native render surface:", error),
+    );
+  }
 
   isRunning(): boolean {
     return this.child !== null;
@@ -731,8 +735,7 @@ export class NativeStreamerManager {
   }
 
   updateSurface(surface: NativeRenderSurface): void {
-    this.lastSurface = surface;
-    void this.flushSurfaceUpdate();
+    this.surfaceUpdates.update(surface);
   }
 
   updateBitrateLimit(maxBitrateKbps: number): void {
@@ -778,6 +781,7 @@ export class NativeStreamerManager {
     const child = this.child;
     this.activeSessionId = null;
     this.capabilities = null;
+    this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
 
     if (!child) {
@@ -796,6 +800,7 @@ export class NativeStreamerManager {
   dispose(reason = "disposed"): void {
     this.activeSessionId = null;
     this.capabilities = null;
+    this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
     this.rejectPending(new Error(`Native streamer ${reason}.`));
     this.terminateProcess();
@@ -947,7 +952,7 @@ export class NativeStreamerManager {
       );
     }
     this.assertBackendPreference(response.capabilities, backendPreference);
-    await this.flushSurfaceUpdate();
+    await this.surfaceUpdates.markReady();
   }
 
   private assertBackendPreference(
@@ -1095,32 +1100,6 @@ export class NativeStreamerManager {
         }
       });
     });
-  }
-
-  private async flushSurfaceUpdate(): Promise<void> {
-    if (this.surfaceUpdateInFlight) {
-      this.surfaceUpdateQueued = true;
-      return;
-    }
-
-    while (this.child && this.lastSurface) {
-      this.surfaceUpdateInFlight = true;
-      this.surfaceUpdateQueued = false;
-      const surface = this.lastSurface;
-
-      try {
-        await this.request({ type: "surface", surface }, SURFACE_UPDATE_TIMEOUT_MS);
-      } catch (error) {
-        console.warn("[NativeStreamer] Failed to update native render surface:", error);
-        break;
-      } finally {
-        this.surfaceUpdateInFlight = false;
-      }
-
-      if (!this.surfaceUpdateQueued || this.lastSurface === surface) {
-        break;
-      }
-    }
   }
 
   private handleStdout(chunk: string): void {
@@ -1306,6 +1285,7 @@ export class NativeStreamerManager {
     this.stderrTail = [];
     this.activeSessionId = null;
     this.capabilities = null;
+    this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
     this.rejectPending(new Error(`Native streamer process ended (${reason}).${tail}`));
 
@@ -1381,6 +1361,7 @@ export class NativeStreamerManager {
   }
 
   private terminateProcess(): void {
+    this.surfaceUpdates.markNotReady();
     const child = this.child;
     if (!child) {
       return;

@@ -167,6 +167,8 @@ let pendingDirectLaunchRequest: DirectLaunchRequest | null = createDirectLaunchR
 // Runtime pointer-lock state (updated by renderer)
 let isPointerLockActiveRuntime = false;
 let pointerLockEscapeCaptureUntilMs = 0;
+let isStreamInputActiveRuntime = false;
+let nativeRawInputOwnsEscapeRuntime = false;
 
 function createDirectLaunchRequest(args: DirectLaunchArgs): DirectLaunchRequest {
   return {
@@ -413,6 +415,14 @@ function createMainWindowDeps() {
     getPointerLockEscapeCaptureUntilMs: () => pointerLockEscapeCaptureUntilMs,
     setPointerLockEscapeCaptureUntilMs: (value: number) => {
       pointerLockEscapeCaptureUntilMs = value;
+    },
+    getStreamInputActive: () => isStreamInputActiveRuntime,
+    setStreamInputActive: (active: boolean) => {
+      isStreamInputActiveRuntime = active;
+    },
+    getNativeRawInputOwnsEscape: () => nativeRawInputOwnsEscapeRuntime,
+    setNativeRawInputOwnsEscape: (ownsEscape: boolean) => {
+      nativeRawInputOwnsEscapeRuntime = ownsEscape;
     },
   };
 }

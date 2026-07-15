@@ -365,6 +365,7 @@ export class GfnWebRtcClient {
    */
   private pendingMouseAbs: { x: number; y: number; width: number; height: number } | null = null;
   private inputCleanup: Array<() => void> = [];
+  private externalEscapeCleanup: (() => void) | null = null;
   private queuedCandidates: RTCIceCandidateInit[] = [];
 
   // Input mode: all input types (mouse, keyboard, gamepad) work simultaneously
@@ -572,6 +573,37 @@ export class GfnWebRtcClient {
     this.autoFullScreenEnabled = options.autoFullScreen !== false;
     this.clipboardPasteEnabled = Boolean(options.clipboardPaste);
     this.clipboardMaxBytes = Math.max(0, Math.trunc(options.clipboardMaxBytes ?? DEFAULT_CLIPBOARD_MAX_BYTES));
+
+    // Escape is intercepted by Electron before Chromium can leave fullscreen.
+    // Keep this subscription alive for the whole stream-client lifetime: Windows
+    // internal native mode intentionally detaches DOM input capture while RawInput
+    // owns the rest of the keyboard and mouse path.
+    try {
+      this.externalEscapeCleanup = window.openNow.onExternalEscape(() => {
+        if (!this.inputReady) return;
+
+        this.log("Forwarding main-process Escape tap to the remote session");
+        this.releasePressedKeys("external Escape forwarded from main");
+
+        const escDown = this.inputEncoder.encodeKeyDown({
+          keycode: 0x1B,
+          scancode: codeMap.Escape.scancode,
+          modifiers: 0,
+          timestampUs: timestampUs(),
+        });
+        this.sendReliableSingleInput(escDown);
+
+        const escUp = this.inputEncoder.encodeKeyUp({
+          keycode: 0x1B,
+          scancode: codeMap.Escape.scancode,
+          modifiers: 0,
+          timestampUs: timestampUs(),
+        });
+        this.sendReliableSingleInput(escUp);
+      });
+    } catch {
+      this.externalEscapeCleanup = null;
+    }
 
     // Configure video element for lowest latency playback
     this.configureVideoElementForLowLatency(options.videoElement);
@@ -2879,17 +2911,17 @@ export class GfnWebRtcClient {
     ensureFullscreen: boolean,
   ): Promise<void> {
     if (ensureFullscreen && !document.fullscreenElement) {
-      try {
-        await document.documentElement.requestFullscreen();
-      } catch (error) {
-        this.log(`DOM fullscreen request failed: ${String(error)}`);
-      }
-
       if (typeof window.openNow?.setFullscreen === "function") {
         try {
           await window.openNow.setFullscreen(true);
         } catch (error) {
           this.log(`Native fullscreen request failed: ${String(error)}`);
+        }
+      } else {
+        try {
+          await document.documentElement.requestFullscreen();
+        } catch (error) {
+          this.log(`DOM fullscreen request failed: ${String(error)}`);
         }
       }
     }
@@ -4051,31 +4083,6 @@ export class GfnWebRtcClient {
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
 
-    // Listen for external Escape events forwarded from main process and
-    // forward them to the remote session as synthetic Escape keypresses.
-    try {
-      (window as any).openNow?.onExternalEscape?.(() => {
-        if (!this.inputReady) return;
-        this.releasePressedKeys("external Escape forwarded from main");
-
-        const escDown = this.inputEncoder.encodeKeyDown({
-          keycode: 0x1B,
-          scancode: codeMap.Escape.scancode,
-          modifiers: 0,
-          timestampUs: timestampUs(),
-        });
-        this.sendReliableSingleInput(escDown);
-
-        const escUp = this.inputEncoder.encodeKeyUp({
-          keycode: 0x1B,
-          scancode: codeMap.Escape.scancode,
-          modifiers: 0,
-          timestampUs: timestampUs(),
-        });
-        this.sendReliableSingleInput(escUp);
-      });
-    } catch {}
-
     this.inputCleanup.push(() => window.removeEventListener("gamepadconnected", this.onGamepadConnected));
     this.inputCleanup.push(() => window.removeEventListener("gamepaddisconnected", this.onGamepadDisconnected));
     this.inputCleanup.push(() => document.removeEventListener("keydown", onKeyDown, true));
@@ -4718,6 +4725,8 @@ export class GfnWebRtcClient {
 
   dispose(): void {
     this.cleanupPeerConnection();
+    this.externalEscapeCleanup?.();
+    this.externalEscapeCleanup = null;
 
     // Cleanup microphone
     if (this.micManager) {

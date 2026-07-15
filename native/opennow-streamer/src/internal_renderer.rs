@@ -266,6 +266,8 @@ fn bind_overlay_to_child(
 
         // SAFETY: child_handle is a platform window/view created by this process
         // (or an X11 window id we own) and remains valid while the surface lives.
+        // Win32 vulkansink: our patched gstvkwindow presents on the GSTVULKAN child
+        // hwnd while parenting that child under this overlay handle (no floating window).
         unsafe {
             overlay.set_window_handle(child_handle);
         }
@@ -424,14 +426,16 @@ mod windows_child {
     // owned by RawInput on this HWND (not Electron click-through).
     const HWND_TOP: Hwnd = std::ptr::null_mut();
     const GWL_STYLE: i32 = -16;
+    const GWL_EXSTYLE: i32 = -20;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOACTIVATE: u32 = 0x0010;
-    const SWP_NOCOPYBITS: u32 = 0x0100;
-    const SWP_NOSENDCHANGING: u32 = 0x0400;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_SHOWWINDOW: u32 = 0x0040;
     const SWP_HIDEWINDOW: u32 = 0x0080;
+    const SWP_NOCOPYBITS: u32 = 0x0100;
     const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOSENDCHANGING: u32 = 0x0400;
     const SW_HIDE: i32 = 0;
     const SW_SHOWNOACTIVATE: i32 = 4;
     const WM_DESTROY: u32 = 0x0002;
@@ -442,6 +446,16 @@ mod windows_child {
     const WS_CLIPCHILDREN: u32 = 0x0200_0000;
     const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
     const WS_VISIBLE: u32 = 0x1000_0000;
+    const WS_POPUP: u32 = 0x8000_0000;
+    const WS_CAPTION: u32 = 0x00C0_0000;
+    const WS_THICKFRAME: u32 = 0x0004_0000;
+    const WS_MINIMIZEBOX: u32 = 0x0002_0000;
+    const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
+    const WS_SYSMENU: u32 = 0x0008_0000;
+    const WS_BORDER: u32 = 0x0080_0000;
+    const WS_EX_APPWINDOW: u32 = 0x0004_0000;
+    const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+    const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
     const MA_ACTIVATE: isize = 1;
     const BLACK_BRUSH: i32 = 4;
 
@@ -484,11 +498,17 @@ mod windows_child {
             lp_enum_func: Option<unsafe extern "system" fn(Hwnd, Lparam) -> Bool>,
             l_param: Lparam,
         ) -> Bool;
+        fn EnumWindows(
+            lp_enum_func: Option<unsafe extern "system" fn(Hwnd, Lparam) -> Bool>,
+            l_param: Lparam,
+        ) -> Bool;
         fn GetClassNameW(h_wnd: Hwnd, lp_class_name: *mut u16, n_max_count: i32) -> i32;
         fn GetModuleHandleW(lp_module_name: *const u16) -> Hinstance;
         fn GetParent(h_wnd: Hwnd) -> Hwnd;
         fn GetWindowLongPtrW(h_wnd: Hwnd, n_index: i32) -> isize;
+        fn GetWindowThreadProcessId(h_wnd: Hwnd, process_id: *mut u32) -> u32;
         fn RegisterClassExW(class: *const WndClassExW) -> Atom;
+        fn SetParent(h_wnd_child: Hwnd, h_wnd_new_parent: Hwnd) -> Hwnd;
         fn SetWindowLongPtrW(h_wnd: Hwnd, n_index: i32, dw_new_long: isize) -> isize;
         fn SetWindowPos(
             h_wnd: Hwnd,
@@ -507,6 +527,11 @@ mod windows_child {
         fn PostMessageW(h_wnd: Hwnd, msg: u32, w_param: Wparam, l_param: Lparam) -> Bool;
         fn PostThreadMessageW(id_thread: u32, msg: u32, w_param: Wparam, l_param: Lparam) -> Bool;
         fn GetCurrentThreadId() -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcessId() -> u32;
     }
 
     #[repr(C)]
@@ -631,6 +656,170 @@ mod windows_child {
             None
         } else {
             Some(found)
+        }
+    }
+
+    unsafe extern "system" fn collect_gst_vulkan_child(hwnd: Hwnd, l_param: Lparam) -> Bool {
+        let out = &mut *(l_param as *mut Hwnd);
+        if !out.is_null() {
+            return 1;
+        }
+        if class_name_is_gst_vulkan(hwnd) {
+            *out = hwnd;
+            return 0;
+        }
+        1
+    }
+
+    unsafe extern "system" fn collect_gst_vulkan_top_level(hwnd: Hwnd, l_param: Lparam) -> Bool {
+        let state = &mut *(l_param as *mut (u32, Hwnd));
+        if !state.1.is_null() {
+            return 1;
+        }
+        let mut process_id = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id != state.0 {
+            return 1;
+        }
+        if class_name_is_gst_vulkan(hwnd) {
+            state.1 = hwnd;
+            return 0;
+        }
+        1
+    }
+
+    unsafe fn class_name_is_gst_vulkan(hwnd: Hwnd) -> bool {
+        let mut class_name = [0u16; 64];
+        let len = GetClassNameW(hwnd, class_name.as_mut_ptr(), class_name.len() as i32);
+        if len <= 0 {
+            return false;
+        }
+        String::from_utf16_lossy(&class_name[..len as usize]) == "GSTVULKAN"
+    }
+
+    unsafe fn find_gst_vulkan_under_parent(parent: Hwnd) -> Option<Hwnd> {
+        let mut found: Hwnd = null_mut();
+        EnumChildWindows(
+            parent,
+            Some(collect_gst_vulkan_child),
+            &mut found as *mut Hwnd as Lparam,
+        );
+        if found.is_null() {
+            None
+        } else {
+            Some(found)
+        }
+    }
+
+    unsafe fn find_process_gst_vulkan_window() -> Option<Hwnd> {
+        let mut state = (GetCurrentProcessId(), null_mut::<c_void>());
+        EnumWindows(
+            Some(collect_gst_vulkan_top_level),
+            &mut state as *mut (u32, Hwnd) as Lparam,
+        );
+        if state.1.is_null() {
+            None
+        } else {
+            Some(state.1)
+        }
+    }
+
+    /// Hide any top-level GSTVULKAN windows so they never float over Electron.
+    pub(super) fn suppress_top_level_gst_vulkan_windows() {
+        unsafe {
+            let mut state = (GetCurrentProcessId(), 0u32);
+            EnumWindows(
+                Some(suppress_top_level_gst_vulkan),
+                &mut state as *mut (u32, u32) as Lparam,
+            );
+        }
+    }
+
+    unsafe extern "system" fn suppress_top_level_gst_vulkan(hwnd: Hwnd, l_param: Lparam) -> Bool {
+        let state = &mut *(l_param as *mut (u32, u32));
+        let mut process_id = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id != state.0 || !class_name_is_gst_vulkan(hwnd) {
+            return 1;
+        }
+        // Already embedded under some parent — leave alone.
+        if !GetParent(hwnd).is_null() {
+            return 1;
+        }
+        ShowWindow(hwnd, SW_HIDE);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let desired_ex = (ex | WS_EX_TOOLWINDOW as isize | WS_EX_NOACTIVATE as isize)
+            & !(WS_EX_APPWINDOW as isize);
+        if desired_ex != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, desired_ex);
+        }
+        SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            -32_000,
+            -32_000,
+            2,
+            2,
+            SWP_NOACTIVATE | SWP_HIDEWINDOW | SWP_NOSENDCHANGING,
+        );
+        state.1 = state.1.saturating_add(1);
+        1
+    }
+
+    /// Reparent vulkansink's GSTVULKAN hwnd into our Internal child and size it.
+    /// Keeps the window hidden while top-level so nothing floats over Electron.
+    pub(super) fn embed_gst_vulkan_window(parent: Hwnd, width: i32, height: i32) -> bool {
+        if parent.is_null() {
+            return false;
+        }
+        let width = width.max(2);
+        let height = height.max(2);
+        unsafe {
+            suppress_top_level_gst_vulkan_windows();
+
+            let Some(vulkan) = find_gst_vulkan_under_parent(parent)
+                .or_else(|| find_process_gst_vulkan_window())
+            else {
+                return false;
+            };
+
+            // Never show as a top-level window — hide first, then reparent, then show.
+            if GetParent(vulkan) != parent {
+                ShowWindow(vulkan, SW_HIDE);
+                SetParent(vulkan, parent);
+            }
+
+            let style = GetWindowLongPtrW(vulkan, GWL_STYLE);
+            let cleared = (WS_POPUP
+                | WS_CAPTION
+                | WS_THICKFRAME
+                | WS_MINIMIZEBOX
+                | WS_MAXIMIZEBOX
+                | WS_SYSMENU
+                | WS_BORDER) as isize;
+            let desired = (style & !cleared)
+                | (WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN) as isize;
+            if desired != style {
+                SetWindowLongPtrW(vulkan, GWL_STYLE, desired);
+            }
+
+            let ex = GetWindowLongPtrW(vulkan, GWL_EXSTYLE);
+            let desired_ex = ex & !(WS_EX_APPWINDOW as isize | WS_EX_TOOLWINDOW as isize);
+            if desired_ex != ex {
+                SetWindowLongPtrW(vulkan, GWL_EXSTYLE, desired_ex);
+            }
+
+            SetWindowPos(
+                vulkan,
+                HWND_TOP,
+                0,
+                0,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOCOPYBITS,
+            );
+            ShowWindow(vulkan, SW_SHOWNOACTIVATE);
+            true
         }
     }
 

@@ -212,6 +212,9 @@ const api: OpenNowApi = {
   notifyPointerLockChange: (active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
     ipcRenderer.send(IPC_CHANNELS.POINTER_LOCK_CHANGE, active, suppressEscapeFullscreenGrace);
   },
+  notifyNativeInputModeChange: (active: boolean, rawInputOwnsEscape: boolean) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT_MODE_CHANGE, active, rawInputOwnsEscape);
+  },
   onExternalEscape: (listener: () => void) => {
     const wrapped = () => listener();
     ipcRenderer.on(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);

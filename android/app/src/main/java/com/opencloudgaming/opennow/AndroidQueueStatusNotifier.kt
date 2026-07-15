@@ -16,6 +16,8 @@ import android.util.Log
 
 internal const val QUEUE_CHANNEL_ID = "opennow_queue_status"
 internal const val QUEUE_NOTIFICATION_ID = 4210
+private const val QUEUE_ALERT_CHANNEL_ID = "opennow_queue_ready"
+private const val QUEUE_ALERT_NOTIFICATION_ID = 4212
 
 private const val QUEUE_SERVICE_ACTION_UPDATE = "com.opencloudgaming.opennow.queue.UPDATE"
 private const val QUEUE_SERVICE_ACTION_STOP = "com.opencloudgaming.opennow.queue.STOP"
@@ -24,15 +26,49 @@ private const val QUEUE_SERVICE_EXTRA_TEXT = "text"
 private const val QUEUE_SERVICE_TAG = "OpenNOWQueueService"
 private val QUEUE_NOTIFICATION_SMALL_ICON = R.drawable.ic_tab_stream
 
+/** Returns true if the queue wait is over and the game is now launching/loading. */
+private fun isQueueComplete(state: OpenNowUiState): Boolean {
+    val queuePosition = queueDisplayPosition(state)
+    if (queuePosition != null) return false // Still in queue
+    val phase = state.launchPhase
+    if (phase.isBlank()) return false
+    return phase.equals("Connecting stream", ignoreCase = true) ||
+        phase.equals("Setting up rig", ignoreCase = true) ||
+        phase.equals("Resuming session", ignoreCase = true) ||
+        phase.contains("Starting", ignoreCase = true)
+}
+
 class AndroidQueueStatusNotifier(private val context: Context) {
     private val appContext = context.applicationContext
     private val notificationManager = appContext.getSystemService(NotificationManager::class.java)
     private var serviceStartRequested = false
+    private var queueReadyAlertSent = false
 
     fun update(state: OpenNowUiState) {
         if (!shouldShowQueueLaunchStatus(state)) {
             cancel()
             return
+        }
+
+        // Reset alert tracker when user is actively queuing so it fires again next time queue completes.
+        if (queueDisplayPosition(state) != null) {
+            queueReadyAlertSent = false
+        }
+
+        // Send a one-shot high-priority heads-up alert when queue finishes and game is loading.
+        if (!queueReadyAlertSent && isQueueComplete(state)) {
+            queueReadyAlertSent = true
+            if (canPostNotifications()) {
+                runCatching {
+                    ensureQueueAlertChannel(appContext)
+                    notificationManager.notify(
+                        QUEUE_ALERT_NOTIFICATION_ID,
+                        buildQueueReadyNotification(appContext, state.streamGame?.title ?: "OpenNOW"),
+                    )
+                }.onFailure { error ->
+                    Log.w(QUEUE_SERVICE_TAG, "Unable to post queue-ready alert notification", error)
+                }
+            }
         }
 
         ensureChannel()
@@ -77,7 +113,9 @@ class AndroidQueueStatusNotifier(private val context: Context) {
             Log.w(QUEUE_SERVICE_TAG, "Unable to stop queue foreground service", error)
         }
         serviceStartRequested = false
+        queueReadyAlertSent = false
         notificationManager.cancel(QUEUE_NOTIFICATION_ID)
+        notificationManager.cancel(QUEUE_ALERT_NOTIFICATION_ID)
     }
 
     private fun canPostNotifications(): Boolean {
@@ -87,6 +125,10 @@ class AndroidQueueStatusNotifier(private val context: Context) {
 
     private fun ensureChannel() {
         ensureQueueNotificationChannel(appContext)
+    }
+
+    private fun ensureAlertChannel() {
+        ensureQueueAlertChannel(appContext)
     }
 }
 
@@ -178,3 +220,53 @@ private fun buildQueueNotification(context: Context, title: String, text: String
         .setContentIntent(pendingIntent)
         .build()
 }
+
+private fun ensureQueueAlertChannel(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    val notificationManager = context.applicationContext.getSystemService(NotificationManager::class.java)
+    val channel = NotificationChannel(
+        QUEUE_ALERT_CHANNEL_ID,
+        "Queue ready alert",
+        NotificationManager.IMPORTANCE_HIGH,
+    ).apply {
+        description = "Alerts when a GFN queue finishes and the game is about to launch."
+        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+        setShowBadge(true)
+        enableVibration(true)
+    }
+    notificationManager.createNotificationChannel(channel)
+}
+
+private fun buildQueueReadyNotification(context: Context, gameTitle: String): Notification {
+    val appContext = context.applicationContext
+    val openIntent = Intent(appContext, MainActivity::class.java).apply {
+        action = Intent.ACTION_MAIN
+        addCategory(Intent.CATEGORY_LAUNCHER)
+        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    }
+    val pendingIntent = PendingIntent.getActivity(
+        appContext,
+        2,
+        openIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+    val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Notification.Builder(appContext, QUEUE_ALERT_CHANNEL_ID)
+    } else {
+        @Suppress("DEPRECATION")
+        Notification.Builder(appContext)
+    }
+    return builder
+        .setSmallIcon(QUEUE_NOTIFICATION_SMALL_ICON)
+        .setContentTitle("$gameTitle is ready to play!")
+        .setContentText("Your GFN queue is done. Tap to return to the app.")
+        .setSubText("OpenNOW")
+        .setCategory(Notification.CATEGORY_ALARM)
+        .setVisibility(Notification.VISIBILITY_PUBLIC)
+        .setOngoing(false)
+        .setAutoCancel(true)
+        .setShowWhen(true)
+        .setContentIntent(pendingIntent)
+        .build()
+}
+

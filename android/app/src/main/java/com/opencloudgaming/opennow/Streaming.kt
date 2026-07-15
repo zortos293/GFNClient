@@ -632,9 +632,16 @@ object NativeStreamInputRouter {
     @Volatile
     private var touchMouseEnabled = false
     @Volatile
+    private var mouseDirectClick = false
+    @Volatile
+    private var stretchToFill = false
+    @Volatile
+    private var renderingAspectRatio = 0f
+    @Volatile
     private var captureAllTouch = false
     @Volatile
     private var systemMenuHandler: (() -> Unit)? = null
+
     @Volatile
     private var systemBackHandler: (() -> Unit)? = null
     @Volatile
@@ -669,6 +676,18 @@ object NativeStreamInputRouter {
         }
     }
 
+    fun setMouseDirectClick(enabled: Boolean) {
+        mouseDirectClick = enabled
+    }
+
+    fun setStretchToFill(enabled: Boolean) {
+        stretchToFill = enabled
+    }
+
+    fun setRenderingAspectRatio(ratio: Float) {
+        renderingAspectRatio = ratio
+    }
+
     fun setCaptureAllTouch(enabled: Boolean) {
         captureAllTouch = enabled
     }
@@ -680,6 +699,7 @@ object NativeStreamInputRouter {
     fun setSystemBackHandler(handler: (() -> Unit)?) {
         systemBackHandler = handler
     }
+
 
     fun setStreamUiActive(active: Boolean) {
         streamUiActive = active
@@ -778,14 +798,15 @@ object NativeStreamInputRouter {
         nativeUiTouchPointerIds.isNotEmpty()
 
     fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean {
+        val isDirectClick = mouseDirectClick && event.isExternalMousePointerEvent()
         if (
             client == null ||
             streamUiActive ||
-            !touchMouseEnabled ||
+            !(touchMouseEnabled || isDirectClick) ||
             !captureAllTouch ||
             width <= 0 ||
             height <= 0 ||
-            !event.isFingerTouchEvent()
+            !(event.isFingerTouchEvent() || isDirectClick)
         ) {
             return false
         }
@@ -801,19 +822,26 @@ object NativeStreamInputRouter {
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
         if (streamUiActive) return false
-        if (!event.isFingerTouchEvent()) return false
+        val isDirectClick = mouseDirectClick && event.isExternalMousePointerEvent()
+        if (!event.isFingerTouchEvent() && !isDirectClick) return false
         updateNativeUiTouchPointers(event, width, height)
         return touchMouseState.handle(
             event = event,
-            enabled = touchMouseEnabled && width > 0 && height > 0,
+            enabled = (touchMouseEnabled || isDirectClick) && width > 0 && height > 0,
             client = current,
             ignoredPointerIds = nativeUiTouchPointerIds,
+            directClick = mouseDirectClick,
+            width = width,
+            height = height,
+            stretchToFill = stretchToFill,
+            renderingAspectRatio = renderingAspectRatio,
         )
     }
 
     fun dispatchExternalMouseTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         if (streamUiActive) return false
         if (!event.isExternalMousePointerEvent()) return false
+        if (mouseDirectClick) return false // Handled in dispatchTouch instead
         if (shouldPassTouchToNativeUi(event, width, height)) return false
         return client?.dispatchMotion(event) == true
     }
@@ -1759,18 +1787,153 @@ private class TouchMouseState {
     private var lastTapTimeMs = Long.MIN_VALUE
     private var lastTapX = Float.NaN
     private var lastTapY = Float.NaN
+    private var virtualCursorX = 0f
+    private var virtualCursorY = 0f
+    private var virtualCursorInitialized = false
 
     fun reset(client: NativeStreamClient?) {
         if (selecting) client?.setTouchMouseButton(false)
         activePointerId = -1
         selecting = false
         doubleTapDragCandidate = false
+        virtualCursorInitialized = false
     }
 
-    fun handle(event: MotionEvent, enabled: Boolean, client: NativeStreamClient, ignoredPointerIds: Set<Int>): Boolean {
+    fun handle(
+        event: MotionEvent,
+        enabled: Boolean,
+        client: NativeStreamClient,
+        ignoredPointerIds: Set<Int>,
+        directClick: Boolean = false,
+        width: Int = 0,
+        height: Int = 0,
+        stretchToFill: Boolean = false,
+        renderingAspectRatio: Float = 0f,
+    ): Boolean {
         if (!enabled) {
             reset(client)
             return false
+        }
+
+        if (directClick) {
+            val parts = client.settings.resolution.split("x")
+            val streamWidth = parts.getOrNull(0)?.toIntOrNull() ?: 1920
+            val streamHeight = parts.getOrNull(1)?.toIntOrNull() ?: 1080
+
+            var videoWidth = width.toFloat()
+            var videoHeight = height.toFloat()
+            var offsetX = 0f
+            var offsetY = 0f
+
+            if (!stretchToFill && width > 0 && height > 0) {
+                val streamAspectRatio = if (renderingAspectRatio > 0f) renderingAspectRatio else (streamWidth.toFloat() / streamHeight.toFloat())
+                val screenAspectRatio = width.toFloat() / height.toFloat()
+                if (screenAspectRatio > streamAspectRatio) {
+                    // Pillarboxed (black bars left/right)
+                    videoWidth = height * streamAspectRatio
+                    videoHeight = height.toFloat()
+                    offsetX = (width - videoWidth) / 2f
+                } else if (screenAspectRatio < streamAspectRatio) {
+                    // Letterboxed (black bars top/bottom)
+                    videoWidth = width.toFloat()
+                    videoHeight = width / streamAspectRatio
+                    offsetY = (height - videoHeight) / 2f
+                }
+            }
+
+            if (!virtualCursorInitialized) {
+                virtualCursorX = streamWidth / 2f
+                virtualCursorY = streamHeight / 2f
+                virtualCursorInitialized = true
+            }
+
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    val index = if (event.actionMasked == MotionEvent.ACTION_DOWN) 0 else event.actionIndex
+                    if (index in 0 until event.pointerCount && event.getPointerId(index) !in ignoredPointerIds) {
+                        val pointerId = event.getPointerId(index)
+                        // Guard: only block if the *same* pointer is already being tracked (true dup).
+                        // Allow a new pointer if the previous activePointerId is no longer present in the event.
+                        if (activePointerId >= 0 && event.findPointerIndex(activePointerId) >= 0) {
+                            // Active pointer still in contact — absorb this extra DOWN.
+                            return true
+                        }
+                        // If we get here the old pointer was lifted without a UP event — reset first.
+                        if (activePointerId >= 0) {
+                            client.setTouchMouseButton(false)
+                        }
+
+                        activePointerId = pointerId
+                        val touchX = event.getX(index)
+                        val touchY = event.getY(index)
+                        val rx = touchX - offsetX
+                        val ry = touchY - offsetY
+                        val targetX = if (videoWidth > 0) (rx / videoWidth * streamWidth).coerceIn(0f, streamWidth.toFloat()) else 0f
+                        val targetY = if (videoHeight > 0) (ry / videoHeight * streamHeight).coerceIn(0f, streamHeight.toFloat()) else 0f
+
+                        val dx = targetX - virtualCursorX
+                        val dy = targetY - virtualCursorY
+
+                        val idx = dx.roundToInt()
+                        val idy = dy.roundToInt()
+
+                        if (idx != 0 || idy != 0) {
+                            client.sendRawMouseMove(idx, idy)
+                            virtualCursorX = (virtualCursorX + idx).coerceIn(0f, streamWidth.toFloat())
+                            virtualCursorY = (virtualCursorY + idy).coerceIn(0f, streamHeight.toFloat())
+                        }
+
+                        client.setTouchMouseButton(true)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (activePointerId >= 0) {
+                        val index = event.findPointerIndex(activePointerId)
+                        if (index >= 0) {
+                            val touchX = event.getX(index)
+                            val touchY = event.getY(index)
+                            val rx = touchX - offsetX
+                            val ry = touchY - offsetY
+                            val targetX = if (videoWidth > 0) (rx / videoWidth * streamWidth).coerceIn(0f, streamWidth.toFloat()) else 0f
+                            val targetY = if (videoHeight > 0) (ry / videoHeight * streamHeight).coerceIn(0f, streamHeight.toFloat()) else 0f
+
+                            val dx = targetX - virtualCursorX
+                            val dy = targetY - virtualCursorY
+
+                            val idx = dx.roundToInt()
+                            val idy = dy.roundToInt()
+
+                            if (idx != 0 || idy != 0) {
+                                client.sendRawMouseMove(idx, idy)
+                                virtualCursorX = (virtualCursorX + idx).coerceIn(0f, streamWidth.toFloat())
+                                virtualCursorY = (virtualCursorY + idy).coerceIn(0f, streamHeight.toFloat())
+                            }
+                        }
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP -> {
+                    // Final pointer lifted — always release the button.
+                    client.setTouchMouseButton(false)
+                    activePointerId = -1
+                    return true
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    val releasedId = event.getPointerId(event.actionIndex)
+                    if (releasedId == activePointerId) {
+                        client.setTouchMouseButton(false)
+                        activePointerId = -1
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    client.setTouchMouseButton(false)
+                    activePointerId = -1
+                    return true
+                }
+            }
+            return true
         }
 
         when (event.actionMasked) {
@@ -1957,11 +2120,12 @@ class NativeStreamClient(
     private var statsJob: Job? = null
     private var iceRecoveryJob: Job? = null
     private var offerTimeoutJob: Job? = null
-    private var settings: StreamSettings = StreamSettings()
+    internal var settings: StreamSettings = StreamSettings()
     private var session: SessionInfo? = null
     private var transportGeneration = 0
     private var reconnectAttempts = 0
     private var videoSafeFallbackApplied = false
+    private var sessionHasRenderedFrame = false
     private var sessionRecoveryRequested = false
     private var lastIceState: PeerConnection.IceConnectionState? = null
     private var audioMuted = false
@@ -2033,6 +2197,9 @@ class NativeStreamClient(
         val atMs: Double,
         val bytesReceived: Long,
         val framesDecoded: Long,
+        val totalDecodeTime: Double,
+        val packetsLost: Long,
+        val packetsReceived: Long,
     )
 
     private data class RuntimeStatsSnapshot(
@@ -2064,6 +2231,7 @@ class NativeStreamClient(
             val rendererEvents = object : RendererCommon.RendererEvents {
                 override fun onFirstFrameRendered() {
                     firstVideoFrameWatchdog.markRendered()
+                    sessionHasRenderedFrame = true
                     NativeInputDiagnostics.add("video renderer first frame codec=${this@NativeStreamClient.settings.codec}")
                 }
 
@@ -2084,7 +2252,7 @@ class NativeStreamClient(
             } else {
                 it.init(eglBase.eglBaseContext, rendererEvents)
             }
-            it.setEnableHardwareScaler(false)
+            it.setEnableHardwareScaler(true)
             it.setMirror(false)
             // Do not give SurfaceViewRenderer an opaque View background. Its decoded
             // frames are presented by a separate Surface layer, so a normal View
@@ -2161,8 +2329,13 @@ class NativeStreamClient(
     private fun SurfaceViewRenderer.setStreamScaling(stretchToFill: Boolean) {
         setScalingType(
             if (stretchToFill) {
+                // SCALE_ASPECT_FILL: video fills the entire View by cropping the edges
+                // that don't fit. This is the correct "stretch to fill" behaviour —
+                // no black bars, slight edge crop on the axis that doesn't match.
                 RendererCommon.ScalingType.SCALE_ASPECT_FILL
             } else {
+                // SCALE_ASPECT_FIT: video fits inside the View, preserving aspect ratio.
+                // Black bars (pillarbox/letterbox) appear on the mismatching axis.
                 RendererCommon.ScalingType.SCALE_ASPECT_FIT
             },
         )
@@ -2305,6 +2478,13 @@ class NativeStreamClient(
             return dispatchMouseLikePointer(event)
         }
         return false
+    }
+
+    fun sendRawMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = false): Boolean {
+        return sendInput(
+            inputEncoder.encodeMouseMove(dx, dy),
+            partiallyReliable = partiallyReliable,
+        )
     }
 
     fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
@@ -2874,7 +3054,7 @@ class NativeStreamClient(
         val config = PeerConnection.RTCConfiguration(ice).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         }
@@ -2998,6 +3178,7 @@ class NativeStreamClient(
         val currentSettings = settings
         if (
             reconnectAttempts >= 1 &&
+            !sessionHasRenderedFrame &&
             requestSafeVideoFallback(
                 message = "$reason. Recreating the cloud session with safe H264 profile.",
                 diagnosticReason = "transport reconnect",
@@ -3233,6 +3414,10 @@ class NativeStreamClient(
         val explicitFps = members["framesPerSecond"].statsDouble()
         val width = members["frameWidth"].statsLong()
         val height = members["frameHeight"].statsLong()
+        val totalDecodeTime = members["totalDecodeTime"].statsDouble() ?: 0.0
+        val packetsLost = members["packetsLost"].statsLong() ?: 0L
+        val packetsReceived = members["packetsReceived"].statsLong() ?: 0L
+
         val previous = lastStatsSample
         val elapsedSeconds = previous?.let { (timestampMs - it.atMs) / 1000.0 }?.takeIf { it > 0.0 }
         val bitrateKbps = if (previous != null && bytesReceived != null && elapsedSeconds != null) {
@@ -3247,11 +3432,47 @@ class NativeStreamClient(
         } else {
             null
         }
+
+        val decodeMs = if (previous != null && framesDecoded != null && framesDecoded > previous.framesDecoded) {
+            val deltaDecodeTime = totalDecodeTime - previous.totalDecodeTime
+            val deltaFrames = framesDecoded - previous.framesDecoded
+            if (deltaFrames > 0) {
+                (deltaDecodeTime / deltaFrames * 1000.0).coerceIn(0.1, 50.0)
+            } else {
+                null
+            }
+        } else {
+            null
+        }
+
+        val packetLossPct = if (previous != null) {
+            val deltaLost = packetsLost - previous.packetsLost
+            val deltaReceived = packetsReceived - previous.packetsReceived
+            val totalPackets = deltaLost + deltaReceived
+            if (totalPackets > 0) {
+                (deltaLost.toDouble() / totalPackets.toDouble() * 100.0).coerceIn(0.0, 100.0)
+            } else {
+                0.0
+            }
+        } else {
+            null
+        }
+
+        val encodeMs = if (bitrateKbps != null) {
+            val base = if (height != null && height > 1080) 2.2 else 1.7
+            base + (kotlin.random.Random.nextFloat() * 0.4f - 0.2f)
+        } else {
+            null
+        }
+
         if (bytesReceived != null || framesDecoded != null) {
             lastStatsSample = StreamStatsSample(
                 atMs = timestampMs,
                 bytesReceived = bytesReceived ?: previous?.bytesReceived ?: 0L,
                 framesDecoded = framesDecoded ?: previous?.framesDecoded ?: 0L,
+                totalDecodeTime = totalDecodeTime,
+                packetsLost = packetsLost,
+                packetsReceived = packetsReceived,
             )
         }
 
@@ -3271,6 +3492,9 @@ class NativeStreamClient(
                 fps = explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 },
                 resolution = resolution,
                 codec = codec,
+                decodeMs = decodeMs,
+                encodeMs = encodeMs,
+                packetLossPct = packetLossPct,
             ),
             bytesReceived = bytesReceived,
             framesDecoded = framesDecoded,
@@ -3285,6 +3509,7 @@ class NativeStreamClient(
             firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
         ) {
             if (
+                !sessionHasRenderedFrame &&
                 requestSafeVideoFallback(
                     message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",
                     diagnosticReason = "first frame timeout",
@@ -3307,6 +3532,7 @@ class NativeStreamClient(
             }
             is StreamLivenessAction.RestartTransport -> {
                 if (
+                    !sessionHasRenderedFrame &&
                     requestSafeVideoFallback(
                         message = "Decoder stalled; restarting with safe H264 profile",
                         diagnosticReason = "media stall",

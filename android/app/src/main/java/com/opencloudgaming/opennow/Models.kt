@@ -96,8 +96,11 @@ data class StreamStatsMetrics(
     val connection: Boolean = true,
     val resolution: Boolean = false,
     val codec: Boolean = false,
+    val location: Boolean = true,
+    val latency: Boolean = true,
+    val packetLoss: Boolean = true,
 ) {
-    fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, connection, resolution, codec).count { it }
+    fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, connection, resolution, codec, location, latency, packetLoss).count { it }
 }
 
 @Serializable
@@ -177,6 +180,12 @@ data class StreamSettings(
 )
 
 @Serializable
+enum class TouchControllerStyle {
+    V1,
+    V2
+}
+
+@Serializable
 data class TouchOffset(val x: Float = 0f, val y: Float = 0f)
 
 @Serializable
@@ -193,7 +202,9 @@ data class AndroidTouchSettings(
     val leftOffsetYDp: Float = 0f,
     val rightOffsetXDp: Float = 0f,
     val rightOffsetYDp: Float = 0f,
+    val mouseDirectClick: Boolean = false,
     val offsets: Map<String, TouchOffset> = emptyMap(),
+    val touchControllerStyle: TouchControllerStyle = TouchControllerStyle.V1,
 ) {
     fun getOffset(key: String): TouchOffset = offsets[key] ?: TouchOffset()
 
@@ -252,6 +263,7 @@ data class AppSettings(
     val streamIntroStartMode: IntroMusicStartMode = IntroMusicStartMode.Muted,
     val queueReadyMusic: Boolean = true,
     val stretchStreamToFill: Boolean = false,
+    val stretchStreamToZoom: Boolean = false,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = true,
@@ -1282,6 +1294,9 @@ data class StreamRuntimeStats(
     val fps: Int? = null,
     val resolution: String? = null,
     val codec: String? = null,
+    val decodeMs: Double? = null,
+    val encodeMs: Double? = null,
+    val packetLossPct: Double? = null,
 )
 
 internal fun CodecCapability.streamingDecoderAvailable(): Boolean =

@@ -5529,6 +5529,217 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--ink);
 }
 
+.settings-native-capability-row {
+  gap: 12px;
+  overflow: hidden;
+}
+
+.settings-native-capability-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-native-capability-header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-native-capability-kicker {
+  color: var(--ink-muted);
+  font-size: 0.63rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.settings-native-capability-count {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  color: var(--ink-muted);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.settings-native-capability-count.is-ready {
+  border-color: rgba(var(--accent-rgb), 0.22);
+  color: var(--accent);
+  background: var(--accent-surface);
+}
+
+.settings-native-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.settings-native-capability-card {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: 9px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--ink) 3%, transparent), transparent 55%),
+    var(--bg-e);
+}
+
+.settings-native-capability-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: var(--panel-border-solid);
+}
+
+.settings-native-capability-card.is-supported::before {
+  background: var(--accent);
+}
+
+.settings-native-capability-card.is-active {
+  border-color: rgba(var(--accent-rgb), 0.3);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.05);
+}
+
+.settings-native-capability-card.is-unsupported {
+  opacity: 0.7;
+}
+
+.settings-native-capability-card-top {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-native-capability-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ink-muted);
+}
+
+.settings-native-capability-card.is-supported .settings-native-capability-icon {
+  color: var(--accent);
+}
+
+.settings-native-capability-name {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-native-capability-name strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.83rem;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-native-capability-name > span {
+  color: var(--ink-muted);
+  font-size: 0.66rem;
+  font-weight: 650;
+}
+
+.settings-native-capability-codecs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.settings-native-capability-codecs span {
+  padding: 3px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  color: var(--ink-muted);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  font-size: 0.64rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.settings-native-capability-codecs span.is-supported {
+  border-color: rgba(var(--accent-rgb), 0.18);
+  color: var(--ink-soft);
+  background: rgba(var(--accent-rgb), 0.07);
+}
+
+.settings-native-capability-codecs span.is-unsupported {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.settings-native-capability-meta {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-muted);
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 0.61rem;
+}
+
+.settings-native-capability-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-native-capability-reason {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.69rem;
+  line-height: 1.4;
+}
+
+.settings-backend-support-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-muted);
+}
+
+.settings-backend-support-dot.is-supported {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.08);
+}
+
+.settings-backend-support-dot.is-unsupported {
+  background: var(--error);
+}
+
+.settings-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+@media (max-width: 680px) {
+  .settings-native-capability-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .settings-native-capability-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .settings-shortcut-hint {
   font-size: 0.72rem;
   color: var(--ink-muted);

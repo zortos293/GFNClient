@@ -448,9 +448,13 @@ pub(crate) mod win32_renderer_window {
     }
 
     pub unsafe fn set_input_event_sender(sender: Option<Sender<NativeWindowInputEvent>>) {
+        let input_stopped = sender.is_none();
         let slot = INPUT_EVENT_SENDER.get_or_init(|| Mutex::new(None));
         if let Ok(mut current) = slot.lock() {
             *current = sender;
+        }
+        if input_stopped {
+            unregister_raw_input_devices();
         }
     }
 
@@ -473,7 +477,9 @@ pub(crate) mod win32_renderer_window {
             .get()
             .and_then(|captured| captured.lock().ok().and_then(|captured| *captured))
         else {
-            unregister_raw_input_devices();
+            if !crate::gstreamer_config::use_internal_renderer() {
+                unregister_raw_input_devices();
+            }
             return;
         };
 
@@ -491,7 +497,9 @@ pub(crate) mod win32_renderer_window {
         if let Ok(mut protected) = protected_slot.lock() {
             *protected = Some(hwnd as isize);
         }
-        install_input_wndproc(hwnd)
+        let wndproc_installed = install_input_wndproc(hwnd);
+        let keyboard_registered = register_internal_raw_keyboard(hwnd);
+        wndproc_installed || keyboard_registered
     }
 
     pub unsafe fn protect_process_renderer_window() -> bool {
@@ -792,7 +800,15 @@ pub(crate) mod win32_renderer_window {
         ClipCursor(null());
         show_cursor();
         emit_input_capture_changed(false);
-        unregister_raw_input_devices();
+        if crate::gstreamer_config::use_internal_renderer() {
+            // F10/F8 release relative mouse capture, but the internal stream
+            // must keep receiving keyboard input (especially Escape) while the
+            // Electron window remains foreground.
+            unregister_raw_mouse_device();
+            register_internal_raw_keyboard(hwnd);
+        } else {
+            unregister_raw_input_devices();
+        }
         SetWindowPos(
             hwnd,
             HWND_NOTOPMOST,
@@ -914,6 +930,36 @@ pub(crate) mod win32_renderer_window {
         RegisterRawInputDevices(
             devices.as_ptr(),
             devices.len() as u32,
+            std::mem::size_of::<RawInputDevice>() as u32,
+        ) != 0
+    }
+
+    unsafe fn register_internal_raw_keyboard(hwnd: Hwnd) -> bool {
+        let device = RawInputDevice {
+            us_usage_page: 0x01,
+            us_usage: 0x06,
+            dw_flags: RIDEV_INPUTSINK,
+            hwnd_target: hwnd,
+        };
+
+        RegisterRawInputDevices(
+            &device,
+            1,
+            std::mem::size_of::<RawInputDevice>() as u32,
+        ) != 0
+    }
+
+    unsafe fn unregister_raw_mouse_device() -> bool {
+        let device = RawInputDevice {
+            us_usage_page: 0x01,
+            us_usage: 0x02,
+            dw_flags: RIDEV_REMOVE,
+            hwnd_target: null_mut(),
+        };
+
+        RegisterRawInputDevices(
+            &device,
+            1,
             std::mem::size_of::<RawInputDevice>() as u32,
         ) != 0
     }
@@ -1135,6 +1181,13 @@ pub(crate) mod win32_renderer_window {
         }
         if keycode == VK_ESCAPE {
             drop(keys);
+            // In the internal renderer Electron must intercept the legacy Escape
+            // before Chromium exits fullscreen, then forward exactly one tap over
+            // IPC. RawInput still owns every other key in this mode. The external
+            // native window has no Electron interception and keeps this path.
+            if crate::gstreamer_config::use_internal_renderer() {
+                return;
+            }
             handle_escape_keyboard_state(scancode, pressed);
             return;
         }

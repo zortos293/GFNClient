@@ -45,6 +45,7 @@ export const nativeVideoBackendOptions: { value: NativeVideoBackendPreference; l
   { value: "auto", label: "Auto", description: "Pick the default native path for the session" },
   { value: "d3d12", label: "DirectX 12", description: "Use the D3D12 decoder and renderer" },
   { value: "d3d11", label: "DirectX 11", description: "Use the D3D11 decoder and renderer" },
+  { value: "vulkan", label: "Vulkan", description: "Use Vulkan presentation where supported; Windows internal mode uses a compatible D3D presentation path" },
 ];
 
 export const APP_LANGUAGE_LABELS: Record<string, string> = {

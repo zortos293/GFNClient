@@ -663,9 +663,11 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
     let max_bitrate = params.max_bitrate_kbps.max(OFFICIAL_MIN_BITRATE_KBPS);
     let min_bitrate = OFFICIAL_MIN_BITRATE_KBPS;
     let initial_bitrate = OFFICIAL_MIN_BITRATE_KBPS.max(max_bitrate / 4);
-    let is_high_fps = params.fps >= 90;
+    let is_high_fps = params.fps > 60;
+    let is_at_least_120_fps = params.fps >= 120;
+    let is_90_fps = params.fps == 90;
     let is_120_fps = params.fps == 120;
-    let is_240_fps = params.fps >= 240;
+    let is_240_fps = params.fps == 240;
     let is_av1 = params.codec == VideoCodec::AV1;
     let bit_depth = params.color_quality.bit_depth();
     let hid_device_mask = params
@@ -699,6 +701,7 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         "a=vqos.fec.repairMinPercent:5".to_owned(),
         "a=vqos.fec.repairPercent:5".to_owned(),
         "a=vqos.fec.repairMaxPercent:35".to_owned(),
+        "a=vqos.bllFec.enable:0".to_owned(),
         "a=vqos.dynamicStreamingMode:0".to_owned(),
         "a=vqos.drc.enable:0".to_owned(),
         "a=vqos.calculateAvgVideoStreamingBitrate:1".to_owned(),
@@ -749,11 +752,11 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
             "a=vqos.dfc.targetDownCooldownMs:250".to_owned(),
             format!(
                 "a=vqos.dfc.dfcAlgoVersion:{}",
-                if is_120_fps || is_240_fps { 2 } else { 1 }
+                if is_at_least_120_fps { 2 } else { 1 }
             ),
             format!(
                 "a=vqos.dfc.minTargetFps:{}",
-                if is_120_fps || is_240_fps { 100 } else { 60 }
+                if is_at_least_120_fps { 100 } else { 60 }
             ),
             "a=vqos.resControl.dfc.useClientFpsPerf:0".to_owned(),
             "a=vqos.dfc.adjustResAndFps:0".to_owned(),
@@ -762,17 +765,24 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
             "a=bwe.iirFilterFactor:8".to_owned(),
             "a=video.encoderFeatureSetting:47".to_owned(),
             "a=video.encoderPreset:6".to_owned(),
-            "a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600".to_owned(),
-            "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9".to_owned(),
-            format!(
-                "a=video.fbcDynamicFpsGrabTimeoutMs:{}",
-                if is_120_fps { 6 } else { 18 }
-            ),
-            format!(
-                "a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:{}",
-                if is_120_fps { 6000 } else { 12000 }
-            ),
         ]);
+        let fps_specific_capture_tuning = if is_90_fps {
+            Some((9, 11))
+        } else if is_120_fps {
+            Some((6, 9))
+        } else if is_240_fps {
+            Some((18, 9))
+        } else {
+            None
+        };
+        if let Some((grab_timeout_ms, decode_threshold_ms)) = fps_specific_capture_tuning {
+            lines.push(format!(
+                "a=video.fbcDynamicFpsGrabTimeoutMs:{grab_timeout_ms}"
+            ));
+            lines.push(format!(
+                "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:{decode_threshold_ms}"
+            ));
+        }
     } else {
         lines.extend([
             "a=vqos.dfc.enable:0".to_owned(),
@@ -786,8 +796,15 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
             "a=vqos.maxStreamFpsEstimate:240".to_owned(),
         ]);
         if ENABLE_240_FPS_SPLIT_ENCODE {
-            // Official 240 FPS DESCRIBE uses 63 strips.
-            lines.push("a=video.videoSplitEncodeStripsPerFrame:63".to_owned());
+            let strips_per_frame =
+                if is_av1 && params.width.saturating_mul(params.height) >= 2_764_800 {
+                    63
+                } else {
+                    3
+                };
+            lines.push(format!(
+                "a=video.videoSplitEncodeStripsPerFrame:{strips_per_frame}"
+            ));
             lines.push(format!(
                 "a=video.updateSplitEncodeStateDynamically:{}",
                 if ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES {
@@ -1159,17 +1176,64 @@ mod tests {
 
     #[test]
     fn builds_nvst_sdp_disables_dynamic_streaming_for_high_fps() {
-        for fps in [120, 240] {
+        for fps in [90, 120, 144, 165, 240, 360] {
             let nvst = build_nvst_sdp(&nvst_params_for_fps(fps));
 
             assert!(nvst.contains("a=vqos.dynamicStreamingMode:0"));
             assert!(nvst.contains("a=vqos.dfc.adjustResAndFps:0"));
             assert!(nvst.contains("a=vqos.dfc.enable:1"));
             assert!(nvst.contains("a=vqos.resControl.dfc.useClientFpsPerf:0"));
-            assert!(nvst.contains("a=vqos.dfc.dfcAlgoVersion:2"));
-            assert!(nvst.contains("a=vqos.dfc.minTargetFps:100"));
+            if fps >= 120 {
+                assert!(nvst.contains("a=vqos.dfc.dfcAlgoVersion:2"));
+                assert!(nvst.contains("a=vqos.dfc.minTargetFps:100"));
+            } else {
+                assert!(nvst.contains("a=vqos.dfc.dfcAlgoVersion:1"));
+                assert!(nvst.contains("a=vqos.dfc.minTargetFps:60"));
+            }
             assert!(!nvst.contains("a=vqos.dfc.enable:0"));
         }
+    }
+
+    #[test]
+    fn applies_only_official_fps_specific_capture_tuning() {
+        let cases = [
+            (90, Some((9, 11))),
+            (120, Some((6, 9))),
+            (144, None),
+            (165, None),
+            (240, Some((18, 9))),
+            (360, None),
+        ];
+
+        for (fps, expected) in cases {
+            let nvst = build_nvst_sdp(&nvst_params_for_fps(fps));
+            match expected {
+                Some((grab_timeout_ms, decode_threshold_ms)) => {
+                    assert!(nvst.contains(&format!(
+                        "a=video.fbcDynamicFpsGrabTimeoutMs:{grab_timeout_ms}"
+                    )));
+                    assert!(nvst.contains(&format!(
+                        "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:{decode_threshold_ms}"
+                    )));
+                }
+                None => {
+                    assert!(!nvst.contains("a=video.fbcDynamicFpsGrabTimeoutMs:"));
+                    assert!(!nvst.contains("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reserves_240_fps_capture_profile_for_exact_240_fps() {
+        let nvst_240 = build_nvst_sdp(&nvst_params_for_fps(240));
+        let nvst_360 = build_nvst_sdp(&nvst_params_for_fps(360));
+
+        assert!(nvst_240.contains("a=vqos.maxStreamFpsEstimate:240"));
+        assert!(nvst_240.contains("a=video.enableNextCaptureMode:1"));
+        assert!(!nvst_360.contains("a=vqos.maxStreamFpsEstimate:240"));
+        assert!(!nvst_360.contains("a=video.enableNextCaptureMode:1"));
+        assert!(!nvst_360.contains("a=video.videoSplitEncodeStripsPerFrame:"));
     }
 
     #[test]
@@ -1299,7 +1363,7 @@ mod tests {
         assert!(nvst.contains("a=video.framePacing.mode:2"));
         assert!(nvst.contains("a=vqos.fec.repairPercent:5"));
         assert!(nvst.contains("a=vqos.fec.repairMaxPercent:35"));
-        assert!(!nvst.contains("a=vqos.bllFec.enable:1"));
+        assert!(nvst.contains("a=vqos.bllFec.enable:0"));
         assert!(nvst.contains("a=video.rtpNackQueueLength:1024"));
         assert!(nvst.contains("a=video.rtpNackQueueMaxPackets:512"));
         assert!(nvst.contains("a=video.rtpNackMaxPacketCount:25"));
@@ -1331,10 +1395,22 @@ mod tests {
         });
 
         assert!(nvst.contains("a=vqos.maxStreamFpsEstimate:240"));
-        assert!(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:63"));
+        assert!(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:3"));
         assert!(nvst.contains("a=video.updateSplitEncodeStateDynamically:1"));
         assert!(nvst.contains("a=video.framePacing.pid.minTargetFrameTimeUs:3958"));
         assert!(nvst.contains("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535"));
         assert!(nvst.contains("a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535"));
+    }
+
+    #[test]
+    fn uses_wide_split_encode_only_for_high_resolution_av1() {
+        let mut params = nvst_params_for_fps(240);
+        params.codec = VideoCodec::AV1;
+        params.width = 2560;
+        params.height = 1440;
+
+        let nvst = build_nvst_sdp(&params);
+
+        assert!(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:63"));
     }
 }

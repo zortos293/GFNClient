@@ -12,7 +12,9 @@ export interface EscapeKeyInput {
 
 export interface EscapeFullscreenGuardState {
   allowEscapeToExitFullscreen: boolean;
+  streamInputActive: boolean;
   pointerLockActive: boolean;
+  rendererControlledFullscreen: boolean;
   windowFullscreen: boolean;
   pointerLockEscapeCaptureUntilMs: number;
   nowMs: number;
@@ -56,6 +58,15 @@ export function shouldCaptureEscapeFullscreenInput(
   }
 
   if (state.pointerLockActive) {
+    return true;
+  }
+
+  // Electron's fullscreen state can lag the renderer IPC request. Protect both
+  // signals, but only while a stream input route is actually active.
+  if (
+    state.streamInputActive
+    && (state.windowFullscreen || state.rendererControlledFullscreen)
+  ) {
     return true;
   }
 

@@ -145,6 +145,8 @@ export interface OpenNowApi {
   togglePointerLock(): Promise<void>;
   /** Notify main process that pointer lock state changed (active = true/false). */
   notifyPointerLockChange(active: boolean, suppressEscapeFullscreenGrace?: boolean): void;
+  /** Tell main whether an active native session owns keyboard input through RawInput. */
+  notifyNativeInputModeChange(active: boolean, rawInputOwnsEscape: boolean): void;
   /** Read plain text from the OS clipboard through Electron main process */
   readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;

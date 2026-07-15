@@ -1,7 +1,7 @@
-import { AlertTriangle, Cpu, ExternalLink, Keyboard, Monitor, RefreshCcw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, ExternalLink, Keyboard, Monitor, RefreshCcw, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { m } from "motion/react";
-import type { NativeStreamerStatus, Settings } from "@shared/gfn";
+import type { NativeStreamerStatus, NativeVideoBackendCapability, Settings } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
   isNativeDirectXBackendSupported,
@@ -12,6 +12,7 @@ import {
 import { useTranslation } from "../../../i18n";
 import {
   formatGstreamerRuntimeLabel,
+  formatNativeVideoCodec,
   formatNativeVideoBackendName,
   getAvailableNativeCodecLabels,
   getGstreamerRuntimeBadgeClass,
@@ -25,6 +26,21 @@ const nativePlatformHint = `${navigator.platform} ${navigator.userAgent}`;
 const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(nativePlatformHint);
 const supportsNativeExternalRenderer = isNativeExternalRendererSupported(nativePlatformHint);
 const supportsNativeDirectXBackend = isNativeDirectXBackendSupported(nativePlatformHint);
+
+function getNativeHostPlatform(): "windows" | "macos" | "linux" | "other" {
+  const normalized = nativePlatformHint.toLowerCase();
+  if (normalized.includes("win")) return "windows";
+  if (normalized.includes("mac")) return "macos";
+  if (normalized.includes("linux")) return "linux";
+  return "other";
+}
+
+function getHostVideoBackends(status: NativeStreamerStatus | null): NativeVideoBackendCapability[] {
+  const hostPlatform = getNativeHostPlatform();
+  return (status?.videoBackends ?? []).filter(
+    (backend) => backend.platform === hostPlatform || backend.platform === "cross-platform",
+  );
+}
 
 export interface SettingsNativeStreamerSectionProps {
   settings: Settings;
@@ -52,6 +68,11 @@ export function SettingsNativeStreamerSection({
   const nativeStreamerEnablePromptCloseTimerRef = useRef<number | null>(null);
   const nativeStreamerEnablePromptVisible =
     nativeStreamerEnablePromptOpen || nativeStreamerEnablePromptClosing;
+  const hostVideoBackends = getHostVideoBackends(nativeStreamerStatus);
+  const readyHardwareBackendCount = hostVideoBackends.filter(
+    (backend) => backend.available && backend.backend !== "software",
+  ).length;
+  const activeVideoBackendId = nativeStreamerStatus?.activeVideoBackend?.backend;
 
   const refreshNativeStreamerStatus = useCallback(async () => {
     if (!isNativeStreamerPlatform) {
@@ -375,48 +396,116 @@ export function SettingsNativeStreamerSection({
                 ) : null}
               </div>
 
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">{t("settings.nativeStreamer.videoPath")}</label>
-                <div className="settings-chip-row">
-                  <span
-                    className={`settings-inline-badge ${
-                      nativeStreamerStatus?.activeVideoBackend?.available
-                        ? nativeStreamerStatus.activeVideoBackend.backend === "software"
-                          ? "settings-inline-badge--codec-testing"
-                          : "settings-inline-badge--codec-gpu"
-                        : "settings-inline-badge--updater-error"
-                    }`}
-                  >
-                    {formatNativeVideoBackendName(nativeStreamerStatus?.activeVideoBackend?.backend)}
+              <div className="settings-row settings-row--column settings-native-capability-row">
+                <div className="settings-native-capability-header">
+                  <div>
+                    <span className="settings-native-capability-kicker">{t("settings.nativeStreamer.thisPc")}</span>
+                    <label className="settings-label">{t("settings.nativeStreamer.supportedVideoBackends")}</label>
+                  </div>
+                  <span className={`settings-native-capability-count ${readyHardwareBackendCount > 0 ? "is-ready" : ""}`}>
+                    {t("settings.nativeStreamer.hardwarePathsReady", { count: readyHardwareBackendCount })}
                   </span>
-                  {getAvailableNativeCodecLabels(nativeStreamerStatus?.activeVideoBackend).map((codec) => (
-                    <span key={codec} className="settings-inline-badge settings-inline-badge--codec">
-                      {codec}
-                    </span>
-                  ))}
                 </div>
+
+                {hostVideoBackends.length > 0 ? (
+                  <div className="settings-native-capability-grid">
+                    {hostVideoBackends.map((backend) => {
+                      const isActive = backend.backend === activeVideoBackendId;
+                      const availableCodecs = getAvailableNativeCodecLabels(backend);
+                      return (
+                        <article
+                          key={backend.backend}
+                          className={`settings-native-capability-card ${backend.available ? "is-supported" : "is-unsupported"} ${isActive ? "is-active" : ""}`}
+                        >
+                          <div className="settings-native-capability-card-top">
+                            <span className="settings-native-capability-icon" aria-hidden="true">
+                              {backend.available ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
+                            </span>
+                            <div className="settings-native-capability-name">
+                              <strong>{formatNativeVideoBackendName(backend.backend)}</strong>
+                              <span>{backend.available ? t("settings.nativeStreamer.supported") : t("settings.nativeStreamer.unavailable")}</span>
+                            </div>
+                            {isActive ? (
+                              <span className="settings-inline-badge settings-inline-badge--codec-gpu">
+                                {settings.nativeVideoBackend === "auto"
+                                  ? t("settings.nativeStreamer.autoPick")
+                                  : t("settings.nativeStreamer.selected")}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="settings-native-capability-codecs" aria-label={t("settings.nativeStreamer.codecSupport")}>
+                            {backend.codecs.map((codec) => (
+                              <span
+                                key={codec.codec}
+                                className={codec.available ? "is-supported" : "is-unsupported"}
+                                title={codec.available ? codec.decoder : codec.reason}
+                              >
+                                {formatNativeVideoCodec(codec.codec)}
+                              </span>
+                            ))}
+                          </div>
+
+                          <div className="settings-native-capability-meta">
+                            <span>{backend.sink ?? t("settings.nativeStreamer.noRenderer")}</span>
+                            <span>
+                              {backend.zeroCopyModes.length > 0
+                                ? backend.zeroCopyModes.join(" · ")
+                                : t("settings.nativeStreamer.systemMemory")}
+                            </span>
+                          </div>
+
+                          {!backend.available && backend.reason ? (
+                            <p className="settings-native-capability-reason">{backend.reason}</p>
+                          ) : availableCodecs.length === 0 ? (
+                            <p className="settings-native-capability-reason">{t("settings.nativeStreamer.noCodecsAvailable")}</p>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <span className="settings-subtle-hint">
+                    {nativeStreamerStatusLoading
+                      ? t("settings.nativeStreamer.probingBackends")
+                      : t("settings.nativeStreamer.videoPathDefaultHint")}
+                  </span>
+                )}
+
                 <span className="settings-subtle-hint">
                   {nativeStreamerStatus?.gstreamerAvailable
-                    ? `${nativeStreamerStatus.codecSummary ?? t("settings.nativeStreamer.codecSupportUnknown")}. ${nativeStreamerStatus.zeroCopySummary ?? t("settings.nativeStreamer.memoryPathUnknown")}.`
+                    ? `${t("settings.nativeStreamer.activePath")}: ${formatNativeVideoBackendName(activeVideoBackendId)}. ${nativeStreamerStatus.codecSummary ?? t("settings.nativeStreamer.codecSupportUnknown")}. ${nativeStreamerStatus.zeroCopySummary ?? t("settings.nativeStreamer.memoryPathUnknown")}.`
                     : nativeStreamerStatus?.activeVideoBackend?.reason
-                      ?? t("settings.nativeStreamer.videoPathDefaultHint")}
+                      ?? t("settings.nativeStreamer.capabilityProbeHint")}
                 </span>
               </div>
 
               {supportsNativeDirectXBackend && <div className="settings-row settings-row--column">
                 <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
                 <div className="settings-chip-row">
-                  {nativeVideoBackendOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
-                      onClick={() => handleChange("nativeVideoBackend", option.value)}
-                      title={option.description}
-                    >
-                      <span>{option.label}</span>
-                    </button>
-                  ))}
+                  {nativeVideoBackendOptions.map((option) => {
+                    const capability = option.value === "auto"
+                      ? undefined
+                      : hostVideoBackends.find((backend) => backend.backend === option.value);
+                    const unavailable = option.value !== "auto"
+                      && nativeStreamerStatus?.detected === true
+                      && capability?.available !== true;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
+                        onClick={() => handleChange("nativeVideoBackend", option.value)}
+                        title={unavailable ? capability?.reason ?? t("settings.nativeStreamer.backendUnavailableOnPc") : option.description}
+                        disabled={unavailable}
+                      >
+                        <span>{option.label}</span>
+                        {option.value !== "auto" && capability ? (
+                          <span className={`settings-backend-support-dot ${capability.available ? "is-supported" : "is-unsupported"}`} aria-hidden="true" />
+                        ) : null}
+                      </button>
+                    );
+                  })}
                 </div>
                 <span className="settings-subtle-hint">
                   {t("settings.nativeStreamer.directxBackendHint")}

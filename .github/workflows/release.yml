@@ -544,6 +544,9 @@ jobs:
             Write-Error "GStreamer Windows SDK installed, but no H.264 decoder plugins were found among: $($h264Decoders -join ', ')"
             exit 1
           }
+          # Official Cerbero Windows packages disable gstvulkan. OpenNOW injects a
+          # vendored Vulkan plugin into the private runtime after bundling.
+          Write-Host "Skipping base-SDK Vulkan element checks; Vulkan is injected into the private OpenNOW runtime bundle."
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 

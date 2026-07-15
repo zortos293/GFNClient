@@ -135,7 +135,10 @@ impl NativeStreamerBackend for GstreamerBackend {
         };
 
         let session_id = context.session.session_id.clone();
-        let pipeline = match GstreamerPipeline::build(self.event_sender.clone()) {
+        let pipeline = match GstreamerPipeline::build(
+            self.event_sender.clone(),
+            &context.session.ice_servers,
+        ) {
             Ok(pipeline) => pipeline,
             Err(message) => {
                 return BackendReply {
@@ -547,11 +550,13 @@ mod tests {
         caps_framerate_summary, sink_stats_summary, VideoStallAction, VideoStallTracker,
     };
     use crate::gstreamer_pipeline::{
-        configure_stats_overlay_element, effective_present_max_fps, format_video_chain_selection,
+        backend_runs_on_platform, configure_stats_overlay_element,
+        default_rtp_video_api_priority, effective_present_max_fps, format_video_chain_selection,
+        preferred_rtp_video_apis_for, resolve_gstreamer_stun_server,
         rtp_video_chain_definition, RtpVideoApi, RtpVideoChainRole,
     };
     use crate::gstreamer_transitions::resolve_queue_mode;
-    use crate::protocol::{NativeQueueMode, StreamSettings, VideoCodec};
+    use crate::protocol::{IceServer, NativeQueueMode, StreamSettings, VideoCodec};
     use crate::sdp::IceCredentials;
     use gst::prelude::*;
     use gstreamer as gst;
@@ -559,8 +564,40 @@ mod tests {
 
     #[test]
     fn builds_and_stops_webrtc_pipeline() {
-        let pipeline = GstreamerPipeline::build(None).expect("GStreamer webrtcbin pipeline");
+        let pipeline = GstreamerPipeline::build(None, &[]).expect("GStreamer webrtcbin pipeline");
         assert_eq!(pipeline.webrtc.name(), "opennow-webrtcbin");
+        assert_eq!(
+            pipeline.webrtc.property::<String>("stun-server"),
+            "stun://stun2.l.google.com:19302"
+        );
+        pipeline.stop().expect("pipeline stops");
+    }
+
+    #[test]
+    fn configures_session_stun_server_for_gstreamer() {
+        let servers = vec![
+            IceServer {
+                urls: vec!["turn:relay.example.test:3478".to_owned()],
+                username: None,
+                credential: None,
+            },
+            IceServer {
+                urls: vec!["stun:192.0.2.10:19302".to_owned()],
+                username: None,
+                credential: None,
+            },
+        ];
+
+        assert_eq!(
+            resolve_gstreamer_stun_server(&servers),
+            "stun://192.0.2.10:19302"
+        );
+        let pipeline =
+            GstreamerPipeline::build(None, &servers).expect("GStreamer webrtcbin pipeline");
+        assert_eq!(
+            pipeline.webrtc.property::<String>("stun-server"),
+            "stun://192.0.2.10:19302"
+        );
         pipeline.stop().expect("pipeline stops");
     }
 
@@ -584,7 +621,8 @@ mod tests {
 
     #[test]
     fn defers_gfn_uuid_ice_password_until_actual_ice_stream_exists() {
-        let mut pipeline = GstreamerPipeline::build(None).expect("GStreamer webrtcbin pipeline");
+        let mut pipeline =
+            GstreamerPipeline::build(None, &[]).expect("GStreamer webrtcbin pipeline");
         let credentials = IceCredentials {
             ufrag: "2efecf37".to_owned(),
             pwd: "26b335b8-6cb2-4c18-96d0-963e5e586c9a".to_owned(),
@@ -600,7 +638,8 @@ mod tests {
 
     #[test]
     fn remote_ice_credential_restore_after_remote_description_does_not_probe_fake_streams() {
-        let mut pipeline = GstreamerPipeline::build(None).expect("GStreamer webrtcbin pipeline");
+        let mut pipeline =
+            GstreamerPipeline::build(None, &[]).expect("GStreamer webrtcbin pipeline");
         let sdp = concat!(
             "v=0\r\n",
             "o=- 4373647202393833435 2 IN IP4 127.0.0.1\r\n",
@@ -751,11 +790,28 @@ mod tests {
         assert!(v4l2.iter().any(|spec| spec.factory == "videoconvert"));
 
         let vulkan = rtp_video_chain_definition("H265", RtpVideoApi::Vulkan).expect("Vulkan H265");
-        assert_eq!(vulkan[3].factory, "vulkanh265dec");
-        assert!(vulkan
-            .iter()
-            .any(|spec| spec.factory == "vulkancolorconvert"));
-        assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(vulkan[3].factory, "d3d12h265dec");
+            assert!(!vulkan.iter().any(|spec| spec.factory == "vulkanh265dec"));
+            // Default Internal renderer: Electron cannot composite vulkansink.
+            assert_eq!(
+                vulkan.last().map(|spec| spec.factory),
+                Some("d3d12videosink")
+            );
+            assert!(vulkan.iter().any(|spec| {
+                spec.role == RtpVideoChainRole::StatsOverlay && spec.factory == "dwritetextoverlay"
+            }));
+            assert!(!vulkan.iter().any(|spec| spec.factory == "vulkanupload"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(vulkan[3].factory, "vulkanh265dec");
+            assert!(vulkan
+                .iter()
+                .any(|spec| spec.factory == "vulkancolorconvert"));
+            assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
+        }
         assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).is_none());
 
         let software =
@@ -765,6 +821,26 @@ mod tests {
         assert_eq!(
             software.last().map(|spec| spec.factory),
             Some("autovideosink")
+        );
+    }
+
+    #[test]
+    fn exposes_vulkan_on_windows_and_linux_only() {
+        assert!(backend_runs_on_platform(RtpVideoApi::Vulkan, "windows"));
+        assert!(backend_runs_on_platform(RtpVideoApi::Vulkan, "linux"));
+        assert!(!backend_runs_on_platform(RtpVideoApi::Vulkan, "macos"));
+        assert!(!backend_runs_on_platform(RtpVideoApi::Vulkan, "other"));
+    }
+
+    #[test]
+    fn explicit_vulkan_selection_does_not_fall_back() {
+        assert_eq!(
+            preferred_rtp_video_apis_for("vulkan", Some(240)),
+            vec![RtpVideoApi::Vulkan]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("vk", Some(120)),
+            vec![RtpVideoApi::Vulkan]
         );
     }
 
@@ -790,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_present_limiter_only_targets_d3d11() {
+    fn automatic_present_limiter_targets_d3d_present_paths() {
         assert_eq!(
             effective_present_max_fps(
                 PRESENT_LIMITER_AUTO_SENTINEL,
@@ -807,7 +883,7 @@ mod tests {
                 RtpVideoApi::D3D12,
                 Some(165)
             ),
-            0
+            165
         );
         assert_eq!(
             effective_present_max_fps(144, Some(240), RtpVideoApi::D3D12, Some(165)),

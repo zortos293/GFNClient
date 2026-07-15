@@ -144,10 +144,11 @@ internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
     streamStatus != "idle" || streamSession != null || activeStreamSettings != null
 
 class OpenNowViewModel(application: Application) : AndroidViewModel(application) {
-    private val http: OkHttpClient = defaultHttpClient()
+    private val openNowApplication = application as OpenNowApplication
+    private val http: OkHttpClient = openNowApplication.httpClient
     private val settingsStore = SettingsStore(application)
-    private val authStore = AuthStore(application)
-    private val authRepository = GfnAuthRepository(application, authStore, http)
+    private val authStore = openNowApplication.authStore
+    private val authRepository = openNowApplication.authRepository
     private val catalogRepository = GfnCatalogRepository(http)
     private val catalogCacheStore = CatalogCacheStore(application)
     private val queuedGameStore = QueuedGameStore(application)
@@ -164,8 +165,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
     private val queueAdReportMutex = Mutex()
     private val accountConnectorRefreshMutex = Mutex()
-    private val resolutionMismatchRestartKeys = mutableSetOf<String>()
-    private val resolutionFallbackNoticeKeys = mutableSetOf<String>()
+    private val runtimeResolutionNoticeKeys = mutableSetOf<String>()
     private val debugEventsLock = Any()
     private val debugEvents = ArrayDeque<DebugLogEvent>()
     private val debugPayloadsLock = Any()
@@ -202,6 +202,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var androidUpdateJob: Job? = null
     private var androidUpdateAutoJob: Job? = null
     private var settingsRefreshJob: Job? = null
+    private var authRefreshJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -323,10 +324,48 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         listOfNotNull(authStore.state.value.selectedProvider, activeSession?.provider, defaultProvider())
             .distinctBy { provider -> provider.code.uppercase(Locale.US) }
 
-    private suspend fun restoreAuthSession(): Result<AuthSession?> =
+    private suspend fun restoreAuthSession(throwOnRefreshFailure: Boolean = false): Result<AuthSession?> =
         authRestoreMutex.withLock {
-            runCatching { authRepository.restore(forceRefresh = false) }
+            runCatching {
+                authRepository.restore(
+                    throwOnRefreshFailure = throwOnRefreshFailure,
+                    removeExpiredSessionOnFailure = !throwOnRefreshFailure,
+                )
+            }
         }
+
+    fun refreshAuthSessionIfNeeded() {
+        if (authRefreshJob?.isActive == true) return
+        val expectedUserId = state.value.authSession?.user?.userId ?: return
+        authRefreshJob = viewModelScope.launch {
+            try {
+                val result = restoreAuthSession(throwOnRefreshFailure = true)
+                val refreshed = result.getOrNull()
+                if (refreshed != null) {
+                    val tokenChanged = refreshed.tokens != state.value.authSession?.tokens
+                    _state.update { current ->
+                        if (current.authSession?.user?.userId != expectedUserId) {
+                            current
+                        } else {
+                            current.copy(
+                                authSession = refreshed,
+                                selectedProvider = refreshed.provider,
+                                savedAccounts = authStore.state.value.sessions.map { session -> session.toSavedAccount() },
+                            )
+                        }
+                    }
+                    if (tokenChanged) {
+                        recordDebugEvent("auth", "Refreshed saved sign-in tokens in the background")
+                    }
+                }
+                result.exceptionOrNull()?.let { error ->
+                    recordDebugEvent("auth", "Background sign-in refresh failed error=${error.debugMessage()}")
+                }
+            } finally {
+                authRefreshJob = null
+            }
+        }
+    }
 
     fun setPage(page: AppPage) {
         _state.update { it.copy(page = page, selectedGame = null) }
@@ -1762,237 +1801,27 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun restartStreamWithSafeVideoProfile(reason: String) {
-        if (launchJob?.isActive == true) {
-            recordDebugEvent("recovery", "Ignored safe video restart while launch job is active reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
-            return
-        }
-        val initial = state.value
-        val auth = initial.authSession ?: run {
-            recordDebugEvent("recovery", "Safe video restart ignored without auth reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)}")
-            return
-        }
-        val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
+    fun recordLocalSafeVideoFallback(reason: String) {
+        val currentSettings = state.value.activeStreamSettings ?: effectiveStreamSettings()
         val safeSettings = currentSettings.androidSafeVideoFallback()
-        recordDebugEvent("recovery", "Safe video restart requested reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} current=${currentSettings.debugSummary()} safe=${safeSettings.debugSummary()}")
-        launchJob = viewModelScope.launch {
-            val token = auth.tokens.idToken ?: auth.tokens.accessToken
-            val snapshot = state.value
-            val previousSession = snapshot.streamSession
-            val previousSettings = snapshot.activeStreamSettings ?: currentSettings
-            val game = snapshot.streamGame
-            val active = snapshot.activeSession
-            val baseUrl = listOfNotNull(
-                previousSession?.streamingBaseUrl,
-                active?.streamingBaseUrl,
-                effectiveStreamingBaseUrl(auth),
-            ).firstOrNull { !it.isLikelyDirectServerUrl() } ?: effectiveStreamingBaseUrl(auth)
-            val returnPage = snapshot.streamReturnPage ?: snapshot.page.takeUnless { it == AppPage.Stream } ?: AppPage.Home
-
-            _state.update {
-                it.copy(
-                    streamSession = null,
-                    activeSession = null,
-                    activeStreamSettings = safeSettings,
-                    streamStatus = "queue",
-                    launchPhase = "Restarting with safe H264 profile",
-                    page = AppPage.Stream,
-                    streamReturnPage = returnPage,
-                    streamLaunchMinimized = false,
-                    error = null,
-                    queuePosition = null,
-                    queueAdActiveId = null,
-                )
+        _state.update { current ->
+            if (current.streamSession == null || current.streamStatus == "idle") {
+                current
+            } else {
+                current.copy(activeStreamSettings = safeSettings)
             }
-
-            runCatching {
-                previousSession?.let { session ->
-                    runCatching { sessionRepository.stopSession(token, session, previousSettings) }
-                        .onFailure { error -> recordDebugEvent("recovery", "Failed to stop previous session ${session.shortDebugId()} error=${error.debugMessage()}") }
-                }
-                active?.takeIf { it.sessionId != previousSession?.sessionId }?.let { activeSession ->
-                    runCatching { sessionRepository.stopActiveSession(token, activeSession, previousSettings) }
-                        .onFailure { error -> recordDebugEvent("recovery", "Failed to stop previous active session ${activeSession.shortDebugId()} error=${error.debugMessage()}") }
-                }
-
-                val selectedVariant = game?.variants?.getOrNull(game.selectedVariantIndex) ?: game?.variants?.firstOrNull()
-                val launchAppId = resolveFallbackLaunchAppId(
-                    token = token,
-                    game = game,
-                    active = active,
-                    baseUrl = baseUrl,
-                )
-                _state.update { it.copy(launchPhase = "Creating safe H264 session") }
-                val created = sessionRepository.createSession(
-                    token = token,
-                    streamingBaseUrl = baseUrl,
-                    appId = launchAppId,
-                    internalTitle = game?.title ?: "Cloud session",
-                    zone = previousSession?.zone?.takeIf { it.isNotBlank() } ?: "prod",
-                    settings = safeSettings,
-                    accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true,
-                )
-                recordDebugEvent("recovery", "Created safe video session ${created.debugSummary()}")
-                pollUntilReady(token, created, safeSettings)
-            }.onSuccess { readySession ->
-                recordDebugEvent("recovery", "Safe video session ready ${readySession.debugSummary()}")
-                _state.update {
-                    it.copy(
-                        streamSession = readySession,
-                        activeStreamSettings = safeSettings,
-                        streamStatus = "connecting",
-                        launchPhase = "Connecting safe H264 stream",
-                        streamLaunchMinimized = false,
-                        queuePosition = null,
-                        queueAdActiveId = null,
-                        page = AppPage.Stream,
-                    )
-                }
-            }.onFailure { error ->
-                if (error is CancellationException) return@onFailure
-                recordDebugEvent("recovery", "Safe video restart failed error=${error.debugMessage()}")
-                _state.update {
-                    it.copy(
-                        error = normalizeLaunchError(error, game?.title),
-                        streamStatus = "idle",
-                        activeStreamSettings = null,
-                        streamReturnPage = null,
-                        launchPhase = "",
-                        streamLaunchMinimized = false,
-                        queuePosition = null,
-                        queueAdActiveId = null,
-                        page = returnPage,
-                    )
-                }
-            }
-        }
-    }
-
-    fun restartStreamForResolutionMismatch(actualResolution: String, expectedResolution: String) {
-        if (launchJob?.isActive == true) {
-            recordDebugEvent("recovery", "Ignored resolution restart while launch job is active actual=$actualResolution expected=$expectedResolution")
-            return
-        }
-        val initial = state.value
-        val auth = initial.authSession ?: run {
-            recordDebugEvent("recovery", "Resolution restart ignored without auth actual=$actualResolution expected=$expectedResolution")
-            return
-        }
-        val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
-        val actualAspect = streamAspectRatioForResolution(actualResolution) ?: currentSettings.aspectRatio
-        val targetSettings = currentSettings.copy(
-            resolution = actualResolution,
-            aspectRatio = actualAspect,
-        )
-        val restartKey = listOf(
-            initial.streamGame?.id ?: initial.activeSession?.appId?.toString() ?: initial.streamSession?.sessionId.orEmpty(),
-            streamSettingsSessionSignature(currentSettings),
-            actualResolution,
-        ).joinToString("|")
-        if (!resolutionMismatchRestartKeys.add(restartKey)) {
-            recordDebugEvent(
-                "recovery",
-                "Resolution mismatch persisted after one recreate actual=$actualResolution expected=$expectedResolution settings=${currentSettings.debugSummary()}",
-            )
-            return
         }
         recordDebugEvent(
             "recovery",
-            "Resolution mismatch actual=$actualResolution expected=$expectedResolution; recreating session settings=${currentSettings.debugSummary()}",
+            "Restarted local transport with safe video profile while keeping cloud session reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} current=${currentSettings.debugSummary()} safe=${safeSettings.debugSummary()}",
         )
-        launchJob = viewModelScope.launch {
-            val token = auth.tokens.idToken ?: auth.tokens.accessToken
-            val snapshot = state.value
-            val previousSession = snapshot.streamSession
-            val previousSettings = snapshot.activeStreamSettings ?: currentSettings
-            val game = snapshot.streamGame
-            val active = snapshot.activeSession
-            val baseUrl = listOfNotNull(
-                previousSession?.streamingBaseUrl,
-                active?.streamingBaseUrl,
-                effectiveStreamingBaseUrl(auth),
-            ).firstOrNull { !it.isLikelyDirectServerUrl() } ?: effectiveStreamingBaseUrl(auth)
-            val returnPage = snapshot.streamReturnPage ?: snapshot.page.takeUnless { it == AppPage.Stream } ?: AppPage.Home
-
-            _state.update {
-                it.copy(
-                    streamSession = null,
-                    activeSession = null,
-                    activeStreamSettings = targetSettings,
-                    streamStatus = "queue",
-                    launchPhase = "Restarting at requested resolution",
-                    page = AppPage.Stream,
-                    streamReturnPage = returnPage,
-                    streamLaunchMinimized = false,
-                    error = null,
-                    queuePosition = null,
-                    queueAdActiveId = null,
-                )
-            }
-
-            runCatching {
-                previousSession?.let { session ->
-                    runCatching { sessionRepository.stopSession(token, session, previousSettings) }
-                        .onFailure { error -> recordDebugEvent("recovery", "Failed to stop mismatched session ${session.shortDebugId()} error=${error.debugMessage()}") }
-                }
-                active?.takeIf { it.sessionId != previousSession?.sessionId }?.let { activeSession ->
-                    runCatching { sessionRepository.stopActiveSession(token, activeSession, previousSettings) }
-                        .onFailure { error -> recordDebugEvent("recovery", "Failed to stop mismatched active session ${activeSession.shortDebugId()} error=${error.debugMessage()}") }
-                }
-
-                val selectedVariant = game?.variants?.getOrNull(game.selectedVariantIndex) ?: game?.variants?.firstOrNull()
-                val launchAppId = resolveFallbackLaunchAppId(
-                    token = token,
-                    game = game,
-                    active = active,
-                    baseUrl = baseUrl,
-                )
-                val created = sessionRepository.createSession(
-                    token = token,
-                    streamingBaseUrl = baseUrl,
-                    appId = launchAppId,
-                    internalTitle = game?.title ?: "Cloud session",
-                    zone = previousSession?.zone?.takeIf { it.isNotBlank() } ?: "prod",
-                    settings = targetSettings,
-                    accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true,
-                )
-                recordDebugEvent("recovery", "Created requested-resolution session ${created.debugSummary()}")
-                pollUntilReady(token, created, targetSettings)
-            }.onSuccess { readySession ->
-                recordDebugEvent("recovery", "Requested-resolution session ready ${readySession.debugSummary()}")
-                _state.update {
-                    it.copy(
-                        streamSession = readySession,
-                        activeStreamSettings = targetSettings,
-                        streamStatus = "connecting",
-                        launchPhase = "Connecting requested-resolution stream",
-                        streamLaunchMinimized = false,
-                        queuePosition = null,
-                        queueAdActiveId = null,
-                        page = AppPage.Stream,
-                    )
-                }
-            }.onFailure { error ->
-                if (error is CancellationException) return@onFailure
-                recordDebugEvent("recovery", "Requested-resolution restart failed error=${error.debugMessage()}")
-                _state.update {
-                    it.copy(
-                        error = normalizeLaunchError(error, game?.title),
-                        streamStatus = "idle",
-                        activeStreamSettings = null,
-                        streamReturnPage = null,
-                        launchPhase = "",
-                        streamLaunchMinimized = false,
-                        queuePosition = null,
-                        queueAdActiveId = null,
-                        page = returnPage,
-                    )
-                }
-            }
-        }
     }
 
-    fun recordServerNegotiatedResolutionFallback(actualResolution: String, expectedResolution: String) {
+    fun recordRuntimeResolutionChange(
+        actualResolution: String,
+        expectedResolution: String,
+        serverNegotiatedFallback: Boolean,
+    ) {
         val current = state.value
         val currentSettings = current.activeStreamSettings ?: effectiveStreamSettings()
         val noticeKey = listOf(
@@ -2000,11 +1829,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             streamSettingsSessionSignature(currentSettings),
             actualResolution,
             expectedResolution,
+            serverNegotiatedFallback.toString(),
         ).joinToString("|")
-        if (!resolutionFallbackNoticeKeys.add(noticeKey)) return
+        if (!runtimeResolutionNoticeKeys.add(noticeKey)) return
+        val resolutionSource = if (serverNegotiatedFallback) {
+            "Server negotiated fallback"
+        } else {
+            "Runtime video mode changed"
+        }
         recordDebugEvent(
             "stream",
-            "Server negotiated fallback resolution actual=$actualResolution expected=$expectedResolution; keeping connected stream settings=${currentSettings.debugSummary()}",
+            "$resolutionSource actual=$actualResolution expected=$expectedResolution; keeping connected stream settings=${currentSettings.debugSummary()}",
         )
     }
 

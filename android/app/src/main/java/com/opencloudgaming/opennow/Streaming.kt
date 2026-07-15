@@ -2083,7 +2083,7 @@ class NativeStreamClient(
     context: Context,
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit,
-    private val onSafeVideoFallbackRequired: (String) -> Unit = {},
+    private val onSafeVideoFallbackApplied: (String) -> Unit = {},
     private val onSessionRecoveryRequired: (String) -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
 ) {
@@ -3180,9 +3180,9 @@ class NativeStreamClient(
             reconnectAttempts >= 1 &&
             !sessionHasRenderedFrame &&
             requestSafeVideoFallback(
-                message = "$reason. Recreating the cloud session with safe H264 profile.",
+                message = "$reason. Restarting the local transport with safe H264 profile.",
                 diagnosticReason = "transport reconnect",
-                recreateWhenAlreadySafe = true,
+                restartWhenAlreadySafe = true,
             )
         ) {
             return
@@ -3228,8 +3228,8 @@ class NativeStreamClient(
         scope.launch { onError(message) }
     }
 
-    private fun emitSafeVideoFallbackRequired(message: String) {
-        scope.launch { onSafeVideoFallbackRequired(message) }
+    private fun emitSafeVideoFallbackApplied(message: String) {
+        scope.launch { onSafeVideoFallbackApplied(message) }
     }
 
     private fun emitSessionRecoveryRequired(message: String) {
@@ -3513,7 +3513,7 @@ class NativeStreamClient(
                 requestSafeVideoFallback(
                     message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",
                     diagnosticReason = "first frame timeout",
-                    recreateWhenAlreadySafe = true,
+                    restartWhenAlreadySafe = true,
                 )
             ) {
                 return
@@ -3549,20 +3549,28 @@ class NativeStreamClient(
     private fun requestSafeVideoFallback(
         message: String,
         diagnosticReason: String,
-        recreateWhenAlreadySafe: Boolean = false,
+        restartWhenAlreadySafe: Boolean = false,
     ): Boolean {
+        val currentSession = session ?: return false
         val fallback = settings.androidSafeVideoFallback()
         val alreadySafe = settings == fallback
-        if (videoSafeFallbackApplied || (alreadySafe && !recreateWhenAlreadySafe)) return false
+        if (videoSafeFallbackApplied || (alreadySafe && !restartWhenAlreadySafe)) return false
         videoSafeFallbackApplied = true
         settings = fallback
+        reconnectAttempts = (reconnectAttempts + 1).coerceAtMost(MAX_TRANSPORT_RECONNECT_ATTEMPTS)
         NativeInputDiagnostics.add(
-            "$diagnosticReason ${if (alreadySafe) "safe profile cloud session recreate" else "safe video fallback"} codec=${fallback.codec} resolution=${fallback.resolution} fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
+            "$diagnosticReason ${if (alreadySafe) "safe profile transport restart" else "safe video fallback"} codec=${fallback.codec} resolution=${fallback.resolution} fps=${fallback.fps} bitrate=${fallback.maxBitrateMbps}",
         )
         transportGeneration += 1
+        val generation = transportGeneration
         closeTransport(clearInputState = false)
-        emitState("Restarting cloud session with safe H264 profile")
-        emitSafeVideoFallbackRequired(message)
+        firstVideoFrameWatchdog.reset()
+        recordStreamDiagnostic(
+            "safe video transport restart generation=$generation session=${streamDiagnosticId(currentSession.sessionId)} codec=${fallback.codec} reason=$diagnosticReason",
+        )
+        emitState("Reconnecting stream with safe H264 profile")
+        emitSafeVideoFallbackApplied(message)
+        startTransport(currentSession, fallback, generation)
         return true
     }
 

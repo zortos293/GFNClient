@@ -58,8 +58,8 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 24
         targetSdk = 36
-        versionCode = 37
-        versionName = "0.8.2"
+        versionCode = 39
+        versionName = "0.8.4"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
         buildConfigField("String", "POSTHOG_HOST", buildConfigString(postHogHost))
@@ -140,6 +140,7 @@ dependencies {
     implementation("androidx.media3:media3-common:1.10.1")
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-ui:1.10.1")
+    implementation("androidx.work:work-runtime:2.11.2")
 
     implementation("io.coil-kt.coil3:coil-compose:3.4.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")

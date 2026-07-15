@@ -4947,8 +4947,6 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         StreamStatsPosition.Center -> Alignment.TopCenter
         StreamStatsPosition.Right -> Alignment.TopEnd
     }
-    var resolutionMismatchStats by remember(session?.sessionId, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) { mutableStateOf(0) }
-    var resolutionMismatchRestartRequested by remember(session?.sessionId, launchStreamSettings.resolution, launchStreamSettings.aspectRatio) { mutableStateOf(false) }
     val dismissStreamGuide = {
         streamGuideOpen = false
         if (!state.settings.androidStreamGuideDismissed) {
@@ -4996,9 +4994,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 streamState = it
                 viewModel.markStreamError(it)
             },
-            onSafeVideoFallbackRequired = {
+            onSafeVideoFallbackApplied = {
                 streamState = it
-                viewModel.restartStreamWithSafeVideoProfile(it)
+                viewModel.recordLocalSafeVideoFallback(it)
             },
             onSessionRecoveryRequired = {
                 streamState = it
@@ -5131,7 +5129,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     LaunchedEffect(state.settings.phoneRumbleFallback) {
         client.updateHapticsSettings(state.settings.phoneRumbleFallback)
     }
-    LaunchedEffect(session?.sessionId, session?.status, streamReady, launchStreamSettings) {
+    LaunchedEffect(session?.sessionId, session?.status, streamReady) {
         if (session != null && streamReady) {
             client.start(session, launchStreamSettings)
         }
@@ -5149,20 +5147,12 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             streamStats.resolution,
             session?.negotiatedStreamProfile?.resolution,
         )
-        when {
-            !streamReady || streamStats.resolution == null -> Unit
-            mismatch == null -> resolutionMismatchStats = 0
-            else -> {
-                resolutionMismatchStats += 1
-                if (resolutionMismatchStats >= 3 && !resolutionMismatchRestartRequested) {
-                    resolutionMismatchRestartRequested = true
-                    viewModel.restartStreamForResolutionMismatch(
-                        actualResolution = mismatch.actualResolution,
-                        expectedResolution = mismatch.expectedResolution,
-                    )
-                    client.stop()
-                }
-            }
+        if (streamReady && mismatch != null) {
+            viewModel.recordRuntimeResolutionChange(
+                actualResolution = mismatch.actualResolution,
+                expectedResolution = mismatch.expectedResolution,
+                serverNegotiatedFallback = mismatch.isServerNegotiatedFallback,
+            )
         }
     }
 

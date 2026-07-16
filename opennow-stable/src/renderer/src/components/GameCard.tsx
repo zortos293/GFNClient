@@ -246,50 +246,54 @@ export const GameCard = memo(function GameCard({
               {t(availabilityBadge.labelKey)}
             </span>
           )}
-          {activeStoreOption && (
-            <p className="game-card-platform" title={activeStoreOption.displayName}>
-              {activeStoreOption.displayName}
-            </p>
-          )}
-          {storeOptions.length > 0 && (
-            <div className="game-card-stores">
-              {storeOptions.map((store) => {
-                const className = [
-                  "game-card-store-chip",
-                  store.isActive ? "active" : "",
-                  store.isOwned ? "owned" : "",
-                ].filter(Boolean).join(" ");
-                const titleParts = [store.displayName];
-                if (store.isOwned) {
-                  titleParts.push(t("gameCard.owned"));
-                }
-                if (store.isActive) {
-                  titleParts.push(t("app.actions.select"));
-                }
-                const title = titleParts.join(" · ");
+          {(activeStoreOption || storeOptions.length > 0) && (
+            <div className="game-card-storefront">
+              {activeStoreOption && (
+                <p className="game-card-platform" title={activeStoreOption.displayName}>
+                  {activeStoreOption.displayName}
+                </p>
+              )}
+              {storeOptions.length > 0 && (
+                <div className="game-card-stores">
+                  {storeOptions.map((store) => {
+                    const className = [
+                      "game-card-store-chip",
+                      store.isActive ? "active" : "",
+                      store.isOwned ? "owned" : "",
+                    ].filter(Boolean).join(" ");
+                    const titleParts = [store.displayName];
+                    if (store.isOwned) {
+                      titleParts.push(t("gameCard.owned"));
+                    }
+                    if (store.isActive) {
+                      titleParts.push(t("app.actions.select"));
+                    }
+                    const title = titleParts.join(" · ");
 
-                if (onSelectStore) {
-                  return (
-                    <button
-                      key={store.storeKey}
-                      type="button"
-                      className={className}
-                      title={title}
-                      onClick={(event) => handleStoreClick(event, store.variantId)}
-                      aria-label={t("gameCard.store", { store: store.displayName })}
-                      aria-pressed={store.isActive}
-                    >
-                      <StoreBrandIcon store={store.store} />
-                    </button>
-                  );
-                }
+                    if (onSelectStore) {
+                      return (
+                        <button
+                          key={store.storeKey}
+                          type="button"
+                          className={className}
+                          title={title}
+                          onClick={(event) => handleStoreClick(event, store.variantId)}
+                          aria-label={t("gameCard.store", { store: store.displayName })}
+                          aria-pressed={store.isActive}
+                        >
+                          <StoreBrandIcon store={store.store} />
+                        </button>
+                      );
+                    }
 
-                return (
-                  <span key={store.storeKey} className={className} title={title}>
-                    <StoreBrandIcon store={store.store} />
-                  </span>
-                );
-              })}
+                    return (
+                      <span key={store.storeKey} className={className} title={title}>
+                        <StoreBrandIcon store={store.store} />
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
           <h3 className="game-card-title" title={game.title}>

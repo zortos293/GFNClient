@@ -43,7 +43,9 @@ export async function refreshAuthTokens(
   return {
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token ?? refreshToken,
-    idToken: payload.id_token,
+    // Omit rather than set undefined so callers that spread onto prior tokens
+    // do not wipe a still-valid id_token when the refresh response excludes it.
+    ...(payload.id_token ? { idToken: payload.id_token } : {}),
     expiresAt: toExpiresAt(payload.expires_in),
     authClientId,
   };
@@ -104,14 +106,22 @@ export async function refreshWithClientToken(
 }
 
 export function mergeTokenSnapshot(base: AuthTokens, refreshed: TokenResponse): AuthTokens {
+  const nextClientToken = refreshed.client_token ?? base.clientToken;
+  const clientTokenRotated =
+    typeof refreshed.client_token === "string" &&
+    refreshed.client_token.length > 0 &&
+    refreshed.client_token !== base.clientToken;
+
   return {
     accessToken: refreshed.access_token,
     refreshToken: refreshed.refresh_token ?? base.refreshToken,
-    idToken: refreshed.id_token,
+    // Refresh responses often omit id_token; keep the prior JWT for LCARS callers.
+    idToken: refreshed.id_token ?? base.idToken,
     expiresAt: toExpiresAt(refreshed.expires_in),
     authClientId: base.authClientId ?? CLIENT_ID,
-    clientToken: refreshed.client_token ?? base.clientToken,
-    clientTokenExpiresAt: base.clientTokenExpiresAt,
-    clientTokenLifetimeMs: base.clientTokenLifetimeMs,
+    clientToken: nextClientToken,
+    // Rotated client tokens must not inherit stale expiry metadata.
+    clientTokenExpiresAt: clientTokenRotated ? undefined : base.clientTokenExpiresAt,
+    clientTokenLifetimeMs: clientTokenRotated ? undefined : base.clientTokenLifetimeMs,
   };
 }

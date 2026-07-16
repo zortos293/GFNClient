@@ -43,14 +43,12 @@ class AndroidQueueStatusNotifier(private val context: Context) {
     private val notificationManager = appContext.getSystemService(NotificationManager::class.java)
     private var serviceStartRequested = false
     private var queueReadyAlertSent = false
-    private var cancellationApplied = false
 
     fun update(state: OpenNowUiState) {
         if (!shouldShowQueueLaunchStatus(state)) {
             cancel()
             return
         }
-        cancellationApplied = false
 
         // Reset alert tracker when user is actively queuing so it fires again next time queue completes.
         if (queueDisplayPosition(state) != null) {
@@ -102,7 +100,6 @@ class AndroidQueueStatusNotifier(private val context: Context) {
     }
 
     fun cancel() {
-        if (!serviceStartRequested && !queueReadyAlertSent && cancellationApplied) return
         val intent = Intent(appContext, AndroidQueueStatusService::class.java).apply {
             action = QUEUE_SERVICE_ACTION_STOP
         }
@@ -117,7 +114,6 @@ class AndroidQueueStatusNotifier(private val context: Context) {
         }
         serviceStartRequested = false
         queueReadyAlertSent = false
-        cancellationApplied = true
         notificationManager.cancel(QUEUE_NOTIFICATION_ID)
         notificationManager.cancel(QUEUE_ALERT_NOTIFICATION_ID)
     }
@@ -273,3 +269,4 @@ private fun buildQueueReadyNotification(context: Context, gameTitle: String): No
         .setContentIntent(pendingIntent)
         .build()
 }
+

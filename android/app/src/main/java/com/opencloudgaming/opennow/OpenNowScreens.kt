@@ -181,8 +181,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -1720,6 +1720,7 @@ private fun AppNavigationRailItem(
     onClick: () -> Unit,
     iconRes: Int,
     label: String,
+    modifier: Modifier = Modifier,
     iconSize: Dp = 24.dp,
     focusRequester: FocusRequester? = null,
     showConnectionDot: Boolean = false,
@@ -1729,7 +1730,7 @@ private fun AppNavigationRailItem(
     NavigationRailItem(
         selected = selected,
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .onFocusChanged { focused = it.isFocused }
             .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
             .then(
@@ -4170,6 +4171,7 @@ private fun GameDetailsSheet(
         delay(80)
         runCatching { gameFocusRequester.requestFocus() }
     }
+    BackHandler(onBack = onDismiss)
     Box(
         Modifier
             .fillMaxSize()
@@ -4677,13 +4679,23 @@ private fun variantDetailsText(variant: GameVariant): String =
 
 @Composable
 private fun ImageCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    var focused by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
     Surface(
-        modifier = modifier.size(44.dp),
+        modifier = modifier
+            .size(44.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .border(
+                width = 2.dp,
+                color = if (focused) accent else Color.Transparent,
+                shape = CircleShape
+            )
+            .clickable(onClick = onClick),
         shape = CircleShape,
         color = Color.Black.copy(alpha = 0.58f),
         tonalElevation = 3.dp,
     ) {
-        IconButton(onClick = onClick) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(
                 painter = painterResource(R.drawable.ic_clear),
                 contentDescription = stringResource(R.string.action_cancel),
@@ -4959,10 +4971,21 @@ private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
 private fun GameDescriptionDisclosure(description: String?, compact: Boolean) {
     var expanded by remember(description) { mutableStateOf(true) }
     val text = description?.takeIf { it.isNotBlank() } ?: "No description is available for this game yet."
+    var focused by remember { mutableStateOf(false) }
+    val accent = MaterialTheme.colorScheme.primary
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(if (compact) 12.dp else 14.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .border(
+                width = 1.dp,
+                color = if (focused) accent else Color.Transparent,
+                shape = RoundedCornerShape(if (compact) 12.dp else 14.dp)
+            )
+            .clickable { expanded = !expanded },
         shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
-        color = PanelAlt,
+        color = if (focused) PanelAlt.copy(alpha = 0.85f) else PanelAlt,
         tonalElevation = 0.dp,
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -5321,10 +5344,18 @@ private fun StoreLaunchOptionsColumn(
                 )
             }
         }
+        var checkFocused by remember { mutableStateOf(false) }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
+                .onFocusChanged { checkFocused = it.isFocused }
+                .background(if (checkFocused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+                .border(
+                    width = 1.dp,
+                    color = if (checkFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    shape = RoundedCornerShape(14.dp)
+                )
                 .clickable { onRememberDefaultStoreChange(!rememberDefaultStore) }
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -5373,12 +5404,19 @@ private fun StoreLaunchVariantRow(
     onClick: () -> Unit,
 ) {
     val badge = launcherBadgeForStoreKey(splitGameStoreKeys(variant.store).firstOrNull())
+    var focused by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
+            .border(
+                width = 2.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(14.dp)
+            )
             .clickable { onClick() },
         shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
+        color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else PanelAlt,
         contentColor = TextPrimary,
     ) {
         Row(
@@ -5554,6 +5592,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     DisposableEffect(Unit) {
         val decor = activity?.window?.decorView
         NativeStreamInputRouter.attach(client)
+        NativeStreamInputRouter.setAndroidTvProfile(tvProfile)
         onDispose {
             if (Build.VERSION.SDK_INT >= 26) {
                 decor?.releasePointerCapture()
@@ -5562,6 +5601,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
             NativeStreamInputRouter.setSystemMenuHandler(null)
             NativeStreamInputRouter.setSystemBackHandler(null)
+            NativeStreamInputRouter.setAndroidTvProfile(false)
             NativeStreamInputRouter.setStreamUiActive(false)
             NativeStreamInputRouter.detach(client)
             client.release()
@@ -7075,9 +7115,11 @@ private fun StreamControlsPanel(
     BackHandler(enabled = statusBarOptionsOpen) {
         statusBarOptionsOpen = false
     }
-    LaunchedEffect(Unit) {
-        delay(80)
-        runCatching { doneFocusRequester.requestFocus() }
+    LaunchedEffect(statusBarOptionsOpen) {
+        if (!statusBarOptionsOpen) {
+            delay(120)
+            runCatching { doneFocusRequester.requestFocus() }
+        }
     }
     Surface(
         modifier = Modifier
@@ -7327,6 +7369,11 @@ private fun StatusBarSettingsPage(
     onButtonTone: () -> Unit,
     onBack: () -> Unit,
 ) {
+    val backFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(120)
+        runCatching { backFocusRequester.requestFocus() }
+    }
     val metrics = settings.streamStatsMetrics
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -7342,6 +7389,7 @@ private fun StatusBarSettingsPage(
                     onButtonTone()
                     onBack()
                 },
+                modifier = Modifier.focusRequester(backFocusRequester),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
             ) {
                 Icon(
@@ -7434,10 +7482,17 @@ private fun StatusBarSettingsPage(
 
 @Composable
 private fun StatusBarOptionAction(label: String, value: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Column(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.06f))
+            .onFocusChanged { focused = it.isFocused }
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
+            .border(
+                width = 1.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 9.dp),
     ) {
@@ -7448,10 +7503,17 @@ private fun StatusBarOptionAction(label: String, value: String, modifier: Modifi
 
 @Composable
 private fun StatusBarMetricSwitch(label: String, checked: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Row(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.06f))
+            .onFocusChanged { focused = it.isFocused }
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
+            .border(
+                width = 1.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -7471,11 +7533,18 @@ private fun StreamPanelSection(title: String, content: @Composable ColumnScope.(
 
 @Composable
 private fun StreamControlSwitch(label: String, value: String, checked: Boolean, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.06f))
+            .onFocusChanged { focused = it.isFocused }
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
+            .border(
+                width = 1.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -7514,11 +7583,18 @@ private fun StreamControlNavigation(label: String, value: String, onClick: () ->
 
 @Composable
 private fun StreamControlAction(label: String, value: String, action: String = "Change", onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.06f))
+            .onFocusChanged { focused = it.isFocused }
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
+            .border(
+                width = 1.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -7535,13 +7611,27 @@ private fun StreamControlAction(label: String, value: String, action: String = "
 private fun CompactSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
     var local by remember(value) { mutableFloatStateOf(value) }
     val focusManager = LocalFocusManager.current
-    Column {
+    var focused by remember { mutableStateOf(false) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (focused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+            .border(
+                width = 1.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(label, Modifier.weight(1f))
             Text("${(local * 100).roundToInt()}%", color = TextMuted)
         }
         Slider(
-            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
+            modifier = Modifier
+                .onFocusChanged { focused = it.isFocused }
+                .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
             value = local,
             onValueChange = {
                 local = it.coerceIn(min, max)
@@ -7556,13 +7646,27 @@ private fun CompactSlider(label: String, value: Float, min: Float, max: Float, o
 private fun CompactDpSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
     var local by remember(value) { mutableFloatStateOf(value) }
     val focusManager = LocalFocusManager.current
-    Column {
+    var focused by remember { mutableStateOf(false) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (focused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+            .border(
+                width = 1.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(label, Modifier.weight(1f))
             Text("${local.roundToInt()} dp", color = TextMuted)
         }
         Slider(
-            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
+            modifier = Modifier
+                .onFocusChanged { focused = it.isFocused }
+                .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
             value = local,
             onValueChange = {
                 local = it.coerceIn(min, max)
@@ -9832,12 +9936,13 @@ private fun VirtualStick(
     diameter: androidx.compose.ui.unit.Dp,
     onChange: (Float, Float) -> Unit,
 ) {
+    val currentOnChange by rememberUpdatedState(onChange)
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
     val style = LocalTouchControllerStyle.current
 
-    DisposableEffect(client, onChange) {
+    DisposableEffect(client) {
         onDispose {
-            onChange(0f, 0f)
+            currentOnChange(0f, 0f)
         }
     }
 
@@ -9847,7 +9952,7 @@ private fun VirtualStick(
             .clip(CircleShape)
             .background(Color.Transparent)
             .border(1.dp, Color.White.copy(alpha = opacity * 0.3f), CircleShape)
-            .pointerInput(client, onChange) {
+            .pointerInput(client) {
                 awaitPointerEventScope {
                     var activePointerId: PointerId? = null
                     try {
@@ -9857,12 +9962,11 @@ private fun VirtualStick(
                                 event.changes.firstOrNull { it.id == pointerId }
                             }
                             if (activeChange != null && !activeChange.pressed) {
-                                onChange(0f, 0f)
+                                currentOnChange(0f, 0f)
                                 knobOffset = Offset.Zero
                                 activePointerId = null
                                 continue
                             }
-
                             val change = activeChange ?: if (activePointerId == null) {
                                 event.changes.firstOrNull {
                                     it.pressed &&
@@ -9878,7 +9982,7 @@ private fun VirtualStick(
                             val maxRadius = min(size.width, size.height) * 0.34f
                             val center = Offset(size.width / 2f, size.height / 2f)
                             val clamped = clampStickOffset(change.position - center, maxRadius)
-                            onChange(
+                            currentOnChange(
                                 (clamped.x / maxRadius).coerceIn(-1f, 1f),
                                 (clamped.y / maxRadius).coerceIn(-1f, 1f),
                             )
@@ -9886,7 +9990,7 @@ private fun VirtualStick(
                             change.consume()
                         }
                     } finally {
-                        onChange(0f, 0f)
+                        currentOnChange(0f, 0f)
                         knobOffset = Offset.Zero
                     }
                 }
@@ -10516,11 +10620,20 @@ private fun FilterMenu(
                     ) {
                         items(options) { option ->
                             val isSelected = option.id in selectedIds
+                            var rowFocused by remember { mutableStateOf(false) }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .onFocusChanged { rowFocused = it.isFocused }
+                                    .background(if (rowFocused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (rowFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
                                     .clickable { onToggle(option.id) }
-                                    .padding(vertical = 6.dp),
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Checkbox(
@@ -10755,12 +10868,13 @@ private fun PrintedWasteOptionsColumn(
                     RecommendedPrintedWasteCard(it)
                 }
             }
+            var listFocused by remember { mutableStateOf(false) }
             LazyColumn(
                 state = zoneListState,
                 modifier = Modifier
                     .weight(1f)
                     .focusRequester(zoneListFocusRequester)
-                    .onFocusChanged { zoneListFocused = it.isFocused }
+                    .onFocusChanged { listFocused = it.isFocused }
                     .onPreviewKeyEvent { event ->
                         if (isTvActivateKey(event)) {
                             if (selectedZone != null) {
@@ -10798,10 +10912,12 @@ private fun PrintedWasteOptionsColumn(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(zones, key = { it.zoneId }) { zoneOption ->
+                    val isCurrent = zoneOption.zoneId == selectedZoneId
                     PrintedWasteZoneRow(
                         zoneOption = zoneOption,
-                        selected = zoneOption.zoneId == selectedZoneId,
-                        listFocused = zoneListFocused,
+                        selected = isCurrent,
+                        focused = isCurrent && listFocused,
+                        listFocused = listFocused,
                         onClick = { onSelectZone(zoneOption.zoneId) },
                     )
                 }
@@ -10863,6 +10979,7 @@ private fun RecommendedPrintedWasteCard(zoneOption: PrintedWasteZoneOption) {
 private fun PrintedWasteZoneRow(
     zoneOption: PrintedWasteZoneOption,
     selected: Boolean,
+    focused: Boolean,
     listFocused: Boolean,
     onClick: () -> Unit,
 ) {
@@ -10872,9 +10989,14 @@ private fun PrintedWasteZoneRow(
             .fillMaxWidth()
             .focusProperties { canFocus = false }
             .clip(RoundedCornerShape(12.dp))
+            .border(
+                width = 2.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
             .clickable { onClick() },
         shape = RoundedCornerShape(12.dp),
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
+        color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
         tonalElevation = if (selected) 2.dp else 0.dp,
         border = if (selected && listFocused) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
     ) {

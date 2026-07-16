@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -663,6 +664,12 @@ object NativeStreamInputRouter {
     @Volatile
     private var client: NativeStreamClient? = null
     @Volatile
+    private var androidTvProfile = false
+
+    fun setAndroidTvProfile(enabled: Boolean) {
+        androidTvProfile = enabled
+    }
+    @Volatile
     private var touchMouseEnabled = false
     @Volatile
     private var mouseDirectClick = false
@@ -1101,6 +1108,23 @@ object NativeStreamInputRouter {
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL,
             -> nativeUiTouchPointerIds.clear()
+        }
+        uiTouchPassthroughActive = nativeUiTouchPointerIds.isNotEmpty()
+    }
+
+    fun postDispatchTouch(event: MotionEvent) {
+        if (!event.isFingerTouchEvent()) return
+        when (event.actionMasked) {
+            MotionEvent.ACTION_POINTER_UP -> {
+                val index = event.actionIndex
+                if (index in 0 until event.pointerCount) {
+                    nativeUiTouchPointerIds.remove(event.getPointerId(index))
+                }
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                nativeUiTouchPointerIds.clear()
+            }
         }
         uiTouchPassthroughActive = nativeUiTouchPointerIds.isNotEmpty()
     }
@@ -2208,6 +2232,12 @@ class NativeStreamClient(
     private val appContext = context.applicationContext
     private val eglBase: EglBase = EglBase.create()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val inputExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "opennow-input-sender").apply {
+            priority = Thread.MAX_PRIORITY
+        }
+    }
+    private val inputScope = CoroutineScope(SupervisorJob() + inputExecutor.asCoroutineDispatcher())
     private val inputEncoder = InputEncoder()
     private val audioDeviceModule: AudioDeviceModule =
         JavaAudioDeviceModule.builder(appContext)
@@ -2555,6 +2585,8 @@ class NativeStreamClient(
     }
 
     private fun finishRelease(preparedRenderer: SurfaceViewRenderer? = null) {
+        inputScope.cancel()
+        inputExecutor.shutdown()
         preparedRenderer?.release()
         factory?.dispose()
         factory = null
@@ -3840,14 +3872,21 @@ class NativeStreamClient(
                     "rx=${raw.rx.formatAxis()} ry=${raw.ry.formatAxis()} hatX=${raw.hatX.formatAxis()} hatY=${raw.hatY.formatAxis()}",
             )
         }
-        val lt = max(
-            max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_BRAKE))),
-            if (physicalLeftTriggerButtonPressed) 1f else 0f,
-        )
-        val rt = max(
-            max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_GAS))),
-            if (physicalRightTriggerButtonPressed) 1f else 0f,
-        )
+        val hasAnalogL = event.device?.getMotionRange(MotionEvent.AXIS_LTRIGGER) != null ||
+                         event.device?.getMotionRange(MotionEvent.AXIS_BRAKE) != null
+        val lt = if (hasAnalogL) {
+            max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_BRAKE)))
+        } else {
+            if (physicalLeftTriggerButtonPressed) 1f else 0f
+        }
+
+        val hasAnalogR = event.device?.getMotionRange(MotionEvent.AXIS_RTRIGGER) != null ||
+                         event.device?.getMotionRange(MotionEvent.AXIS_GAS) != null
+        val rt = if (hasAnalogR) {
+            max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), normalizeTriggerAxis(event.getAxisValue(MotionEvent.AXIS_GAS)))
+        } else {
+            if (physicalRightTriggerButtonPressed) 1f else 0f
+        }
         val leftScale = radialDeadzoneScale(axes.leftX, axes.leftY)
         val rightScale = radialDeadzoneScale(axes.rightX, axes.rightY)
         val leftX = axes.leftX * leftScale
@@ -3901,9 +3940,20 @@ class NativeStreamClient(
                 physicalControllerConnected = true
                 physicalControllerActive = true
                 physicalLeftTriggerButtonPressed = pressed
-                lastLeftTrigger = if (pressed) 255 else 0
+                val hasAnalogTrigger = event.device?.getMotionRange(MotionEvent.AXIS_LTRIGGER) != null ||
+                                       event.device?.getMotionRange(MotionEvent.AXIS_BRAKE) != null
+                if (!hasAnalogTrigger) {
+                    lastLeftTrigger = if (pressed) 255 else 0
+                }
                 val mouseSent = handleControllerMouseTrigger(left = true, pressed = pressed)
-                return sendCurrentGamepadState(controllerId = activeControllerId) || mouseSent
+                if (mouseSent) {
+                    return true
+                }
+                return if (!hasAnalogTrigger) {
+                    sendCurrentGamepadState(controllerId = activeControllerId)
+                } else {
+                    true
+                }
             }
             KeyEvent.KEYCODE_BUTTON_R2 -> {
                 activeControllerId = controllerIdFor(event)
@@ -3913,9 +3963,20 @@ class NativeStreamClient(
                 physicalControllerConnected = true
                 physicalControllerActive = true
                 physicalRightTriggerButtonPressed = pressed
-                lastRightTrigger = if (pressed) 255 else 0
+                val hasAnalogTrigger = event.device?.getMotionRange(MotionEvent.AXIS_RTRIGGER) != null ||
+                                       event.device?.getMotionRange(MotionEvent.AXIS_GAS) != null
+                if (!hasAnalogTrigger) {
+                    lastRightTrigger = if (pressed) 255 else 0
+                }
                 val mouseSent = handleControllerMouseTrigger(left = false, pressed = pressed)
-                return sendCurrentGamepadState(controllerId = activeControllerId) || mouseSent
+                if (mouseSent) {
+                    return true
+                }
+                return if (!hasAnalogTrigger) {
+                    sendCurrentGamepadState(controllerId = activeControllerId)
+                } else {
+                    true
+                }
             }
         }
         return false
@@ -4058,7 +4119,15 @@ class NativeStreamClient(
             }
             return false
         }
-        return channel.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), true))
+        if (channel.bufferedAmount() > 65536) {
+            return false
+        }
+        inputScope.launch {
+            runCatching {
+                channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
+            }
+        }
+        return true
     }
 
     private fun refreshConnectedPhysicalControllers() {

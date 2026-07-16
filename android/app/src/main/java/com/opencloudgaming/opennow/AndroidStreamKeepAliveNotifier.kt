@@ -29,12 +29,14 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
     private val appContext = context.applicationContext
     private var serviceStartRequested = false
     private var activeTitle: String? = null
+    private var cancellationApplied = false
 
     fun update(state: OpenNowUiState) {
         if (!shouldKeepAndroidStreamAlive(state)) {
             cancel()
             return
         }
+        cancellationApplied = false
 
         val title = state.streamGame?.title ?: "OpenNOW"
         if (serviceStartRequested && activeTitle == title) return
@@ -56,6 +58,7 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
     }
 
     fun cancel() {
+        if (!serviceStartRequested && cancellationApplied) return
         val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
             action = STREAM_SERVICE_ACTION_STOP
         }
@@ -70,6 +73,7 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
         }
         serviceStartRequested = false
         activeTitle = null
+        cancellationApplied = true
         appContext.getSystemService(NotificationManager::class.java).cancel(STREAM_NOTIFICATION_ID)
     }
 }

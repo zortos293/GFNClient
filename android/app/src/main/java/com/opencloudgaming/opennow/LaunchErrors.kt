@@ -6,12 +6,18 @@ private val LaunchErrorWhitespaceRegex = Regex("""\s+""")
 internal fun normalizeLaunchErrorMessage(error: Throwable, gameTitle: String? = null): String {
     val text = error.message ?: return "Launch failed"
     return when {
+        isFreeTierEntitlementError(text) ->
+            "Your GeForce NOW account is on the Free tier. This game requires a Priority or Ultimate membership."
         isLimitedModeStreamingError(text) -> limitedModeStreamingMessage(gameTitle)
         text.contains("patch", ignoreCase = true) || text.contains("maintenance", ignoreCase = true) ->
             "Game is patching or under maintenance. Try again when NVIDIA finishes updating it."
         else -> text
     }
 }
+
+private fun isFreeTierEntitlementError(text: String): Boolean =
+    text.contains("ENTITLEMENT_FAILURE_STATUS", ignoreCase = true) ||
+        text.contains("8A910006", ignoreCase = true)
 
 private fun isLimitedModeStreamingError(text: String): Boolean =
     text.contains("STREAMING_NOT_ALLOWED_IN_LIMITED_MODE", ignoreCase = true) ||

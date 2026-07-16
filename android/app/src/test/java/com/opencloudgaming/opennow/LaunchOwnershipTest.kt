@@ -75,6 +75,31 @@ class LaunchOwnershipTest {
     }
 
     @Test
+    fun metadataEnrichmentPreservesPanelLibraryOwnership() {
+        val panelGame = game(
+            variants = listOf(
+                variant(
+                    id = "steam",
+                    store = "Steam",
+                    libraryStatus = "MANUAL",
+                    librarySelected = true,
+                ),
+            ),
+            isInLibrary = true,
+        )
+        val metadataGame = game(
+            variants = listOf(variant(id = "steam", store = "Steam")),
+        ).copy(description = "Enriched description")
+
+        val merged = mergePanelGameWithMetadata(panelGame, metadataGame)
+
+        assertTrue(merged.isInLibrary)
+        assertEquals("MANUAL", merged.variants.single().libraryStatus)
+        assertEquals(true, merged.variants.single().librarySelected)
+        assertEquals("Enriched description", merged.description)
+    }
+
+    @Test
     fun libraryStoreFiltersOnlyUseOwnedStores() {
         val game = game(
             variants = listOf(

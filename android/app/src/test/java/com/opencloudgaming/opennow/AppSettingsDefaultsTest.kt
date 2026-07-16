@@ -18,7 +18,10 @@ class AppSettingsDefaultsTest {
         assertTrue(metrics.connection)
         assertFalse(metrics.resolution)
         assertFalse(metrics.codec)
-        assertEquals(3, metrics.enabledCount())
+        assertTrue(metrics.location)
+        assertTrue(metrics.latency)
+        assertTrue(metrics.packetLoss)
+        assertEquals(6, metrics.enabledCount())
     }
 
     @Test
@@ -33,16 +36,17 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun defaultsKeepAdvancedAndAudioPolishAvailableWithoutAutoplayingIntro() {
+    fun defaultsUseRecommendedProfileAndKeepOptionalMusicOff() {
         val settings = AppSettings()
 
-        assertTrue(settings.nerdMode)
+        assertFalse(settings.nerdMode)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
         assertTrue(settings.controllerUiSounds)
         assertEquals(AppLaunchPage.Store, settings.launchPage)
-        assertTrue(settings.streamIntroMusic)
+        assertEquals(StreamPreset.Recommended, settings.streamPreset)
+        assertFalse(settings.streamIntroMusic)
         assertEquals(IntroMusicStartMode.Muted, settings.streamIntroStartMode)
-        assertTrue(settings.queueReadyMusic)
+        assertFalse(settings.queueReadyMusic)
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)

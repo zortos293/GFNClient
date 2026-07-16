@@ -6,6 +6,8 @@
         <item name="android:windowFullscreen">false</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">#090B0D</item>
+        <item name="android:windowDisablePreview">false</item>
         <item name="android:colorAccent">#6AF0A0</item>
         <item name="android:fontFamily">sans</item>
     </style>

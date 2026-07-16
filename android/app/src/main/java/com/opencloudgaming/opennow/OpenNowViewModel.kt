@@ -3,17 +3,21 @@ package com.opencloudgaming.opennow
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +42,7 @@ enum class AppPage {
 
 enum class SettingsRouteTarget {
     General,
+    Stream,
 }
 
 private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
@@ -77,6 +82,15 @@ data class ActiveSessionDecision(
     val requestedGameTitle: String,
 )
 
+@Immutable
+data class DiagnosticShareState(
+    val awaitingConsent: Boolean = false,
+    val uploading: Boolean = false,
+    val pasteUrl: String? = null,
+    val clipboardSummary: String? = null,
+    val error: String? = null,
+)
+
 private data class PendingActiveSessionLaunch(
     val game: GameInfo,
     val launchAppId: String,
@@ -113,6 +127,7 @@ data class OpenNowUiState(
     val settingsRefreshing: Boolean = false,
     val settingsRouteTarget: SettingsRouteTarget? = null,
     val settings: AppSettings = AppSettings(),
+    val androidTvProfile: Boolean = false,
     val codecReport: RuntimeCodecReport? = null,
     val selectedGame: GameInfo? = null,
     val activeSession: ActiveSessionInfo? = null,
@@ -138,6 +153,10 @@ data class OpenNowUiState(
     val androidUpdate: AndroidUpdateState = AndroidUpdateState(),
     val dismissedAndroidUpdateNoticeKey: String? = null,
     val androidPictureInPictureActive: Boolean = false,
+    val diagnosticShare: DiagnosticShareState = DiagnosticShareState(),
+    val localTvConnector: LocalTvConnectorState = LocalTvConnectorState(),
+    val remoteStreamMenuRequestToken: Int = 0,
+    val remoteStatsToggleRequestToken: Int = 0,
 )
 
 internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
@@ -163,6 +182,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     )
     private val appUpdater = AndroidAppUpdater(application, http)
     private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
+    private val localTvConnector = openNowApplication.localTvConnector
     private val queueAdReportMutex = Mutex()
     private val accountConnectorRefreshMutex = Mutex()
     private val runtimeResolutionNoticeKeys = mutableSetOf<String>()
@@ -174,9 +194,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     @Volatile
     private var latestStreamRuntimeStats: TimedStreamRuntimeStats? = null
     private var lastRuntimeStatsEventAtMs: Long = 0L
+    private var deviceRecommendation: AndroidDeviceRecommendation? = null
+    private val settingsDiagnosticTapTimes = ArrayDeque<Long>()
 
     private val initialAuthSession = authStore.activeSession()
-    private val initialSettings = settingsStore.settings.value
+    private val androidTvProfile = isAndroidTvProfile(application)
+    private val initialSettings = settingsStore.settings.value.let { current ->
+        if (androidTvProfile && current.tvLayoutProfileVersion < TV_LAYOUT_PROFILE_VERSION) {
+            settingsStore.update { saved ->
+                saved.copy(
+                    // 36dp on every edge consumed 144 physical pixels per axis at the
+                    // common TV density. Migrate only the legacy default; preserve custom values.
+                    tvSafeAreaPaddingDp = if (saved.tvSafeAreaPaddingDp == 36f) 16f else saved.tvSafeAreaPaddingDp,
+                    tvLayoutProfileVersion = TV_LAYOUT_PROFILE_VERSION,
+                )
+            }
+            settingsStore.settings.value
+        } else {
+            current
+        }
+    }
     private val _state = MutableStateFlow(
         OpenNowUiState(
             page = defaultLaunchAppPage(initialSettings),
@@ -186,6 +223,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             savedAccounts = authStore.state.value.sessions.map { session -> session.toSavedAccount() },
             loadingGames = initialAuthSession != null,
             settings = initialSettings,
+            androidTvProfile = androidTvProfile,
             androidUpdate = appUpdater.state.value,
             dismissedAndroidUpdateNoticeKey = androidUpdateNoticeStore.dismissedKey(),
             queuedGameKeys = queuedGameStore.load(),
@@ -209,6 +247,53 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             settingsStore.settings.collect { next ->
                 OpenNowAnalytics.applyOptOut(!next.analyticsSharingEnabled)
                 _state.update { it.copy(settings = next) }
+            }
+        }
+        if (androidTvProfile) {
+            viewModelScope.launch {
+                settingsStore.settings
+                    .map { it.localTvRemoteEnabled }
+                    .distinctUntilChanged()
+                    .collect { enabled ->
+                        if (enabled) localTvConnector.startHosting() else localTvConnector.stopHosting()
+                    }
+            }
+        }
+        viewModelScope.launch {
+            localTvConnector.state.collect { next ->
+                _state.update { it.copy(localTvConnector = next) }
+            }
+        }
+        viewModelScope.launch {
+            localTvConnector.launchRequests.collect { request ->
+                if (!state.value.androidTvProfile) return@collect
+                val allGames = state.value.games + state.value.libraryGames
+                val game = allGames.firstOrNull { game ->
+                    game.id == request.gameId ||
+                        game.uuid == request.gameId ||
+                        game.launchAppId == request.gameId ||
+                        game.variants.any { it.id == request.gameId }
+                } ?: GameInfo(
+                    id = request.gameId,
+                    uuid = request.gameId,
+                    launchAppId = request.gameId.takeIf { it.all(Char::isDigit) },
+                    title = request.title ?: "Game ${request.gameId}",
+                    variants = listOf(GameVariant(id = request.gameId, store = "Unknown")),
+                )
+                recordDebugEvent("tv-connector", "Accepted encrypted local launch game=${game.title}")
+                play(game)
+            }
+        }
+        viewModelScope.launch {
+            localTvConnector.signInRequests.collect { transferredSession ->
+                if (!state.value.androidTvProfile) return@collect
+                acceptLocalTvSignIn(transferredSession)
+            }
+        }
+        viewModelScope.launch {
+            localTvConnector.remoteRequests.collect { request ->
+                if (!state.value.androidTvProfile) return@collect
+                handleLocalTvRemoteRequest(request)
             }
         }
         viewModelScope.launch {
@@ -291,8 +376,31 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun initialize() {
         viewModelScope.launch {
-            val codecReport = CodecProbe.report(getApplication())
-            _state.update { it.copy(codecReport = codecReport, initializing = false) }
+            val codecReport = withContext(Dispatchers.Default) {
+                CodecProbe.report(getApplication())
+            }
+            val recommendation = recommendedAndroidStreamProfile(getApplication(), codecReport)
+            deviceRecommendation = recommendation
+            val currentSettings = settingsStore.settings.value
+            if (
+                currentSettings.streamPreset == StreamPreset.Recommended &&
+                currentSettings.stream != recommendation.stream
+            ) {
+                settingsStore.update { settings ->
+                    if (settings.streamPreset == StreamPreset.Recommended) {
+                        settings.copy(stream = recommendation.stream)
+                    } else {
+                        settings
+                    }
+                }
+            }
+            _state.update {
+                it.copy(
+                    codecReport = codecReport,
+                    settings = settingsStore.settings.value,
+                    initializing = false,
+                )
+            }
             val restoreResult = restoreAuthSession()
             val providers = runCatching { authRepository.loginProviders() }.getOrDefault(listOf(defaultProvider()))
             val restored = restoreResult.getOrNull()
@@ -371,12 +479,231 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(page = page, selectedGame = null) }
     }
 
+    fun recordSettingsIconTap() {
+        val now = SystemClock.elapsedRealtime()
+        while (settingsDiagnosticTapTimes.firstOrNull()?.let { now - it > SETTINGS_DIAGNOSTIC_TAP_WINDOW_MS } == true) {
+            settingsDiagnosticTapTimes.removeFirst()
+        }
+        settingsDiagnosticTapTimes.addLast(now)
+        if (settingsDiagnosticTapTimes.size < SETTINGS_DIAGNOSTIC_TAP_COUNT) return
+        settingsDiagnosticTapTimes.clear()
+        _state.update {
+            it.copy(diagnosticShare = DiagnosticShareState(awaitingConsent = true))
+        }
+    }
+
+    fun dismissDiagnosticShare() {
+        _state.update { it.copy(diagnosticShare = DiagnosticShareState()) }
+    }
+
+    fun startLocalTvConnector() {
+        if (!state.value.androidTvProfile) return
+        settingsStore.update { it.copy(localTvRemoteEnabled = true) }
+        localTvConnector.startHosting()
+    }
+
+    fun stopLocalTvConnector() {
+        if (state.value.androidTvProfile) {
+            settingsStore.update { it.copy(localTvRemoteEnabled = false) }
+        }
+        localTvConnector.stopHosting()
+    }
+
+    fun refreshLocalTvPairingCode() {
+        if (!state.value.androidTvProfile || !state.value.settings.localTvRemoteEnabled) return
+        localTvConnector.refreshPairingCode()
+    }
+
+    fun setLocalTvDeviceTrusted(trusted: Boolean) {
+        if (!state.value.androidTvProfile) return
+        localTvConnector.setPairedDeviceTrusted(trusted)
+    }
+
+    fun setLocalTvTrustRequested(requested: Boolean) {
+        if (state.value.androidTvProfile) return
+        localTvConnector.setPhoneTrustRequest(requested)
+    }
+
+    fun forgetLocalTvConnector() {
+        localTvConnector.forgetPhoneTarget()
+    }
+
+    fun playOnLocalTv(game: GameInfo) {
+        if (state.value.androidTvProfile) return
+        localTvConnector.sendLaunch(gameTrackingKey(game), game.title)
+    }
+
+    fun signInLocalTv() {
+        if (state.value.androidTvProfile) return
+        val session = state.value.authSession ?: run {
+            _state.update { it.copy(error = "Sign in on the phone first") }
+            return
+        }
+        localTvConnector.sendSignIn(session)
+    }
+
+    fun switchLocalTvAccount(userId: String) {
+        if (state.value.androidTvProfile) return
+        val session = authStore.state.value.sessions.firstOrNull { it.user.userId == userId } ?: run {
+            _state.update { it.copy(error = "That account is no longer available on this phone") }
+            return
+        }
+        localTvConnector.sendSignIn(session)
+    }
+
+    fun sendLocalTvRemoteAction(action: String, value: String? = null) {
+        if (state.value.androidTvProfile) return
+        localTvConnector.sendRemoteAction(action, value)
+    }
+
+    private fun handleLocalTvRemoteRequest(request: LocalTvRemoteRequest) {
+        recordDebugEvent("tv-remote", "Accepted encrypted action=${request.action}")
+        when (request.action) {
+            "open_stream_menu" -> _state.update {
+                it.copy(remoteStreamMenuRequestToken = it.remoteStreamMenuRequestToken + 1)
+            }
+            "toggle_stream_stats" -> _state.update {
+                it.copy(remoteStatsToggleRequestToken = it.remoteStatsToggleRequestToken + 1)
+            }
+            "stop_stream" -> stopStream()
+            "apply_recommended" -> applyStreamPreset(StreamPreset.Recommended)
+            "set_codec" -> request.value
+                ?.let { value -> runCatching { VideoCodec.valueOf(value) }.getOrNull() }
+                ?.let { codec -> updateStreamSettings { it.copy(codec = codec) } }
+            "set_resolution" -> request.value
+                ?.takeIf { streamAspectRatioForResolution(it) != null }
+                ?.let { resolution ->
+                    updateStreamSettings {
+                        it.copy(
+                            resolution = resolution,
+                            aspectRatio = streamAspectRatioForResolution(resolution) ?: it.aspectRatio,
+                        )
+                    }
+                }
+            "set_fps" -> request.value?.toIntOrNull()
+                ?.takeIf { it in setOf(30, 60, 120) }
+                ?.let { fps -> updateStreamSettings { it.copy(fps = fps) } }
+            "set_background" -> request.value?.toBooleanStrictOrNull()?.let { enabled ->
+                settingsStore.update { it.copy(nerdCatalogBackground = enabled) }
+            }
+            "set_ui_sounds" -> request.value?.toBooleanStrictOrNull()?.let { enabled ->
+                settingsStore.update { it.copy(controllerUiSounds = enabled) }
+            }
+            "set_safe_area" -> request.value?.toFloatOrNull()?.coerceIn(0f, 120f)?.let { padding ->
+                settingsStore.update { it.copy(tvSafeAreaPaddingDp = padding) }
+            }
+            "set_hide_server_selector" -> request.value?.toBooleanStrictOrNull()?.let { hidden ->
+                settingsStore.update { it.copy(hideServerSelector = hidden) }
+            }
+        }
+    }
+
+    private fun acceptLocalTvSignIn(transferredSession: AuthSession) {
+        viewModelScope.launch {
+            authStore.upsertSession(transferredSession)
+            val restored = restoreAuthSession(throwOnRefreshFailure = true).getOrElse { error ->
+                authStore.removeSession(transferredSession.user.userId)
+                _state.update { it.copy(error = "Phone sign-in could not be verified: ${error.message.orEmpty()}") }
+                return@launch
+            } ?: run {
+                authStore.removeSession(transferredSession.user.userId)
+                _state.update { it.copy(error = "Phone sign-in could not be verified") }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    authSession = restored,
+                    selectedProvider = restored.provider,
+                    savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                    error = null,
+                    loadingGames = true,
+                )
+            }
+            Toast.makeText(getApplication(), "Signed in securely from phone", Toast.LENGTH_SHORT).show()
+            recordDebugEvent("tv-connector", "Accepted encrypted local sign-in provider=${restored.provider.code}")
+            refreshAfterAuth(restored)
+        }
+    }
+
+    fun uploadDiagnosticShare() {
+        if (state.value.diagnosticShare.uploading) return
+        _state.update {
+            it.copy(diagnosticShare = DiagnosticShareState(uploading = true))
+        }
+        viewModelScope.launch {
+            val snapshot = state.value
+            val summaryHeader = diagnosticSummaryHeader(snapshot)
+            val sanitizedLog = sanitizedDebugLogText()
+            val payload = sanitizeDiagnosticExport(
+                buildString {
+                    appendLine(summaryHeader)
+                    appendLine()
+                    append(sanitizedLog)
+                },
+            )
+            runCatching { uploadAndroidDiagnosticPaste(http, payload) }
+                .onSuccess { pasteUrl ->
+                    _state.update {
+                        it.copy(
+                            diagnosticShare = DiagnosticShareState(
+                                pasteUrl = pasteUrl,
+                                clipboardSummary = "$summaryHeader\nPaste: $pasteUrl",
+                            ),
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) return@onFailure
+                    _state.update {
+                        it.copy(
+                            diagnosticShare = DiagnosticShareState(
+                                awaitingConsent = true,
+                                error = error.message ?: "Could not upload diagnostics",
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun diagnosticSummaryHeader(snapshot: OpenNowUiState): String {
+        val recommendation = deviceRecommendation
+        val model = listOf(Build.MANUFACTURER, Build.MODEL)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString(" ")
+        val accountType = snapshot.subscriptionInfo?.membershipTier
+            ?: snapshot.authSession?.user?.membershipTier
+            ?: "Unknown"
+        val provider = snapshot.authSession?.provider?.displayName?.takeIf { it.isNotBlank() } ?: "Unknown"
+        return buildString {
+            appendLine("OpenNOW Android ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("Client: ${if (snapshot.androidTvProfile) "Android TV" else "Android mobile"}")
+            appendLine("Hardware: $model · Android ${Build.VERSION.RELEASE}")
+            appendLine("Screen: ${recommendation?.displayWidth ?: "?"}x${recommendation?.displayHeight ?: "?"} · processors ${recommendation?.processorCount ?: "?"} · memory ${recommendation?.totalMemoryMiB?.let { "$it MiB" } ?: "unknown"}")
+            appendLine("Membership: $provider · $accountType")
+            appendLine("Profile: ${snapshot.settings.streamPreset} · ${snapshot.settings.stream.resolution}@${snapshot.settings.stream.fps} · ${snapshot.settings.stream.codec} · ${snapshot.settings.stream.maxBitrateMbps} Mbps")
+            append("Status: ${snapshot.streamStatus} · ${snapshot.error?.take(160)?.let(::sanitizeDiagnosticExport) ?: "no current error"}")
+        }
+    }
+
     fun openAndroidUpdateSettings() {
         _state.update {
             it.copy(
                 page = AppPage.Settings,
                 selectedGame = null,
                 settingsRouteTarget = SettingsRouteTarget.General,
+            )
+        }
+    }
+
+    fun openStreamSettings() {
+        _state.update {
+            it.copy(
+                page = AppPage.Settings,
+                selectedGame = null,
+                settingsRouteTarget = SettingsRouteTarget.Stream,
             )
         }
     }
@@ -424,7 +751,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun login(provider: LoginProvider = state.value.selectedProvider) {
         loginJob?.cancel()
         loginJob = viewModelScope.launch {
-            val useDeviceCode = state.value.codecReport?.androidTvProfile == true && provider.supportsDeviceCodeLogin
+            val useDeviceCode = state.value.androidTvProfile && provider.supportsDeviceCodeLogin
             _state.update {
                 it.copy(
                     error = null,
@@ -850,15 +1177,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearCatalogCache() {
-        val removed = catalogCacheStore.clear()
-        Toast.makeText(
-            getApplication(),
-            if (removed == 0) "Game cache was already clear" else "Cleared game cache",
-            Toast.LENGTH_SHORT,
-        ).show()
-        val session = state.value.authSession ?: return
         viewModelScope.launch {
-            refreshAfterAuth(session)
+            val removed = withContext(Dispatchers.IO) { catalogCacheStore.clear() }
+            Toast.makeText(
+                getApplication(),
+                if (removed == 0) "Game cache was already clear" else "Cleared game cache",
+                Toast.LENGTH_SHORT,
+            ).show()
+            state.value.authSession?.let { refreshAfterAuth(it) }
         }
     }
 
@@ -983,10 +1309,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun applyStreamPreset(preset: StreamPreset) {
         val snapshot = state.value
         settingsStore.update { settings ->
+            val presetStream = if (preset == StreamPreset.Recommended) {
+                (deviceRecommendation ?: recommendedAndroidStreamProfile(getApplication(), snapshot.codecReport)).stream
+            } else {
+                settings.stream.applyingStreamPreset(preset)
+            }
             settings.copy(
                 streamPreset = preset,
-                stream = settings.stream
-                    .applyingStreamPreset(preset)
+                stream = presetStream
                     .withAndroidSettingsAvailability()
                     .withResolutionAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
                     .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier),
@@ -1956,6 +2286,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun handleExternalLaunchIntent(intent: Intent?) {
         if (intent == null) return
         val uri = intent.data
+        if (localTvConnector.isPairUri(uri)) {
+            if (state.value.androidTvProfile) {
+                _state.update { it.copy(error = "Pairing links must be opened on the Android phone") }
+            } else if (uri != null) {
+                localTvConnector.pairPhone(uri)
+            }
+            return
+        }
         if (authRepository.handleOAuthRedirect(uri)) {
             _state.update { it.copy(launchPhase = LOGIN_PHASE_GETTING_TOKENS, error = null) }
             return
@@ -2018,6 +2356,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("negotiated=${session?.negotiatedStreamProfile?.debugSummary().orEmpty()} requestedFeatures=${session?.requestedStreamingFeatures?.debugSummary().orEmpty()} finalizedFeatures=${session?.finalizedStreamingFeatures?.debugSummary().orEmpty()}")
             appendLine("printedWaste.loading=${snapshot.printedWasteLoading} queueZones=${snapshot.printedWasteQueue.size} mappingZones=${snapshot.printedWasteMapping.size} pings=${snapshot.printedWastePings.size} error=${snapshot.printedWasteError.orEmpty()}")
             appendLine("settings.resolution=${snapshot.settings.stream.resolution} fps=${snapshot.settings.stream.fps} codec=${snapshot.settings.stream.codec} bitrate=${snapshot.settings.stream.maxBitrateMbps}")
+            appendLine("settings.preset=${snapshot.settings.streamPreset} recommendation=${deviceRecommendation?.debugSummary() ?: "pending"}")
             snapshot.activeStreamSettings?.let { active ->
                 appendLine("active.resolution=${active.resolution} fps=${active.fps} codec=${active.codec} bitrate=${active.maxBitrateMbps}")
             }
@@ -2061,30 +2400,54 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun sanitizedDebugLogText(): String = sanitizeDiagnosticExport(debugLogText())
+
     fun debugLogFileName(): String {
         val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         return "opennow-android-logs-$timestamp.txt"
+    }
+
+    private companion object {
+        const val SETTINGS_DIAGNOSTIC_TAP_COUNT = 10
+        const val SETTINGS_DIAGNOSTIC_TAP_WINDOW_MS = 8_000L
+        const val TV_INITIAL_CATALOG_PAGE_COUNT = 1
+        const val TV_INITIAL_CATALOG_GAME_LIMIT = 120
+        const val TV_LAYOUT_PROFILE_VERSION = 1
     }
 
     private suspend fun refreshAfterAuth(session: AuthSession, keepRefreshVisibleWithCache: Boolean = false) {
         _state.update { it.copy(loadingGames = true, error = null) }
         val baseUrl = effectiveStreamingBaseUrl(session)
         val token = session.tokens.idToken ?: session.tokens.accessToken
-        val cachedMain = catalogCacheStore.loadMainGames(session.user.userId, baseUrl)
-        val cachedLibrary = catalogCacheStore.loadLibraryGames(session.user.userId, baseUrl)
-        val cachedCatalog = catalogCacheStore.loadCatalog(
-            userId = session.user.userId,
-            providerStreamingBaseUrl = baseUrl,
-            searchQuery = state.value.catalogSearch,
-            sortId = state.value.catalogSortId,
-            filterIds = state.value.catalogFilterIds,
-        )
-        if (cachedMain != null || cachedLibrary != null || cachedCatalog != null) {
-            val cachedMergedLibrary = mergeKnownLibraryGames(
-                cachedLibrary.orEmpty(),
-                cachedMain.orEmpty(),
-                cachedCatalog?.games.orEmpty(),
+        val initialCatalogSearch = state.value.catalogSearch
+        val initialCatalogSortId = state.value.catalogSortId
+        val initialCatalogFilterIds = state.value.catalogFilterIds
+        val (cachedMain, cachedLibrary, unboundedCachedCatalog) = withContext(Dispatchers.IO) {
+            Triple(
+                catalogCacheStore.loadMainGames(session.user.userId, baseUrl),
+                catalogCacheStore.loadLibraryGames(session.user.userId, baseUrl),
+                catalogCacheStore.loadCatalog(
+                    userId = session.user.userId,
+                    providerStreamingBaseUrl = baseUrl,
+                    searchQuery = initialCatalogSearch,
+                    sortId = initialCatalogSortId,
+                    filterIds = initialCatalogFilterIds,
+                ),
             )
+        }
+        val cachedCatalog = if (androidTvProfile) {
+            unboundedCachedCatalog?.copy(games = unboundedCachedCatalog.games.take(TV_INITIAL_CATALOG_GAME_LIMIT))
+        } else {
+            unboundedCachedCatalog
+        }
+        if (cachedMain != null || cachedLibrary != null || cachedCatalog != null) {
+            val cachedMergedLibrary = withContext(Dispatchers.Default) {
+                mergeKnownLibraryGames(
+                    cachedLibrary.orEmpty(),
+                    cachedMain.orEmpty(),
+                    cachedCatalog?.games.orEmpty(),
+                )
+            }
             _state.update {
                 it.copy(
                     games = cachedMain ?: it.games,
@@ -2096,10 +2459,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         val subscriptionJob = viewModelScope.launch {
-            val sub = runCatching {
-                val vpcId = catalogRepository.getVpcId(token, session.provider.streamingServiceUrl)
-                subscriptionRepository.fetchSubscription(token, session.user.userId, vpcId)
-            }.getOrNull()
+            val sub = withContext(Dispatchers.IO) {
+                runCatching {
+                    val vpcId = catalogRepository.getVpcId(token, session.provider.streamingServiceUrl)
+                    subscriptionRepository.fetchSubscription(token, session.user.userId, vpcId)
+                }.getOrNull()
+            }
             val enrichedSession = persistSubscriptionTier(session, sub)
             _state.update { current ->
                 current.copy(
@@ -2115,31 +2480,53 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         activeSubscriptionJob = subscriptionJob
         val accountConnectorsJob = viewModelScope.launch {
             _state.update { it.copy(loadingAccountConnectors = true) }
-            val connectors = runCatching { accountConnectorRepository.fetchConnectors(token) }.getOrDefault(emptyList())
+            val connectors = withContext(Dispatchers.IO) {
+                runCatching { accountConnectorRepository.fetchConnectors(token) }.getOrDefault(emptyList())
+            }
             _state.update { it.copy(accountConnectors = connectors, loadingAccountConnectors = false) }
         }
         val regionsJob = viewModelScope.launch {
-            val regions = runCatching { fetchDynamicRegions(http, token, session.provider.streamingServiceUrl).first }.getOrDefault(emptyList())
+            val regions = withContext(Dispatchers.IO) {
+                runCatching { fetchDynamicRegions(http, token, session.provider.streamingServiceUrl).first }.getOrDefault(emptyList())
+            }
             _state.update { it.copy(regions = regions) }
         }
         gamesJob?.cancel()
         gamesJob = viewModelScope.launch {
             runCatching {
-                val main = catalogRepository.fetchMainGames(token, baseUrl)
-                val library = catalogRepository.fetchLibraryGames(token, baseUrl)
-                val catalog = catalogRepository.browseCatalog(token, baseUrl, state.value.catalogSearch, state.value.catalogSortId, state.value.catalogFilterIds)
-                val mergedLibrary = mergeKnownLibraryGames(library, main, catalog.games)
-                catalogCacheStore.saveMainGames(session.user.userId, baseUrl, main)
-                catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, mergedLibrary)
-                catalogCacheStore.saveCatalog(
-                    userId = session.user.userId,
-                    providerStreamingBaseUrl = baseUrl,
-                    searchQuery = state.value.catalogSearch,
-                    sortId = state.value.catalogSortId,
-                    filterIds = state.value.catalogFilterIds,
-                    result = catalog,
-                )
-                Triple(main, mergedLibrary, catalog)
+                withContext(Dispatchers.IO) {
+                    val includeSupplementalPublicVariants = !androidTvProfile
+                    val catalog = catalogRepository.browseCatalog(
+                        token = token,
+                        providerStreamingBaseUrl = baseUrl,
+                        searchQuery = initialCatalogSearch,
+                        sortId = initialCatalogSortId,
+                        filterIds = initialCatalogFilterIds,
+                        maxPages = if (androidTvProfile) TV_INITIAL_CATALOG_PAGE_COUNT else 3,
+                        includeSupplementalPublicVariants = includeSupplementalPublicVariants,
+                    )
+                    // MainV2 is a ~600KB personalized panel response on this TV and then
+                    // triggers additional metadata batches. The bounded catalog already
+                    // contains the launchable TV store data; retain MainV2 on mobile.
+                    val main = if (androidTvProfile) {
+                        catalog.games
+                    } else {
+                        catalogRepository.fetchMainGames(token, baseUrl, includeSupplementalPublicVariants)
+                    }
+                    val library = catalogRepository.fetchLibraryGames(token, baseUrl, includeSupplementalPublicVariants)
+                    val mergedLibrary = mergeKnownLibraryGames(library, main, catalog.games)
+                    catalogCacheStore.saveMainGames(session.user.userId, baseUrl, main)
+                    catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, mergedLibrary)
+                    catalogCacheStore.saveCatalog(
+                        userId = session.user.userId,
+                        providerStreamingBaseUrl = baseUrl,
+                        searchQuery = initialCatalogSearch,
+                        sortId = initialCatalogSortId,
+                        filterIds = initialCatalogFilterIds,
+                        result = catalog,
+                    )
+                    Triple(main, mergedLibrary, catalog)
+                }
             }.onSuccess { (main, library, catalog) ->
                 _state.update {
                     it.copy(
@@ -2167,13 +2554,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         gamesJob = viewModelScope.launch {
             val auth = state.value.authSession ?: return@launch
             val baseUrl = effectiveStreamingBaseUrl(auth)
-            val cachedCatalog = catalogCacheStore.loadCatalog(
-                userId = auth.user.userId,
-                providerStreamingBaseUrl = baseUrl,
-                searchQuery = state.value.catalogSearch,
-                sortId = state.value.catalogSortId,
-                filterIds = state.value.catalogFilterIds,
-            )
+            val searchQuery = state.value.catalogSearch
+            val sortId = state.value.catalogSortId
+            val filterIds = state.value.catalogFilterIds
+            val unboundedCachedCatalog = withContext(Dispatchers.IO) {
+                catalogCacheStore.loadCatalog(
+                    userId = auth.user.userId,
+                    providerStreamingBaseUrl = baseUrl,
+                    searchQuery = searchQuery,
+                    sortId = sortId,
+                    filterIds = filterIds,
+                )
+            }
+            val cachedCatalog = if (androidTvProfile) {
+                unboundedCachedCatalog?.copy(games = unboundedCachedCatalog.games.take(TV_INITIAL_CATALOG_GAME_LIMIT))
+            } else {
+                unboundedCachedCatalog
+            }
             _state.update {
                 it.copy(
                     loadingGames = cachedCatalog == null,
@@ -2182,23 +2579,31 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             runCatching {
-                catalogRepository.browseCatalog(
-                    token = auth.tokens.idToken ?: auth.tokens.accessToken,
-                    providerStreamingBaseUrl = baseUrl,
-                    searchQuery = state.value.catalogSearch,
-                    sortId = state.value.catalogSortId,
-                    filterIds = state.value.catalogFilterIds,
-                )
+                withContext(Dispatchers.IO) {
+                    catalogRepository.browseCatalog(
+                        token = auth.tokens.idToken ?: auth.tokens.accessToken,
+                        providerStreamingBaseUrl = baseUrl,
+                        searchQuery = searchQuery,
+                        sortId = sortId,
+                        filterIds = filterIds,
+                        maxPages = if (androidTvProfile) TV_INITIAL_CATALOG_PAGE_COUNT else 3,
+                        includeSupplementalPublicVariants = !androidTvProfile,
+                    )
+                }
             }.onSuccess { result ->
-                val mergedLibrary = mergeKnownLibraryGames(state.value.libraryGames, result.games)
-                catalogCacheStore.saveCatalog(
-                    userId = auth.user.userId,
-                    providerStreamingBaseUrl = baseUrl,
-                    searchQuery = state.value.catalogSearch,
-                    sortId = state.value.catalogSortId,
-                    filterIds = state.value.catalogFilterIds,
-                    result = result,
-                )
+                val mergedLibrary = withContext(Dispatchers.Default) {
+                    mergeKnownLibraryGames(state.value.libraryGames, result.games)
+                }
+                withContext(Dispatchers.IO) {
+                    catalogCacheStore.saveCatalog(
+                        userId = auth.user.userId,
+                        providerStreamingBaseUrl = baseUrl,
+                        searchQuery = searchQuery,
+                        sortId = sortId,
+                        filterIds = filterIds,
+                        result = result,
+                    )
+                }
                 _state.update {
                     it.copy(
                         catalogResult = result,

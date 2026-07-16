@@ -1,10 +1,35 @@
 package com.opencloudgaming.opennow
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidAuthRefreshTest {
+    @Test
+    fun legacySessionTriesBothKnownAuthClients() {
+        assertEquals(
+            listOf("browser-client", "device-client"),
+            authenticationRefreshClientIds(
+                savedClientId = null,
+                browserClientId = "browser-client",
+                deviceClientId = "device-client",
+            ),
+        )
+    }
+
+    @Test
+    fun savedAuthClientIsTriedFirstWithoutDuplicates() {
+        assertEquals(
+            listOf("device-client", "browser-client"),
+            authenticationRefreshClientIds(
+                savedClientId = "device-client",
+                browserClientId = "browser-client",
+                deviceClientId = "device-client",
+            ),
+        )
+    }
+
     @Test
     fun freshAccessAndClientTokensDoNotNeedBackgroundRefresh() {
         val now = 1_000_000L

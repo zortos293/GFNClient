@@ -6,6 +6,19 @@ import org.junit.Test
 
 class StreamLivenessWatchdogTest {
     @Test
+    fun tvRecoveryIsFasterWhileMobileThresholdsStayUnchanged() {
+        val tv = streamRecoveryTiming(androidTvProfile = true)
+        val mobile = streamRecoveryTiming(androidTvProfile = false)
+
+        assertEquals(3_000L, tv.keyframeAfterMs)
+        assertEquals(2_000L, tv.keyframeIntervalMs)
+        assertEquals(8_000L, tv.restartAfterMs)
+        assertEquals(5_000L, mobile.keyframeAfterMs)
+        assertEquals(2_500L, mobile.keyframeIntervalMs)
+        assertEquals(14_000L, mobile.restartAfterMs)
+    }
+
+    @Test
     fun requestsKeyframesBeforeRestartingStalledMedia() {
         val watchdog = StreamLivenessWatchdog(
             keyframeAfterMs = 1_000L,

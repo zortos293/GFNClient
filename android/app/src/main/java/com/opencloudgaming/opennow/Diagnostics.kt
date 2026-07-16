@@ -7,10 +7,17 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import okio.Buffer
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal const val OPENNOW_DEBUG_LOG_TAG = "OpenNOWDebug"
 
@@ -123,10 +130,11 @@ internal fun sanitizeDiagnosticLogPayload(
     }.getOrElse {
         redactDiagnosticText(trimmed)
     }
-    return if (formatted.length <= limit) {
-        formatted
+    val redacted = redactDiagnosticText(formatted)
+    return if (redacted.length <= limit) {
+        redacted
     } else {
-        formatted.take(limit) + "\n... truncated ${formatted.length - limit} chars ..."
+        redacted.take(limit) + "\n... truncated ${redacted.length - limit} chars ..."
     }
 }
 
@@ -164,13 +172,14 @@ private fun shouldRedactDiagnosticKey(key: String): Boolean {
         normalized == "verificationuricomplete" ||
         normalized == "deviceid" ||
         normalized == "devicehashid" ||
+        normalized == "sub" ||
         normalized == "email" ||
         normalized == "userid"
 }
 
 private fun redactDiagnosticText(text: String): String {
     val sensitive = Regex(
-        """(?i)\b(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete|credential|password|secret|cookie|code)(\s*[=:]\s*)([^\s,;&]+)""",
+        """(?i)\b(authorization|access[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?token|device[_-]?code|user[_-]?code|verification[_-]?uri[_-]?complete|credential|password|secret|cookie|code|sub)(\s*[=:]\s*)([^\s,;&]+)""",
     )
     return sensitive.replace(text) { match ->
         "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
@@ -181,7 +190,12 @@ internal fun sanitizeDiagnosticExport(raw: String): String {
     var sanitized = Regex("""(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+""").replace(raw, "Bearer [redacted]")
     sanitized = redactDiagnosticText(sanitized)
     sanitized = Regex(
-        """(?i)\b(email|user|user[_-]?id|user[_-]?name|display[_-]?name|account|account[_-]?id|profile[_-]?id|session|session[_-]?id|server|server[_-]?ip|device|device[_-]?id|device[_-]?name|ip[_-]?address)(\s*[=:]\s*)([^\s,;&]+)""",
+        """(?i)([\"']?(?:email|user(?:[_-]?id|[_-]?name)?|display[_-]?name|account[_-]?id|profile[_-]?id|session[_-]?id|server[_-]?ip|device[_-]?id|device[_-]?name|ip[_-]?address)[\"']?\s*:\s*)(\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^,}\r\n]+)""",
+    ).replace(sanitized) { match ->
+        "${match.groupValues[1]}\"[redacted]\""
+    }
+    sanitized = Regex(
+        """(?im)\b(email|user|user[_-]?id|user[_-]?name|display[_-]?name|account|account[_-]?id|profile[_-]?id|session|session[_-]?id|server|server[_-]?ip|device|device[_-]?id|device[_-]?name|ip[_-]?address)(\s*[=:]\s*)(.*?)(?=\s+[a-z][a-z0-9_.-]*\s*[=:]|$)""",
     ).replace(sanitized) { match ->
         "${match.groupValues[1]}${match.groupValues[2]}[redacted]"
     }
@@ -197,11 +211,50 @@ internal fun sanitizeDiagnosticExport(raw: String): String {
     return sanitized
 }
 
-private fun singleLineDiagnosticPreview(raw: String): String =
-    sanitizeDiagnosticLogPayload(raw, HTTP_DIAGNOSTIC_BODY_LIMIT)
+private const val ANDROID_DIAGNOSTIC_PASTE_URL =
+    "https://paste.rtech.support/upload/opennow-android-diagnostics.txt"
+private const val ANDROID_DIAGNOSTIC_PASTE_EXPIRY_SECONDS = 86_400
+
+internal suspend fun uploadAndroidDiagnosticPaste(
+    http: OkHttpClient,
+    sanitizedText: String,
+): String = withContext(Dispatchers.IO) {
+    val request = Request.Builder()
+        .url(ANDROID_DIAGNOSTIC_PASTE_URL)
+        .header("Accept", "application/json")
+        .header("Linx-Randomize", "yes")
+        .header("Linx-Expiry", ANDROID_DIAGNOSTIC_PASTE_EXPIRY_SECONDS.toString())
+        .put(sanitizedText.toRequestBody("text/plain; charset=utf-8".toMediaType()))
+        .build()
+    http.newCall(request).execute().use { response ->
+        val body = response.body.string().trim()
+        if (!response.isSuccessful) {
+            error("Diagnostics upload failed (HTTP ${response.code})")
+        }
+        val jsonUrl = runCatching {
+            OpenNowJson.parseToJsonElement(body).jsonObject["url"]?.jsonPrimitive?.content
+        }.getOrNull()
+        (jsonUrl ?: body.lineSequence().firstOrNull { it.startsWith("https://") })
+            ?.trim()
+            ?.takeIf { it.startsWith("https://paste.rtech.support/") }
+            ?: error("Diagnostics upload returned no paste URL")
+    }
+}
+
+private fun singleLineDiagnosticPreview(raw: String): String {
+    // Parsing and pretty-printing multi-hundred-kilobyte catalog responses used to run
+    // before the preview was truncated. Keep diagnostics bounded before any JSON work.
+    val bounded = if (raw.length > HTTP_DIAGNOSTIC_BODY_LIMIT * 2) {
+        raw.take(HTTP_DIAGNOSTIC_BODY_LIMIT * 2) +
+            "\n... omitted ${raw.length - (HTTP_DIAGNOSTIC_BODY_LIMIT * 2)} chars before formatting ..."
+    } else {
+        raw
+    }
+    return redactDiagnosticText(sanitizeDiagnosticLogPayload(bounded, HTTP_DIAGNOSTIC_BODY_LIMIT))
         .lineSequence()
         .joinToString(" ") { it.trim() }
         .take(HTTP_DIAGNOSTIC_BODY_LIMIT)
+}
 
 private fun okhttp3.RequestBody.safeContentLength(): Long =
     runCatching { contentLength() }.getOrDefault(-1L)

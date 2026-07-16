@@ -834,23 +834,36 @@ class GfnAuthRepository(
     ): AuthSession {
         val tokens = session.tokens
         val refreshErrors = mutableListOf<String>()
+        val refreshClientIds = authenticationRefreshClientIds(
+            savedClientId = tokens.authClientId,
+            browserClientId = CLIENT_ID,
+            deviceClientId = DEVICE_CODE_CLIENT_ID,
+        )
 
         if (!tokens.clientToken.isNullOrBlank()) {
-            runCatching {
-                val refreshed = mergeTokenSnapshot(tokens, refreshWithClientToken(tokens.clientToken, session.user.userId))
-                return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "client token")
-            }.onFailure { error ->
-                refreshErrors += "client_token: ${error.message ?: "Unknown refresh error"}"
+            for (clientId in refreshClientIds) {
+                runCatching {
+                    val refreshed = mergeTokenSnapshot(
+                        base = tokens,
+                        root = refreshWithClientToken(tokens.clientToken, session.user.userId, clientId),
+                        authClientId = clientId,
+                    )
+                    return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "client token")
+                }.onFailure { error ->
+                    refreshErrors += "client_token(${authClientLabel(clientId)}): ${error.message ?: "Unknown refresh error"}"
+                }
             }
         }
 
         val refresh = tokens.refreshToken
         if (!refresh.isNullOrBlank()) {
-            runCatching {
-                val refreshed = refreshAuthTokens(refresh, tokens)
-                return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "refresh token")
-            }.onFailure { error ->
-                refreshErrors += "refresh_token: ${error.message ?: "Unknown refresh error"}"
+            for (clientId in refreshClientIds) {
+                runCatching {
+                    val refreshed = refreshAuthTokens(refresh, tokens, clientId)
+                    return buildRefreshedSession(session, ensureClientTokenBestEffort(refreshed), source = "refresh token")
+                }.onFailure { error ->
+                    refreshErrors += "refresh_token(${authClientLabel(clientId)}): ${error.message ?: "Unknown refresh error"}"
+                }
             }
         }
 
@@ -879,11 +892,11 @@ class GfnAuthRepository(
         return session
     }
 
-    private suspend fun refreshWithClientToken(clientToken: String, userId: String): JsonObject {
+    private suspend fun refreshWithClientToken(clientToken: String, userId: String, authClientId: String): JsonObject {
         val body = FormBody.Builder()
             .add("grant_type", "urn:ietf:params:oauth:grant-type:client_token")
             .add("client_token", clientToken)
-            .add("client_id", CLIENT_ID)
+            .add("client_id", authClientId)
             .add("sub", userId)
             .build()
         val request = Request.Builder()
@@ -896,11 +909,11 @@ class GfnAuthRepository(
         return OpenNowJson.parseToJsonElement(text).jsonObject
     }
 
-    private suspend fun refreshAuthTokens(refresh: String, base: AuthTokens): AuthTokens {
+    private suspend fun refreshAuthTokens(refresh: String, base: AuthTokens, authClientId: String): AuthTokens {
         val body = FormBody.Builder()
             .add("grant_type", "refresh_token")
             .add("refresh_token", refresh)
-            .add("client_id", CLIENT_ID)
+            .add("client_id", authClientId)
             .build()
         val request = Request.Builder()
             .url(TOKEN_ENDPOINT)
@@ -917,10 +930,11 @@ class GfnAuthRepository(
             expiresAt = expiresAt(root.int("expires_in")),
             clientToken = base.clientToken,
             clientTokenExpiresAt = base.clientTokenExpiresAt,
+            authClientId = authClientId,
         )
     }
 
-    private fun mergeTokenSnapshot(base: AuthTokens, root: JsonObject): AuthTokens =
+    private fun mergeTokenSnapshot(base: AuthTokens, root: JsonObject, authClientId: String): AuthTokens =
         AuthTokens(
             accessToken = requireNotNull(root.string("access_token")) { "Missing access token" },
             refreshToken = root.string("refresh_token") ?: base.refreshToken,
@@ -928,7 +942,15 @@ class GfnAuthRepository(
             expiresAt = expiresAt(root.int("expires_in")),
             clientToken = root.string("client_token") ?: base.clientToken,
             clientTokenExpiresAt = base.clientTokenExpiresAt,
+            authClientId = authClientId,
         )
+
+    private fun authClientLabel(clientId: String): String =
+        when (clientId) {
+            CLIENT_ID -> "browser"
+            DEVICE_CODE_CLIENT_ID -> "device"
+            else -> "saved"
+        }
 
     private suspend fun buildRefreshedSession(session: AuthSession, tokens: AuthTokens, source: String): AuthSession {
         val refreshed = buildSession(session.provider, tokens, fallbackUser = session.user)
@@ -959,6 +981,7 @@ class GfnAuthRepository(
             idToken = root.string("id_token"),
             expiresAt = expiresAt(root.int("expires_in")),
             clientToken = root.string("client_token"),
+            authClientId = CLIENT_ID,
         )
     }
 
@@ -1027,6 +1050,7 @@ class GfnAuthRepository(
                     idToken = root.string("id_token"),
                     expiresAt = expiresAt(root.int("expires_in")),
                     clientToken = root.string("client_token"),
+                    authClientId = DEVICE_CODE_CLIENT_ID,
                 )
             }
             val error = root?.string("error").orEmpty()
@@ -1297,17 +1321,32 @@ class GfnAuthRepository(
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
 ) {
-    suspend fun fetchMainGames(token: String, providerStreamingBaseUrl: String): List<GameInfo> {
+    private data class CachedVpcId(val value: String, val expiresAtElapsedMs: Long)
+
+    private val vpcIdMutex = Mutex()
+    private val vpcIdCache = mutableMapOf<String, CachedVpcId>()
+
+    suspend fun fetchMainGames(
+        token: String,
+        providerStreamingBaseUrl: String,
+        includeSupplementalPublicVariants: Boolean = true,
+    ): List<GameInfo> {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val panels = fetchPanels(token, listOf("MAIN"), vpcId, withLibraryTime = false)
-        return mergePublicGameVariants(enrichGamesWithMetadata(token, vpcId, flattenPanels(panels)), fetchPublicGames())
+        val games = enrichGamesWithMetadata(token, vpcId, flattenPanels(panels))
+        return if (includeSupplementalPublicVariants) mergePublicGameVariants(games, fetchPublicGames()) else games
     }
 
-    suspend fun fetchLibraryGames(token: String, providerStreamingBaseUrl: String): List<GameInfo> {
+    suspend fun fetchLibraryGames(
+        token: String,
+        providerStreamingBaseUrl: String,
+        includeSupplementalPublicVariants: Boolean = true,
+    ): List<GameInfo> {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val panels = runCatching { fetchPanels(token, listOf("LIBRARY"), vpcId, withLibraryTime = true) }
             .getOrElse { fetchPanels(token, listOf("LIBRARY"), vpcId, withLibraryTime = false) }
-        return mergePublicGameVariants(enrichGamesWithMetadata(token, vpcId, flattenPanels(panels)), fetchPublicGames())
+        val games = enrichGamesWithMetadata(token, vpcId, flattenPanels(panels))
+        return if (includeSupplementalPublicVariants) mergePublicGameVariants(games, fetchPublicGames()) else games
     }
 
     suspend fun browseCatalog(
@@ -1316,6 +1355,8 @@ class GfnCatalogRepository(
         searchQuery: String,
         sortId: String = DEFAULT_SORT_ID,
         filterIds: List<String> = emptyList(),
+        maxPages: Int = MAX_CATALOG_PAGES,
+        includeSupplementalPublicVariants: Boolean = true,
     ): CatalogBrowseResult {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val definitions = fetchFilterAndSortDefinitions(token)
@@ -1336,7 +1377,7 @@ class GfnCatalogRepository(
         var hasNextPage = false
         var endCursor: String? = null
         var cursor = ""
-        for (page in 0 until MAX_CATALOG_PAGES) {
+        for (page in 0 until maxPages.coerceIn(1, MAX_CATALOG_PAGES)) {
             val payload = postGraphQl(
                 query = query,
                 variables = buildJsonObject {
@@ -1361,14 +1402,14 @@ class GfnCatalogRepository(
             if (!hasNextPage || endCursor.isNullOrBlank()) break
             cursor = endCursor.orEmpty()
         }
-        val publicGames = fetchPublicGames()
+        val publicGames = if (includeSupplementalPublicVariants) fetchPublicGames() else emptyList()
         val games = dedupeGames(collectedApps.map(::appToGame))
-        val withSearchFallbacks = if (searchQuery.isBlank()) {
+        val withSearchFallbacks = if (searchQuery.isBlank() || publicGames.isEmpty()) {
             games
         } else {
             dedupeGames(games + publicGames.filter { it.matchesSearch(searchQuery) })
         }
-        val merged = mergePublicGameVariants(withSearchFallbacks, publicGames)
+        val merged = if (publicGames.isEmpty()) withSearchFallbacks else mergePublicGameVariants(withSearchFallbacks, publicGames)
         return CatalogBrowseResult(
             games = merged,
             numberReturned = numberReturned,
@@ -1424,22 +1465,42 @@ class GfnCatalogRepository(
 
     suspend fun getVpcId(token: String, providerStreamingBaseUrl: String): String {
         val base = normalizeStreamingServiceUrl(providerStreamingBaseUrl) ?: DEFAULT_STREAMING_SERVICE_URL
-        return runCatching {
-            val request = Request.Builder()
-                .url("${base}v2/serverInfo")
-                .headers(
-                    Headers.Builder()
-                        .putDesktopLcars(token, includeUserAgent = true, includeEmptyTokenAuthorization = true)
-                        .build(),
-                )
-                .build()
-            val (code, text) = http.awaitText(request)
-            if (code !in 200..299) {
-                "GFN-PC"
-            } else {
-                OpenNowJson.parseToJsonElement(text).jsonObject.obj("requestStatus")?.string("serverId") ?: "GFN-PC"
+        val cacheKey = base.lowercase(Locale.US)
+        return vpcIdMutex.withLock {
+            val now = SystemClock.elapsedRealtime()
+            vpcIdCache[cacheKey]
+                ?.takeIf { it.expiresAtElapsedMs > now }
+                ?.value
+                ?.let { return@withLock it }
+
+            val resolved = runCatching {
+                val request = Request.Builder()
+                    .url("${base}v2/serverInfo")
+                    .headers(
+                        Headers.Builder()
+                            .putDesktopLcars(token, includeUserAgent = true, includeEmptyTokenAuthorization = true)
+                            .build(),
+                    )
+                    .build()
+                val (code, text) = http.awaitText(request)
+                if (code !in 200..299) {
+                    "GFN-PC"
+                } else {
+                    OpenNowJson.parseToJsonElement(text).jsonObject.obj("requestStatus")?.string("serverId") ?: "GFN-PC"
+                }
+            }.getOrDefault("GFN-PC")
+            // Catalog, library, and subscription refreshes start together. Share their
+            // server identity instead of issuing the same request several times. Do not
+            // cache the fallback so a transient network failure can recover immediately.
+            if (resolved != "GFN-PC") {
+                vpcIdCache[cacheKey] = CachedVpcId(resolved, now + VPC_ID_CACHE_TTL_MS)
             }
-        }.getOrDefault("GFN-PC")
+            resolved
+        }
+    }
+
+    private companion object {
+        const val VPC_ID_CACHE_TTL_MS = 5 * 60 * 1_000L
     }
 
     private suspend fun fetchPanels(token: String, panelNames: List<String>, vpcId: String, withLibraryTime: Boolean): JsonObject {
@@ -1493,15 +1554,7 @@ class GfnCatalogRepository(
         val byId = apps.associateBy { it.string("id").orEmpty() }
         return dedupeGames(games.map { game ->
             val app = byId[game.uuid] ?: return@map game
-            val merged = appToGame(app)
-            val selectedId = game.variants.getOrNull(game.selectedVariantIndex)?.id
-            val selectedIndex = selectedId?.let { id -> merged.variants.indexOfFirst { it.id == id } } ?: -1
-            merged.copy(
-                id = game.id,
-                catalogSectionId = game.catalogSectionId,
-                catalogSectionTitle = game.catalogSectionTitle,
-                selectedVariantIndex = if (selectedIndex >= 0) selectedIndex else merged.selectedVariantIndex,
-            )
+            mergePanelGameWithMetadata(game, appToGame(app))
         })
     }
 
@@ -2068,10 +2121,14 @@ class PrintedWasteRepository(
                 val port = if (url.isHttps) 443 else 80
                 val validPings = mutableListOf<Long>()
 
-                tcpPing(hostname, port, timeoutMs = 3_000)
-                repeat(3) { index ->
-                    if (index > 0) delay(100)
-                    tcpPing(hostname, port, timeoutMs = 3_000)?.let(validPings::add)
+                // The selector waits for the slowest region, so multi-second probes make
+                // one unreachable edge look like a frozen queue screen. A short warm-up
+                // plus two samples is enough to rank playable streaming regions while
+                // bounding the entire parallel pass to roughly two seconds.
+                tcpPing(hostname, port, timeoutMs = 750)
+                repeat(2) { index ->
+                    if (index > 0) delay(50)
+                    tcpPing(hostname, port, timeoutMs = 750)?.let(validPings::add)
                 }
 
                 if (validPings.isEmpty()) {

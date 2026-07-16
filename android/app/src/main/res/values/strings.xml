@@ -56,6 +56,7 @@
     <string name="settings_resolution">Resolution</string>
     <string name="settings_aspect_ratio">Aspect ratio</string>
     <string name="settings_stream_preset">Stream preset</string>
+    <string name="stream_preset_recommended">Recommended</string>
     <string name="stream_preset_custom">Custom</string>
     <string name="stream_preset_low_data_saver">Low (data saver)</string>
     <string name="stream_preset_medium">Medium</string>

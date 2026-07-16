@@ -56,10 +56,11 @@ android {
 
     defaultConfig {
         applicationId = "com.opencloudgaming.opennow"
-        minSdk = 24
+        minSdk = 23
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.8.4"
+        versionCode = 40
+        versionName = "0.8.5"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
         buildConfigField("String", "POSTHOG_HOST", buildConfigString(postHogHost))
@@ -158,6 +159,7 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }

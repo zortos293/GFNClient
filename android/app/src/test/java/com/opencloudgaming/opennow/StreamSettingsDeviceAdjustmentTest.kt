@@ -425,6 +425,41 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun preservesHardwareH265ForLowPowerAndroidTvInsideSafeLimits() {
+        val adjusted = StreamSettings(
+            resolution = "3840x2160",
+            aspectRatio = "16:9",
+            fps = 120,
+            maxBitrateMbps = 90,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+            enableCloudGsync = true,
+            streamSharpeningEnabled = true,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                lowPower = true,
+                tv = true,
+                nativeDecoderAvailable = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+            ),
+        )
+
+        assertEquals(VideoCodec.H265, adjusted.codec)
+        assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
+        assertEquals("1920x1080", adjusted.resolution)
+        assertEquals(60, adjusted.fps)
+        assertEquals(25, adjusted.maxBitrateMbps)
+        assertEquals(false, adjusted.hdrEnabled)
+        assertEquals(false, adjusted.enableCloudGsync)
+        assertEquals(false, adjusted.streamSharpeningEnabled)
+    }
+
+    @Test
     fun keepsLowPowerAndroidTvUltrawideWithinDecoderBounds() {
         val adjusted = StreamSettings(
             resolution = "3440x1440",

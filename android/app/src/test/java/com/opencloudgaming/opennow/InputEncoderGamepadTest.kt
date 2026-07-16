@@ -47,6 +47,36 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun buildsSteamMenuAsGuideHeldWithA() {
+        assertEquals(GamepadButtonMapping.GUIDE, SteamMenuChord.buttons(aPressed = false))
+        assertEquals(
+            GamepadButtonMapping.GUIDE or GamepadButtonMapping.A,
+            SteamMenuChord.buttons(aPressed = true),
+        )
+    }
+
+    @Test
+    fun viewAndStartChordSendsHomeAWithoutLeakingTopButtons() {
+        val chord = SteamOverlayChordState()
+
+        assertFalse(chord.update(GamepadButtonMapping.BACK))
+        assertEquals(GamepadButtonMapping.BACK, chord.effectiveButtons(GamepadButtonMapping.BACK))
+
+        val both = GamepadButtonMapping.BACK or GamepadButtonMapping.START
+        assertTrue(chord.update(both))
+        assertEquals(
+            GamepadButtonMapping.GUIDE or GamepadButtonMapping.A,
+            chord.effectiveButtons(both),
+        )
+        assertTrue(chord.releaseChord())
+        assertEquals(0, chord.effectiveButtons(both))
+
+        assertFalse(chord.update(0))
+        assertFalse(chord.update(GamepadButtonMapping.START))
+        assertEquals(GamepadButtonMapping.START, chord.effectiveButtons(GamepadButtonMapping.START))
+    }
+
+    @Test
     fun classifiesControllerButtonKeyCodesWithoutDependingOnEventSource() {
         assertTrue(GamepadButtonMapping.isControllerButtonKeyCode(KeyEvent.KEYCODE_BUTTON_MODE))
         assertTrue(GamepadButtonMapping.isControllerButtonKeyCode(KeyEvent.KEYCODE_BUTTON_START))
@@ -122,12 +152,21 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun doesNotMapGameplayButtonsToControllerMouseAssist() {
+    fun mapsControllerMouseClicksWithoutTakingOverOtherGameplayButtons() {
         assertNull(AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.RIGHT_THUMB))
-        assertNull(AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.A))
-        assertNull(AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.B))
+        assertEquals(1, AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.A))
+        assertEquals(3, AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.B))
         assertNull(AndroidControllerMouseAssist.mouseButtonForTrigger(left = true))
         assertNull(AndroidControllerMouseAssist.mouseButtonForTrigger(left = false))
+    }
+
+    @Test
+    fun classifiesMemoryConstrainedTvWithoutDowngradingSameMemoryMobile() {
+        val twoGiB = 2L * 1024L * 1024L * 1024L
+
+        assertTrue(isLowPowerStreamingProfile(androidTvProfile = true, renderer = "amlogic", totalMemoryBytes = twoGiB))
+        assertFalse(isLowPowerStreamingProfile(androidTvProfile = false, renderer = "adreno", totalMemoryBytes = twoGiB))
+        assertFalse(isLowPowerStreamingProfile(androidTvProfile = true, renderer = "adreno", totalMemoryBytes = 4L * 1024L * 1024L * 1024L))
     }
 
     @Test

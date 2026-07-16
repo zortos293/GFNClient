@@ -102,6 +102,7 @@ private enum class SettingsCategory(
     Stream("Stream", "Resolution, FPS, codec, HDR, proxy", R.drawable.ic_tab_stream),
     Input("Input", "Mouse, keyboard, touch controls, rumble", R.drawable.ic_tab_library),
     Interface("Interface", "Color, cards, stats, controller UI", R.drawable.ic_tab_store),
+    Remote("Remote", "Pair a phone and control this TV", R.drawable.ic_tab_library),
     Account("Account", "Sign-in, storage, connected stores", R.drawable.ic_tab_store),
     Advanced("Advanced", "Diagnostics, debug logs, advanced tools", R.drawable.ic_search),
     About("About", "Version, credits, and support", R.drawable.ic_tab_settings),
@@ -201,10 +202,16 @@ internal fun SettingsScreen(
         }
     }
     LaunchedEffect(state.settingsRouteTarget) {
-        if (state.settingsRouteTarget == SettingsRouteTarget.General) {
+        val routeTarget = state.settingsRouteTarget
+        val category = when (routeTarget) {
+            SettingsRouteTarget.General -> SettingsCategory.General
+            SettingsRouteTarget.Stream -> SettingsCategory.Stream
+            null -> null
+        }
+        if (routeTarget != null && category != null) {
             onSearchQueryChange("")
-            selectedCategory = SettingsCategory.General
-            viewModel.consumeSettingsRouteTarget(SettingsRouteTarget.General)
+            selectedCategory = category
+            viewModel.consumeSettingsRouteTarget(routeTarget)
         }
     }
     BackHandler(enabled = selectedCategory != null) {
@@ -386,6 +393,7 @@ private fun SettingsContent(
     showSessionProxyWarning: () -> Unit,
 ) {
     val settings = state.settings
+    val tvProfile = state.androidTvProfile
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
                 if (state.androidUpdate.apkUpdatesAllowed) {
@@ -694,8 +702,10 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
                 NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, 0.82f, 1.08f, 0.02f) { value -> viewModel.updateSettings(settings.copy(posterSizeScale = value)) }
-                NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f) { value ->
-                    viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
+                if (tvProfile) {
+                    NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 120f, 2f) { value ->
+                        viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
+                    }
                 }
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
                 ChoiceRow("Status bar appearance", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
@@ -717,26 +727,28 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
                 }
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
-                SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
-                    viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
-                }
-                if (settings.streamIntroMusic) {
-                    val introStartOptions = IntroMusicStartMode.entries.map { mode ->
-                        mode to introMusicStartModeLabel(mode)
+                if (settings.nerdMode) {
+                    SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
+                        viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
                     }
-                    ChoiceRow(
-                        stringResource(R.string.settings_stream_intro_music_start),
-                        introStartOptions.map { it.second },
-                        introStartOptions.firstOrNull { it.first == settings.streamIntroStartMode }?.second
-                            ?: introStartOptions.first().second,
-                    ) { label ->
-                        introStartOptions.firstOrNull { it.second == label }?.first?.let { mode ->
-                            viewModel.updateSettings(settings.copy(streamIntroStartMode = mode))
+                    if (settings.streamIntroMusic) {
+                        val introStartOptions = IntroMusicStartMode.entries.map { mode ->
+                            mode to introMusicStartModeLabel(mode)
+                        }
+                        ChoiceRow(
+                            stringResource(R.string.settings_stream_intro_music_start),
+                            introStartOptions.map { it.second },
+                            introStartOptions.firstOrNull { it.first == settings.streamIntroStartMode }?.second
+                                ?: introStartOptions.first().second,
+                        ) { label ->
+                            introStartOptions.firstOrNull { it.second == label }?.first?.let { mode ->
+                                viewModel.updateSettings(settings.copy(streamIntroStartMode = mode))
+                            }
                         }
                     }
-                }
-                SettingSwitch(stringResource(R.string.settings_queue_ready_music), settings.queueReadyMusic) { enabled ->
-                    viewModel.updateSettings(settings.copy(queueReadyMusic = enabled))
+                    SettingSwitch(stringResource(R.string.settings_queue_ready_music), settings.queueReadyMusic) { enabled ->
+                        viewModel.updateSettings(settings.copy(queueReadyMusic = enabled))
+                    }
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings", "tutorial", "guide", "wipe", "relaunch", "fresh install") {
@@ -747,6 +759,9 @@ private fun SettingsContent(
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
                     CodecDiagnosticsPanel(state.codecReport)
+                }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Remote, searchQuery, "Remote", "tv", "phone", "pair", "code", "qr", "local", "launch", "remote", "trust", "purple dot", "overlay", "account switcher") {
+                    LocalTvConnectorPanel(state = state, viewModel = viewModel)
                 }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Debug Logs", "debug", "logs", "logcat", "events", "export", "json", "cloudmatch", "queue", "stream") {
                     DebugLogsPanel(state = state, viewModel = viewModel)
@@ -826,6 +841,168 @@ private fun AdvancedOptionsSettings(settings: AppSettings, viewModel: OpenNowVie
     }
     if (settings.nerdCatalogBackground) {
         CatalogBackgroundImageSetting(settings = settings, viewModel = viewModel)
+    }
+}
+
+@Composable
+private fun LocalTvConnectorPanel(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+) {
+    val connector = state.localTvConnector
+    var remoteBackgroundEnabled by remember(connector.connectedTvName) { mutableStateOf(false) }
+    var remoteUiSoundsEnabled by remember(connector.connectedTvName) { mutableStateOf(false) }
+    var remoteServerSelectorHidden by remember(connector.connectedTvName) { mutableStateOf(false) }
+    var remoteCodec by remember(connector.connectedTvName) { mutableStateOf(VideoCodec.H264.name) }
+    var remoteResolution by remember(connector.connectedTvName) { mutableStateOf("1920x1080") }
+    var remoteFps by remember(connector.connectedTvName) { mutableStateOf("60") }
+    var remoteSafeArea by remember(connector.connectedTvName) { mutableStateOf("16 dp") }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            if (state.androidTvProfile) {
+                "Pair an Android phone on the same private network. Remote commands are end-to-end encrypted locally and never use a cloud relay."
+            } else {
+                "Scan the QR shown in the TV's Remote settings with this phone's camera. Pairing and controls stay on your private network."
+            },
+            color = SettingsTextMuted,
+        )
+        if (state.androidTvProfile) {
+            SettingSwitch(
+                label = "Phone remote",
+                checked = state.settings.localTvRemoteEnabled,
+                description = "Allow a paired phone on this private network to launch games and send approved remote controls.",
+            ) { enabled ->
+                if (enabled) viewModel.startLocalTvConnector() else viewModel.stopLocalTvConnector()
+            }
+            if (state.settings.localTvRemoteEnabled && connector.hosting) {
+                if (connector.pairedDeviceName == null) {
+                    connector.pairUri?.let { uri ->
+                        val qr = remember(uri) { QrCode.encodeText(uri) }
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            qr?.let { QrCodeView(it, Modifier.size(240.dp)) }
+                        }
+                    }
+                    Text(
+                        "Pairing code ${connector.pairingCode ?: "----"}",
+                        color = SettingsText,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                    )
+                    OutlinedButton(
+                        onClick = viewModel::refreshLocalTvPairingCode,
+                        enabled = !connector.busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Request a new 4-digit code")
+                    }
+                } else {
+                    Text(
+                        "Connected: ${connector.pairedDeviceName}",
+                        color = Color(0xffb56cff),
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "The purple dot below the Settings icon means a phone is paired with this TV.",
+                        color = SettingsTextMuted,
+                    )
+                    SettingSwitch(
+                        label = "Trust this phone",
+                        checked = connector.pairedDeviceTrusted,
+                        description = "Trusted phones may change TV settings, control stream overlays, stop sessions, and switch accounts. Game launching does not require trust.",
+                    ) { trusted -> viewModel.setLocalTvDeviceTrusted(trusted) }
+                    if (connector.trustRequestedByDevice && !connector.pairedDeviceTrusted) {
+                        Text("This phone requested trusted remote access. Review the checkbox above on the TV before allowing it.", color = SettingsTextMuted)
+                    }
+                    OutlinedButton(
+                        onClick = viewModel::refreshLocalTvPairingCode,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Forget phone and request a new code")
+                    }
+                }
+            } else if (state.settings.localTvRemoteEnabled) {
+                OutlinedButton(
+                    onClick = viewModel::startLocalTvConnector,
+                    enabled = !connector.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (connector.busy) "Starting…" else "Retry phone remote")
+                }
+            }
+        } else if (connector.phoneConnected) {
+            Text(
+                "Connected to ${connector.connectedTvName}",
+                color = Color(0xffb56cff),
+                fontWeight = FontWeight.Bold,
+            )
+            OutlinedButton(onClick = viewModel::forgetLocalTvConnector, modifier = Modifier.fillMaxWidth()) {
+                Text("Forget TV")
+            }
+            Text("Session and overlays", color = SettingsText, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = { viewModel.sendLocalTvRemoteAction("open_stream_menu") }, enabled = !connector.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Open stream controls")
+            }
+            OutlinedButton(onClick = { viewModel.sendLocalTvRemoteAction("toggle_stream_stats") }, enabled = !connector.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Toggle stream status overlay")
+            }
+            OutlinedButton(onClick = { viewModel.sendLocalTvRemoteAction("stop_stream") }, enabled = !connector.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("End TV session")
+            }
+            Text("TV stream profile", color = SettingsText, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = { viewModel.sendLocalTvRemoteAction("apply_recommended") }, enabled = !connector.busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Apply Recommended")
+            }
+            ChoiceRow("TV codec", VideoCodec.entries.map(VideoCodec::name), remoteCodec) { codec ->
+                remoteCodec = codec
+                viewModel.sendLocalTvRemoteAction("set_codec", codec)
+            }
+            ChoiceRow("TV resolution", listOf("1280x720", "1920x1080", "3840x2160"), remoteResolution) { resolution ->
+                remoteResolution = resolution
+                viewModel.sendLocalTvRemoteAction("set_resolution", resolution)
+            }
+            ChoiceRow("TV frame rate", listOf("30", "60", "120"), remoteFps) { fps ->
+                remoteFps = fps
+                viewModel.sendLocalTvRemoteAction("set_fps", fps)
+            }
+            Text("TV interface", color = SettingsText, fontWeight = FontWeight.Bold)
+            SettingSwitch("TV background image", remoteBackgroundEnabled) { enabled ->
+                remoteBackgroundEnabled = enabled
+                viewModel.sendLocalTvRemoteAction("set_background", enabled.toString())
+            }
+            SettingSwitch("TV controller sounds", remoteUiSoundsEnabled) { enabled ->
+                remoteUiSoundsEnabled = enabled
+                viewModel.sendLocalTvRemoteAction("set_ui_sounds", enabled.toString())
+            }
+            SettingSwitch("Hide TV server selector", remoteServerSelectorHidden) { hidden ->
+                remoteServerSelectorHidden = hidden
+                viewModel.sendLocalTvRemoteAction("set_hide_server_selector", hidden.toString())
+            }
+            ChoiceRow("TV safe area", listOf("0 dp", "8 dp", "16 dp", "24 dp", "32 dp"), remoteSafeArea) { label ->
+                remoteSafeArea = label
+                viewModel.sendLocalTvRemoteAction("set_safe_area", label.substringBefore(' '))
+            }
+            Text("TV account switcher", color = SettingsText, fontWeight = FontWeight.Bold)
+            state.savedAccounts.forEach { account ->
+                OutlinedButton(
+                    onClick = { viewModel.switchLocalTvAccount(account.userId) },
+                    enabled = !connector.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Use ${account.displayName.ifBlank { account.email.orEmpty().ifBlank { "NVIDIA account" } }} on TV", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Text("To launch a game, open its image on this phone and choose Play on TV.", color = SettingsTextMuted)
+        } else {
+            SettingSwitch(
+                label = "Request trusted access",
+                checked = connector.requestTrustedAccess,
+                description = "The TV will still require someone there to approve trust before this phone can change settings, overlays, sessions, or accounts.",
+            ) { requested -> viewModel.setLocalTvTrustRequested(requested) }
+            Text("No TV paired. On the TV, open Settings → Remote, enable Phone remote, and scan its QR code.", color = SettingsText)
+        }
+        connector.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        connector.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
     }
 }
 
@@ -1014,6 +1191,7 @@ private fun releasePersistableImageReadPermission(context: android.content.Conte
 @Composable
 private fun streamPresetLabel(preset: StreamPreset): String =
     when (preset) {
+        StreamPreset.Recommended -> stringResource(R.string.stream_preset_recommended)
         StreamPreset.Custom -> stringResource(R.string.stream_preset_custom)
         StreamPreset.LowDataSaver -> stringResource(R.string.stream_preset_low_data_saver)
         StreamPreset.Medium -> stringResource(R.string.stream_preset_medium)
@@ -1208,6 +1386,7 @@ private fun settingsCategories(): List<SettingsCategory> =
         add(SettingsCategory.Stream)
         add(SettingsCategory.Input)
         add(SettingsCategory.Interface)
+        add(SettingsCategory.Remote)
         add(SettingsCategory.Advanced)
     }
 

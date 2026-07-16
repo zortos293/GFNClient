@@ -9,7 +9,7 @@ internal fun shouldLockPhoneStreamLandscape(
     state.page == AppPage.Stream &&
         state.streamStatus in phoneStreamLandscapeStatuses &&
         state.streamSession?.isReadyForStream() == true &&
-        state.codecReport?.androidTvProfile != true &&
+        !(state.androidTvProfile || state.codecReport?.androidTvProfile == true) &&
         isPhoneSizedAndroidDevice(smallestScreenWidthDp)
 
 private val phoneStreamLandscapeStatuses = setOf("connecting", "streaming")

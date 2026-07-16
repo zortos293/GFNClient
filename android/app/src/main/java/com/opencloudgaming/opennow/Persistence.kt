@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 private const val STORE_NAME = "opennow_native"
+private const val CATALOG_CACHE_STORE_NAME = "opennow_catalog_cache"
 private const val SECURE_STORE_NAME = "opennow_auth_secure"
 private const val KEY_SETTINGS = "settings"
 private const val KEY_AUTH = "auth"
@@ -323,7 +324,8 @@ class SettingsStore(context: Context) {
             queueReadyMusic = queueReadyMusic,
             stretchStreamToFill = stretchStreamToFill,
             nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
-            tvSafeAreaPaddingDp = tvSafeAreaPaddingDp.coerceIn(0f, 72f),
+            tvSafeAreaPaddingDp = tvSafeAreaPaddingDp.coerceIn(0f, 120f),
+            tvLayoutProfileVersion = tvLayoutProfileVersion.coerceAtLeast(0),
             controllerUiSounds = controllerUiSounds,
             autoFullScreen = true,
         )
@@ -444,7 +446,26 @@ class AuthStore(context: Context) {
 }
 
 class CatalogCacheStore(context: Context) {
-    private val prefs = ExternalPrefs.get(context, STORE_NAME)
+    private val appContext = context.applicationContext
+
+    init {
+        // Catalog payloads reached multiple megabytes and shared a file with ordinary
+        // settings. Every small settings commit therefore rewrote the entire catalog on
+        // the UI thread. Drop the old cache (it is disposable) and keep it isolated.
+        val legacyPrefs = ExternalPrefs.get(appContext, STORE_NAME)
+        val legacyKeys = legacyPrefs.all.keys.filter { it.startsWith(KEY_CATALOG_CACHE_PREFIX) }
+        if (legacyKeys.isNotEmpty()) {
+            legacyPrefs.edit().apply {
+                legacyKeys.forEach(::remove)
+            }.commit()
+        }
+    }
+
+    // Cache construction can parse a sizeable file, so defer it until a caller already
+    // running on Dispatchers.IO asks for cache data.
+    private val prefs by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        ExternalPrefs.get(appContext, CATALOG_CACHE_STORE_NAME)
+    }
 
     fun loadMainGames(userId: String, providerStreamingBaseUrl: String): List<GameInfo>? =
         loadGameList(key("main", userId, providerStreamingBaseUrl))

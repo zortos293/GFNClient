@@ -5,6 +5,18 @@ import org.junit.Test
 
 class LaunchErrorsTest {
     @Test
+    fun freeTierEntitlementFailureExplainsMembershipRequirement() {
+        val error = IllegalStateException(
+            "CloudMatch returned status 18: ENTITLEMENT_FAILURE_STATUS 8A910006",
+        )
+
+        assertEquals(
+            "Your GeForce NOW account is on the Free tier. This game requires a Priority or Ultimate membership.",
+            normalizeLaunchErrorMessage(error, "Subnautica 2"),
+        )
+    }
+
+    @Test
     fun limitedModeCloudMatchStatusUsesGameTitle() {
         val error = IllegalStateException(
             "CloudMatch returned status 81: STREAMING_NOT_ALLOWED_IN_LIMITED_MODE 8A91000D",

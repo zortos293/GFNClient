@@ -1433,7 +1433,7 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         Button(
             onClick = {
-                clipboard.setText(AnnotatedString(viewModel.debugLogText()))
+                clipboard.setText(AnnotatedString(viewModel.sanitizedDebugLogText()))
                 copied = true
             },
             modifier = Modifier.weight(1f),
@@ -1442,7 +1442,7 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
         }
         OutlinedButton(
             onClick = {
-                pendingLogText = viewModel.debugLogText()
+                pendingLogText = viewModel.sanitizedDebugLogText()
                 saved = false
                 saveError = null
                 saveLauncher.launch(viewModel.debugLogFileName())

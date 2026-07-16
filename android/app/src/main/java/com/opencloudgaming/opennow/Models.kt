@@ -30,6 +30,9 @@ enum class ColorQuality {
 
 @Serializable
 enum class StreamPreset {
+    @kotlinx.serialization.SerialName("recommended")
+    Recommended,
+
     @kotlinx.serialization.SerialName("custom")
     Custom,
 
@@ -228,7 +231,7 @@ data class AndroidTouchSettings(
 @Serializable
 data class AppSettings(
     val stream: StreamSettings = StreamSettings(),
-    val streamPreset: StreamPreset = StreamPreset.Custom,
+    val streamPreset: StreamPreset = StreamPreset.Recommended,
     val posterSizeScale: Float = 1f,
     val compactGameCards: Boolean = true,
     val handheldLandscapeFourColumnGrid: Boolean = false,
@@ -236,13 +239,15 @@ data class AppSettings(
     val nerdCatalogBackground: Boolean = false,
     val catalogBackgroundPreset: CatalogBackgroundPreset = CatalogBackgroundPreset.ColorfulAbstract,
     val nerdCatalogBackgroundUri: String? = null,
-    val tvSafeAreaPaddingDp: Float = 24f,
+    val tvSafeAreaPaddingDp: Float = 16f,
+    val tvLayoutProfileVersion: Int = 0,
+    val localTvRemoteEnabled: Boolean = false,
     val showGameStoreLabels: Boolean = true,
     val expressiveUi: Boolean = true,
     val dynamicColor: Boolean = false,
     val uiAccent: UiAccent = UiAccent.OpenNow,
     val launchPage: AppLaunchPage = AppLaunchPage.Store,
-    val nerdMode: Boolean = true,
+    val nerdMode: Boolean = false,
     val hideStreamButtons: Boolean = false,
     val showAntiAfkIndicator: Boolean = true,
     val showStatsOnLaunch: Boolean = false,
@@ -259,9 +264,9 @@ data class AppSettings(
     val controllerLibraryGameBackdrop: Boolean = true,
     val autoLoadControllerLibrary: Boolean = false,
     val autoFullScreen: Boolean = true,
-    val streamIntroMusic: Boolean = true,
+    val streamIntroMusic: Boolean = false,
     val streamIntroStartMode: IntroMusicStartMode = IntroMusicStartMode.Muted,
-    val queueReadyMusic: Boolean = true,
+    val queueReadyMusic: Boolean = false,
     val stretchStreamToFill: Boolean = false,
     val stretchStreamToZoom: Boolean = false,
     val favoriteGameIds: List<String> = emptyList(),
@@ -635,6 +640,7 @@ private fun streamPresetTargetForAspect(preset: StreamPreset, aspectRatio: Strin
     val normalizedAspect = aspectRatio.takeIf { streamResolutionOptionsForAspect(it).isNotEmpty() } ?: "16:9"
     val maxHeight = when (preset) {
         StreamPreset.Custom -> Int.MAX_VALUE
+        StreamPreset.Recommended -> 1200
         StreamPreset.LowDataSaver -> 800
         StreamPreset.Medium -> 1200
         StreamPreset.High -> 1600
@@ -650,6 +656,7 @@ private fun streamPresetTargetForAspect(preset: StreamPreset, aspectRatio: Strin
 
     return when (preset) {
         StreamPreset.Custom -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 60, 75)
+        StreamPreset.Recommended -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 60, 35)
         StreamPreset.LowDataSaver -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 30, 12)
         StreamPreset.Medium -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 60, 35)
         StreamPreset.High -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 360, 75)
@@ -734,6 +741,7 @@ data class AuthTokens(
     val expiresAt: Long,
     val clientToken: String? = null,
     val clientTokenExpiresAt: Long? = null,
+    val authClientId: String? = null,
 )
 
 @Serializable
@@ -926,6 +934,9 @@ internal fun mergeKnownLibraryGames(vararg groups: List<GameInfo>): List<GameInf
     }
     return byKey.values.toList()
 }
+
+internal fun mergePanelGameWithMetadata(panelGame: GameInfo, metadataGame: GameInfo): GameInfo =
+    mergeGameInfo(panelGame, metadataGame)
 
 internal fun normalizeGameStore(store: String): String =
     store.uppercase(Locale.US).replace(Regex("[\\s-]+"), "_")
@@ -1332,11 +1343,18 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     if (availableSettings != this) return availableSettings.adjustedForDevice(report)
 
     if (report?.androidTvProfile == true && report.lowPowerGpuProfile) {
+        val requestedCodecUsable = report.capabilities
+            .firstOrNull { it.codec == codec }
+            ?.streamingDecoderUsableForLaunch()
+            ?: (codec == VideoCodec.H264)
+        val effectiveCodec = if (requestedCodecUsable) codec else report.bestStreamingFallbackCodec()
         return copy(
-            codec = VideoCodec.H264,
+            codec = effectiveCodec,
             colorQuality = ColorQuality.EightBit420,
             maxBitrateMbps = minOf(maxBitrateMbps, LOW_POWER_TV_BITRATE_CAP_MBPS),
             fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
+            hdrEnabled = false,
+            enableCloudGsync = false,
         ).cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT)
             .withStableAndroidCloudMatchProfile()
             .withoutAndroidTvSharpening(report)

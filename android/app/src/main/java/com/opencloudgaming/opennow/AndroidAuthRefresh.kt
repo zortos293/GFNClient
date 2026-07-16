@@ -24,6 +24,17 @@ internal fun AuthTokens.needsBackgroundRefresh(nowMs: Long = System.currentTimeM
         clientTokenExpiresAt == null ||
         clientTokenExpiresAt - nowMs < CLIENT_TOKEN_REFRESH_WINDOW_MS
 
+internal fun authenticationRefreshClientIds(
+    savedClientId: String?,
+    browserClientId: String,
+    deviceClientId: String,
+): List<String> =
+    listOfNotNull(
+        savedClientId?.takeIf(String::isNotBlank),
+        browserClientId,
+        deviceClientId,
+    ).distinct()
+
 internal object AndroidAuthRefreshScheduler {
     fun schedule(context: Context) {
         val constraints = Constraints.Builder()

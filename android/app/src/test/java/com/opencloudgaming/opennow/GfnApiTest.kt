@@ -368,4 +368,17 @@ class GfnApiTest {
         assertTrue(exported.contains("requestType=session"))
     }
 
+    @Test
+    fun diagnosticLogPayloadRedactsFormEncodedAuthFields() {
+        val exported = sanitizeDiagnosticLogPayload(
+            "grant_type=client_token&client_token=client-secret&client_id=public-client&sub=user-123",
+        )
+
+        assertFalse(exported.contains("client-secret"))
+        assertFalse(exported.contains("user-123"))
+        assertTrue(exported.contains("client_token=[redacted]"))
+        assertTrue(exported.contains("sub=[redacted]"))
+        assertTrue(exported.contains("client_id=public-client"))
+    }
+
 }

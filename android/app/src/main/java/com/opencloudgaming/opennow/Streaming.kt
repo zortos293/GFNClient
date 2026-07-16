@@ -1,6 +1,8 @@
 package com.opencloudgaming.opennow
 
+import android.app.ActivityManager
 import android.content.Context
+import android.content.res.Configuration
 import android.media.AudioAttributes
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -22,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -111,12 +114,21 @@ private object WebRtcRuntime {
 object CodecProbe {
     fun report(context: Context): RuntimeCodecReport {
         WebRtcRuntime.ensureInitialized(context)
-        val packageManager = context.packageManager
-        val isTv = packageManager.hasSystemFeature("android.software.leanback")
+        val isTv = isAndroidTvProfile(context)
         val renderer = listOf(Build.HARDWARE, Build.BOARD, Build.DEVICE, Build.MODEL, Build.MANUFACTURER)
             .joinToString(" ")
             .lowercase(Locale.US)
-        val lowPower = renderer.contains("powervr") || renderer.contains("ge8320") || renderer.contains("ge83")
+        val memoryInfo = ActivityManager.MemoryInfo()
+        val totalMemoryBytes = runCatching {
+            (context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)
+                ?.getMemoryInfo(memoryInfo)
+            memoryInfo.totalMem.takeIf { it > 0L }
+        }.getOrNull()
+        val lowPower = isLowPowerStreamingProfile(
+            androidTvProfile = isTv,
+            renderer = renderer,
+            totalMemoryBytes = totalMemoryBytes,
+        )
         val webRtcDecoders = probeWebRtcDecoders()
         val capabilities = VideoCodec.entries.map { codec ->
             val mime = codec.mimeType()
@@ -149,7 +161,8 @@ object CodecProbe {
             lowPowerGpuProfile = lowPower,
         ).also { report ->
             NativeInputDiagnostics.add(
-                "codec probe device=${Build.MANUFACTURER}/${Build.MODEL} hardware=${Build.HARDWARE} tv=$isTv lowPower=$lowPower",
+                "codec probe device=${Build.MANUFACTURER}/${Build.MODEL} hardware=${Build.HARDWARE} tv=$isTv lowPower=$lowPower " +
+                    "memoryMiB=${totalMemoryBytes?.div(BYTES_PER_MEBIBYTE) ?: 0L}",
             )
             report.capabilities.forEach { capability ->
                 NativeInputDiagnostics.add(
@@ -275,6 +288,26 @@ object CodecProbe {
             VideoCodec.H265 -> "video/hevc"
             VideoCodec.AV1 -> "video/av01"
         }
+}
+
+internal fun isAndroidTvProfile(context: Context): Boolean =
+    context.packageManager.hasSystemFeature("android.software.leanback") ||
+        context.resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK == Configuration.UI_MODE_TYPE_TELEVISION
+
+internal fun isLowPowerStreamingProfile(
+    androidTvProfile: Boolean,
+    renderer: String,
+    totalMemoryBytes: Long?,
+): Boolean {
+    val normalizedRenderer = renderer.lowercase(Locale.US)
+    val knownLowPowerGpu =
+        normalizedRenderer.contains("powervr") ||
+            normalizedRenderer.contains("ge8320") ||
+            normalizedRenderer.contains("ge83")
+    val constrainedTvMemory = androidTvProfile &&
+        totalMemoryBytes != null &&
+        totalMemoryBytes in 1..LOW_POWER_TV_MEMORY_LIMIT_BYTES
+    return knownLowPowerGpu || constrainedTvMemory
 }
 
 private fun openNowHardwareVideoDecoderFactory(sharedContext: EglBase.Context): VideoDecoderFactory =
@@ -1229,7 +1262,12 @@ internal object AndroidControllerMouseAssist {
         return if (dx != 0 || dy != 0) ControllerMouseDelta(dx, dy) else null
     }
 
-    fun mouseButtonForGamepad(buttonMask: Int): Int? = null
+    fun mouseButtonForGamepad(buttonMask: Int): Int? =
+        when (buttonMask) {
+            GamepadButtonMapping.A -> 1
+            GamepadButtonMapping.B -> 3
+            else -> null
+        }
 
     fun mouseButtonForTrigger(left: Boolean): Int? = null
 
@@ -1422,6 +1460,49 @@ internal object GamepadButtonMapping {
         keyCode == KeyEvent.KEYCODE_BUTTON_L2 ||
             keyCode == KeyEvent.KEYCODE_BUTTON_R2 ||
             keyCode in KeyEvent.KEYCODE_BUTTON_A..KeyEvent.KEYCODE_BUTTON_MODE
+}
+
+internal object SteamMenuChord {
+    fun buttons(aPressed: Boolean): Int =
+        GamepadButtonMapping.GUIDE or if (aPressed) GamepadButtonMapping.A else 0
+}
+
+internal class SteamOverlayChordState {
+    private var latched = false
+    private var chordPressed = false
+
+    fun update(rawButtons: Int): Boolean {
+        val topButtons = rawButtons and TOP_BUTTONS
+        val activated = !latched && topButtons == TOP_BUTTONS
+        if (activated) {
+            latched = true
+            chordPressed = true
+        } else if (latched && topButtons == 0) {
+            latched = false
+            chordPressed = false
+        }
+        return activated
+    }
+
+    fun effectiveButtons(rawButtons: Int): Int {
+        val withoutTopButtons = if (latched) rawButtons and TOP_BUTTONS.inv() else rawButtons
+        return if (chordPressed) withoutTopButtons or SteamMenuChord.buttons(aPressed = true) else withoutTopButtons
+    }
+
+    fun releaseChord(): Boolean {
+        if (!chordPressed) return false
+        chordPressed = false
+        return true
+    }
+
+    fun reset() {
+        latched = false
+        chordPressed = false
+    }
+
+    private companion object {
+        const val TOP_BUTTONS = 0x0030
+    }
 }
 
 internal fun streamSharpnessShaderStrength(enabled: Boolean, amount: Float): Float =
@@ -1744,6 +1825,36 @@ internal class StreamLivenessWatchdog(
         }
         return StreamLivenessAction.None
     }
+}
+
+internal data class StreamRecoveryTiming(
+    val keyframeAfterMs: Long,
+    val keyframeIntervalMs: Long,
+    val restartAfterMs: Long,
+)
+
+internal fun streamRecoveryTiming(androidTvProfile: Boolean): StreamRecoveryTiming =
+    if (androidTvProfile) {
+        StreamRecoveryTiming(
+            keyframeAfterMs = TV_MEDIA_STALL_KEYFRAME_AFTER_MS,
+            keyframeIntervalMs = TV_MEDIA_STALL_KEYFRAME_INTERVAL_MS,
+            restartAfterMs = TV_MEDIA_STALL_RESTART_AFTER_MS,
+        )
+    } else {
+        StreamRecoveryTiming(
+            keyframeAfterMs = MEDIA_STALL_KEYFRAME_AFTER_MS,
+            keyframeIntervalMs = MEDIA_STALL_KEYFRAME_INTERVAL_MS,
+            restartAfterMs = MEDIA_STALL_RESTART_AFTER_MS,
+        )
+    }
+
+private fun newStreamLivenessWatchdog(androidTvProfile: Boolean): StreamLivenessWatchdog {
+    val timing = streamRecoveryTiming(androidTvProfile)
+    return StreamLivenessWatchdog(
+        keyframeAfterMs = timing.keyframeAfterMs,
+        keyframeIntervalMs = timing.keyframeIntervalMs,
+        restartAfterMs = timing.restartAfterMs,
+    )
 }
 
 internal class FirstVideoFrameWatchdog(
@@ -2086,6 +2197,7 @@ class NativeStreamClient(
     private val onSafeVideoFallbackApplied: (String) -> Unit = {},
     private val onSessionRecoveryRequired: (String) -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
+    private val onControllerMouseAssistChanged: (Boolean) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val eglBase: EglBase = EglBase.create()
@@ -2146,6 +2258,9 @@ class NativeStreamClient(
     private val controllerAxisAvailability = mutableMapOf<Int, AndroidGamepadAxisAvailability>()
     private var physicalButtons = 0
     private var physicalHatButtons = 0
+    private var steamMenuChordButtons = 0
+    private val physicalSteamOverlayChord = SteamOverlayChordState()
+    private val virtualSteamOverlayChord = SteamOverlayChordState()
     private var physicalLeftTriggerButtonPressed = false
     private var physicalRightTriggerButtonPressed = false
     private var lastLeftTrigger = 0
@@ -2173,16 +2288,21 @@ class NativeStreamClient(
     private var hardwareKeyboardEventLogged = false
     private var physicalGamepadAxisLogged = false
     private var lastStatsSample: StreamStatsSample? = null
-    private val livenessWatchdog = StreamLivenessWatchdog()
+    private var androidTvProfile = false
+    private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
     private val firstVideoFrameWatchdog = FirstVideoFrameWatchdog()
     private val textSendMutex = Mutex()
     private var guideAutoReleaseJob: Job? = null
+    private var steamMenuChordJob: Job? = null
+    private var physicalSteamOverlayChordReleaseJob: Job? = null
+    private var virtualSteamOverlayChordReleaseJob: Job? = null
     private val lastRumbleEffectAtMs = LongArray(GAMEPAD_MAX_CONTROLLERS)
     private val hapticsSupportLogged = BooleanArray(GAMEPAD_MAX_CONTROLLERS)
     private var lastHapticsWarningAtMs = 0L
     private var lastHapticsAdvertisementAtMs = 0L
     private var phoneRumbleFallbackEnabled = true
     private var phoneRumbleSupportLogged = false
+    private var released = false
 
     private data class RumbleEffectProfile(
         val weakAmplitude: Int,
@@ -2300,11 +2420,15 @@ class NativeStreamClient(
     }
 
     private fun releaseRendererInternal(candidate: SurfaceViewRenderer) {
+        prepareRendererForRelease(candidate)
+        candidate.release()
+    }
+
+    private fun prepareRendererForRelease(candidate: SurfaceViewRenderer) {
         detachRendererSink(candidate)
         rendererSurfaceCallback?.let(candidate.holder::removeCallback)
         rendererSurfaceCallback = null
         candidate.hideSurfaceBeforeRelease()
-        candidate.release()
     }
 
     private fun SurfaceViewRenderer.hideSurfaceBeforeRelease() {
@@ -2357,7 +2481,19 @@ class NativeStreamClient(
         }
     }
 
+    fun updateAndroidTvProfile(enabled: Boolean) {
+        if (androidTvProfile == enabled) return
+        androidTvProfile = enabled
+        livenessWatchdog = newStreamLivenessWatchdog(enabled)
+        recordStreamDiagnostic("recovery profile=${if (enabled) "android-tv" else "mobile"}")
+    }
+
+    fun setControllerMouseAssistEnabled(enabled: Boolean) {
+        setControllerMouseAssistActive(enabled)
+    }
+
     fun start(session: SessionInfo, settings: StreamSettings) {
+        if (released) return
         this.session = session
         this.settings = settings
         transportGeneration += 1
@@ -2388,16 +2524,36 @@ class NativeStreamClient(
     }
 
     fun release() {
+        if (released) return
+        released = true
+        if (androidTvProfile) {
+            val activeRenderer = renderer
+            activeRenderer?.let(::prepareRendererForRelease)
+            renderer = null
+            rendererSharpnessDrawer = null
+            stop()
+            scope.launch {
+                delay(ANDROID_TV_CODEC_RELEASE_SETTLE_MS)
+                finishRelease(activeRenderer)
+            }
+            return
+        }
         stop()
         renderer?.let { activeRenderer ->
             releaseRendererInternal(activeRenderer)
         }
         renderer = null
         rendererSharpnessDrawer = null
+        finishRelease()
+    }
+
+    private fun finishRelease(preparedRenderer: SurfaceViewRenderer? = null) {
+        preparedRenderer?.release()
         factory?.dispose()
         factory = null
         audioDeviceModule.release()
         eglBase.release()
+        scope.cancel()
     }
 
     private fun resetInputState() {
@@ -2415,10 +2571,19 @@ class NativeStreamClient(
         physicalControllerActive = false
         physicalButtons = 0
         physicalHatButtons = 0
+        steamMenuChordButtons = 0
+        physicalSteamOverlayChord.reset()
+        virtualSteamOverlayChord.reset()
         physicalLeftTriggerButtonPressed = false
         physicalRightTriggerButtonPressed = false
         guideAutoReleaseJob?.cancel()
         guideAutoReleaseJob = null
+        steamMenuChordJob?.cancel()
+        steamMenuChordJob = null
+        physicalSteamOverlayChordReleaseJob?.cancel()
+        physicalSteamOverlayChordReleaseJob = null
+        virtualSteamOverlayChordReleaseJob?.cancel()
+        virtualSteamOverlayChordReleaseJob = null
         stopAllGamepadRumble()
         lastLeftTrigger = 0
         lastRightTrigger = 0
@@ -2443,6 +2608,7 @@ class NativeStreamClient(
         hardwareKeyboardEventLogged = false
         physicalGamepadAxisLogged = false
         inputEncoder.resetGamepadSequences()
+        emitControllerMouseAssistChanged(false)
     }
 
     fun dispatchKey(event: KeyEvent): Boolean {
@@ -2703,6 +2869,7 @@ class NativeStreamClient(
         controllerMouseAssistActive = true
         controllerMouseAssistAutoArmed = true
         controllerMouseMoveLogged = false
+        emitControllerMouseAssistChanged(true)
         NativeInputDiagnostics.add("controller mouse assist auto-armed for Android TV")
     }
 
@@ -2712,7 +2879,13 @@ class NativeStreamClient(
         controllerMouseAssistActive = active
         controllerMouseAssistAutoArmed = autoArmed && active
         controllerMouseMoveLogged = false
+        sendCurrentGamepadState()
+        emitControllerMouseAssistChanged(active)
         NativeInputDiagnostics.add("controller mouse assist ${if (active) "enabled" else "disabled"} auto=$controllerMouseAssistAutoArmed")
+    }
+
+    private fun emitControllerMouseAssistChanged(active: Boolean) {
+        scope.launch { onControllerMouseAssistChanged(active) }
     }
 
     private fun releaseControllerMouseButtons() {
@@ -2722,7 +2895,7 @@ class NativeStreamClient(
         }
         if (controllerMouseRightButtonDown) {
             controllerMouseRightButtonDown = false
-            sendMouseButton(button = 2, pressed = false, source = "controller mouse")
+            sendMouseButton(button = 3, pressed = false, source = "controller mouse")
         }
     }
 
@@ -2732,7 +2905,7 @@ class NativeStreamClient(
                 if (controllerMouseLeftButtonDown == pressed) return true
                 controllerMouseLeftButtonDown = pressed
             }
-            2 -> {
+            3 -> {
                 if (controllerMouseRightButtonDown == pressed) return true
                 controllerMouseRightButtonDown = pressed
             }
@@ -2747,7 +2920,30 @@ class NativeStreamClient(
 
     fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
         virtualButtons = if (pressed) virtualButtons or buttonMask else virtualButtons and buttonMask.inv()
+        val steamOverlayChordActivated = virtualSteamOverlayChord.update(virtualButtons)
         sendCurrentGamepadState()
+        if (steamOverlayChordActivated) {
+            scheduleVirtualSteamOverlayChordRelease()
+        }
+    }
+
+    fun openSteamMenu() {
+        steamMenuChordJob?.cancel()
+        val controllerId = activeControllerId
+        steamMenuChordButtons = SteamMenuChord.buttons(aPressed = false)
+        sendCurrentGamepadState(controllerId)
+        steamMenuChordJob = scope.launch {
+            delay(STEAM_MENU_MODIFIER_DELAY_MS)
+            steamMenuChordButtons = SteamMenuChord.buttons(aPressed = true)
+            sendCurrentGamepadState(controllerId)
+            delay(GAMEPAD_GUIDE_AUTO_RELEASE_MS)
+            steamMenuChordButtons = SteamMenuChord.buttons(aPressed = false)
+            sendCurrentGamepadState(controllerId)
+            delay(STEAM_MENU_MODIFIER_DELAY_MS)
+            steamMenuChordButtons = 0
+            sendCurrentGamepadState(controllerId)
+            NativeInputDiagnostics.add("Steam Menu sent Guide+A chord slot=$controllerId")
+        }
     }
 
     fun setVirtualTrigger(left: Boolean, pressed: Boolean) {
@@ -3642,11 +3838,17 @@ class NativeStreamClient(
             }
             physicalControllerConnected = true
             physicalControllerActive = true
-            val mouseSent = handleControllerMouseButton(mask, pressed)
+            if (handleControllerMouseButton(mask, pressed)) {
+                return true
+            }
             physicalButtons = if (pressed) physicalButtons or mask else physicalButtons and mask.inv()
+            val steamOverlayChordActivated = physicalSteamOverlayChord.update(physicalButtons)
             val sent = sendCurrentGamepadState(controllerId = activeControllerId)
             updateGuideAutoRelease(mask, pressed, activeControllerId)
-            return sent || mouseSent
+            if (steamOverlayChordActivated) {
+                schedulePhysicalSteamOverlayChordRelease(activeControllerId)
+            }
+            return sent
         }
         when (event.keyCode) {
             KeyEvent.KEYCODE_BUTTON_L2 -> {
@@ -3691,7 +3893,8 @@ class NativeStreamClient(
     private fun handleControllerMouseButton(buttonMask: Int, pressed: Boolean): Boolean {
         if (!controllerMouseAssistActive) return false
         val mouseButton = AndroidControllerMouseAssist.mouseButtonForGamepad(buttonMask) ?: return false
-        return setControllerMouseButton(mouseButton, pressed)
+        setControllerMouseButton(mouseButton, pressed)
+        return true
     }
 
     private fun handleControllerMouseTrigger(left: Boolean, pressed: Boolean): Boolean {
@@ -3704,7 +3907,11 @@ class NativeStreamClient(
         val partiallyReliable = canSendGamepadPartiallyReliable(controllerId)
         val packet = inputEncoder.encodeGamepadState(
             controllerId = controllerId,
-            buttons = physicalButtons or physicalHatButtons or virtualButtons,
+            buttons =
+                physicalSteamOverlayChord.effectiveButtons(physicalButtons) or
+                    physicalHatButtons or
+                    virtualSteamOverlayChord.effectiveButtons(virtualButtons) or
+                    steamMenuChordButtons,
             leftTrigger = max(lastLeftTrigger, virtualLeftTrigger),
             rightTrigger = max(lastRightTrigger, virtualRightTrigger),
             leftStickX = effectiveLeftStickX(),
@@ -3733,10 +3940,33 @@ class NativeStreamClient(
         }
     }
 
+    private fun schedulePhysicalSteamOverlayChordRelease(controllerId: Int) {
+        physicalSteamOverlayChordReleaseJob?.cancel()
+        physicalSteamOverlayChordReleaseJob = scope.launch {
+            delay(GAMEPAD_GUIDE_AUTO_RELEASE_MS)
+            if (!physicalSteamOverlayChord.releaseChord()) return@launch
+            sendCurrentGamepadState(controllerId = controllerId)
+            NativeInputDiagnostics.add("physical View+Start sent Steam Menu Home+A chord slot=$controllerId")
+        }
+    }
+
+    private fun scheduleVirtualSteamOverlayChordRelease() {
+        virtualSteamOverlayChordReleaseJob?.cancel()
+        virtualSteamOverlayChordReleaseJob = scope.launch {
+            delay(GAMEPAD_GUIDE_AUTO_RELEASE_MS)
+            if (!virtualSteamOverlayChord.releaseChord()) return@launch
+            sendCurrentGamepadState()
+            NativeInputDiagnostics.add("touch View+Start sent Steam Menu Home+A chord")
+        }
+    }
+
     private fun effectiveLeftStickX(): Int = if (virtualLeftStickActive) virtualLeftStickX else lastLeftStickX
     private fun effectiveLeftStickY(): Int = if (virtualLeftStickActive) virtualLeftStickY else lastLeftStickY
-    private fun effectiveRightStickX(): Int = if (virtualRightStickActive) virtualRightStickX else lastRightStickX
-    private fun effectiveRightStickY(): Int = if (virtualRightStickActive) virtualRightStickY else lastRightStickY
+    private fun effectiveRightStickX(): Int =
+        if (virtualRightStickActive) virtualRightStickX else if (controllerMouseAssistActive) 0 else lastRightStickX
+
+    private fun effectiveRightStickY(): Int =
+        if (virtualRightStickActive) virtualRightStickY else if (controllerMouseAssistActive) 0 else lastRightStickY
 
     private fun hasAnyControllerState(): Boolean =
         physicalControllerConnected ||
@@ -3745,6 +3975,7 @@ class NativeStreamClient(
             physicalButtons != 0 ||
             physicalHatButtons != 0 ||
             virtualButtons != 0 ||
+            steamMenuChordButtons != 0 ||
             lastLeftTrigger != 0 ||
             lastRightTrigger != 0 ||
             virtualLeftTrigger != 0 ||
@@ -3812,6 +4043,9 @@ class NativeStreamClient(
             physicalControllerActive = false
             physicalButtons = 0
             physicalHatButtons = 0
+            physicalSteamOverlayChord.reset()
+            physicalSteamOverlayChordReleaseJob?.cancel()
+            physicalSteamOverlayChordReleaseJob = null
             physicalLeftTriggerButtonPressed = false
             physicalRightTriggerButtonPressed = false
             lastLeftTrigger = 0
@@ -4187,6 +4421,7 @@ class NativeStreamClient(
     }
 
     private companion object {
+        private const val ANDROID_TV_CODEC_RELEASE_SETTLE_MS = 180L
         private const val EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX = 240f
         private const val GAMEPAD_MAX_CONTROLLERS = 4
         private const val RUMBLE_EFFECT_MS = 90L
@@ -5087,13 +5322,19 @@ private const val OFFER_TIMEOUT_MS = 12_000L
 private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
 private const val MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
 private const val MEDIA_STALL_RESTART_AFTER_MS = 14_000L
+private const val TV_MEDIA_STALL_KEYFRAME_AFTER_MS = 3_000L
+private const val TV_MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_000L
+private const val TV_MEDIA_STALL_RESTART_AFTER_MS = 8_000L
 private const val FIRST_VIDEO_FRAME_TIMEOUT_MS = 8_000L
 private const val GAMEPAD_GUIDE_AUTO_RELEASE_MS = 160L
+private const val STEAM_MENU_MODIFIER_DELAY_MS = 40L
 private const val STREAM_TEXT_SEND_MAX_CHARS = 4096
 private const val STREAM_TEXT_SEND_ATTEMPTS = 3
 private const val STREAM_TEXT_PACKET_DELAY_MS = 4L
 private const val STREAM_TEXT_KEY_DELAY_MS = 10L
 private const val STREAM_TEXT_RETRY_DELAY_MS = 16L
+private const val BYTES_PER_MEBIBYTE = 1024L * 1024L
+private const val LOW_POWER_TV_MEMORY_LIMIT_BYTES = 3L * 1024L * BYTES_PER_MEBIBYTE
 
 private fun Any?.statsDouble(): Double? =
     when (this) {

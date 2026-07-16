@@ -1,8 +1,11 @@
 package com.opencloudgaming.opennow
 
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -14,6 +17,49 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GfnApiTest {
+    @Test
+    fun catalogArtworkUsesGameBoxArtForMobileAndTvCards() {
+        val artwork = catalogCardArtwork(
+            keyArt = "key-art",
+            gameBoxArt = "game-box-art",
+            heroImage = "hero-image",
+            tvBanner = "tv-banner",
+        )
+
+        assertEquals("game-box-art", artwork.mobileImageUrl)
+        assertEquals("game-box-art", artwork.tvImageUrl)
+    }
+
+    @Test
+    fun catalogArtworkDoesNotFallBackToLandscapeArtOnMobile() {
+        val artwork = catalogCardArtwork(
+            keyArt = "key-art",
+            gameBoxArt = null,
+            heroImage = "hero-image",
+            tvBanner = "tv-banner",
+        )
+
+        assertNull(artwork.mobileImageUrl)
+        assertEquals("key-art", artwork.tvImageUrl)
+    }
+
+    @Test
+    fun catalogScreenshotsPreserveDistinctNonBlankImages() {
+        val images = buildJsonObject {
+            putJsonArray("SCREENSHOTS") {
+                add(JsonPrimitive(" screenshot-one "))
+                add(JsonPrimitive(""))
+                add(JsonPrimitive("screenshot-two"))
+                add(JsonPrimitive("screenshot-one"))
+            }
+        }
+
+        assertEquals(
+            listOf("screenshot-one", "screenshot-two"),
+            catalogScreenshotUrls(images),
+        )
+    }
+
     @Test
     fun canonicalizesOldGamesGraphQlHost() {
         val url = canonicalizeGfnRequestUrl(

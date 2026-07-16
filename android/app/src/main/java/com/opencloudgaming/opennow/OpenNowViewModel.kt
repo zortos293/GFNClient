@@ -233,7 +233,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private var gamesJob: Job? = null
     private var launchJob: Job? = null
-    private var checkSessionJob: Job? = null
     private var activeSubscriptionJob: Job? = null
     private var pendingActiveSessionLaunch: PendingActiveSessionLaunch? = null
     private var loginJob: Job? = null
@@ -1564,8 +1563,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         )
         launchJob?.cancel()
         launchJob = null
-        checkSessionJob?.cancel()
-        checkSessionJob = null
         pendingActiveSessionLaunch = null
         viewModelScope.launch {
             val auth = state.value.authSession
@@ -2107,28 +2104,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun recordNativeStreamState(message: String) {
         recordDebugEvent("native", "state=$message session=${state.value.streamSession?.shortDebugId().orEmpty()}")
-        if (message.startsWith("Reconnecting stream")) {
-            val currentSession = state.value.streamSession ?: return
-            val auth = state.value.authSession ?: return
-            val token = auth.tokens.idToken ?: auth.tokens.accessToken
-            val baseUrl = effectiveStreamingBaseUrl(auth)
-            val settings = state.value.activeStreamSettings ?: effectiveStreamSettings()
-
-            if (checkSessionJob?.isActive != true) {
-                checkSessionJob = viewModelScope.launch {
-                    runCatching {
-                        val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, settings)
-                        val isActive = activeSessions.any { it.sessionId == currentSession.sessionId }
-                        if (!isActive) {
-                            recordDebugEvent("stream", "Session is no longer active on the GFN server; exiting stream cleanly")
-                            stopStream()
-                        }
-                    }.onFailure { error ->
-                        recordDebugEvent("stream", "Failed to check session validity during reconnect: ${error.debugMessage()}")
-                    }
-                }
-            }
-        }
     }
 
     fun recordLocalSafeVideoFallback(reason: String) {

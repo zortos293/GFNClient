@@ -876,7 +876,9 @@ data class GameInfo(
     val featureLabels: List<String> = emptyList(),
     val genres: List<String> = emptyList(),
     val imageUrl: String? = null,
+    val tvCardImageUrl: String? = null,
     val screenshotUrl: String? = null,
+    val screenshotUrls: List<String> = emptyList(),
     val tvBannerUrl: String? = null,
     val playType: String? = null,
     val membershipTierLabel: String? = null,
@@ -936,7 +938,13 @@ internal fun mergeKnownLibraryGames(vararg groups: List<GameInfo>): List<GameInf
 }
 
 internal fun mergePanelGameWithMetadata(panelGame: GameInfo, metadataGame: GameInfo): GameInfo =
-    mergeGameInfo(panelGame, metadataGame)
+    mergeGameInfo(panelGame, metadataGame).copy(
+        imageUrl = metadataGame.imageUrl ?: panelGame.imageUrl,
+        tvCardImageUrl = metadataGame.tvCardImageUrl ?: panelGame.tvCardImageUrl,
+        screenshotUrl = metadataGame.screenshotUrl ?: panelGame.screenshotUrl,
+        screenshotUrls = (metadataGame.screenshotUrls + panelGame.screenshotUrls).distinct(),
+        tvBannerUrl = metadataGame.tvBannerUrl ?: panelGame.tvBannerUrl,
+    )
 
 internal fun normalizeGameStore(store: String): String =
     store.uppercase(Locale.US).replace(Regex("[\\s-]+"), "_")
@@ -1033,7 +1041,9 @@ private fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
         description = left.description ?: right.description,
         longDescription = left.longDescription ?: right.longDescription,
         imageUrl = left.imageUrl ?: right.imageUrl,
+        tvCardImageUrl = left.tvCardImageUrl ?: right.tvCardImageUrl,
         screenshotUrl = left.screenshotUrl ?: right.screenshotUrl,
+        screenshotUrls = (left.screenshotUrls + right.screenshotUrls).distinct(),
         tvBannerUrl = left.tvBannerUrl ?: right.tvBannerUrl,
         playType = left.playType ?: right.playType,
         membershipTierLabel = left.membershipTierLabel ?: right.membershipTierLabel,

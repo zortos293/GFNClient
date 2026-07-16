@@ -800,9 +800,9 @@ private fun TvPhoneSignInConnector(
         ) {
             BoxWithConstraints(if (dedicated) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
                 val qrSize = if (dedicated) {
-                    minOf(maxHeight - 48.dp, maxWidth * 0.28f, 172.dp).coerceAtLeast(104.dp)
+                    minOf(maxHeight - 40.dp, maxWidth * 0.36f, 240.dp).coerceAtLeast(152.dp)
                 } else {
-                    150.dp
+                    188.dp
                 }
                 Row(
                     (if (dedicated) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
@@ -817,23 +817,11 @@ private fun TvPhoneSignInConnector(
                                 color = Color.White,
                                 border = BorderStroke(3.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
                             ) {
-                                QrCodeView(code, Modifier.size(qrSize).padding(8.dp))
+                                QrCodeView(code, Modifier.size(qrSize))
                             }
                         }
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (dedicated) 10.dp else 8.dp)) {
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
-                        ) {
-                            Text(
-                                "LOCAL • ENCRYPTED",
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            )
-                        }
                         Text(
                             if (connector.pairedDeviceName == null) "Pair your phone" else "Phone connected",
                             color = TextPrimary,
@@ -842,7 +830,7 @@ private fun TvPhoneSignInConnector(
                         )
                         Text(
                             if (connector.pairedDeviceName == null) {
-                                "Scan with the phone camera. Pairing stays on this private network and expires after five minutes."
+                                "Your TV and phone must be on the same Wi-Fi. Scan the QR code with your phone camera; the pairing code expires after five minutes."
                             } else {
                                 "${connector.pairedDeviceName} can launch games. Approve trust below for settings, overlays, sessions, and account switching."
                             },
@@ -1112,8 +1100,7 @@ internal fun QrCodeView(qrCode: QrCode, modifier: Modifier = Modifier) {
     Canvas(
         modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White)
-            .padding(14.dp),
+            .background(Color.White),
     ) {
         val quiet = 4
         val cells = qrCode.size + quiet * 2
@@ -2827,7 +2814,6 @@ private fun StoreStartRailsSkeleton(
     tvProfile: Boolean,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
     Column(
         Modifier
             .fillMaxWidth()
@@ -2836,8 +2822,9 @@ private fun StoreStartRailsSkeleton(
     ) {
         repeat(2) {
             StoreRailSectionSkeleton(
-                cardWidth = cardWidth,
                 expressiveUi = settings.expressiveUi,
+                tvProfile = tvProfile,
+                landscapeLayout = landscapeLayout,
             )
         }
     }
@@ -2845,8 +2832,9 @@ private fun StoreStartRailsSkeleton(
 
 @Composable
 private fun StoreRailSectionSkeleton(
-    cardWidth: Dp,
     expressiveUi: Boolean,
+    tvProfile: Boolean,
+    landscapeLayout: Boolean,
 ) {
     val spacing = 10.dp
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2856,8 +2844,12 @@ private fun StoreRailSectionSkeleton(
                 .fillMaxWidth()
                 .clipToBounds(),
         ) {
-            val visibleCount = (((maxWidth.value + spacing.value) / (cardWidth.value + spacing.value)).toInt())
-                .coerceAtLeast(1)
+            val baseCardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
+            val visibleCount = if (tvProfile) {
+                (((maxWidth.value + spacing.value) / (baseCardWidth.value + spacing.value)).toInt()).coerceAtLeast(1)
+            } else {
+                if (landscapeLayout) 5 else 3
+            }
             val fittedCardWidth = ((maxWidth.value - spacing.value * (visibleCount - 1)) / visibleCount)
                 .coerceAtLeast(1f)
                 .dp
@@ -2869,6 +2861,7 @@ private fun StoreRailSectionSkeleton(
                     StoreRailGameCardSkeleton(
                         width = fittedCardWidth,
                         expressiveUi = expressiveUi,
+                        portraitCard = !tvProfile,
                     )
                 }
             }
@@ -2880,12 +2873,13 @@ private fun StoreRailSectionSkeleton(
 private fun StoreRailGameCardSkeleton(
     width: Dp,
     expressiveUi: Boolean,
+    portraitCard: Boolean,
 ) {
     val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     Surface(
         modifier = Modifier
             .width(width)
-            .aspectRatio(1f)
+            .aspectRatio(if (portraitCard) GAME_BOX_ART_ASPECT_RATIO else 1f)
             .border(1.dp, Color.White.copy(alpha = 0.08f), shape),
         shape = shape,
         color = Color.Black,
@@ -2921,7 +2915,13 @@ private fun GameCardSkeleton(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (squareCard) Modifier.aspectRatio(1f) else Modifier.height(cardHeight)),
+            .then(
+                when {
+                    thumbnailPlayOverlay -> Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO)
+                    squareCard -> Modifier.aspectRatio(1f)
+                    else -> Modifier.height(cardHeight)
+                },
+            ),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
         shape = cardShape,
     ) {
@@ -3061,6 +3061,7 @@ private fun GameGrid(
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
+                    tvProfile = tvProfile,
                     expressiveUi = settings.expressiveUi,
                     controllerBackgroundAnimations = settings.controllerBackgroundAnimations && !tvProfile,
                     showGameStoreLabels = settings.showGameStoreLabels,
@@ -3172,6 +3173,7 @@ private fun StoreGameGrid(
                 GameCard(
                     game = game,
                     favorite = game.id in favoriteIds,
+                    tvProfile = tvProfile,
                     expressiveUi = settings.expressiveUi,
                     controllerBackgroundAnimations = settings.controllerBackgroundAnimations && !tvProfile,
                     showGameStoreLabels = settings.showGameStoreLabels,
@@ -3241,11 +3243,12 @@ private fun StoreStartRails(
             )
         }
         if (comingNext.isNotEmpty()) {
-            StoreComingNextCarousel(
+            StoreRailSection(
                 title = stringResource(R.string.store_coming_next),
                 games = comingNext,
                 favoriteIds = favoriteIds,
                 settings = performanceSettings,
+                tvProfile = tvProfile,
                 controllerActionMode = controllerActionMode,
                 onSelect = onSelect,
                 onFavorite = onFavorite,
@@ -3263,6 +3266,7 @@ private fun StoreComingNextCarousel(
     games: List<GameInfo>,
     favoriteIds: List<String>,
     settings: AppSettings,
+    tvProfile: Boolean,
     controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
@@ -3351,6 +3355,11 @@ private fun StoreComingNextCarousel(
                                 page = (page + 1) % games.size
                                 true
                             }
+                            !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                                event = event,
+                                onFavorite = { onFavorite(featured.id) },
+                                onPlay = { onPlay(featured) },
+                            ) -> true
                             isTvActivateKey(event) -> {
                                 onSelect(featured)
                                 true
@@ -3405,6 +3414,20 @@ private fun StoreComingNextCarousel(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                    if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                        ThumbnailPlayButton(
+                            onClick = { onPlay(featured) },
+                            onLongClick = { onChooseStore(featured) },
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                            buttonSize = 50.dp,
+                        )
+                        FavoriteIconButton(
+                            favorite = featured.id in favoriteIds,
+                            onClick = { onFavorite(featured.id) },
+                            modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
+                            size = 38.dp,
+                        )
+                    }
                     ControllerFocusSheen(
                         visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
                         cornerRadius = if (settings.expressiveUi) 24.dp else 16.dp,
@@ -3429,7 +3452,6 @@ private fun StoreRailSection(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val cardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             title,
@@ -3439,23 +3461,36 @@ private fun StoreRailSection(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(horizontal = 2.dp),
-        ) {
-            items(games, key = { storeRailGameKey(it) }) { game ->
-                StoreRailGameCard(
-                    game = game,
-                    favorite = game.id in favoriteIds,
-                    expressiveUi = settings.expressiveUi,
-                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
-                    width = cardWidth,
-                    controllerActionMode = controllerActionMode,
-                    onSelect = onSelect,
-                    onFavorite = onFavorite,
-                    onPlay = onPlay,
-                    onChooseStore = onChooseStore,
-                )
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val spacing = 10.dp
+            val baseCardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
+            val visibleCount = if (tvProfile) {
+                (((maxWidth.value + spacing.value) / (baseCardWidth.value + spacing.value)).toInt()).coerceAtLeast(1)
+            } else {
+                if (landscapeLayout) 5 else 3
+            }
+            val cardWidth = ((maxWidth.value - spacing.value * (visibleCount - 1) - 4.dp.value) / visibleCount)
+                .coerceAtLeast(1f)
+                .dp
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(spacing),
+                contentPadding = PaddingValues(horizontal = 2.dp),
+            ) {
+                items(games, key = { storeRailGameKey(it) }) { game ->
+                    StoreRailGameCard(
+                        game = game,
+                        favorite = game.id in favoriteIds,
+                        tvProfile = tvProfile,
+                        expressiveUi = settings.expressiveUi,
+                        controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                        width = cardWidth,
+                        controllerActionMode = controllerActionMode,
+                        onSelect = onSelect,
+                        onFavorite = onFavorite,
+                        onPlay = onPlay,
+                        onChooseStore = onChooseStore,
+                    )
+                }
             }
         }
     }
@@ -3466,6 +3501,7 @@ private fun StoreRailSection(
 private fun StoreRailGameCard(
     game: GameInfo,
     favorite: Boolean,
+    tvProfile: Boolean,
     expressiveUi: Boolean,
     controllerBackgroundAnimations: Boolean,
     width: Dp,
@@ -3478,6 +3514,7 @@ private fun StoreRailGameCard(
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
+    val actionButtonSize = 34.dp
     val focusBorderColor = controllerFocusBorderColor(
         active = focused && controllerActionMode,
         animate = controllerBackgroundAnimations,
@@ -3485,7 +3522,7 @@ private fun StoreRailGameCard(
     Surface(
         modifier = Modifier
             .width(width)
-            .aspectRatio(1f)
+            .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .border(
                 width = if (focused) 3.dp else 1.dp,
@@ -3498,6 +3535,11 @@ private fun StoreRailGameCard(
             )
             .onPreviewKeyEvent { event ->
                 when {
+                    !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                        event = event,
+                        onFavorite = { onFavorite(game.id) },
+                        onPlay = { onPlay(game) },
+                    ) -> true
                     isTvActivateKey(event) -> {
                         onSelect(game)
                         true
@@ -3517,21 +3559,30 @@ private fun StoreRailGameCard(
         shadowElevation = if (focused) 8.dp else 1.dp,
     ) {
         Box(Modifier.fillMaxSize().clip(shape)) {
-            UrlImage(game.imageUrl, Modifier.fillMaxSize())
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(GameCardOverlayGradient),
-                contentAlignment = Alignment.BottomStart
-            ) {
-                Text(
-                    text = game.title,
-                    color = Color.White,
-                    fontWeight = FontWeight.ExtraBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+            UrlImage(
+                catalogCardImageUrl(game, tvProfile),
+                Modifier.fillMaxSize(),
+                contentScale = if (tvProfile) ContentScale.Crop else ContentScale.Fit,
+            )
+            if (shouldOverlayCatalogCardTitle(tvProfile)) {
+                GameCardTitleOverlay(game.title)
+            }
+            if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                ThumbnailPlayButton(
+                    onClick = { onPlay(game) },
+                    onLongClick = { onChooseStore(game) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp),
+                    buttonSize = actionButtonSize,
+                )
+                FavoriteIconButton(
+                    favorite = favorite,
+                    onClick = { onFavorite(game.id) },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp),
+                    size = actionButtonSize,
                 )
             }
             ControllerFocusSheen(
@@ -3597,6 +3648,7 @@ private fun storeRailGameKey(game: GameInfo): String =
     gameTrackingKey(game)
 
 private const val STORE_RAIL_GAME_LIMIT = 14
+private const val GAME_BOX_ART_ASPECT_RATIO = 628f / 888f
 
 private data class GameGridSpec(
     val columns: Int,
@@ -3681,6 +3733,23 @@ private fun gameGridSpec(
     val landscapeHorizontalSpacing = if (handheldLayout) 10.dp else compactHorizontalSpacing
     val landscapeContentHorizontalPadding = 4.dp
     return when {
+        handheldLayout -> GameGridSpec(
+            columns = if (landscapeLayout) {
+                landscapePosterColumnCount(
+                    maxWidth = maxWidth,
+                    horizontalSpacing = landscapeHorizontalSpacing,
+                    horizontalContentPadding = landscapeContentHorizontalPadding,
+                    handheldLayout = true,
+                )
+            } else {
+                3
+            },
+            cardHeight = if (compact) 188.dp else 214.dp,
+            horizontalSpacing = landscapeHorizontalSpacing,
+            verticalSpacing = if (landscapeLayout) 16.dp else compactVerticalSpacing,
+            contentPadding = PaddingValues(horizontal = landscapeContentHorizontalPadding, vertical = 4.dp),
+            squareCards = false,
+        )
         landscapeLayout -> GameGridSpec(
             columns = landscapePosterColumnCount(
                 maxWidth = maxWidth,
@@ -3692,7 +3761,7 @@ private fun gameGridSpec(
             horizontalSpacing = landscapeHorizontalSpacing,
             verticalSpacing = if (handheldLayout) 16.dp else compactVerticalSpacing,
             contentPadding = PaddingValues(horizontal = landscapeContentHorizontalPadding, vertical = 4.dp),
-            squareCards = handheldLayout,
+            squareCards = false,
         )
         compact -> GameGridSpec(
             columns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
@@ -3762,6 +3831,7 @@ private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp, minimumCo
 private fun GameCard(
     game: GameInfo,
     favorite: Boolean,
+    tvProfile: Boolean,
     expressiveUi: Boolean,
     controllerBackgroundAnimations: Boolean,
     showGameStoreLabels: Boolean,
@@ -3777,6 +3847,10 @@ private fun GameCard(
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val cardShape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
+    val handheldPosterCard = !tvProfile
+    val launcherTile = handheldPosterCard && thumbnailPlayOverlay
+    val overlayActionSize = if (launcherTile) 34.dp else 44.dp
+    val overlayActionPadding = if (launcherTile) 6.dp else 8.dp
     val focusBorderColor = controllerFocusBorderColor(
         active = focused && controllerActionMode,
         animate = controllerBackgroundAnimations,
@@ -3784,7 +3858,13 @@ private fun GameCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (squareCard) Modifier.aspectRatio(1f) else Modifier.height(cardHeight))
+            .then(
+                when {
+                    handheldPosterCard -> Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO)
+                    squareCard -> Modifier.aspectRatio(1f)
+                    else -> Modifier.height(cardHeight)
+                },
+            )
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .border(
                 width = if (focused) 3.dp else 1.dp,
@@ -3797,6 +3877,11 @@ private fun GameCard(
             )
             .onPreviewKeyEvent { event ->
                 when {
+                    !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                        event = event,
+                        onFavorite = { onFavorite(game.id) },
+                        onPlay = { onPlay(game) },
+                    ) -> true
                     isTvActivateKey(event) -> {
                         onSelect(game)
                         true
@@ -3816,21 +3901,30 @@ private fun GameCard(
                 .weight(1f)
                 .clickable { onSelect(game) },
         ) {
-            UrlImage(game.imageUrl, Modifier.fillMaxSize())
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(GameCardOverlayGradient),
-                contentAlignment = Alignment.BottomStart
-            ) {
-                Text(
-                    text = game.title,
-                    color = Color.White,
-                    fontWeight = FontWeight.ExtraBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+            UrlImage(
+                catalogCardImageUrl(game, tvProfile),
+                Modifier.fillMaxSize(),
+                contentScale = if (handheldPosterCard) ContentScale.Fit else ContentScale.Crop,
+            )
+            if (shouldOverlayCatalogCardTitle(tvProfile)) {
+                GameCardTitleOverlay(game.title)
+            }
+            if (thumbnailPlayOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                FavoriteIconButton(
+                    favorite = favorite,
+                    onClick = { onFavorite(game.id) },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(overlayActionPadding),
+                    size = overlayActionSize,
+                )
+                ThumbnailPlayButton(
+                    onClick = { onPlay(game) },
+                    onLongClick = { onChooseStore(game) },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(overlayActionPadding),
+                    buttonSize = overlayActionSize,
                 )
             }
             ControllerFocusSheen(
@@ -3850,6 +3944,43 @@ private fun GameCard(
                 }
             }
         }
+    }
+}
+
+internal fun catalogCardImageUrl(game: GameInfo, tvProfile: Boolean): String? {
+    val source = if (tvProfile) {
+        game.tvCardImageUrl?.takeIf { it.isNotBlank() }
+            ?: game.imageUrl?.takeIf { it.isNotBlank() }
+    } else {
+        game.imageUrl
+            ?.takeIf { it.isNotBlank() }
+            ?.takeIf { !it.contains("img.nvidiagrid.net") || it.contains("/GAME_BOX_ART_") }
+    } ?: return null
+    return if (tvProfile) optimizedNvidiaImageUrl(source, 272) else source
+}
+
+internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = tvProfile
+
+internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
+    !tvProfile && !controllerActionMode
+
+@Composable
+private fun GameCardTitleOverlay(title: String) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(GameCardOverlayGradient),
+        contentAlignment = Alignment.BottomStart,
+    ) {
+        Text(
+            text = title,
+            color = Color.White,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        )
     }
 }
 
@@ -4297,6 +4428,7 @@ private fun GameDetailsCompactInfoContent(
 ) {
     OwnershipStatusRow(game = game, compact = true)
     GameGenreChips(game = game, compact = true)
+    GameScreenshotGallery(game = game, compact = true)
     GameDescriptionDisclosure(description = description, compact = true)
     CompactDetailRows(game)
     LaunchOptionsList(
@@ -4366,6 +4498,7 @@ private fun GameDetailsScrollableContent(
                     val description = gameDescriptionForDetails(game)
                     OwnershipStatusRow(game = game, compact = false)
                     GameGenreChips(game = game, compact = false)
+                    GameScreenshotGallery(game = game, compact = false)
                     GameDescriptionDisclosure(description = description, compact = false)
                     DetailRows(game)
                     LaunchOptionsList(
@@ -4773,6 +4906,50 @@ private fun GameGenreChips(game: GameInfo, compact: Boolean) {
     ) {
         items(genres, key = { it }) { label ->
             AssistChip(onClick = {}, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+        }
+    }
+}
+
+@Composable
+private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
+    val screenshots = game.screenshotUrls
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .distinct()
+    if (screenshots.isEmpty()) return
+    val context = LocalContext.current
+    val requestWidth = remember(context) { wideImageRequestWidth(context).coerceAtLeast(960) }
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 7.dp else 9.dp),
+    ) {
+        Text(
+            "Screenshots",
+            color = TextPrimary,
+            style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp),
+            contentPadding = PaddingValues(end = 8.dp),
+        ) {
+            items(screenshots, key = { it }) { screenshot ->
+                Surface(
+                    modifier = Modifier
+                        .width(if (compact) 224.dp else 288.dp)
+                        .aspectRatio(16f / 9f),
+                    shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
+                    color = Color.Black,
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                ) {
+                    UrlImage(
+                        url = optimizedNvidiaImageUrl(screenshot, requestWidth),
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                }
+            }
         }
     }
 }
@@ -5241,6 +5418,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val session = state.streamSession
     val game = state.streamGame
     var streamState by remember { mutableStateOf("Preparing") }
+    var initialVideoFrameRendered by remember(session?.sessionId) { mutableStateOf(false) }
+    val markInitialVideoFrameRendered by rememberUpdatedState<() -> Unit> {
+        initialVideoFrameRendered = true
+    }
     var controlsOpen by remember { mutableStateOf(false) }
     var exitConfirmOpen by remember { mutableStateOf(false) }
     var keyboardOpen by remember { mutableStateOf(false) }
@@ -5355,6 +5536,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             onSessionRecoveryRequired = {
                 streamState = it
                 viewModel.recoverStreamSession(it)
+            },
+            onFirstVideoFrameRendered = {
+                markInitialVideoFrameRendered()
             },
             onStats = {
                 streamStats = it
@@ -5583,6 +5767,17 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         viewModel.updateSettings(state.settings.copy(androidTouch = touch))
                     },
                     modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
+            AnimatedVisibility(
+                visible = !initialVideoFrameRendered,
+                enter = fadeIn(animationSpec = tween(180)) + scaleIn(initialScale = 0.96f),
+                exit = fadeOut(animationSpec = tween(180)) + scaleOut(targetScale = 0.98f),
+                modifier = Modifier.align(Alignment.Center),
+            ) {
+                InitialStreamConnectionOverlay(
+                    gameTitle = game?.title,
+                    status = initialStreamConnectionStatus(streamState),
                 )
             }
             if (touchLayoutEditing) {
@@ -7682,6 +7877,144 @@ private fun shouldHideStreamStatusText(status: String): Boolean =
             it.equals("ICE CONNECTED", ignoreCase = true) ||
             it.equals("ICE COMPLETED", ignoreCase = true)
     }
+
+internal data class InitialStreamConnectionStatus(
+    val phase: String,
+    val title: String,
+    val detail: String,
+)
+
+internal fun initialStreamConnectionStatus(nativeState: String): InitialStreamConnectionStatus {
+    val normalized = nativeState.trim().replace('_', ' ')
+    return when {
+        normalized.equals("Preparing", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Preparing",
+            title = "Preparing your stream",
+            detail = "Getting the secure video connection ready.",
+        )
+        normalized.startsWith("Connecting signaling", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Connecting",
+            title = "Connecting to your game",
+            detail = "Opening a secure connection to the streaming server.",
+        )
+        normalized.startsWith("Waiting for offer", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Waiting for video",
+            title = "Starting the video stream",
+            detail = "The server is preparing the first video frame.",
+        )
+        normalized.equals("ICE CHECKING", ignoreCase = true) ||
+            normalized.equals("ICE NEW", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Securing connection",
+            title = "Almost ready",
+            detail = "Checking the best route for the live video stream.",
+        )
+        normalized.equals("ICE DISCONNECTED", ignoreCase = true) ||
+            normalized.equals("ICE FAILED", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Retrying",
+            title = "Connection interrupted",
+            detail = "OpenNOW is retrying the initial stream connection.",
+        )
+        normalized.startsWith("Recovering video", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Recovering video",
+            title = "Waiting for a clear frame",
+            detail = "Requesting a fresh video frame before showing the stream.",
+        )
+        normalized.contains("safe H264 profile", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Optimizing video",
+            title = "Trying a compatible video mode",
+            detail = "Restarting the initial video connection with safer settings.",
+        )
+        normalized.startsWith("Reconnecting", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Retrying connection",
+            title = "Connecting again",
+            detail = "The initial connection did not finish, so OpenNOW is retrying it.",
+        )
+        normalized.startsWith("Recovering cloud session", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Checking session",
+            title = "Restoring your game session",
+            detail = "Checking the existing cloud session before continuing.",
+        )
+        normalized.equals("Streaming", ignoreCase = true) -> InitialStreamConnectionStatus(
+            phase = "Starting video",
+            title = "Connection established",
+            detail = "Waiting for the first video frame to appear.",
+        )
+        else -> InitialStreamConnectionStatus(
+            phase = "Starting stream",
+            title = "Preparing your game",
+            detail = "OpenNOW is waiting for the live video to begin.",
+        )
+    }
+}
+
+@Composable
+private fun InitialStreamConnectionOverlay(
+    gameTitle: String?,
+    status: InitialStreamConnectionStatus,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(
+        modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.18f))
+            .padding(24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        val cardWidthFraction = if (maxWidth > maxHeight) 0.54f else 0.9f
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(cardWidthFraction)
+                .widthIn(max = 560.dp),
+            shape = RoundedCornerShape(22.dp),
+            color = Panel.copy(alpha = 0.96f),
+            contentColor = TextPrimary,
+            tonalElevation = 10.dp,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 22.dp, vertical = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .semantics { contentDescription = status.phase },
+                    strokeWidth = 3.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Column(
+                    Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(
+                        gameTitle?.takeIf { it.isNotBlank() } ?: "OpenNOW stream",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        status.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        status.detail,
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        status.phase,
+                        color = TextMuted.copy(alpha = 0.78f),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun StreamExitConfirmation(
@@ -10687,7 +11020,12 @@ private fun imageDataForSource(source: String): Any? {
 }
 
 @Composable
-internal fun UrlImage(url: String?, modifier: Modifier = Modifier, fallbackUrl: String? = null) {
+internal fun UrlImage(
+    url: String?,
+    modifier: Modifier = Modifier,
+    fallbackUrl: String? = null,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
     val source = url?.trim().orEmpty()
     val fallbackSource = fallbackUrl?.trim()?.takeIf { it.isNotBlank() && it != source }
     var activeSource by remember(source, fallbackSource) {
@@ -10716,7 +11054,7 @@ internal fun UrlImage(url: String?, modifier: Modifier = Modifier, fallbackUrl: 
                     model = imageData,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
+                    contentScale = contentScale,
                     onLoading = { imageState = UrlImageState.Loading },
                     onSuccess = { imageState = UrlImageState.Loaded },
                     onError = {

@@ -6,7 +6,7 @@ import org.junit.Test
 
 class StreamLivenessWatchdogTest {
     @Test
-    fun tvRecoveryIsFasterWhileMobileThresholdsStayUnchanged() {
+    fun usesPlatformSpecificRecoveryThresholds() {
         val tv = streamRecoveryTiming(androidTvProfile = true)
         val mobile = streamRecoveryTiming(androidTvProfile = false)
 
@@ -15,7 +15,7 @@ class StreamLivenessWatchdogTest {
         assertEquals(8_000L, tv.restartAfterMs)
         assertEquals(5_000L, mobile.keyframeAfterMs)
         assertEquals(2_500L, mobile.keyframeIntervalMs)
-        assertEquals(14_000L, mobile.restartAfterMs)
+        assertEquals(10_000L, mobile.restartAfterMs)
     }
 
     @Test
@@ -87,5 +87,24 @@ class StreamLivenessWatchdogTest {
         assertEquals(StreamLivenessAction.None, watchdog.observe(900L, bytesReceived = 10L, framesDecoded = null, connected = true))
         assertEquals(StreamLivenessAction.None, watchdog.observe(1_700L, bytesReceived = 20L, framesDecoded = null, connected = true))
         assertEquals(StreamLivenessAction.None, watchdog.observe(2_500L, bytesReceived = 30L, framesDecoded = null, connected = true))
+    }
+
+    @Test
+    fun reportsMediaProgressSeparatelyFromTransportConnectivity() {
+        val watchdog = StreamLivenessWatchdog(
+            keyframeAfterMs = 1_000L,
+            keyframeIntervalMs = 500L,
+            restartAfterMs = 3_000L,
+        )
+
+        watchdog.markConnected(0L)
+        watchdog.observe(100L, bytesReceived = 10L, framesDecoded = 0L, connected = true)
+        assertEquals(false, watchdog.latestObservationProgressed)
+
+        watchdog.observe(200L, bytesReceived = 20L, framesDecoded = 1L, connected = true)
+        assertEquals(true, watchdog.latestObservationProgressed)
+
+        watchdog.observe(300L, bytesReceived = 30L, framesDecoded = 1L, connected = true)
+        assertEquals(false, watchdog.latestObservationProgressed)
     }
 }

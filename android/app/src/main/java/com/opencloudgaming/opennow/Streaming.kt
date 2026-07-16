@@ -1776,6 +1776,8 @@ internal class StreamLivenessWatchdog(
     private var lastFramesDecoded: Long? = null
     private var lastKeyframeRequestAtMs = Long.MIN_VALUE
     private var keyframeAttempts = 0
+    var latestObservationProgressed: Boolean = false
+        private set
 
     fun reset() {
         lastProgressAtMs = null
@@ -1783,6 +1785,7 @@ internal class StreamLivenessWatchdog(
         lastFramesDecoded = null
         lastKeyframeRequestAtMs = Long.MIN_VALUE
         keyframeAttempts = 0
+        latestObservationProgressed = false
     }
 
     fun markConnected(nowMs: Long) {
@@ -1792,6 +1795,7 @@ internal class StreamLivenessWatchdog(
     }
 
     fun observe(nowMs: Long, bytesReceived: Long?, framesDecoded: Long?, connected: Boolean): StreamLivenessAction {
+        latestObservationProgressed = false
         if (!connected) {
             reset()
             return StreamLivenessAction.None
@@ -1805,6 +1809,7 @@ internal class StreamLivenessWatchdog(
         if (bytesReceived != null) lastBytesReceived = bytesReceived
         if (framesDecoded != null) lastFramesDecoded = framesDecoded
         if (progressed) {
+            latestObservationProgressed = true
             lastProgressAtMs = nowMs
             lastKeyframeRequestAtMs = Long.MIN_VALUE
             keyframeAttempts = 0
@@ -2196,6 +2201,7 @@ class NativeStreamClient(
     private val onError: (String) -> Unit,
     private val onSafeVideoFallbackApplied: (String) -> Unit = {},
     private val onSessionRecoveryRequired: (String) -> Unit = {},
+    private val onFirstVideoFrameRendered: () -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
     private val onControllerMouseAssistChanged: (Boolean) -> Unit = {},
 ) {
@@ -2237,7 +2243,8 @@ class NativeStreamClient(
     private var transportGeneration = 0
     private var reconnectAttempts = 0
     private var videoSafeFallbackApplied = false
-    private var sessionHasRenderedFrame = false
+    private var transportHasStableMedia = false
+    private var consecutiveTransportProgressSamples = 0
     private var sessionRecoveryRequested = false
     private var lastIceState: PeerConnection.IceConnectionState? = null
     private var audioMuted = false
@@ -2351,8 +2358,8 @@ class NativeStreamClient(
             val rendererEvents = object : RendererCommon.RendererEvents {
                 override fun onFirstFrameRendered() {
                     firstVideoFrameWatchdog.markRendered()
-                    sessionHasRenderedFrame = true
                     NativeInputDiagnostics.add("video renderer first frame codec=${this@NativeStreamClient.settings.codec}")
+                    scope.launch { onFirstVideoFrameRendered() }
                 }
 
                 override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
@@ -2985,6 +2992,9 @@ class NativeStreamClient(
         inputDropLogged = false
         lastIceState = null
         lastStatsSample = null
+        transportHasStableMedia = false
+        consecutiveTransportProgressSamples = 0
+        firstVideoFrameWatchdog.reset()
         emitStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
         recordStreamDiagnostic(
@@ -3334,8 +3344,15 @@ class NativeStreamClient(
                 -> {
                     iceRecoveryJob?.cancel()
                     iceRecoveryJob = null
-                    reconnectAttempts = 0
                     livenessWatchdog.markConnected(SystemClock.elapsedRealtime())
+                    if (reconnectAttempts > 0) {
+                        signaling?.requestKeyframe(
+                            reason = "transport_reconnect",
+                            backlogFrames = 0,
+                            attempt = reconnectAttempts,
+                        )
+                        recordStreamDiagnostic("reconnect keyframe requested attempt=$reconnectAttempts generation=$generation")
+                    }
                     emitState("Streaming")
                 }
                 PeerConnection.IceConnectionState.DISCONNECTED -> {
@@ -3374,7 +3391,7 @@ class NativeStreamClient(
         val currentSettings = settings
         if (
             reconnectAttempts >= 1 &&
-            !sessionHasRenderedFrame &&
+            !transportHasStableMedia &&
             requestSafeVideoFallback(
                 message = "$reason. Restarting the local transport with safe H264 profile.",
                 diagnosticReason = "transport reconnect",
@@ -3700,12 +3717,19 @@ class NativeStreamClient(
     private fun handleMediaLiveness(snapshot: RuntimeStatsSnapshot) {
         val connected = lastIceState == PeerConnection.IceConnectionState.CONNECTED ||
             lastIceState == PeerConnection.IceConnectionState.COMPLETED
+        val action = livenessWatchdog.observe(
+            SystemClock.elapsedRealtime(),
+            snapshot.bytesReceived,
+            snapshot.framesDecoded,
+            connected,
+        )
+        updateTransportRecoveryProgress(livenessWatchdog.latestObservationProgressed)
         if (
             rendererSinkAttached &&
             firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
         ) {
             if (
-                !sessionHasRenderedFrame &&
+                !transportHasStableMedia &&
                 requestSafeVideoFallback(
                     message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",
                     diagnosticReason = "first frame timeout",
@@ -3715,7 +3739,7 @@ class NativeStreamClient(
                 return
             }
         }
-        when (val action = livenessWatchdog.observe(SystemClock.elapsedRealtime(), snapshot.bytesReceived, snapshot.framesDecoded, connected)) {
+        when (action) {
             StreamLivenessAction.None -> Unit
             is StreamLivenessAction.RequestKeyframe -> {
                 signaling?.requestKeyframe(
@@ -3728,7 +3752,7 @@ class NativeStreamClient(
             }
             is StreamLivenessAction.RestartTransport -> {
                 if (
-                    !sessionHasRenderedFrame &&
+                    !transportHasStableMedia &&
                     requestSafeVideoFallback(
                         message = "Decoder stalled; restarting with safe H264 profile",
                         diagnosticReason = "media stall",
@@ -3740,6 +3764,24 @@ class NativeStreamClient(
                 restartTransport("Media stalled for ${action.stalledMs / 1000}s")
             }
         }
+    }
+
+    private fun updateTransportRecoveryProgress(progressed: Boolean) {
+        if (!progressed) {
+            consecutiveTransportProgressSamples = 0
+            return
+        }
+        firstVideoFrameWatchdog.markRendered()
+        consecutiveTransportProgressSamples += 1
+        if (consecutiveTransportProgressSamples < STABLE_TRANSPORT_PROGRESS_SAMPLES) return
+
+        if (!transportHasStableMedia && reconnectAttempts > 0) {
+            recordStreamDiagnostic(
+                "transport media stable; reconnect budget reset attempts=$reconnectAttempts generation=$transportGeneration",
+            )
+        }
+        transportHasStableMedia = true
+        reconnectAttempts = 0
     }
 
     private fun requestSafeVideoFallback(
@@ -5321,11 +5363,12 @@ private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 3
 private const val OFFER_TIMEOUT_MS = 12_000L
 private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
 private const val MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
-private const val MEDIA_STALL_RESTART_AFTER_MS = 14_000L
+private const val MEDIA_STALL_RESTART_AFTER_MS = 10_000L
 private const val TV_MEDIA_STALL_KEYFRAME_AFTER_MS = 3_000L
 private const val TV_MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_000L
 private const val TV_MEDIA_STALL_RESTART_AFTER_MS = 8_000L
 private const val FIRST_VIDEO_FRAME_TIMEOUT_MS = 8_000L
+private const val STABLE_TRANSPORT_PROGRESS_SAMPLES = 3
 private const val GAMEPAD_GUIDE_AUTO_RELEASE_MS = 160L
 private const val STEAM_MENU_MODIFIER_DELAY_MS = 40L
 private const val STREAM_TEXT_SEND_MAX_CHARS = 4096

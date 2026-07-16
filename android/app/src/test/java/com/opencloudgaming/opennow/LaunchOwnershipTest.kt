@@ -89,14 +89,24 @@ class LaunchOwnershipTest {
         )
         val metadataGame = game(
             variants = listOf(variant(id = "steam", store = "Steam")),
-        ).copy(description = "Enriched description")
+        ).copy(
+            description = "Enriched description",
+            imageUrl = "game-box-art",
+            screenshotUrls = listOf("screenshot-one", "screenshot-two"),
+        )
+        val panelWithFallbackArtwork = panelGame.copy(
+            imageUrl = "panel-banner-fallback",
+            screenshotUrls = listOf("screenshot-one"),
+        )
 
-        val merged = mergePanelGameWithMetadata(panelGame, metadataGame)
+        val merged = mergePanelGameWithMetadata(panelWithFallbackArtwork, metadataGame)
 
         assertTrue(merged.isInLibrary)
         assertEquals("MANUAL", merged.variants.single().libraryStatus)
         assertEquals(true, merged.variants.single().librarySelected)
         assertEquals("Enriched description", merged.description)
+        assertEquals("game-box-art", merged.imageUrl)
+        assertEquals(listOf("screenshot-one", "screenshot-two"), merged.screenshotUrls)
     }
 
     @Test

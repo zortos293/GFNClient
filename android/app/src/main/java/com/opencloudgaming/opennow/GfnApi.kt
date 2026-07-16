@@ -1318,6 +1318,27 @@ class GfnAuthRepository(
     }
 }
 
+internal data class CatalogCardArtwork(
+    val mobileImageUrl: String?,
+    val tvImageUrl: String?,
+)
+
+internal fun catalogCardArtwork(
+    keyArt: String?,
+    gameBoxArt: String?,
+    heroImage: String?,
+    tvBanner: String?,
+): CatalogCardArtwork = CatalogCardArtwork(
+    mobileImageUrl = gameBoxArt?.takeIf { it.isNotBlank() },
+    tvImageUrl = listOf(gameBoxArt, keyArt, heroImage, tvBanner).firstOrNull { !it.isNullOrBlank() },
+)
+
+internal fun catalogScreenshotUrls(images: JsonObject?): List<String> =
+    images?.arr("SCREENSHOTS")
+        ?.mapNotNull { it.asString()?.trim()?.takeIf(String::isNotBlank) }
+        ?.distinct()
+        .orEmpty()
+
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
 ) {
@@ -1440,12 +1461,14 @@ class GfnCatalogRepository(
                 val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: title
                 val steamAppId = obj.string("steamUrl")?.substringAfter("/app/", "")?.substringBefore("/")
                 val store = obj.string("store") ?: if (obj.string("publisher")?.contains("ncsoft", true) == true) "NCSoft" else "Unknown"
+                val posterUrl = steamAppId?.takeIf { it.isNotBlank() }?.let { "https://cdn.cloudflare.steamstatic.com/steam/apps/$it/library_600x900.jpg" }
                 GameInfo(
                     id = id,
                     uuid = id,
                     launchAppId = id.takeIf { it.all(Char::isDigit) },
                     title = title,
-                    imageUrl = steamAppId?.takeIf { it.isNotBlank() }?.let { "https://cdn.cloudflare.steamstatic.com/steam/apps/$it/library_600x900.jpg" },
+                    imageUrl = posterUrl,
+                    tvCardImageUrl = posterUrl,
                     screenshotUrl = steamAppId?.takeIf { it.isNotBlank() }?.let { "https://cdn.cloudflare.steamstatic.com/steam/apps/$it/library_hero.jpg" },
                     tvBannerUrl = steamAppId?.takeIf { it.isNotBlank() }?.let { "https://cdn.cloudflare.steamstatic.com/steam/apps/$it/library_hero.jpg" },
                     searchText = listOf(title, store, obj.string("publisher")).filterNotNull().joinToString(" ").lowercase(),
@@ -1597,11 +1620,15 @@ class GfnCatalogRepository(
             ?.string("id")
         val selectedIndex = max(0, variants.indexOfFirst { it.id == (selectedVariantId ?: numericAppId) })
         val images = app.obj("images")
-        val imageUrl = listOf("GAME_BOX_ART", "KEY_ART", "HERO_IMAGE", "TV_BANNER")
-            .firstNotNullOfOrNull { images?.string(it) }
-            ?.let(::optimizeImage)
+        val cardArtwork = catalogCardArtwork(
+            keyArt = images?.string("KEY_ART"),
+            gameBoxArt = images?.string("GAME_BOX_ART"),
+            heroImage = images?.string("HERO_IMAGE"),
+            tvBanner = images?.string("TV_BANNER"),
+        )
         val screenshotUrl = listOf("HERO_IMAGE", "TV_BANNER", "KEY_ART", "GAME_BOX_ART")
             .firstNotNullOfOrNull { images?.string(it) }
+        val screenshotUrls = catalogScreenshotUrls(images)
         val tvBannerUrl = listOf("TV_BANNER", "HERO_IMAGE", "KEY_ART", "GAME_BOX_ART")
             .firstNotNullOfOrNull { images?.string(it) }
         val genres = extractLabels(app.arr("genres"))
@@ -1617,8 +1644,10 @@ class GfnCatalogRepository(
             longDescription = app.string("longDescription"),
             featureLabels = featureLabels,
             genres = genres,
-            imageUrl = imageUrl,
+            imageUrl = cardArtwork.mobileImageUrl,
+            tvCardImageUrl = cardArtwork.tvImageUrl,
             screenshotUrl = screenshotUrl,
+            screenshotUrls = screenshotUrls,
             tvBannerUrl = tvBannerUrl,
             playType = app.obj("gfn")?.string("playType"),
             membershipTierLabel = app.obj("gfn")?.string("minimumMembershipTierLabel"),
@@ -1704,7 +1733,7 @@ class GfnCatalogRepository(
             items {
               id
               title
-              images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE }
+              images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
               variants { id appStore supportedControls gfn { status library { status selected } } }
               gfn { playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
               itemMetadata { campaignIds }
@@ -1742,7 +1771,9 @@ class GfnCatalogRepository(
                     description = left.description ?: right.description,
                     longDescription = left.longDescription ?: right.longDescription,
                     imageUrl = left.imageUrl ?: right.imageUrl,
+                    tvCardImageUrl = left.tvCardImageUrl ?: right.tvCardImageUrl,
                     screenshotUrl = left.screenshotUrl ?: right.screenshotUrl,
+                    screenshotUrls = (left.screenshotUrls + right.screenshotUrls).distinct(),
                     tvBannerUrl = left.tvBannerUrl ?: right.tvBannerUrl,
                     variants = variants,
                     availableStores = displayStoresForVariants(variants),
@@ -1764,7 +1795,9 @@ class GfnCatalogRepository(
             if (supplemental.isEmpty()) game else game.copy(
                 launchAppId = game.launchAppId ?: publicGame.launchAppId,
                 imageUrl = game.imageUrl ?: publicGame.imageUrl,
+                tvCardImageUrl = game.tvCardImageUrl ?: publicGame.tvCardImageUrl,
                 screenshotUrl = game.screenshotUrl ?: publicGame.screenshotUrl,
+                screenshotUrls = (game.screenshotUrls + publicGame.screenshotUrls).distinct(),
                 tvBannerUrl = game.tvBannerUrl ?: publicGame.tvBannerUrl,
                 variants = game.variants + supplemental,
                 availableStores = displayStoresForVariants(game.variants + supplemental),
@@ -1772,9 +1805,6 @@ class GfnCatalogRepository(
             )
         }
     }
-
-    private fun optimizeImage(url: String): String =
-        if (url.contains("img.nvidiagrid.net")) "$url;f=webp;w=272" else url
 
     private fun GameInfo.matchesSearch(query: String): Boolean {
         val normalized = query.trim().lowercase()

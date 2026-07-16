@@ -12,7 +12,6 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.util.Rational
-import android.graphics.Color
 import android.view.Display
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -20,24 +19,21 @@ import android.view.MotionEvent
 import android.view.PointerIcon
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private lateinit var viewModel: OpenNowViewModel
-    private var pendingLaunchIntent: Intent? = null
+    private val viewModel: OpenNowViewModel by viewModels()
     private val queueStatusNotifier by lazy { AndroidQueueStatusNotifier(this) }
     private val streamKeepAliveNotifier by lazy { AndroidStreamKeepAliveNotifier(this) }
     private var notificationPermissionRequested = false
@@ -58,35 +54,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         defaultRequestedOrientation = requestedOrientation
         volumeControlStream = AudioManager.STREAM_MUSIC
-        showNativeStartupFrame()
-        val decor = window.decorView
-        val firstDrawListener = object : ViewTreeObserver.OnDrawListener {
-            private var scheduled = false
-
-            override fun onDraw() {
-                if (scheduled) return
-                scheduled = true
-                decor.post {
-                    if (decor.viewTreeObserver.isAlive) {
-                        decor.viewTreeObserver.removeOnDrawListener(this)
-                    }
-                    initializeOpenNowUi()
-                }
-            }
-        }
-        decor.viewTreeObserver.addOnDrawListener(firstDrawListener)
-    }
-
-    private fun showNativeStartupFrame() {
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(9, 11, 13))
-        }
-        setContentView(root)
-    }
-
-    private fun initializeOpenNowUi() {
-        if (::viewModel.isInitialized || isFinishing || isDestroyed) return
-        viewModel = ViewModelProvider(this)[OpenNowViewModel::class.java]
         setContent {
             OpenNowApp(viewModel)
         }
@@ -109,26 +76,18 @@ class MainActivity : ComponentActivity() {
                 applyStreamDisplayRefreshRate(streamActive, state.activeStreamSettings?.fps ?: state.settings.stream.fps)
             }
         }
-        viewModel.handleExternalLaunchIntent(pendingLaunchIntent ?: intent)
-        pendingLaunchIntent = null
+        viewModel.handleExternalLaunchIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (::viewModel.isInitialized) {
-            viewModel.handleExternalLaunchIntent(intent)
-        } else {
-            pendingLaunchIntent = intent
-        }
+        viewModel.handleExternalLaunchIntent(intent)
     }
 
     override fun onResume() {
         super.onResume()
-        if (::viewModel.isInitialized) {
-            viewModel.refreshAuthSessionIfNeeded()
-            viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
-        }
+        viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
         if (streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
             applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
@@ -153,7 +112,6 @@ class MainActivity : ComponentActivity() {
             return dispatchSyntheticStreamUiKey(normalizedStreamUiKeyCode, event)
         }
         if (NativeStreamInputRouter.isControllerAppBackKey(event)) {
-            if (!::viewModel.isInitialized) return super.dispatchKeyEvent(event)
             if (event.action == KeyEvent.ACTION_UP) {
                 viewModel.handleControllerBackNavigation()
             }
@@ -173,9 +131,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        if (::viewModel.isInitialized) {
-            viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
-        }
+        viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
     }
 
     private fun KeyEvent.isAndroidVolumeKey(): Boolean =
@@ -193,31 +149,35 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        val decorView = window?.decorView
-        if (decorView != null && NativeStreamInputRouter.dispatchExternalMouseTouch(event, decorView.width, decorView.height)) return true
-        if (decorView != null && NativeStreamInputRouter.shouldForwardTouchBeforeViews(event, decorView.width, decorView.height)) {
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                NativeInputDiagnostics.add("activity touch forwardBeforeViews size=${decorView.width}x${decorView.height}")
+        try {
+            val decorView = window?.decorView
+            if (decorView != null && NativeStreamInputRouter.dispatchExternalMouseTouch(event, decorView.width, decorView.height)) return true
+            if (decorView != null && NativeStreamInputRouter.shouldForwardTouchBeforeViews(event, decorView.width, decorView.height)) {
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    NativeInputDiagnostics.add("activity touch forwardBeforeViews size=${decorView.width}x${decorView.height}")
+                }
+                val forwarded = NativeStreamInputRouter.dispatchTouch(event, decorView.width, decorView.height)
+                if (NativeStreamInputRouter.shouldCaptureTouchBeforeViews(event, decorView.width, decorView.height) && forwarded) {
+                    return true
+                }
             }
-            val forwarded = NativeStreamInputRouter.dispatchTouch(event, decorView.width, decorView.height)
-            if (NativeStreamInputRouter.shouldCaptureTouchBeforeViews(event, decorView.width, decorView.height) && forwarded) {
+            val handled = super.dispatchTouchEvent(event)
+            if (handled) {
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    NativeInputDiagnostics.add("activity touch consumedByView action=${event.actionMasked}")
+                }
                 return true
             }
-        }
-        val handled = super.dispatchTouchEvent(event)
-        if (handled) {
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                NativeInputDiagnostics.add("activity touch consumedByView action=${event.actionMasked}")
+            return if (decorView != null) {
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    NativeInputDiagnostics.add("activity touch fallback size=${decorView.width}x${decorView.height}")
+                }
+                NativeStreamInputRouter.dispatchTouch(event, decorView.width, decorView.height)
+            } else {
+                false
             }
-            return true
-        }
-        return if (decorView != null) {
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                NativeInputDiagnostics.add("activity touch fallback size=${decorView.width}x${decorView.height}")
-            }
-            NativeStreamInputRouter.dispatchTouch(event, decorView.width, decorView.height)
-        } else {
-            false
+        } finally {
+            NativeStreamInputRouter.postDispatchTouch(event)
         }
     }
 
@@ -461,9 +421,7 @@ class MainActivity : ComponentActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 4210 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            if (::viewModel.isInitialized) {
-                queueStatusNotifier.update(viewModel.state.value)
-            }
+            queueStatusNotifier.update(viewModel.state.value)
         }
     }
 
@@ -480,18 +438,14 @@ class MainActivity : ComponentActivity() {
         if (event.actionMasked != MotionEvent.ACTION_MOVE) return false
         if ((event.source and InputDevice.SOURCE_JOYSTICK) != InputDevice.SOURCE_JOYSTICK) return false
 
-        val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
-        val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-        val navigationX = if (hatX <= -0.5f || hatX >= 0.5f) hatX else event.getAxisValue(MotionEvent.AXIS_X)
-        val navigationY = if (hatY <= -0.5f || hatY >= 0.5f) hatY else event.getAxisValue(MotionEvent.AXIS_Y)
         val nextX = when {
-            navigationX <= -0.65f -> KeyEvent.KEYCODE_DPAD_LEFT
-            navigationX >= 0.65f -> KeyEvent.KEYCODE_DPAD_RIGHT
+            event.getAxisValue(MotionEvent.AXIS_HAT_X) <= -0.5f -> KeyEvent.KEYCODE_DPAD_LEFT
+            event.getAxisValue(MotionEvent.AXIS_HAT_X) >= 0.5f -> KeyEvent.KEYCODE_DPAD_RIGHT
             else -> null
         }
         val nextY = when {
-            navigationY <= -0.65f -> KeyEvent.KEYCODE_DPAD_UP
-            navigationY >= 0.65f -> KeyEvent.KEYCODE_DPAD_DOWN
+            event.getAxisValue(MotionEvent.AXIS_HAT_Y) <= -0.5f -> KeyEvent.KEYCODE_DPAD_UP
+            event.getAxisValue(MotionEvent.AXIS_HAT_Y) >= 0.5f -> KeyEvent.KEYCODE_DPAD_DOWN
             else -> null
         }
 

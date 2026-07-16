@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 @Serializable
 enum class VideoCodec {
@@ -415,7 +416,7 @@ internal fun streamSettingsSessionSignature(settings: StreamSettings): String {
     ).joinToString(";")
 }
 
-private data class StreamResolutionOption(
+internal data class StreamResolutionOption(
     val value: String,
     val aspectRatio: String,
     val tier: String,
@@ -590,7 +591,7 @@ private fun customResolutionAllowedForPlan(
         pixels <= availableChoices.maxOf { it.width * it.height }
 }
 
-private val STREAM_RESOLUTION_OPTIONS = listOf(
+internal val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1280x720", "16:9", "720"),
     StreamResolutionOption("1366x768", "16:9", "768"),
     StreamResolutionOption("1600x900", "16:9", "900"),
@@ -1300,6 +1301,9 @@ data class CodecCapability(
     val webRtcHardwareDecoderAvailable: Boolean? = null,
     val webRtcDecoderName: String? = null,
     val webRtcCodecProfiles: List<String> = emptyList(),
+    val maxSupportedWidth: Int? = null,
+    val maxSupportedHeight: Int? = null,
+    val maxFpsByResolution: Map<String, Int> = emptyMap(),
 )
 
 data class RuntimeCodecReport(
@@ -1365,7 +1369,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
             fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
             hdrEnabled = false,
             enableCloudGsync = false,
-        ).cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT)
+        ).cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT, strict = false)
             .withStableAndroidCloudMatchProfile()
             .withoutAndroidTvSharpening(report)
     }
@@ -1383,7 +1387,11 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     }
 
     val adjusted = (if (effectiveCodec == codec) this else copy(codec = effectiveCodec)).withCodecColorCompatibility()
-    return when (effectiveCodec) {
+    val effectiveCapability = report?.capabilities?.firstOrNull { it.codec == effectiveCodec }
+    val maxWidth = effectiveCapability?.maxSupportedWidth
+    val maxHeight = effectiveCapability?.maxSupportedHeight
+
+    val capped = when (effectiveCodec) {
         VideoCodec.H264 -> adjusted.copy(colorQuality = ColorQuality.EightBit420, maxBitrateMbps = minOf(adjusted.maxBitrateMbps, profileBitrateCap))
         VideoCodec.H265,
         VideoCodec.AV1 -> adjusted.copy(
@@ -1392,6 +1400,15 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         )
     }.withStableAndroidCloudMatchProfile()
         .withoutAndroidTvSharpening(report)
+
+    val capabilityCap = if (maxWidth != null && maxHeight != null) {
+        capped.cappedResolution(maxWidth, maxHeight, strict = false)
+    } else {
+        capped
+    }
+
+    val maxSupportedFps = effectiveCapability?.maxFpsByResolution?.get(capabilityCap.resolution) ?: 360
+    return capabilityCap.copy(fps = minOf(capabilityCap.fps, maxSupportedFps))
 }
 
 internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
@@ -1403,7 +1420,7 @@ internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
         hdrEnabled = false,
         enableCloudGsync = false,
         streamSharpeningEnabled = false,
-    ).cappedResolution(SAFE_VIDEO_FALLBACK_MAX_WIDTH, SAFE_VIDEO_FALLBACK_MAX_HEIGHT)
+    ).cappedResolution(SAFE_VIDEO_FALLBACK_MAX_WIDTH, SAFE_VIDEO_FALLBACK_MAX_HEIGHT, strict = false)
 
 private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
     val compatible = withCodecColorCompatibility()
@@ -1439,24 +1456,37 @@ private fun StreamSettings.withoutAndroidTvSharpening(report: RuntimeCodecReport
         this
     }
 
-private fun StreamSettings.cappedResolution(maxWidth: Int, maxHeight: Int): StreamSettings {
+private fun StreamSettings.cappedResolution(maxWidth: Int, maxHeight: Int, strict: Boolean = false): StreamSettings {
     val normalized = normalizeStreamResolutionForAspect(resolution, aspectRatio)
     val (width, height) = parseResolutionPixels(normalized)
-    if (width <= maxWidth && height <= maxHeight) return copy(resolution = normalized)
+    
+    val fits = if (strict) {
+        width <= maxWidth && height <= maxHeight
+    } else {
+        val maxPixelCount = (maxWidth * maxHeight * 1.4f).roundToInt()
+        width <= maxWidth * 2 && height <= maxHeight * 2 && (width * height) <= maxPixelCount
+    }
+    
+    if (fits) return copy(resolution = normalized)
 
     val sameAspect = STREAM_RESOLUTION_OPTIONS
-        .filter { it.aspectRatio == aspectRatio && it.fitsWithin(maxWidth, maxHeight) }
+        .filter { it.aspectRatio == aspectRatio && it.fitsWithin(maxWidth, maxHeight, strict) }
         .maxByOrNull { it.pixelCount() }
     val fallback = STREAM_RESOLUTION_OPTIONS
-        .filter { it.fitsWithin(maxWidth, maxHeight) }
+        .filter { it.fitsWithin(maxWidth, maxHeight, strict) }
         .maxWithOrNull(compareBy<StreamResolutionOption> { it.pixelCount() }.thenBy { if (it.aspectRatio == "16:9") 1 else 0 })
     val capped = sameAspect ?: fallback ?: StreamResolutionOption("1280x720", "16:9", "720")
     return copy(resolution = capped.value, aspectRatio = capped.aspectRatio)
 }
 
-private fun StreamResolutionOption.fitsWithin(maxWidth: Int, maxHeight: Int): Boolean {
+private fun StreamResolutionOption.fitsWithin(maxWidth: Int, maxHeight: Int, strict: Boolean = false): Boolean {
     val (width, height) = parseResolutionPixels(value)
-    return width <= maxWidth && height <= maxHeight
+    return if (strict) {
+        width <= maxWidth && height <= maxHeight
+    } else {
+        val maxPixelCount = (maxWidth * maxHeight * 1.4f).roundToInt()
+        width <= maxWidth * 2 && height <= maxHeight * 2 && (width * height) <= maxPixelCount
+    }
 }
 
 private fun StreamResolutionOption.pixelCount(): Int {

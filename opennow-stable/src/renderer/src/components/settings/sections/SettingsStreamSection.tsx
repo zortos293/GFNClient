@@ -570,13 +570,13 @@ export function SettingsStreamSection({
       </div>
       <div className="settings-rows">
         {/* Resolution — grouped dropdown */}
-        <div className="settings-row settings-row--column">
+        <div className="settings-row">
           <label className="settings-label settings-label--with-icon">
             <ScanLine size={15} className="settings-label-icon" />
             {t("settings.video.resolution")}
             {subscriptionLoading && <MotionSpinner size={12} className="settings-loading-icon" />}
           </label>
-          <div className="settings-dropdown settings-resolution-dropdown" ref={resolutionDropdownRef}>
+          <div className="settings-dropdown settings-dropdown--constrained settings-resolution-dropdown" ref={resolutionDropdownRef}>
             <button
               type="button"
               className={`settings-dropdown-selected ${resolutionDropdownOpen ? "open" : ""}`}
@@ -657,36 +657,38 @@ export function SettingsStreamSection({
         </div>
 
         {/* Color Quality */}
-        <div className="settings-row settings-row--column">
+        <div className="settings-row">
           <label className="settings-label settings-label--with-icon">
             <SlidersHorizontal size={15} className="settings-label-icon" />
             {t("settings.video.colorDepth")}
           </label>
-          <div className="settings-chip-row">
-            {colorQualityOptions.map((opt) => {
-              const needsHevc = colorQualityRequiresHevc(opt.value);
-              const colorDescription = opt.value === "8bit_420"
-                ? t("settings.colorQuality.mostCompatible")
-                : opt.value === "8bit_444"
-                  ? t("settings.colorQuality.sharperChroma")
-                  : opt.value === "10bit_420"
-                    ? t("settings.colorQuality.higherBitDepth")
-                    : t("settings.colorQuality.highestChromaAndBitDepth");
-              return (
-                <button
-                  key={opt.value}
-                  className={`settings-chip ${settings.colorQuality === opt.value ? "active" : ""}`}
-                  onClick={() => handleColorQualityChange(opt.value)}
-                  title={needsHevc ? t("settings.colorQuality.requiresH265OrAv1Title", { description: colorDescription }) : colorDescription}
-                >
-                  <span>{opt.label}</span>
-                </button>
-              );
-            })}
+          <div className="settings-row-control">
+            <div className="settings-chip-row">
+              {colorQualityOptions.map((opt) => {
+                const needsHevc = colorQualityRequiresHevc(opt.value);
+                const colorDescription = opt.value === "8bit_420"
+                  ? t("settings.colorQuality.mostCompatible")
+                  : opt.value === "8bit_444"
+                    ? t("settings.colorQuality.sharperChroma")
+                    : opt.value === "10bit_420"
+                      ? t("settings.colorQuality.higherBitDepth")
+                      : t("settings.colorQuality.highestChromaAndBitDepth");
+                return (
+                  <button
+                    key={opt.value}
+                    className={`settings-chip ${settings.colorQuality === opt.value ? "active" : ""}`}
+                    onClick={() => handleColorQualityChange(opt.value)}
+                    title={needsHevc ? t("settings.colorQuality.requiresH265OrAv1Title", { description: colorDescription }) : colorDescription}
+                  >
+                    <span>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {colorQualityRequiresHevc(settings.colorQuality) && settings.codec === "H264" && (
+              <span className="settings-input-hint">{t("settings.video.requiresH265OrAv1")}</span>
+            )}
           </div>
-          {colorQualityRequiresHevc(settings.colorQuality) && settings.codec === "H264" && (
-            <span className="settings-input-hint">{t("settings.video.requiresH265OrAv1")}</span>
-          )}
         </div>
 
         {/* Bitrate slider */}
@@ -931,50 +933,54 @@ export function SettingsStreamSection({
           <div className="settings-rows">
             {showStreamVideo && (
               <>
-                <div className="settings-row settings-row--column">
+                <div className="settings-row">
                   <label className="settings-label settings-label--with-icon">
                     <Cpu size={15} className="settings-label-icon" />
                     {t("settings.video.decoder")}
                   </label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`decoder-${option.value}`}
-                        className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("decoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
+                  <div className="settings-row-control">
+                    <div className="settings-chip-row">
+                      {accelerationOptions.map((option) => (
+                        <button
+                          key={`decoder-${option.value}`}
+                          className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
+                          onClick={() => handleChange("decoderPreference", option.value)}
+                        >
+                          {option.value === "auto"
+                            ? t("app.labels.auto")
+                            : option.value === "hardware"
+                              ? t("app.labels.hardware")
+                              : t("settings.video.softwareCpu")}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                   </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                 </div>
 
-                <div className="settings-row settings-row--column">
+                <div className="settings-row">
                   <label className="settings-label settings-label--with-icon">
                     <Film size={15} className="settings-label-icon" />
                     {t("settings.video.encoder")}
                   </label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`encoder-${option.value}`}
-                        className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("encoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
+                  <div className="settings-row-control">
+                    <div className="settings-chip-row">
+                      {accelerationOptions.map((option) => (
+                        <button
+                          key={`encoder-${option.value}`}
+                          className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
+                          onClick={() => handleChange("encoderPreference", option.value)}
+                        >
+                          {option.value === "auto"
+                            ? t("app.labels.auto")
+                            : option.value === "hardware"
+                              ? t("app.labels.hardware")
+                              : t("settings.video.softwareCpu")}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                   </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                 </div>
               </>
             )}

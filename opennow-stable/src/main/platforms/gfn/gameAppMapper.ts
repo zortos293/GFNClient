@@ -336,6 +336,7 @@ export function resolveAppData(app: AppData): AppResolution {
 export function appToVariants(app: AppData): GameVariant[] {
   return app.variants?.map((variant) => {
     const supportsPersistence = supportsInGameSettingsPersistence(variant);
+    const libraryStatus = variant.gfn?.library?.status;
     return {
       id: variant.id,
       store: variant.appStore,
@@ -343,8 +344,9 @@ export function appToVariants(app: AppData): GameVariant[] {
       supportedControls: variant.supportedControls ?? [],
       ...(supportsPersistence ? { supportsInGameSettingsPersistence: true } : {}),
       librarySelected: variant.gfn?.library?.selected,
-      inLibrary: variant.gfn?.library?.selected === true,
-      libraryStatus: variant.gfn?.library?.status,
+      // Owned via PLATFORM_SYNC/MANUAL/IN_LIBRARY even when not the selected variant.
+      inLibrary: isOwnedLibraryStatus(libraryStatus),
+      libraryStatus,
       lastPlayedDate: variant.gfn?.library?.lastPlayedDate,
       gfnStatus: variant.gfn?.status,
     };
@@ -398,16 +400,34 @@ export function appToGame(app: AppData): GameInfo {
   };
 }
 
+function resolveMergedLibraryOwnership(
+  primary?: Pick<GameVariant, "inLibrary" | "libraryStatus">,
+  fallback?: Pick<GameVariant, "inLibrary" | "libraryStatus">,
+): { inLibrary: boolean; libraryStatus?: string } {
+  const libraryStatus = primary?.libraryStatus ?? fallback?.libraryStatus;
+  if (libraryStatus !== undefined) {
+    return {
+      libraryStatus,
+      inLibrary: isOwnedLibraryStatus(libraryStatus),
+    };
+  }
+  return {
+    libraryStatus,
+    inLibrary: Boolean(primary?.inLibrary || fallback?.inLibrary),
+  };
+}
+
 function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo {
   const merged = appToGame(app);
   const selectedVariantId = game.variants[game.selectedVariantIndex]?.id;
   const variants = merged.variants.map((variant) => {
     const existing = game.variants.find((candidate) => candidate.id === variant.id);
+    const ownership = resolveMergedLibraryOwnership(variant, existing);
     return {
       ...variant,
       librarySelected: variant.librarySelected ?? existing?.librarySelected,
-      inLibrary: variant.inLibrary ?? existing?.inLibrary,
-      libraryStatus: variant.libraryStatus ?? existing?.libraryStatus,
+      inLibrary: ownership.inLibrary,
+      libraryStatus: ownership.libraryStatus,
       lastPlayedDate: variant.lastPlayedDate ?? existing?.lastPlayedDate,
     };
   });
@@ -419,10 +439,30 @@ function mergeAppMetaIntoGame(game: GameInfo, app: AppData): GameInfo {
     ...game,
     ...merged,
     id: game.id,
-    isInLibrary: merged.isInLibrary || game.isInLibrary,
+    isInLibrary: merged.isInLibrary || game.isInLibrary || variants.some((variant) => variant.inLibrary),
     lastPlayed: merged.lastPlayed ?? game.lastPlayed,
     variants,
     selectedVariantIndex: selectedVariantIndex >= 0 ? selectedVariantIndex : merged.selectedVariantIndex,
+  };
+}
+
+function mergeGameVariants(existing: GameVariant, incoming: GameVariant): GameVariant {
+  const ownership = resolveMergedLibraryOwnership(incoming, existing);
+  return {
+    ...existing,
+    ...incoming,
+    storeUrl: incoming.storeUrl ?? existing.storeUrl,
+    supportedControls:
+      incoming.supportedControls.length > 0
+        ? incoming.supportedControls
+        : existing.supportedControls,
+    supportsInGameSettingsPersistence:
+      incoming.supportsInGameSettingsPersistence ?? existing.supportsInGameSettingsPersistence,
+    librarySelected: incoming.librarySelected ?? existing.librarySelected,
+    inLibrary: ownership.inLibrary,
+    libraryStatus: ownership.libraryStatus,
+    lastPlayedDate: incoming.lastPlayedDate ?? existing.lastPlayedDate,
+    gfnStatus: incoming.gfnStatus ?? existing.gfnStatus,
   };
 }
 
@@ -438,9 +478,14 @@ export function dedupeGames(games: GameInfo[]): GameInfo[] {
 
     const mergedVariants = new Map<string, GameVariant>();
     for (const variant of [...existing.variants, ...game.variants]) {
-      mergedVariants.set(variant.id, variant);
+      const prior = mergedVariants.get(variant.id);
+      mergedVariants.set(variant.id, prior ? mergeGameVariants(prior, variant) : variant);
     }
 
+    const mergedVariantList = [...mergedVariants.values()];
+    const hasResolvedLibraryStatus = mergedVariantList.some(
+      (variant) => variant.libraryStatus !== undefined,
+    );
     const merged: GameInfo = {
       ...existing,
       ...game,
@@ -468,8 +513,15 @@ export function dedupeGames(games: GameInfo[]): GameInfo[] {
       publisherName: existing.publisherName ?? game.publisherName,
       playabilityState: existing.playabilityState ?? game.playabilityState,
       lastPlayed: existing.lastPlayed ?? game.lastPlayed,
-      isInLibrary: existing.isInLibrary || game.isInLibrary,
-      variants: [...mergedVariants.values()],
+      variants: mergedVariantList,
+      // Prefer variant libraryStatus when present so NOT_OWNED can clear stale flags.
+      isInLibrary: hasResolvedLibraryStatus
+        ? mergedVariantList.some((variant) => variant.inLibrary)
+        : Boolean(
+          existing.isInLibrary ||
+          game.isInLibrary ||
+          mergedVariantList.some((variant) => variant.inLibrary),
+        ),
       genres: [...new Set([...(existing.genres ?? []), ...(game.genres ?? [])])],
       featureLabels: [...new Set([...(existing.featureLabels ?? []), ...(game.featureLabels ?? [])])],
       supportedControls: [...new Set([...(existing.supportedControls ?? []), ...(game.supportedControls ?? [])])],
@@ -478,7 +530,7 @@ export function dedupeGames(games: GameInfo[]): GameInfo[] {
       availableStores: [...new Set([...(existing.availableStores ?? []), ...(game.availableStores ?? [])])],
       searchText: [existing.searchText, game.searchText].filter(Boolean).join(" ").trim() || undefined,
       selectedVariantIndex: Math.max(0, existing.variants[existing.selectedVariantIndex]
-        ? [...mergedVariants.values()].findIndex((variant) => variant.id === existing.variants[existing.selectedVariantIndex]?.id)
+        ? mergedVariantList.findIndex((variant) => variant.id === existing.variants[existing.selectedVariantIndex]?.id)
         : game.selectedVariantIndex),
     };
 

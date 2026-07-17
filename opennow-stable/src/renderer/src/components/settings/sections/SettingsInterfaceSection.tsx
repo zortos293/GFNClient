@@ -2,6 +2,7 @@ import { useCallback, useMemo, type JSX } from "react";
 import type { AppAccentColor, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
+import { SettingRange } from "../SettingRange";
 import {
   accentColorOptions,
   getAppLanguageLabel,
@@ -14,10 +15,11 @@ export interface SettingsInterfaceSectionProps {
   settings: Settings;
   showAll: boolean;
   handleChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  handlePreview: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onSaved: () => void;
 }
 
-export function SettingsInterfaceSection({ settings, showAll, handleChange, onSaved }: SettingsInterfaceSectionProps): JSX.Element {
+export function SettingsInterfaceSection({ settings, showAll, handleChange, handlePreview, onSaved }: SettingsInterfaceSectionProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
   const posterSizePercent = Math.round(settings.posterSizeScale * 100);
 
@@ -47,10 +49,11 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
   );
 
   const handleAppLanguageChange = useCallback((nextLocale: string): void => {
-    void setLocale(nextLocale).catch((error) => {
-      console.warn("[Settings] Failed to change app language:", error);
-    });
-    onSaved();
+    void setLocale(nextLocale)
+      .then(onSaved)
+      .catch((error) => {
+        console.warn("[Settings] Failed to change app language:", error);
+      });
   }, [onSaved, setLocale]);
 
   return (
@@ -280,15 +283,16 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
               <label className="settings-label" htmlFor="settings-interface-poster-size">{t("settings.interface.posterSize")}</label>
               <span className="settings-value-badge">{posterSizePercent}%</span>
             </div>
-            <input
+            <SettingRange
               id="settings-interface-poster-size"
-              type="range"
               className="settings-slider"
               min={POSTER_SIZE_MIN}
               max={POSTER_SIZE_MAX}
               step={POSTER_SIZE_STEP}
               value={posterSizePercent}
-              onChange={(e) => handleChange("posterSizeScale", Number(e.target.value) / 100)}
+              normalize={(value) => value / 100}
+              onPreview={(value) => handlePreview("posterSizeScale", value)}
+              onCommit={(value) => handleChange("posterSizeScale", value)}
             />
             <span className="settings-subtle-hint">{t("settings.interface.posterSizeHint")}</span>
           </div>
@@ -341,15 +345,15 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                       : t("settings.interface.everyMinutes", { count: settings.sessionClockShowEveryMinutes })}
                   </span>
                 </div>
-                <input
+                <SettingRange
                   id="settings-interface-session-timer-reappear"
-                  type="range"
                   className="settings-slider"
                   min={0}
                   max={120}
                   step={5}
                   value={settings.sessionClockShowEveryMinutes}
-                  onChange={(e) => handleChange("sessionClockShowEveryMinutes", parseInt(e.target.value, 10))}
+                  onPreview={(value) => handlePreview("sessionClockShowEveryMinutes", value)}
+                  onCommit={(value) => handleChange("sessionClockShowEveryMinutes", value)}
                 />
                 <span className="settings-subtle-hint">{t("settings.interface.sessionTimerReappearHint")}</span>
               </div>
@@ -361,15 +365,15 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                     {t("app.units.seconds", { value: settings.sessionClockShowDurationSeconds })}
                   </span>
                 </div>
-                <input
+                <SettingRange
                   id="settings-interface-session-timer-visible-time"
-                  type="range"
                   className="settings-slider"
                   min={5}
                   max={120}
                   step={5}
                   value={settings.sessionClockShowDurationSeconds}
-                  onChange={(e) => handleChange("sessionClockShowDurationSeconds", parseInt(e.target.value, 10))}
+                  onPreview={(value) => handlePreview("sessionClockShowDurationSeconds", value)}
+                  onCommit={(value) => handleChange("sessionClockShowDurationSeconds", value)}
                 />
                 <span className="settings-subtle-hint">{t("settings.interface.sessionTimerVisibleTimeHint")}</span>
               </div>

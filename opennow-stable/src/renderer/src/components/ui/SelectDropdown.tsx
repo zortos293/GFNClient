@@ -274,7 +274,7 @@ export function SelectDropdown({
                       tabIndex={-1}
                       className={cx("select-dropdown__option", selected && "is-selected", active && "is-active")}
                       onClick={() => selectOption(index)}
-                      onMouseEnter={() => {
+                      onPointerMove={() => {
                         if (!option.disabled) setActiveIndex(index);
                       }}
                     >

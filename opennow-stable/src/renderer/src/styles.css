@@ -155,6 +155,16 @@ body,
     linear-gradient(180deg, var(--bg-a), var(--bg-b));
 }
 
+.app-shell {
+  display: contents;
+}
+
+.stream-view-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1080;
+}
+
 .app-container--controller {
   --navbar-h: 118px;
   background:
@@ -208,7 +218,6 @@ body,
   background: var(--bg-a);
   border-bottom: 1px solid var(--panel-border);
   z-index: 1000;
-  will-change: transform;
 }
 
 [data-translucent="true"] .navbar {
@@ -1004,7 +1013,17 @@ body,
   -webkit-backdrop-filter: blur(3px);
 }
 
+.navbar-modal-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
 .navbar-modal {
+  position: relative;
+  z-index: 1;
   width: min(760px, calc(100vw - 40px));
   max-height: calc(100vh - 70px);
   border-radius: 12px;
@@ -2021,9 +2040,6 @@ body,
   box-shadow: none;
   cursor: pointer;
   contain: layout style;
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  will-change: transform;
   transition: border-color var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast);
 }
 
@@ -2607,7 +2623,6 @@ body,
   overflow-y: auto;
   min-height: 0;
   padding-right: 2px;
-  will-change: scroll-position;
 }
 
 .home-empty-state {
@@ -2931,7 +2946,6 @@ body,
   overflow-y: auto;
   min-height: 0;
   padding-right: 2px;
-  will-change: scroll-position;
 }
 
 .library-game-wrapper {
@@ -3033,7 +3047,6 @@ body,
   object-fit: cover;
   object-position: center;
   filter: saturate(0.98) brightness(0.78);
-  will-change: opacity, transform;
 }
 
 .controller-hero-placeholder {
@@ -3053,7 +3066,6 @@ body,
   left: clamp(42px, 7vw, 300px);
   bottom: clamp(46px, 6.4vh, 140px);
   z-index: 1;
-  will-change: opacity, transform;
 }
 
 .controller-hero-content h1 {
@@ -3254,19 +3266,17 @@ body,
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32);
   cursor: pointer;
   contain: layout style;
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
   transition: border-color var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast), transform var(--t-fast);
 }
 
 .controller-native-card:hover {
-  transform: translate3d(0, -3px, 0) scale(1.02);
+  transform: translateY(-3px) scale(1.02);
 }
 
 .controller-native-card.selected {
   border-color: #2ee375;
   box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.68), 0 24px 48px rgba(0, 0, 0, 0.38);
-  transform: translate3d(0, -3px, 0) scale(1.025);
+  transform: translateY(-3px) scale(1.025);
 }
 
 .controller-native-card-art,
@@ -3659,9 +3669,6 @@ body,
   cursor: pointer;
   transition: border-color var(--t-normal), box-shadow var(--t-normal);
   contain: layout style;
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  will-change: transform;
 }
 
 .home-page .game-card:focus,
@@ -3704,7 +3711,6 @@ body,
   padding-top: var(--game-aspect);
   overflow: hidden;
   background: var(--bg-c);
-  backface-visibility: hidden;
   flex: 1;
 }
 
@@ -3721,7 +3727,6 @@ body,
   object-fit: cover;
   object-position: center;
   transition: transform var(--t-slow);
-  will-change: transform;
 }
 
 .game-card:hover .game-card-image {
@@ -3978,16 +3983,9 @@ button.game-card-store-chip.owned.active:hover {
   cursor: pointer;
 }
 
-.settings-modal-placeholder {
-  flex: 1;
-  min-height: 0;
-}
-
 .animated-modal-panel {
   position: relative;
   z-index: 1;
-  transform: translateZ(0);
-  backface-visibility: hidden;
 }
 
 .settings-modal {
@@ -5375,9 +5373,7 @@ button.game-card-store-chip.owned.active:hover {
   position: absolute;
   inset: 0;
   border: none;
-  background: rgba(8, 9, 11, 0.6);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
+  background: rgba(8, 9, 11, 0.68);
   cursor: pointer;
 }
 
@@ -7350,7 +7346,7 @@ button.game-card-store-chip.owned.active:hover {
   border-radius: var(--r-md);
   background: var(--bg-b);
   overflow: hidden;
-  transition: bottom 420ms var(--ease), border-color 320ms var(--ease), box-shadow 320ms var(--ease);
+  transition: border-color 320ms var(--ease), box-shadow 320ms var(--ease);
 }
 
 [data-translucent="true"] .sv-stats {
@@ -7795,7 +7791,7 @@ button.game-card-store-chip.owned.active:hover {
   z-index: 1001;
   color: var(--error);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
 .sv-mic:hover {
@@ -8399,23 +8395,25 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .sload-step-line-fill {
+  width: 100%;
   height: 100%;
-  width: 0%;
+  transform: scaleX(0);
+  transform-origin: left center;
   background: linear-gradient(90deg, var(--accent), var(--accent-press));
-  transition: width 500ms var(--ease);
+  transition: transform 500ms var(--ease);
 }
 
 .sload-step-line.failed .sload-step-line-fill {
-  width: 100%;
+  transform: scaleX(1);
   background: linear-gradient(90deg, #f87171, #ef4444);
 }
 
 .sload-step.completed .sload-step-line-fill {
-  width: 100%;
+  transform: scaleX(1);
 }
 
 .sload-step.active .sload-step-line-fill {
-  width: 50%;
+  transform: scaleX(0.5);
 }
 
 /* Status */
@@ -10098,21 +10096,6 @@ button.game-card-store-chip.owned.active:hover {
    REDUCED MOTION
    ====================================================== */
 @media (prefers-reduced-motion: reduce) {
-
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-
-  .sload-spin {
-    animation-name: spin !important;
-    animation-duration: 1s !important;
-    animation-iteration-count: infinite !important;
-  }
-
   .animated-modal-scrim {
     background-color: rgba(6, 7, 9, 0.72);
   }
@@ -10392,18 +10375,14 @@ button.game-card-store-chip.owned.active:hover {
   opacity: 1;
 }
 
-.app-container--controller > .main-content {
+.app-container--controller > .app-shell > .main-content,
+.app-container--atmosphere > .app-shell > .main-content {
   position: relative;
   z-index: 1;
 }
 
-.app-container--atmosphere > .main-content {
-  position: relative;
-  z-index: 1;
-}
-
-.app-container--controller > .navbar,
-.app-container--atmosphere > .navbar {
+.app-container--controller > .app-shell > .navbar,
+.app-container--atmosphere > .app-shell > .navbar {
   z-index: 1000;
 }
 
@@ -10428,14 +10407,12 @@ button.game-card-store-chip.owned.active:hover {
 
 .app-container--controller .controller-store-tile {
   transition:
-    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
     border-color 220ms ease,
     box-shadow 320ms ease,
     filter 320ms ease;
 }
 
 .app-container--controller .controller-store-tile.focused {
-  transform: translate3d(0, -7px, 0) scale(1.035);
   border-color: #63f296;
   box-shadow:
     0 0 0 2px rgba(99, 242, 150, 0.9),
@@ -10731,10 +10708,6 @@ button.game-card-store-chip.owned.active:hover {
   background: rgba(255, 255, 255, 0.09);
 }
 
-.sv-video {
-  will-change: opacity, transform;
-}
-
 @media (max-width: 720px), (max-height: 700px) {
   .sload-content {
     padding: 24px;
@@ -10761,7 +10734,7 @@ button.game-card-store-chip.owned.active:hover {
 
 @media (prefers-reduced-motion: reduce) {
   .shader-atmosphere canvas {
-    display: none;
+    display: none !important;
   }
 
   .sv-video {

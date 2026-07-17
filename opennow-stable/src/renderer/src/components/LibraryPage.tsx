@@ -5,7 +5,7 @@ import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import type { PlaytimeData } from "../lib/gameCatalog";
-import { getControllerFeaturedGames } from "../lib/controllerCatalogUi";
+import { getControllerFeaturedGames, getControllerHeroBackgroundCandidates } from "../lib/controllerCatalogUi";
 import {
   gameMatchesLibraryFilters,
   gameMatchesStoreFilter,
@@ -45,6 +45,7 @@ export interface LibraryPageProps {
   selectedSortId: string;
   onSortChange: (sortId: string) => void;
   controllerMode?: boolean;
+  surfaceActive?: boolean;
   featuredGames?: GameInfo[];
   activeSessionAppIds?: number[];
   onPreviousControllerPage?: () => void;
@@ -69,6 +70,7 @@ export const LibraryPage = memo(function LibraryPage({
   selectedSortId,
   onSortChange,
   controllerMode = false,
+  surfaceActive = true,
   featuredGames = [],
   activeSessionAppIds = [],
   onPreviousControllerPage,
@@ -91,6 +93,7 @@ export const LibraryPage = memo(function LibraryPage({
   const gamepadPreviousButtonsRef = useRef(0);
   const gamepadLastMoveAtRef = useRef(0);
   const gamepadFrameRef = useRef<number | null>(null);
+  const pendingScrollFrameRef = useRef<number | null>(null);
   const controllerYPressedAtRef = useRef(0);
   const controllerYConsumedByHoldRef = useRef(false);
   const controllerGameRowRef = useRef<HTMLDivElement | null>(null);
@@ -111,9 +114,28 @@ export const LibraryPage = memo(function LibraryPage({
   });
 
   useEffect(() => {
-    if (!controllerMode || !controllerSearchOpen) return;
+    if (surfaceActive) return undefined;
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+      pendingScrollFrameRef.current = null;
+    }
+    gamepadPreviousButtonsRef.current = 0;
+    gamepadLastMoveAtRef.current = 0;
+    controllerYPressedAtRef.current = 0;
+    controllerYConsumedByHoldRef.current = false;
+    return undefined;
+  }, [surfaceActive]);
+
+  useEffect(() => () => {
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!controllerMode || !surfaceActive || !controllerSearchOpen) return;
     controllerSearchInputRef.current?.focus();
-  }, [controllerMode, controllerSearchOpen]);
+  }, [controllerMode, controllerSearchOpen, surfaceActive]);
 
   const librarySearchHasQuery = searchQuery.trim().length > 0;
   const libraryFilterGroups = useMemo(
@@ -144,10 +166,10 @@ export const LibraryPage = memo(function LibraryPage({
   }, [libraryFilterGroups]);
 
   useEffect(() => {
-    if (controllerMode || visibleLibraryGames.length === 0) return;
+    if (!surfaceActive || controllerMode || visibleLibraryGames.length === 0) return;
     if (visibleLibraryGames.some((game) => game.id === selectedGameId)) return;
     onSelectGame(visibleLibraryGames[0].id);
-  }, [controllerMode, onSelectGame, selectedGameId, visibleLibraryGames]);
+  }, [controllerMode, onSelectGame, selectedGameId, surfaceActive, visibleLibraryGames]);
 
   const toggleLibraryFilter = (filterId: string): void => {
     setSelectedLibraryFilterIds((previous) => (
@@ -175,9 +197,9 @@ export const LibraryPage = memo(function LibraryPage({
   );
 
   useEffect(() => {
-    if (!controllerMode) return;
+    if (!controllerMode || !surfaceActive) return;
     setControllerHeroIndex(0);
-  }, [controllerMode, controllerStoreFilterId, controllerFeaturedGames.length, controllerFeaturedGames[0]?.id]);
+  }, [controllerMode, controllerStoreFilterId, controllerFeaturedGames.length, controllerFeaturedGames[0]?.id, surfaceActive]);
 
   useEffect(() => {
     if (controllerMode) return;
@@ -186,18 +208,43 @@ export const LibraryPage = memo(function LibraryPage({
   }, [controllerMode]);
 
   useEffect(() => {
-    if (!controllerMode || controllerFeaturedGames.length <= 1) return;
+    if (!controllerMode || !surfaceActive || controllerFeaturedGames.length <= 1) return;
+    let cancelled = false;
+    let advancing = false;
     const interval = window.setInterval(() => {
-      setControllerHeroIndex((index) => (index + 1) % controllerFeaturedGames.length);
+      if (advancing) return;
+      advancing = true;
+      const nextIndex = (controllerHeroIndex + 1) % controllerFeaturedGames.length;
+      const nextGame = controllerFeaturedGames[nextIndex];
+      const nextImageUrl = nextGame ? getControllerHeroBackgroundCandidates(nextGame)[0] : undefined;
+      if (!nextImageUrl) {
+        if (!cancelled) setControllerHeroIndex(nextIndex);
+        advancing = false;
+        return;
+      }
+
+      const image = new Image();
+      image.src = nextImageUrl;
+      void image.decode()
+        .catch(() => undefined)
+        .then(() => {
+          if (!cancelled) setControllerHeroIndex(nextIndex);
+        })
+        .finally(() => {
+          advancing = false;
+        });
     }, CONTROLLER_HERO_ROTATION_MS);
-    return () => window.clearInterval(interval);
-  }, [controllerMode, controllerFeaturedGames.length]);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [controllerHeroIndex, controllerMode, controllerFeaturedGames, surfaceActive]);
 
   useEffect(() => {
-    if (!controllerMode || games.length === 0) return;
+    if (!controllerMode || !surfaceActive || games.length === 0) return;
     if (controllerGames.some((game) => game.id === selectedGameId)) return;
     onSelectGame(controllerGames[0]?.id ?? games[0].id);
-  }, [controllerGames, controllerMode, games, onSelectGame, selectedGameId]);
+  }, [controllerGames, controllerMode, games, onSelectGame, selectedGameId, surfaceActive]);
 
   useEffect(() => {
     if (controllerStoreFilterItems.some((item) => item.id === controllerStoreFilterId)) return;
@@ -209,11 +256,16 @@ export const LibraryPage = memo(function LibraryPage({
   const selectedControllerGame = controllerGames[selectedControllerGameIndex] ?? controllerGames[0];
 
   const focusControllerGame = (index: number): void => {
-    if (controllerGames.length === 0) return;
+    if (!surfaceActive || controllerGames.length === 0) return;
     const nextIndex = Math.max(0, Math.min(index, controllerGames.length - 1));
     const nextGame = controllerGames[nextIndex];
     onSelectGame(nextGame.id);
-    window.requestAnimationFrame(() => {
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+    }
+    pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
+      pendingScrollFrameRef.current = null;
+      if (!surfaceActive) return;
       const row = controllerGameRowRef.current;
       const card = row?.querySelector<HTMLElement>(`[data-controller-game-id="${CSS.escape(nextGame.id)}"]`);
       card?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "auto" });
@@ -283,7 +335,7 @@ export const LibraryPage = memo(function LibraryPage({
   };
 
   useEffect(() => {
-    if (!controllerMode) return;
+    if (!controllerMode || !surfaceActive) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (detailsGame) {
         if (event.key === "Escape" || event.key.toLowerCase() === "b") {
@@ -334,10 +386,10 @@ export const LibraryPage = memo(function LibraryPage({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controllerMode, controllerSearchOpen, detailsGame, onNextControllerPage, onPlayGame, onPreviousControllerPage, selectedControllerGame, selectedControllerGameIndex]);
+  }, [controllerMode, controllerSearchOpen, detailsGame, onNextControllerPage, onPlayGame, onPreviousControllerPage, selectedControllerGame, selectedControllerGameIndex, surfaceActive]);
 
   useEffect(() => {
-    if (!controllerMode) return;
+    if (!controllerMode || !surfaceActive) return;
     const readButtons = (): number => {
       const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
       return readControllerGamepadButtons(pad);
@@ -454,7 +506,7 @@ export const LibraryPage = memo(function LibraryPage({
       window.removeEventListener("gamepaddisconnected", handleDisconnect);
       stopGamepadNavigation();
     };
-  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
+  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage, surfaceActive]);
 
   const libraryGridItems = useMemo(
     () => visibleLibraryGames.map((game) => (
@@ -463,6 +515,7 @@ export const LibraryPage = memo(function LibraryPage({
           game={game}
           isSelected={game.id === selectedGameId}
           selectedVariantId={selectedVariantByGameId[game.id]}
+          surface="library"
           actionsRef={catalogActionsRef}
         />
         <div

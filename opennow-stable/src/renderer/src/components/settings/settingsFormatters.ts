@@ -198,7 +198,6 @@ export const shortcutDefaults = {
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
 export const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+G";
 export const SIDEBAR_TOGGLE_SHORTCUT_ALIASES = isMac ? [SIDEBAR_TOGGLE_SHORTCUT_RAW] : [SIDEBAR_TOGGLE_SHORTCUT_RAW, "Ctrl+Shift+G"];
-export const NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS = 160;
 
 export function extractRemoteInvokeErrorMessage(error: unknown, fallback: string): string {
   if (!(error instanceof Error) || !error.message.trim()) {

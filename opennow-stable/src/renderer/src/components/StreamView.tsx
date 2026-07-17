@@ -80,6 +80,7 @@ interface StreamViewProps {
   } | null;
   isFullscreen: boolean;
   isConnecting: boolean;
+  streamRevealComplete: boolean;
   gameTitle: string;
   recordingBitrateMbps: number | null;
   platformStore?: string;
@@ -133,6 +134,7 @@ export function StreamView({
   streamWarning,
   isFullscreen,
   isConnecting,
+  streamRevealComplete,
   gameTitle,
   recordingBitrateMbps,
   platformStore,
@@ -238,12 +240,17 @@ export function StreamView({
       setSessionReadySplashVisible(false);
       return;
     }
-    if (nativeRendererActive || !streamVideoReady || sessionReadySplashShownRef.current) {
+    if (
+      nativeRendererActive
+      || !streamVideoReady
+      || !streamRevealComplete
+      || sessionReadySplashShownRef.current
+    ) {
       return;
     }
     sessionReadySplashShownRef.current = true;
     setSessionReadySplashVisible(true);
-  }, [isConnecting, nativeRendererActive, streamVideoReady]);
+  }, [isConnecting, nativeRendererActive, streamRevealComplete, streamVideoReady]);
 
   const handleSessionReadySplashFinished = useCallback(() => {
     setSessionReadySplashVisible(false);
@@ -1413,24 +1420,40 @@ export function StreamView({
 
   return (
     <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", nativeInternalHole ? "sv--native-hole" : "", className].filter(Boolean).join(" ")}>
-      <m.video
-        ref={setVideoRef}
-        autoPlay
-        playsInline
-        muted
-        tabIndex={-1}
-        className={["sv-video", nativeInternalHole ? "sv-video--native-hole" : ""].filter(Boolean).join(" ")}
-        initial={false}
-        animate={streamVideoReady
-          ? { opacity: 1, scale: 1 }
-          : { opacity: 0, scale: 1.008 }}
-        transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
-        onClick={() => {
-          if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
-            localVideoRef.current.focus({ preventScroll: true });
-          }
-        }}
-      />
+      {nativeInternalHole ? (
+        <video
+          ref={setVideoRef}
+          autoPlay
+          playsInline
+          muted
+          tabIndex={-1}
+          className="sv-video sv-video--native-hole"
+          onClick={() => {
+            if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+              localVideoRef.current.focus({ preventScroll: true });
+            }
+          }}
+        />
+      ) : (
+        <m.video
+          ref={setVideoRef}
+          autoPlay
+          playsInline
+          muted
+          tabIndex={-1}
+          className="sv-video"
+          initial={false}
+          animate={streamVideoReady
+            ? { opacity: 1, scale: 1 }
+            : { opacity: 0, scale: 1.008 }}
+          transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+          onClick={() => {
+            if (localVideoRef.current && document.activeElement !== localVideoRef.current) {
+              localVideoRef.current.focus({ preventScroll: true });
+            }
+          }}
+        />
+      )}
       <audio ref={setAudioRef} autoPlay playsInline />
       <VideoFocusOnReady
         diagnosticsStore={diagnosticsStore}

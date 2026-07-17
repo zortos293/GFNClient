@@ -1,8 +1,8 @@
-import { createPortal } from "react-dom";
 import { ExternalLink, X } from "lucide-react";
-import type { JSX } from "react";
+import { useRef, type JSX } from "react";
 import type { ReleaseHighlightsPayload } from "@shared/gfn";
 import { useTranslation } from "../i18n";
+import { ModalSurface } from "./ui/ModalSurface";
 
 // ---------------------------------------------------------------------------
 // Simple inline markdown renderer
@@ -136,46 +136,50 @@ function renderMarkdown(markdown: string): JSX.Element[] {
 // ---------------------------------------------------------------------------
 
 export interface ReleaseHighlightsModalProps {
-  payload: ReleaseHighlightsPayload;
+  payload: ReleaseHighlightsPayload | null;
   /**
    * Called when the user dismisses the modal via "Got it".
    * The caller decides whether to ack (auto-show) or just close (manual-show).
    */
   onDismiss: () => void;
-  /** Called for manual "View on GitHub" link */
-  version: string;
+  onExitComplete?: () => void;
 }
 
 export function ReleaseHighlightsModal({
   payload,
   onDismiss,
-  version,
+  onExitComplete,
 }: ReleaseHighlightsModalProps): JSX.Element | null {
   const { t } = useTranslation();
+  const retainedPayloadRef = useRef<ReleaseHighlightsPayload | null>(payload);
+  const primaryActionRef = useRef<HTMLButtonElement | null>(null);
+  if (payload) {
+    retainedPayloadRef.current = payload;
+  }
+  const retainedPayload = retainedPayloadRef.current;
+  const githubReleaseUrl = retainedPayload
+    ? `https://github.com/OpenCloudGaming/OpenNOW/releases/tag/v${retainedPayload.version}`
+    : "";
 
-  const githubReleaseUrl = `https://github.com/OpenCloudGaming/OpenNOW/releases/tag/v${version}`;
-
-  if (typeof document === "undefined") return null;
-
-  return createPortal(
-    <div
-      className="rh-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("releaseHighlights.kicker")}
+  return (
+    <ModalSurface
+      open={payload !== null && retainedPayload !== null}
+      onClose={onDismiss}
+      onExitComplete={onExitComplete}
+      motion="large"
+      overlayClassName="rh-overlay"
+      backdropClassName="rh-backdrop"
+      panelClassName="rh-card"
+      ariaLabel={t("releaseHighlights.kicker")}
+      backdropLabel={t("app.actions.close")}
+      initialFocusRef={primaryActionRef}
     >
-      <button
-        type="button"
-        className="rh-backdrop"
-        onClick={onDismiss}
-        aria-label={t("app.actions.close")}
-      />
-
-      <div className="rh-card">
+      {retainedPayload ? (
+        <>
         {/* Header */}
         <div className="rh-header">
           <div className="rh-kicker">{t("releaseHighlights.kicker")}</div>
-          <h2 className="rh-title">{payload.title}</h2>
+          <h2 className="rh-title">{retainedPayload.title}</h2>
           <button
             type="button"
             className="rh-close-btn"
@@ -188,10 +192,10 @@ export function ReleaseHighlightsModal({
 
         {/* Scrollable body */}
         <div className="rh-body">
-          {payload.source === "fallback" ? (
+          {retainedPayload.source === "fallback" ? (
             <p className="rh-fallback-text">{t("releaseHighlights.unavailable")}</p>
           ) : (
-            <div className="rh-markdown">{renderMarkdown(payload.bodyMarkdown)}</div>
+            <div className="rh-markdown">{renderMarkdown(retainedPayload.bodyMarkdown)}</div>
           )}
         </div>
 
@@ -211,13 +215,13 @@ export function ReleaseHighlightsModal({
             type="button"
             className="rh-btn-primary"
             onClick={onDismiss}
-            autoFocus
+            ref={primaryActionRef}
           >
             {t("releaseHighlights.gotIt")}
           </button>
         </div>
-      </div>
-    </div>,
-    document.body,
+        </>
+      ) : null}
+    </ModalSurface>
   );
 }

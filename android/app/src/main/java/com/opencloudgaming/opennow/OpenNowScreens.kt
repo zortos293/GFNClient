@@ -182,7 +182,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -9954,44 +9953,25 @@ private fun VirtualStick(
             .border(1.dp, Color.White.copy(alpha = opacity * 0.3f), CircleShape)
             .pointerInput(client) {
                 awaitPointerEventScope {
-                    var activePointerId: PointerId? = null
-                    try {
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val activeChange = activePointerId?.let { pointerId ->
-                                event.changes.firstOrNull { it.id == pointerId }
-                            }
-                            if (activeChange != null && !activeChange.pressed) {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.pressed }
+                        val maxRadius = min(size.width, size.height) * 0.34f
+                        if (change == null) {
+                            if (knobOffset != Offset.Zero) {
                                 currentOnChange(0f, 0f)
                                 knobOffset = Offset.Zero
-                                activePointerId = null
-                                continue
                             }
-                            val change = activeChange ?: if (activePointerId == null) {
-                                event.changes.firstOrNull {
-                                    it.pressed &&
-                                        !it.previousPressed &&
-                                        it.position.x in 0f..size.width.toFloat() &&
-                                        it.position.y in 0f..size.height.toFloat()
-                                }?.also { activePointerId = it.id }
-                            } else {
-                                null
-                            }
-                            if (change == null) continue
-
-                            val maxRadius = min(size.width, size.height) * 0.34f
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val clamped = clampStickOffset(change.position - center, maxRadius)
-                            currentOnChange(
-                                (clamped.x / maxRadius).coerceIn(-1f, 1f),
-                                (clamped.y / maxRadius).coerceIn(-1f, 1f),
-                            )
-                            knobOffset = clamped
-                            change.consume()
+                            continue
                         }
-                    } finally {
-                        currentOnChange(0f, 0f)
-                        knobOffset = Offset.Zero
+                        val center = Offset(size.width / 2f, size.height / 2f)
+                        val clamped = clampStickOffset(change.position - center, maxRadius)
+                        currentOnChange(
+                            (clamped.x / maxRadius).coerceIn(-1f, 1f),
+                            (clamped.y / maxRadius).coerceIn(-1f, 1f),
+                        )
+                        knobOffset = clamped
+                        change.consume()
                     }
                 }
             },

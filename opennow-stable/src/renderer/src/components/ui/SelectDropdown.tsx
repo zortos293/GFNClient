@@ -6,12 +6,13 @@ export interface SelectDropdownOption {
   value: string;
   label: ReactNode;
   disabled?: boolean;
+  group?: string;
 }
 
 interface SelectDropdownProps {
   id?: string;
   value: string;
-  options: SelectDropdownOption[];
+  options: readonly SelectDropdownOption[];
   onChange: (value: string) => void;
   disabled?: boolean;
   placeholder?: ReactNode;
@@ -25,7 +26,7 @@ function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }
 
-function findEnabledIndex(options: SelectDropdownOption[], startIndex: number, direction: 1 | -1): number {
+function findEnabledIndex(options: readonly SelectDropdownOption[], startIndex: number, direction: 1 | -1): number {
   if (options.length === 0) return -1;
 
   for (let step = 0; step < options.length; step += 1) {
@@ -36,11 +37,11 @@ function findEnabledIndex(options: SelectDropdownOption[], startIndex: number, d
   return -1;
 }
 
-function findFirstEnabledIndex(options: SelectDropdownOption[]): number {
+function findFirstEnabledIndex(options: readonly SelectDropdownOption[]): number {
   return options.findIndex((option) => !option.disabled);
 }
 
-function findLastEnabledIndex(options: SelectDropdownOption[]): number {
+function findLastEnabledIndex(options: readonly SelectDropdownOption[]): number {
   for (let index = options.length - 1; index >= 0; index -= 1) {
     if (!options[index]?.disabled) return index;
   }
@@ -78,6 +79,23 @@ export function SelectDropdown({
     () => options.map((option) => `${option.value}:${option.disabled ? "disabled" : "enabled"}`).join("|"),
     [options],
   );
+  const optionGroups = useMemo(() => {
+    const groups: Array<{
+      label?: string;
+      options: Array<{ option: SelectDropdownOption; index: number }>;
+    }> = [];
+
+    options.forEach((option, index) => {
+      const currentGroup = groups.at(-1);
+      if (!currentGroup || currentGroup.label !== option.group) {
+        groups.push({ label: option.group, options: [{ option, index }] });
+      } else {
+        currentGroup.options.push({ option, index });
+      }
+    });
+
+    return groups;
+  }, [options]);
 
   useEffect(() => {
     optionRefs.current = optionRefs.current.slice(0, options.length);
@@ -185,6 +203,7 @@ export function SelectDropdown({
       case "Escape":
         if (open) {
           event.preventDefault();
+          event.stopPropagation();
           setOpen(false);
         }
         break;
@@ -201,6 +220,7 @@ export function SelectDropdown({
       <button
         id={buttonId}
         type="button"
+        role="combobox"
         className={cx("select-dropdown__trigger", triggerClassName)}
         disabled={effectiveDisabled}
         aria-label={ariaLabel}
@@ -223,30 +243,47 @@ export function SelectDropdown({
 
       {open && (
         <div id={listboxId} className={cx("select-dropdown__menu", menuClassName)} role="listbox" aria-labelledby={buttonId}>
-          {options.map((option, index) => {
-            const selected = option.value === value;
-            const active = index === activeIndex;
+          {optionGroups.map((group, groupIndex) => {
+            const groupLabelId = group.label ? `${listboxId}-group-${groupIndex}` : undefined;
             return (
-              <button
-                key={option.value}
-                id={`${listboxId}-option-${index}`}
-                ref={(element) => {
-                  optionRefs.current[index] = element;
-                }}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                disabled={option.disabled}
-                tabIndex={-1}
-                className={cx("select-dropdown__option", selected && "is-selected", active && "is-active")}
-                onClick={() => selectOption(index)}
-                onMouseEnter={() => {
-                  if (!option.disabled) setActiveIndex(index);
-                }}
+              <div
+                key={`${group.label ?? "ungrouped"}-${groupIndex}`}
+                className={group.label ? "select-dropdown__group" : undefined}
+                role={group.label ? "group" : undefined}
+                aria-labelledby={groupLabelId}
               >
-                <span className="select-dropdown__option-label">{option.label}</span>
-                {selected && <Check size={14} className="select-dropdown__check" aria-hidden="true" />}
-              </button>
+                {group.label && (
+                  <div id={groupLabelId} className="select-dropdown__group-label">
+                    {group.label}
+                  </div>
+                )}
+                {group.options.map(({ option, index }) => {
+                  const selected = option.value === value;
+                  const active = index === activeIndex;
+                  return (
+                    <button
+                      key={option.value}
+                      id={`${listboxId}-option-${index}`}
+                      ref={(element) => {
+                        optionRefs.current[index] = element;
+                      }}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      disabled={option.disabled}
+                      tabIndex={-1}
+                      className={cx("select-dropdown__option", selected && "is-selected", active && "is-active")}
+                      onClick={() => selectOption(index)}
+                      onMouseEnter={() => {
+                        if (!option.disabled) setActiveIndex(index);
+                      }}
+                    >
+                      <span className="select-dropdown__option-label">{option.label}</span>
+                      {selected && <Check size={14} className="select-dropdown__check" aria-hidden="true" />}
+                    </button>
+                  );
+                })}
+              </div>
             );
           })}
         </div>

@@ -50,7 +50,7 @@ class InputEncoderGamepadTest {
     fun buildsSteamMenuAsGuideHeldWithA() {
         assertEquals(GamepadButtonMapping.GUIDE, SteamMenuChord.buttons(aPressed = false))
         assertEquals(
-            GamepadButtonMapping.GUIDE or GamepadButtonMapping.A,
+            GamepadButtonMapping.GUIDE,
             SteamMenuChord.buttons(aPressed = true),
         )
     }
@@ -65,7 +65,7 @@ class InputEncoderGamepadTest {
         val both = GamepadButtonMapping.BACK or GamepadButtonMapping.START
         assertTrue(chord.update(both))
         assertEquals(
-            GamepadButtonMapping.GUIDE or GamepadButtonMapping.A,
+            GamepadButtonMapping.GUIDE,
             chord.effectiveButtons(both),
         )
         assertTrue(chord.releaseChord())

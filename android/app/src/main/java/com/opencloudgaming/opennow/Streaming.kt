@@ -1530,8 +1530,9 @@ internal object GamepadButtonMapping {
 }
 
 internal object SteamMenuChord {
-    fun buttons(aPressed: Boolean): Int =
-        GamepadButtonMapping.GUIDE or if (aPressed) GamepadButtonMapping.A else 0
+    // Send only the Guide (Home) button. The GUIDE+A chord previously used caused unintended
+    // A-button input during gameplay; a plain Guide press is sufficient to open Steam overlay.
+    fun buttons(aPressed: Boolean): Int = GamepadButtonMapping.GUIDE
 }
 
 internal class SteamOverlayChordState {
@@ -1973,6 +1974,7 @@ private class TouchMouseState {
     private var virtualCursorX = 0f
     private var virtualCursorY = 0f
     private var virtualCursorInitialized = false
+    private var twoFingerTapCandidate = false
 
     fun reset(client: NativeStreamClient?) {
         if (selecting) client?.setTouchMouseButton(false)
@@ -1980,6 +1982,7 @@ private class TouchMouseState {
         selecting = false
         doubleTapDragCandidate = false
         virtualCursorInitialized = false
+        twoFingerTapCandidate = false
     }
 
     fun handle(
@@ -2126,6 +2129,7 @@ private class TouchMouseState {
                     return false
                 }
                 beginPointer(event, 0)
+                twoFingerTapCandidate = false
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -2133,6 +2137,20 @@ private class TouchMouseState {
                     val index = event.actionIndex
                     if (index in 0 until event.pointerCount && event.getPointerId(index) !in ignoredPointerIds) {
                         beginPointer(event, index)
+                    }
+                } else {
+                    val newIndex = event.actionIndex
+                    val newPointerId = if (newIndex in 0 until event.pointerCount) event.getPointerId(newIndex) else -1
+                    if (newPointerId >= 0 && newPointerId !in ignoredPointerIds) {
+                        var nonIgnoredCount = 0
+                        for (i in 0 until event.pointerCount) {
+                            if (event.getPointerId(i) !in ignoredPointerIds) {
+                                nonIgnoredCount++
+                            }
+                        }
+                        if (nonIgnoredCount == 2) {
+                            twoFingerTapCandidate = true
+                        }
                     }
                 }
                 return true
@@ -2217,12 +2235,18 @@ private class TouchMouseState {
             return
         }
         if (wasTap) {
-            NativeInputDiagnostics.add("touch tap click dx=${tapDistanceX.roundToInt()} dy=${tapDistanceY.roundToInt()}")
-            client.sendTouchMouseClick()
+            if (twoFingerTapCandidate) {
+                NativeInputDiagnostics.add("touch 2-finger tap right click dx=${tapDistanceX.roundToInt()} dy=${tapDistanceY.roundToInt()}")
+                client.sendTouchMouseRightClick()
+            } else {
+                NativeInputDiagnostics.add("touch tap click dx=${tapDistanceX.roundToInt()} dy=${tapDistanceY.roundToInt()}")
+                client.sendTouchMouseClick()
+            }
             lastTapTimeMs = event.eventTime
             lastTapX = x
             lastTapY = y
         }
+        twoFingerTapCandidate = false
     }
 
     private fun MotionEvent.firstPointerIndexNotIn(ignoredPointerIds: Set<Int>): Int {
@@ -2271,6 +2295,7 @@ class NativeStreamClient(
     private val onFirstVideoFrameRendered: () -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
     private val onControllerMouseAssistChanged: (Boolean) -> Unit = {},
+    private val onStreamStopped: () -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val eglBase: EglBase = EglBase.create()
@@ -2352,6 +2377,7 @@ class NativeStreamClient(
     private var controllerMouseAutoArmOnStart = false
     private var controllerMouseAssistActive = false
     private var controllerMouseAssistAutoArmed = false
+    private var controllerMouseEmulationActive = false
     private var controllerMouseMoveLogged = false
     private var controllerMouseLeftButtonDown = false
     private var controllerMouseRightButtonDown = false
@@ -2383,6 +2409,11 @@ class NativeStreamClient(
     private var phoneRumbleFallbackEnabled = true
     private var phoneRumbleSupportLogged = false
     private var released = false
+    private var controllerMouseLoopJob: Job? = null
+    private var physicalLeftStickX = 0f
+    private var physicalLeftStickY = 0f
+    private var physicalRightStickX = 0f
+    private var physicalRightStickY = 0f
 
     private data class RumbleEffectProfile(
         val weakAmplitude: Int,
@@ -2572,6 +2603,51 @@ class NativeStreamClient(
         setControllerMouseAssistActive(enabled)
     }
 
+    fun setControllerMouseEmulationActive(enabled: Boolean) {
+        if (controllerMouseEmulationActive == enabled) return
+        if (!enabled) {
+            // Release any held mouse buttons so state stays clean.
+            releaseControllerMouseButtons()
+            // Zero both physical and virtual left-stick memory so neither controller path
+            // delivers stale deflection to the game after mode is disabled.
+            lastLeftStickX = 0
+            lastLeftStickY = 0
+            virtualLeftStickActive = false
+            virtualLeftStickX = 0
+            virtualLeftStickY = 0
+        }
+        controllerMouseEmulationActive = enabled
+        // Push a fresh gamepad state immediately so the zeroed stick is sent before any next frame.
+        sendCurrentGamepadState()
+        NativeInputDiagnostics.add("controller mouse emulation ${if (enabled) "enabled" else "disabled"}")
+    }
+
+    private fun startControllerMouseLoop() {
+        controllerMouseLoopJob?.cancel()
+        controllerMouseLoopJob = scope.launch {
+            val currentJob = coroutineContext[Job]
+            while (currentJob?.isActive == true) {
+                // Poll/send mouse updates at 60Hz (approx 16ms delay; physical caches are cleared on disconnect/reset)
+                delay(16L)
+                if (controllerMouseEmulationActive) {
+                    sendControllerMouseMove(physicalLeftStickX, physicalLeftStickY)
+                }
+                if (controllerMouseAssistActive) {
+                    sendControllerMouseMove(physicalRightStickX, physicalRightStickY)
+                }
+            }
+        }
+    }
+
+    private fun stopControllerMouseLoop() {
+        controllerMouseLoopJob?.cancel()
+        controllerMouseLoopJob = null
+        physicalLeftStickX = 0f
+        physicalLeftStickY = 0f
+        physicalRightStickX = 0f
+        physicalRightStickY = 0f
+    }
+
     fun start(session: SessionInfo, settings: StreamSettings) {
         if (released) return
         this.session = session
@@ -2591,9 +2667,11 @@ class NativeStreamClient(
             "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps}",
         )
         startTransport(session, settings, transportGeneration)
+        startControllerMouseLoop()
     }
 
     fun stop() {
+        stopControllerMouseLoop()
         transportGeneration += 1
         reconnectAttempts = 0
         sessionRecoveryRequested = false
@@ -2673,8 +2751,13 @@ class NativeStreamClient(
         lastLeftStickY = 0
         lastRightStickX = 0
         lastRightStickY = 0
+        physicalLeftStickX = 0f
+        physicalLeftStickY = 0f
+        physicalRightStickX = 0f
+        physicalRightStickY = 0f
         controllerMouseAssistActive = false
         controllerMouseAssistAutoArmed = false
+        controllerMouseEmulationActive = false
         controllerMouseMoveLogged = false
         controllerMouseLeftButtonDown = false
         controllerMouseRightButtonDown = false
@@ -2871,6 +2954,14 @@ class NativeStreamClient(
         }
     }
 
+    fun sendTouchMouseRightClick() {
+        scope.launch {
+            if (!sendMouseButton(button = 3, pressed = true, source = "touch mouse right click")) return@launch
+            delay(160L)
+            sendMouseButton(button = 3, pressed = false, source = "touch mouse right click")
+        }
+    }
+
     fun sendKeyCode(keyCode: Int) {
         val down = KeyEvent(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), KeyEvent.ACTION_DOWN, keyCode, 0)
         val up = KeyEvent(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0)
@@ -3001,6 +3092,14 @@ class NativeStreamClient(
     }
 
     fun setVirtualButton(buttonMask: Int, pressed: Boolean) {
+        // When left-stick mouse emulation is active, intercept A (left click) and B (right click).
+        if (controllerMouseEmulationActive) {
+            val mouseButton = AndroidControllerMouseAssist.mouseButtonForGamepad(buttonMask)
+            if (mouseButton != null) {
+                setControllerMouseButton(mouseButton, pressed)
+                return
+            }
+        }
         virtualButtons = if (pressed) virtualButtons or buttonMask else virtualButtons and buttonMask.inv()
         val steamOverlayChordActivated = virtualSteamOverlayChord.update(virtualButtons)
         sendCurrentGamepadState()
@@ -3041,6 +3140,16 @@ class NativeStreamClient(
         val scale = radialDeadzoneScale(x, y, deadzone = 0.08f)
         val normalizedX = x * scale
         val normalizedY = y * scale
+        if (controllerMouseEmulationActive) {
+            // Redirect left-stick input to mouse movement; keep virtual stick zeroed so the game
+            // receives no stick deflection from the touch controller either.
+            sendControllerMouseMove(normalizedX, normalizedY)
+            virtualLeftStickActive = false
+            virtualLeftStickX = 0
+            virtualLeftStickY = 0
+            sendCurrentGamepadState()
+            return
+        }
         virtualLeftStickActive = normalizedX != 0f || normalizedY != 0f
         virtualLeftStickX = normalizeToInt16(normalizedX)
         virtualLeftStickY = normalizeToInt16(-normalizedY)
@@ -3129,11 +3238,32 @@ class NativeStreamClient(
             }
             is SignalingEvent.Disconnected -> {
                 recordStreamDiagnostic("signaling disconnected ${event.reason}")
-                scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
+                val reason = event.reason
+                val isSessionTerminated = reason.contains("code=1000", ignoreCase = true) ||
+                        reason.contains("http=410", ignoreCase = true) ||
+                        reason.contains("http=404", ignoreCase = true) ||
+                        reason.contains("Not Found", ignoreCase = true)
+                if (isSessionTerminated) {
+                    recordStreamDiagnostic("Signaling disconnected normally. Stopping stream.")
+                    stop()
+                    scope.launch { onStreamStopped() }
+                } else {
+                    scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
+                }
             }
             is SignalingEvent.Error -> {
                 recordStreamDiagnostic("signaling error ${event.message}")
-                scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
+                val message = event.message
+                val isSessionTerminated = message.contains("http=410", ignoreCase = true) ||
+                        message.contains("http=404", ignoreCase = true) ||
+                        message.contains("Not Found", ignoreCase = true)
+                if (isSessionTerminated) {
+                    recordStreamDiagnostic("Signaling error indicates session terminated. Stopping stream.")
+                    stop()
+                    scope.launch { onStreamStopped() }
+                } else {
+                    scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
+                }
             }
             is SignalingEvent.Log -> recordStreamDiagnostic(event.message)
             is SignalingEvent.RemoteIce -> {
@@ -3939,12 +4069,22 @@ class NativeStreamClient(
         physicalHatButtons = if (axes.hatUsedAsLeftStick) 0 else event.hatDpadButtons()
         lastLeftTrigger = normalizeToUint8(lt)
         lastRightTrigger = normalizeToUint8(rt)
-        lastLeftStickX = normalizeToInt16(leftX)
-        lastLeftStickY = normalizeToInt16(-leftY)
+        // When left-stick mouse emulation is active, keep lastLeftStick{X,Y} = 0 so the game
+        // receives no stick deflection. The actual motion is forwarded as mouse delta instead.
+        if (controllerMouseEmulationActive) {
+            lastLeftStickX = 0
+            lastLeftStickY = 0
+        } else {
+            lastLeftStickX = normalizeToInt16(leftX)
+            lastLeftStickY = normalizeToInt16(-leftY)
+        }
         lastRightStickX = normalizeToInt16(rightX)
         lastRightStickY = normalizeToInt16(-rightY)
-        val mouseSent = sendControllerMouseMove(rightX, rightY)
-        return sendCurrentGamepadState(controllerId = controllerId) || mouseSent
+        physicalLeftStickX = leftX
+        physicalLeftStickY = leftY
+        physicalRightStickX = rightX
+        physicalRightStickY = rightY
+        return sendCurrentGamepadState(controllerId = controllerId)
     }
 
     private fun dispatchGamepadKey(event: KeyEvent): Boolean {
@@ -3962,6 +4102,9 @@ class NativeStreamClient(
             }
             physicalControllerConnected = true
             physicalControllerActive = true
+            if (handleControllerMouseEmulationButton(mask, pressed)) {
+                return true
+            }
             if (handleControllerMouseButton(mask, pressed)) {
                 return true
             }
@@ -4026,20 +4169,28 @@ class NativeStreamClient(
     }
 
     private fun sendControllerMouseMove(stickX: Float, stickY: Float): Boolean {
-        if (!controllerMouseAssistActive) return false
+        if (!controllerMouseAssistActive && !controllerMouseEmulationActive) return false
         val delta = AndroidControllerMouseAssist.mouseDelta(stickX, stickY) ?: return false
         val sent = sendTouchMouseMove(delta.dx, delta.dy)
         if (sent && !controllerMouseMoveLogged) {
             controllerMouseMoveLogged = true
-            NativeInputDiagnostics.add("controller mouse move sent dx=${delta.dx} dy=${delta.dy} auto=$controllerMouseAssistAutoArmed")
+            NativeInputDiagnostics.add("controller mouse move sent dx=${delta.dx} dy=${delta.dy} auto=$controllerMouseAssistAutoArmed emulation=$controllerMouseEmulationActive")
         }
         return sent
     }
 
     private fun handleControllerMouseButton(buttonMask: Int, pressed: Boolean): Boolean {
-        if (!controllerMouseAssistActive) return false
+        if (!controllerMouseAssistActive && !controllerMouseEmulationActive) return false
         val mouseButton = AndroidControllerMouseAssist.mouseButtonForGamepad(buttonMask) ?: return false
         setControllerMouseButton(mouseButton, pressed)
+        return true
+    }
+
+    /** When emulation mode is on, intercept Gamepad A as a left mouse click (button 1). */
+    private fun handleControllerMouseEmulationButton(buttonMask: Int, pressed: Boolean): Boolean {
+        if (!controllerMouseEmulationActive) return false
+        if (buttonMask != GamepadButtonMapping.A) return false
+        setControllerMouseButton(1, pressed)
         return true
     }
 
@@ -4208,6 +4359,10 @@ class NativeStreamClient(
             lastLeftStickY = 0
             lastRightStickX = 0
             lastRightStickY = 0
+            physicalLeftStickX = 0f
+            physicalLeftStickY = 0f
+            physicalRightStickX = 0f
+            physicalRightStickY = 0f
             sendCurrentGamepadState()
         }
         updateHapticsAdvertisement(force = connectionChanged)

@@ -474,19 +474,19 @@ private fun SettingsContent(
                         )
                     }
                 }
-                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToFill) { enabled ->
-                    viewModel.updateSettings(
-                        settings.copy(
-                            stretchStreamToFill = enabled,
-                            stretchStreamToZoom = if (enabled) false else settings.stretchStreamToZoom
-                        )
-                    )
-                }
-                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_zoom), settings.stretchStreamToZoom) { enabled ->
+                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToZoom) { enabled ->
                     viewModel.updateSettings(
                         settings.copy(
                             stretchStreamToZoom = enabled,
                             stretchStreamToFill = if (enabled) false else settings.stretchStreamToFill
+                        )
+                    )
+                }
+                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_zoom), settings.stretchStreamToFill) { enabled ->
+                    viewModel.updateSettings(
+                        settings.copy(
+                            stretchStreamToFill = enabled,
+                            stretchStreamToZoom = if (enabled) false else settings.stretchStreamToZoom
                         )
                     )
                 }
@@ -641,6 +641,13 @@ private fun SettingsContent(
                 }
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
                 SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
+                SettingSwitch(
+                    label = "Mouse mode (Left stick)",
+                    checked = settings.controllerMouseEmulation,
+                    description = "Toggle in Stream Controls per session. Left stick moves the cursor, A button clicks, B button right-clicks.",
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(controllerMouseEmulation = enabled))
+                }
                 SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
                 val touchStyleOptions = listOf(
                     SettingsChoiceOption(TouchControllerStyle.V1.name, "V1 (Solid)"),

@@ -2122,6 +2122,41 @@ internal fun handleVerticalDpadFocusMove(event: androidx.compose.ui.input.key.Ke
     return focusManager.moveFocus(direction)
 }
 
+/**
+ * Key event handler for Compose Sliders when navigated by TV remote or D-pad controller.
+ * - D-pad Up/Down  → moves focus to the next/previous focusable element.
+ * - D-pad Left     → decrements the slider value by [step], clamped to [min].
+ * - D-pad Right    → increments the slider value by [step], clamped to [max].
+ * Returns true when the event is consumed (Left/Right) so that Compose does not
+ * move focus sideways instead of changing the value.
+ */
+internal fun handleSliderDpadInput(
+    event: androidx.compose.ui.input.key.KeyEvent,
+    value: Float,
+    min: Float,
+    max: Float,
+    step: Float,
+    focusManager: FocusManager,
+    onValueAdjusted: (Float) -> Unit,
+): Boolean {
+    if (event.type != KeyEventType.KeyDown) return false
+    return when (event.key) {
+        Key.DirectionUp -> focusManager.moveFocus(FocusDirection.Up)
+        Key.DirectionDown -> focusManager.moveFocus(FocusDirection.Down)
+        Key.DirectionLeft -> {
+            val newValue = (value - step).coerceIn(min, max)
+            onValueAdjusted(newValue)
+            true
+        }
+        Key.DirectionRight -> {
+            val newValue = (value + step).coerceIn(min, max)
+            onValueAdjusted(newValue)
+            true
+        }
+        else -> false
+    }
+}
+
 internal fun isTvActivateKey(event: androidx.compose.ui.input.key.KeyEvent): Boolean =
     event.type == KeyEventType.KeyUp &&
         event.key in setOf(
@@ -5514,6 +5549,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     var controllerMouseAssistEnabled by remember(session?.sessionId) { mutableStateOf(false) }
+    var controllerMouseEmulationEnabled by remember(session?.sessionId) { mutableStateOf(state.settings.controllerMouseEmulation) }
     val streamReady = session?.isReadyForStream() == true
     val tvProfile = state.androidTvProfile
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = streamReady)
@@ -5627,6 +5663,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             },
             onControllerMouseAssistChanged = {
                 controllerMouseAssistEnabled = it
+            },
+            onStreamStopped = {
+                viewModel.stopStream()
             },
         )
     }
@@ -5762,6 +5801,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     LaunchedEffect(session?.sessionId, session?.status, streamReady) {
         if (session != null && streamReady) {
             client.start(session, launchStreamSettings)
+        }
+    }
+    LaunchedEffect(client, controllerMouseEmulationEnabled, streamReady) {
+        if (streamReady) {
+            client.setControllerMouseEmulationActive(controllerMouseEmulationEnabled)
         }
     }
     LaunchedEffect(
@@ -5962,6 +6006,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     tvProfile = tvProfile,
                     touchControlsVisible = touchControlsVisible,
                     controllerMouseAssistEnabled = controllerMouseAssistEnabled,
+                    controllerMouseEmulationEnabled = controllerMouseEmulationEnabled,
                     showSessionTimer = state.settings.sessionCounterEnabled,
                     sessionTimerLimit = smartSessionLimit,
                     sessionStartedAtMs = sessionStartedAtMs,
@@ -6005,6 +6050,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                     onControllerMouseAssistToggle = {
                         client.setControllerMouseAssistEnabled(!controllerMouseAssistEnabled)
+                    },
+                    onControllerMouseEmulationToggle = {
+                        val newState = !controllerMouseEmulationEnabled
+                        controllerMouseEmulationEnabled = newState
+                        client.setControllerMouseEmulationActive(newState)
                     },
                     onExit = {
                         controlsOpen = false
@@ -7109,6 +7159,7 @@ private fun StreamControlsPanel(
     tvProfile: Boolean,
     touchControlsVisible: Boolean,
     controllerMouseAssistEnabled: Boolean,
+    controllerMouseEmulationEnabled: Boolean,
     showSessionTimer: Boolean,
     sessionTimerLimit: SmartSessionLimit,
     sessionStartedAtMs: Long,
@@ -7129,6 +7180,7 @@ private fun StreamControlsPanel(
     onBackspace: () -> Unit,
     onSteamMenuOpen: () -> Unit,
     onControllerMouseAssistToggle: () -> Unit,
+    onControllerMouseEmulationToggle: () -> Unit,
     onExit: () -> Unit,
     onTouchControlsToggle: () -> Unit,
     onMousePadToggle: () -> Unit,
@@ -7154,6 +7206,9 @@ private fun StreamControlsPanel(
     val doneFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     var statusBarOptionsOpen by remember { mutableStateOf(false) }
+    var keyboardFocused by remember { mutableStateOf(false) }
+    var exitFocused by remember { mutableStateOf(false) }
+    var doneFocused by remember { mutableStateOf(false) }
     BackHandler(enabled = statusBarOptionsOpen) {
         statusBarOptionsOpen = false
     }
@@ -7215,6 +7270,13 @@ private fun StreamControlsPanel(
                             onButtonTone()
                             onKeyboardOpen()
                         },
+                        modifier = Modifier
+                            .onFocusChanged { keyboardFocused = it.isFocused }
+                            .border(
+                                width = 1.dp,
+                                color = if (keyboardFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                shape = ButtonDefaults.outlinedShape
+                            ),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     ) {
                         Icon(
@@ -7229,6 +7291,13 @@ private fun StreamControlsPanel(
                             onButtonTone()
                             onExit()
                         },
+                        modifier = Modifier
+                            .onFocusChanged { exitFocused = it.isFocused }
+                            .border(
+                                width = 1.dp,
+                                color = if (exitFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                shape = ButtonDefaults.outlinedShape
+                            ),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                     ) {
                         Text("Exit")
@@ -7237,7 +7306,14 @@ private fun StreamControlsPanel(
                         onButtonTone()
                         onClose()
                     }
-                    val doneModifier = Modifier.focusRequester(doneFocusRequester)
+                    val doneModifier = Modifier
+                        .focusRequester(doneFocusRequester)
+                        .onFocusChanged { doneFocused = it.isFocused }
+                        .border(
+                            width = 1.dp,
+                            color = if (doneFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                            shape = ButtonDefaults.outlinedShape
+                        )
                     if (highlightDone) {
                         Button(
                             onClick = doneAction,
@@ -7287,13 +7363,13 @@ private fun StreamControlsPanel(
                     if (settings.stream.streamSharpeningEnabled) {
                         CompactSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, onSharpeningAmountChange)
                     }
-                    StreamControlSwitch("Stretch to fill", if (settings.stretchStreamToFill) "On" else "Off", settings.stretchStreamToFill) {
-                        onButtonTone()
-                        onStretchToFillToggle()
-                    }
-                    StreamControlSwitch("Stretch to zoom", if (settings.stretchStreamToZoom) "On" else "Off", settings.stretchStreamToZoom) {
+                    StreamControlSwitch("Stretch to fill", if (settings.stretchStreamToZoom) "On" else "Off", settings.stretchStreamToZoom) {
                         onButtonTone()
                         onStretchToZoomToggle()
+                    }
+                    StreamControlSwitch("Stretch to zoom", if (settings.stretchStreamToFill) "On" else "Off", settings.stretchStreamToFill) {
+                        onButtonTone()
+                        onStretchToFillToggle()
                     }
                 }
             }
@@ -7301,7 +7377,7 @@ private fun StreamControlsPanel(
                 StreamPanelSection("Input") {
                     StreamControlAction(
                         label = "Steam Menu",
-                        value = "Send Home + A to the streamed PC",
+                        value = "Send Home to the streamed PC",
                         action = "Open",
                     ) {
                         onButtonTone()
@@ -7366,6 +7442,16 @@ private fun StreamControlsPanel(
                             onButtonTone()
                             onPhoneRumbleFallbackToggle()
                         }
+                    }
+                    // Mouse mode (Left stick): shown for all profiles — works with both physical
+                    // gamepad and touch controller.
+                    StreamControlSwitch(
+                        "Mouse mode (Left stick)",
+                        if (controllerMouseEmulationEnabled) "L stick moves · A clicks · B right-clicks" else "Off",
+                        controllerMouseEmulationEnabled,
+                    ) {
+                        onButtonTone()
+                        onControllerMouseEmulationToggle()
                     }
                 }
             }
@@ -7601,11 +7687,18 @@ private fun StreamControlSwitch(label: String, value: String, checked: Boolean, 
 
 @Composable
 private fun StreamControlNavigation(label: String, value: String, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.06f))
+            .onFocusChanged { focused = it.isFocused }
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
+            .border(
+                width = 1.dp,
+                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(12.dp)
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -7658,9 +7751,9 @@ private fun CompactSlider(label: String, value: Float, min: Float, max: Float, o
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
             .border(
-                width = 1.dp,
+                width = if (focused) 2.dp else 1.dp,
                 color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
                 shape = RoundedCornerShape(12.dp)
             )
@@ -7673,7 +7766,12 @@ private fun CompactSlider(label: String, value: Float, min: Float, max: Float, o
         Slider(
             modifier = Modifier
                 .onFocusChanged { focused = it.isFocused }
-                .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
+                .onPreviewKeyEvent {
+                    handleSliderDpadInput(it, local, min, max, 0.05f, focusManager) { newVal ->
+                        local = newVal
+                        onChange(newVal)
+                    }
+                },
             value = local,
             onValueChange = {
                 local = it.coerceIn(min, max)
@@ -7693,9 +7791,9 @@ private fun CompactDpSlider(label: String, value: Float, min: Float, max: Float,
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
             .border(
-                width = 1.dp,
+                width = if (focused) 2.dp else 1.dp,
                 color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
                 shape = RoundedCornerShape(12.dp)
             )
@@ -7708,7 +7806,12 @@ private fun CompactDpSlider(label: String, value: Float, min: Float, max: Float,
         Slider(
             modifier = Modifier
                 .onFocusChanged { focused = it.isFocused }
-                .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
+                .onPreviewKeyEvent {
+                    handleSliderDpadInput(it, local, min, max, 2f, focusManager) { newVal ->
+                        local = newVal
+                        onChange(newVal)
+                    }
+                },
             value = local,
             onValueChange = {
                 local = it.coerceIn(min, max)

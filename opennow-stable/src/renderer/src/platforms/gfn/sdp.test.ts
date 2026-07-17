@@ -194,6 +194,37 @@ test("buildNvstSdp includes stream quality and partially reliable input paramete
   }
 });
 
+test("buildNvstSdp applies the official 90 FPS capture profile", () => {
+  const sdp = buildNvstSdp({
+    width: 1280,
+    height: 800,
+    fps: 90,
+    maxBitrateKbps: 50000,
+    partialReliableThresholdMs: 16,
+    codec: "H265",
+    colorQuality: "10bit_420",
+    credentials: {
+      ufrag: "ufrag-test",
+      pwd: "password-test",
+      fingerprint: "AA:BB:CC",
+    },
+  });
+
+  const lines = new Set(sdp.split(/\r?\n/));
+  for (const line of [
+    "a=video.maxFPS:90",
+    "a=video.framePacing.pid.minTargetFrameTimeUs:10555",
+    "a=vqos.dfc.enable:1",
+    "a=vqos.dfc.dfcAlgoVersion:1",
+    "a=vqos.dfc.minTargetFps:60",
+    "a=video.fbcDynamicFpsGrabTimeoutMs:9",
+    "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:11",
+  ]) {
+    assert.equal(lines.has(line), true, `missing exact SDP line: ${line}`);
+  }
+  assert.equal(lines.has("a=vqos.maxStreamFpsEstimate:240"), false);
+});
+
 test("buildNvstSdp keeps dynamic split encode updates enabled for 240 FPS by default", () => {
   const defaultSdp = buildNvstSdp({
     width: 1920,

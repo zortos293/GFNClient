@@ -198,7 +198,7 @@ data class AndroidTouchSettings(
     val mousePad: Boolean = true,
     val opacity: Float = 0.82f,
     val scale: Float = 1f,
-    val buttonScale: Float = 1f,
+    val buttonScale: Float = 1.102468f,
     val stickScale: Float = 1f,
     val edgePaddingDp: Float = 14f,
     val bottomPaddingDp: Float = 10f,
@@ -207,7 +207,18 @@ data class AndroidTouchSettings(
     val rightOffsetXDp: Float = 0f,
     val rightOffsetYDp: Float = 0f,
     val mouseDirectClick: Boolean = false,
-    val offsets: Map<String, TouchOffset> = emptyMap(),
+    val offsets: Map<String, TouchOffset> = mapOf(
+        "lstick_landscape" to TouchOffset(-67.02336f, 1.4236208f),
+        "l3_landscape" to TouchOffset(-159.65048f, 119.79623f),
+        "lt_landscape" to TouchOffset(32.63997f, -52.50644f),
+        "dpad_landscape" to TouchOffset(47.38254f, -131.70163f),
+        "rb_landscape" to TouchOffset(-124.94213f, -107.18774f),
+        "lb_landscape" to TouchOffset(119.051155f, -100.54266f),
+        "face_landscape" to TouchOffset(-20.225464f, -132.01855f),
+        "rstick_landscape" to TouchOffset(96.44574f, -7.9870353f),
+        "r3_landscape" to TouchOffset(191.65938f, 125.07891f),
+        "rt_landscape" to TouchOffset(-30.344517f, -57.420998f)
+    ),
     val touchControllerStyle: TouchControllerStyle = TouchControllerStyle.V1,
 ) {
     fun getOffset(key: String): TouchOffset = offsets[key] ?: TouchOffset()
@@ -219,12 +230,19 @@ data class AndroidTouchSettings(
     }
 
     fun withResetOffsets(): AndroidTouchSettings {
+        val defaultSettings = AndroidTouchSettings()
         return this.copy(
-            leftOffsetXDp = 0f,
-            leftOffsetYDp = 0f,
-            rightOffsetXDp = 0f,
-            rightOffsetYDp = 0f,
-            offsets = emptyMap()
+            opacity = defaultSettings.opacity,
+            scale = defaultSettings.scale,
+            buttonScale = defaultSettings.buttonScale,
+            stickScale = defaultSettings.stickScale,
+            edgePaddingDp = defaultSettings.edgePaddingDp,
+            bottomPaddingDp = defaultSettings.bottomPaddingDp,
+            leftOffsetXDp = defaultSettings.leftOffsetXDp,
+            leftOffsetYDp = defaultSettings.leftOffsetYDp,
+            rightOffsetXDp = defaultSettings.rightOffsetXDp,
+            rightOffsetYDp = defaultSettings.rightOffsetYDp,
+            offsets = defaultSettings.offsets
         )
     }
 }
@@ -259,6 +277,7 @@ data class AppSettings(
     val hideServerSelector: Boolean = false,
     val controllerMode: Boolean = false,
     val controllerUiSounds: Boolean = true,
+    val controllerMouseEmulation: Boolean = false,
     val controllerBackgroundAnimations: Boolean = true,
     val controllerThemeStyle: String = "aurora",
     val controllerThemeColor: ControllerThemeRgb = ControllerThemeRgb(),

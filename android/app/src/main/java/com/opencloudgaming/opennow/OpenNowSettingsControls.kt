@@ -201,10 +201,19 @@ internal fun NumberSlider(
 ) {
     var local by remember(value) { mutableFloatStateOf(value) }
     val focusManager = LocalFocusManager.current
+    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
+    var focused by remember { mutableStateOf(false) }
+    val showFocus = controllerNavigationEnabled && focused
+    val shape = RoundedCornerShape(14.dp)
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .border(
+                width = if (showFocus) 2.dp else 1.dp,
+                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = shape,
+            )
+            .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
@@ -213,7 +222,14 @@ internal fun NumberSlider(
             Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Slider(
-            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
+            modifier = Modifier
+                .onFocusChanged { focused = it.isFocused }
+                .onPreviewKeyEvent {
+                    handleSliderDpadInput(it, local, min, max, step, focusManager) { newVal ->
+                        local = ((newVal / step).roundToInt() * step).coerceIn(min, max)
+                        onChange(local)
+                    }
+                },
             value = local,
             onValueChange = { local = ((it / step).roundToInt() * step).coerceIn(min, max) },
             onValueChangeFinished = { onChange(local) },

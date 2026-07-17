@@ -1,9 +1,9 @@
-import { Check } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
-import type { Settings } from "@shared/gfn";
+import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
+import type { KeyboardLayout, Settings } from "@shared/gfn";
 import { keyboardLayoutOptions } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../../../shortcuts";
 import { useTranslation } from "../../../i18n";
+import { SelectDropdown } from "../../ui/SelectDropdown";
 import {
   getShortcutConflictMessage,
   isMac,
@@ -17,6 +17,14 @@ export interface SettingsInputSectionProps {
   settings: Settings;
   showAll: boolean;
   handleChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+}
+
+function formatMouseSensitivityDraft(value: number): string {
+  return String(Number(value.toFixed(2)));
+}
+
+function formatMouseAccelerationDraft(value: number): string {
+  return String(Math.round(value));
 }
 
 export function SettingsInputSection({ settings, showAll, handleChange }: SettingsInputSectionProps): JSX.Element {
@@ -37,8 +45,8 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
   const [toggleMicrophoneError, setToggleMicrophoneError] = useState<string | null>(null);
   const [screenshotError, setScreenshotError] = useState<string | null>(null);
   const [recordingError, setRecordingError] = useState<string | null>(null);
-  const [keyboardLayoutDropdownOpen, setKeyboardLayoutDropdownOpen] = useState(false);
-  const keyboardLayoutDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [mouseSensitivityDraft, setMouseSensitivityDraft] = useState(() => formatMouseSensitivityDraft(settings.mouseSensitivity));
+  const [mouseAccelerationDraft, setMouseAccelerationDraft] = useState(() => formatMouseAccelerationDraft(settings.mouseAcceleration));
 
   useEffect(() => { setToggleStatsInput(settings.shortcutToggleStats); }, [settings.shortcutToggleStats]);
   useEffect(() => { setTogglePointerLockInput(settings.shortcutTogglePointerLock); }, [settings.shortcutTogglePointerLock]);
@@ -48,21 +56,38 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
   useEffect(() => { setToggleMicrophoneInput(settings.shortcutToggleMicrophone); }, [settings.shortcutToggleMicrophone]);
   useEffect(() => { setScreenshotInput(settings.shortcutScreenshot); }, [settings.shortcutScreenshot]);
   useEffect(() => { setRecordingInput(settings.shortcutToggleRecording); }, [settings.shortcutToggleRecording]);
+  useEffect(() => { setMouseSensitivityDraft(formatMouseSensitivityDraft(settings.mouseSensitivity)); }, [settings.mouseSensitivity]);
+  useEffect(() => { setMouseAccelerationDraft(formatMouseAccelerationDraft(settings.mouseAcceleration)); }, [settings.mouseAcceleration]);
 
-  const selectedKeyboardLayoutName = useMemo(() => {
-    return keyboardLayoutOptions.find((option) => option.value === settings.keyboardLayout)?.label ?? "English (US)";
-  }, [settings.keyboardLayout]);
+  const commitMouseSensitivityDraft = (): void => {
+    const trimmed = mouseSensitivityDraft.trim();
+    const parsed = Number(trimmed);
+    if (!trimmed || !Number.isFinite(parsed)) {
+      setMouseSensitivityDraft(formatMouseSensitivityDraft(settings.mouseSensitivity));
+      return;
+    }
 
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent): void => {
-      const target = event.target as Node;
-      if (keyboardLayoutDropdownRef.current && !keyboardLayoutDropdownRef.current.contains(target)) {
-        setKeyboardLayoutDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
-  }, []);
+    const normalized = Math.round(Math.max(0.1, Math.min(4, parsed)) * 100) / 100;
+    if (normalized !== settings.mouseSensitivity) {
+      handleChange("mouseSensitivity", normalized);
+    }
+    setMouseSensitivityDraft(formatMouseSensitivityDraft(normalized));
+  };
+
+  const commitMouseAccelerationDraft = (): void => {
+    const trimmed = mouseAccelerationDraft.trim();
+    const parsed = Number(trimmed);
+    if (!trimmed || !Number.isFinite(parsed)) {
+      setMouseAccelerationDraft(formatMouseAccelerationDraft(settings.mouseAcceleration));
+      return;
+    }
+
+    const normalized = Math.max(1, Math.min(150, Math.round(parsed)));
+    if (normalized !== settings.mouseAcceleration) {
+      handleChange("mouseAcceleration", normalized);
+    }
+    setMouseAccelerationDraft(formatMouseAccelerationDraft(normalized));
+  };
 
   const handleShortcutBlur = (key: ShortcutSettingKey, rawValue: string): void => {
     const trimmed = rawValue.trim();
@@ -282,21 +307,24 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
         <h2>{t("settings.input.title")}</h2>
       </div>
       <div className="settings-rows">
-        <div className="settings-row">
-          <label className="settings-label">{t("settings.input.clipboardPaste")}</label>
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={settings.clipboardPaste}
-              onChange={(e) => handleChange("clipboardPaste", e.target.checked)}
-            />
-            <span className="settings-toggle-track" />
-          </label>
+        <div className="settings-row settings-row--column">
+          <div className="settings-row-top settings-row-top--compact">
+            <label className="settings-label" htmlFor="settings-input-clipboard-paste">{t("settings.input.clipboardPaste")}</label>
+            <label className="settings-toggle">
+              <input
+                id="settings-input-clipboard-paste"
+                type="checkbox"
+                checked={settings.clipboardPaste}
+                onChange={(e) => handleChange("clipboardPaste", e.target.checked)}
+              />
+              <span className="settings-toggle-track" />
+            </label>
+          </div>
         </div>
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-input-gyroscope-controls">
               <span className="settings-label-title">
                 {t("settings.input.gyroscopeControls")}
                 <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
@@ -304,6 +332,7 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
             </label>
             <label className="settings-toggle">
               <input
+                id="settings-input-gyroscope-controls"
                 type="checkbox"
                 checked={settings.enableGyroscopeControls}
                 onChange={(e) => handleChange("enableGyroscopeControls", e.target.checked)}
@@ -317,7 +346,7 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
         {isMac && (
           <div className="settings-row settings-row--column">
             <div className="settings-row-top settings-row-top--compact">
-              <label className="settings-label settings-label--wrap">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-input-steam-controller-compatibility">
                 <span className="settings-label-title">
                   {t("settings.input.steamControllerCompatibilityMode")}
                   <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
@@ -325,6 +354,7 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-input-steam-controller-compatibility"
                   type="checkbox"
                   checked={settings.steamControllerCompatibilityMode}
                   onChange={(e) => handleChange("steamControllerCompatibilityMode", e.target.checked)}
@@ -338,7 +368,7 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-input-native-cursor-overlay">
               <span className="settings-label-title">
                 {t("settings.input.nativeCursorOverlay")}
                 <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
@@ -346,6 +376,7 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
             </label>
             <label className="settings-toggle">
               <input
+                id="settings-input-native-cursor-overlay"
                 type="checkbox"
                 checked={settings.nativeCursorOverlay}
                 onChange={(e) => handleChange("nativeCursorOverlay", e.target.checked)}
@@ -356,70 +387,60 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
           <span className="settings-subtle-hint">{t("settings.input.nativeCursorOverlayHint")}</span>
         </div>
 
-        <div className="settings-row settings-row--top-aligned">
-          <label className="settings-label settings-label--wrap">
+        <div className="settings-row">
+          <label className="settings-label settings-label--wrap" htmlFor="settings-input-keyboard-layout">
             {t("settings.game.keyboardLayout")}
             <span className="settings-hint">{t("settings.input.keyboardLayoutHint")}</span>
           </label>
-          <div className="settings-dropdown settings-dropdown--constrained" ref={keyboardLayoutDropdownRef}>
-            <button
-              type="button"
-              className={`settings-dropdown-selected ${keyboardLayoutDropdownOpen ? "open" : ""}`}
-              onClick={() => setKeyboardLayoutDropdownOpen((open) => !open)}
-            >
-              <span className="settings-dropdown-selected-name">{selectedKeyboardLayoutName}</span>
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${keyboardLayoutDropdownOpen ? "flipped" : ""}`}>
-                <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-              </svg>
-            </button>
-            {keyboardLayoutDropdownOpen && (
-              <div className="settings-dropdown-menu settings-dropdown-menu--tall">
-                {keyboardLayoutOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`settings-dropdown-item ${settings.keyboardLayout === option.value ? "active" : ""}`}
-                    onClick={() => {
-                      handleChange("keyboardLayout", option.value);
-                      setKeyboardLayoutDropdownOpen(false);
-                    }}
-                  >
-                    <span>{option.label}</span>
-                    {settings.keyboardLayout === option.value && <Check size={14} className="settings-dropdown-check" />}
-                  </button>
-                ))}
-              </div>
-            )}
+          <div className="settings-row-control">
+            <SelectDropdown
+              id="settings-input-keyboard-layout"
+              value={settings.keyboardLayout}
+              options={keyboardLayoutOptions}
+              onChange={(value) => handleChange("keyboardLayout", value as KeyboardLayout)}
+              menuClassName="select-dropdown__menu--tall"
+            />
           </div>
         </div>
 
         {/* Mouse Sensitivity */}
         <div className="settings-row settings-row--column">
           <div className="settings-row-top">
-            <label className="settings-label">{t("settings.input.mouseSensitivity")}</label>
+            <label id="settings-input-mouse-sensitivity-label" className="settings-label" htmlFor="settings-input-mouse-sensitivity-slider">{t("settings.input.mouseSensitivity")}</label>
             <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(2)}x</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="settings-slider-control">
             <input
+              id="settings-input-mouse-sensitivity-slider"
               type="range"
               className="settings-slider"
               min={0.1}
               max={4}
               step={0.01}
               value={settings.mouseSensitivity}
-              onChange={(e) => handleChange("mouseSensitivity", parseFloat(e.target.value))}
+              onChange={(e) => {
+                const value = parseFloat(e.target.value);
+                setMouseSensitivityDraft(formatMouseSensitivityDraft(value));
+                handleChange("mouseSensitivity", value);
+              }}
             />
             <input
+              id="settings-input-mouse-sensitivity-number"
               type="number"
-              className="settings-number-input"
-              style={{ width: 80 }}
+              className="settings-text-input settings-number-input"
+              aria-labelledby="settings-input-mouse-sensitivity-label"
               min={0.1}
               max={4}
               step={0.01}
-              value={Number(settings.mouseSensitivity.toFixed(2))}
-              onChange={(e) => {
-                const v = parseFloat(e.target.value || "0");
-                if (Number.isFinite(v)) handleChange("mouseSensitivity", Math.max(0.1, Math.min(4, v)));
+              value={mouseSensitivityDraft}
+              onChange={(e) => setMouseSensitivityDraft(e.target.value)}
+              onBlur={commitMouseSensitivityDraft}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                } else if (e.key === "Escape") {
+                  commitMouseSensitivityDraft();
+                }
               }}
             />
           </div>
@@ -428,31 +449,40 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top">
-            <label className="settings-label">{t("settings.input.mouseAccelerator")}</label>
+            <label id="settings-input-mouse-acceleration-label" className="settings-label" htmlFor="settings-input-mouse-acceleration-slider">{t("settings.input.mouseAccelerator")}</label>
             <span className="settings-value-badge">{Math.round(settings.mouseAcceleration)}%</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="settings-slider-control">
             <input
+              id="settings-input-mouse-acceleration-slider"
               type="range"
               className="settings-slider"
               min={1}
               max={150}
               step={1}
               value={Math.round(settings.mouseAcceleration)}
-              onChange={(e) => handleChange("mouseAcceleration", Math.max(1, Math.min(150, Math.round(Number(e.target.value) || 1))))}
+              onChange={(e) => {
+                const value = Math.max(1, Math.min(150, Math.round(Number(e.target.value) || 1)));
+                setMouseAccelerationDraft(formatMouseAccelerationDraft(value));
+                handleChange("mouseAcceleration", value);
+              }}
             />
             <input
+              id="settings-input-mouse-acceleration-number"
               type="number"
-              className="settings-number-input"
-              style={{ width: 80 }}
+              className="settings-text-input settings-number-input"
+              aria-labelledby="settings-input-mouse-acceleration-label"
               min={1}
               max={150}
               step={1}
-              value={Math.round(settings.mouseAcceleration)}
-              onChange={(e) => {
-                const v = Number(e.target.value || "1");
-                if (Number.isFinite(v)) {
-                  handleChange("mouseAcceleration", Math.max(1, Math.min(150, Math.round(v))));
+              value={mouseAccelerationDraft}
+              onChange={(e) => setMouseAccelerationDraft(e.target.value)}
+              onBlur={commitMouseAccelerationDraft}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                } else if (e.key === "Escape") {
+                  commitMouseAccelerationDraft();
                 }
               }}
             />

@@ -1,7 +1,8 @@
-import { Check, Mic } from "lucide-react";
+import { Mic } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import type { MicrophoneMode, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
+import { SelectDropdown } from "../../ui/SelectDropdown";
 import { getMicrophonePermissionError, microphoneModeOptions } from "../settingsFormatters";
 
 export interface SettingsAudioSectionProps {
@@ -14,11 +15,9 @@ export function SettingsAudioSection({ settings, showAll, handleChange }: Settin
   const { locale, t } = useTranslation();
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
   const [microphonePermissionError, setMicrophonePermissionError] = useState<string | null>(null);
-  const [microphoneModeDropdownOpen, setMicrophoneModeDropdownOpen] = useState(false);
-  const [microphoneDeviceDropdownOpen, setMicrophoneDeviceDropdownOpen] = useState(false);
-  const microphoneModeDropdownRef = useRef<HTMLDivElement | null>(null);
-  const microphoneDeviceDropdownRef = useRef<HTMLDivElement | null>(null);
   const latestMicrophoneDeviceIdRef = useRef(settings.microphoneDeviceId);
+  const microphoneModeId = "settings-audio-microphone-mode";
+  const microphoneDeviceId = "settings-audio-microphone-device";
 
   useEffect(() => {
     latestMicrophoneDeviceIdRef.current = settings.microphoneDeviceId;
@@ -120,35 +119,24 @@ export function SettingsAudioSection({ settings, showAll, handleChange }: Settin
     }
   }, [locale, t]);
 
-  const selectedMicrophoneModeName = useMemo(() => {
-    return getMicrophoneModeLabel(settings.microphoneMode);
-  }, [settings.microphoneMode, getMicrophoneModeLabel]);
+  const localizedMicrophoneModeOptions = useMemo(
+    () => microphoneModeOptions.map((option) => ({
+      value: option.value,
+      label: getMicrophoneModeLabel(option.value),
+    })),
+    [getMicrophoneModeLabel],
+  );
 
-  const selectedMicrophoneDeviceName = useMemo(() => {
-    if (!settings.microphoneDeviceId) return t("app.labels.defaultDevice");
-    const found = microphoneDevices.find((device) => device.deviceId === settings.microphoneDeviceId);
-    return found?.label || t("settings.audio.selectedDevice");
-  }, [settings.microphoneDeviceId, microphoneDevices, locale, t]);
-
-  useEffect(() => {
-    if (settings.microphoneMode === "disabled") {
-      setMicrophoneDeviceDropdownOpen(false);
-    }
-  }, [settings.microphoneMode]);
-
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent): void => {
-      const target = event.target as Node;
-      if (microphoneModeDropdownRef.current && !microphoneModeDropdownRef.current.contains(target)) {
-        setMicrophoneModeDropdownOpen(false);
-      }
-      if (microphoneDeviceDropdownRef.current && !microphoneDeviceDropdownRef.current.contains(target)) {
-        setMicrophoneDeviceDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
-  }, []);
+  const microphoneDeviceOptions = useMemo(
+    () => [
+      { value: "", label: t("app.labels.defaultDevice") },
+      ...microphoneDevices.map((device, index) => ({
+        value: device.deviceId,
+        label: device.label || t("settings.audio.microphoneIndexed", { index: index + 1 }),
+      })),
+    ],
+    [locale, microphoneDevices, t],
+  );
 
   return (
     <section className="settings-section">
@@ -156,113 +144,50 @@ export function SettingsAudioSection({ settings, showAll, handleChange }: Settin
       <div className="settings-section-header">
         <h2>{t("settings.audio.title")}</h2>
       </div>
-        <div className="settings-rows">
+      <div className="settings-rows">
+        <div className="settings-row">
+          <label className="settings-label" htmlFor={microphoneModeId}>
+            {t("settings.audio.microphone")}
+            <span className="settings-hint">{t("settings.audio.microphoneHint")}</span>
+          </label>
+          <div className="settings-row-control">
+            <SelectDropdown
+              id={microphoneModeId}
+              value={settings.microphoneMode}
+              options={localizedMicrophoneModeOptions}
+              onChange={(value) => handleChange("microphoneMode", value as MicrophoneMode)}
+            />
+          </div>
+        </div>
+
+        {settings.microphoneMode !== "disabled" && (
           <div className="settings-row">
-            <label className="settings-label">
-              {t("settings.audio.microphone")}
-              <span className="settings-hint">{t("settings.audio.microphoneHint")}</span>
+            <label className="settings-label" htmlFor={microphoneDeviceId}>
+              <span className="settings-label--with-icon">
+                <Mic size={14} aria-hidden="true" />
+                {t("settings.audio.microphoneDevice")}
+              </span>
+              <span className="settings-hint">{t("settings.audio.microphoneDeviceHint")}</span>
             </label>
-            <div className="settings-dropdown" ref={microphoneModeDropdownRef}>
-              <button
-                type="button"
-                className={`settings-dropdown-selected ${microphoneModeDropdownOpen ? "open" : ""}`}
-                onClick={() => {
-                  setMicrophoneModeDropdownOpen((open) => !open);
-                  setMicrophoneDeviceDropdownOpen(false);
-                }}
-              >
-                <span className="settings-dropdown-selected-name">{selectedMicrophoneModeName}</span>
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${microphoneModeDropdownOpen ? "flipped" : ""}`}>
-                  <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-                </svg>
-              </button>
-              {microphoneModeDropdownOpen && (
-                <div className="settings-dropdown-menu">
-                  {microphoneModeOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={`settings-dropdown-item ${settings.microphoneMode === option.value ? "active" : ""}`}
-                      onClick={() => {
-                        handleChange("microphoneMode", option.value);
-                        setMicrophoneModeDropdownOpen(false);
-                      }}
-                    >
-                      <span>{getMicrophoneModeLabel(option.value)}</span>
-                      {settings.microphoneMode === option.value && <Check size={14} className="settings-dropdown-check" />}
-                    </button>
-                  ))}
-                </div>
+            <div className="settings-mic-device-wrap">
+              <SelectDropdown
+                id={microphoneDeviceId}
+                value={settings.microphoneDeviceId}
+                options={microphoneDeviceOptions}
+                onChange={(value) => handleChange("microphoneDeviceId", value)}
+                disabled={microphoneDevices.length === 0}
+                menuClassName="select-dropdown__menu--tall"
+              />
+              {microphonePermissionError && (
+                <span className="settings-input-hint">{microphonePermissionError}</span>
+              )}
+              {microphoneDevices.length === 0 && !microphonePermissionError && (
+                <span className="settings-subtle-hint">{t("settings.audio.noMicrophoneDevicesFound")}</span>
               )}
             </div>
           </div>
-
-          {settings.microphoneMode !== "disabled" && (
-            <div className="settings-row">
-              <label className="settings-label">
-                <div className="flex items-center gap-2">
-                  <Mic size={14} />
-                  {t("settings.audio.microphoneDevice")}
-                </div>
-                <span className="settings-hint">{t("settings.audio.microphoneDeviceHint")}</span>
-              </label>
-              <div className="settings-mic-device-wrap">
-                <div className="settings-dropdown" ref={microphoneDeviceDropdownRef}>
-                  <button
-                    type="button"
-                    className={`settings-dropdown-selected ${microphoneDeviceDropdownOpen ? "open" : ""}`}
-                    onClick={() => {
-                      if (microphoneDevices.length === 0) return;
-                      setMicrophoneDeviceDropdownOpen((open) => !open);
-                      setMicrophoneModeDropdownOpen(false);
-                    }}
-                    disabled={microphoneDevices.length === 0}
-                  >
-                    <span className="settings-dropdown-selected-name">{selectedMicrophoneDeviceName}</span>
-                    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${microphoneDeviceDropdownOpen ? "flipped" : ""}`}>
-                      <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-                    </svg>
-                  </button>
-                  {microphoneDeviceDropdownOpen && (
-                    <div className="settings-dropdown-menu settings-dropdown-menu--tall">
-                      <button
-                        type="button"
-                        className={`settings-dropdown-item ${settings.microphoneDeviceId === "" ? "active" : ""}`}
-                        onClick={() => {
-                          handleChange("microphoneDeviceId", "");
-                          setMicrophoneDeviceDropdownOpen(false);
-                        }}
-                      >
-                        <span>{t("app.labels.defaultDevice")}</span>
-                        {settings.microphoneDeviceId === "" && <Check size={14} className="settings-dropdown-check" />}
-                      </button>
-                      {microphoneDevices.map((device, index) => (
-                        <button
-                          key={device.deviceId}
-                          type="button"
-                          className={`settings-dropdown-item ${settings.microphoneDeviceId === device.deviceId ? "active" : ""}`}
-                          onClick={() => {
-                            handleChange("microphoneDeviceId", device.deviceId);
-                            setMicrophoneDeviceDropdownOpen(false);
-                          }}
-                        >
-                          <span>{device.label || t("settings.audio.microphoneIndexed", { index: index + 1 })}</span>
-                          {settings.microphoneDeviceId === device.deviceId && <Check size={14} className="settings-dropdown-check" />}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {microphonePermissionError && (
-                  <span className="text-red-400 text-xs mt-1">{microphonePermissionError}</span>
-                )}
-                {microphoneDevices.length === 0 && !microphonePermissionError && (
-                  <span className="text-yellow-400 text-xs mt-1">{t("settings.audio.noMicrophoneDevicesFound")}</span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
+        )}
+      </div>
+    </section>
   );
 }

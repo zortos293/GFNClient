@@ -73,6 +73,12 @@ export function SettingsNativeStreamerSection({
     (backend) => backend.available && backend.backend !== "software",
   ).length;
   const activeVideoBackendId = nativeStreamerStatus?.activeVideoBackend?.backend;
+  const primaryStatusMessage = nativeStreamerStatus?.message.trim() ?? "";
+  const runtimeStatusMessage = nativeStreamerStatus?.gstreamerRuntime.message.trim() ?? "";
+  const distinctRuntimeStatusMessage = runtimeStatusMessage && runtimeStatusMessage !== primaryStatusMessage
+    ? runtimeStatusMessage
+    : "";
+  const runtimePath = nativeStreamerStatus?.gstreamerRuntime.path?.trim() ?? "";
 
   const refreshNativeStreamerStatus = useCallback(async () => {
     if (!isNativeStreamerPlatform) {
@@ -282,7 +288,7 @@ export function SettingsNativeStreamerSection({
             <>
               <div className="settings-row settings-row--column">
                 <div className="settings-row-top settings-row-top--compact">
-                  <label className="settings-label settings-label--wrap">
+                  <label className="settings-label settings-label--wrap" htmlFor="settings-native-streaming-enabled">
                     <span className="settings-label-title">
                       {t("settings.nativeStreamer.nativeStreaming")}
                       <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
@@ -290,6 +296,7 @@ export function SettingsNativeStreamerSection({
                   </label>
                   <label className="settings-toggle">
                     <input
+                      id="settings-native-streaming-enabled"
                       type="checkbox"
                       checked={settings.streamClientMode === "native"}
                       onChange={(e) => handleNativeStreamerToggleChange(e.target.checked)}
@@ -300,31 +307,36 @@ export function SettingsNativeStreamerSection({
                 <span className="settings-subtle-hint">
                   {t("settings.nativeStreamer.nativeStreamingHint")}
                 </span>
-                <div className="settings-chip-row">
-                  <a className="settings-chip" href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
+                <div className="settings-native-report-links">
+                  <a href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
                     <span>{t("settings.nativeStreamer.reportOnGithubIssues")}</span>
-                    <ExternalLink size={13} />
+                    <ExternalLink size={12} />
                   </a>
-                  <a className="settings-chip" href="https://discord.gg/8EJYaJcNfD" target="_blank" rel="noreferrer">
+                  <a href="https://discord.gg/8EJYaJcNfD" target="_blank" rel="noreferrer">
                     <span>{t("settings.nativeStreamer.reportOnDiscord")}</span>
-                    <ExternalLink size={13} />
+                    <ExternalLink size={12} />
                   </a>
                 </div>
               </div>
 
-              <div className="settings-row">
-                <label className="settings-label">
-                  {t("settings.nativeStreamer.showNativeStreamerStats")}
-                  <span className="settings-hint">{t("settings.nativeStreamer.showNativeStreamerStatsHint")}</span>
-                </label>
-                <label className="settings-toggle">
-                  <input
-                    type="checkbox"
-                    checked={settings.showNativeStreamerStats}
-                    onChange={(e) => handleChange("showNativeStreamerStats", e.target.checked)}
-                  />
-                  <span className="settings-toggle-track" />
-                </label>
+              <div className="settings-row settings-row--column">
+                <div className="settings-row-top settings-row-top--compact">
+                  <label className="settings-label settings-label--wrap" htmlFor="settings-native-show-stats">
+                    <span className="settings-label-title">{t("settings.nativeStreamer.showNativeStreamerStats")}</span>
+                  </label>
+                  <label className="settings-toggle">
+                    <input
+                      id="settings-native-show-stats"
+                      type="checkbox"
+                      checked={settings.showNativeStreamerStats}
+                      onChange={(e) => handleChange("showNativeStreamerStats", e.target.checked)}
+                    />
+                    <span className="settings-toggle-track" />
+                  </label>
+                </div>
+                <span className="settings-subtle-hint">
+                  {t("settings.nativeStreamer.showNativeStreamerStatsHint")}
+                </span>
               </div>
 
               <div className="settings-row settings-row--column">
@@ -359,27 +371,26 @@ export function SettingsNativeStreamerSection({
                         ? t("settings.nativeStreamer.gstreamerReady")
                         : t("settings.nativeStreamer.notReady")}
                   </span>
-                </div>
-                <span className="settings-subtle-hint">
-                  {nativeStreamerStatus?.message ?? t("settings.nativeStreamer.statusDefaultHint")}
-                </span>
-              </div>
-
-              <div className="settings-row settings-row--column">
-                <label className="settings-label">{t("settings.nativeStreamer.gstreamerRuntime")}</label>
-                <div className="settings-chip-row">
                   <span className={`settings-inline-badge ${getGstreamerRuntimeBadgeClass(nativeStreamerStatus)}`}>
                     {formatGstreamerRuntimeLabel(nativeStreamerStatus)}
                   </span>
-                  {nativeStreamerStatus?.gstreamerRuntime.path ? (
-                    <span className="settings-inline-badge settings-inline-badge--codec">
-                      {t("settings.nativeStreamer.bundledPathDetected")}
-                    </span>
-                  ) : null}
                 </div>
                 <span className="settings-subtle-hint">
-                  {nativeStreamerStatus?.gstreamerRuntime.message ?? t("settings.nativeStreamer.runtimeDefaultHint")}
+                  {primaryStatusMessage || t("settings.nativeStreamer.statusDefaultHint")}
                 </span>
+                {distinctRuntimeStatusMessage ? (
+                  <span className="settings-subtle-hint">{distinctRuntimeStatusMessage}</span>
+                ) : null}
+                {runtimePath ? (
+                  <span className="settings-native-runtime-path">
+                    <strong>
+                      {nativeStreamerStatus?.gstreamerRuntime.bundled
+                        ? t("settings.nativeStreamer.bundledPathDetected")
+                        : t("settings.nativeStreamer.gstreamerRuntime")}
+                    </strong>
+                    <code>{runtimePath}</code>
+                  </span>
+                ) : null}
                 {!nativeStreamerStatus?.gstreamerAvailable && nativeStreamerStatus?.gstreamerRuntime.installInstructions?.length ? (
                   <div className="settings-install-steps">
                     <span className="settings-subtle-hint">
@@ -472,12 +483,12 @@ export function SettingsNativeStreamerSection({
                   </span>
                 )}
 
-                <span className="settings-subtle-hint">
-                  {nativeStreamerStatus?.gstreamerAvailable
-                    ? `${t("settings.nativeStreamer.activePath")}: ${formatNativeVideoBackendName(activeVideoBackendId)}. ${nativeStreamerStatus.codecSummary ?? t("settings.nativeStreamer.codecSupportUnknown")}. ${nativeStreamerStatus.zeroCopySummary ?? t("settings.nativeStreamer.memoryPathUnknown")}.`
-                    : nativeStreamerStatus?.activeVideoBackend?.reason
+                {(!nativeStreamerStatus?.gstreamerAvailable || hostVideoBackends.length === 0) && (
+                  <span className="settings-subtle-hint">
+                    {nativeStreamerStatus?.activeVideoBackend?.reason
                       ?? t("settings.nativeStreamer.capabilityProbeHint")}
-                </span>
+                  </span>
+                )}
               </div>
 
               {supportsNativeDirectXBackend && <div className="settings-row settings-row--column">
@@ -495,6 +506,7 @@ export function SettingsNativeStreamerSection({
                         key={option.value}
                         type="button"
                         className={`settings-chip ${settings.nativeVideoBackend === option.value ? "active" : ""}`}
+                        aria-pressed={settings.nativeVideoBackend === option.value}
                         onClick={() => handleChange("nativeVideoBackend", option.value)}
                         title={unavailable ? capability?.reason ?? t("settings.nativeStreamer.backendUnavailableOnPc") : option.description}
                         disabled={unavailable}
@@ -518,6 +530,7 @@ export function SettingsNativeStreamerSection({
                   <button
                     type="button"
                     className={`settings-chip ${!settings.enableCloudGsync ? "active" : ""}`}
+                    aria-pressed={!settings.enableCloudGsync}
                     onClick={() => setNativeFramePacing("low-latency")}
                   >
                     <span>{t("settings.nativeStreamer.lowestLatency")}</span>
@@ -525,6 +538,7 @@ export function SettingsNativeStreamerSection({
                   <button
                     type="button"
                     className={`settings-chip ${settings.enableCloudGsync ? "active" : ""}`}
+                    aria-pressed={settings.enableCloudGsync}
                     onClick={() => setNativeFramePacing("smooth")}
                   >
                     <span>{t("settings.nativeStreamer.smoothGsync")}</span>
@@ -539,10 +553,10 @@ export function SettingsNativeStreamerSection({
                 <div className="settings-row settings-row--column">
                   <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
                   <div className="settings-chip-row">
-                    <button type="button" className={`settings-chip ${!settings.nativeExternalRenderer ? "active" : ""}`} onClick={() => handleChange("nativeExternalRenderer", false)}>
+                    <button type="button" className={`settings-chip ${!settings.nativeExternalRenderer ? "active" : ""}`} aria-pressed={!settings.nativeExternalRenderer} onClick={() => handleChange("nativeExternalRenderer", false)}>
                       <span>{t("settings.nativeStreamer.renderModeInternal")}</span>
                     </button>
-                    <button type="button" className={`settings-chip ${settings.nativeExternalRenderer ? "active" : ""}`} onClick={() => handleChange("nativeExternalRenderer", true)}>
+                    <button type="button" className={`settings-chip ${settings.nativeExternalRenderer ? "active" : ""}`} aria-pressed={settings.nativeExternalRenderer} onClick={() => handleChange("nativeExternalRenderer", true)}>
                       <span>{t("settings.nativeStreamer.renderModeExternal")}</span>
                     </button>
                   </div>

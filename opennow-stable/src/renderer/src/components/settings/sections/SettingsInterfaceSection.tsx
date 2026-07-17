@@ -1,7 +1,5 @@
-import { Check } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
-import type { Settings } from "@shared/gfn";
-import { getAccentColorOption } from "../../../lib/uiCustomization";
+import { useCallback, useMemo, type JSX } from "react";
+import type { AppAccentColor, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
 import {
@@ -21,10 +19,6 @@ export interface SettingsInterfaceSectionProps {
 
 export function SettingsInterfaceSection({ settings, showAll, handleChange, onSaved }: SettingsInterfaceSectionProps): JSX.Element {
   const { locale, availableLocales, setLocale, t } = useTranslation();
-  const [appLanguageDropdownOpen, setAppLanguageDropdownOpen] = useState(false);
-  const appLanguageDropdownRef = useRef<HTMLDivElement | null>(null);
-  const [accentColorDropdownOpen, setAccentColorDropdownOpen] = useState(false);
-  const accentColorDropdownRef = useRef<HTMLDivElement | null>(null);
   const posterSizePercent = Math.round(settings.posterSizeScale * 100);
 
   const appLanguageOptions = useMemo(
@@ -32,33 +26,32 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
     [availableLocales],
   );
 
-  const selectedAppLanguageName = useMemo(() => {
-    return appLanguageOptions.find((option) => option.value === locale)?.label ?? getAppLanguageLabel(locale);
-  }, [appLanguageOptions, locale]);
-
-  const selectedAccentColor = useMemo(() => getAccentColorOption(settings.appAccentColor), [settings.appAccentColor]);
+  const accentDropdownOptions = useMemo(
+    () => accentColorOptions.map((option) => ({
+      value: option.value,
+      label: (
+        <span className="settings-accent-option">
+          <span
+            className="settings-accent-swatch"
+            aria-hidden="true"
+            style={{
+              background: option.hex,
+              boxShadow: `0 0 0 1px color-mix(in srgb, ${option.hex} 48%, rgba(255, 255, 255, 0.22))`,
+            }}
+          />
+          <span>{t(option.labelKey)}</span>
+        </span>
+      ),
+    })),
+    [locale, t],
+  );
 
   const handleAppLanguageChange = useCallback((nextLocale: string): void => {
-    setAppLanguageDropdownOpen(false);
     void setLocale(nextLocale).catch((error) => {
       console.warn("[Settings] Failed to change app language:", error);
     });
     onSaved();
   }, [onSaved, setLocale]);
-
-  useEffect(() => {
-    const handlePointerDown = (event: MouseEvent): void => {
-      const target = event.target as Node;
-      if (appLanguageDropdownRef.current && !appLanguageDropdownRef.current.contains(target)) {
-        setAppLanguageDropdownOpen(false);
-      }
-      if (accentColorDropdownRef.current && !accentColorDropdownRef.current.contains(target)) {
-        setAccentColorDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
-  }, []);
 
   return (
     <>
@@ -70,36 +63,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
         </div>
         <div className="settings-rows">
           <div className="settings-row">
-            <label className="settings-label">
+            <label className="settings-label" htmlFor="settings-interface-app-language">
               {t("settings.interface.appLanguage")}
               <span className="settings-hint">{t("settings.interface.appLanguageHint")}</span>
             </label>
-            <div className="settings-dropdown" ref={appLanguageDropdownRef}>
-              <button
-                type="button"
-                className={`settings-dropdown-selected ${appLanguageDropdownOpen ? "open" : ""}`}
-                onClick={() => setAppLanguageDropdownOpen((open) => !open)}
-              >
-                <span className="settings-dropdown-selected-name">{selectedAppLanguageName}</span>
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${appLanguageDropdownOpen ? "flipped" : ""}`}>
-                  <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-                </svg>
-              </button>
-              {appLanguageDropdownOpen && (
-                <div className="settings-dropdown-menu">
-                  {appLanguageOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={`settings-dropdown-item ${locale === option.value ? "active" : ""}`}
-                      onClick={() => handleAppLanguageChange(option.value)}
-                    >
-                      <span>{option.label}</span>
-                      {locale === option.value && <Check size={14} className="settings-dropdown-check" />}
-                    </button>
-                  ))}
-                </div>
-              )}
+            <div className="settings-row-control">
+              <SelectDropdown
+                id="settings-interface-app-language"
+                value={locale}
+                options={appLanguageOptions}
+                onChange={handleAppLanguageChange}
+              />
             </div>
           </div>
 
@@ -108,108 +82,63 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
               {t("settings.interface.theme") || "Theme"}
               <span className="settings-hint">{t("settings.interface.themeHint") || "Choose a light, dark, or system-matching theme."}</span>
             </label>
-            <SelectDropdown
-              id="appTheme"
-              value={settings.appTheme}
-              options={[
-                { value: "auto", label: t("settings.interface.themeAuto") || "Auto" },
-                { value: "light", label: t("settings.interface.themeLight") || "Light" },
-                { value: "dark", label: t("settings.interface.themeDark") || "Dark" },
-              ]}
-              onChange={(value) => handleChange("appTheme", value as any)}
-              ariaLabel={t("settings.interface.theme") || "Theme"}
-            />
-          </div>
-
-          <div className="settings-row">
-            <label className="settings-label">
-              {t("settings.interface.translucentUI") || "Translucent UI"}
-              <span className="settings-hint">{t("settings.interface.translucentUIHint") || "Enable glassmorphism and translucent overlays."}</span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.translucentUI}
-                onChange={(e) => handleChange("translucentUI", e.target.checked)}
+            <div className="settings-row-control">
+              <SelectDropdown
+                id="appTheme"
+                value={settings.appTheme}
+                options={[
+                  { value: "auto", label: t("settings.interface.themeAuto") || "Auto" },
+                  { value: "light", label: t("settings.interface.themeLight") || "Light" },
+                  { value: "dark", label: t("settings.interface.themeDark") || "Dark" },
+                ]}
+                onChange={(value) => handleChange("appTheme", value as any)}
+                ariaLabel={t("settings.interface.theme") || "Theme"}
               />
-              <span className="settings-toggle-track" />
-            </label>
+            </div>
+          </div>
+
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-translucent-ui">
+                <span className="settings-label-title">{t("settings.interface.translucentUI") || "Translucent UI"}</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  id="settings-interface-translucent-ui"
+                  type="checkbox"
+                  checked={settings.translucentUI}
+                  onChange={(e) => handleChange("translucentUI", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+            <span className="settings-subtle-hint">{t("settings.interface.translucentUIHint") || "Enable glassmorphism and translucent overlays."}</span>
           </div>
 
           <div className="settings-row">
-            <label className="settings-label">
+            <label className="settings-label" htmlFor="settings-interface-accent-color">
               {t("settings.interface.accentColor")}
               <span className="settings-hint">{t("settings.interface.accentColorHint")}</span>
             </label>
-            <div className="settings-dropdown" ref={accentColorDropdownRef}>
-              <button
-                type="button"
-                className={`settings-dropdown-selected ${accentColorDropdownOpen ? "open" : ""}`}
-                onClick={() => setAccentColorDropdownOpen((open) => !open)}
-              >
-                <span className="settings-dropdown-selected-name" style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      width: 12,
-                      height: 12,
-                      borderRadius: 9999,
-                      background: selectedAccentColor.hex,
-                      boxShadow: `0 0 0 1px color-mix(in srgb, ${selectedAccentColor.hex} 48%, rgba(255, 255, 255, 0.22))`,
-                    }}
-                  />
-                  {t(selectedAccentColor.labelKey)}
-                </span>
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${accentColorDropdownOpen ? "flipped" : ""}`}>
-                  <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-                </svg>
-              </button>
-              {accentColorDropdownOpen && (
-                <div className="settings-dropdown-menu">
-                  {accentColorOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={`settings-dropdown-item ${settings.appAccentColor === option.value ? "active" : ""}`}
-                      onClick={() => {
-                        handleChange("appAccentColor", option.value);
-                        setAccentColorDropdownOpen(false);
-                      }}
-                    >
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 10, flex: 1 }}>
-                        <span
-                          aria-hidden="true"
-                          style={{
-                            width: 20,
-                            height: 20,
-                            borderRadius: 9999,
-                            flexShrink: 0,
-                            flex: "0 0 20px",
-                            background: option.hex,
-                            boxShadow: `0 0 0 1px color-mix(in srgb, ${option.hex} 48%, rgba(255, 255, 255, 0.22))`,
-                          }}
-                        />
-                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {t(option.labelKey)}
-                        </span>
-                      </span>
-                      {settings.appAccentColor === option.value && <Check size={14} className="settings-dropdown-check" />}
-                    </button>
-                  ))}
-                </div>
-              )}
+            <div className="settings-row-control">
+              <SelectDropdown
+                id="settings-interface-accent-color"
+                value={settings.appAccentColor}
+                options={accentDropdownOptions}
+                onChange={(value) => handleChange("appAccentColor", value as AppAccentColor)}
+              />
             </div>
           </div>
 
           {/* Appearance toggles */}
-          <div className="settings-toggle-grid">
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.hideStreamOverlayButtons")}
-                <span className="settings-hint">{t("settings.interface.hideStreamOverlayButtonsHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-hide-stream-buttons">
+                <span className="settings-label-title">{t("settings.interface.hideStreamOverlayButtons")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-hide-stream-buttons"
                   type="checkbox"
                   checked={settings.hideStreamButtons}
                   onChange={(e) => handleChange("hideStreamButtons", e.target.checked)}
@@ -217,14 +146,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.hideStreamOverlayButtonsHint")}</span>
+          </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.showStatsOnStreamLaunch")}
-                <span className="settings-hint">{t("settings.interface.showStatsOnStreamLaunchHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-show-stats-on-launch">
+                <span className="settings-label-title">{t("settings.interface.showStatsOnStreamLaunch")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-show-stats-on-launch"
                   type="checkbox"
                   checked={settings.showStatsOnLaunch}
                   onChange={(e) => handleChange("showStatsOnLaunch", e.target.checked)}
@@ -232,14 +164,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.showStatsOnStreamLaunchHint")}</span>
+          </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.hideServerSelector")}
-                <span className="settings-hint">{t("settings.interface.hideServerSelectorHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-hide-server-selector">
+                <span className="settings-label-title">{t("settings.interface.hideServerSelector")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-hide-server-selector"
                   type="checkbox"
                   checked={settings.hideServerSelector}
                   onChange={(e) => handleChange("hideServerSelector", e.target.checked)}
@@ -247,14 +182,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.hideServerSelectorHint")}</span>
+          </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.showAntiAfkIndicator")}
-                <span className="settings-hint">{t("settings.interface.showAntiAfkIndicatorHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-show-anti-afk-indicator">
+                <span className="settings-label-title">{t("settings.interface.showAntiAfkIndicator")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-show-anti-afk-indicator"
                   type="checkbox"
                   checked={settings.showAntiAfkIndicator}
                   onChange={(e) => handleChange("showAntiAfkIndicator", e.target.checked)}
@@ -262,14 +200,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.showAntiAfkIndicatorHint")}</span>
+          </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.autoFullScreen")}
-                <span className="settings-hint">{t("settings.interface.autoFullScreenHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-auto-fullscreen">
+                <span className="settings-label-title">{t("settings.interface.autoFullScreen")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-auto-fullscreen"
                   type="checkbox"
                   checked={settings.autoFullScreen}
                   onChange={(e) => handleChange("autoFullScreen", e.target.checked)}
@@ -277,14 +218,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.autoFullScreenHint")}</span>
+          </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.controllerMode")}
-                <span className="settings-hint">{t("settings.interface.controllerModeHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-controller-mode">
+                <span className="settings-label-title">{t("settings.interface.controllerMode")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-controller-mode"
                   type="checkbox"
                   checked={settings.controllerMode}
                   onChange={(e) => handleChange("controllerMode", e.target.checked)}
@@ -292,14 +236,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.controllerModeHint")}</span>
+          </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.escapeExitsFullscreen")}
-                <span className="settings-hint">{t("settings.interface.escapeExitsFullscreenHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-escape-exits-fullscreen">
+                <span className="settings-label-title">{t("settings.interface.escapeExitsFullscreen")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-escape-exits-fullscreen"
                   type="checkbox"
                   checked={Boolean(settings.allowEscapeToExitFullscreen)}
                   onChange={(e) => handleChange("allowEscapeToExitFullscreen", e.target.checked)}
@@ -307,14 +254,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.escapeExitsFullscreenHint")}</span>
+          </div>
 
-            <div className="settings-row">
-              <label className="settings-label">
-                {t("settings.interface.discordRichPresence")}
-                <span className="settings-hint">{t("settings.interface.discordRichPresenceHint")}</span>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-discord-rich-presence">
+                <span className="settings-label-title">{t("settings.interface.discordRichPresence")}</span>
               </label>
               <label className="settings-toggle">
                 <input
+                  id="settings-interface-discord-rich-presence"
                   type="checkbox"
                   checked={settings.discordRichPresence}
                   onChange={(e) => handleChange("discordRichPresence", e.target.checked)}
@@ -322,14 +272,16 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                 <span className="settings-toggle-track" />
               </label>
             </div>
+            <span className="settings-subtle-hint">{t("settings.interface.discordRichPresenceHint")}</span>
           </div>
 
           <div className="settings-row settings-row--column">
             <div className="settings-row-top">
-              <label className="settings-label">{t("settings.interface.posterSize")}</label>
+              <label className="settings-label" htmlFor="settings-interface-poster-size">{t("settings.interface.posterSize")}</label>
               <span className="settings-value-badge">{posterSizePercent}%</span>
             </div>
             <input
+              id="settings-interface-poster-size"
               type="range"
               className="settings-slider"
               min={POSTER_SIZE_MIN}
@@ -341,42 +293,48 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
             <span className="settings-subtle-hint">{t("settings.interface.posterSizeHint")}</span>
           </div>
 
-          <div className="settings-row">
-            <label className="settings-label">
-              {t("settings.interface.showSessionTimeRemainingInStatsOverlay")}
-              <span className="settings-hint">{t("settings.interface.showSessionTimeRemainingInStatsOverlayHint")}</span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.showSessionTimeRemainingInStatsOverlay}
-                onChange={(e) => handleChange("showSessionTimeRemainingInStatsOverlay", e.target.checked)}
-              />
-              <span className="settings-toggle-track" />
-            </label>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-show-session-time-remaining">
+                <span className="settings-label-title">{t("settings.interface.showSessionTimeRemainingInStatsOverlay")}</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  id="settings-interface-show-session-time-remaining"
+                  type="checkbox"
+                  checked={settings.showSessionTimeRemainingInStatsOverlay}
+                  onChange={(e) => handleChange("showSessionTimeRemainingInStatsOverlay", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+            <span className="settings-subtle-hint">{t("settings.interface.showSessionTimeRemainingInStatsOverlayHint")}</span>
           </div>
 
           {/* Session Counter */}
-          <div className="settings-row">
-            <label className="settings-label">
-              {t("settings.interface.sessionElapsedCounter")}
-              <span className="settings-hint">{t("settings.interface.sessionElapsedCounterHint")}</span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                type="checkbox"
-                checked={settings.sessionCounterEnabled}
-                onChange={(e) => handleChange("sessionCounterEnabled", e.target.checked)}
-              />
-              <span className="settings-toggle-track" />
-            </label>
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top settings-row-top--compact">
+              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-session-counter">
+                <span className="settings-label-title">{t("settings.interface.sessionElapsedCounter")}</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  id="settings-interface-session-counter"
+                  type="checkbox"
+                  checked={settings.sessionCounterEnabled}
+                  onChange={(e) => handleChange("sessionCounterEnabled", e.target.checked)}
+                />
+                <span className="settings-toggle-track" />
+              </label>
+            </div>
+            <span className="settings-subtle-hint">{t("settings.interface.sessionElapsedCounterHint")}</span>
           </div>
 
           {settings.sessionCounterEnabled && (
             <>
               <div className="settings-row settings-row--column">
                 <div className="settings-row-top">
-                  <label className="settings-label">{t("settings.interface.sessionTimerReappear")}</label>
+                  <label className="settings-label" htmlFor="settings-interface-session-timer-reappear">{t("settings.interface.sessionTimerReappear")}</label>
                   <span className="settings-value-badge">
                     {settings.sessionClockShowEveryMinutes === 0
                       ? t("settings.interface.off")
@@ -384,6 +342,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
                   </span>
                 </div>
                 <input
+                  id="settings-interface-session-timer-reappear"
                   type="range"
                   className="settings-slider"
                   min={0}
@@ -397,12 +356,13 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, onSa
 
               <div className="settings-row settings-row--column">
                 <div className="settings-row-top">
-                  <label className="settings-label">{t("settings.interface.sessionTimerVisibleTime")}</label>
+                  <label className="settings-label" htmlFor="settings-interface-session-timer-visible-time">{t("settings.interface.sessionTimerVisibleTime")}</label>
                   <span className="settings-value-badge">
                     {t("app.units.seconds", { value: settings.sessionClockShowDurationSeconds })}
                   </span>
                 </div>
                 <input
+                  id="settings-interface-session-timer-visible-time"
                   type="range"
                   className="settings-slider"
                   min={5}

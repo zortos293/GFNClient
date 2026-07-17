@@ -695,7 +695,9 @@ private fun SettingsContent(
                 }
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
-                NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, 0.82f, 1.08f, 0.02f) { value -> viewModel.updateSettings(settings.copy(posterSizeScale = value)) }
+                NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 0.05f) { value ->
+                    viewModel.updateSettings(settings.copy(posterSizeScale = value))
+                }
                 NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f) { value ->
                     viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
                 }

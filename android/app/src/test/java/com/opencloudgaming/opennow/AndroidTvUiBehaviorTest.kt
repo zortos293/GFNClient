@@ -117,6 +117,25 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun screenEdgePaddingAppliesOutsideStreamOnEveryDeviceLayout() {
+        val settings = AppSettings(tvSafeAreaPaddingDp = 20f)
+
+        assertEquals(20f, appContentEdgePaddingDp(settings, inStream = false), 0f)
+        assertEquals(0f, appContentEdgePaddingDp(settings, inStream = true), 0f)
+    }
+
+    @Test
+    fun gameCardScaleChangesGridAndStoreRailDensity() {
+        assertEquals(7, scaledGameCardColumnCount(baseColumns = 5, cardScale = 0.75f, minimumColumns = 3))
+        assertEquals(5, scaledGameCardColumnCount(baseColumns = 5, cardScale = 1f, minimumColumns = 3))
+        assertEquals(4, scaledGameCardColumnCount(baseColumns = 5, cardScale = 1.4f, minimumColumns = 3))
+
+        val smallCards = storeRailVisibleCardCount(900f, 146f, 10f, 0.75f)
+        val largeCards = storeRailVisibleCardCount(900f, 146f, 10f, 1.4f)
+        assertTrue(smallCards > largeCards)
+    }
+
+    @Test
     fun localTvRemoteRequiresExplicitOptIn() {
         assertFalse(AppSettings().localTvRemoteEnabled)
     }

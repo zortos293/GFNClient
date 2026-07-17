@@ -113,6 +113,12 @@ private object WebRtcRuntime {
 }
 
 object CodecProbe {
+    private data class DecoderLimits(
+        val maxSupportedWidth: Int?,
+        val maxSupportedHeight: Int?,
+        val maxFpsByResolution: Map<String, Int>,
+    )
+
     fun report(context: Context): RuntimeCodecReport {
         WebRtcRuntime.ensureInitialized(context)
         val isTv = isAndroidTvProfile(context)
@@ -139,6 +145,7 @@ object CodecProbe {
             val nativeDecoderAvailable = runCatching { NativeCodecProbe.nativeDecoderAvailable(mime) }.getOrNull()
             val preferredDecoder = decoders.firstOrNull(::isHardwareCodec) ?: decoders.firstOrNull()
             val preferredEncoder = encoders.firstOrNull(::isHardwareCodec) ?: encoders.firstOrNull()
+            val decoderLimits = decoderLimits(mime, decoders)
             CodecCapability(
                 codec = codec,
                 decoderAvailable = decoders.isNotEmpty(),
@@ -153,6 +160,9 @@ object CodecProbe {
                 webRtcHardwareDecoderAvailable = webRtc?.hardwareDecoderAvailable,
                 webRtcDecoderName = webRtc?.decoderName,
                 webRtcCodecProfiles = webRtc?.profiles.orEmpty(),
+                maxSupportedWidth = decoderLimits.maxSupportedWidth,
+                maxSupportedHeight = decoderLimits.maxSupportedHeight,
+                maxFpsByResolution = decoderLimits.maxFpsByResolution,
             )
         }
         return RuntimeCodecReport(
@@ -170,11 +180,47 @@ object CodecProbe {
                     "codec probe codec=${capability.codec} platform=${capability.decoderName ?: "none"} " +
                         "platformHw=${capability.hardwareDecoder} native=${capability.nativeDecoderAvailable} " +
                         "webrtc=${capability.webRtcDecoderName ?: "none"} webrtcHw=${capability.webRtcHardwareDecoderAvailable} " +
-                        "profiles=${capability.webRtcCodecProfiles.joinToString("|").ifBlank { "none" }} " +
-                        "launch=${capability.streamingDecoderUsableForLaunch()}",
+                    "profiles=${capability.webRtcCodecProfiles.joinToString("|").ifBlank { "none" }} " +
+                    "max=${capability.maxSupportedWidth ?: 0}x${capability.maxSupportedHeight ?: 0} " +
+                    "launch=${capability.streamingDecoderUsableForLaunch()}",
                 )
             }
         }
+    }
+
+    private fun decoderLimits(mime: String, decoders: List<MediaCodecInfo>): DecoderLimits {
+        val candidates = decoders.filter(::isHardwareCodec).ifEmpty { decoders }
+        if (candidates.isEmpty()) return DecoderLimits(null, null, emptyMap())
+        val knownResolutions = streamAspectRatioOptions()
+            .flatMap(::streamResolutionOptionsForAspect)
+            .distinct()
+        val supportedPixels = mutableListOf<Pair<Int, Int>>()
+        val maxFpsByResolution = buildMap {
+            for (resolution in knownResolutions) {
+                val (width, height) = parseResolutionPixelsOrNull(resolution) ?: continue
+                val videoCapabilities = candidates.mapNotNull { decoder ->
+                    runCatching { decoder.getCapabilitiesForType(mime).videoCapabilities }.getOrNull()
+                }.filter { video ->
+                    runCatching { video.isSizeSupported(width, height) }.getOrDefault(false)
+                }
+                if (videoCapabilities.isEmpty()) continue
+                supportedPixels += width to height
+                val maxFps = videoCapabilities.mapNotNull { video ->
+                    runCatching {
+                        video.getSupportedFrameRatesFor(width, height).upper
+                            .takeIf { it.isFinite() && it > 0.0 }
+                            ?.roundToInt()
+                            ?.coerceIn(1, 360)
+                    }.getOrNull()
+                }.maxOrNull()
+                if (maxFps != null) put(resolution, maxFps)
+            }
+        }
+        return DecoderLimits(
+            maxSupportedWidth = supportedPixels.maxOfOrNull { it.first },
+            maxSupportedHeight = supportedPixels.maxOfOrNull { it.second },
+            maxFpsByResolution = maxFpsByResolution,
+        )
     }
 
     private fun codecInfos(mime: String, encoder: Boolean): List<MediaCodecInfo> {
@@ -1105,9 +1151,6 @@ object NativeStreamInputRouter {
                     nativeUiTouchPointerIds += event.getPointerId(index)
                 }
             }
-            MotionEvent.ACTION_UP,
-            MotionEvent.ACTION_CANCEL,
-            -> nativeUiTouchPointerIds.clear()
         }
         uiTouchPassthroughActive = nativeUiTouchPointerIds.isNotEmpty()
     }

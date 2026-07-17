@@ -387,6 +387,82 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun recoveryReclaimsExactUltrawideSessionAfterLocalCodecFallback() {
+        val original = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            fps = 60,
+            codec = VideoCodec.AV1,
+        )
+        val safeFallback = original.androidSafeVideoFallback()
+        val running = activeSession(
+            sessionId = "running-session",
+            resolution = "1680x720",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(original),
+        )
+
+        assertEquals(false, running.matchesStreamSettings(safeFallback))
+        assertEquals(
+            "running-session",
+            activeSessionRecoveryCandidate(
+                sessions = listOf(running),
+                previousSessionId = "running-session",
+                launchAppId = running.appId,
+                settings = safeFallback,
+            )?.sessionId,
+        )
+    }
+
+    @Test
+    fun recoveryDoesNotReclaimExactSessionWithDifferentGeometry() {
+        val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
+        val stale = activeSession(
+            sessionId = "running-session",
+            resolution = "1920x1080",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(settings),
+        )
+
+        assertEquals(
+            null,
+            activeSessionRecoveryCandidate(
+                sessions = listOf(stale),
+                previousSessionId = "running-session",
+                launchAppId = null,
+                settings = settings,
+            ),
+        )
+    }
+
+    @Test
+    fun recoveryKeepsStrictSignatureMatchingForOtherSessions() {
+        val original = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            fps = 60,
+            codec = VideoCodec.AV1,
+        )
+        val safeFallback = original.androidSafeVideoFallback()
+        val otherSession = activeSession(
+            sessionId = "other-session",
+            resolution = "1680x720",
+            fps = 60,
+            settingsSignature = streamSettingsSessionSignature(original),
+        )
+
+        assertEquals(
+            null,
+            activeSessionRecoveryCandidate(
+                sessions = listOf(otherSession),
+                previousSessionId = "previous-session",
+                launchAppId = otherSession.appId,
+                settings = safeFallback,
+            ),
+        )
+    }
+
+    @Test
     fun activeSessionWithUnknownMonitorModeIsNotReusedForLaunch() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9", fps = 60)
         val active = activeSession(

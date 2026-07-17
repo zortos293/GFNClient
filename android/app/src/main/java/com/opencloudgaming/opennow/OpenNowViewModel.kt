@@ -2205,21 +2205,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         baseUrl = baseUrl,
                     ).toIntOrNull()
                 }.getOrNull()
-                val matchingActiveSessions = activeSessions.filter { it.matchesStreamSettings(currentSettings) }
-                val readyCandidate = matchingActiveSessions.firstOrNull {
-                    it.sessionId == previousSession.sessionId &&
-                        it.isReadyForClaim()
-                } ?: resolvedAppId?.let { appId ->
-                    matchingActiveSessions.firstOrNull {
-                        it.appId == appId &&
-                            it.isReadyForClaim()
-                    }
+                val readyCandidate = activeSessionRecoveryCandidate(
+                    sessions = activeSessions,
+                    previousSessionId = previousSession.sessionId,
+                    launchAppId = resolvedAppId,
+                    settings = currentSettings,
+                )
+                if (readyCandidate?.sessionId == previousSession.sessionId && !readyCandidate.matchesStreamSettings(currentSettings)) {
+                    recordDebugEvent(
+                        "recovery",
+                        "Reclaiming current session after local profile fallback active=${readyCandidate.debugSummary()} settings=${currentSettings.debugSummary()}",
+                    )
+                }
+                val cachedCurrentSession = active?.takeIf {
+                    it.sessionId == previousSession.sessionId && it.matchesStreamGeometry(currentSettings)
                 }
                 val fallbackCandidate = readyCandidate
                     ?: previousSession.toRecoveryActiveSession(
                         appId = resolvedAppId ?: active?.appId ?: 0,
-                        fallbackActive = active?.takeIf { it.matchesStreamSettings(currentSettings) },
-                    )?.takeIf { it.matchesStreamSettings(currentSettings) }
+                        fallbackActive = cachedCurrentSession,
+                    )?.takeIf { it.matchesStreamGeometry(currentSettings) }
                     ?: error("The running session could not be found anymore, so recovery was not possible.")
                 recordDebugEvent("recovery", "Claiming recovery candidate ${fallbackCandidate.debugSummary()}")
                 claimActiveSessionOrContinuePolling(token, fallbackCandidate, currentSettings)

@@ -101,7 +101,7 @@
     <string name="catalog_background_original">Original OpenNOW</string>
     <string name="action_choose_image">Choose image</string>
     <string name="action_use_default">Use default</string>
-    <string name="settings_tv_safe_area">TV screen padding</string>
+    <string name="settings_tv_safe_area">Screen edge padding</string>
     <string name="settings_compact_cards">Compact game cards</string>
     <string name="settings_show_store_labels">Show store labels</string>
     <string name="settings_card_size">Game card size</string>

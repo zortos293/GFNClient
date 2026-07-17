@@ -286,6 +286,9 @@ data class AppSettings(
     val allowEscapeToExitFullscreen: Boolean = false,
 )
 
+internal const val MIN_GAME_CARD_SCALE = 0.75f
+internal const val MAX_GAME_CARD_SCALE = 1.4f
+
 internal val AppSettings.analyticsSharingEnabled: Boolean
     get() = analyticsConsentAsked && !analyticsOptOut
 
@@ -1257,12 +1260,30 @@ internal fun SessionInfo.isReadyForStream(): Boolean =
 internal fun ActiveSessionInfo.isReadyForClaim(): Boolean =
     status in setOf(2, 3) && !serverIp.isNullOrBlank()
 
-internal fun ActiveSessionInfo.matchesStreamSettings(settings: StreamSettings): Boolean {
-    if (settingsSignature != streamSettingsSessionSignature(settings)) return false
+internal fun ActiveSessionInfo.matchesStreamGeometry(settings: StreamSettings): Boolean {
     val activeResolution = parseResolutionPixelsOrNull(resolution)
     val expectedResolution = streamResolutionPixels(settings)
     val activeFps = fps?.takeIf { it > 0 }
     return activeResolution == expectedResolution && activeFps == settings.fps
+}
+
+internal fun ActiveSessionInfo.matchesStreamSettings(settings: StreamSettings): Boolean =
+    settingsSignature == streamSettingsSessionSignature(settings) && matchesStreamGeometry(settings)
+
+internal fun activeSessionRecoveryCandidate(
+    sessions: List<ActiveSessionInfo>,
+    previousSessionId: String,
+    launchAppId: Int?,
+    settings: StreamSettings,
+): ActiveSessionInfo? {
+    val readySessions = sessions.filter { it.isReadyForClaim() }
+    return readySessions.firstOrNull {
+        it.sessionId == previousSessionId && it.matchesStreamGeometry(settings)
+    } ?: launchAppId?.let { appId ->
+        readySessions.firstOrNull {
+            it.appId == appId && it.matchesStreamSettings(settings)
+        }
+    }
 }
 
 internal fun activeSessionLaunchConflict(

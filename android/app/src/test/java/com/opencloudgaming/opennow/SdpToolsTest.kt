@@ -188,6 +188,45 @@ class SdpToolsTest {
     }
 
     @Test
+    fun commonResolutionAspectAndCodecMatrixProducesMatchingSdp() {
+        val modes = listOf(
+            Triple("1280x720", "16:9", 1280 to 720),
+            Triple("1920x1080", "16:9", 1920 to 1080),
+            Triple("1920x1200", "16:10", 1920 to 1200),
+            Triple("1024x768", "4:3", 1024 to 768),
+            Triple("1680x720", "21:9", 1680 to 720),
+            Triple("2560x1080", "21:9", 2560 to 1080),
+        )
+
+        for ((resolution, aspectRatio, pixels) in modes) {
+            for (codec in VideoCodec.entries) {
+                val settings = StreamSettings(
+                    resolution = resolution,
+                    aspectRatio = aspectRatio,
+                    fps = 60,
+                    codec = codec,
+                    colorQuality = if (codec == VideoCodec.H264) ColorQuality.EightBit420 else ColorQuality.TenBit420,
+                )
+                val preferred = SdpTools.preferCodec(allCodecOffer(), settings)
+                val nvst = SdpTools.buildNvstSdp(
+                    offerSdp = preferred,
+                    settings = settings,
+                    localAnswer = """
+                        a=ice-ufrag:testUfrag
+                        a=ice-pwd:testPassword
+                        a=fingerprint:sha-256 11:22:33
+                    """.trimIndent(),
+                )
+
+                assertTrue("$resolution $codec was not preferred", SdpTools.negotiatesCodec(preferred, codec))
+                assertTrue("$resolution $codec width missing", nvst.contains("a=video.clientViewportWd:${pixels.first}"))
+                assertTrue("$resolution $codec height missing", nvst.contains("a=video.clientViewportHt:${pixels.second}"))
+                assertTrue("$resolution $codec fps missing", nvst.contains("a=video.maxFPS:60"))
+            }
+        }
+    }
+
+    @Test
     fun nvstSdpDisablesHdrForSdrStream() {
         val nvst = buildNvstSdp(StreamSettings(hdrEnabled = false))
 
@@ -238,5 +277,20 @@ class SdpToolsTest {
         a=rtpmap:97 H265/90000
         a=fmtp:97 profile-id=1
         a=rtpmap:98 H264/90000
+        """.trimIndent()
+
+    private fun allCodecOffer(): String =
+        """
+        m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100 101
+        a=rtpmap:96 H264/90000
+        a=rtpmap:97 rtx/90000
+        a=fmtp:97 apt=96
+        a=rtpmap:98 H265/90000
+        a=fmtp:98 profile-id=2;tier-flag=0;level-id=153
+        a=rtpmap:99 rtx/90000
+        a=fmtp:99 apt=98
+        a=rtpmap:100 AV1/90000
+        a=rtpmap:101 rtx/90000
+        a=fmtp:101 apt=100
         """.trimIndent()
 }

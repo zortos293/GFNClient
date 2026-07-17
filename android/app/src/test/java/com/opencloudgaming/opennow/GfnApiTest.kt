@@ -95,46 +95,51 @@ class GfnApiTest {
     }
 
     @Test
-    fun claimRequestCarriesRequestedMonitorSettings() {
+    fun claimRequestCarriesCommonResolutionAspectAndCodecMatrix() {
         val cases = listOf(
             Triple("1280x720", "16:9", 1280 to 720),
-            Triple("1680x720", "21:9", 1680 to 720),
+            Triple("1920x1080", "16:9", 1920 to 1080),
             Triple("1920x1200", "16:10", 1920 to 1200),
+            Triple("1024x768", "4:3", 1024 to 768),
+            Triple("1680x720", "21:9", 1680 to 720),
             Triple("2560x1080", "21:9", 2560 to 1080),
         )
 
         for ((resolution, aspectRatio, pixels) in cases) {
-            val settings = StreamSettings(
-                resolution = resolution,
-                aspectRatio = aspectRatio,
-                fps = 60,
-                maxBitrateMbps = 150,
-                codec = VideoCodec.H265,
-            )
-            val body = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
-            val sessionRequestData = body.getValue("sessionRequestData").jsonObject
-            val metadata = sessionRequestData.getValue("metaData").jsonArray
-            val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
-            val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
-            val signature = metadata.firstNotNullOfOrNull { item ->
-                item.jsonObject.takeIf {
-                    it["key"]?.jsonPrimitive?.contentOrNull == OPENNOW_STREAM_SETTINGS_METADATA_KEY
-                }?.get("value")?.jsonPrimitive?.contentOrNull
-            }
-            val physicalResolution = metadata.firstNotNullOfOrNull { item ->
-                item.jsonObject.takeIf {
-                    it["key"]?.jsonPrimitive?.contentOrNull == "clientPhysicalResolution"
-                }?.get("value")?.jsonPrimitive?.contentOrNull
-            }?.let { OpenNowJson.parseToJsonElement(it).jsonObject }
+            for (codec in VideoCodec.entries) {
+                val settings = StreamSettings(
+                    resolution = resolution,
+                    aspectRatio = aspectRatio,
+                    fps = 60,
+                    maxBitrateMbps = 75,
+                    codec = codec,
+                    colorQuality = if (codec == VideoCodec.H264) ColorQuality.EightBit420 else ColorQuality.TenBit420,
+                )
+                val body = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
+                val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+                val metadata = sessionRequestData.getValue("metaData").jsonArray
+                val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+                val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
+                val signature = metadata.firstNotNullOfOrNull { item ->
+                    item.jsonObject.takeIf {
+                        it["key"]?.jsonPrimitive?.contentOrNull == OPENNOW_STREAM_SETTINGS_METADATA_KEY
+                    }?.get("value")?.jsonPrimitive?.contentOrNull
+                }
+                val physicalResolution = metadata.firstNotNullOfOrNull { item ->
+                    item.jsonObject.takeIf {
+                        it["key"]?.jsonPrimitive?.contentOrNull == "clientPhysicalResolution"
+                    }?.get("value")?.jsonPrimitive?.contentOrNull
+                }?.let { OpenNowJson.parseToJsonElement(it).jsonObject }
 
-            assertEquals(streamSettingsSessionSignature(settings), signature)
-            assertEquals(pixels.first, monitor.getValue("widthInPixels").jsonPrimitive.int)
-            assertEquals(pixels.second, monitor.getValue("heightInPixels").jsonPrimitive.int)
-            assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
-            assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
-            assertEquals(false, features.getValue("reflex").jsonPrimitive.boolean)
-            assertEquals(pixels.first, physicalResolution?.getValue("horizontalPixels")?.jsonPrimitive?.int)
-            assertEquals(pixels.second, physicalResolution?.getValue("verticalPixels")?.jsonPrimitive?.int)
+                assertEquals("$resolution $codec signature", streamSettingsSessionSignature(settings), signature)
+                assertEquals("$resolution $codec width", pixels.first, monitor.getValue("widthInPixels").jsonPrimitive.int)
+                assertEquals("$resolution $codec height", pixels.second, monitor.getValue("heightInPixels").jsonPrimitive.int)
+                assertEquals("$resolution $codec fps", 60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+                assertEquals("$resolution $codec bit depth", if (codec == VideoCodec.H264) 0 else 10, features.getValue("bitDepth").jsonPrimitive.int)
+                assertEquals(false, features.getValue("reflex").jsonPrimitive.boolean)
+                assertEquals(pixels.first, physicalResolution?.getValue("horizontalPixels")?.jsonPrimitive?.int)
+                assertEquals(pixels.second, physicalResolution?.getValue("verticalPixels")?.jsonPrimitive?.int)
+            }
         }
     }
 

@@ -1331,7 +1331,7 @@ private fun MainShell(
         val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
         val storeControlsInTopBar = phoneLandscapeChrome && state.page == AppPage.Home
         val libraryControlsInTopBar = phoneLandscapeChrome && state.page == AppPage.Library
-        val tvSafeAreaPadding = if (tvProfile && !inStream) state.settings.tvSafeAreaPaddingDp.dp else 0.dp
+        val screenEdgePadding = appContentEdgePaddingDp(state.settings, inStream).dp
         LaunchedEffect(phoneLandscapeChrome, scrollChromePage) {
             if (!phoneLandscapeChrome || !scrollChromePage) {
                 phoneLandscapeScrollChromeHidden = false
@@ -1415,7 +1415,7 @@ private fun MainShell(
                 Row(
                     Modifier
                         .fillMaxSize()
-                        .padding(tvSafeAreaPadding),
+                        .padding(screenEdgePadding),
                 ) {
                     if (showNavigationRail) {
                         AppNavigationRail(
@@ -1556,7 +1556,7 @@ private fun MainShell(
                             favorite = game.id in state.settings.favoriteGameIds,
                             defaultVariantId = state.settings.defaultGameVariantIds[game.id],
                             fullScreen = tvProfile,
-                            safeAreaPadding = tvSafeAreaPadding,
+                            safeAreaPadding = screenEdgePadding,
                             onPlay = viewModel::play,
                             onChooseStore = viewModel::chooseStore,
                             onFavorite = viewModel::updateFavorites,
@@ -2739,7 +2739,7 @@ private fun GameGridSkeleton(
     storeLayout: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
+    val scale = settings.posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
@@ -2827,6 +2827,7 @@ private fun StoreStartRailsSkeleton(
                 expressiveUi = settings.expressiveUi,
                 tvProfile = tvProfile,
                 landscapeLayout = landscapeLayout,
+                cardScale = settings.posterSizeScale,
             )
         }
     }
@@ -2837,6 +2838,7 @@ private fun StoreRailSectionSkeleton(
     expressiveUi: Boolean,
     tvProfile: Boolean,
     landscapeLayout: Boolean,
+    cardScale: Float,
 ) {
     val spacing = 10.dp
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2847,11 +2849,12 @@ private fun StoreRailSectionSkeleton(
                 .clipToBounds(),
         ) {
             val baseCardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
-            val visibleCount = if (tvProfile) {
-                (((maxWidth.value + spacing.value) / (baseCardWidth.value + spacing.value)).toInt()).coerceAtLeast(1)
-            } else {
-                if (landscapeLayout) 5 else 3
-            }
+            val visibleCount = storeRailVisibleCardCount(
+                availableWidthDp = maxWidth.value,
+                baseCardWidthDp = baseCardWidth.value,
+                spacingDp = spacing.value,
+                cardScale = cardScale,
+            )
             val fittedCardWidth = ((maxWidth.value - spacing.value * (visibleCount - 1)) / visibleCount)
                 .coerceAtLeast(1f)
                 .dp
@@ -3044,7 +3047,7 @@ private fun GameGrid(
         }
         return
     }
-    val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
+    val scale = settings.posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
@@ -3124,7 +3127,7 @@ private fun StoreGameGrid(
         }
         return
     }
-    val scale = settings.posterSizeScale.coerceIn(0.82f, 1.08f)
+    val scale = settings.posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
@@ -3466,11 +3469,12 @@ private fun StoreRailSection(
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val spacing = 10.dp
             val baseCardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
-            val visibleCount = if (tvProfile) {
-                (((maxWidth.value + spacing.value) / (baseCardWidth.value + spacing.value)).toInt()).coerceAtLeast(1)
-            } else {
-                if (landscapeLayout) 5 else 3
-            }
+            val visibleCount = storeRailVisibleCardCount(
+                availableWidthDp = maxWidth.value,
+                baseCardWidthDp = baseCardWidth.value,
+                spacingDp = spacing.value,
+                cardScale = settings.posterSizeScale,
+            )
             val cardWidth = ((maxWidth.value - spacing.value * (visibleCount - 1) - 4.dp.value) / visibleCount)
                 .coerceAtLeast(1f)
                 .dp
@@ -3736,16 +3740,20 @@ private fun gameGridSpec(
     val landscapeContentHorizontalPadding = 4.dp
     return when {
         handheldLayout -> GameGridSpec(
-            columns = if (landscapeLayout) {
-                landscapePosterColumnCount(
-                    maxWidth = maxWidth,
-                    horizontalSpacing = landscapeHorizontalSpacing,
-                    horizontalContentPadding = landscapeContentHorizontalPadding,
-                    handheldLayout = true,
-                )
-            } else {
-                3
-            },
+            columns = scaledGameCardColumnCount(
+                baseColumns = if (landscapeLayout) {
+                    landscapePosterColumnCount(
+                        maxWidth = maxWidth,
+                        horizontalSpacing = landscapeHorizontalSpacing,
+                        horizontalContentPadding = landscapeContentHorizontalPadding,
+                        handheldLayout = true,
+                    )
+                } else {
+                    3
+                },
+                cardScale = settings.posterSizeScale,
+                minimumColumns = if (landscapeLayout) 4 else 2,
+            ),
             cardHeight = if (compact) 188.dp else 214.dp,
             horizontalSpacing = landscapeHorizontalSpacing,
             verticalSpacing = if (landscapeLayout) 16.dp else compactVerticalSpacing,
@@ -3753,11 +3761,15 @@ private fun gameGridSpec(
             squareCards = false,
         )
         landscapeLayout -> GameGridSpec(
-            columns = landscapePosterColumnCount(
-                maxWidth = maxWidth,
-                horizontalSpacing = landscapeHorizontalSpacing,
-                horizontalContentPadding = landscapeContentHorizontalPadding,
-                handheldLayout = handheldLayout,
+            columns = scaledGameCardColumnCount(
+                baseColumns = landscapePosterColumnCount(
+                    maxWidth = maxWidth,
+                    horizontalSpacing = landscapeHorizontalSpacing,
+                    horizontalContentPadding = landscapeContentHorizontalPadding,
+                    handheldLayout = handheldLayout,
+                ),
+                cardScale = settings.posterSizeScale,
+                minimumColumns = 3,
             ),
             cardHeight = if (compact) 188.dp else 214.dp,
             horizontalSpacing = landscapeHorizontalSpacing,
@@ -3766,7 +3778,11 @@ private fun gameGridSpec(
             squareCards = false,
         )
         compact -> GameGridSpec(
-            columns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
+            columns = scaledGameCardColumnCount(
+                baseColumns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
+                cardScale = settings.posterSizeScale,
+                minimumColumns = minimumPortraitColumns,
+            ),
             cardHeight = 218.dp,
             horizontalSpacing = compactHorizontalSpacing,
             verticalSpacing = compactVerticalSpacing,
@@ -3774,7 +3790,11 @@ private fun gameGridSpec(
             squareCards = false,
         )
         else -> GameGridSpec(
-            columns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
+            columns = scaledGameCardColumnCount(
+                baseColumns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
+                cardScale = settings.posterSizeScale,
+                minimumColumns = minimumPortraitColumns,
+            ),
             cardHeight = 246.dp,
             horizontalSpacing = compactHorizontalSpacing,
             verticalSpacing = compactVerticalSpacing,
@@ -3782,6 +3802,29 @@ private fun gameGridSpec(
             squareCards = false,
         )
     }
+}
+
+internal fun appContentEdgePaddingDp(settings: AppSettings, inStream: Boolean): Float =
+    if (inStream) 0f else settings.tvSafeAreaPaddingDp.coerceIn(0f, 120f)
+
+internal fun scaledGameCardColumnCount(
+    baseColumns: Int,
+    cardScale: Float,
+    minimumColumns: Int,
+): Int = (baseColumns / cardScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE))
+    .roundToInt()
+    .coerceIn(minimumColumns, 12)
+
+internal fun storeRailVisibleCardCount(
+    availableWidthDp: Float,
+    baseCardWidthDp: Float,
+    spacingDp: Float,
+    cardScale: Float,
+): Int {
+    val scaledCardWidth = baseCardWidthDp * cardScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
+    return ((availableWidthDp + spacingDp) / (scaledCardWidth + spacingDp))
+        .toInt()
+        .coerceAtLeast(1)
 }
 
 private fun landscapePosterColumnCount(

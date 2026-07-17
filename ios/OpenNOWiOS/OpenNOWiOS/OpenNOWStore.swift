@@ -156,7 +156,18 @@ struct CloudGame: Identifiable, Codable, Equatable {
     }
 
     var catalogArtworkUrl: String? {
-        boxArtUrl ?? imageUrl ?? heroImageUrl ?? tvBannerUrl
+        for candidate in [boxArtUrl, imageUrl] {
+            guard let candidate = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !candidate.isEmpty else {
+                continue
+            }
+            if candidate.localizedCaseInsensitiveContains("img.nvidiagrid.net"),
+               !candidate.localizedCaseInsensitiveContains("GAME_BOX_ART") {
+                continue
+            }
+            return candidate
+        }
+        return nil
     }
 
     var detailsArtworkUrl: String? {
@@ -166,6 +177,28 @@ struct CloudGame: Identifiable, Codable, Equatable {
     var queueArtworkUrl: String? {
         tvBannerUrl ?? heroImageUrl ?? imageUrl ?? boxArtUrl
     }
+}
+
+func gameMatchesCatalogSearch(_ game: CloudGame, query: String) -> Bool {
+    let terms = query
+        .split(whereSeparator: { $0.isWhitespace })
+        .map(String.init)
+    guard !terms.isEmpty else { return true }
+    let searchableText = ([
+        game.title,
+        game.genre,
+        game.platform,
+        game.summary,
+        game.longDescription,
+        game.publisher,
+        game.developer
+    ].compactMap { $0 }
+        + (game.featureLabels ?? [])
+        + (game.tags ?? [])
+        + (game.stores ?? [])
+        + game.launchOptions.map(\.storefront))
+        .joined(separator: " ")
+    return terms.allSatisfy { searchableText.localizedCaseInsensitiveContains($0) }
 }
 
 enum GFNCatalogLabelParser {
@@ -866,7 +899,7 @@ struct AppSettings: Codable, Equatable {
         streamSharpeningAmount = min(max(streamSharpeningAmount, 0), 1)
         mouseSensitivity = min(max(mouseSensitivity, 0.25), 3)
         mouseAcceleration = min(max(mouseAcceleration, 0), 2)
-        posterSizeScale = min(max(posterSizeScale, 0.75), 1.35)
+        posterSizeScale = min(max(posterSizeScale, 0.75), 1.4)
         sessionProxyUrl = sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         if preferredRegion == "Auto" {
             preferredRegion = ""
@@ -5882,6 +5915,34 @@ final class OpenNOWStore: ObservableObject {
             let mainGames = preservingCatalogMetadata(in: fetchedMainGames, from: allGames)
             let fetchedLibrary = try await api.fetchLibraryGames(session: refreshed, vpcId: vpcId)
             let library = preservingCatalogMetadata(in: fetchedLibrary, from: libraryGames + allGames)
+            let filteredRegions = regions.filter {
+                !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
+            }
+
+            guard accountIsCurrent(requestedUserId) else { return }
+            let catalogSession = AuthSession(
+                provider: refreshed.provider,
+                tokens: refreshed.tokens,
+                user: refreshed.user
+            )
+            authSession = catalogSession
+            user = refreshed.user
+            persistAuthSession(catalogSession)
+            cachedVpcId = vpcId
+            availableRegions = filteredRegions
+            allGames = mainGames
+            featuredGames = Array(mainGames.prefix(8))
+            libraryGames = library
+            persistCachedCatalog(
+                allGames: mainGames,
+                featuredGames: featuredGames,
+                libraryGames: library,
+                vpcId: vpcId,
+                for: catalogSession
+            )
+            isLoadingGames = false
+            lastError = nil
+
             var accountWarnings: [String] = []
             var refreshedSubscription = subscription
             do {
@@ -5900,9 +5961,6 @@ final class OpenNOWStore: ObservableObject {
                 )
             }
 
-            let filteredRegions = regions.filter {
-                !StreamZonePolicy.isBlocked($0.url) && !StreamZonePolicy.isBlocked($0.name)
-            }
             let streamSettings = nativeLaunchSettings(for: activeStreamSettings ?? settings, context: "refreshCatalog")
             var refreshedRemoteSessions: [RemoteSessionCandidate]?
             do {
@@ -5927,18 +5985,6 @@ final class OpenNOWStore: ObservableObject {
             user = updatedUser
             persistAuthSession(updatedSession)
 
-            cachedVpcId = vpcId
-            availableRegions = filteredRegions
-            allGames = mainGames
-            featuredGames = Array(mainGames.prefix(8))
-            libraryGames = library
-            persistCachedCatalog(
-                allGames: mainGames,
-                featuredGames: featuredGames,
-                libraryGames: library,
-                vpcId: vpcId,
-                for: updatedSession
-            )
             subscription = refreshedSubscription
             accountConnectors = refreshedConnectors
             persistCachedAccount(for: updatedSession)
@@ -5950,9 +5996,12 @@ final class OpenNOWStore: ObservableObject {
             } else {
                 remoteSessionsSnapshotLoaded = false
             }
-            lastError = accountWarnings.isEmpty
-                ? nil
-                : "Some account details could not refresh: \(accountWarnings.joined(separator: " "))"
+            if !accountWarnings.isEmpty {
+                logger.warning(
+                    "Catalog loaded while account details were partially unavailable: \(accountWarnings.joined(separator: " "), privacy: .public)"
+                )
+            }
+            lastError = nil
         } catch is CancellationError {
             // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
             return
@@ -5965,7 +6014,16 @@ final class OpenNOWStore: ObservableObject {
                 hydrateCachedCatalog(for: session, onlyMissing: true)
             }
             hydrateCachedAccount(for: session, onlyMissing: true)
-            lastError = "Account refresh failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "Account data could not be refreshed."))"
+            let message = OpenNOWErrorPresenter.message(
+                for: error,
+                fallback: "Account data could not be refreshed."
+            )
+            if allGames.isEmpty && libraryGames.isEmpty {
+                lastError = "Account refresh failed: \(message)"
+            } else {
+                logger.warning("Using cached catalog after refresh failure: \(message, privacy: .public)")
+                lastError = nil
+            }
         }
     }
 
@@ -7158,19 +7216,7 @@ final class OpenNOWStore: ObservableObject {
 
     var filteredCatalogGames: [CloudGame] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return allGames }
-        return allGames.filter {
-            $0.title.localizedCaseInsensitiveContains(query) ||
-            $0.genre.localizedCaseInsensitiveContains(query) ||
-            $0.platform.localizedCaseInsensitiveContains(query) ||
-            ($0.summary?.localizedCaseInsensitiveContains(query) ?? false) ||
-            ($0.longDescription?.localizedCaseInsensitiveContains(query) ?? false) ||
-            ($0.publisher?.localizedCaseInsensitiveContains(query) ?? false) ||
-            ($0.developer?.localizedCaseInsensitiveContains(query) ?? false) ||
-            ($0.featureLabels?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ?? false) ||
-            ($0.tags?.contains(where: { $0.localizedCaseInsensitiveContains(query) }) ?? false) ||
-            ($0.stores?.contains(where: { storeDisplayName($0).localizedCaseInsensitiveContains(query) }) ?? false)
-        }
+        return allGames.filter { gameMatchesCatalogSearch($0, query: query) }
     }
 
     var favoriteGames: [CloudGame] {

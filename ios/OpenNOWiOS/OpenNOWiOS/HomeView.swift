@@ -199,7 +199,7 @@ private actor OpenNOWImageLoadGate {
     }
 }
 
-private struct OpenNOWImageLoadRequest: Equatable {
+private struct OpenNOWImageLoadRequest: Hashable {
     let url: URL
     let targetPixelSize: Int
 }
@@ -207,6 +207,40 @@ private struct OpenNOWImageLoadRequest: Equatable {
 private struct OpenNOWLoadedImage {
     let image: UIImage
     let cost: Int
+}
+
+private enum OpenNOWImageDecoder {
+    static func downsample(data: Data, targetPixelSize: Int) -> UIImage? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, options) else {
+            return UIImage(data: data)
+        }
+        return downsample(source: source, targetPixelSize: targetPixelSize)
+            ?? UIImage(data: data)
+    }
+
+    static func downsample(fileURL: URL, targetPixelSize: Int) -> UIImage? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, options) else {
+            return UIImage(contentsOfFile: fileURL.path)
+        }
+        return downsample(source: source, targetPixelSize: targetPixelSize)
+            ?? UIImage(contentsOfFile: fileURL.path)
+    }
+
+    private static func downsample(source: CGImageSource, targetPixelSize: Int) -> UIImage? {
+        let maxPixelSize = max(160, targetPixelSize)
+        let downsampleOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ] as CFDictionary
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage, scale: UIScreen.main.scale, orientation: .up)
+    }
 }
 
 private enum OpenNOWRemoteImageFetcher {
@@ -233,7 +267,10 @@ private enum OpenNOWRemoteImageFetcher {
 
         let image = try await Task.detached(priority: .utility) {
             try Task.checkCancellation()
-            guard let decoded = downsampleImage(data: data, targetPixelSize: targetPixelSize) else {
+            guard let decoded = OpenNOWImageDecoder.downsample(
+                data: data,
+                targetPixelSize: targetPixelSize
+            ) else {
                 throw URLError(.cannotDecodeContentData)
             }
             return decoded
@@ -242,25 +279,46 @@ private enum OpenNOWRemoteImageFetcher {
         let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count
         return OpenNOWLoadedImage(image: image, cost: cost)
     }
+}
 
-    private static func downsampleImage(data: Data, targetPixelSize: Int) -> UIImage? {
-        let options = [kCGImageSourceShouldCache: false] as CFDictionary
-        guard let source = CGImageSourceCreateWithData(data as CFData, options) else {
-            return UIImage(data: data)
+private actor OpenNOWRemoteImagePipeline {
+    static let shared = OpenNOWRemoteImagePipeline()
+
+    private var inFlight: [OpenNOWImageLoadRequest: Task<UIImage, Error>] = [:]
+
+    func load(_ request: OpenNOWImageLoadRequest) async throws -> UIImage {
+        if let cached = OpenNOWImageCache.shared.image(
+            for: request.url,
+            targetPixelSize: request.targetPixelSize
+        ) {
+            return cached
+        }
+        if let existing = inFlight[request] {
+            return try await existing.value
         }
 
-        let maxPixelSize = max(160, targetPixelSize)
-        let downsampleOptions = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-        ] as CFDictionary
-
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions) else {
-            return UIImage(data: data)
+        let task = Task(priority: .utility) {
+            let loaded = try await OpenNOWRemoteImageFetcher.load(
+                url: request.url,
+                targetPixelSize: request.targetPixelSize
+            )
+            OpenNOWImageCache.shared.insert(
+                loaded.image,
+                for: request.url,
+                targetPixelSize: request.targetPixelSize,
+                cost: loaded.cost
+            )
+            return loaded.image
         }
-        return UIImage(cgImage: cgImage, scale: UIScreen.main.scale, orientation: .up)
+        inFlight[request] = task
+        do {
+            let image = try await task.value
+            inFlight[request] = nil
+            return image
+        } catch {
+            inFlight[request] = nil
+            throw error
+        }
     }
 }
 
@@ -272,7 +330,7 @@ private final class CachedRemoteImageLoader: ObservableObject {
     private var loadedRequest: OpenNOWImageLoadRequest?
 
     func load(_ request: OpenNOWImageLoadRequest) async {
-        if loadedRequest == request && (image != nil || didFail) { return }
+        if loadedRequest == request && image != nil { return }
 
         loadedRequest = request
         didFail = false
@@ -285,18 +343,9 @@ private final class CachedRemoteImageLoader: ObservableObject {
         image = nil
 
         do {
-            let loaded = try await OpenNOWRemoteImageFetcher.load(
-                url: request.url,
-                targetPixelSize: request.targetPixelSize
-            )
+            let loaded = try await OpenNOWRemoteImagePipeline.shared.load(request)
             guard !Task.isCancelled, loadedRequest == request else { return }
-            OpenNOWImageCache.shared.insert(
-                loaded.image,
-                for: request.url,
-                targetPixelSize: request.targetPixelSize,
-                cost: loaded.cost
-            )
-            image = loaded.image
+            image = loaded
         } catch is CancellationError {
             if loadedRequest == request {
                 image = nil
@@ -343,54 +392,56 @@ struct CatalogWallpaperBackdrop: View {
 
     @State private var image: UIImage?
 
-    private var loadID: String {
-        "\(isEnabled)-\(managedFilename ?? "gradient")"
-    }
-
     var body: some View {
-        Group {
-            if isEnabled {
-                ZStack {
-                    if let image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .transition(.opacity)
-                    } else {
-                        brandGradient
-                    }
+        GeometryReader { proxy in
+            let targetPixelSize = imageTargetPixelSize(for: proxy.size)
+            let loadID = "\(isEnabled)-\(managedFilename ?? "gradient")-\((targetPixelSize + 159) / 160)"
+            Group {
+                if isEnabled {
+                    ZStack {
+                        if let image {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .transition(.opacity)
+                        } else {
+                            brandGradient
+                        }
 
-                    LinearGradient(
-                        colors: [
-                            Color(uiColor: .systemBackground).opacity(0.34),
-                            Color(uiColor: .systemBackground).opacity(0.72)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+                        LinearGradient(
+                            colors: [
+                                Color(uiColor: .systemBackground).opacity(0.34),
+                                Color(uiColor: .systemBackground).opacity(0.72)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                    .clipped()
+                } else {
+                    Color(uiColor: .systemBackground)
                 }
-                .clipped()
-            } else {
-                Color(uiColor: .systemBackground)
+            }
+            .task(id: loadID) {
+                await loadManagedWallpaper(targetPixelSize: targetPixelSize)
             }
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
-        .task(id: loadID) {
-            await loadManagedWallpaper()
-        }
     }
 
     @MainActor
-    private func loadManagedWallpaper() async {
+    private func loadManagedWallpaper(targetPixelSize: Int) async {
         guard isEnabled,
               let url = CatalogWallpaperStorage.wallpaperURL(for: managedFilename) else {
             image = nil
             return
         }
-        let path = url.path
         let loaded = await Task.detached(priority: .utility) {
-            UIImage(contentsOfFile: path)
+            OpenNOWImageDecoder.downsample(
+                fileURL: url,
+                targetPixelSize: targetPixelSize
+            )
         }.value
         guard !Task.isCancelled else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
@@ -405,6 +456,12 @@ struct HomeView: View {
     @State private var selectedGameForDetails: CloudGame?
     @State private var selectedGameForLauncher: CloudGame?
     @State private var isSearchPresented = false
+
+    private var continueCardWidth: CGFloat {
+        let baseWidth: CGFloat = store.settings.compactGameCards ? 140 : 160
+        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.4))
+        return baseWidth * scale
+    }
 
     var body: some View {
         NavigationStack {
@@ -487,27 +544,40 @@ struct HomeView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            VStack(spacing: 10) {
-                ForEach(gameBannerActionRows(for: continueGameItems)) { row in
-                    GameBannerActionRowView(items: row.items)
-                }
-
-                ForEach(unknownResumableSessions) { candidate in
-                    Button {
-                        Haptics.light()
-                        store.scheduleResume(candidate: candidate)
-                    } label: {
-                        Label("Cloud Session", systemImage: "arrow.clockwise.circle")
-                            .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(continueGameItems) { item in
+                        GameBannerButton(
+                            game: item.game,
+                            subtitle: item.subtitle,
+                            badgeSystemImage: item.badgeSystemImage
+                        ) {
+                            item.onSelect()
+                        }
+                        .frame(width: continueCardWidth)
                     }
-                    .buttonStyle(.bordered)
+
+                    ForEach(unknownResumableSessions) { candidate in
+                        Button {
+                            Haptics.light()
+                            store.scheduleResume(candidate: candidate)
+                        } label: {
+                            Label("Cloud Session", systemImage: "arrow.clockwise.circle")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(width: continueCardWidth)
+                    }
                 }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 8)
             }
+            .accessibilityLabel("Continue games and sessions")
         }
     }
 
     private var comingNextSection: some View {
-        ComingNextCarousel(
+        ComingNextRail(
             games: comingNextGames,
             onOpenDetails: { selectedGameForDetails = $0 },
             onPlay: launchFromCard
@@ -706,11 +776,6 @@ struct GameBannerActionItem: Identifiable {
     let onSelect: () -> Void
 }
 
-struct GameBannerActionRowGroup: Identifiable {
-    let id: String
-    let items: [GameBannerActionItem]
-}
-
 func gameBannerRows(for games: [CloudGame]) -> [GameBannerRowGroup] {
     guard !games.isEmpty else { return [] }
     var rows: [GameBannerRowGroup] = []
@@ -720,21 +785,6 @@ func gameBannerRows(for games: [CloudGame]) -> [GameBannerRowGroup] {
     while index < games.count {
         let rowGames = Array(games[index..<min(index + 2, games.count)])
         rows.append(GameBannerRowGroup(id: rowGames.map(\.id).joined(separator: "|"), games: rowGames))
-        index += 2
-    }
-
-    return rows
-}
-
-func gameBannerActionRows(for items: [GameBannerActionItem]) -> [GameBannerActionRowGroup] {
-    guard !items.isEmpty else { return [] }
-    var rows: [GameBannerActionRowGroup] = []
-    rows.reserveCapacity((items.count + 1) / 2)
-
-    var index = 0
-    while index < items.count {
-        let rowItems = Array(items[index..<min(index + 2, items.count)])
-        rows.append(GameBannerActionRowGroup(id: rowItems.map(\.id).joined(separator: "|"), items: rowItems))
         index += 2
     }
 
@@ -828,7 +878,7 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
     @ViewBuilder let emptyActions: () -> EmptyActions
 
     private var columns: [GridItem] {
-        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.35))
+        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.4))
         let baseMinimum: CGFloat = store.settings.compactGameCards ? 132 : 154
         let baseMaximum: CGFloat = store.settings.compactGameCards ? 196 : 230
         return [
@@ -852,6 +902,7 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                             GameCatalogGridSkeletonCard()
                         }
                     }
+                    .shimmeringSkeleton()
                     .padding(.horizontal, 12)
                 } else if games.isEmpty {
                     OpenNOWUnavailableView(emptyTitle, systemImage: emptySystemImage) {
@@ -865,10 +916,17 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                 } else {
                     LazyVGrid(columns: columns, spacing: 12) {
                         ForEach(games) { game in
+                            let favorite = store.isFavorite(game)
+                            let canLaunch = OpenNOWPlatform.supportsEmbeddedStreamer
+                                && !store.launchOptions(for: game).isEmpty
                             GameCatalogGridCard(
                                 game: game,
                                 subtitle: store.settings.showGameStoreLabels ? subtitle(game) : nil,
                                 badgeSystemImage: badgeSystemImage(game),
+                                compact: store.settings.compactGameCards,
+                                favorite: favorite,
+                                canLaunch: canLaunch,
+                                onToggleFavorite: { store.toggleFavorite(game) },
                                 onOpenDetails: { onOpenDetails(game) },
                                 onPlay: { onPlay(game) }
                             )
@@ -884,7 +942,6 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
 }
 
 private struct GameCatalogGridCard: View {
-    @EnvironmentObject private var store: OpenNOWStore
     @EnvironmentObject private var controllerShortcuts: CatalogControllerShortcutCoordinator
     @FocusState private var isPosterFocused: Bool
     @State private var isLegacyPosterFocused = false
@@ -892,15 +949,15 @@ private struct GameCatalogGridCard: View {
     let game: CloudGame
     let subtitle: String?
     let badgeSystemImage: String?
+    let compact: Bool
+    let favorite: Bool
+    let canLaunch: Bool
+    let onToggleFavorite: () -> Void
     let onOpenDetails: () -> Void
     let onPlay: () -> Void
 
-    private var canLaunch: Bool {
-        OpenNOWPlatform.supportsEmbeddedStreamer && !store.launchOptions(for: game).isEmpty
-    }
-
     private var controlSize: CGFloat {
-        store.settings.compactGameCards ? 36 : 42
+        compact ? 36 : 42
     }
 
     private var isPosterVisuallyFocused: Bool {
@@ -914,10 +971,11 @@ private struct GameCatalogGridCard: View {
 
     private func toggleFavorite() {
         Haptics.light()
-        store.toggleFavorite(game)
+        onToggleFavorite()
     }
 
     private func play() {
+        guard canLaunch else { return }
         Haptics.medium()
         onPlay()
     }
@@ -929,7 +987,7 @@ private struct GameCatalogGridCard: View {
                     game: game,
                     subtitle: subtitle,
                     badgeSystemImage: badgeSystemImage,
-                    compact: store.settings.compactGameCards,
+                    compact: compact,
                     isFocused: isPosterVisuallyFocused
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -946,9 +1004,9 @@ private struct GameCatalogGridCard: View {
 
             HStack(alignment: .bottom) {
                 Button(action: toggleFavorite) {
-                    Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
+                    Image(systemName: favorite ? "heart.fill" : "heart")
                         .font(.headline.weight(.bold))
-                        .foregroundStyle(store.isFavorite(game) ? Color.red : Color.white)
+                        .foregroundStyle(favorite ? Color.red : Color.white)
                         .frame(width: controlSize, height: controlSize)
                         .background(.ultraThinMaterial, in: Circle())
                         .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
@@ -956,7 +1014,7 @@ private struct GameCatalogGridCard: View {
                 .buttonStyle(.plain)
                 .controllerFocusableCompat(fallbackActivation: toggleFavorite)
                 .contentShape(Circle())
-                .accessibilityLabel(store.isFavorite(game) ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
+                .accessibilityLabel(favorite ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
 
                 Spacer(minLength: 8)
 
@@ -974,7 +1032,7 @@ private struct GameCatalogGridCard: View {
                 .accessibilityLabel("Launch \(game.title)")
                 .disabled(!canLaunch)
             }
-            .padding(store.settings.compactGameCards ? 6 : 8)
+            .padding(compact ? 6 : 8)
             .zIndex(1)
         }
         .overlay(alignment: .topTrailing) {
@@ -982,7 +1040,7 @@ private struct GameCatalogGridCard: View {
                controllerShortcuts.isEnabled,
                controllerShortcuts.controllerConnected {
                 CatalogControllerShortcutHint(
-                    favorite: store.isFavorite(game),
+                    favorite: favorite,
                     playEnabled: canLaunch
                 )
                 .padding(6)
@@ -1009,10 +1067,7 @@ private struct GameCatalogGridCard: View {
             owner: controllerShortcutOwner,
             isFocused: focused,
             favorite: { toggleFavorite() },
-            play: {
-                guard canLaunch else { return }
-                play()
-            }
+            play: { play() }
         )
     }
 }
@@ -1057,39 +1112,10 @@ private struct GameCatalogPosterContent: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            GameArtworkView(game: game, iconSize: 42)
+            Color.black
+
+            GameArtworkView(game: game, iconSize: 42, fit: true)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            LinearGradient(
-                colors: [
-                    .clear,
-                    .black.opacity(0.24),
-                    .black.opacity(0.9)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(game.title)
-                    .font((compact ? Font.caption : Font.subheadline).weight(.semibold))
-                    .foregroundStyle(Color.white)
-                    .lineLimit(compact ? 2 : 3)
-                    .minimumScaleFactor(0.78)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Color.white.opacity(0.82))
-                        .lineLimit(1)
-                }
-            }
-            .padding(.horizontal, compact ? 8 : 10)
-            .padding(.top, compact ? 8 : 10)
-            .padding(.bottom, compact ? 48 : 58)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .aspectRatio(gameVerticalBannerAspectRatio, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1111,7 +1137,8 @@ private struct GameCatalogPosterContent: View {
                 )
         )
         .shadow(color: .black.opacity(0.14), radius: 8, y: 4)
-        .accessibilityElement(children: .combine)
+        .accessibilityLabel(game.title)
+        .accessibilityValue(subtitle ?? "")
     }
 
     private var badgeBackgroundColor: Color {
@@ -1141,7 +1168,6 @@ private struct GameCatalogGridSkeletonCard: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
-        .shimmeringSkeleton()
         .accessibilityHidden(true)
     }
 }
@@ -1166,33 +1192,6 @@ struct GameBannerRowView: View {
             }
 
             if games.count == 1 {
-                Color.clear
-                    .aspectRatio(gameVerticalBannerAspectRatio, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
-                    .accessibilityHidden(true)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-struct GameBannerActionRowView: View {
-    let items: [GameBannerActionItem]
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ForEach(items) { item in
-                GameBannerButton(
-                    game: item.game,
-                    subtitle: item.subtitle,
-                    badgeSystemImage: item.badgeSystemImage
-                ) {
-                    item.onSelect()
-                }
-                .frame(maxWidth: .infinity)
-            }
-
-            if items.count == 1 {
                 Color.clear
                     .aspectRatio(gameVerticalBannerAspectRatio, contentMode: .fit)
                     .frame(maxWidth: .infinity)
@@ -1423,11 +1422,18 @@ private struct GameLaunchDetailsArtwork: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let targetPixelSize = imageTargetPixelSize(for: proxy.size)
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(gameColor(for: game.title).opacity(0.18))
-                if let imageUrl = game.detailsArtworkUrl, let url = URL(string: imageUrl) {
-                    CachedRemoteImage(url: url, targetPixelSize: imageTargetPixelSize(for: proxy.size)) { image in
+                if let imageUrl = game.detailsArtworkUrl,
+                   let url = URL(
+                    string: optimizedNvidiaArtworkURL(
+                        imageUrl,
+                        targetPixelSize: targetPixelSize
+                    )
+                   ) {
+                    CachedRemoteImage(url: url, targetPixelSize: targetPixelSize) { image in
                         image
                             .resizable()
                             .scaledToFill()
@@ -1565,6 +1571,58 @@ private struct JumpBackInCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct ComingNextRail: View {
+    @EnvironmentObject private var store: OpenNOWStore
+
+    let games: [CloudGame]
+    let onOpenDetails: (CloudGame) -> Void
+    let onPlay: (CloudGame) -> Void
+
+    private var cardWidth: CGFloat {
+        let baseWidth: CGFloat = store.settings.compactGameCards ? 140 : 160
+        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.4))
+        return baseWidth * scale
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Coming Next", systemImage: "sparkles")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text("Recently added or updated")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 10) {
+                    ForEach(games) { game in
+                        let favorite = store.isFavorite(game)
+                        let canLaunch = OpenNOWPlatform.supportsEmbeddedStreamer
+                            && !store.launchOptions(for: game).isEmpty
+                        GameCatalogGridCard(
+                            game: game,
+                            subtitle: gameCatalogSubtitle(for: game),
+                            badgeSystemImage: nil,
+                            compact: store.settings.compactGameCards,
+                            favorite: favorite,
+                            canLaunch: canLaunch,
+                            onToggleFavorite: { store.toggleFavorite(game) },
+                            onOpenDetails: { onOpenDetails(game) },
+                            onPlay: { onPlay(game) }
+                        )
+                        .frame(width: cardWidth)
+                    }
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 4)
+            }
+            .accessibilityLabel("Coming Next games")
+        }
     }
 }
 
@@ -1883,7 +1941,7 @@ struct FeaturedGameCard: View {
 
     private var cardWidth: CGFloat {
         let baseWidth: CGFloat = store.settings.compactGameCards ? 140 : 160
-        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.35))
+        let scale = CGFloat(min(max(store.settings.posterSizeScale, 0.75), 1.4))
         return baseWidth * scale
     }
 
@@ -2670,7 +2728,8 @@ struct GameArtworkView: View {
             let targetPixelSize = imageTargetPixelSize(for: proxy.size)
             ZStack {
                 gameColor(for: game.title).opacity(0.2)
-                if let imageUrl = artworkUrl, let url = URL(string: imageUrl) {
+                if let imageUrl = artworkUrl,
+                   let url = URL(string: requestArtworkURL(imageUrl, targetPixelSize: targetPixelSize)) {
                     CachedRemoteImage(url: url, targetPixelSize: targetPixelSize) { image in
                         fittedImage(image, size: proxy.size)
                     } placeholder: {
@@ -2717,6 +2776,15 @@ struct GameArtworkView: View {
             return game.detailsArtworkUrl
         case .queue:
             return game.queueArtworkUrl
+        }
+    }
+
+    private func requestArtworkURL(_ source: String, targetPixelSize: Int) -> String {
+        switch role {
+        case .catalog:
+            return source
+        case .details, .queue:
+            return optimizedNvidiaArtworkURL(source, targetPixelSize: targetPixelSize)
         }
     }
 }
@@ -2774,6 +2842,17 @@ func imageTargetPixelSize(for size: CGSize) -> Int {
     let pixels = points * UIScreen.main.scale
     guard pixels.isFinite, pixels > 0 else { return 480 }
     return max(160, Int(ceil(pixels)))
+}
+
+func optimizedNvidiaArtworkURL(_ raw: String, targetPixelSize: Int) -> String {
+    guard raw.localizedCaseInsensitiveContains("img.nvidiagrid.net") else { return raw }
+    let markers = [";f=", ";w=", ";h=", ";dpr="]
+    let cutoff = markers.compactMap {
+        raw.range(of: $0, options: .caseInsensitive)?.lowerBound
+    }.min()
+    let base = cutoff.map { String(raw[..<$0]) } ?? raw
+    let width = min(max(targetPixelSize, 160), 1_920)
+    return "\(base);f=webp;w=\(width)"
 }
 
 func gameColor(for title: String) -> Color {

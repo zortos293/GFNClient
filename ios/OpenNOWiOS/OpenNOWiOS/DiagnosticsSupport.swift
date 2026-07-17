@@ -16,7 +16,8 @@ enum DiagnosticsSanitizer {
     ]
 
     static func sanitize(_ raw: String) -> String {
-        var value = raw
+        let protectedVersions = protectingSemanticVersions(in: raw)
+        var value = protectedVersions.value
         value = replacing(
             in: value,
             pattern: #"(?i)\b(Bearer|GFNJWT)\s+[A-Za-z0-9._~+/=-]+"#,
@@ -69,12 +70,22 @@ enum DiagnosticsSanitizer {
         )
         value = replacingMatches(
             in: value,
-            pattern: #"(?<![0-9])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![0-9])"#,
+            pattern: #"(?<=://)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![0-9])"#,
             label: "IP"
         )
         value = replacingMatches(
             in: value,
-            pattern: #"(?i)(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}(?![0-9a-f:])"#,
+            pattern: #"(?<![0-9/])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![0-9])"#,
+            label: "IP"
+        )
+        value = replacingMatches(
+            in: value,
+            pattern: #"(?i)(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![0-9a-f:])"#,
+            label: "IP"
+        )
+        value = replacingMatches(
+            in: value,
+            pattern: #"(?i)(?<![0-9a-f:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?(?![0-9a-f:])"#,
             label: "IP"
         )
         value = replacingMatches(
@@ -87,7 +98,7 @@ enum DiagnosticsSanitizer {
             pattern: #"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/=])"#,
             label: "OPAQUE"
         )
-        return value
+        return protectedVersions.restoring(in: value)
     }
 
     static func redactedHeaders(_ headers: [String: String]) -> String {
@@ -201,6 +212,41 @@ enum DiagnosticsSanitizer {
             result.replaceSubrange(swiftRange, with: fingerprint(String(result[swiftRange]), label: label))
         }
         return result
+    }
+
+    private struct ProtectedText {
+        var value: String
+        var replacements: [String: String]
+
+        func restoring(in sanitized: String) -> String {
+            replacements.reduce(sanitized) { result, replacement in
+                result.replacingOccurrences(of: replacement.key, with: replacement.value)
+            }
+        }
+    }
+
+    private static func protectingSemanticVersions(in raw: String) -> ProtectedText {
+        let patterns = [
+            #"(?i)\b[a-z0-9_-]*(?:version|build)\s*[:=]\s*\d+(?:\.\d+){3}\b"#,
+            #"(?i)\b(?:Chrome|Safari|GFN-PC|NVIDIACEFClient)/\d+(?:\.\d+){3}\b"#
+        ]
+        var protected = ProtectedText(value: raw, replacements: [:])
+        var nextIndex = 0
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let matches = regex.matches(
+                in: protected.value,
+                range: NSRange(protected.value.startIndex..., in: protected.value)
+            )
+            for match in matches.reversed() {
+                guard let range = Range(match.range, in: protected.value) else { continue }
+                let placeholder = "[SAFE_VERSION_\(nextIndex)]"
+                nextIndex += 1
+                protected.replacements[placeholder] = String(protected.value[range])
+                protected.value.replaceSubrange(range, with: placeholder)
+            }
+        }
+        return protected
     }
 }
 

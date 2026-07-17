@@ -15,6 +15,149 @@ import Network
 import os
 #endif
 
+#if os(iOS) && canImport(WebRTC)
+enum NativeStreamAudioSessionPolicy {
+    static func category(enableMic: Bool) -> AVAudioSession.Category {
+        enableMic ? .playAndRecord : .playback
+    }
+
+    static func mode(enableMic: Bool) -> AVAudioSession.Mode {
+        enableMic ? .voiceChat : .moviePlayback
+    }
+
+    static func options(enableMic: Bool) -> AVAudioSession.CategoryOptions {
+        enableMic ? [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker] : []
+    }
+}
+
+func nativeStreamShouldUseFilteredRenderer(
+    osMajorVersion: Int,
+    streamSharpeningEnabled: Bool,
+    isSimulator: Bool
+) -> Bool {
+    isSimulator || osMajorVersion >= 26 || streamSharpeningEnabled
+}
+
+enum NativeStreamTransportPolicy {
+    static let offerTimeout: TimeInterval = 12
+    static let iceDisconnectedGrace: TimeInterval = 3.5
+    static let allowsTCPCandidates = true
+}
+
+enum NativeStreamLivenessAction: Equatable {
+    case none
+    case requestKeyframe(stalledFor: TimeInterval, attempt: Int)
+    case restartTransport(stalledFor: TimeInterval)
+}
+
+struct NativeStreamLivenessWatchdog {
+    private let keyframeAfter: TimeInterval
+    private let keyframeInterval: TimeInterval
+    private let restartAfter: TimeInterval
+    private var lastProgressAt: TimeInterval?
+    private var lastBytesReceived: Int?
+    private var lastFramesDecoded: Int?
+    private var lastKeyframeRequestAt: TimeInterval?
+    private var keyframeAttempts = 0
+    private(set) var latestObservationProgressed = false
+
+    init(
+        keyframeAfter: TimeInterval = 5,
+        keyframeInterval: TimeInterval = 2.5,
+        restartAfter: TimeInterval = 10
+    ) {
+        self.keyframeAfter = keyframeAfter
+        self.keyframeInterval = keyframeInterval
+        self.restartAfter = restartAfter
+    }
+
+    mutating func reset() {
+        lastProgressAt = nil
+        lastBytesReceived = nil
+        lastFramesDecoded = nil
+        lastKeyframeRequestAt = nil
+        keyframeAttempts = 0
+        latestObservationProgressed = false
+    }
+
+    mutating func markConnected(now: TimeInterval) {
+        lastProgressAt = now
+        lastKeyframeRequestAt = nil
+        keyframeAttempts = 0
+    }
+
+    mutating func observe(
+        now: TimeInterval,
+        bytesReceived: Int?,
+        framesDecoded: Int?,
+        connected: Bool
+    ) -> NativeStreamLivenessAction {
+        latestObservationProgressed = false
+        guard connected else {
+            reset()
+            return .none
+        }
+
+        let progressed: Bool
+        if let framesDecoded {
+            progressed = lastFramesDecoded.map { framesDecoded > $0 } ?? (framesDecoded > 0)
+        } else if let bytesReceived {
+            progressed = lastBytesReceived.map { bytesReceived > $0 } ?? (bytesReceived > 0)
+        } else {
+            progressed = false
+        }
+        if let bytesReceived {
+            lastBytesReceived = bytesReceived
+        }
+        if let framesDecoded {
+            lastFramesDecoded = framesDecoded
+        }
+        if progressed {
+            latestObservationProgressed = true
+            lastProgressAt = now
+            lastKeyframeRequestAt = nil
+            keyframeAttempts = 0
+            return .none
+        }
+
+        guard let lastProgressAt else {
+            self.lastProgressAt = now
+            return .none
+        }
+        let stalledFor = now - lastProgressAt
+        if stalledFor >= restartAfter {
+            reset()
+            return .restartTransport(stalledFor: stalledFor)
+        }
+        let keyframeDue = lastKeyframeRequestAt.map { now - $0 >= keyframeInterval } ?? true
+        if stalledFor >= keyframeAfter, keyframeDue {
+            lastKeyframeRequestAt = now
+            keyframeAttempts += 1
+            return .requestKeyframe(stalledFor: stalledFor, attempt: keyframeAttempts)
+        }
+        return .none
+    }
+}
+
+struct NativeStreamRecoveryProgressTracker {
+    private static let stableSampleCount = 3
+    private var consecutiveProgressSamples = 0
+    private var stable = false
+
+    mutating func observe(progressed: Bool) -> Bool {
+        guard !stable else { return false }
+        guard progressed else {
+            consecutiveProgressSamples = 0
+            return false
+        }
+        consecutiveProgressSamples += 1
+        guard consecutiveProgressSamples >= Self.stableSampleCount else { return false }
+        stable = true
+        return true
+    }
+}
+#endif
+
 enum StreamSessionTimerMode: Equatable {
     case countdown
     case stopwatch
@@ -179,6 +322,7 @@ struct StreamerView: View {
         onStreamTutorialCompleted: @escaping () -> Void = {},
         onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
+        onTransportStable: @escaping () -> Void = {},
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onClose: @escaping () -> Void,
@@ -197,6 +341,7 @@ struct StreamerView: View {
                 onStreamTutorialCompleted: onStreamTutorialCompleted,
                 onControllerTouchPromptDismissed: onControllerTouchPromptDismissed,
                 onStatsOverlayChange: onStatsOverlayChange,
+                onTransportStable: onTransportStable,
                 onSafeVideoFallbackRequired: onSafeVideoFallbackRequired,
                 onClose: onClose,
                 onRetry: onRetry
@@ -385,6 +530,7 @@ struct StreamerView: View {
         onStreamTutorialCompleted: @escaping () -> Void = {},
         onControllerTouchPromptDismissed: @escaping () -> Void = {},
         onStatsOverlayChange: @escaping (Bool) -> Void = { _ in },
+        onTransportStable: @escaping () -> Void = {},
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onClose: @escaping () -> Void,
@@ -403,6 +549,7 @@ struct StreamerView: View {
         _ = onStreamTutorialCompleted
         _ = onControllerTouchPromptDismissed
         _ = onStatsOverlayChange
+        _ = onTransportStable
         _ = onSafeVideoFallbackRequired
         _ = onNativeFallbackRequiresFreshEndpoint
         _ = onRetry
@@ -1414,6 +1561,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private let onStreamTutorialCompleted: () -> Void
     private let onControllerTouchPromptDismissed: () -> Void
     private let onStatsOverlayChange: (Bool) -> Void
+    private let onTransportStable: () -> Void
     private let onSafeVideoFallbackRequired: (String) -> Void
     private let onClose: () -> Void
     private let onRetry: (() -> Void)?
@@ -1434,6 +1582,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var webSocket: URLSessionWebSocketTask?
     private var signalingHeartbeat: DispatchSourceTimer?
     private var offerTimeoutWorkItem: DispatchWorkItem?
+    private var iceDisconnectWorkItem: DispatchWorkItem?
     private var statsTimer: DispatchSourceTimer?
     private var factory: RTCPeerConnectionFactory?
     private var peerConnection: RTCPeerConnection?
@@ -1464,6 +1613,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var lastStatsFramesDecoded: Int?
     private var lastStatsFramesRendered: Int?
     private var lastStatsBytesReceived: Int?
+    private var mediaTransportConnected = false
+    private var mediaLivenessWatchdog = NativeStreamLivenessWatchdog()
+    private var recoveryProgressTracker = NativeStreamRecoveryProgressTracker()
     private var lastRenderedStatsProgressAt: TimeInterval?
     private var lastPostStartKeyframeRequestAt: TimeInterval?
     private var postStartKeyframeAttempts = 0
@@ -1494,6 +1646,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         onStreamTutorialCompleted: @escaping () -> Void,
         onControllerTouchPromptDismissed: @escaping () -> Void,
         onStatsOverlayChange: @escaping (Bool) -> Void,
+        onTransportStable: @escaping () -> Void,
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)?
@@ -1526,6 +1679,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.onStreamTutorialCompleted = onStreamTutorialCompleted
         self.onControllerTouchPromptDismissed = onControllerTouchPromptDismissed
         self.onStatsOverlayChange = onStatsOverlayChange
+        self.onTransportStable = onTransportStable
         self.onSafeVideoFallbackRequired = onSafeVideoFallbackRequired
         self.onClose = onClose
         self.onRetry = onRetry
@@ -2106,6 +2260,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         teardownWebRTCAudioSession()
         offerTimeoutWorkItem?.cancel()
         offerTimeoutWorkItem = nil
+        iceDisconnectWorkItem?.cancel()
+        iceDisconnectWorkItem = nil
+        mediaTransportConnected = false
+        mediaLivenessWatchdog.reset()
         signalingHeartbeat?.cancel()
         signalingHeartbeat = nil
         statsTimer?.cancel()
@@ -2339,7 +2497,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         configuration.sdpSemantics = .unifiedPlan
         configuration.bundlePolicy = .maxBundle
         configuration.rtcpMuxPolicy = .require
-        configuration.tcpCandidatePolicy = .disabled
+        configuration.tcpCandidatePolicy = NativeStreamTransportPolicy.allowsTCPCandidates ? .enabled : .disabled
         configuration.continualGatheringPolicy = .gatherContinually
 
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -2564,7 +2722,6 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func sendLocalIceCandidate(_ candidate: RTCIceCandidate) {
-        guard candidate.sdp.range(of: " tcp ", options: .caseInsensitive) == nil else { return }
         let payload: [String: Any] = [
             "candidate": candidate.sdp,
             "sdpMid": candidate.sdpMid ?? "",
@@ -2658,7 +2815,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             }
         }
         offerTimeoutWorkItem = item
-        workQueue.asyncAfter(deadline: .now() + 24, execute: item)
+        workQueue.asyncAfter(deadline: .now() + NativeStreamTransportPolicy.offerTimeout, execute: item)
     }
 
     private func startSignalingHeartbeat() {
@@ -2825,6 +2982,13 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             handleDecodedVideoProgress(framesDecoded: framesDecoded ?? 0)
         }
         let now = ProcessInfo.processInfo.systemUptime
+        if handleMediaLiveness(
+            framesDecoded: framesDecoded,
+            bytesReceived: bytesReceived,
+            now: now
+        ) {
+            return
+        }
         handlePostStartRenderProgress(
             framesDecoded: framesDecoded,
             framesRendered: framesRendered,
@@ -2865,6 +3029,42 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         lastStatsFramesDecoded = framesDecoded
         lastStatsFramesRendered = framesRendered
         lastStatsBytesReceived = bytesReceived
+    }
+
+    private func handleMediaLiveness(
+        framesDecoded: Int?,
+        bytesReceived: Int?,
+        now: TimeInterval
+    ) -> Bool {
+        let action = mediaLivenessWatchdog.observe(
+            now: now,
+            bytesReceived: bytesReceived,
+            framesDecoded: framesDecoded,
+            connected: mediaTransportConnected
+        )
+        if recoveryProgressTracker.observe(progressed: mediaLivenessWatchdog.latestObservationProgressed) {
+            log("Media transport stable after three consecutive progress samples")
+            onTransportStable()
+        }
+        switch action {
+        case .none:
+            return false
+        case let .requestKeyframe(stalledFor, attempt):
+            requestKeyframe(reason: "media_stall", attempt: attempt)
+            updateStatus(
+                "Recovering video",
+                detail: String(format: "Media paused for %.1fs; requesting a fresh keyframe", stalledFor)
+            )
+            return false
+        case let .restartTransport(stalledFor):
+            let reason = String(format: "Media stalled for %.1fs", stalledFor)
+            if selectedCodec != .h264 {
+                onSafeVideoFallbackRequired("\(reason) while using \(selectedCodec.rawValue)")
+            } else {
+                fail(reason)
+            }
+            return true
+        }
     }
 
     private func handlePostStartRenderProgress(
@@ -3093,6 +3293,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             || value.contains("waiting for offer timed out")
             || value.contains("signaling failed")
             || value.contains("signaling closed")
+            || value.contains("media stalled")
             || value.contains("video renderer stalled")
             || value.contains("ice connection failed")
             || value.contains("peer connection failed")
@@ -3100,6 +3301,38 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     private func log(_ message: String) {
         logger.info("\(message, privacy: .public)")
+    }
+
+    private func markMediaTransportConnected() {
+        mediaTransportConnected = true
+        iceDisconnectWorkItem?.cancel()
+        iceDisconnectWorkItem = nil
+        mediaLivenessWatchdog.markConnected(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func markMediaTransportDisconnected() {
+        mediaTransportConnected = false
+        mediaLivenessWatchdog.reset()
+    }
+
+    private func scheduleIceDisconnectRecovery() {
+        guard iceDisconnectWorkItem == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.stopped, !self.mediaTransportConnected else { return }
+                self.iceDisconnectWorkItem = nil
+                if self.selectedCodec != .h264 {
+                    self.onSafeVideoFallbackRequired("ICE remained disconnected while using \(self.selectedCodec.rawValue)")
+                } else {
+                    self.fail("ICE connection failed after disconnect")
+                }
+            }
+        }
+        iceDisconnectWorkItem = item
+        workQueue.asyncAfter(
+            deadline: .now() + NativeStreamTransportPolicy.iceDisconnectedGrace,
+            execute: item
+        )
     }
 
     private func handlePictureInPictureActiveChanged(_ active: Bool) {
@@ -3220,7 +3453,12 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         }
         activateWebRTCAudioSession(audioSession)
         webRTCAudioSessionConfigured = true
-        log("WebRTC audio playback enabled mic=\(enableMic)")
+        let routeTypes = audioSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        log(
+            "WebRTC audio playback enabled mic=\(enableMic) "
+                + "sampleRate=\(Int(audioSession.sampleRate)) channels=\(audioSession.outputNumberOfChannels) "
+                + "route=\(routeTypes.isEmpty ? "none" : routeTypes)"
+        )
     }
 
     private func applyLiveAudioPreference() {
@@ -3239,16 +3477,21 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     }
 
     private func configureAudioCategory(_ audioSession: RTCAudioSession, enableMic: Bool) {
-        let category: AVAudioSession.Category = enableMic ? .playAndRecord : .playback
-        let mode: AVAudioSession.Mode = enableMic ? .voiceChat : .moviePlayback
-        let options: AVAudioSession.CategoryOptions = enableMic
-            ? [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]
-            : [.allowBluetoothA2DP]
-
         do {
-            try audioSession.setCategory(category, mode: mode, options: options)
+            try audioSession.setCategory(
+                NativeStreamAudioSessionPolicy.category(enableMic: enableMic),
+                mode: NativeStreamAudioSessionPolicy.mode(enableMic: enableMic),
+                options: NativeStreamAudioSessionPolicy.options(enableMic: enableMic)
+            )
         } catch {
             log("Audio session category failed: \(error.localizedDescription)")
+        }
+        if audioSession.maximumOutputNumberOfChannels >= 2 {
+            do {
+                try audioSession.setPreferredOutputNumberOfChannels(2)
+            } catch {
+                log("Audio session stereo output failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -3265,6 +3508,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func teardownWebRTCAudioSession() {
         guard webRTCAudioSessionConfigured else { return }
         let audioSession = RTCAudioSession.sharedInstance()
+        audioSession.lockForConfiguration()
+        defer { audioSession.unlockForConfiguration() }
         audioSession.useManualAudio = true
         audioSession.isAudioEnabled = false
         #if !targetEnvironment(simulator)
@@ -3350,15 +3595,23 @@ extension NativeStreamCoordinator: RTCPeerConnectionDelegate {
         Task { @MainActor in
             switch newState {
             case .connected, .completed:
+                self.markMediaTransportConnected()
                 self.updateStatus("Media connected", detail: "Waiting for video")
             case .failed:
+                self.markMediaTransportDisconnected()
+                self.iceDisconnectWorkItem?.cancel()
+                self.iceDisconnectWorkItem = nil
                 if self.selectedCodec != .h264 {
                     self.onSafeVideoFallbackRequired("ICE failed while using \(self.selectedCodec.rawValue)")
                 } else {
                     self.fail("ICE connection failed")
                 }
             case .disconnected:
+                self.markMediaTransportDisconnected()
                 self.updateStatus("Reconnecting", detail: "ICE disconnected")
+                self.scheduleIceDisconnectRecovery()
+            case .new, .checking, .closed:
+                self.markMediaTransportDisconnected()
             default:
                 break
             }
@@ -3920,6 +4173,7 @@ private final class NativeStreamRenderView: UIView {
     private var viewportTransformScale: CGFloat = 1
     private var viewportTransformOffset: CGSize = .zero
     private var loggedRendererPath = false
+    private var filteredRendererCreationScheduled = false
 
     var metalDelegate: RTCVideoViewDelegate? {
         get { metalVideoView.delegate }
@@ -3969,6 +4223,12 @@ private final class NativeStreamRenderView: UIView {
         rendererStateLock.lock()
         let useFilteredRenderer = filteredRendererActive
         let filtered = filteredMetalView
+        let shouldRetryFilteredRenderer = shouldRequestFilteredRenderer
+            && filtered == nil
+            && !filteredRendererCreationScheduled
+        if shouldRetryFilteredRenderer {
+            filteredRendererCreationScheduled = true
+        }
         let shouldLogRendererPath = !loggedRendererPath
         loggedRendererPath = true
         rendererStateLock.unlock()
@@ -3983,6 +4243,29 @@ private final class NativeStreamRenderView: UIView {
             filtered.display(frame: frame)
         } else {
             metalVideoView.renderFrame(frame)
+        }
+        if shouldRetryFilteredRenderer {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.ensureFilteredMetalView()
+                self.rendererStateLock.lock()
+                let rendererCreated = self.filteredMetalView != nil
+                self.rendererStateLock.unlock()
+                self.updateRendererVisibility()
+                if rendererCreated {
+                    self.rendererStateLock.lock()
+                    self.filteredRendererCreationScheduled = false
+                    self.rendererStateLock.unlock()
+                } else {
+                    // Avoid retrying once per decoded frame if Metal is briefly unavailable.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                        guard let self else { return }
+                        self.rendererStateLock.lock()
+                        self.filteredRendererCreationScheduled = false
+                        self.rendererStateLock.unlock()
+                    }
+                }
+            }
         }
     }
 
@@ -4023,11 +4306,17 @@ private final class NativeStreamRenderView: UIView {
     }
 
     private var shouldRequestFilteredRenderer: Bool {
-        #if targetEnvironment(simulator)
-        true
-        #else
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 || streamSharpeningEnabled
-        #endif
+        nativeStreamShouldUseFilteredRenderer(
+            osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+            streamSharpeningEnabled: streamSharpeningEnabled,
+            isSimulator: {
+                #if targetEnvironment(simulator)
+                true
+                #else
+                false
+                #endif
+            }()
+        )
     }
 
     private func ensureFilteredMetalView() {
@@ -4057,8 +4346,8 @@ private final class NativeStreamRenderView: UIView {
 }
 
 /// `RTCMTLVideoView` does not reliably present IOSurfaces in CoreSimulator or
-/// current iOS 27 runtimes. This Core Image + Metal surface is the reliable
-/// fallback there and remains opt-in through sharpening on older devices.
+/// iOS 26+ runtimes. This Core Image + Metal surface is the reliable fallback
+/// there and remains opt-in through sharpening on older devices.
 private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     var stretchToFill = false
     var sharpeningAmount = 0.0

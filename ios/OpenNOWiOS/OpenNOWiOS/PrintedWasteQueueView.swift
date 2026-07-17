@@ -22,8 +22,8 @@ struct PrintedWasteZone: Identifiable, Equatable {
 }
 
 enum StreamZonePolicy {
-    static let blockedZoneIDs: Set<String> = ["NP-BOM-01"]
-    static let blockedZoneMessage = "NP-BOM-01 is temporarily unavailable on iOS. Choose another server or Automatic."
+    static let blockedZoneIDs: Set<String> = []
+    static let blockedZoneMessage = "This server is temporarily unavailable on iOS. Choose another server or Automatic."
 
     static func isBlocked(_ value: String?) -> Bool {
         guard let zoneID = normalizedZoneID(from: value) else { return false }

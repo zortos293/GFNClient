@@ -229,6 +229,9 @@ struct MainTabView: View {
             onStatsOverlayChange: { visible in
                 store.updateStreamStatsOverlayVisible(visible)
             },
+            onTransportStable: {
+                streamerAutoRetryCount = 0
+            },
             onSafeVideoFallbackRequired: { reason in
                 store.restartStreamWithSafeVideoProfile(reason: reason)
             },

@@ -572,6 +572,7 @@ final class NativeStreamInputBridge {
     private var lastGamepadStates: [Int: NativeStreamGamepadState] = [:]
     private var gamepadKeepaliveTimer: Timer?
     private var heartbeatTimer: Timer?
+    private var lastHapticsAdvertisementAt: TimeInterval = -.infinity
     private var mouseAccumulator = CGPoint.zero
     private var mouseFlushScheduled = false
     private var mouseSensitivity: CGFloat = 1
@@ -616,7 +617,7 @@ final class NativeStreamInputBridge {
         }
         phoneRumbleFallbackEnabled = phoneRumbleFallback
         setPhysicalControllerPassthrough(physicalControllerPassthrough)
-        advertiseHaptics()
+        advertiseHaptics(force: true)
     }
 
     func setPhysicalControllerPassthrough(_ enabled: Bool) {
@@ -626,7 +627,7 @@ final class NativeStreamInputBridge {
         }
         physicalControllerPassthroughEnabled = enabled
         attachControllers()
-        advertiseHaptics()
+        advertiseHaptics(force: true)
     }
 
     func setPhoneRumbleFallback(_ enabled: Bool) {
@@ -637,7 +638,7 @@ final class NativeStreamInputBridge {
         }
         #endif
         phoneRumbleFallbackEnabled = enabled
-        advertiseHaptics()
+        advertiseHaptics(force: true)
     }
 
     func attach() {
@@ -705,6 +706,7 @@ final class NativeStreamInputBridge {
         gamepadKeepaliveTimer?.invalidate()
         gamepadKeepaliveTimer = nil
         stopAllRumble()
+        lastHapticsAdvertisementAt = -.infinity
     }
 
     func sendTouchMouseMove(dx: CGFloat, dy: CGFloat) {
@@ -737,7 +739,11 @@ final class NativeStreamInputBridge {
         return batch.characterCount
     }
 
-    func advertiseHaptics() {
+    func advertiseHaptics(
+        force: Bool = false,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) {
+        guard force || now - lastHapticsAdvertisementAt >= 5 else { return }
         let controllerAvailable = physicalControllerPassthroughEnabled && controllersBySlot.values.contains { $0.haptics != nil }
         #if canImport(CoreHaptics)
         let phoneAvailable = phoneRumbleFallbackEnabled && Self.phoneHapticsSupported
@@ -745,11 +751,17 @@ final class NativeStreamInputBridge {
         let phoneAvailable = false
         #endif
         sink?.sendReliableInput(encoder.encodeHapticsEnabled(controllerAvailable || phoneAvailable))
+        if force {
+            sink?.logInputEvent(
+                "Haptics advertised: controller=\(controllerAvailable) phoneFallback=\(phoneAvailable)"
+            )
+        }
+        lastHapticsAdvertisementAt = now
     }
 
     func primeReliableChannel() {
         sink?.sendReliableInput(encoder.encodeHeartbeat())
-        advertiseHaptics()
+        advertiseHaptics(force: true)
     }
 
     @discardableResult
@@ -882,7 +894,7 @@ final class NativeStreamInputBridge {
         attachKeyboard()
         attachMice()
         attachControllers()
-        advertiseHaptics()
+        advertiseHaptics(force: true)
     }
 
     private func startTimers() {
@@ -890,6 +902,7 @@ final class NativeStreamInputBridge {
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.sink?.sendReliableInput(self.encoder.encodeHeartbeat())
+            self.advertiseHaptics()
         }
         gamepadKeepaliveTimer?.invalidate()
         gamepadKeepaliveTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -1203,8 +1216,7 @@ final class NativeStreamInputBridge {
                 guard let haptics = controller.haptics else {
                     throw NSError(domain: "OpenNOW.NativeStreamer.Haptics", code: 1)
                 }
-                let locality: GCHapticsLocality = haptics.supportedLocalities.contains(.all) ? .all : .default
-                guard let engine = haptics.createEngine(withLocality: locality) else {
+                guard let engine = haptics.createEngine(withLocality: .default) else {
                     throw NSError(domain: "OpenNOW.NativeStreamer.Haptics", code: 2)
                 }
                 engine.playsHapticsOnly = true
@@ -1393,7 +1405,7 @@ final class NativeStreamInputBridge {
     func sendKey(mapping: NativeStreamKeyboardMapping, pressed: Bool, modifiers: UInt16) {}
     func sendMouseWheel(delta: Int) {}
     func sendUnicodeText(_ text: String) -> Int { 0 }
-    func advertiseHaptics() {}
+    func advertiseHaptics(force: Bool = false, now: TimeInterval = 0) {}
     func applyRumble(controllerId: Int, weakMagnitude: Int, strongMagnitude: Int) {}
     func setVirtualControllerEnabled(_ enabled: Bool) {}
     func setVirtualButton(_ button: NativeStreamVirtualGamepadButton, pressed: Bool) {}

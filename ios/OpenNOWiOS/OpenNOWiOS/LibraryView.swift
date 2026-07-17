@@ -145,13 +145,7 @@ struct LibraryView: View {
     private var filteredGames: [CloudGame] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = store.libraryGames.filter { game in
-            let matchesQuery = query.isEmpty ||
-                game.title.localizedCaseInsensitiveContains(query) ||
-                game.genre.localizedCaseInsensitiveContains(query) ||
-                game.platform.localizedCaseInsensitiveContains(query) ||
-                (game.publisher?.localizedCaseInsensitiveContains(query) ?? false) ||
-                (game.developer?.localizedCaseInsensitiveContains(query) ?? false) ||
-                gameResolvedStores(game: game).contains { storeDisplayName($0).localizedCaseInsensitiveContains(query) }
+            let matchesQuery = gameMatchesCatalogSearch(game, query: query)
             let matchesGenre = selectedGenre == nil || game.genre == selectedGenre
             let matchesPlatform = selectedPlatform == nil || game.platform == selectedPlatform
             let matchesStore = selectedStore.map { gameResolvedStores(game: game).contains($0) } ?? true

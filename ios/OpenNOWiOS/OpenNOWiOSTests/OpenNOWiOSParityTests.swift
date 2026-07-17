@@ -200,6 +200,19 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(sink.reliablePackets.count, packetCount)
     }
 
+    func testHapticsAvailabilityIsReadvertisedAfterAndroidParityInterval() {
+        let bridge = NativeStreamInputBridge()
+        let sink = RecordingNativeStreamInputSink()
+        bridge.sink = sink
+
+        bridge.advertiseHaptics(force: true, now: 100)
+        bridge.advertiseHaptics(now: 104.9)
+        XCTAssertEqual(sink.reliablePackets.count, 1)
+
+        bridge.advertiseHaptics(now: 105)
+        XCTAssertEqual(sink.reliablePackets.count, 2)
+    }
+
     private func remoteOffer(address: String, port: Int) -> String {
         """
         v=0
@@ -572,10 +585,10 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
-    func testBlockedBombayZoneCannotBeSelectedByIDURLOrAutomaticRouting() {
-        XCTAssertTrue(StreamZonePolicy.isBlocked("np-bom-01"))
-        XCTAssertTrue(StreamZonePolicy.isBlocked("https://np-bom-01.cloudmatchbeta.nvidiagrid.net/"))
-        XCTAssertTrue(StreamZonePolicy.isBlocked("NP-BOM-01.CLOUDMATCHBETA.NVIDIAGRID.NET"))
+    func testBombayZoneCanBeSelectedByIDURLAndAutomaticRouting() {
+        XCTAssertFalse(StreamZonePolicy.isBlocked("np-bom-01"))
+        XCTAssertFalse(StreamZonePolicy.isBlocked("https://np-bom-01.cloudmatchbeta.nvidiagrid.net/"))
+        XCTAssertFalse(StreamZonePolicy.isBlocked("NP-BOM-01.CLOUDMATCHBETA.NVIDIAGRID.NET"))
         XCTAssertFalse(StreamZonePolicy.isBlocked("np-bom-02"))
 
         let blocked = PrintedWasteZone(
@@ -599,7 +612,7 @@ final class OpenNOWiOSParityTests: XCTestCase {
             regionSuffix: "ams-02"
         )
 
-        XCTAssertEqual(recommendedPrintedWasteZone(in: [blocked, allowed])?.id, allowed.id)
+        XCTAssertEqual(recommendedPrintedWasteZone(in: [blocked, allowed])?.id, blocked.id)
     }
 
     func testAndroidBitrateAndLanguageChoicesRemainAvailable() {
@@ -775,6 +788,64 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(game.queueArtworkUrl, "tv")
     }
 
+    func testMobileCatalogArtworkRejectsStaleNvidiaBannerLikeAndroid() throws {
+        let validBoxArt = try JSONDecoder().decode(
+            CloudGame.self,
+            from: Data(
+                #"{"id":"valid","title":"Valid","genre":"Action","platform":"Steam","icon":"gamecontroller.fill","imageUrl":"https://img.nvidiagrid.net/apps/123/ZZ/GAME_BOX_ART_01_example.jpg","launchOptions":[]}"#.utf8
+            )
+        )
+        let staleBanner = try JSONDecoder().decode(
+            CloudGame.self,
+            from: Data(
+                #"{"id":"stale","title":"Stale","genre":"Action","platform":"Steam","icon":"gamecontroller.fill","imageUrl":"https://img.nvidiagrid.net/apps/123/ZZ/TV_BANNER_01_example.jpg","launchOptions":[]}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(
+            validBoxArt.catalogArtworkUrl,
+            "https://img.nvidiagrid.net/apps/123/ZZ/GAME_BOX_ART_01_example.jpg"
+        )
+        XCTAssertNil(staleBanner.catalogArtworkUrl)
+    }
+
+    func testNvidiaArtworkRequestsReplaceExistingSizingAndClampToAndroidWideLimit() {
+        XCTAssertEqual(
+            optimizedNvidiaArtworkURL(
+                "https://img.nvidiagrid.net/apps/box.jpg;f=jpeg;w=4096;dpr=2",
+                targetPixelSize: 2_800
+            ),
+            "https://img.nvidiagrid.net/apps/box.jpg;f=webp;w=1920"
+        )
+        XCTAssertEqual(
+            optimizedNvidiaArtworkURL(
+                "https://cdn.example.com/box.jpg",
+                targetPixelSize: 800
+            ),
+            "https://cdn.example.com/box.jpg"
+        )
+    }
+
+    func testCatalogSearchMatchesAllTermsAcrossMetadataLikeAndroid() throws {
+        let game = try JSONDecoder().decode(
+            CloudGame.self,
+            from: Data(
+                #"{"id":"game","title":"Cyber Adventure","genre":"Action","platform":"Steam","icon":"gamecontroller.fill","launchOptions":[],"publisher":"Cloud Studio","tags":["Open World"]}"#.utf8
+            )
+        )
+
+        XCTAssertTrue(gameMatchesCatalogSearch(game, query: "cyber world"))
+        XCTAssertTrue(gameMatchesCatalogSearch(game, query: "cloud action"))
+        XCTAssertFalse(gameMatchesCatalogSearch(game, query: "cyber racing"))
+    }
+
+    func testPosterScaleUsesLatestAndroidRange() {
+        var settings = AppSettings.default
+        settings.posterSizeScale = 2
+        settings.normalizeStreamDefaults()
+        XCTAssertEqual(settings.posterSizeScale, 1.4)
+    }
+
     func testPrintedWasteEqualScoresPreferLowerPingLikeAndroid() {
         let highPing = PrintedWasteZone(
             id: "high-ping",
@@ -863,6 +934,128 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertFalse(redacted.contains("device-12345"))
         XCTAssertFalse(redacted.contains("request-67890"))
         XCTAssertTrue(redacted.contains("[ID:"))
+    }
+
+    func testDiagnosticsPreserveTimestampsAndVersionsWhileRedactingNetworkAddresses() {
+        let redacted = DiagnosticsSanitizer.sanitize(
+            """
+            generatedAt=2026-07-13T10:31:22.768Z
+            nv-client-version: 2.0.0.0
+            User-Agent: Chrome/131.0.0.0 GFN-PC/2.0.0.0
+            serverIp=203.0.113.42 url=https://198.51.100.5/path ipv6=2001:db8::1
+            """
+        )
+
+        XCTAssertTrue(redacted.contains("2026-07-13T10:31:22.768Z"))
+        XCTAssertTrue(redacted.contains("nv-client-version: 2.0.0.0"))
+        XCTAssertTrue(redacted.contains("Chrome/131.0.0.0"))
+        XCTAssertTrue(redacted.contains("GFN-PC/2.0.0.0"))
+        XCTAssertFalse(redacted.contains("203.0.113.42"))
+        XCTAssertFalse(redacted.contains("198.51.100.5"))
+        XCTAssertFalse(redacted.contains("2001:db8::1"))
+    }
+
+    func testPlaybackAudioPolicyUsesMovieModeWithoutInvalidBluetoothOptions() {
+        XCTAssertEqual(NativeStreamAudioSessionPolicy.category(enableMic: false), .playback)
+        XCTAssertEqual(NativeStreamAudioSessionPolicy.mode(enableMic: false), .moviePlayback)
+        XCTAssertTrue(NativeStreamAudioSessionPolicy.options(enableMic: false).isEmpty)
+    }
+
+    func testIOS26UsesFilteredRendererWithoutRequiringSharpeningToggle() {
+        XCTAssertTrue(
+            nativeStreamShouldUseFilteredRenderer(
+                osMajorVersion: 26,
+                streamSharpeningEnabled: false,
+                isSimulator: false
+            )
+        )
+        XCTAssertFalse(
+            nativeStreamShouldUseFilteredRenderer(
+                osMajorVersion: 25,
+                streamSharpeningEnabled: false,
+                isSimulator: false
+            )
+        )
+        XCTAssertTrue(
+            nativeStreamShouldUseFilteredRenderer(
+                osMajorVersion: 25,
+                streamSharpeningEnabled: true,
+                isSimulator: false
+            )
+        )
+    }
+
+    func testNativeStreamTransportRecoveryMatchesAndroidMobileTiming() {
+        XCTAssertEqual(NativeStreamTransportPolicy.offerTimeout, 12)
+        XCTAssertEqual(NativeStreamTransportPolicy.iceDisconnectedGrace, 3.5)
+        XCTAssertTrue(NativeStreamTransportPolicy.allowsTCPCandidates)
+
+        var watchdog = NativeStreamLivenessWatchdog()
+        watchdog.markConnected(now: 0)
+
+        XCTAssertEqual(
+            watchdog.observe(now: 4.9, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 5, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .requestKeyframe(stalledFor: 5, attempt: 1)
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 7.4, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 7.5, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .requestKeyframe(stalledFor: 7.5, attempt: 2)
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 10, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .restartTransport(stalledFor: 10)
+        )
+    }
+
+    func testNativeStreamLivenessProgressAndDisconnectResetRecoveryWindow() {
+        var watchdog = NativeStreamLivenessWatchdog()
+        watchdog.markConnected(now: 0)
+
+        XCTAssertEqual(
+            watchdog.observe(now: 5, bytesReceived: 100, framesDecoded: 1, connected: true),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 9.9, bytesReceived: 100, framesDecoded: 1, connected: true),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 10, bytesReceived: 100, framesDecoded: 1, connected: true),
+            .requestKeyframe(stalledFor: 5, attempt: 1)
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 10.5, bytesReceived: 100, framesDecoded: 1, connected: false),
+            .none
+        )
+
+        watchdog.markConnected(now: 20)
+        XCTAssertEqual(
+            watchdog.observe(now: 24.9, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(now: 25, bytesReceived: 0, framesDecoded: 0, connected: true),
+            .requestKeyframe(stalledFor: 5, attempt: 1)
+        )
+    }
+
+    func testNativeStreamRecoveryBudgetResetsOnlyAfterThreeConsecutiveProgressSamples() {
+        var tracker = NativeStreamRecoveryProgressTracker()
+
+        XCTAssertFalse(tracker.observe(progressed: true))
+        XCTAssertFalse(tracker.observe(progressed: false))
+        XCTAssertFalse(tracker.observe(progressed: true))
+        XCTAssertFalse(tracker.observe(progressed: true))
+        XCTAssertTrue(tracker.observe(progressed: true))
+        XCTAssertFalse(tracker.observe(progressed: true))
     }
 
     private func deterministicProfile(

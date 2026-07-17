@@ -695,7 +695,7 @@ struct SettingsView: View {
             }
             #endif
             LabeledContent {
-                Slider(value: $store.settings.posterSizeScale, in: 0.75...1.35, step: 0.05)
+                Slider(value: $store.settings.posterSizeScale, in: 0.75...1.4, step: 0.05)
                     .frame(maxWidth: 180)
             } label: {
                 Text("Game Card Size")

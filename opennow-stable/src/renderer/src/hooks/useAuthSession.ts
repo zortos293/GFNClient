@@ -114,6 +114,8 @@ export function useAuthSession({
   const hasInitializedRef = useRef(false);
   const qrLoginAttemptRef = useRef(0);
   const completingQrLoginRef = useRef(false);
+  const removeAccountInFlightRef = useRef(false);
+  const logoutInFlightRef = useRef(false);
 
   const selectedProvider = useMemo(() => {
     return providers.find((p) => p.idpId === providerIdpId) ?? authSession?.provider ?? null;
@@ -367,26 +369,31 @@ export function useAuthSession({
   }, []);
 
   const confirmRemoveAccount = useCallback(async () => {
-    if (!accountToRemove) return;
+    if (!accountToRemove || removeAccountInFlightRef.current) return;
+    removeAccountInFlightRef.current = true;
     const targetUserId = accountToRemove;
     setRemoveAccountConfirmOpen(false);
     setAccountToRemove(null);
 
-    await window.openNow.removeAccount(targetUserId);
-    const [accounts, sessionResult] = await Promise.all([
-      window.openNow.getSavedAccounts(),
-      window.openNow.getAuthSession(),
-    ]);
-    setSavedAccounts(accounts);
-    setAuthSession(sessionResult.session);
-    if (sessionResult.session) {
-      setProviderIdpId(sessionResult.session.provider.idpId);
-      await loadSessionRuntimeData(sessionResult.session);
-      await refreshNavbarActiveSession(sessionResult.session);
-      return;
+    try {
+      await window.openNow.removeAccount(targetUserId);
+      const [accounts, sessionResult] = await Promise.all([
+        window.openNow.getSavedAccounts(),
+        window.openNow.getAuthSession(),
+      ]);
+      setSavedAccounts(accounts);
+      setAuthSession(sessionResult.session);
+      if (sessionResult.session) {
+        setProviderIdpId(sessionResult.session.provider.idpId);
+        await loadSessionRuntimeData(sessionResult.session);
+        await refreshNavbarActiveSession(sessionResult.session);
+        return;
+      }
+      clearSessionCatalog("no-session", { clearFeatured: true });
+      setNavbarActiveSession(null);
+    } finally {
+      removeAccountInFlightRef.current = false;
     }
-    clearSessionCatalog("no-session", { clearFeatured: true });
-    setNavbarActiveSession(null);
   }, [
     accountToRemove,
     clearSessionCatalog,
@@ -401,15 +408,22 @@ export function useAuthSession({
   }, []);
 
   const confirmLogout = useCallback(async () => {
+    if (logoutInFlightRef.current) return;
+    logoutInFlightRef.current = true;
     setLogoutConfirmOpen(false);
     clearSessionCatalog("logout");
-    await window.openNow.logoutAll();
-    setAuthSession(null);
-    setSavedAccounts([]);
-    resetLaunchRuntime();
-    setNavbarActiveSession(null);
-    setIsResumingNavbarSession(false);
-    setCurrentPage("home");
+
+    try {
+      await window.openNow.logoutAll();
+      setAuthSession(null);
+      setSavedAccounts([]);
+      resetLaunchRuntime();
+      setNavbarActiveSession(null);
+      setIsResumingNavbarSession(false);
+      setCurrentPage("home");
+    } finally {
+      logoutInFlightRef.current = false;
+    }
   }, [
     clearSessionCatalog,
     resetLaunchRuntime,

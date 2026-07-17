@@ -1,6 +1,5 @@
 import { AlertTriangle, CheckCircle2, Cpu, ExternalLink, Keyboard, Monitor, RefreshCcw, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
-import { m } from "motion/react";
 import type { NativeStreamerStatus, NativeVideoBackendCapability, Settings } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
@@ -17,10 +16,9 @@ import {
   getAvailableNativeCodecLabels,
   getGstreamerRuntimeBadgeClass,
   nativeVideoBackendOptions,
-  NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS,
 } from "../settingsFormatters";
-import { dialogMotion, overlayMotion } from "../../MotionProvider";
 import { MotionSpinner } from "../../MotionSpinner";
+import { ModalSurface } from "../../ui/ModalSurface";
 
 const nativePlatformHint = `${navigator.platform} ${navigator.userAgent}`;
 const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(nativePlatformHint);
@@ -61,13 +59,7 @@ export function SettingsNativeStreamerSection({
   const [nativeStreamerStatus, setNativeStreamerStatus] = useState<NativeStreamerStatus | null>(null);
   const [nativeStreamerStatusLoading, setNativeStreamerStatusLoading] = useState(false);
   const [nativeStreamerEnablePromptOpen, setNativeStreamerEnablePromptOpen] = useState(false);
-  const [nativeStreamerEnablePromptClosing, setNativeStreamerEnablePromptClosing] = useState(false);
-  const nativeStreamerEnablePromptRef = useRef<HTMLDivElement | null>(null);
   const nativeStreamerEnablePromptConfirmRef = useRef<HTMLButtonElement | null>(null);
-  const nativeStreamerEnablePromptPreviousFocusRef = useRef<HTMLElement | null>(null);
-  const nativeStreamerEnablePromptCloseTimerRef = useRef<number | null>(null);
-  const nativeStreamerEnablePromptVisible =
-    nativeStreamerEnablePromptOpen || nativeStreamerEnablePromptClosing;
   const hostVideoBackends = getHostVideoBackends(nativeStreamerStatus);
   const readyHardwareBackendCount = hostVideoBackends.filter(
     (backend) => backend.available && backend.backend !== "software",
@@ -113,32 +105,24 @@ export function SettingsNativeStreamerSection({
   }, [refreshNativeStreamerStatus]);
 
   useEffect(() => {
-    onBlockingOverlayChange?.(nativeStreamerEnablePromptVisible);
-    return () => onBlockingOverlayChange?.(false);
-  }, [nativeStreamerEnablePromptVisible, onBlockingOverlayChange]);
+    if (nativeStreamerEnablePromptOpen) {
+      onBlockingOverlayChange?.(true);
+    }
+  }, [nativeStreamerEnablePromptOpen, onBlockingOverlayChange]);
+
+  useEffect(() => () => onBlockingOverlayChange?.(false), [onBlockingOverlayChange]);
 
   const openNativeStreamerEnablePrompt = useCallback((): void => {
-    if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
-      window.clearTimeout(nativeStreamerEnablePromptCloseTimerRef.current);
-      nativeStreamerEnablePromptCloseTimerRef.current = null;
-    }
-
-    setNativeStreamerEnablePromptClosing(false);
     setNativeStreamerEnablePromptOpen(true);
   }, []);
 
   const closeNativeStreamerEnablePrompt = useCallback((): void => {
-    if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
-      return;
-    }
-
     setNativeStreamerEnablePromptOpen(false);
-    setNativeStreamerEnablePromptClosing(true);
-    nativeStreamerEnablePromptCloseTimerRef.current = window.setTimeout(() => {
-      nativeStreamerEnablePromptCloseTimerRef.current = null;
-      setNativeStreamerEnablePromptClosing(false);
-    }, NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS);
   }, []);
+
+  const handleNativeStreamerEnablePromptExit = useCallback((): void => {
+    onBlockingOverlayChange?.(false);
+  }, [onBlockingOverlayChange]);
 
   const confirmNativeStreamerEnablePrompt = useCallback((): void => {
     handleChange("streamClientMode", "native");
@@ -170,96 +154,6 @@ export function SettingsNativeStreamerSection({
     handleChange("nativeCloudGsyncMode", "auto");
     handleChange("nativeD3dFullscreenMode", "auto");
   }, [handleChange]);
-
-  useEffect(() => {
-    return () => {
-      if (nativeStreamerEnablePromptCloseTimerRef.current !== null) {
-        window.clearTimeout(nativeStreamerEnablePromptCloseTimerRef.current);
-        nativeStreamerEnablePromptCloseTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!nativeStreamerEnablePromptVisible) {
-      return;
-    }
-
-    nativeStreamerEnablePromptPreviousFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    const getFocusableElements = (): HTMLElement[] => {
-      const dialog = nativeStreamerEnablePromptRef.current;
-      if (!dialog) {
-        return [];
-      }
-
-      return Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          [
-            "a[href]",
-            "button:not([disabled])",
-            "input:not([disabled])",
-            "select:not([disabled])",
-            "textarea:not([disabled])",
-            '[tabindex]:not([tabindex="-1"])',
-          ].join(","),
-        ),
-      ).filter((element) => element.tabIndex >= 0 && element.getAttribute("aria-hidden") !== "true");
-    };
-
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeNativeStreamerEnablePrompt();
-        return;
-      }
-
-      if (event.key !== "Tab") {
-        return;
-      }
-
-      const dialog = nativeStreamerEnablePromptRef.current;
-      const focusableElements = getFocusableElements();
-      if (!dialog || focusableElements.length === 0) {
-        event.preventDefault();
-        dialog?.focus({ preventScroll: true });
-        return;
-      }
-
-      const activeElement = document.activeElement;
-      const firstElement = focusableElements[0];
-      const lastElement = focusableElements[focusableElements.length - 1];
-      const focusIsOnDialog = activeElement === dialog;
-
-      if (event.shiftKey && (focusIsOnDialog || activeElement === firstElement || !dialog.contains(activeElement))) {
-        event.preventDefault();
-        lastElement.focus({ preventScroll: true });
-        return;
-      }
-
-      if (!event.shiftKey && (focusIsOnDialog || activeElement === lastElement || !dialog.contains(activeElement))) {
-        event.preventDefault();
-        firstElement.focus({ preventScroll: true });
-      }
-    };
-
-    const focusFrame = window.requestAnimationFrame(() => {
-      nativeStreamerEnablePromptConfirmRef.current?.focus({ preventScroll: true });
-    });
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener("keydown", handleKeyDown);
-
-      const previousFocus = nativeStreamerEnablePromptPreviousFocusRef.current;
-      nativeStreamerEnablePromptPreviousFocusRef.current = null;
-      if (previousFocus?.isConnected) {
-        previousFocus.focus({ preventScroll: true });
-      }
-    };
-  }, [closeNativeStreamerEnablePrompt, nativeStreamerEnablePromptVisible]);
 
   return (
     <>
@@ -575,36 +469,19 @@ export function SettingsNativeStreamerSection({
         </div>
       </section>
       )}
-      {nativeStreamerEnablePromptVisible && (
-        <m.div
-          className={`native-streamer-warning ${nativeStreamerEnablePromptClosing ? "native-streamer-warning--closing" : ""}`}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="native-streamer-warning-title"
-          aria-describedby="native-streamer-warning-copy"
-          initial={overlayMotion.initial}
-          animate={nativeStreamerEnablePromptClosing ? overlayMotion.exit : overlayMotion.animate}
-          transition={overlayMotion.transition}
-        >
-          <m.button
-            type="button"
-            className="native-streamer-warning-backdrop"
-            aria-label={t("app.actions.cancel")}
-            aria-hidden="true"
-            tabIndex={-1}
-            onClick={closeNativeStreamerEnablePrompt}
-            initial={overlayMotion.initial}
-            animate={nativeStreamerEnablePromptClosing ? overlayMotion.exit : overlayMotion.animate}
-            transition={overlayMotion.transition}
-          />
-          <m.div
-            ref={nativeStreamerEnablePromptRef}
-            className="native-streamer-warning-card"
-            tabIndex={-1}
-            initial={dialogMotion.initial}
-            animate={nativeStreamerEnablePromptClosing ? dialogMotion.exit : dialogMotion.animate}
-            transition={dialogMotion.transition}
-          >
+      <ModalSurface
+        open={nativeStreamerEnablePromptOpen}
+        onClose={closeNativeStreamerEnablePrompt}
+        onExitComplete={handleNativeStreamerEnablePromptExit}
+        motion="compact"
+        overlayClassName="native-streamer-warning"
+        backdropClassName="native-streamer-warning-backdrop"
+        panelClassName="native-streamer-warning-card"
+        ariaLabelledBy="native-streamer-warning-title"
+        ariaDescribedBy="native-streamer-warning-copy"
+        backdropLabel={t("app.actions.cancel")}
+        initialFocusRef={nativeStreamerEnablePromptConfirmRef}
+      >
             <div className="native-streamer-warning-kicker">
               <AlertTriangle size={14} />
               {t("settings.nativeStreamer.enablePromptKicker")}
@@ -644,7 +521,6 @@ export function SettingsNativeStreamerSection({
                 className="native-streamer-warning-btn native-streamer-warning-btn--primary"
                 onClick={confirmNativeStreamerEnablePrompt}
                 ref={nativeStreamerEnablePromptConfirmRef}
-                autoFocus
               >
                 {t("settings.nativeStreamer.enablePromptEnable")}
               </button>
@@ -652,9 +528,7 @@ export function SettingsNativeStreamerSection({
             <div className="native-streamer-warning-hint">
               <kbd>Esc</kbd> {t("settings.nativeStreamer.enablePromptEsc")}
             </div>
-          </m.div>
-        </m.div>
-      )}
+      </ModalSurface>
     </>
   );
 }

@@ -4,6 +4,7 @@ import { keyboardLayoutOptions } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../../../shortcuts";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
+import { SettingRange } from "../SettingRange";
 import {
   getShortcutConflictMessage,
   isMac,
@@ -17,6 +18,7 @@ export interface SettingsInputSectionProps {
   settings: Settings;
   showAll: boolean;
   handleChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  handlePreview: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
 }
 
 function formatMouseSensitivityDraft(value: number): string {
@@ -27,7 +29,7 @@ function formatMouseAccelerationDraft(value: number): string {
   return String(Math.round(value));
 }
 
-export function SettingsInputSection({ settings, showAll, handleChange }: SettingsInputSectionProps): JSX.Element {
+export function SettingsInputSection({ settings, showAll, handleChange, handlePreview }: SettingsInputSectionProps): JSX.Element {
   const { t } = useTranslation();
   const [toggleStatsInput, setToggleStatsInput] = useState(settings.shortcutToggleStats);
   const [togglePointerLockInput, setTogglePointerLockInput] = useState(settings.shortcutTogglePointerLock);
@@ -410,19 +412,18 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
             <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(2)}x</span>
           </div>
           <div className="settings-slider-control">
-            <input
+            <SettingRange
               id="settings-input-mouse-sensitivity-slider"
-              type="range"
               className="settings-slider"
               min={0.1}
               max={4}
               step={0.01}
               value={settings.mouseSensitivity}
-              onChange={(e) => {
-                const value = parseFloat(e.target.value);
+              onPreview={(value) => {
                 setMouseSensitivityDraft(formatMouseSensitivityDraft(value));
-                handleChange("mouseSensitivity", value);
+                handlePreview("mouseSensitivity", value);
               }}
+              onCommit={(value) => handleChange("mouseSensitivity", value)}
             />
             <input
               id="settings-input-mouse-sensitivity-number"
@@ -453,19 +454,19 @@ export function SettingsInputSection({ settings, showAll, handleChange }: Settin
             <span className="settings-value-badge">{Math.round(settings.mouseAcceleration)}%</span>
           </div>
           <div className="settings-slider-control">
-            <input
+            <SettingRange
               id="settings-input-mouse-acceleration-slider"
-              type="range"
               className="settings-slider"
               min={1}
               max={150}
               step={1}
               value={Math.round(settings.mouseAcceleration)}
-              onChange={(e) => {
-                const value = Math.max(1, Math.min(150, Math.round(Number(e.target.value) || 1)));
+              normalize={(value) => Math.max(1, Math.min(150, Math.round(value || 1)))}
+              onPreview={(value) => {
                 setMouseAccelerationDraft(formatMouseAccelerationDraft(value));
-                handleChange("mouseAcceleration", value);
+                handlePreview("mouseAcceleration", value);
               }}
+              onCommit={(value) => handleChange("mouseAcceleration", value)}
             />
             <input
               id="settings-input-mouse-acceleration-number"

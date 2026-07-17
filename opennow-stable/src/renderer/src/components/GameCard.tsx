@@ -1,5 +1,5 @@
 import { Play, Monitor } from "lucide-react";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { JSX } from "react";
 import { m } from "motion/react";
 import { normalizeGameStore } from "@shared/gfn";
@@ -11,6 +11,7 @@ import { useTranslation } from "../i18n";
 interface GameCardProps {
   game: GameInfo;
   isSelected?: boolean;
+  surface?: "home" | "library";
   onPlay: () => void;
   onSelect: () => void;
   selectedVariantId?: string;
@@ -133,10 +134,17 @@ const StoreBrandIcon = memo(function StoreBrandIcon({ store }: { store: string }
   return <IconComponent />;
 });
 
+const GAME_CARD_FALLBACK_ASPECT: Record<"home" | "library", number> = {
+  home: 56.25,
+  library: 150,
+};
+const gameCardAspectByImageUrl = new Map<string, number>();
+
 function gameCardPropsAreEqual(prev: GameCardProps, next: GameCardProps): boolean {
   return (
     prev.game === next.game
     && prev.isSelected === next.isSelected
+    && prev.surface === next.surface
     && prev.selectedVariantId === next.selectedVariantId
     && prev.onPlay === next.onPlay
     && prev.onSelect === next.onSelect
@@ -147,6 +155,7 @@ function gameCardPropsAreEqual(prev: GameCardProps, next: GameCardProps): boolea
 export const GameCard = memo(function GameCard({
   game,
   isSelected = false,
+  surface = "home",
   onPlay,
   onSelect,
   selectedVariantId,
@@ -166,16 +175,29 @@ export const GameCard = memo(function GameCard({
     [game, selectedVariantId],
   );
 
-  const [aspectPct, setAspectPct] = useState<number | undefined>(undefined);
+  const fallbackAspectPct = GAME_CARD_FALLBACK_ASPECT[surface];
+  const [aspectPct, setAspectPct] = useState(
+    () => (game.imageUrl ? gameCardAspectByImageUrl.get(game.imageUrl) : undefined) ?? fallbackAspectPct,
+  );
+
+  useEffect(() => {
+    setAspectPct(
+      (game.imageUrl ? gameCardAspectByImageUrl.get(game.imageUrl) : undefined) ?? fallbackAspectPct,
+    );
+  }, [fallbackAspectPct, game.imageUrl]);
 
   const handleImageLoad = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
     const img = event.currentTarget;
     const w = img.naturalWidth;
     const h = img.naturalHeight;
     if (w && h) {
-      setAspectPct((h / w) * 100);
+      const measuredAspectPct = (h / w) * 100;
+      if (game.imageUrl) {
+        gameCardAspectByImageUrl.set(game.imageUrl, measuredAspectPct);
+      }
+      setAspectPct(measuredAspectPct);
     }
-  }, []);
+  }, [game.imageUrl]);
 
   const handlePlayClick = (event: React.MouseEvent): void => {
     event.stopPropagation();

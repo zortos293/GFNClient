@@ -9,6 +9,7 @@ export type ShaderAtmosphereVariant = "controller" | "queue" | "connecting";
 export interface ShaderAtmosphereProps {
   variant?: ShaderAtmosphereVariant;
   className?: string;
+  active?: boolean;
 }
 
 type PointerPosition = { x: number; y: number };
@@ -158,17 +159,40 @@ function supportsWebGl(): boolean {
 export function ShaderAtmosphere({
   variant = "controller",
   className,
+  active = true,
 }: ShaderAtmosphereProps): JSX.Element {
-  const [canRender, setCanRender] = useState(false);
+  const [webGlSupported, setWebGlSupported] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(
+    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== "hidden");
   const pointerRef = useRef<PointerPosition>({ x: -2, y: -2 });
+  const renderActive = active && documentVisible && !reducedMotion;
 
   useEffect(() => {
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    setCanRender(!reducedMotion && supportsWebGl());
+    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const syncReducedMotion = (): void => setReducedMotion(mediaQuery.matches);
+    const syncVisibility = (): void => setDocumentVisible(document.visibilityState !== "hidden");
+    syncReducedMotion();
+    syncVisibility();
+    mediaQuery.addEventListener("change", syncReducedMotion);
+    document.addEventListener("visibilitychange", syncVisibility);
+    return () => {
+      mediaQuery.removeEventListener("change", syncReducedMotion);
+      document.removeEventListener("visibilitychange", syncVisibility);
+    };
   }, []);
 
   useEffect(() => {
-    if (!canRender || variant === "controller") return undefined;
+    if (reducedMotion) {
+      setWebGlSupported(false);
+      return;
+    }
+    setWebGlSupported(supportsWebGl());
+  }, [reducedMotion]);
+
+  useEffect(() => {
+    if (!renderActive || variant === "controller") return undefined;
 
     const handlePointerMove = (event: PointerEvent): void => {
       pointerRef.current.x = event.clientX / Math.max(window.innerWidth, 1);
@@ -187,16 +211,22 @@ export function ShaderAtmosphere({
       window.removeEventListener("blur", clearPointer);
       document.documentElement.removeEventListener("mouseleave", clearPointer);
     };
-  }, [canRender, variant]);
+  }, [renderActive, variant]);
 
   return (
     <div
-      className={["shader-atmosphere", `shader-atmosphere--${variant}`, className].filter(Boolean).join(" ")}
+      className={[
+        "shader-atmosphere",
+        `shader-atmosphere--${variant}`,
+        reducedMotion ? "shader-atmosphere--reduced-motion" : "",
+        className,
+      ].filter(Boolean).join(" ")}
       aria-hidden="true"
     >
-      {canRender && (
+      {!reducedMotion && webGlSupported && (
         <Canvas
           dpr={[0.75, 1]}
+          frameloop={renderActive ? "always" : "never"}
           camera={{ position: [0, 0, 1] }}
           gl={{ antialias: false, alpha: false, powerPreference: "high-performance" }}
         >

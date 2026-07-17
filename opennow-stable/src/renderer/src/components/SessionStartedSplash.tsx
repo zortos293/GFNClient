@@ -1,8 +1,8 @@
 import { useEffect } from "react";
-import { AnimatePresence, m } from "motion/react";
+import { AnimatePresence, m, useReducedMotion } from "motion/react";
 import { Check } from "lucide-react";
 import type { JSX } from "react";
-import { smoothEase } from "./MotionProvider";
+import { compactDialogTransition } from "./MotionProvider";
 import { useTranslation } from "../i18n";
 
 const CONNECTED_BADGE_VISIBLE_MS = 2400;
@@ -20,8 +20,7 @@ const badgeVariants = {
     y: 0,
     filter: "blur(0px)",
     transition: {
-      duration: 0.5,
-      ease: smoothEase,
+      ...compactDialogTransition,
     },
   },
   exit: {
@@ -29,7 +28,7 @@ const badgeVariants = {
     scale: 0.96,
     y: -20,
     filter: "blur(6px)",
-    transition: { duration: 0.34, ease: smoothEase },
+    transition: compactDialogTransition,
   },
 } as const;
 
@@ -44,6 +43,7 @@ export function SessionStartedSplash({
   onFinished,
 }: SessionStartedSplashProps): JSX.Element | null {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
     if (!visible) {
@@ -60,10 +60,11 @@ export function SessionStartedSplash({
           className="sv-ready-splash"
           role="status"
           aria-live="polite"
-          variants={badgeVariants}
-          initial="hidden"
-          animate="visible"
-          exit="exit"
+          variants={reducedMotion ? undefined : badgeVariants}
+          initial={reducedMotion ? { opacity: 1, scale: 1, y: 0, filter: "blur(0px)" } : "hidden"}
+          animate={reducedMotion ? { opacity: 1, scale: 1, y: 0, filter: "blur(0px)" } : "visible"}
+          exit={reducedMotion ? { opacity: 0 } : "exit"}
+          transition={reducedMotion ? { duration: 0 } : undefined}
         >
           <span className="sv-ready-splash-card">
             <span className="sv-ready-splash-emblem" aria-hidden>

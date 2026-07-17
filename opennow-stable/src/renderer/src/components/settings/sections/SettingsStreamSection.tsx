@@ -2,7 +2,6 @@ import {
   Check, Globe, Heart, MapPin, Monitor, SlidersHorizontal, Wifi, Zap, Search, X, Cpu,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { m } from "motion/react";
 import type {
   ColorQuality,
   EntitledResolution,
@@ -33,13 +32,13 @@ import {
   getFpsForResolution,
   groupResolutions,
   inferAspectRatioFromResolution,
-  NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS,
   STATIC_FPS_PRESETS,
   STATIC_RESOLUTION_PRESETS,
 } from "../settingsFormatters";
-import { dialogMotion, overlayMotion } from "../../MotionProvider";
 import { MotionSpinner } from "../../MotionSpinner";
+import { ModalSurface } from "../../ui/ModalSurface";
 import { SelectDropdown, type SelectDropdownOption } from "../../ui/SelectDropdown";
+import { SettingRange } from "../SettingRange";
 
 export interface SettingsStreamSectionProps {
   settings: Settings;
@@ -49,6 +48,7 @@ export interface SettingsStreamSectionProps {
   showStreamVideo: boolean;
   showStreamCodecDiagnostics: boolean;
   handleChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  handlePreview: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   codecResults: CodecTestResult[] | null;
   codecTesting: boolean;
   onRunCodecTest: () => Promise<void>;
@@ -66,6 +66,7 @@ export function SettingsStreamSection({
   showStreamVideo,
   showStreamCodecDiagnostics,
   handleChange,
+  handlePreview,
   codecResults,
   codecTesting,
   onRunCodecTest,
@@ -102,24 +103,21 @@ export function SettingsStreamSection({
   });
 
   const [zortosCommunityProxyPromptOpen, setZortosCommunityProxyPromptOpen] = useState(false);
-  const [zortosCommunityProxyPromptClosing, setZortosCommunityProxyPromptClosing] = useState(false);
   const [zortosCommunityProxyProvisioning, setZortosCommunityProxyProvisioning] = useState(false);
   const [zortosCommunityProxyError, setZortosCommunityProxyError] = useState<string | null>(null);
-  const zortosCommunityProxyPromptRef = useRef<HTMLDivElement | null>(null);
   const zortosCommunityProxyPromptContinueRef = useRef<HTMLButtonElement | null>(null);
-  const zortosCommunityProxyPromptPreviousFocusRef = useRef<HTMLElement | null>(null);
-  const zortosCommunityProxyPromptCloseTimerRef = useRef<number | null>(null);
-  const zortosCommunityProxyPromptVisible =
-    zortosCommunityProxyPromptOpen || zortosCommunityProxyPromptClosing;
   const isUsingZortosCommunityProxy = useMemo(
     () => settings.sessionProxyEnabled && isZortosCommunityProxyUrl(settings.sessionProxyUrl),
     [settings.sessionProxyEnabled, settings.sessionProxyUrl],
   );
 
   useEffect(() => {
-    onBlockingOverlayChange?.(zortosCommunityProxyPromptVisible);
-    return () => onBlockingOverlayChange?.(false);
-  }, [zortosCommunityProxyPromptVisible, onBlockingOverlayChange]);
+    if (zortosCommunityProxyPromptOpen) {
+      onBlockingOverlayChange?.(true);
+    }
+  }, [onBlockingOverlayChange, zortosCommunityProxyPromptOpen]);
+
+  useEffect(() => () => onBlockingOverlayChange?.(false), [onBlockingOverlayChange]);
 
   const runPingTest = useCallback(async () => {
     if (regions.length === 0) return;
@@ -402,30 +400,22 @@ export function SettingsStreamSection({
   }, [activeRegionOptionId, regionDropdownOpen]);
 
   const openZortosCommunityProxyPrompt = useCallback((): void => {
-    if (zortosCommunityProxyPromptCloseTimerRef.current !== null) {
-      window.clearTimeout(zortosCommunityProxyPromptCloseTimerRef.current);
-      zortosCommunityProxyPromptCloseTimerRef.current = null;
-    }
-
     setZortosCommunityProxyError(null);
     setZortosCommunityProxyProvisioning(false);
-    setZortosCommunityProxyPromptClosing(false);
     setZortosCommunityProxyPromptOpen(true);
   }, []);
 
   const closeZortosCommunityProxyPrompt = useCallback((): void => {
-    if (zortosCommunityProxyPromptCloseTimerRef.current !== null || zortosCommunityProxyProvisioning) {
+    if (zortosCommunityProxyProvisioning) {
       return;
     }
-
     setZortosCommunityProxyPromptOpen(false);
-    setZortosCommunityProxyPromptClosing(true);
-    zortosCommunityProxyPromptCloseTimerRef.current = window.setTimeout(() => {
-      zortosCommunityProxyPromptCloseTimerRef.current = null;
-      setZortosCommunityProxyPromptClosing(false);
-      setZortosCommunityProxyError(null);
-    }, NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS);
   }, [zortosCommunityProxyProvisioning]);
+
+  const handleZortosCommunityProxyPromptExit = useCallback((): void => {
+    setZortosCommunityProxyError(null);
+    onBlockingOverlayChange?.(false);
+  }, [onBlockingOverlayChange]);
 
   const handleOpenZortosSponsors = useCallback((): void => {
     void window.openNow.openExternalUrl(ZORTOS_GITHUB_SPONSORS_URL).catch((error) => {
@@ -456,46 +446,6 @@ export function SettingsStreamSection({
       setZortosCommunityProxyProvisioning(false);
     }
   }, [closeZortosCommunityProxyPrompt, handleChange, t, zortosCommunityProxyProvisioning]);
-
-  useEffect(() => {
-    return () => {
-      if (zortosCommunityProxyPromptCloseTimerRef.current !== null) {
-        window.clearTimeout(zortosCommunityProxyPromptCloseTimerRef.current);
-        zortosCommunityProxyPromptCloseTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!zortosCommunityProxyPromptVisible) {
-      return;
-    }
-
-    zortosCommunityProxyPromptPreviousFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !zortosCommunityProxyProvisioning) {
-        event.preventDefault();
-        closeZortosCommunityProxyPrompt();
-      }
-    };
-
-    const focusFrame = window.requestAnimationFrame(() => {
-      zortosCommunityProxyPromptContinueRef.current?.focus({ preventScroll: true });
-    });
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener("keydown", handleKeyDown);
-      const previousFocus = zortosCommunityProxyPromptPreviousFocusRef.current;
-      zortosCommunityProxyPromptPreviousFocusRef.current = null;
-      if (previousFocus?.isConnected) {
-        previousFocus.focus({ preventScroll: true });
-      }
-    };
-  }, [closeZortosCommunityProxyPrompt, zortosCommunityProxyPromptVisible, zortosCommunityProxyProvisioning]);
 
   return (
     <>
@@ -824,15 +774,15 @@ export function SettingsStreamSection({
             <label className="settings-label" htmlFor="settings-stream-max-bitrate">{t("settings.video.maxBitrate")}</label>
             <span className="settings-value-badge">{settings.maxBitrateMbps} Mbps</span>
           </div>
-          <input
+          <SettingRange
             id="settings-stream-max-bitrate"
-            type="range"
             className="settings-slider"
             min={5}
             max={150}
             step={5}
             value={settings.maxBitrateMbps}
-            onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
+            onPreview={(value) => handlePreview("maxBitrateMbps", value)}
+            onCommit={(value) => handleChange("maxBitrateMbps", value)}
           />
         </div>
 
@@ -863,16 +813,16 @@ export function SettingsStreamSection({
               <span>{t("settings.video.customBitrate")}</span>
             </button>
           </div>
-          <input
+          <SettingRange
             id="settings-stream-recording-bitrate"
-            type="range"
             className="settings-slider"
             min={5}
             max={200}
             step={5}
             value={settings.recordingBitrateMbps ?? 75}
             disabled={settings.recordingBitrateMbps === null}
-            onChange={(e) => handleChange("recordingBitrateMbps", parseInt(e.target.value, 10))}
+            onPreview={(value) => handlePreview("recordingBitrateMbps", value)}
+            onCommit={(value) => handleChange("recordingBitrateMbps", value)}
           />
           <span className="settings-subtle-hint">{t("settings.video.recordingBitrateHint")}</span>
         </div>
@@ -1009,19 +959,18 @@ export function SettingsStreamSection({
                     <label className="settings-label" htmlFor={`settings-stream-video-filter-${control.key}`}>{t(control.labelKey)}</label>
                     <span className="settings-value-badge">{settings.videoShader[control.key]}%</span>
                   </div>
-                  <input
+                  <SettingRange
                     id={`settings-stream-video-filter-${control.key}`}
-                    type="range"
                     className="settings-slider"
                     min={control.min}
                     max={control.max}
                     step={1}
                     value={settings.videoShader[control.key]}
-                    onChange={(e) => {
-                      const next = parseInt(e.target.value, 10);
-                      if (Number.isFinite(next)) {
-                        handleChange("videoShader", { ...settings.videoShader, [control.key]: next });
-                      }
+                    onPreview={(value) => {
+                      handlePreview("videoShader", { ...settings.videoShader, [control.key]: value });
+                    }}
+                    onCommit={(value) => {
+                      handleChange("videoShader", { ...settings.videoShader, [control.key]: value });
                     }}
                   />
                 </div>
@@ -1191,37 +1140,21 @@ export function SettingsStreamSection({
                   </div>
                   )}
                 </>
-      {zortosCommunityProxyPromptVisible && (
-        <m.div
-          className={`native-streamer-warning ${zortosCommunityProxyPromptClosing ? "native-streamer-warning--closing" : ""}`}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="zortos-community-proxy-title"
-          aria-describedby="zortos-community-proxy-copy"
-          initial={overlayMotion.initial}
-          animate={zortosCommunityProxyPromptClosing ? overlayMotion.exit : overlayMotion.animate}
-          transition={overlayMotion.transition}
-        >
-          <m.button
-            type="button"
-            className="native-streamer-warning-backdrop"
-            aria-label={t("app.actions.cancel")}
-            aria-hidden="true"
-            tabIndex={-1}
-            disabled={zortosCommunityProxyProvisioning}
-            onClick={closeZortosCommunityProxyPrompt}
-            initial={overlayMotion.initial}
-            animate={zortosCommunityProxyPromptClosing ? overlayMotion.exit : overlayMotion.animate}
-            transition={overlayMotion.transition}
-          />
-          <m.div
-            ref={zortosCommunityProxyPromptRef}
-            className="native-streamer-warning-card"
-            tabIndex={-1}
-            initial={dialogMotion.initial}
-            animate={zortosCommunityProxyPromptClosing ? dialogMotion.exit : dialogMotion.animate}
-            transition={dialogMotion.transition}
-          >
+      <ModalSurface
+        open={zortosCommunityProxyPromptOpen}
+        onClose={closeZortosCommunityProxyPrompt}
+        onExitComplete={handleZortosCommunityProxyPromptExit}
+        motion="compact"
+        overlayClassName="native-streamer-warning"
+        backdropClassName="native-streamer-warning-backdrop"
+        panelClassName="native-streamer-warning-card"
+        ariaLabelledBy="zortos-community-proxy-title"
+        ariaDescribedBy="zortos-community-proxy-copy"
+        backdropLabel={t("app.actions.cancel")}
+        initialFocusRef={zortosCommunityProxyPromptContinueRef}
+        closeOnBackdrop={!zortosCommunityProxyProvisioning}
+        closeOnEscape={!zortosCommunityProxyProvisioning}
+      >
             <div className="native-streamer-warning-kicker">
               <Heart size={14} />
               {t("settings.video.zortosCommunityProxy.enablePromptKicker")}
@@ -1255,7 +1188,6 @@ export function SettingsStreamSection({
                 }}
                 ref={zortosCommunityProxyPromptContinueRef}
                 disabled={zortosCommunityProxyProvisioning}
-                autoFocus
               >
                 {zortosCommunityProxyProvisioning
                   ? t("settings.video.zortosCommunityProxy.provisioning")
@@ -1265,9 +1197,7 @@ export function SettingsStreamSection({
             <div className="native-streamer-warning-hint">
               <kbd>Esc</kbd> {t("settings.video.zortosCommunityProxy.enablePromptEsc")}
             </div>
-          </m.div>
-        </m.div>
-      )}
+      </ModalSurface>
     </>
   );
 }

@@ -6,7 +6,7 @@ import { isOwnedLibraryStatus } from "@shared/gfn";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
-import { appendImageType, appendUnique, gameMatchesActiveSession } from "../lib/controllerCatalogUi";
+import { appendImageType, appendUnique } from "../lib/controllerCatalogUi";
 import { useTranslation } from "../i18n";
 import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
 import { pageTransition, panelSpring } from "./MotionProvider";
@@ -54,6 +54,7 @@ export interface HomePageProps {
   totalCount: number;
   supportedCount: number;
   controllerMode?: boolean;
+  surfaceActive?: boolean;
   storePanels?: GamePanelResult[];
   storeHeroGames?: GameInfo[];
   activeSessionAppIds?: number[];
@@ -91,6 +92,20 @@ function getControllerStoreLogoUrl(game: GameInfo): string | undefined {
     ?? game.imageUrlsByType?.TITLE_LOGO?.[0];
 }
 
+function preloadControllerHeroImage(imageUrl: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => {
+      void image.decode()
+        .catch(() => undefined)
+        .then(() => resolve(image.naturalWidth > 0));
+    };
+    image.onerror = () => resolve(false);
+    image.src = imageUrl;
+  });
+}
+
 function getSelectedVariant(game: GameInfo, selectedVariantId?: string): GameVariant | undefined {
   return game.variants.find((variant) => variant.id === selectedVariantId)
     ?? game.variants[game.selectedVariantIndex]
@@ -103,13 +118,6 @@ function storeVariantIsOwned(variant: GameVariant | undefined): boolean {
 
 function getVariantDisplayName(variant: GameVariant | undefined, fallback: string): string {
   return variant?.store ? getStoreDisplayName(variant.store) : fallback;
-}
-
-function getPurchaseUrl(game: GameInfo, selectedVariantId?: string): string | undefined {
-  const selectedVariant = getSelectedVariant(game, selectedVariantId);
-  if (selectedVariant?.storeUrl) return selectedVariant.storeUrl;
-  return game.variants.find((variant) => !storeVariantIsOwned(variant) && variant.storeUrl)?.storeUrl
-    ?? game.variants.find((variant) => variant.storeUrl)?.storeUrl;
 }
 
 function gameNeedsPurchase(game: GameInfo, selectedVariantId?: string): boolean {
@@ -177,8 +185,8 @@ function ControllerStoreTile({
         onPlay();
       }}
       aria-label={game.title}
-      animate={{ scale: focused ? 1.055 : 1 }}
-      whileTap={{ scale: 0.98 }}
+      animate={{ y: focused ? -7 : 0, scale: focused ? 1.035 : 1 }}
+      whileTap={{ y: focused ? -5 : 0, scale: 0.98 }}
       transition={panelSpring}
     >
       <span className="controller-store-tile-art">
@@ -238,6 +246,7 @@ export const HomePage = memo(function HomePage({
   totalCount,
   supportedCount,
   controllerMode = false,
+  surfaceActive = true,
   storePanels = [],
   storeHeroGames = [],
   activeSessionAppIds: _activeSessionAppIds = [],
@@ -262,6 +271,7 @@ export const HomePage = memo(function HomePage({
   const gamepadPreviousButtonsRef = useRef(0);
   const gamepadLastMoveAtRef = useRef(0);
   const gamepadFrameRef = useRef<number | null>(null);
+  const pendingScrollFrameRef = useRef<number | null>(null);
   const controllerInputStateRef = useRef({
     focusTile: (_row: number, _column: number): void => {},
     launchFocusedTile: (): void => {},
@@ -269,6 +279,23 @@ export const HomePage = memo(function HomePage({
     focusedRowIndex: 0,
     focusedColumnIndex: 0,
   });
+
+  useEffect(() => {
+    if (surfaceActive) return undefined;
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+      pendingScrollFrameRef.current = null;
+    }
+    gamepadPreviousButtonsRef.current = 0;
+    gamepadLastMoveAtRef.current = 0;
+    return undefined;
+  }, [surfaceActive]);
+
+  useEffect(() => () => {
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+    }
+  }, []);
 
   const controllerSections = useMemo(
     () => storePanels.flatMap((panel) => panel.sections).filter((section) => section.games.length > 0),
@@ -280,7 +307,7 @@ export const HomePage = memo(function HomePage({
   );
 
   const focusTile = (rowIndex: number, columnIndex: number): void => {
-    if (controllerSections.length === 0) return;
+    if (!surfaceActive || controllerSections.length === 0) return;
     const nextRowIndex = Math.max(0, Math.min(rowIndex, controllerSections.length - 1));
     const row = controllerSections[nextRowIndex];
     if (!row || row.games.length === 0) return;
@@ -289,7 +316,12 @@ export const HomePage = memo(function HomePage({
     setFocusedRowIndex(nextRowIndex);
     setFocusedColumnIndex(nextColumnIndex);
     onSelectGame(nextGame.id);
-    window.requestAnimationFrame(() => {
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+    }
+    pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
+      pendingScrollFrameRef.current = null;
+      if (!surfaceActive) return;
       const tile = rowRefs.current[nextRowIndex]?.querySelector<HTMLElement>(`[data-controller-store-column="${nextColumnIndex}"]`);
       tile?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "auto" });
       tile?.closest(".controller-store-section")?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
@@ -330,32 +362,57 @@ export const HomePage = memo(function HomePage({
   }, [cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile]);
 
   useEffect(() => {
-    if (!controllerMode || !controllerSearchOpen) return;
+    if (!controllerMode || !surfaceActive || !controllerSearchOpen) return;
     controllerSearchInputRef.current?.focus();
-  }, [controllerMode, controllerSearchOpen]);
+  }, [controllerMode, controllerSearchOpen, surfaceActive]);
 
   useEffect(() => {
-    if (!controllerMode) return;
+    if (!controllerMode || !surfaceActive) return;
     setControllerHeroIndex(0);
-  }, [controllerHeroGames, controllerMode]);
+  }, [controllerHeroGames, controllerMode, surfaceActive]);
 
   useEffect(() => {
-    if (!controllerMode || controllerHeroGames.length <= 1) return;
+    if (!controllerMode || !surfaceActive || controllerHeroGames.length <= 1) return;
+    let cancelled = false;
+    let advancing = false;
+
+    const advanceHero = async (): Promise<void> => {
+      if (advancing) return;
+      advancing = true;
+      try {
+        for (let offset = 1; offset < controllerHeroGames.length; offset += 1) {
+          const nextIndex = (controllerHeroIndex + offset) % controllerHeroGames.length;
+          const nextGame = controllerHeroGames[nextIndex];
+          const nextImageUrl = nextGame ? getControllerStoreImageCandidates(nextGame, true)[0] : undefined;
+          if (!nextImageUrl || await preloadControllerHeroImage(nextImageUrl)) {
+            if (!cancelled) setControllerHeroIndex(nextIndex);
+            return;
+          }
+          if (cancelled) return;
+        }
+      } finally {
+        advancing = false;
+      }
+    };
+
     const interval = window.setInterval(() => {
-      setControllerHeroIndex((index) => (index + 1) % controllerHeroGames.length);
+      void advanceHero();
     }, CONTROLLER_STORE_HERO_ROTATION_MS);
-    return () => window.clearInterval(interval);
-  }, [controllerHeroGames.length, controllerMode]);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [controllerHeroIndex, controllerHeroGames, controllerMode, surfaceActive]);
 
   useEffect(() => {
-    if (!controllerMode || controllerSections.length === 0) return;
+    if (!controllerMode || !surfaceActive || controllerSections.length === 0) return;
     const currentRow = controllerSections[focusedRowIndex];
     if (currentRow?.games.some((game) => game.id === selectedGameId)) return;
     focusTile(0, 0);
-  }, [controllerMode, controllerSections, focusedRowIndex, selectedGameId]);
+  }, [controllerMode, controllerSections, focusedRowIndex, selectedGameId, surfaceActive]);
 
   useEffect(() => {
-    if (!controllerMode) return;
+    if (!controllerMode || !surfaceActive) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (controllerSearchOpen) {
         if (event.key === "Escape") {
@@ -401,10 +458,10 @@ export const HomePage = memo(function HomePage({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controllerMode, controllerSearchOpen, cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile, onNextControllerPage, onPreviousControllerPage]);
+  }, [controllerMode, controllerSearchOpen, cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile, onNextControllerPage, onPreviousControllerPage, surfaceActive]);
 
   useEffect(() => {
-    if (!controllerMode) return;
+    if (!controllerMode || !surfaceActive) return;
     const readButtons = (): number => {
       const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
       return readControllerGamepadButtons(pad);
@@ -483,7 +540,7 @@ export const HomePage = memo(function HomePage({
       window.removeEventListener("gamepaddisconnected", handleDisconnect);
       stopGamepadNavigation();
     };
-  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage]);
+  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage, surfaceActive]);
 
   const gameGridItems = useMemo(
     () => games.map((game) => (
@@ -492,6 +549,7 @@ export const HomePage = memo(function HomePage({
         game={game}
         isSelected={game.id === selectedGameId}
         selectedVariantId={selectedVariantByGameId[game.id]}
+        surface="home"
         actionsRef={catalogActionsRef}
       />
     )),

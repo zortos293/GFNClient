@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, JSX } from "react";
-import { createPortal } from "react-dom";
-import { AnimatePresence, m } from "motion/react";
+import { AnimatePresence, m, useReducedMotion } from "motion/react";
 
 import type {
   ActiveSessionInfo,
@@ -116,7 +115,8 @@ import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
-import { overlayMotion, pageTransition, standardEase } from "./components/MotionProvider";
+import { ModalSurface } from "./components/ui/ModalSurface";
+import { overlayMotion, pageTransition, streamRevealTransition } from "./components/MotionProvider";
 import { LazyShaderAtmosphere } from "./components/LazyShaderAtmosphere";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
@@ -161,13 +161,13 @@ const DEFAULT_SHORTCUTS = {
 
 export function App(): JSX.Element {
   const { locale, t } = useTranslation();
+  const reducedMotion = useReducedMotion();
 
   // Navigation / settings / stream state below; auth + catalog come from hooks after deps are ready.
 
   // Navigation
   const [currentPage, setCurrentPage] = useState<AppPage>("home");
   const [pageBeforeSettings, setPageBeforeSettings] = useState<AppPage>("home");
-  const [settingsMounted, setSettingsMounted] = useState(false);
   const [sessionFullscreen, setSessionFullscreenState] = useState(false);
 
   // Settings State
@@ -335,8 +335,19 @@ export function App(): JSX.Element {
   // Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const accountConfirmRestoreFocusRef = useRef<HTMLElement | null>(null);
+  const logoutConfirmCancelRef = useRef<HTMLButtonElement | null>(null);
+  const removeAccountConfirmCancelRef = useRef<HTMLButtonElement | null>(null);
   const [videoElementHasFrame, setVideoElementHasFrame] = useState(false);
-  const [streamRevealComplete, setStreamRevealComplete] = useState(false);
+  const [streamRevealPhase, setStreamRevealPhase] = useState<"covered" | "revealing" | "revealed">("covered");
+  const [streamSurfacePresent, setStreamSurfacePresent] = useState(false);
+  const [launchSurfacePresent, setLaunchSurfacePresent] = useState(false);
+  const [settingsSurfacePresent, setSettingsSurfacePresent] = useState(false);
+  const [navbarOverlayBlocking, setNavbarOverlayBlocking] = useState(false);
+  const [logoutConfirmSurfacePresent, setLogoutConfirmSurfacePresent] = useState(false);
+  const [removeAccountConfirmSurfacePresent, setRemoveAccountConfirmSurfacePresent] = useState(false);
+  const [releaseHighlightsSurfacePresent, setReleaseHighlightsSurfacePresent] = useState(false);
+  const streamRevealComplete = streamRevealPhase === "revealed";
   const clientRef = useRef<GfnWebRtcClient | null>(null);
   const isStreamingRef = useRef(streamStatus === "streaming");
 
@@ -347,7 +358,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (streamStatus !== "streaming") {
       setVideoElementHasFrame(false);
-      setStreamRevealComplete(false);
+      setStreamRevealPhase("covered");
     }
 
     if (streamStatus === "idle") return undefined;
@@ -373,10 +384,25 @@ export function App(): JSX.Element {
   const streamVideoReady = isStreamVideoReady(streamStatus, diagnosticsVideoReady, videoElementHasFrame);
 
   useEffect(() => {
-    if (streamStatus === "idle" || !streamVideoReady || streamRevealComplete) return undefined;
-    const timer = window.setTimeout(() => setStreamRevealComplete(true), 680);
-    return () => window.clearTimeout(timer);
-  }, [streamRevealComplete, streamStatus, streamVideoReady]);
+    if (streamStatus === "idle" || !streamVideoReady || streamRevealPhase !== "covered") return;
+    setStreamRevealPhase(reducedMotion ? "revealed" : "revealing");
+  }, [reducedMotion, streamRevealPhase, streamStatus, streamVideoReady]);
+
+  useEffect(() => {
+    if (streamStatus !== "idle") setStreamSurfacePresent(true);
+  }, [streamStatus]);
+
+  useEffect(() => {
+    if (streamStatus !== "idle" || launchError) setLaunchSurfacePresent(true);
+  }, [launchError, streamStatus]);
+
+  useEffect(() => {
+    if (currentPage === "settings") setSettingsSurfacePresent(true);
+  }, [currentPage]);
+
+  useEffect(() => {
+    if (releaseHighlightsPayload) setReleaseHighlightsSurfacePresent(true);
+  }, [releaseHighlightsPayload]);
 
   useEffect(() => {
     if (streamStatus === "streaming" && audioRef.current) {
@@ -500,6 +526,14 @@ export function App(): JSX.Element {
     setNavbarActiveSession,
     setIsResumingNavbarSession,
   });
+
+  useEffect(() => {
+    if (logoutConfirmOpen) setLogoutConfirmSurfacePresent(true);
+  }, [logoutConfirmOpen]);
+
+  useEffect(() => {
+    if (removeAccountConfirmOpen) setRemoveAccountConfirmSurfacePresent(true);
+  }, [removeAccountConfirmOpen]);
 
   const effectiveControllerModeForCatalog = settings.controllerMode || directLaunchConsoleMode;
   const effectiveStreamingBaseUrlForCatalog = settings.region.trim()
@@ -1534,13 +1568,10 @@ export function App(): JSX.Element {
   }, [settings.translucentUI]);
 
 
-  // Save settings when changed
-  const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]) => {
-    setSettings((prev) => ({ ...prev, [key]: value }));
-    if (settingsLoaded) {
-      await window.openNow.setSetting(key, value);
-    }
-    // If a running client exists, push certain settings live
+  const previewSetting = useCallback(<K extends keyof Settings>(key: K, value: Settings[K]): void => {
+    setSettings((prev) => (Object.is(prev[key], value) ? prev : { ...prev, [key]: value }));
+
+    // If a running client exists, push supported settings live while controls move.
     if (key === "mouseSensitivity") {
       try {
         (clientRef.current as any)?.setMouseSensitivity?.(value as number);
@@ -1583,7 +1614,14 @@ export function App(): JSX.Element {
         // ignore
       }
     }
-  }, [settingsLoaded]);
+  }, []);
+
+  const updateSetting = useCallback(async <K extends keyof Settings>(key: K, value: Settings[K]): Promise<void> => {
+    previewSetting(key, value);
+    if (settingsLoaded) {
+      await window.openNow.setSetting(key, value);
+    }
+  }, [previewSetting, settingsLoaded]);
 
   useEffect(() => {
     if (!settingsLoaded || !subscriptionInfo) {
@@ -2992,133 +3030,110 @@ export function App(): JSX.Element {
     });
   }, [activeSessionProxyUrl, authSession, effectiveStreamingBaseUrl, handleOpenStoreUrl]);
 
-  useEffect(() => {
-    if (!logoutConfirmOpen && !removeAccountConfirmOpen) return;
+  const closeRemoveAccountConfirm = (): void => {
+    setRemoveAccountConfirmOpen(false);
+    setAccountToRemove(null);
+  };
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        if (removeAccountConfirmOpen) {
-          setRemoveAccountConfirmOpen(false);
-          setAccountToRemove(null);
-        } else if (logoutConfirmOpen) {
-          setLogoutConfirmOpen(false);
-        }
-      }
-      if (event.key === "Enter") {
-        event.preventDefault();
-        if (removeAccountConfirmOpen) {
-          void confirmRemoveAccount();
-        } else if (logoutConfirmOpen) {
-          void confirmLogout();
-        }
-      }
-    };
+  const logoutConfirmModal = (
+    <ModalSurface
+      open={logoutConfirmOpen}
+      onClose={() => setLogoutConfirmOpen(false)}
+      onConfirm={() => {
+        void confirmLogout();
+      }}
+      onExitComplete={() => setLogoutConfirmSurfacePresent(false)}
+      motion="compact"
+      overlayClassName="logout-confirm"
+      backdropClassName="logout-confirm-backdrop"
+      panelClassName="logout-confirm-card"
+      ariaLabel={t("auth.accounts.logOutConfirmation")}
+      backdropLabel={t("auth.accounts.cancelLogOut")}
+      initialFocusRef={logoutConfirmCancelRef}
+      restoreFocusRef={accountConfirmRestoreFocusRef}
+    >
+      <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
+      <h3 className="logout-confirm-title">{t("auth.accounts.signOutAllTitle")}</h3>
+      <p className="logout-confirm-text">
+        {t("auth.accounts.signOutAllDescription")}
+      </p>
+      <p className="logout-confirm-subtext">
+        {t("auth.accounts.signOutAllSubtext")}
+      </p>
+      <div className="logout-confirm-actions">
+        <button
+          ref={logoutConfirmCancelRef}
+          type="button"
+          className="logout-confirm-btn logout-confirm-btn-cancel"
+          onClick={() => setLogoutConfirmOpen(false)}
+        >
+          {t("auth.accounts.staySignedIn")}
+        </button>
+        <button
+          type="button"
+          className="logout-confirm-btn logout-confirm-btn-confirm"
+          onClick={() => {
+            void confirmLogout();
+          }}
+        >
+          {t("auth.accounts.signOutAll")}
+        </button>
+      </div>
+      <div className="logout-confirm-hint">
+        <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
+      </div>
+    </ModalSurface>
+  );
 
-    window.addEventListener("keydown", handleKeyDown);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [confirmLogout, confirmRemoveAccount, logoutConfirmOpen, removeAccountConfirmOpen]);
-
-  const logoutConfirmModal = logoutConfirmOpen && typeof document !== "undefined"
-    ? createPortal(
-        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label={t("auth.accounts.logOutConfirmation")}>
-          <button
-            type="button"
-            className="logout-confirm-backdrop"
-            onClick={() => setLogoutConfirmOpen(false)}
-            aria-label={t("auth.accounts.cancelLogOut")}
-          />
-          <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
-            <h3 className="logout-confirm-title">{t("auth.accounts.signOutAllTitle")}</h3>
-            <p className="logout-confirm-text">
-              {t("auth.accounts.signOutAllDescription")}
-            </p>
-            <p className="logout-confirm-subtext">
-              {t("auth.accounts.signOutAllSubtext")}
-            </p>
-            <div className="logout-confirm-actions">
-              <button
-                type="button"
-                className="logout-confirm-btn logout-confirm-btn-cancel"
-                onClick={() => setLogoutConfirmOpen(false)}
-              >
-                {t("auth.accounts.staySignedIn")}
-              </button>
-              <button
-                type="button"
-                className="logout-confirm-btn logout-confirm-btn-confirm"
-                onClick={() => {
-                  void confirmLogout();
-                }}
-              >
-                {t("auth.accounts.signOutAll")}
-              </button>
-            </div>
-            <div className="logout-confirm-hint">
-              <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )
-    : null;
-
-  const removeAccountConfirmModal = removeAccountConfirmOpen && typeof document !== "undefined"
-    ? createPortal(
-        <div className="logout-confirm" role="dialog" aria-modal="true" aria-label={t("auth.accounts.removeAccountConfirmation")}>
-          <button
-            type="button"
-            className="logout-confirm-backdrop"
-            onClick={() => {
-              setRemoveAccountConfirmOpen(false);
-              setAccountToRemove(null);
-            }}
-            aria-label={t("auth.accounts.cancelAccountRemoval")}
-          />
-          <div className="logout-confirm-card">
-            <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
-            <h3 className="logout-confirm-title">{t("auth.accounts.removeAccountTitle")}</h3>
-            <p className="logout-confirm-text">
-              {t("auth.accounts.removeAccountDescription", { name: accountToRemoveDisplayName })}
-            </p>
-            <p className="logout-confirm-subtext">
-              {t("auth.accounts.removeAccountSubtext")}
-            </p>
-            <div className="logout-confirm-actions">
-              <button
-                type="button"
-                className="logout-confirm-btn logout-confirm-btn-cancel"
-                onClick={() => {
-                  setRemoveAccountConfirmOpen(false);
-                  setAccountToRemove(null);
-                }}
-              >
-                {t("app.actions.cancel")}
-              </button>
-              <button
-                type="button"
-                className="logout-confirm-btn logout-confirm-btn-confirm"
-                onClick={() => {
-                  void confirmRemoveAccount();
-                }}
-              >
-                {t("app.actions.remove")}
-              </button>
-            </div>
-            <div className="logout-confirm-hint">
-              <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )
-    : null;
+  const removeAccountConfirmModal = (
+    <ModalSurface
+      open={removeAccountConfirmOpen}
+      onClose={closeRemoveAccountConfirm}
+      onConfirm={() => {
+        void confirmRemoveAccount();
+      }}
+      onExitComplete={() => setRemoveAccountConfirmSurfacePresent(false)}
+      motion="compact"
+      overlayClassName="logout-confirm"
+      backdropClassName="logout-confirm-backdrop"
+      panelClassName="logout-confirm-card"
+      ariaLabel={t("auth.accounts.removeAccountConfirmation")}
+      backdropLabel={t("auth.accounts.cancelAccountRemoval")}
+      initialFocusRef={removeAccountConfirmCancelRef}
+      restoreFocusRef={accountConfirmRestoreFocusRef}
+    >
+      <div className="logout-confirm-kicker">{t("auth.accounts.kicker")}</div>
+      <h3 className="logout-confirm-title">{t("auth.accounts.removeAccountTitle")}</h3>
+      <p className="logout-confirm-text">
+        {t("auth.accounts.removeAccountDescription", { name: accountToRemoveDisplayName })}
+      </p>
+      <p className="logout-confirm-subtext">
+        {t("auth.accounts.removeAccountSubtext")}
+      </p>
+      <div className="logout-confirm-actions">
+        <button
+          ref={removeAccountConfirmCancelRef}
+          type="button"
+          className="logout-confirm-btn logout-confirm-btn-cancel"
+          onClick={closeRemoveAccountConfirm}
+        >
+          {t("app.actions.cancel")}
+        </button>
+        <button
+          type="button"
+          className="logout-confirm-btn logout-confirm-btn-confirm"
+          onClick={() => {
+            void confirmRemoveAccount();
+          }}
+        >
+          {t("app.actions.remove")}
+        </button>
+      </div>
+      <div className="logout-confirm-hint">
+        <kbd>Enter</kbd> {t("app.actions.confirm")} · <kbd>Esc</kbd> {t("app.actions.cancel")}
+      </div>
+    </ModalSurface>
+  );
 
   const handleResumeFromNavbar = useCallback(async () => {
     if (
@@ -3571,16 +3586,6 @@ export function App(): JSX.Element {
     setReleaseHighlightsIsAuto(false);
   }, [releaseHighlightsIsAuto]);
 
-  const handleSettingsExitComplete = useCallback((): void => {
-    setSettingsMounted(false);
-  }, []);
-
-  useEffect(() => {
-    if (currentPage === "settings") {
-      setSettingsMounted(true);
-    }
-  }, [currentPage]);
-
   const mainPage: AppPage = currentPage === "settings" ? pageBeforeSettings : currentPage;
 
   // Show login screen if not authenticated
@@ -3601,13 +3606,11 @@ export function App(): JSX.Element {
           qrLoginChallenge={qrLoginChallenge}
           isQrLoginPending={activeLoginMode === "qr" && !qrLoginChallenge}
         />
-        {releaseHighlightsPayload && (
-          <ReleaseHighlightsModal
-            payload={releaseHighlightsPayload}
-            version={releaseHighlightsPayload.version}
-            onDismiss={handleDismissReleaseHighlights}
-          />
-        )}
+        <ReleaseHighlightsModal
+          payload={releaseHighlightsPayload}
+          onDismiss={handleDismissReleaseHighlights}
+          onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
+        />
       </>
     );
   }
@@ -3615,149 +3618,43 @@ export function App(): JSX.Element {
   const showLaunchOverlay = streamStatus !== "idle" || launchError !== null;
   const hasActiveStreamView = streamStatus !== "idle";
   const showLaunchErrorOverlay = launchError !== null;
-  const showDesktopLaunchLoading = showLaunchErrorOverlay || (streamStatus !== "idle" && !streamRevealComplete);
-  // Show stream lifecycle (waiting/connecting/streaming/failure)
-  if (showLaunchOverlay) {
-    const loadingStatus = launchError
-      ? launchError.stage
-      : streamStatus === "streaming"
-        ? "connecting"
-        : toLoadingStatus(streamStatus);
-    return (
-      <>
-        {hasActiveStreamView && (
-          <StreamView
-            videoRef={videoRef}
-            audioRef={audioRef}
-            diagnosticsStore={diagnosticsStore}
-            showStats={showStatsOverlay}
-            showNativeStats={settings.showNativeStreamerStats}
-            nativeInputCaptureActive={nativeInputCaptureActive}
-            gstreamerEnabled={settings.streamClientMode === "native"}
-            nativeExternalRenderer={settings.nativeExternalRenderer}
-            shortcuts={{
-              toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
-              togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
-              toggleFullscreen: formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac),
-              stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
-              toggleAntiAfk: shortcuts.toggleAntiAfk.canonical,
-              toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
-              screenshot: shortcuts.screenshot.canonical,
-              recording: shortcuts.recording.canonical,
-            }}
-            hideStreamButtons={settings.hideStreamButtons}
-            serverRegion={session?.serverIp}
-            antiAfkEnabled={antiAfkEnabled}
-            antiAfkAckNonce={antiAfkAckNonce}
-            showAntiAfkIndicator={settings.showAntiAfkIndicator}
-            exitPrompt={exitPrompt}
-            sessionStartedAtMs={sessionStartedAtMs}
-            sessionCounterEnabled={settings.sessionCounterEnabled}
-            showSessionTimeRemainingInStatsOverlay={settings.showSessionTimeRemainingInStatsOverlay}
-            sessionTimeRemainingSeconds={sessionTimeRemainingSeconds}
-            sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
-            sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
-            streamWarning={streamWarning}
-            isFullscreen={sessionFullscreen || !!document.fullscreenElement}
-            isConnecting={streamStatus === "connecting"}
-            isStreaming={isStreaming}
-            recordingBitrateMbps={settings.recordingBitrateMbps}
-            gameTitle={streamingGame?.title ?? t("app.labels.game")}
-            platformStore={streamingStore ?? undefined}
-            onToggleFullscreen={() => {
-              void toggleSessionFullscreen();
-            }}
-            onConfirmExit={handleExitPromptConfirm}
-            onCancelExit={handleExitPromptCancel}
-            onEndSession={() => {
-              void handlePromptedStopStream();
-            }}
-            onToggleMicrophone={() => {
-              clientRef.current?.toggleMicrophone();
-            }}
-            mouseSensitivity={settings.mouseSensitivity}
-            onMouseSensitivityChange={handleMouseSensitivityChange}
-            mouseAcceleration={settings.mouseAcceleration}
-            onMouseAccelerationChange={handleMouseAccelerationChange}
-            microphoneMode={settings.microphoneMode}
-            onMicrophoneModeChange={handleMicrophoneModeChange}
-            onScreenshotShortcutChange={(value) => {
-              void updateSetting("shortcutScreenshot", value);
-            }}
-            onRecordingShortcutChange={(value) => {
-              void updateSetting("shortcutToggleRecording", value);
-            }}
-            onShowSessionTimeRemainingInStatsOverlayChange={(value) => {
-              void updateSetting("showSessionTimeRemainingInStatsOverlay", value);
-            }}
-            subscriptionInfo={subscriptionInfo}
-            micTrack={clientRef.current?.getMicTrack() ?? null}
-            onRequestPointerLock={handleRequestPointerLock}
-            onReleasePointerLock={() => {
-              void releasePointerLockIfNeeded();
-            }}
-            onNativeInputPaused={setNativeInputPaused}
-            allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
-            videoShader={settings.videoShader}
-            onVideoShaderChange={handleVideoShaderChange}
-          />
-        )}
-        <AnimatePresence>
-          {showDesktopLaunchLoading && (
-            <m.div
-              key="stream-loading-transition"
-              className={`stream-loading-transition${streamVideoReady && !launchError ? " stream-loading-transition--warping" : ""}`}
-              initial={false}
-              animate={streamVideoReady && !launchError
-                ? { opacity: 0, scale: 1.025 }
-                : { opacity: 1, scale: 1 }}
-              exit={{ opacity: 0 }}
-              transition={streamVideoReady && !launchError
-                ? { duration: 0.62, ease: standardEase }
-                : { duration: 0.16, ease: standardEase }}
-            >
-              <StreamLoading
-                gameTitle={streamingGame?.title ?? t("app.labels.game")}
-                gameCover={streamingGame?.imageUrl}
-                platformStore={streamingStore ?? undefined}
-                status={loadingStatus}
-                queuePosition={queuePosition}
-                adState={effectiveAdState}
-                activeAd={activeQueueAd}
-                activeAdMediaUrl={activeQueueAdMediaUrl}
-                onAdPlaybackEvent={handleQueueAdPlaybackEvent}
-                adPreviewRef={queueAdPreviewRef}
-                error={
-                  launchError
-                    ? {
-                        title: launchError.title,
-                        description: launchError.description,
-                        code: launchError.codeLabel,
-                        actionLabel: launchError.actionLabel,
-                      }
-                    : undefined
-                }
-                onErrorAction={launchError?.action ? handleLaunchErrorAction : undefined}
-                onCancel={() => {
-                  if (launchError) {
-                    void handleDismissLaunchError();
-                    return;
-                  }
-                  void handlePromptedStopStream();
-                }}
-              />
-            </m.div>
-          )}
-        </AnimatePresence>
-      </>
-    );
-  }
+  const showDesktopLaunchLoading = showLaunchErrorOverlay
+    || (streamStatus !== "idle" && streamRevealPhase !== "revealed");
+  const loadingStatus = launchError
+    ? launchError.stage
+    : streamStatus === "streaming"
+      ? "connecting"
+      : toLoadingStatus(streamStatus);
+  const showCatalogAtmosphere = mainPage === "home" || mainPage === "library";
+  const shellBlocked = showLaunchOverlay
+    || streamSurfacePresent
+    || launchSurfacePresent
+    || currentPage === "settings"
+    || settingsSurfacePresent
+    || navbarOverlayBlocking
+    || queueModalGame !== null
+    || releaseHighlightsPayload !== null
+    || releaseHighlightsSurfacePresent
+    || logoutConfirmOpen
+    || logoutConfirmSurfacePresent
+    || removeAccountConfirmOpen
+    || removeAccountConfirmSurfacePresent;
+  const catalogSurfaceActive = !shellBlocked;
 
-  // Main app layout
-  const showCatalogAtmosphere = currentPage === "home" || currentPage === "library";
   return (
     <div className={`app-container${effectiveControllerMode ? " app-container--controller" : ""}${showCatalogAtmosphere ? " app-container--atmosphere" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
-      {showCatalogAtmosphere && <LazyShaderAtmosphere variant="controller" className="catalog-atmosphere" />}
+      <div
+        className="app-shell"
+        inert={shellBlocked ? true : undefined}
+        aria-hidden={shellBlocked || undefined}
+      >
+      {showCatalogAtmosphere && (
+        <LazyShaderAtmosphere
+          variant="controller"
+          className="catalog-atmosphere"
+          active={catalogSurfaceActive}
+        />
+      )}
       <AnimatePresence>
         {startupRefreshNotice && (
           <m.div
@@ -3797,11 +3694,16 @@ export function App(): JSX.Element {
         }}
         savedAccounts={savedAccounts}
         onSwitchAccount={handleSwitchAccount}
-        onRemoveAccount={(userId) => {
+        onRemoveAccount={(userId, restoreFocusTarget) => {
+          accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
           void handleRemoveAccount(userId);
         }}
         onAddAccount={handleAddAccount}
-        onLogoutAll={handleLogout}
+        onLogoutAll={(restoreFocusTarget) => {
+          accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
+          handleLogout();
+        }}
+        onBlockingOverlayChange={setNavbarOverlayBlocking}
         controllerMode={effectiveControllerMode}
       />
 
@@ -3836,6 +3738,7 @@ export function App(): JSX.Element {
                 totalCount={catalogTotalCount}
                 supportedCount={catalogSupportedCount}
                 controllerMode={effectiveControllerMode}
+                surfaceActive={catalogSurfaceActive}
                 storePanels={storePanels}
                 storeHeroGames={featuredGames}
                 activeSessionAppIds={activeSessionAppIds}
@@ -3866,6 +3769,7 @@ export function App(): JSX.Element {
                   selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
                   onSortChange={setCatalogSelectedSortId}
                   controllerMode={effectiveControllerMode}
+                  surfaceActive={catalogSurfaceActive}
                   featuredGames={featuredGames.length > 0 ? featuredGames : games}
                   activeSessionAppIds={activeSessionAppIds}
                   onBuyGame={handleBuyGame}
@@ -3878,24 +3782,170 @@ export function App(): JSX.Element {
         </AnimatePresence>
         </PageErrorBoundary>
       </main>
+      </div>
+
+      <AnimatePresence
+        initial={false}
+        onExitComplete={() => setStreamSurfacePresent(false)}
+      >
+        {hasActiveStreamView && (
+          <m.div
+            key="stream-view-layer"
+            className="stream-view-layer"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={pageTransition}
+          >
+            <StreamView
+              videoRef={videoRef}
+              audioRef={audioRef}
+              diagnosticsStore={diagnosticsStore}
+              showStats={showStatsOverlay}
+              showNativeStats={settings.showNativeStreamerStats}
+              nativeInputCaptureActive={nativeInputCaptureActive}
+              gstreamerEnabled={settings.streamClientMode === "native"}
+              nativeExternalRenderer={settings.nativeExternalRenderer}
+              shortcuts={{
+                toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),
+                togglePointerLock: formatShortcutForDisplay(settings.shortcutTogglePointerLock, isMac),
+                toggleFullscreen: formatShortcutForDisplay(settings.shortcutToggleFullscreen, isMac),
+                stopStream: formatShortcutForDisplay(settings.shortcutStopStream, isMac),
+                toggleAntiAfk: shortcuts.toggleAntiAfk.canonical,
+                toggleMicrophone: formatShortcutForDisplay(settings.shortcutToggleMicrophone, isMac),
+                screenshot: shortcuts.screenshot.canonical,
+                recording: shortcuts.recording.canonical,
+              }}
+              hideStreamButtons={settings.hideStreamButtons}
+              serverRegion={session?.serverIp}
+              antiAfkEnabled={antiAfkEnabled}
+              antiAfkAckNonce={antiAfkAckNonce}
+              showAntiAfkIndicator={settings.showAntiAfkIndicator}
+              exitPrompt={exitPrompt}
+              sessionStartedAtMs={sessionStartedAtMs}
+              sessionCounterEnabled={settings.sessionCounterEnabled}
+              showSessionTimeRemainingInStatsOverlay={settings.showSessionTimeRemainingInStatsOverlay}
+              sessionTimeRemainingSeconds={sessionTimeRemainingSeconds}
+              sessionClockShowEveryMinutes={settings.sessionClockShowEveryMinutes}
+              sessionClockShowDurationSeconds={settings.sessionClockShowDurationSeconds}
+              streamWarning={streamWarning}
+              isFullscreen={sessionFullscreen || !!document.fullscreenElement}
+              isConnecting={streamStatus === "connecting"}
+              streamRevealComplete={streamRevealComplete}
+              isStreaming={isStreaming}
+              recordingBitrateMbps={settings.recordingBitrateMbps}
+              gameTitle={streamingGame?.title ?? t("app.labels.game")}
+              platformStore={streamingStore ?? undefined}
+              onToggleFullscreen={() => {
+                void toggleSessionFullscreen();
+              }}
+              onConfirmExit={handleExitPromptConfirm}
+              onCancelExit={handleExitPromptCancel}
+              onEndSession={() => {
+                void handlePromptedStopStream();
+              }}
+              onToggleMicrophone={() => {
+                clientRef.current?.toggleMicrophone();
+              }}
+              mouseSensitivity={settings.mouseSensitivity}
+              onMouseSensitivityChange={handleMouseSensitivityChange}
+              mouseAcceleration={settings.mouseAcceleration}
+              onMouseAccelerationChange={handleMouseAccelerationChange}
+              microphoneMode={settings.microphoneMode}
+              onMicrophoneModeChange={handleMicrophoneModeChange}
+              onScreenshotShortcutChange={(value) => {
+                void updateSetting("shortcutScreenshot", value);
+              }}
+              onRecordingShortcutChange={(value) => {
+                void updateSetting("shortcutToggleRecording", value);
+              }}
+              onShowSessionTimeRemainingInStatsOverlayChange={(value) => {
+                void updateSetting("showSessionTimeRemainingInStatsOverlay", value);
+              }}
+              subscriptionInfo={subscriptionInfo}
+              micTrack={clientRef.current?.getMicTrack() ?? null}
+              onRequestPointerLock={handleRequestPointerLock}
+              onReleasePointerLock={() => {
+                void releasePointerLockIfNeeded();
+              }}
+              onNativeInputPaused={setNativeInputPaused}
+              allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
+              videoShader={settings.videoShader}
+              onVideoShaderChange={handleVideoShaderChange}
+            />
+          </m.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence
+        initial={false}
+        onExitComplete={() => setLaunchSurfacePresent(false)}
+      >
+        {showDesktopLaunchLoading && (
+          <m.div
+            key="stream-loading-transition"
+            className={`stream-loading-transition${streamRevealPhase === "revealing" && !launchError ? " stream-loading-transition--warping" : ""}`}
+            initial={{ opacity: 1, scale: 1 }}
+            animate={streamRevealPhase === "revealing" && !launchError
+              ? { opacity: 0, scale: 1.025 }
+              : { opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            transition={streamRevealPhase === "revealing" && !launchError
+              ? streamRevealTransition
+              : { duration: reducedMotion ? 0 : 0.16 }}
+            onAnimationComplete={() => {
+              if (streamRevealPhase === "revealing" && !launchError) {
+                setStreamRevealPhase("revealed");
+              }
+            }}
+          >
+            <StreamLoading
+              gameTitle={streamingGame?.title ?? t("app.labels.game")}
+              gameCover={streamingGame?.imageUrl}
+              platformStore={streamingStore ?? undefined}
+              status={loadingStatus}
+              queuePosition={queuePosition}
+              adState={effectiveAdState}
+              activeAd={activeQueueAd}
+              activeAdMediaUrl={activeQueueAdMediaUrl}
+              onAdPlaybackEvent={handleQueueAdPlaybackEvent}
+              adPreviewRef={queueAdPreviewRef}
+              error={launchError ? {
+                title: launchError.title,
+                description: launchError.description,
+                code: launchError.codeLabel,
+                actionLabel: launchError.actionLabel,
+              } : undefined}
+              onErrorAction={launchError?.action ? handleLaunchErrorAction : undefined}
+              onCancel={() => {
+                if (launchError) {
+                  void handleDismissLaunchError();
+                  return;
+                }
+                void handlePromptedStopStream();
+              }}
+            />
+          </m.div>
+        )}
+      </AnimatePresence>
+
       <SettingsModalHost
         open={currentPage === "settings"}
         onClose={handleCloseSettings}
-        onExitComplete={handleSettingsExitComplete}
+        onExitComplete={() => setSettingsSurfacePresent(false)}
       >
-        {settingsMounted && (
-          <SettingsPage
-            settings={settings}
-            regions={regions}
-            codecResults={codecResults}
-            codecTesting={codecTesting}
-            onRunCodecTest={runCodecTest}
-            onSettingChange={updateSetting}
-            onClose={handleCloseSettings}
-            focusSection={settingsFocusSection}
-            onOpenWhatsNew={handleOpenWhatsNew}
-          />
-        )}
+        <SettingsPage
+          settings={settings}
+          regions={regions}
+          codecResults={codecResults}
+          codecTesting={codecTesting}
+          onRunCodecTest={runCodecTest}
+          onSettingPreview={previewSetting}
+          onSettingChange={updateSetting}
+          onClose={handleCloseSettings}
+          focusSection={settingsFocusSection}
+          onOpenWhatsNew={handleOpenWhatsNew}
+        />
       </SettingsModalHost>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
@@ -3907,13 +3957,11 @@ export function App(): JSX.Element {
           onCancel={handleQueueModalCancel}
         />
       )}
-      {releaseHighlightsPayload && (
-        <ReleaseHighlightsModal
-          payload={releaseHighlightsPayload}
-          version={releaseHighlightsPayload.version}
-          onDismiss={handleDismissReleaseHighlights}
-        />
-      )}
+      <ReleaseHighlightsModal
+        payload={releaseHighlightsPayload}
+        onDismiss={handleDismissReleaseHighlights}
+        onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
+      />
     </div>
   );
 }

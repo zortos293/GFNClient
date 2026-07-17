@@ -1105,9 +1105,6 @@ object NativeStreamInputRouter {
                     nativeUiTouchPointerIds += event.getPointerId(index)
                 }
             }
-            MotionEvent.ACTION_UP,
-            MotionEvent.ACTION_CANCEL,
-            -> nativeUiTouchPointerIds.clear()
         }
         uiTouchPassthroughActive = nativeUiTouchPointerIds.isNotEmpty()
     }

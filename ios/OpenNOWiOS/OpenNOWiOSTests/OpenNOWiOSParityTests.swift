@@ -616,7 +616,10 @@ final class OpenNOWiOSParityTests: XCTestCase {
     }
 
     func testAndroidBitrateAndLanguageChoicesRemainAvailable() {
-        XCTAssertEqual(StreamSettingsResolver.bitrateOptionsMbps, [0] + Array(1...150))
+        XCTAssertEqual(
+            StreamSettingsResolver.bitrateOptionsMbps,
+            [0, 5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 75, 100]
+        )
         XCTAssertTrue(StreamSettingsResolver.keyboardLayoutOptions.contains { $0.value == "zh-TW" })
         XCTAssertTrue(StreamSettingsResolver.keyboardLayoutOptions.contains { $0.value == "ru-RU" })
         for language in ["th_TH", "vi_VN", "id_ID", "uk_UA", "nl_NL", "no_NO"] {
@@ -809,6 +812,49 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertNil(staleBanner.catalogArtworkUrl)
     }
 
+    func testGameDetailsPreferFirstScreenshotLikeAndroid() throws {
+        let game = try JSONDecoder().decode(
+            CloudGame.self,
+            from: Data(
+                #"{"id":"game","title":"Game","genre":"Action","platform":"Steam","icon":"gamecontroller.fill","imageUrl":"poster","heroImageUrl":"hero","launchOptions":[],"screenshotUrls":["shot-one","shot-two"]}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(game.screenshotUrls, ["shot-one", "shot-two"])
+        XCTAssertEqual(game.detailsArtworkUrl, "shot-one")
+    }
+
+    func testCompletedQueueAdIsRemovedBeforeReturningToQueueScreen() {
+        let ad = SessionAdInfo(
+            adId: "ad-1",
+            state: nil,
+            adState: nil,
+            adUrl: nil,
+            mediaUrl: "https://example.com/ad.mp4",
+            adMediaFiles: [],
+            clickThroughUrl: nil,
+            adLengthInSeconds: 15,
+            durationMs: nil,
+            title: nil,
+            description: nil
+        )
+        let state = SessionAdState(
+            isAdsRequired: true,
+            sessionAdsRequired: true,
+            isQueuePaused: true,
+            gracePeriodSeconds: nil,
+            message: nil,
+            sessionAds: [ad],
+            ads: [ad],
+            opportunity: nil,
+            serverSentEmptyAds: false
+        )
+
+        let updated = removeSessionAdItem(state, adId: ad.adId)
+        XCTAssertTrue(sessionAdItems(updated).isEmpty)
+        XCTAssertTrue(isSessionAdsRequired(updated))
+    }
+
     func testNvidiaArtworkRequestsReplaceExistingSizingAndClampToAndroidWideLimit() {
         XCTAssertEqual(
             optimizedNvidiaArtworkURL(
@@ -844,6 +890,24 @@ final class OpenNOWiOSParityTests: XCTestCase {
         settings.posterSizeScale = 2
         settings.normalizeStreamDefaults()
         XCTAssertEqual(settings.posterSizeScale, 1.4)
+    }
+
+    func testArtworkTargetSizeUsesStableCacheBuckets() {
+        XCTAssertEqual(normalizedImageTargetPixelSize(1), 160)
+        XCTAssertEqual(normalizedImageTargetPixelSize(161), 320)
+        XCTAssertEqual(normalizedImageTargetPixelSize(319), 320)
+        XCTAssertEqual(normalizedImageTargetPixelSize(960), 960)
+    }
+
+    func testPersistedBitrateIsNormalizedToNearestMenuPreset() {
+        var settings = AppSettings.default
+        settings.maxBitrateMbps = 150
+        settings.normalizeStreamDefaults()
+        XCTAssertEqual(settings.maxBitrateMbps, 100)
+
+        settings.maxBitrateMbps = 73
+        settings.normalizeStreamDefaults()
+        XCTAssertEqual(settings.maxBitrateMbps, 75)
     }
 
     func testPrintedWasteEqualScoresPreferLowerPingLikeAndroid() {

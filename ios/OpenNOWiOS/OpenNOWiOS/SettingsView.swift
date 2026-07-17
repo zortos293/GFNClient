@@ -528,8 +528,10 @@ struct SettingsView: View {
                 }
             }
 
-            Stepper(value: customStreamBinding(\.maxBitrateMbps), in: 0...150, step: 1) {
-                LabeledContent("Max Bitrate", value: bitrateLabel(for: store.settings.maxBitrateMbps))
+            Picker("Max Bitrate", selection: customStreamBinding(\.maxBitrateMbps)) {
+                ForEach(StreamSettingsResolver.bitrateOptionsMbps, id: \.self) { bitrate in
+                    Text(bitrateLabel(for: bitrate)).tag(bitrate)
+                }
             }
 
             Toggle("HDR", isOn: $store.settings.hdrEnabled)

@@ -3,6 +3,7 @@ import UIKit
 import ImageIO
 import GameController
 import Combine
+import CryptoKit
 
 func catalogStableGameKey(_ game: CloudGame) -> String {
     if let uuid = game.uuid?.trimmingCharacters(in: .whitespacesAndNewlines), !uuid.isEmpty {
@@ -129,6 +130,9 @@ final class OpenNOWImageCache {
             diskCapacity: 256 * 1024 * 1024,
             diskPath: "OpenNOWURLCache"
         )
+        Task(priority: .utility) {
+            await OpenNOWImageDiskCache.shared.prepare()
+        }
     }
 
     func image(for url: URL, targetPixelSize: Int) -> UIImage? {
@@ -143,12 +147,118 @@ final class OpenNOWImageCache {
         cache.removeAllObjects()
     }
 
-    private func cacheKey(url: URL, targetPixelSize: Int) -> NSString {
-        "\(url.absoluteString)#\(pixelBucket(for: targetPixelSize))" as NSString
+    static func removeAllPersistentImages() {
+        Task(priority: .utility) {
+            await OpenNOWImageDiskCache.shared.removeAll()
+        }
     }
 
-    private func pixelBucket(for targetPixelSize: Int) -> Int {
-        max(160, ((targetPixelSize + 159) / 160) * 160)
+    private func cacheKey(url: URL, targetPixelSize: Int) -> NSString {
+        "\(url.absoluteString)#\(normalizedImageTargetPixelSize(targetPixelSize))" as NSString
+    }
+}
+
+private actor OpenNOWImageDiskCache {
+    static let shared = OpenNOWImageDiskCache()
+
+    private let maximumAge: TimeInterval = 30 * 24 * 60 * 60
+    private let maximumBytes = 512 * 1024 * 1024
+    private let directoryURL: URL?
+    private var lastPruneAt = Date.distantPast
+
+    private init() {
+        directoryURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("OpenNOWArtwork", isDirectory: true)
+    }
+
+    func prepare() {
+        ensureDirectoryExists()
+        pruneIfNeeded(force: true)
+    }
+
+    func data(for url: URL) -> Data? {
+        guard let fileURL = fileURL(for: url),
+              let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
+              Date().timeIntervalSince(values.contentModificationDate ?? .distantPast) <= maximumAge,
+              let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe),
+              !data.isEmpty else {
+            return nil
+        }
+        return data
+    }
+
+    func store(_ data: Data, for url: URL) {
+        guard !data.isEmpty, let fileURL = fileURL(for: url) else { return }
+        ensureDirectoryExists()
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            pruneIfNeeded(force: false)
+        } catch {
+            // Artwork can always be fetched again; cache writes must not block rendering.
+        }
+    }
+
+    func remove(for url: URL) {
+        guard let fileURL = fileURL(for: url) else { return }
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    func removeAll() {
+        guard let directoryURL else { return }
+        try? FileManager.default.removeItem(at: directoryURL)
+        ensureDirectoryExists()
+        lastPruneAt = .distantPast
+    }
+
+    private func ensureDirectoryExists() {
+        guard let directoryURL else { return }
+        try? FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+    }
+
+    private func fileURL(for url: URL) -> URL? {
+        guard let directoryURL else { return nil }
+        let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return directoryURL.appendingPathComponent(digest).appendingPathExtension("image")
+    }
+
+    private func pruneIfNeeded(force: Bool) {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastPruneAt) >= 60 * 60,
+              let directoryURL,
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return
+        }
+        lastPruneAt = now
+
+        var entries = files.compactMap { fileURL -> (url: URL, date: Date, bytes: Int)? in
+            guard let values = try? fileURL.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey]
+            ) else {
+                return nil
+            }
+            return (fileURL, values.contentModificationDate ?? .distantPast, values.fileSize ?? 0)
+        }
+
+        for entry in entries where now.timeIntervalSince(entry.date) > maximumAge {
+            try? FileManager.default.removeItem(at: entry.url)
+        }
+        entries.removeAll { now.timeIntervalSince($0.date) > maximumAge }
+
+        var totalBytes = entries.reduce(0) { $0 + $1.bytes }
+        guard totalBytes > maximumBytes else { return }
+        for entry in entries.sorted(by: { $0.date < $1.date }) where totalBytes > maximumBytes {
+            try? FileManager.default.removeItem(at: entry.url)
+            totalBytes -= entry.bytes
+        }
     }
 }
 
@@ -157,7 +267,11 @@ private actor OpenNOWImageLoadGate {
 
     private let limit: Int
     private var available: Int
-    private var waiters: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
+    private var waiters: [(
+        id: UUID,
+        priority: TaskPriority,
+        continuation: CheckedContinuation<Void, Error>
+    )] = []
 
     init(limit: Int) {
         self.limit = limit
@@ -171,9 +285,10 @@ private actor OpenNOWImageLoadGate {
         }
 
         let id = UUID()
+        let priority = Task.currentPriority
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                waiters.append((id, continuation))
+                waiters.append((id, priority, continuation))
             }
         } onCancel: {
             Task {
@@ -188,7 +303,10 @@ private actor OpenNOWImageLoadGate {
             return
         }
 
-        let next = waiters.removeFirst()
+        let nextIndex = waiters.indices.max {
+            waiters[$0].priority.rawValue < waiters[$1].priority.rawValue
+        } ?? waiters.startIndex
+        let next = waiters.remove(at: nextIndex)
         next.continuation.resume()
     }
 
@@ -207,6 +325,7 @@ private struct OpenNOWImageLoadRequest: Hashable {
 private struct OpenNOWLoadedImage {
     let image: UIImage
     let cost: Int
+    let data: Data
 }
 
 private enum OpenNOWImageDecoder {
@@ -226,6 +345,16 @@ private enum OpenNOWImageDecoder {
         }
         return downsample(source: source, targetPixelSize: targetPixelSize)
             ?? UIImage(contentsOfFile: fileURL.path)
+    }
+
+    static func downsampledImage(data: Data, targetPixelSize: Int) async throws -> UIImage {
+        try await Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            guard let decoded = downsample(data: data, targetPixelSize: targetPixelSize) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            return decoded
+        }.value
     }
 
     private static func downsample(source: CGImageSource, targetPixelSize: Int) -> UIImage? {
@@ -265,19 +394,13 @@ private enum OpenNOWRemoteImageFetcher {
             throw URLError(.badServerResponse)
         }
 
-        let image = try await Task.detached(priority: .utility) {
-            try Task.checkCancellation()
-            guard let decoded = OpenNOWImageDecoder.downsample(
-                data: data,
-                targetPixelSize: targetPixelSize
-            ) else {
-                throw URLError(.cannotDecodeContentData)
-            }
-            return decoded
-        }.value
+        let image = try await OpenNOWImageDecoder.downsampledImage(
+            data: data,
+            targetPixelSize: targetPixelSize
+        )
 
         let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count
-        return OpenNOWLoadedImage(image: image, cost: cost)
+        return OpenNOWLoadedImage(image: image, cost: cost, data: data)
     }
 }
 
@@ -297,7 +420,26 @@ private actor OpenNOWRemoteImagePipeline {
             return try await existing.value
         }
 
-        let task = Task(priority: .utility) {
+        let task = Task(priority: Task.currentPriority) {
+            if let diskData = await OpenNOWImageDiskCache.shared.data(for: request.url) {
+                do {
+                    let diskImage = try await OpenNOWImageDecoder.downsampledImage(
+                        data: diskData,
+                        targetPixelSize: request.targetPixelSize
+                    )
+                    let cost = diskImage.cgImage.map { $0.bytesPerRow * $0.height } ?? diskData.count
+                    OpenNOWImageCache.shared.insert(
+                        diskImage,
+                        for: request.url,
+                        targetPixelSize: request.targetPixelSize,
+                        cost: cost
+                    )
+                    return diskImage
+                } catch {
+                    await OpenNOWImageDiskCache.shared.remove(for: request.url)
+                }
+            }
+
             let loaded = try await OpenNOWRemoteImageFetcher.load(
                 url: request.url,
                 targetPixelSize: request.targetPixelSize
@@ -308,6 +450,7 @@ private actor OpenNOWRemoteImagePipeline {
                 targetPixelSize: request.targetPixelSize,
                 cost: loaded.cost
             )
+            await OpenNOWImageDiskCache.shared.store(loaded.data, for: request.url)
             return loaded.image
         }
         inFlight[request] = task
@@ -332,6 +475,7 @@ private final class CachedRemoteImageLoader: ObservableObject {
     func load(_ request: OpenNOWImageLoadRequest) async {
         if loadedRequest == request && image != nil { return }
 
+        let previousRequest = loadedRequest
         loadedRequest = request
         didFail = false
 
@@ -340,7 +484,9 @@ private final class CachedRemoteImageLoader: ObservableObject {
             return
         }
 
-        image = nil
+        if previousRequest?.url != request.url {
+            image = nil
+        }
 
         do {
             let loaded = try await OpenNOWRemoteImagePipeline.shared.load(request)
@@ -348,11 +494,12 @@ private final class CachedRemoteImageLoader: ObservableObject {
             image = loaded
         } catch is CancellationError {
             if loadedRequest == request {
-                image = nil
                 didFail = false
             }
         } catch {
-            didFail = true
+            if loadedRequest == request, image == nil {
+                didFail = true
+            }
         }
     }
 }
@@ -360,6 +507,7 @@ private final class CachedRemoteImageLoader: ObservableObject {
 struct CachedRemoteImage<Content: View, Placeholder: View, Failure: View>: View {
     let url: URL
     let targetPixelSize: Int
+    var priority: TaskPriority = .utility
     let content: (Image) -> Content
     let placeholder: () -> Placeholder
     let failure: () -> Failure
@@ -380,7 +528,7 @@ struct CachedRemoteImage<Content: View, Placeholder: View, Failure: View>: View 
                 placeholder()
             }
         }
-        .task(id: request) {
+        .task(id: request, priority: priority) {
             await loader.load(request)
         }
     }
@@ -1114,7 +1262,7 @@ private struct GameCatalogPosterContent: View {
         ZStack(alignment: .bottomLeading) {
             Color.black
 
-            GameArtworkView(game: game, iconSize: 42, fit: true)
+            GameArtworkView(game: game, iconSize: 42)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .aspectRatio(gameVerticalBannerAspectRatio, contentMode: .fit)
@@ -1426,6 +1574,10 @@ private struct GameLaunchDetailsArtwork: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(gameColor(for: game.title).opacity(0.18))
+
+                GameArtworkView(game: game, iconSize: 42, role: .catalog)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+
                 if let imageUrl = game.detailsArtworkUrl,
                    let url = URL(
                     string: optimizedNvidiaArtworkURL(
@@ -1433,18 +1585,22 @@ private struct GameLaunchDetailsArtwork: View {
                         targetPixelSize: targetPixelSize
                     )
                    ) {
-                    CachedRemoteImage(url: url, targetPixelSize: targetPixelSize) { image in
+                    CachedRemoteImage(
+                        url: url,
+                        targetPixelSize: targetPixelSize,
+                        priority: .userInitiated
+                    ) { image in
                         image
                             .resizable()
                             .scaledToFill()
                             .frame(width: proxy.size.width, height: proxy.size.height)
                     } placeholder: {
-                        GameArtworkLoadingPlaceholder(game: game, iconSize: 42, isFailure: false)
+                        Color.clear
                     } failure: {
-                        fallbackIcon
+                        Color.clear
                     }
                 } else {
-                    fallbackIcon
+                    Color.clear
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -1452,10 +1608,64 @@ private struct GameLaunchDetailsArtwork: View {
         }
     }
 
-    private var fallbackIcon: some View {
-        Image(systemName: game.icon)
-            .font(.system(size: 42, weight: .semibold))
-            .foregroundStyle(gameColor(for: game.title))
+}
+
+private struct GameScreenshotGallery: View {
+    let urls: [String]
+
+    private var screenshotURLs: [URL] {
+        var seen = Set<String>()
+        return urls.compactMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return URL(string: optimizedNvidiaArtworkURL(trimmed, targetPixelSize: 960))
+        }
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 10) {
+                ForEach(screenshotURLs, id: \.absoluteString) { url in
+                    CachedRemoteImage(
+                        url: url,
+                        targetPixelSize: 960,
+                        priority: .userInitiated
+                    ) { image in
+                        image
+                            .resizable()
+                            .scaledToFit()
+                    } placeholder: {
+                        GameScreenshotPlaceholder()
+                    } failure: {
+                        GameScreenshotPlaceholder(isFailure: true)
+                    }
+                    .frame(width: 288)
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                    )
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+        }
+        .accessibilityLabel("Game screenshots")
+    }
+}
+
+private struct GameScreenshotPlaceholder: View {
+    var isFailure = false
+
+    var body: some View {
+        ZStack {
+            Color.secondary.opacity(isFailure ? 0.10 : 0.16)
+            Image(systemName: isFailure ? "photo.badge.exclamationmark" : "photo")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -2089,6 +2299,13 @@ struct GameLaunchDetailsSheet: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .listRowInsets(EdgeInsets())
 
+                }
+
+                if let screenshots = game.screenshotUrls, !screenshots.isEmpty {
+                    Section("Screenshots") {
+                        GameScreenshotGallery(urls: screenshots)
+                            .listRowInsets(EdgeInsets())
+                    }
                 }
 
                 if !launcherOptions.isEmpty {
@@ -2841,7 +3058,11 @@ func imageTargetPixelSize(for size: CGSize) -> Int {
     let points = max(size.width, size.height)
     let pixels = points * UIScreen.main.scale
     guard pixels.isFinite, pixels > 0 else { return 480 }
-    return max(160, Int(ceil(pixels)))
+    return normalizedImageTargetPixelSize(Int(ceil(pixels)))
+}
+
+func normalizedImageTargetPixelSize(_ targetPixelSize: Int) -> Int {
+    max(160, ((targetPixelSize + 159) / 160) * 160)
 }
 
 func optimizedNvidiaArtworkURL(_ raw: String, targetPixelSize: Int) -> String {

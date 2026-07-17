@@ -125,12 +125,6 @@ struct StreamLoadingView: View {
       QueueAdPlayerCard(ad: ad, compact: isWide)
         .environmentObject(store)
 
-      AndroidQueueStatusText(
-        text: queueStatusText,
-        position: store.activeSession?.queuePosition,
-        compact: true
-      )
-
       actionButtons
       queueError
     }
@@ -450,7 +444,6 @@ private struct QueueAdPlayerCard: View {
       isPlaying = false
       Task { @MainActor in
         store.reportQueueAdFinished(adId: ad.adId, watchedTimeInMs: watchedTimeMs)
-        await dismissQueueOverlayIfAdsFinished()
       }
     }
   }
@@ -472,19 +465,6 @@ private struct QueueAdPlayerCard: View {
     player.isMuted = isMuted
   }
 
-  @MainActor
-  private func dismissQueueOverlayIfAdsFinished() async {
-    for _ in 0..<16 {
-      let adsRequired =
-        store.effectiveAdState.map { $0.sessionAdsRequired ?? $0.isAdsRequired } ?? false
-      let isQueueing = (store.activeSession?.status ?? 0) == 1
-      if isQueueing && (!adsRequired || store.activeQueueAd == nil) {
-        store.minimizeQueueOverlay()
-        return
-      }
-      try? await Task.sleep(for: .milliseconds(250))
-    }
-  }
 }
 
 private struct StreamActionButtonStyleModifier: ViewModifier {

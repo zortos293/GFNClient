@@ -123,9 +123,11 @@ struct CloudGame: Identifiable, Codable, Equatable {
     let catalogSectionId: String?
     let catalogSectionTitle: String?
     let contentRatings: [String]?
+    var screenshotUrls: [String]? = nil
 
     func fillingMissingMetadata(from fallback: CloudGame?) -> CloudGame {
         guard let fallback else { return self }
+        let mergedScreenshots = Self.mergingArtworkURLs(screenshotUrls, fallback.screenshotUrls)
         return CloudGame(
             id: id,
             title: title,
@@ -151,7 +153,8 @@ struct CloudGame: Identifiable, Codable, Equatable {
             membershipTierLabel: membershipTierLabel,
             catalogSectionId: catalogSectionId,
             catalogSectionTitle: catalogSectionTitle,
-            contentRatings: GFNContentRatingParser.merging(contentRatings, fallback.contentRatings)
+            contentRatings: GFNContentRatingParser.merging(contentRatings, fallback.contentRatings),
+            screenshotUrls: mergedScreenshots
         )
     }
 
@@ -171,11 +174,21 @@ struct CloudGame: Identifiable, Codable, Equatable {
     }
 
     var detailsArtworkUrl: String? {
-        heroImageUrl ?? tvBannerUrl ?? imageUrl ?? boxArtUrl
+        screenshotUrls?.first ?? heroImageUrl ?? tvBannerUrl ?? imageUrl ?? boxArtUrl
     }
 
     var queueArtworkUrl: String? {
         tvBannerUrl ?? heroImageUrl ?? imageUrl ?? boxArtUrl
+    }
+
+    private static func mergingArtworkURLs(_ primary: [String]?, _ fallback: [String]?) -> [String]? {
+        var seen = Set<String>()
+        let merged = ((primary ?? []) + (fallback ?? [])).compactMap { raw -> String? in
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+            return value
+        }
+        return merged.isEmpty ? nil : merged
     }
 }
 
@@ -899,6 +912,7 @@ struct AppSettings: Codable, Equatable {
         streamSharpeningAmount = min(max(streamSharpeningAmount, 0), 1)
         mouseSensitivity = min(max(mouseSensitivity, 0.25), 3)
         mouseAcceleration = min(max(mouseAcceleration, 0), 2)
+        maxBitrateMbps = StreamSettingsResolver.normalizedBitratePreset(maxBitrateMbps)
         posterSizeScale = min(max(posterSizeScale, 0.75), 1.4)
         sessionProxyUrl = sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         if preferredRegion == "Auto" {
@@ -1404,7 +1418,14 @@ enum StreamSettingsResolver {
         .init(value: "5120x2880", aspectRatio: "16:9", tier: "2880", requiredPlan: .ultimate)
     ]
 
-    static let bitrateOptionsMbps: [Int] = [0] + Array(1...150)
+    static let bitrateOptionsMbps = [0, 5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 75, 100]
+
+    static func normalizedBitratePreset(_ value: Int) -> Int {
+        guard value > 0 else { return 0 }
+        return bitrateOptionsMbps.dropFirst().min { left, right in
+            abs(left - value) < abs(right - value)
+        } ?? 100
+    }
 
     static var resolutionOptions: [(value: String, label: String)] {
         resolutionOptions(for: "16:9")
@@ -4738,6 +4759,7 @@ private actor GFNAPIClient {
                             ?? (images?["KEY_ART"] as? String)
                             ?? (images?["GAME_BOX_ART"] as? String)
                     )
+                    let screenshotUrls = imageURLs(from: images?["SCREENSHOTS"])
                     if seen.contains(id) { continue }
                     seen.insert(id)
                     let genre = (((app["genres"] as? [[String: Any]])?.first)?["name"] as? String) ?? "Cloud Game"
@@ -4781,7 +4803,8 @@ private actor GFNAPIClient {
                             membershipTierLabel: metadata.membershipTierLabel,
                             catalogSectionId: sectionId,
                             catalogSectionTitle: sectionTitle,
-                            contentRatings: GFNContentRatingParser.labels(from: app["contentRatings"])
+                            contentRatings: GFNContentRatingParser.labels(from: app["contentRatings"]),
+                            screenshotUrls: screenshotUrls
                         )
                     )
                 }
@@ -4872,6 +4895,10 @@ private actor GFNAPIClient {
                 ?? (images?["KEY_ART"] as? String)
                 ?? (images?["GAME_BOX_ART"] as? String)
         ) ?? game.tvBannerUrl
+        let screenshotUrls = mergedImageURLs(
+            imageURLs(from: images?["SCREENSHOTS"]),
+            game.screenshotUrls
+        )
 
         return CloudGame(
             id: game.id,
@@ -4901,7 +4928,8 @@ private actor GFNAPIClient {
             contentRatings: GFNContentRatingParser.merging(
                 GFNContentRatingParser.labels(from: app["contentRatings"]),
                 game.contentRatings
-            )
+            ),
+            screenshotUrls: screenshotUrls
         )
     }
 
@@ -4954,6 +4982,34 @@ private actor GFNAPIClient {
 
     private static func toOptionalStringArray(_ value: Any?) -> [String]? {
         GFNCatalogLabelParser.labels(from: value)
+    }
+
+    private static func imageURLs(from value: Any?) -> [String]? {
+        let rawURLs: [String]
+        if let urls = value as? [String] {
+            rawURLs = urls
+        } else if let items = value as? [[String: Any]] {
+            rawURLs = items.compactMap { item in
+                ["url", "imageUrl", "mediaUrl", "src"]
+                    .compactMap { toOptionalString(item[$0]) }
+                    .first
+            }
+        } else if let url = toOptionalString(value) {
+            rawURLs = [url]
+        } else {
+            return nil
+        }
+        return mergedImageURLs(rawURLs, nil)
+    }
+
+    private static func mergedImageURLs(_ primary: [String]?, _ fallback: [String]?) -> [String]? {
+        var seen = Set<String>()
+        let merged = ((primary ?? []) + (fallback ?? [])).compactMap { raw -> String? in
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+            return value
+        }
+        return merged.isEmpty ? nil : merged
     }
 
     private static func formatReleaseDate(_ raw: String?) -> String? {
@@ -6893,12 +6949,20 @@ final class OpenNOWStore: ObservableObject {
     func reportQueueAdFinished(adId: String, watchedTimeInMs: Int) {
         let lastAction = adReportStateById[adId]
         guard lastAction != .finish && lastAction != .cancel else { return }
+        let completedAdDurationMs = activeQueueAd?.adLengthInSeconds.map { Int(round($0 * 1000)) }
+            ?? activeQueueAd?.durationMs
         adReportStateById[adId] = .finish
+        if var active = activeSession {
+            active.adState = removeSessionAdItem(active.adState, adId: adId)
+            activeSession = active
+            syncTrackedSessionSurface()
+        }
         Task {
             await reportQueueAdAction(
                 adId: adId,
                 action: .finish,
-                watchedTimeInMs: max(0, watchedTimeInMs)
+                watchedTimeInMs: max(0, watchedTimeInMs),
+                completedAdDurationMs: completedAdDurationMs
             )
         }
     }
@@ -7095,6 +7159,7 @@ final class OpenNOWStore: ObservableObject {
 
     func clearImageCache() {
         OpenNOWImageCache.shared.removeAll()
+        OpenNOWImageCache.removeAllPersistentImages()
         URLCache.shared.removeAllCachedResponses()
     }
 
@@ -7696,6 +7761,7 @@ final class OpenNOWStore: ObservableObject {
         adId: String,
         action: SessionAdAction,
         watchedTimeInMs: Int? = nil,
+        completedAdDurationMs: Int? = nil,
         cancelReason: String? = nil,
         errorInfo: String? = nil
     ) async {
@@ -7705,7 +7771,9 @@ final class OpenNOWStore: ObservableObject {
                 return nil
             }
             let elapsed = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
-            let adDurationMs = (activeQueueAd?.adLengthInSeconds.map { Int(round($0 * 1000)) }) ?? activeQueueAd?.durationMs
+            let adDurationMs = completedAdDurationMs
+                ?? activeQueueAd?.adLengthInSeconds.map { Int(round($0 * 1000)) }
+                ?? activeQueueAd?.durationMs
             guard let adDurationMs, elapsed > adDurationMs else { return 0 }
             return elapsed - adDurationMs
         }()

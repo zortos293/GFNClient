@@ -302,6 +302,7 @@ const APP_LANGUAGE_LABELS: Record<string, string> = {
   ko: "한국어",
   nl: "Nederlands",
   ro: "Română",
+  vi: "Tiếng Việt",
 };
 
 const accentColorOptions = getAccentColorOptions();

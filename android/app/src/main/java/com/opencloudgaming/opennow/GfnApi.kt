@@ -210,18 +210,8 @@ private fun monitorSettings(profile: StreamRequestProfile, fps: Int): JsonObject
         put("heightInPixels", profile.height)
         put("framesPerSecond", fps)
         put("sdrHdrMode", if (profile.hdrEnabled) 1 else 0)
-        put(
-            "displayData",
-            if (profile.hdrEnabled) {
-                hdrDisplayDataJson()
-            } else {
-                buildJsonObject {
-                    put("desiredContentMaxLuminance", 0)
-                    put("desiredContentMinLuminance", 0)
-                    put("desiredContentMaxFrameAverageLuminance", 0)
-                }
-            },
-        )
+        put("displayData", if (profile.hdrEnabled) hdrDisplayDataJson() else JsonNull)
+        put("hdr10PlusGamingData", JsonNull)
         put("dpi", 0)
     }
 
@@ -231,6 +221,7 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
         put("bitDepth", profile.bitDepth)
         put("cloudGsync", settings.enableCloudGsync)
         put("enabledL4S", settings.enableL4S)
+        put("trueHdr", profile.hdrEnabled)
         put("profile", 0)
         put("fallbackToLogicalResolution", false)
         put("chromaFormat", profile.chroma)
@@ -238,6 +229,8 @@ private fun requestedStreamingFeatures(settings: StreamSettings, profile: Stream
         put("prefilterSharpness", 0)
         put("prefilterNoiseReduction", 0)
         put("hudStreamingMode", 0)
+        put("sdrColorSpace", 2)
+        put("hdrColorSpace", if (profile.hdrEnabled) 4 else 0)
     }
 
 private fun baseWebRtcSessionMetadata(): JsonArray = buildJsonArray {
@@ -1339,6 +1332,9 @@ internal fun catalogScreenshotUrls(images: JsonObject?): List<String> =
         ?.distinct()
         .orEmpty()
 
+internal fun catalogGameDescription(app: JsonObject): String? =
+    app.string("description") ?: app.string("shortDescription")
+
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
 ) {
@@ -1640,7 +1636,7 @@ class GfnCatalogRepository(
             uuid = app.string("id"),
             launchAppId = numericAppId,
             title = title,
-            description = app.string("description"),
+            description = catalogGameDescription(app),
             longDescription = app.string("longDescription"),
             featureLabels = featureLabels,
             genres = genres,
@@ -1733,6 +1729,9 @@ class GfnCatalogRepository(
             items {
               id
               title
+              shortDescription
+              longDescription
+              publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
               variants { id appStore supportedControls gfn { status library { status selected } } }
               gfn { playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }

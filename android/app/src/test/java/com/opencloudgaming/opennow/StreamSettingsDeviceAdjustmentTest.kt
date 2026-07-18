@@ -216,7 +216,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun fallsBackToH264WhenNativeAdvancedDecoderProbeFails() {
+    fun preservesH265WhenWebRtcHardwareDecoderWorksButNativeProbeFails() {
         val adjusted = StreamSettings(codec = VideoCodec.H265, colorQuality = ColorQuality.TenBit420, maxBitrateMbps = 90)
             .adjustedForDevice(
                 codecReport(
@@ -229,9 +229,31 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
             )
 
-        assertEquals(VideoCodec.H264, adjusted.codec)
+        assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals(35, adjusted.maxBitrateMbps)
+        assertEquals(75, adjusted.maxBitrateMbps)
+    }
+
+    @Test
+    fun changingResolutionDoesNotForceAWebRtcHardwareCodecBackToH264() {
+        val report = codecReport(
+            VideoCodec.H265,
+            hardwareDecoder = true,
+            realtimeSafe = true,
+            nativeDecoderAvailable = false,
+            webRtcDecoderAvailable = true,
+            webRtcHardwareDecoderAvailable = true,
+        )
+
+        listOf("1280x720", "1920x1080", "2560x1440", "3840x2160").forEach { resolution ->
+            val adjusted = StreamSettings(
+                resolution = resolution,
+                aspectRatio = "16:9",
+                codec = VideoCodec.H265,
+            ).adjustedForDevice(report)
+
+            assertEquals("$resolution should retain the selected codec", VideoCodec.H265, adjusted.codec)
+        }
     }
 
     @Test

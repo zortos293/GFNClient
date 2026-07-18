@@ -186,8 +186,8 @@ internal fun SettingsScreen(
     val detailFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    val controllerNavigationEnabled =
-        tvProfile || rememberPhysicalControllerConnected(enabled = !tvProfile)
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !tvProfile)
+    val controllerNavigationEnabled = tvProfile || physicalControllerConnected
     val showSearch = searchRequested || searchQuery.isNotBlank()
     val categories = remember { settingsCategories() }
     LaunchedEffect(searchRequested) {
@@ -203,11 +203,16 @@ internal fun SettingsScreen(
         }
     }
     LaunchedEffect(state.settingsRouteTarget) {
-        if (state.settingsRouteTarget == SettingsRouteTarget.General) {
-            onSearchQueryChange("")
-            selectedCategory = SettingsCategory.General
-            viewModel.consumeSettingsRouteTarget(SettingsRouteTarget.General)
+        val routeTarget = state.settingsRouteTarget ?: return@LaunchedEffect
+        val routeCategory = when (routeTarget) {
+            SettingsRouteTarget.General -> SettingsCategory.General
+            SettingsRouteTarget.Stream -> SettingsCategory.Stream
         }
+        if (selectedCategory != routeCategory || searchQuery.isNotBlank()) {
+            onSearchQueryChange("")
+            selectedCategory = routeCategory
+        }
+        viewModel.consumeSettingsRouteTarget(routeTarget)
     }
     BackHandler(enabled = selectedCategory != null) {
         selectedCategory = null
@@ -218,6 +223,13 @@ internal fun SettingsScreen(
         if (detailOpen && controllerNavigationEnabled) {
             delay(90)
             runCatching { detailFocusRequester.requestFocus() }
+        }
+        if (tvProfile) {
+            // Focus can scroll the first control into view while AnimatedContent is
+            // still measuring the new route. Reset afterward so every TV detail
+            // page opens with its header and remote Back hint fully visible.
+            delay(30)
+            scrollState.scrollTo(0)
         }
     }
     LaunchedEffect(backRequestToken) {
@@ -243,6 +255,7 @@ internal fun SettingsScreen(
                 refreshing = state.settingsRefreshing,
                 onRefresh = viewModel::refreshSettings,
                 modifier = Modifier.fillMaxSize(),
+                enabled = false,
             ) {
                 Column(
                     Modifier
@@ -266,6 +279,8 @@ internal fun SettingsScreen(
                         SettingsBody(
                             state = state,
                             viewModel = viewModel,
+                            tvProfile = tvProfile,
+                            physicalControllerConnected = physicalControllerConnected,
                             searchQuery = searchQuery,
                             selectedCategory = category,
                             categories = categories,
@@ -306,6 +321,8 @@ internal fun SettingsScreen(
                             SettingsBody(
                                 state = state,
                                 viewModel = viewModel,
+                                tvProfile = tvProfile,
+                                physicalControllerConnected = physicalControllerConnected,
                                 searchQuery = searchQuery,
                                 selectedCategory = category,
                                 categories = categories,
@@ -326,6 +343,8 @@ internal fun SettingsScreen(
 private fun SettingsBody(
     state: OpenNowUiState,
     viewModel: OpenNowViewModel,
+    tvProfile: Boolean,
+    physicalControllerConnected: Boolean,
     searchQuery: String,
     selectedCategory: SettingsCategory?,
     categories: List<SettingsCategory>,
@@ -359,7 +378,12 @@ private fun SettingsBody(
                     .lockedFocusGroup(),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                SettingsDetailHeader(category = selectedCategory, onBack = onBack)
+                SettingsDetailHeader(
+                    category = selectedCategory,
+                    tvProfile = tvProfile,
+                    physicalControllerConnected = physicalControllerConnected,
+                    onBack = onBack,
+                )
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -388,6 +412,7 @@ private fun SettingsContent(
     showSessionProxyWarning: () -> Unit,
 ) {
     val settings = state.settings
+    val deviceHasBattery = rememberDeviceHasBattery()
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
                 if (state.androidUpdate.apkUpdatesAllowed) {
@@ -762,9 +787,11 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Debug Logs", "debug", "logs", "logcat", "events", "export", "json", "cloudmatch", "queue", "stream") {
                     DebugLogsPanel(state = state, viewModel = viewModel)
                 }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Battery Optimization", "battery", "optimization", "background", "activity", "ignore", "allow", "run") {
+    if (deviceHasBattery) {
+        CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Battery Optimization", "battery", "optimization", "background", "activity", "ignore", "allow", "run") {
                     BatteryOptimizationPanel()
                 }
+    }
     CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
                 AppVersionPanel()
                 OpenNowGitHubPanel()
@@ -1126,16 +1153,18 @@ private fun SettingsAccountCard(state: OpenNowUiState, onClick: () -> Unit) {
 @Composable
 private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(14.dp)
+    val accent = MaterialTheme.colorScheme.primary
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .background(if (focused) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+            .clip(shape)
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+            .background(if (focused) accent.copy(alpha = 0.22f) else Color.Transparent)
             .border(
-                width = 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(14.dp)
+                width = if (focused) 3.dp else 1.dp,
+                color = if (focused) accent else Color.Transparent,
+                shape = shape,
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 14.dp),
@@ -1145,13 +1174,13 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
         Surface(
             modifier = Modifier.size(42.dp),
             shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+            color = if (focused) accent else accent.copy(alpha = 0.16f),
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                 Icon(
                     painter = painterResource(category.iconRes),
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = if (focused) MaterialTheme.colorScheme.onPrimary else accent,
                     modifier = Modifier.size(22.dp),
                 )
             }
@@ -1159,15 +1188,15 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
                 category.title,
-                color = SettingsText,
+                color = if (focused) Color.White else SettingsText,
                 style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Medium,
+                fontWeight = if (focused) FontWeight.ExtraBold else FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 category.summary,
-                color = SettingsTextMuted,
+                color = if (focused) Color.White.copy(alpha = 0.86f) else SettingsTextMuted,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1176,27 +1205,98 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
         Icon(
             painter = painterResource(R.drawable.ic_chevron_right),
             contentDescription = null,
-            tint = SettingsTextMuted,
+            tint = if (focused) accent else SettingsTextMuted,
             modifier = Modifier.size(22.dp),
         )
     }
 }
 
 @Composable
-private fun SettingsDetailHeader(category: SettingsCategory, onBack: () -> Unit) {
-    Row(
+private fun SettingsDetailHeader(
+    category: SettingsCategory,
+    tvProfile: Boolean,
+    physicalControllerConnected: Boolean,
+    onBack: () -> Unit,
+) {
+    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
+    val showHardwareBackHint = tvProfile || controllerNavigationEnabled
+    var backFocused by remember { mutableStateOf(false) }
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        IconButton(onClick = onBack) {
-            Icon(
-                painter = painterResource(R.drawable.ic_arrow_back),
-                contentDescription = "Back",
-                tint = SettingsText,
-            )
+        if (showHardwareBackHint) {
+            Surface(
+                modifier = Modifier
+                    .onFocusChanged { backFocused = it.isFocused || it.hasFocus }
+                    .border(
+                        width = if (backFocused) 3.dp else 1.dp,
+                        color = if (backFocused) Color.White else Color.Transparent,
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .clickable(onClick = onBack),
+                shape = RoundedCornerShape(999.dp),
+                color = if (backFocused) MaterialTheme.colorScheme.primary.copy(alpha = 0.24f) else Color.Transparent,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .border(2.dp, Color.White.copy(alpha = 0.9f), CircleShape),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                    ) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            if (tvProfile || !physicalControllerConnected) {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_arrow_back),
+                                    contentDescription = "Remote Back button",
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(21.dp),
+                                )
+                            } else {
+                                Text(
+                                    "B",
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    fontWeight = FontWeight.Black,
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "BACK",
+                        color = SettingsText,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(end = 7.dp),
+                    )
+                }
+            }
+        } else {
+            Surface(
+                modifier = Modifier
+                    .size(42.dp)
+                    .border(1.dp, SettingsTextMuted.copy(alpha = 0.5f), CircleShape)
+                    .clickable(onClick = onBack),
+                shape = CircleShape,
+                color = Color.Transparent,
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_arrow_back),
+                        contentDescription = "Back",
+                        tint = SettingsText,
+                        modifier = Modifier.size(21.dp),
+                    )
+                }
+            }
         }
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.fillMaxWidth()) {
             Text(
                 category.title,
                 color = SettingsText,

@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -57,8 +56,11 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 import android.os.PowerManager
+import android.os.BatteryManager
+import android.os.Build
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.runtime.LaunchedEffect
@@ -1430,26 +1432,40 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
         "Exports launch state, queue state, stream updates, recovery events, settings, codec capabilities, and recent sanitized CloudMatch JSON responses.",
         color = SettingsTextMuted,
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+    if (state.androidTvProfile) {
         Button(
-            onClick = {
-                clipboard.setText(AnnotatedString(viewModel.sanitizedDebugLogText()))
-                copied = true
-            },
-            modifier = Modifier.weight(1f),
+            onClick = viewModel::uploadDiagnosticShare,
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (copied) "Copied logs" else "Copy logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("Upload logs and show QR", maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        OutlinedButton(
-            onClick = {
-                pendingLogText = viewModel.sanitizedDebugLogText()
-                saved = false
-                saveError = null
-                saveLauncher.launch(viewModel.debugLogFileName())
-            },
-            modifier = Modifier.weight(1f),
-        ) {
-            Text(if (saved) "Exported" else "Export logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            "Sensitive values are removed before an unlisted, temporary paste is created. Scan the QR code with your phone to share it.",
+            color = SettingsTextMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = {
+                    clipboard.setText(AnnotatedString(viewModel.sanitizedDebugLogText()))
+                    copied = true
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (copied) "Copied logs" else "Copy logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            OutlinedButton(
+                onClick = {
+                    pendingLogText = viewModel.sanitizedDebugLogText()
+                    saved = false
+                    saveError = null
+                    saveLauncher.launch(viewModel.debugLogFileName())
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (saved) "Exported" else "Export logs", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
     state.error?.let { error ->
@@ -1465,6 +1481,32 @@ internal fun DebugLogsPanel(state: OpenNowUiState, viewModel: OpenNowViewModel) 
     saveError?.let {
         Text(it, color = Color(0xffff9f9f), style = MaterialTheme.typography.bodySmall)
     }
+}
+
+@Composable
+internal fun rememberDeviceHasBattery(): Boolean {
+    val appContext = LocalContext.current.applicationContext
+    return remember(appContext) { deviceHasBattery(appContext) }
+}
+
+internal fun shouldShowBatteryOptimization(explicitBatteryPresent: Boolean?): Boolean =
+    explicitBatteryPresent != false
+
+private fun deviceHasBattery(context: Context): Boolean {
+    val batteryStatus = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        context.registerReceiver(
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+            Context.RECEIVER_NOT_EXPORTED,
+        )
+    } else {
+        @Suppress("DEPRECATION")
+        context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    }
+    val explicitBatteryPresent = batteryStatus
+        ?.takeIf { it.hasExtra(BatteryManager.EXTRA_PRESENT) }
+        ?.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true)
+    return shouldShowBatteryOptimization(explicitBatteryPresent)
 }
 
 @Composable

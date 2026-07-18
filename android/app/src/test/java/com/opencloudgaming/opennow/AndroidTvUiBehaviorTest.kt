@@ -8,6 +8,18 @@ import org.junit.Test
 
 class AndroidTvUiBehaviorTest {
     @Test
+    fun gameDetailsPreferCleanShortDescription() {
+        val game = GameInfo(
+            id = "fortnite",
+            title = "Fortnite",
+            description = "Clean short description",
+            longDescription = "Provider long description",
+        )
+
+        assertEquals("Clean short description", gameDescriptionForDetails(game))
+    }
+
+    @Test
     fun restoresTvNavigationFocusOnlyWhenLeavingStream() {
         assertTrue(
             shouldRestoreTvNavigationFocus(
@@ -84,6 +96,67 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun tvAndPhysicalControllerCardsUseEnhancedFocusFrame() {
+        assertTrue(
+            shouldShowEnhancedControllerFocus(
+                focused = true,
+                tvProfile = true,
+                controllerActionMode = false,
+            ),
+        )
+        assertTrue(
+            shouldShowEnhancedControllerFocus(
+                focused = true,
+                tvProfile = false,
+                controllerActionMode = true,
+            ),
+        )
+        assertFalse(
+            shouldShowEnhancedControllerFocus(
+                focused = true,
+                tvProfile = false,
+                controllerActionMode = false,
+            ),
+        )
+        assertFalse(
+            shouldShowEnhancedControllerFocus(
+                focused = false,
+                tvProfile = true,
+                controllerActionMode = false,
+            ),
+        )
+    }
+
+    @Test
+    fun controllerFocusPulseExpandsAndFadesOnlyAtTheOuterEdge() {
+        assertEquals(4f, controllerFocusPulseStrokeWidthDp(0f), 0f)
+        assertEquals(13f, controllerFocusPulseStrokeWidthDp(1f), 0f)
+        assertTrue(controllerFocusPulseAlpha(0f) > controllerFocusPulseAlpha(0.5f))
+        assertEquals(0f, controllerFocusPulseAlpha(1f), 0f)
+    }
+
+    @Test
+    fun tvGameDetailsInitiallyFocusPlayWhileTouchLayoutsKeepArtworkFocus() {
+        assertTrue(shouldInitiallyFocusGameDetailsPlay(tvProfile = true))
+        assertFalse(shouldInitiallyFocusGameDetailsPlay(tvProfile = false))
+    }
+
+    @Test
+    fun focusedGameDetailsPlayButtonGetsAnUnmistakableLiftAndEdge() {
+        assertEquals(1.06f, gameDetailsPlayFocusScale(focused = true), 0f)
+        assertEquals(1f, gameDetailsPlayFocusScale(focused = false), 0f)
+        assertEquals(4f, gameDetailsPlayFocusBorderWidthDp(focused = true), 0f)
+        assertEquals(0f, gameDetailsPlayFocusBorderWidthDp(focused = false), 0f)
+    }
+
+    @Test
+    fun tvCatalogCardsNeverShowStoreLabels() {
+        assertFalse(shouldShowGameStoreLabels(tvProfile = true, enabled = true))
+        assertTrue(shouldShowGameStoreLabels(tvProfile = false, enabled = true))
+        assertFalse(shouldShowGameStoreLabels(tvProfile = false, enabled = false))
+    }
+
+    @Test
     fun tvNeverShowsTouchControlsWhileMobileBehaviorIsPreserved() {
         assertFalse(
             shouldShowAndroidTouchControls(
@@ -109,6 +182,12 @@ class AndroidTvUiBehaviorTest {
                 suppressedByPhysicalController = true,
             ),
         )
+    }
+
+    @Test
+    fun tvUsesStableAudioBufferingWhileMobileKeepsLowLatencyAudio() {
+        assertFalse(shouldUseLowLatencyStreamAudio(androidTvProfile = true))
+        assertTrue(shouldUseLowLatencyStreamAudio(androidTvProfile = false))
     }
 
     @Test
@@ -145,6 +224,33 @@ class AndroidTvUiBehaviorTest {
         assertTrue(shouldShowLocalTvConnectionDot(tvProfile = true, pairedDeviceName = "Pixel"))
         assertFalse(shouldShowLocalTvConnectionDot(tvProfile = false, pairedDeviceName = "Pixel"))
         assertFalse(shouldShowLocalTvConnectionDot(tvProfile = true, pairedDeviceName = null))
+    }
+
+    @Test
+    fun tvSettingsNeverAddsASecondBackItemToTheRail() {
+        assertFalse(
+            shouldShowSettingsBackRail(
+                tvProfile = true,
+                settingsPageOpen = true,
+                horizontalChrome = true,
+                detailRouteOpen = true,
+            ),
+        )
+        assertTrue(
+            shouldShowSettingsBackRail(
+                tvProfile = false,
+                settingsPageOpen = true,
+                horizontalChrome = true,
+                detailRouteOpen = true,
+            ),
+        )
+    }
+
+    @Test
+    fun batteryOptimizationIsHiddenOnlyWhenNoBatteryIsConfirmed() {
+        assertFalse(shouldShowBatteryOptimization(explicitBatteryPresent = false))
+        assertTrue(shouldShowBatteryOptimization(explicitBatteryPresent = true))
+        assertTrue(shouldShowBatteryOptimization(explicitBatteryPresent = null))
     }
 
     @Test

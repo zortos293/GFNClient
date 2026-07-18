@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow
 
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.buildJsonObject
@@ -58,6 +59,20 @@ class GfnApiTest {
             listOf("screenshot-one", "screenshot-two"),
             catalogScreenshotUrls(images),
         )
+    }
+
+    @Test
+    fun catalogDescriptionSupportsBrowseAndMetadataFieldNames() {
+        val browseApp = buildJsonObject {
+            put("shortDescription", JsonPrimitive("Browse description"))
+        }
+        val metadataApp = buildJsonObject {
+            put("description", JsonPrimitive("Metadata description"))
+            put("shortDescription", JsonPrimitive("Fallback description"))
+        }
+
+        assertEquals("Browse description", catalogGameDescription(browseApp))
+        assertEquals("Metadata description", catalogGameDescription(metadataApp))
     }
 
     @Test
@@ -178,17 +193,65 @@ class GfnApiTest {
         assertFalse(monitor.containsKey("monitorId"))
         assertFalse(monitor.containsKey("positionX"))
         assertFalse(monitor.containsKey("positionY"))
-        assertFalse(monitor.containsKey("hdr10PlusGamingData"))
-        assertEquals(
-            0,
-            monitor.getValue("displayData").jsonObject
-                .getValue("desiredContentMaxLuminance").jsonPrimitive.int,
-        )
+        assertEquals(JsonNull, monitor.getValue("displayData"))
+        assertEquals(JsonNull, monitor.getValue("hdr10PlusGamingData"))
         assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(2, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
         assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(1920, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
         assertEquals(1080, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+    }
+
+    @Test
+    fun claimRequestExplicitlyMarksSdrColorMetadata() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.EightBit420,
+            hdrEnabled = false,
+        )
+
+        val sessionRequestData = buildMinimalClaimRequestBody("123", "device", settings)
+            .getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData
+            .getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+        val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
+
+        assertEquals(0, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(JsonNull, monitor.getValue("displayData"))
+        assertEquals(JsonNull, monitor.getValue("hdr10PlusGamingData"))
+        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(false, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(2, features.getValue("sdrColorSpace").jsonPrimitive.int)
+        assertEquals(0, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(0, sessionRequestData.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(JsonNull, sessionRequestData.getValue("clientDisplayHdrCapabilities"))
+    }
+
+    @Test
+    fun claimRequestExplicitlyMarksHdrColorMetadata() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+        )
+
+        val sessionRequestData = buildMinimalClaimRequestBody("123", "device", settings)
+            .getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData
+            .getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+        val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
+
+        assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(1000, monitor.getValue("displayData").jsonObject
+            .getValue("desiredContentMaxLuminance").jsonPrimitive.int)
+        assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(2, features.getValue("sdrColorSpace").jsonPrimitive.int)
+        assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(1, sessionRequestData.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertTrue(sessionRequestData.getValue("clientDisplayHdrCapabilities") is kotlinx.serialization.json.JsonObject)
     }
 
     @Test

@@ -486,13 +486,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settingsDiagnosticTapTimes.addLast(now)
         if (settingsDiagnosticTapTimes.size < SETTINGS_DIAGNOSTIC_TAP_COUNT) return
         settingsDiagnosticTapTimes.clear()
-        _state.update {
-            it.copy(diagnosticShare = DiagnosticShareState(awaitingConsent = true))
-        }
+        requestDiagnosticShare()
     }
 
     fun dismissDiagnosticShare() {
         _state.update { it.copy(diagnosticShare = DiagnosticShareState()) }
+    }
+
+    fun requestDiagnosticShare() {
+        _state.update {
+            it.copy(diagnosticShare = DiagnosticShareState(awaitingConsent = true))
+        }
     }
 
     fun startLocalTvConnector() {

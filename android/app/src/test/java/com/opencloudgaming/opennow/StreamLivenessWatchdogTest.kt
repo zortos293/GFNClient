@@ -6,6 +6,14 @@ import org.junit.Test
 
 class StreamLivenessWatchdogTest {
     @Test
+    fun advancedCodecRestartWaitsForDecoderReleaseAfterStablePlayback() {
+        assertEquals(180L, advancedCodecRestartSettleDelayMs(VideoCodec.AV1, hadStableMedia = true))
+        assertEquals(180L, advancedCodecRestartSettleDelayMs(VideoCodec.H265, hadStableMedia = true))
+        assertEquals(0L, advancedCodecRestartSettleDelayMs(VideoCodec.H264, hadStableMedia = true))
+        assertEquals(0L, advancedCodecRestartSettleDelayMs(VideoCodec.AV1, hadStableMedia = false))
+    }
+
+    @Test
     fun usesPlatformSpecificRecoveryThresholds() {
         val tv = streamRecoveryTiming(androidTvProfile = true)
         val mobile = streamRecoveryTiming(androidTvProfile = false)

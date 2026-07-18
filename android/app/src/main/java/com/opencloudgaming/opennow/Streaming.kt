@@ -37,9 +37,11 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.ConnectionSpec
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.TlsVersion
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
@@ -79,6 +81,7 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.security.SecureRandom
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -530,6 +533,7 @@ class GfnSignalingClient(
     private val http: OkHttpClient = defaultHttpClient(),
     private val onEvent: (SignalingEvent) -> Unit,
 ) {
+    private val signalingHttp = signalingWebSocketHttpClient(http)
     private var webSocket: WebSocket? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var heartbeatJob: Job? = null
@@ -549,13 +553,14 @@ class GfnSignalingClient(
             .header("Origin", "https://play.geforcenow.com")
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0.0.0 Safari/537.36")
             .build()
-        webSocket = http.newWebSocket(
+        webSocket = signalingHttp.newWebSocket(
             request,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     onEvent(
                         SignalingEvent.Log(
-                            "Signaling open http=${response.code} protocol=${response.header("Sec-WebSocket-Protocol").orEmpty().replace(session.sessionId, streamDiagnosticId(session.sessionId))}",
+                            "Signaling open http=${response.code} tls=${response.handshake?.tlsVersion?.javaName ?: "unknown"} " +
+                                "protocol=${response.header("Sec-WebSocket-Protocol").orEmpty().replace(session.sessionId, streamDiagnosticId(session.sessionId))}",
                         ),
                     )
                     sendPeerInfo()
@@ -654,7 +659,9 @@ class GfnSignalingClient(
             if (shouldAck) sendJson("""{"ack":$ack}""")
         }
         if (parsed["hb"] != null) {
-            sendJson("""{"hb":1}""")
+            // The client already sends its own heartbeat every five seconds.
+            // Treat server heartbeat frames as acknowledgements instead of
+            // creating an unnecessary reply round trip.
             return
         }
         val peerMsg = parsed["peer_msg"]?.jsonObject ?: return
@@ -705,6 +712,20 @@ class GfnSignalingClient(
         return ackCounter
     }
 }
+
+private val SIGNALING_TLS_1_2 =
+    ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+        .tlsVersions(TlsVersion.TLS_1_2)
+        .build()
+
+internal fun signalingWebSocketHttpClient(base: OkHttpClient): OkHttpClient =
+    base.newBuilder()
+        // GFN already has an application heartbeat. Avoid a second WebSocket
+        // ping loop and Android TV's TLS 1.3/Conscrypt reader spin on this
+        // long-lived signaling socket; media remains DTLS/WebRTC and unchanged.
+        .pingInterval(0, TimeUnit.MILLISECONDS)
+        .connectionSpecs(listOf(SIGNALING_TLS_1_2))
+        .build()
 
 object NativeStreamInputRouter {
     @Volatile
@@ -2298,6 +2319,7 @@ class NativeStreamClient(
     private val onStreamStopped: () -> Unit = {},
 ) {
     private val appContext = context.applicationContext
+    private val initialAndroidTvProfile = isAndroidTvProfile(appContext)
     private val eglBase: EglBase = EglBase.create()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val inputExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
@@ -2309,7 +2331,7 @@ class NativeStreamClient(
     private val inputEncoder = InputEncoder()
     private val audioDeviceModule: AudioDeviceModule =
         JavaAudioDeviceModule.builder(appContext)
-            .setUseLowLatency(true)
+            .setUseLowLatency(shouldUseLowLatencyStreamAudio(initialAndroidTvProfile))
             .setUseStereoOutput(true)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -2394,7 +2416,7 @@ class NativeStreamClient(
     private var hardwareKeyboardEventLogged = false
     private var physicalGamepadAxisLogged = false
     private var lastStatsSample: StreamStatsSample? = null
-    private var androidTvProfile = false
+    private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
     private val firstVideoFrameWatchdog = FirstVideoFrameWatchdog()
     private val textSendMutex = Mutex()
@@ -3594,6 +3616,7 @@ class NativeStreamClient(
     private fun restartTransport(reason: String) {
         val currentSession = session ?: return
         val currentSettings = settings
+        val hadStableMedia = transportHasStableMedia
         if (
             reconnectAttempts >= 1 &&
             !transportHasStableMedia &&
@@ -3616,8 +3639,24 @@ class NativeStreamClient(
         recordStreamDiagnostic("transport restart reason=$reason attempt=$reconnectAttempts generation=$generation")
         emitState("Reconnecting stream ($reconnectAttempts/$MAX_TRANSPORT_RECONNECT_ATTEMPTS)")
         closeTransport(clearInputState = false, cancelRecovery = false)
-        iceRecoveryJob = null
-        startTransport(currentSession, currentSettings, generation)
+        val codecSettleDelayMs = advancedCodecRestartSettleDelayMs(
+            codec = currentSettings.codec,
+            hadStableMedia = hadStableMedia,
+        )
+        if (codecSettleDelayMs == 0L) {
+            iceRecoveryJob = null
+            startTransport(currentSession, currentSettings, generation)
+            return
+        }
+        recordStreamDiagnostic(
+            "waiting ${codecSettleDelayMs}ms for ${currentSettings.codec} decoder release before transport restart generation=$generation",
+        )
+        iceRecoveryJob = scope.launch {
+            delay(codecSettleDelayMs)
+            if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
+            iceRecoveryJob = null
+            startTransport(currentSession, currentSettings, generation)
+        }
     }
 
     private fun requestSessionRecovery(message: String) {
@@ -5620,12 +5659,18 @@ class InputEncoder {
 
 private fun timestampUs(): Long = SystemClock.elapsedRealtimeNanos() / 1000L
 
+internal fun shouldUseLowLatencyStreamAudio(androidTvProfile: Boolean): Boolean = !androidTvProfile
+
+internal fun advancedCodecRestartSettleDelayMs(codec: VideoCodec, hadStableMedia: Boolean): Long =
+    if (hadStableMedia && codec != VideoCodec.H264) ANDROID_CODEC_RESTART_SETTLE_MS else 0L
+
 private const val DEFAULT_INPUT_PROTOCOL_VERSION = 2
 private const val INPUT_HANDSHAKE_MARKER = 0x0e
 private const val INPUT_HANDSHAKE_MAGIC_WORD = 526
 private const val ICE_DISCONNECTED_GRACE_MS = 3500L
 private const val ICE_FAILED_RECONNECT_DELAY_MS = 250L
 private const val SIGNALING_RECONNECT_DELAY_MS = 1000L
+private const val ANDROID_CODEC_RESTART_SETTLE_MS = 180L
 private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 3
 private const val OFFER_TIMEOUT_MS = 12_000L
 private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L

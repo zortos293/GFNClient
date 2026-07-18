@@ -31,10 +31,12 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -93,7 +95,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -530,17 +531,21 @@ private fun DiagnosticShareDialog(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         if (state.androidTvProfile) {
-                            qrCode?.let { QrCodeView(it, Modifier.size(240.dp)) }
-                            Text("Scan this QR code on your phone. The sanitized paste expires within 24 hours.")
+                            if (qrCode != null) {
+                                QrCodeView(qrCode, Modifier.size(240.dp))
+                                Text("Scan this QR code on your phone. The sanitized paste expires within 24 hours.")
+                            } else {
+                                Text("Could not create the QR code. Close this dialog and try again.")
+                            }
                         } else {
                             Text("Device, account type, stream profile, current status, and the temporary paste URL were copied to the clipboard.")
+                            Text(
+                                share.pasteUrl,
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                            )
                         }
-                        Text(
-                            share.pasteUrl,
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.bodySmall,
-                            textAlign = TextAlign.Center,
-                        )
                     }
                 },
                 confirmButton = { Button(onClick = onDismiss) { Text("Done") } },
@@ -1328,8 +1333,9 @@ private fun MainShell(
         val portraitChrome = !inStream && maxHeight >= maxWidth
         val showNavigationRail = !inStream && (tvProfile || phoneLandscapeChrome)
         val scrollChromePage = state.page == AppPage.Home || state.page == AppPage.Library
-        val storeControlsInTopBar = phoneLandscapeChrome && state.page == AppPage.Home
-        val libraryControlsInTopBar = phoneLandscapeChrome && state.page == AppPage.Library
+        val tvCatalogChrome = tvProfile && scrollChromePage
+        val storeControlsInTopBar = (phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Home
+        val libraryControlsInTopBar = (phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Library
         val screenEdgePadding = appContentEdgePaddingDp(state.settings, inStream).dp
         LaunchedEffect(phoneLandscapeChrome, scrollChromePage) {
             if (!phoneLandscapeChrome || !scrollChromePage) {
@@ -1422,7 +1428,12 @@ private fun MainShell(
                             activeSearchTarget = visibleSearchTarget,
                             showAppIcon = showNavigationRail && horizontalChrome,
                             largeIcons = phoneLandscapeChrome,
-                            showSettingsBack = state.page == AppPage.Settings && horizontalChrome && settingsDetailRouteOpen,
+                            showSettingsBack = shouldShowSettingsBackRail(
+                                tvProfile = tvProfile,
+                                settingsPageOpen = state.page == AppPage.Settings,
+                                horizontalChrome = horizontalChrome,
+                                detailRouteOpen = settingsDetailRouteOpen,
+                            ),
                             showCatalogControllerActions = false,
                             onNavigate = { page ->
                                 navigateFromAppChrome(page)
@@ -1441,7 +1452,7 @@ private fun MainShell(
                             visible =
                                 portraitChrome ||
                                     (phoneLandscapeChrome && !phoneLandscapeScrollChromeHidden) ||
-                                    (tvProfile && state.settings.nerdMode),
+                                    tvCatalogChrome,
                         ) {
                             if (!inStream) {
                                 TopStatusBar(
@@ -1712,6 +1723,13 @@ private fun AppNavigationRail(
 
 internal fun shouldShowLocalTvConnectionDot(tvProfile: Boolean, pairedDeviceName: String?): Boolean =
     tvProfile && !pairedDeviceName.isNullOrBlank()
+
+internal fun shouldShowSettingsBackRail(
+    tvProfile: Boolean,
+    settingsPageOpen: Boolean,
+    horizontalChrome: Boolean,
+    detailRouteOpen: Boolean,
+): Boolean = !tvProfile && settingsPageOpen && horizontalChrome && detailRouteOpen
 
 @Composable
 private fun AppNavigationRailItem(
@@ -2203,6 +2221,7 @@ private fun HomeScreen(
     }
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
+        enabled = !tvProfile,
         showRefreshIndicator = !searchingCatalog,
         onRefresh = viewModel::refreshGames,
         modifier = Modifier.fillMaxSize(),
@@ -2460,6 +2479,7 @@ private fun LibraryScreen(
     }
     SwipeToRefreshContainer(
         refreshing = state.loadingGames,
+        enabled = !tvProfile,
         onRefresh = viewModel::refreshGames,
         modifier = Modifier.fillMaxSize(),
     ) {
@@ -2836,7 +2856,10 @@ private fun GameGridSkeleton(
                         cardHeight = gridSpec.cardHeight * scale,
                         squareCard = gridSpec.squareCards,
                         thumbnailPlayOverlay = !tvProfile,
-                        showStoreLabels = settings.showGameStoreLabels,
+                        showStoreLabels = shouldShowGameStoreLabels(
+                            tvProfile = tvProfile,
+                            enabled = settings.showGameStoreLabels,
+                        ),
                     )
                 }
             }
@@ -3034,9 +3057,16 @@ internal fun SwipeToRefreshContainer(
     refreshing: Boolean,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     showRefreshIndicator: Boolean = true,
     content: @Composable () -> Unit,
 ) {
+    if (!enabled) {
+        Box(modifier) {
+            content()
+        }
+        return
+    }
     val pullRefreshState = rememberPullToRefreshState()
     PullToRefreshBox(
         isRefreshing = refreshing,
@@ -3102,8 +3132,11 @@ private fun GameGrid(
                     favorite = game.id in favoriteIds,
                     tvProfile = tvProfile,
                     expressiveUi = settings.expressiveUi,
-                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations && !tvProfile,
-                    showGameStoreLabels = settings.showGameStoreLabels,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                    showGameStoreLabels = shouldShowGameStoreLabels(
+                        tvProfile = tvProfile,
+                        enabled = settings.showGameStoreLabels,
+                    ),
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
@@ -3214,8 +3247,11 @@ private fun StoreGameGrid(
                     favorite = game.id in favoriteIds,
                     tvProfile = tvProfile,
                     expressiveUi = settings.expressiveUi,
-                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations && !tvProfile,
-                    showGameStoreLabels = settings.showGameStoreLabels,
+                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                    showGameStoreLabels = shouldShowGameStoreLabels(
+                        tvProfile = tvProfile,
+                        enabled = settings.showGameStoreLabels,
+                    ),
                     cardHeight = gridSpec.cardHeight * scale,
                     squareCard = gridSpec.squareCards,
                     thumbnailPlayOverlay = !tvProfile,
@@ -3244,13 +3280,6 @@ private fun StoreStartRails(
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
 ) {
-    val performanceSettings = remember(settings, tvProfile) {
-        if (tvProfile && settings.controllerBackgroundAnimations) {
-            settings.copy(controllerBackgroundAnimations = false)
-        } else {
-            settings
-        }
-    }
     val jumpBackIn = remember(games, libraryGames, favoriteIds, queuedGameKeys) {
         jumpBackInGames(games, libraryGames, favoriteIds, queuedGameKeys)
     }
@@ -3272,7 +3301,7 @@ private fun StoreStartRails(
                 title = stringResource(R.string.store_jump_back_in),
                 games = jumpBackIn,
                 favoriteIds = favoriteIds,
-                settings = performanceSettings,
+                settings = settings,
                 tvProfile = tvProfile,
                 controllerActionMode = controllerActionMode,
                 onSelect = onSelect,
@@ -3286,7 +3315,7 @@ private fun StoreStartRails(
                 title = stringResource(R.string.store_coming_next),
                 games = comingNext,
                 favoriteIds = favoriteIds,
-                settings = performanceSettings,
+                settings = settings,
                 tvProfile = tvProfile,
                 controllerActionMode = controllerActionMode,
                 onSelect = onSelect,
@@ -3317,9 +3346,10 @@ private fun StoreComingNextCarousel(
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var page by remember(games) { mutableIntStateOf(0) }
     var focused by remember { mutableStateOf(false) }
-    val focusBorderColor = controllerFocusBorderColor(
-        active = focused && controllerActionMode,
-        animate = settings.controllerBackgroundAnimations,
+    val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
+        focused = focused,
+        tvProfile = tvProfile,
+        controllerActionMode = controllerActionMode,
     )
     LaunchedEffect(games, page, focused) {
         if (games.size > 1 && !focused && settings.controllerBackgroundAnimations) {
@@ -3377,7 +3407,7 @@ private fun StoreComingNextCarousel(
                     .border(
                         width = if (focused) 3.dp else 1.dp,
                         color = when {
-                            focused && controllerActionMode -> focusBorderColor
+                            enhancedControllerFocus -> Color.Transparent
                             focused -> Color.White
                             else -> Color.White.copy(alpha = 0.08f)
                         },
@@ -3467,8 +3497,9 @@ private fun StoreComingNextCarousel(
                             size = 38.dp,
                         )
                     }
-                    ControllerFocusSheen(
-                        visible = focused && controllerActionMode && settings.controllerBackgroundAnimations,
+                    ControllerFocusFrame(
+                        visible = enhancedControllerFocus,
+                        animate = settings.controllerBackgroundAnimations,
                         cornerRadius = if (settings.expressiveUi) 24.dp else 16.dp,
                     )
                 }
@@ -3555,9 +3586,10 @@ private fun StoreRailGameCard(
     val focusManager = LocalFocusManager.current
     val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     val actionButtonSize = 34.dp
-    val focusBorderColor = controllerFocusBorderColor(
-        active = focused && controllerActionMode,
-        animate = controllerBackgroundAnimations,
+    val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
+        focused = focused,
+        tvProfile = tvProfile,
+        controllerActionMode = controllerActionMode,
     )
     Surface(
         modifier = Modifier
@@ -3567,7 +3599,7 @@ private fun StoreRailGameCard(
             .border(
                 width = if (focused) 3.dp else 1.dp,
                 color = when {
-                    focused && controllerActionMode -> focusBorderColor
+                    enhancedControllerFocus -> Color.Transparent
                     focused -> Color.White
                     else -> Color.White.copy(alpha = 0.08f)
                 },
@@ -3625,8 +3657,9 @@ private fun StoreRailGameCard(
                     size = actionButtonSize,
                 )
             }
-            ControllerFocusSheen(
-                visible = focused && controllerActionMode && controllerBackgroundAnimations,
+            ControllerFocusFrame(
+                visible = enhancedControllerFocus,
+                animate = controllerBackgroundAnimations,
                 cornerRadius = if (expressiveUi) 12.dp else 8.dp,
             )
         }
@@ -3690,6 +3723,22 @@ private fun storeRailGameKey(game: GameInfo): String =
 private const val STORE_RAIL_GAME_LIMIT = 14
 private const val GAME_BOX_ART_ASPECT_RATIO = 628f / 888f
 
+internal fun shouldShowEnhancedControllerFocus(
+    focused: Boolean,
+    tvProfile: Boolean,
+    controllerActionMode: Boolean,
+): Boolean = focused && (tvProfile || controllerActionMode)
+
+internal fun shouldInitiallyFocusGameDetailsPlay(tvProfile: Boolean): Boolean = tvProfile
+
+internal fun controllerFocusPulseStrokeWidthDp(progress: Float): Float =
+    4f + (9f * progress.coerceIn(0f, 1f))
+
+internal fun controllerFocusPulseAlpha(progress: Float): Float {
+    val remaining = 1f - progress.coerceIn(0f, 1f)
+    return 0.58f * remaining * remaining
+}
+
 private data class GameGridSpec(
     val columns: Int,
     val cardHeight: Dp,
@@ -3707,55 +3756,65 @@ private fun storeRailCardWidth(tvProfile: Boolean, landscapeLayout: Boolean): Dp
     }
 
 @Composable
-private fun controllerFocusBorderColor(active: Boolean, animate: Boolean): Color {
-    if (!active) return Color.Transparent
+private fun BoxScope.ControllerFocusFrame(
+    visible: Boolean,
+    animate: Boolean,
+    cornerRadius: Dp,
+) {
+    if (!visible) return
     val accent = MaterialTheme.colorScheme.primary
-    if (!animate) return accent
-    val transition = rememberInfiniteTransition(label = "controller-focus")
-    val glow by transition.animateFloat(
-        initialValue = 0.46f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 920, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "controller-focus-glow",
-    )
-    return accent.copy(alpha = glow)
+    if (animate) {
+        val transition = rememberInfiniteTransition(label = "controller-focus-pulse")
+        val pulseProgress by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1_100, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "controller-focus-pulse-progress",
+        )
+        ControllerFocusFrameCanvas(
+            accent = accent,
+            cornerRadius = cornerRadius,
+            pulseProgress = pulseProgress,
+        )
+    } else {
+        ControllerFocusFrameCanvas(
+            accent = accent,
+            cornerRadius = cornerRadius,
+            pulseProgress = null,
+        )
+    }
 }
 
 @Composable
-private fun BoxScope.ControllerFocusSheen(visible: Boolean, cornerRadius: Dp) {
-    if (!visible) return
-    val accent = MaterialTheme.colorScheme.primary
-    val transition = rememberInfiniteTransition(label = "controller-focus-sheen")
-    val travel by transition.animateFloat(
-        initialValue = -0.55f,
-        targetValue = 1.55f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1_650, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "controller-focus-sheen-travel",
-    )
-    Canvas(Modifier.matchParentSize().padding(1.dp)) {
-        val diagonal = size.width + size.height
-        val center = diagonal * travel
-        val brush = Brush.linearGradient(
-            colors = listOf(
-                accent.copy(alpha = 0.12f),
-                accent.copy(alpha = 0.32f),
-                Color.White.copy(alpha = 0.96f),
-                accent.copy(alpha = 0.34f),
-                accent.copy(alpha = 0.12f),
-            ),
-            start = Offset(center - size.width * 0.42f, center - size.height * 0.42f),
-            end = Offset(center + size.width * 0.42f, center + size.height * 0.42f),
-        )
+private fun BoxScope.ControllerFocusFrameCanvas(
+    accent: Color,
+    cornerRadius: Dp,
+    pulseProgress: Float?,
+) {
+    Canvas(Modifier.matchParentSize().padding(2.dp)) {
+        val outerRadius = (cornerRadius - 2.dp).toPx().coerceAtLeast(0f)
+
+        // Keep every animated pixel on the card edge. The pulse expands by
+        // widening the outer stroke and fading; it never creates an inner box.
         drawRoundRect(
-            brush = brush,
-            cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
-            style = Stroke(width = 2.4.dp.toPx()),
+            color = accent.copy(alpha = 0.18f),
+            cornerRadius = CornerRadius(outerRadius, outerRadius),
+            style = Stroke(width = 8.dp.toPx()),
+        )
+        pulseProgress?.let { progress ->
+            drawRoundRect(
+                color = accent.copy(alpha = controllerFocusPulseAlpha(progress)),
+                cornerRadius = CornerRadius(outerRadius, outerRadius),
+                style = Stroke(width = controllerFocusPulseStrokeWidthDp(progress).dp.toPx()),
+            )
+        }
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.96f),
+            cornerRadius = CornerRadius(outerRadius, outerRadius),
+            style = Stroke(width = 2.dp.toPx()),
         )
     }
 }
@@ -3930,9 +3989,10 @@ private fun GameCard(
     val launcherTile = handheldPosterCard && thumbnailPlayOverlay
     val overlayActionSize = if (launcherTile) 34.dp else 44.dp
     val overlayActionPadding = if (launcherTile) 6.dp else 8.dp
-    val focusBorderColor = controllerFocusBorderColor(
-        active = focused && controllerActionMode,
-        animate = controllerBackgroundAnimations,
+    val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
+        focused = focused,
+        tvProfile = tvProfile,
+        controllerActionMode = controllerActionMode,
     )
     Card(
         modifier = Modifier
@@ -3948,7 +4008,7 @@ private fun GameCard(
             .border(
                 width = if (focused) 3.dp else 1.dp,
                 color = when {
-                    focused && controllerActionMode -> focusBorderColor
+                    enhancedControllerFocus -> Color.Transparent
                     focused -> Color.White
                     else -> Color.Transparent
                 },
@@ -4006,12 +4066,13 @@ private fun GameCard(
                     buttonSize = overlayActionSize,
                 )
             }
-            ControllerFocusSheen(
-                visible = focused && controllerActionMode && controllerBackgroundAnimations,
+            ControllerFocusFrame(
+                visible = enhancedControllerFocus,
+                animate = controllerBackgroundAnimations,
                 cornerRadius = if (expressiveUi) 12.dp else 8.dp,
             )
         }
-        if (!thumbnailPlayOverlay) {
+        if (!thumbnailPlayOverlay && showGameStoreLabels) {
             Column(
                 Modifier
                     .clickable { onSelect(game) }
@@ -4042,6 +4103,9 @@ internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = tvProf
 
 internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
     !tvProfile && !controllerActionMode
+
+internal fun shouldShowGameStoreLabels(tvProfile: Boolean, enabled: Boolean): Boolean =
+    enabled && !tvProfile
 
 @Composable
 private fun GameCardTitleOverlay(title: String) {
@@ -4244,9 +4308,14 @@ private fun GameDetailsSheet(
 ) {
     val gameFocusRequester = remember(game.id) { FocusRequester() }
     val playFocusRequester = remember(game.id) { FocusRequester() }
-    LaunchedEffect(game.id) {
+    LaunchedEffect(game.id, fullScreen) {
         delay(80)
-        runCatching { gameFocusRequester.requestFocus() }
+        val initialRequester = if (shouldInitiallyFocusGameDetailsPlay(tvProfile = fullScreen)) {
+            playFocusRequester
+        } else {
+            gameFocusRequester
+        }
+        runCatching { initialRequester.requestFocus() }
     }
     BackHandler(onBack = onDismiss)
     Box(
@@ -4701,10 +4770,25 @@ private fun LongPressPlayButton(
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(999.dp)
+    val accent = MaterialTheme.colorScheme.primary
+    val focusScale by animateFloatAsState(
+        targetValue = gameDetailsPlayFocusScale(focused),
+        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
+        label = "game-details-play-focus-scale",
+    )
+    val containerColor by animateColorAsState(
+        targetValue = if (focused) Color.White else accent,
+        animationSpec = tween(durationMillis = 120),
+        label = "game-details-play-focus-color",
+    )
     Surface(
         modifier = modifier
             .height(48.dp)
             .onFocusChanged { focused = it.isFocused }
+            .graphicsLayer {
+                scaleX = focusScale
+                scaleY = focusScale
+            }
             .onPreviewKeyEvent { event ->
                 if (isTvActivateKey(event)) {
                     onClick()
@@ -4720,11 +4804,20 @@ private fun LongPressPlayButton(
                 onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
             )
             .then(
-                if (focused) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, shape) else Modifier
+                if (focused) {
+                    Modifier.border(
+                        width = gameDetailsPlayFocusBorderWidthDp(focused).dp,
+                        color = accent,
+                        shape = shape,
+                    )
+                } else {
+                    Modifier
+                },
             ),
         shape = shape,
-        color = MaterialTheme.colorScheme.primary,
+        color = containerColor,
         tonalElevation = 0.dp,
+        shadowElevation = if (focused) 12.dp else 0.dp,
     ) {
         Row(
             Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -4739,13 +4832,17 @@ private fun LongPressPlayButton(
             Text(
                 stringResource(R.string.action_play),
                 color = Color.Black,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = if (focused) FontWeight.ExtraBold else FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
     }
 }
+
+internal fun gameDetailsPlayFocusScale(focused: Boolean): Float = if (focused) 1.06f else 1f
+
+internal fun gameDetailsPlayFocusBorderWidthDp(focused: Boolean): Float = if (focused) 4f else 0f
 
 private fun variantDetailsText(variant: GameVariant): String =
     listOfNotNull(
@@ -4814,9 +4911,9 @@ private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier:
     }
 }
 
-private fun gameDescriptionForDetails(game: GameInfo): String? =
-    game.longDescription?.takeIf { it.isNotBlank() }
-        ?: game.description?.takeIf { it.isNotBlank() }
+internal fun gameDescriptionForDetails(game: GameInfo): String? =
+    game.description?.takeIf { it.isNotBlank() }
+        ?: game.longDescription?.takeIf { it.isNotBlank() }
 
 private fun gameHeroImageUrl(context: Context, game: GameInfo?): String? {
     val url = game?.screenshotUrl?.takeIf { it.isNotBlank() }

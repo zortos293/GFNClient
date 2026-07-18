@@ -1374,17 +1374,19 @@ internal fun CodecCapability.streamingDecoderName(): String? =
     webRtcDecoderName ?: decoderName
 
 internal fun CodecCapability.streamingRealtimeSafe(): Boolean =
-    streamingDecoderAvailable() &&
-        (codec == VideoCodec.H264 || (nativeDecoderAvailable != false && (streamingHardwareDecoderAvailable() || webRtcDecoderAvailable == true)))
+    streamingDecoderUsableForLaunch()
 
 internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean {
-    if (webRtcDecoderAvailable == false && nativeDecoderAvailable != true) return false
     if (codec == VideoCodec.H264) return webRtcDecoderAvailable ?: decoderAvailable
-    if (nativeDecoderAvailable == false) return false
-    val nativeHardwareReady = nativeDecoderAvailable == true && hardwareDecoder
-    val webRtcHardwareReady = webRtcDecoderAvailable == true && webRtcHardwareDecoderAvailable == true
-    if (!nativeHardwareReady && !webRtcHardwareReady) return false
-    return !decoderAvailable || (hardwareDecoder && realtimeSafe)
+
+    // The stream is decoded by the WebRTC decoder factory, so its successful hardware
+    // probe is authoritative. The Media NDK probe is only a secondary diagnostic and can
+    // legitimately disagree on devices whose codec is exposed through WebRTC's factory.
+    if (webRtcDecoderAvailable != null) {
+        return webRtcDecoderAvailable && webRtcHardwareDecoderAvailable == true
+    }
+
+    return nativeDecoderAvailable == true && hardwareDecoder && realtimeSafe
 }
 
 private fun RuntimeCodecReport.bestStreamingFallbackCodec(): VideoCodec =

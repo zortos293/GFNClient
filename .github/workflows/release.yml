@@ -286,7 +286,7 @@ jobs:
       npm_config_audit: "false"
       npm_config_fund: "false"
       GSTREAMER_VERSION: "1.28.2"
-      GSTREAMER_WINDOWS_VERSION: "1.26.8"
+      GSTREAMER_WINDOWS_VERSION: "1.28.3"
       CARGO_NET_RETRY: "10"
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
@@ -421,15 +421,14 @@ jobs:
         if: matrix.native_build == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
-          $installBase = "C:\gstreamer"
+          $installRoot = "C:\gstreamer\1.0\msvc_x86_64"
           $roots = @(
-            "C:\gstreamer\1.0\msvc_x86_64",
+            $installRoot,
             "C:\Program Files\gstreamer\1.0\msvc_x86_64"
           )
           $searchBases = @("C:\gstreamer", "C:\Program Files\gstreamer")
           $script:gstreamerPcPaths = @()
-          $script:lastRuntimeMsiExitCode = $null
-          $script:lastDevelMsiExitCode = $null
+          $script:lastInstallerExitCode = $null
           function Test-GStreamerRoot([string] $candidate) {
             return [bool]($candidate -and
               (Test-Path (Join-Path $candidate "lib\pkgconfig\gstreamer-1.0.pc")) -and
@@ -451,7 +450,7 @@ jobs:
             }
             return $null
           }
-          function Get-GStreamerMsi([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
+          function Get-GStreamerInstaller([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
             New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
             $output = Join-Path $downloadDir $fileName
             $partial = "$output.part"
@@ -487,33 +486,34 @@ jobs:
             }
             return $null
           }
-          function Install-GStreamerMsiSdk([string] $version) {
+          function Install-GStreamerSdk([string] $version) {
             $urlBases = @(
               "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc",
               "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
             )
             $downloadDir = Join-Path $env:GITHUB_WORKSPACE ".cache\gstreamer-windows\$version"
-            $runtime = Get-GStreamerMsi "gstreamer-1.0-msvc-x86_64-$version.msi" $downloadDir $urlBases
-            if (-not $runtime) { return $false }
-            $devel = Get-GStreamerMsi "gstreamer-1.0-devel-msvc-x86_64-$version.msi" $downloadDir $urlBases
-            if (-not $devel) { return $false }
-            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
-            $script:lastRuntimeMsiExitCode = $runtimeInstall.ExitCode
-            if ($runtimeInstall.ExitCode -ne 0) { return $false }
-            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
-            $script:lastDevelMsiExitCode = $develInstall.ExitCode
-            if ($develInstall.ExitCode -ne 0) { return $false }
+            $installer = Get-GStreamerInstaller "gstreamer-1.0-msvc-x86_64-$version.exe" $downloadDir $urlBases
+            if (-not $installer) { return $false }
+            $install = Start-Process -FilePath $installer -ArgumentList @(
+              "/VERYSILENT",
+              "/SUPPRESSMSGBOXES",
+              "/NORESTART",
+              "/TYPE=devel",
+              "/DIR=$installRoot"
+            ) -Wait -PassThru -NoNewWindow
+            $script:lastInstallerExitCode = $install.ExitCode
+            if ($install.ExitCode -ne 0) { return $false }
             return [bool](Find-GStreamerRoot)
           }
           $root = Find-GStreamerRoot
           if ($root) {
             Write-Host "Using cached GStreamer Windows SDK: $root"
-          } elseif (-not (Install-GStreamerMsiSdk $env:GSTREAMER_WINDOWS_VERSION)) {
+          } elseif (-not (Install-GStreamerSdk $env:GSTREAMER_WINDOWS_VERSION)) {
             [void](Find-GStreamerRoot)
             Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
             Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
             Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
-            Write-Error "Failed to install/discover GStreamer Windows MSI SDK version $env:GSTREAMER_WINDOWS_VERSION. Runtime MSI exit code: $script:lastRuntimeMsiExitCode; devel MSI exit code: $script:lastDevelMsiExitCode."
+            Write-Error "Failed to install/discover GStreamer Windows SDK version $env:GSTREAMER_WINDOWS_VERSION. Installer exit code: $script:lastInstallerExitCode."
             exit 1
           }
           $root = Find-GStreamerRoot

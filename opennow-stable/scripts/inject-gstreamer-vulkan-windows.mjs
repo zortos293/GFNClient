@@ -75,6 +75,7 @@ function resolveVendorDir(runtimeVersion) {
     const [major, minor] = runtimeVersion.split(".");
     const sameSeries = versions.find((version) => version.startsWith(`${major}.${minor}.`));
     if (sameSeries) return join(vendorRoot, sameSeries);
+    return null;
   }
   return join(vendorRoot, versions[0]);
 }
@@ -130,7 +131,7 @@ try {
   const vendorDir = resolveVendorDir(runtimeVersion);
   if (!vendorDir) {
     throw new Error(
-      "No vendored Windows GStreamer Vulkan plugins were found. "
+      `No compatible vendored Windows GStreamer Vulkan plugins were found for runtime ${runtimeVersion ?? "unknown"}. `
       + `Expected artifacts under ${vendorRoot}/<gstreamer-version>/.`,
     );
   }

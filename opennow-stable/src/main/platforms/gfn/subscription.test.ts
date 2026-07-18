@@ -39,6 +39,12 @@ test("fetchSubscription exposes only entitled resolution and fps profiles", asyn
             isEntitled: true,
           },
           {
+            widthInPixels: 1280,
+            heightInPixels: 800,
+            framesPerSecond: 90,
+            isEntitled: true,
+          },
+          {
             widthInPixels: 1920,
             heightInPixels: 1080,
             framesPerSecond: 240,
@@ -59,5 +65,6 @@ test("fetchSubscription exposes only entitled resolution and fps profiles", asyn
 
   assert.deepEqual(subscription.entitledResolutions, [
     { width: 1920, height: 1080, fps: 60 },
+    { width: 1280, height: 800, fps: 90 },
   ]);
 });

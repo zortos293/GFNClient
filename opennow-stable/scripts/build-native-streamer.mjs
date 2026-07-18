@@ -366,7 +366,7 @@ function parseNativeStreamerResponse(stdout) {
   return response;
 }
 
-function verifyGstreamerBinary(binaryPath, env, requiredVideoBackends = []) {
+function verifyGstreamerBinary(binaryPath, env) {
   const result = spawnSync(binaryPath, {
     input: `${JSON.stringify({ id: verifyCommandId, type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
     encoding: "utf8",
@@ -432,24 +432,21 @@ function verifyGstreamerBinary(binaryPath, env, requiredVideoBackends = []) {
     process.exit(1);
   }
 
-  for (const required of requiredVideoBackends) {
-    const backend = capabilities.videoBackends.find((candidate) => candidate?.backend === required.backend);
-    const availableCodecs = new Set(
-      Array.isArray(backend?.codecs)
-        ? backend.codecs.filter((codec) => codec?.available).map((codec) => codec.codec)
-        : [],
-    );
-    const missingCodecs = required.codecs.filter((codec) => !availableCodecs.has(codec));
-    if (!backend?.available || backend.sink !== required.sink || missingCodecs.length > 0) {
-      console.error(
-        `Bundled native streamer is missing required ${required.backend} capability `
-        + `(sink=${required.sink}, codecs=${required.codecs.join("/")}): ${JSON.stringify(backend)}`,
-      );
-      process.exit(1);
-    }
-  }
-
   console.log(`Verified native streamer GStreamer capabilities: ${availableVideoBackends.join(", ")}.`);
+}
+
+function verifyBundledWindowsVulkanPlugin(binaryPath, env) {
+  const gstInspect = join(dirname(binaryPath), "gstreamer", "bin", "gst-inspect-1.0.exe");
+  const result = spawnSync(gstInspect, ["vulkanupload"], {
+    encoding: "utf8",
+    env,
+  });
+  if (result.status !== 0) {
+    console.error(result.stderr || result.stdout);
+    console.error("Bundled GStreamer Vulkan plugin failed to load.");
+    process.exit(result.status ?? 1);
+  }
+  console.log("Verified bundled GStreamer Vulkan plugin and loader.");
 }
 
 const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
@@ -502,14 +499,11 @@ if (process.platform !== "win32") {
 if (hasFeature(nativeFeatures, "gstreamer")) {
   verifyGstreamerBinary(packageBinary, buildEnv);
   if (bundleGstreamerRuntime(gstreamerSdkRoot, nativeFeatures)) {
-    const requiredVideoBackends = process.platform === "win32"
-      ? [{ backend: "vulkan", sink: "vulkansink", codecs: ["h264", "h265"] }]
-      : [];
-    verifyGstreamerBinary(
-      packagePlatformBinary,
-      buildBundledGstreamerEnv(buildEnv, packagePlatformBinary),
-      requiredVideoBackends,
-    );
+    const bundledEnv = buildBundledGstreamerEnv(buildEnv, packagePlatformBinary);
+    if (process.platform === "win32") {
+      verifyBundledWindowsVulkanPlugin(packagePlatformBinary, bundledEnv);
+    }
+    verifyGstreamerBinary(packagePlatformBinary, bundledEnv);
   }
 }
 

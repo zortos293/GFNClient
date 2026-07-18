@@ -83,8 +83,12 @@ function resolveVendorDir(runtimeVersion) {
 function injectVulkanPlugins(runtimeRoot, vendorDir) {
   const pluginSource = join(vendorDir, "lib", "gstreamer-1.0", "gstvulkan.dll");
   const librarySource = join(vendorDir, "bin", "gstvulkan-1.0-0.dll");
+  const loaderSource = join(packageRoot, "node_modules", "electron", "dist", "vulkan-1.dll");
   if (!isExistingFile(pluginSource) || !isExistingFile(librarySource)) {
     throw new Error(`Vendored Vulkan artifacts are incomplete under ${vendorDir}`);
+  }
+  if (!isExistingFile(loaderSource)) {
+    throw new Error(`Electron Vulkan loader was not found: ${loaderSource}`);
   }
 
   const pluginDestDir = join(runtimeRoot, "lib", "gstreamer-1.0");
@@ -93,6 +97,7 @@ function injectVulkanPlugins(runtimeRoot, vendorDir) {
   mkdirSync(binDestDir, { recursive: true });
   copyFileSync(pluginSource, join(pluginDestDir, "gstvulkan.dll"));
   copyFileSync(librarySource, join(binDestDir, "gstvulkan-1.0-0.dll"));
+  copyFileSync(loaderSource, join(binDestDir, "vulkan-1.dll"));
 
   const metadataPath = join(runtimeRoot, "OPENNOW-GSTREAMER-RUNTIME.txt");
   if (isExistingFile(metadataPath)) {
@@ -106,7 +111,7 @@ function injectVulkanPlugins(runtimeRoot, vendorDir) {
     }
   }
 
-  console.log(`Injected Windows GStreamer Vulkan plugins from ${vendorDir} into ${runtimeRoot}.`);
+  console.log(`Injected Windows GStreamer Vulkan plugins and loader into ${runtimeRoot}.`);
 }
 
 const args = parseArgs(process.argv.slice(2));

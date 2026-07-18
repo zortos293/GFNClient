@@ -154,6 +154,7 @@ data class OpenNowUiState(
     val dismissedAndroidUpdateNoticeKey: String? = null,
     val androidPictureInPictureActive: Boolean = false,
     val diagnosticShare: DiagnosticShareState = DiagnosticShareState(),
+    val loginToolsVisible: Boolean = false,
     val localTvConnector: LocalTvConnectorState = LocalTvConnectorState(),
     val remoteStreamMenuRequestToken: Int = 0,
     val remoteStatsToggleRequestToken: Int = 0,
@@ -195,7 +196,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var latestStreamRuntimeStats: TimedStreamRuntimeStats? = null
     private var lastRuntimeStatsEventAtMs: Long = 0L
     private var deviceRecommendation: AndroidDeviceRecommendation? = null
-    private val settingsDiagnosticTapTimes = ArrayDeque<Long>()
+    private val settingsDiagnosticTapTracker = RapidTapTracker()
+    private val loginIconTapTracker = RapidTapTracker()
 
     private val initialAuthSession = authStore.activeSession()
     private val androidTvProfile = isAndroidTvProfile(application)
@@ -479,14 +481,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun recordSettingsIconTap() {
-        val now = SystemClock.elapsedRealtime()
-        while (settingsDiagnosticTapTimes.firstOrNull()?.let { now - it > SETTINGS_DIAGNOSTIC_TAP_WINDOW_MS } == true) {
-            settingsDiagnosticTapTimes.removeFirst()
-        }
-        settingsDiagnosticTapTimes.addLast(now)
-        if (settingsDiagnosticTapTimes.size < SETTINGS_DIAGNOSTIC_TAP_COUNT) return
-        settingsDiagnosticTapTimes.clear()
-        requestDiagnosticShare()
+        if (settingsDiagnosticTapTracker.recordTap(SystemClock.elapsedRealtime())) requestDiagnosticShare()
+    }
+
+    fun recordLoginIconTap() {
+        if (!loginIconTapTracker.recordTap(SystemClock.elapsedRealtime())) return
+        _state.update { it.copy(loginToolsVisible = true) }
+    }
+
+    fun dismissLoginTools() {
+        _state.update { it.copy(loginToolsVisible = false) }
     }
 
     fun dismissDiagnosticShare() {
@@ -766,25 +770,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 loginWithBestAvailableMethod(provider, useDeviceCode)
             }
                 .onSuccess { session ->
-                    _state.update {
-                        it.copy(
-                            authSession = session,
-                            selectedProvider = session.provider,
-                            savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
-                            launchPhase = "",
-                            deviceLoginPrompt = null,
-                            error = null,
-                            page = defaultLaunchAppPage(),
-                        )
-                    }
-                    OpenNowAnalytics.capture(
-                        event = "user_logged_in",
-                        properties = mapOf(
-                            "provider" to session.provider.code,
-                            "membership_tier" to session.user.membershipTier,
-                        ),
-                    )
-                    refreshAfterAuth(session)
+                    completeLogin(session)
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
@@ -811,32 +797,63 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 loginWithDeviceCode(provider)
             }
                 .onSuccess { session ->
-                    _state.update {
-                        it.copy(
-                            authSession = session,
-                            selectedProvider = session.provider,
-                            savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
-                            launchPhase = "",
-                            deviceLoginPrompt = null,
-                            error = null,
-                            page = defaultLaunchAppPage(),
-                        )
-                    }
-                    OpenNowAnalytics.capture(
-                        event = "user_logged_in",
-                        properties = mapOf(
-                            "provider" to session.provider.code,
-                            "membership_tier" to session.user.membershipTier,
-                            "login_method" to "device_code",
-                        ),
-                    )
-                    refreshAfterAuth(session)
+                    completeLogin(session, loginMethod = "device_code")
                 }
                 .onFailure { error ->
                     if (error is CancellationException) return@onFailure
                     _state.update { it.copy(error = error.message ?: "Code sign-in failed", launchPhase = "", deviceLoginPrompt = null) }
                 }
         }
+    }
+
+    fun loginWithToken(tokenInput: String, provider: LoginProvider = state.value.selectedProvider) {
+        loginJob?.cancel()
+        loginJob = viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    error = null,
+                    launchPhase = "Checking sign-in token",
+                    deviceLoginPrompt = null,
+                    loginToolsVisible = false,
+                )
+            }
+            runCatching { authRepository.loginWithToken(provider, tokenInput) }
+                .onSuccess { session -> completeLogin(session, loginMethod = "token") }
+                .onFailure { error ->
+                    if (error is CancellationException) return@onFailure
+                    _state.update {
+                        it.copy(
+                            error = error.message ?: "Token sign-in failed",
+                            launchPhase = "",
+                            deviceLoginPrompt = null,
+                        )
+                    }
+                }
+        }
+    }
+
+    private suspend fun completeLogin(session: AuthSession, loginMethod: String? = null) {
+        _state.update {
+            it.copy(
+                authSession = session,
+                selectedProvider = session.provider,
+                savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                launchPhase = "",
+                deviceLoginPrompt = null,
+                error = null,
+                page = defaultLaunchAppPage(),
+                loginToolsVisible = false,
+            )
+        }
+        OpenNowAnalytics.capture(
+            event = "user_logged_in",
+            properties = buildMap {
+                put("provider", session.provider.code)
+                put("membership_tier", session.user.membershipTier)
+                loginMethod?.let { put("login_method", it) }
+            },
+        )
+        refreshAfterAuth(session)
     }
 
     private suspend fun loginWithBestAvailableMethod(provider: LoginProvider, useDeviceCode: Boolean): AuthSession {
@@ -2392,8 +2409,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private companion object {
-        const val SETTINGS_DIAGNOSTIC_TAP_COUNT = 10
-        const val SETTINGS_DIAGNOSTIC_TAP_WINDOW_MS = 8_000L
         const val TV_INITIAL_CATALOG_PAGE_COUNT = 1
         const val TV_INITIAL_CATALOG_GAME_LIMIT = 120
         const val TV_LAYOUT_PROFILE_VERSION = 1

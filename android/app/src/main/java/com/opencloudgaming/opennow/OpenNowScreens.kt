@@ -207,6 +207,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -665,6 +667,22 @@ private fun LoadingScreen(text: String) {
 @Composable
 private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val signInFocusRequester = remember { FocusRequester() }
+    val context = LocalContext.current
+    var tokenDialogVisible by remember { mutableStateOf(false) }
+    var tokenInput by remember { mutableStateOf("") }
+    var pendingLogText by remember { mutableStateOf("") }
+    val logExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(pendingLogText.toByteArray(Charsets.UTF_8))
+            } ?: error("Could not open log file")
+        }.onSuccess {
+            Toast.makeText(context, "Logs exported", Toast.LENGTH_SHORT).show()
+        }.onFailure { error ->
+            Toast.makeText(context, error.message ?: "Could not export logs", Toast.LENGTH_LONG).show()
+        }
+    }
     val tvLogin = state.androidTvProfile
     val deviceCodeLoginAvailable = state.selectedProvider.supportsDeviceCodeLogin
     val preferDeviceCodeLogin = tvLogin && deviceCodeLoginAvailable
@@ -707,7 +725,10 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                OpenNowMark(if (compactForPhonePairing) 56.dp else 88.dp)
+                OpenNowMark(
+                    size = if (compactForPhonePairing) 56.dp else 88.dp,
+                    modifier = Modifier.clickable(onClick = viewModel::recordLoginIconTap),
+                )
                 Spacer(Modifier.height(if (compactForPhonePairing) 8.dp else 20.dp))
                 Text(
                     "OpenNOW",
@@ -766,6 +787,109 @@ private fun LoginScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 }
             }
         }
+    }
+
+    if (state.loginToolsVisible) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissLoginTools,
+            title = { Text("Sign-in tools") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Use a token to sign in without the browser, or export diagnostics before signing in.")
+                    Button(
+                        onClick = {
+                            viewModel.dismissLoginTools()
+                            tokenDialogVisible = true
+                        },
+                        enabled = !normalLoginBusy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Sign in with token")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.dismissLoginTools()
+                            if (tvLogin) {
+                                viewModel.requestDiagnosticShare()
+                            } else {
+                                pendingLogText = viewModel.sanitizedDebugLogText()
+                                logExportLauncher.launch(viewModel.debugLogFileName())
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (tvLogin) "Export logs with QR" else "Export logs")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissLoginTools) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    if (tokenDialogVisible) {
+        val submitToken = {
+            val submittedToken = tokenInput
+            tokenInput = ""
+            tokenDialogVisible = false
+            viewModel.loginWithToken(submittedToken)
+        }
+        AlertDialog(
+            onDismissRequest = {
+                tokenInput = ""
+                tokenDialogVisible = false
+            },
+            title = { Text("Sign in with token") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Paste an NVIDIA access token or token-response JSON. OpenNOW verifies the access token before saving the account.")
+                    OutlinedTextField(
+                        value = tokenInput,
+                        onValueChange = { tokenInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Access token") },
+                        minLines = 3,
+                        maxLines = 6,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = { if (tokenInput.isNotBlank() && !normalLoginBusy) submitToken() },
+                        ),
+                        singleLine = false,
+                    )
+                    Text(
+                        "Only use credentials for an account you control.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = submitToken,
+                    enabled = tokenInput.isNotBlank() && !normalLoginBusy,
+                ) {
+                    Text("Sign in")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        tokenInput = ""
+                        tokenDialogVisible = false
+                    },
+                ) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -11510,11 +11634,11 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun OpenNowMark(size: androidx.compose.ui.unit.Dp) {
+private fun OpenNowMark(size: androidx.compose.ui.unit.Dp, modifier: Modifier = Modifier) {
     Image(
         painter = painterResource(R.drawable.opennow_logo_mark),
         contentDescription = "OpenNOW",
-        modifier = Modifier
+        modifier = modifier
             .width(size * 1.85f)
             .height(size),
         contentScale = ContentScale.Fit,

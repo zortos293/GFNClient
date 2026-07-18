@@ -732,9 +732,15 @@ object NativeStreamInputRouter {
     private var client: NativeStreamClient? = null
     @Volatile
     private var androidTvProfile = false
+    @Volatile
+    private var platformBackCallbackActive = false
 
     fun setAndroidTvProfile(enabled: Boolean) {
         androidTvProfile = enabled
+    }
+
+    fun setPlatformBackCallbackActive(active: Boolean) {
+        platformBackCallbackActive = active
     }
     @Volatile
     private var touchMouseEnabled = false
@@ -805,6 +811,12 @@ object NativeStreamInputRouter {
 
     fun setSystemBackHandler(handler: (() -> Unit)?) {
         systemBackHandler = handler
+    }
+
+    fun dispatchSystemBack(): Boolean {
+        val handler = systemBackHandler ?: return false
+        handler()
+        return true
     }
 
 
@@ -954,6 +966,12 @@ object NativeStreamInputRouter {
     }
 
     fun dispatchKey(event: KeyEvent): Boolean {
+        if (shouldDeferStreamBackToPlatform(event.keyCode, platformBackCallbackActive)) {
+            // Android 13+ can deliver the same remote press as both a KeyEvent and
+            // OnBackInvokedCallback. Consume the key copy so the platform callback
+            // toggles Stream Controls exactly once.
+            return true
+        }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
@@ -963,8 +981,7 @@ object NativeStreamInputRouter {
             return systemMenuHandler != null
         }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamExitShortcutKey()) {
-            systemBackHandler?.invoke()
-            return systemBackHandler != null
+            return dispatchSystemBack()
         }
         if (event.action == KeyEvent.ACTION_UP && event.isStreamExitShortcutKey()) {
             return systemBackHandler != null
@@ -1008,13 +1025,22 @@ object NativeStreamInputRouter {
             keyCode = keyCode,
             controllerInputDevice = isControllerInputDevice(),
             hardwareKeyboardSource = isHardwareKeyboardSource(),
+            androidTvProfile = androidTvProfile,
         )
 
     fun shouldOpenStreamSystemMenuKey(keyCode: Int, controllerInputDevice: Boolean): Boolean =
         keyCode == KeyEvent.KEYCODE_MENU && !controllerInputDevice
 
-    fun shouldHandleStreamExitKey(keyCode: Int, controllerInputDevice: Boolean, hardwareKeyboardSource: Boolean): Boolean =
-        (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
+    fun shouldDeferStreamBackToPlatform(keyCode: Int, platformCallbackActive: Boolean): Boolean =
+        platformCallbackActive && keyCode == KeyEvent.KEYCODE_BACK
+
+    fun shouldHandleStreamExitKey(
+        keyCode: Int,
+        controllerInputDevice: Boolean,
+        hardwareKeyboardSource: Boolean,
+        androidTvProfile: Boolean = false,
+    ): Boolean =
+        (keyCode == KeyEvent.KEYCODE_BACK && (androidTvProfile || !controllerInputDevice)) ||
             (keyCode == KeyEvent.KEYCODE_ESCAPE && !hardwareKeyboardSource)
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =

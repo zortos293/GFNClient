@@ -589,7 +589,7 @@ private fun SettingsContent(
                         s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()
                     }
                 }
-                val hdrAvailable = hasUltimateStreamingPlan(state.subscriptionInfo, fallbackMembershipTier)
+                val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier)
                 SettingSwitch(
                     stringResource(R.string.settings_hdr),
                     settings.stream.hdrEnabled && hdrAvailable,

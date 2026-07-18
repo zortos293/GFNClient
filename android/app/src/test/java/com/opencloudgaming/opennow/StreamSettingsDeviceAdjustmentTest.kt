@@ -482,6 +482,39 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun lowPowerAndroidTvKeeps1440pWhenHardwareDecoderExplicitlySupportsIt() {
+        val adjusted = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            maxBitrateMbps = 75,
+            fps = 120,
+            streamSharpeningEnabled = true,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                lowPower = true,
+                tv = true,
+                nativeDecoderAvailable = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+                maxSupportedWidth = 3840,
+                maxSupportedHeight = 2160,
+            ),
+        )
+
+        assertEquals("2560x1440", adjusted.resolution)
+        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals(VideoCodec.H265, adjusted.codec)
+        assertEquals(60, adjusted.fps)
+        assertEquals(25, adjusted.maxBitrateMbps)
+        assertEquals(false, adjusted.streamSharpeningEnabled)
+    }
+
+    @Test
     fun keepsLowPowerAndroidTvUltrawideWithinDecoderBounds() {
         val adjusted = StreamSettings(
             resolution = "3440x1440",
@@ -599,6 +632,52 @@ class StreamSettingsDeviceAdjustmentTest {
 
         val adjusted = settings.adjustedForDevice(report)
         assertEquals("2560x1080", adjusted.resolution)
+    }
+
+    @Test
+    fun preserves1440pByUsingAnotherHardwareCodecBeforeReducingResolution() {
+        val report = RuntimeCodecReport(
+            capabilities = listOf(
+                CodecCapability(
+                    codec = VideoCodec.H264,
+                    decoderAvailable = true,
+                    encoderAvailable = false,
+                    hardwareDecoder = true,
+                    hardwareEncoder = false,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                    maxSupportedWidth = 1920,
+                    maxSupportedHeight = 1080,
+                ),
+                CodecCapability(
+                    codec = VideoCodec.H265,
+                    decoderAvailable = true,
+                    encoderAvailable = false,
+                    hardwareDecoder = true,
+                    hardwareEncoder = false,
+                    realtimeSafe = true,
+                    webRtcDecoderAvailable = true,
+                    webRtcHardwareDecoderAvailable = true,
+                    maxSupportedWidth = 3840,
+                    maxSupportedHeight = 2160,
+                ),
+            ),
+            nativeRuntimeSummary = "{}",
+            androidTvProfile = false,
+            lowPowerGpuProfile = false,
+        )
+
+        val adjusted = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            codec = VideoCodec.H264,
+            colorQuality = ColorQuality.EightBit420,
+        ).adjustedForDevice(report)
+
+        assertEquals("2560x1440", adjusted.resolution)
+        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals(VideoCodec.H265, adjusted.codec)
     }
 
     @Test

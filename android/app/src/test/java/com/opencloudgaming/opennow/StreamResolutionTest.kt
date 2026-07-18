@@ -284,6 +284,17 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun hdrIsAvailableForPerformanceAndUltimatePlans() {
+        val requested = StreamSettings(codec = VideoCodec.H265, hdrEnabled = true)
+
+        assertEquals(false, requested.withHdrAllowed(SubscriptionInfo(membershipTier = "FREE"), null).hdrEnabled)
+        assertEquals(true, requested.withHdrAllowed(SubscriptionInfo(membershipTier = "PERFORMANCE"), null).hdrEnabled)
+        assertEquals(true, requested.withHdrAllowed(SubscriptionInfo(membershipTier = "PRIORITY"), null).hdrEnabled)
+        assertEquals(true, requested.withHdrAllowed(SubscriptionInfo(membershipTier = "ULTIMATE"), null).hdrEnabled)
+        assertEquals(true, hasHdrStreamingPlan(null, "PERFORMANCE"))
+    }
+
+    @Test
     fun authenticatedUltimateTierWinsWhenSubscriptionPayloadDefaultsToFree() {
         val incompleteSubscription = SubscriptionInfo(membershipTier = "FREE")
         val fourK = streamResolutionChoicesForAspect("16:9").first { it.value == "3840x2160" }

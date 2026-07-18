@@ -22,10 +22,13 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.annotation.RequiresApi
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
@@ -48,6 +51,8 @@ class MainActivity : ComponentActivity() {
     private var phoneStreamOrientationLocked = false
     private var streamPictureInPictureReady = false
     private var streamPictureInPictureAspectRatio = Rational(16, 9)
+    private var streamBackCallbackRegistered = false
+    private var streamBackCallback: Any? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,6 +78,7 @@ class MainActivity : ComponentActivity() {
                     settings = state.activeStreamSettings ?: state.settings.stream,
                 )
                 applyStreamSystemUi(streamActive)
+                updateStreamBackCallback(streamActive)
                 applyStreamDisplayRefreshRate(streamActive, state.activeStreamSettings?.fps ?: state.settings.stream.fps)
             }
         }
@@ -139,6 +145,34 @@ class MainActivity : ComponentActivity() {
             keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
             keyCode == KeyEvent.KEYCODE_VOLUME_MUTE
 
+    private fun updateStreamBackCallback(active: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        updateStreamBackCallbackApi33(active)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun updateStreamBackCallbackApi33(active: Boolean) {
+        val callback = (streamBackCallback as? OnBackInvokedCallback)
+            ?: OnBackInvokedCallback { NativeStreamInputRouter.dispatchSystemBack() }.also {
+                streamBackCallback = it
+            }
+        when {
+            active && !streamBackCallbackRegistered -> {
+                onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_OVERLAY,
+                    callback,
+                )
+                streamBackCallbackRegistered = true
+                NativeStreamInputRouter.setPlatformBackCallbackActive(true)
+            }
+            !active && streamBackCallbackRegistered -> {
+                NativeStreamInputRouter.setPlatformBackCallbackActive(false)
+                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(callback)
+                streamBackCallbackRegistered = false
+            }
+        }
+    }
+
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (streamSystemUiActive && (event.isMouseLikePointerEvent() || event.isControllerMotionEvent())) {
             enforceStreamSystemUiFromInput()
@@ -182,6 +216,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        updateStreamBackCallback(false)
         if (isFinishing) {
             queueStatusNotifier.cancel()
             streamKeepAliveNotifier.cancel()

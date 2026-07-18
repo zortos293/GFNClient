@@ -19,11 +19,18 @@ class StreamingProfileInstrumentedTest {
 
         val modes = listOf(
             "1280x720" to "16:9",
+            "1366x768" to "16:9",
+            "1600x900" to "16:9",
             "1920x1080" to "16:9",
+            "2560x1440" to "16:9",
+            "3840x2160" to "16:9",
+            "1280x800" to "16:10",
             "1920x1200" to "16:10",
+            "2560x1600" to "16:10",
             "1024x768" to "4:3",
             "1680x720" to "21:9",
             "2560x1080" to "21:9",
+            "3440x1440" to "21:9",
         )
         for ((resolution, aspectRatio) in modes) {
             for (codec in VideoCodec.entries) {
@@ -42,6 +49,11 @@ class StreamingProfileInstrumentedTest {
                     "$resolution $codec resolved with inconsistent aspect metadata",
                     streamAspectRatioForResolution(adjusted.resolution),
                     adjusted.aspectRatio,
+                )
+                assertEquals(
+                    "$resolution $codec was unnecessarily reduced despite explicit decoder support",
+                    resolution,
+                    adjusted.resolution,
                 )
                 println(
                     "STREAM_MATRIX requested=$resolution/$aspectRatio/$codec effective=${adjusted.resolution}/${adjusted.aspectRatio}/${adjusted.codec} " +

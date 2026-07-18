@@ -489,6 +489,10 @@ internal fun hasUltimateStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallb
     streamResolutionPlanRank(effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) >=
         streamResolutionPlanRank(StreamResolutionPlan.Ultimate)
 
+internal fun hasHdrStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Boolean =
+    streamResolutionPlanRank(effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) >=
+        streamResolutionPlanRank(StreamResolutionPlan.Priority)
+
 internal fun maxStreamFpsFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Int =
     if (hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) 360 else 60
 
@@ -525,7 +529,7 @@ internal fun monthlyHoursRemainingFor(subscriptionInfo: SubscriptionInfo?, fallb
 }
 
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
-    if (hdrEnabled && !hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
+    if (hdrEnabled && !hasHdrStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
 
 internal fun VideoCodec.availableForAndroidSettings(): Boolean =
     true
@@ -1399,26 +1403,38 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     if (availableSettings != this) return availableSettings.adjustedForDevice(report)
 
     if (report?.androidTvProfile == true && report.lowPowerGpuProfile) {
-        val requestedCodecUsable = report.capabilities
-            .firstOrNull { it.codec == codec }
-            ?.streamingDecoderUsableForLaunch()
-            ?: (codec == VideoCodec.H264)
-        val effectiveCodec = if (requestedCodecUsable) codec else report.bestStreamingFallbackCodec()
-        return copy(
+        val requestedCapability = report.capabilities.firstOrNull { it.codec == codec }
+        val requestedCodecUsable = requestedCapability?.streamingDecoderUsableForLaunch() ?: (codec == VideoCodec.H264)
+        val usableCodec = if (requestedCodecUsable) codec else report.bestStreamingFallbackCodec()
+        val effectiveCodec = if (report.capabilities.firstOrNull { it.codec == usableCodec }.supportsStreamResolution(this) != false) {
+            usableCodec
+        } else {
+            report.bestStreamingCodecForResolution(copy(codec = usableCodec)) ?: usableCodec
+        }
+        val effectiveCapability = report.capabilities.firstOrNull { it.codec == effectiveCodec }
+        val lowPowerProfile = copy(
             codec = effectiveCodec,
             colorQuality = ColorQuality.EightBit420,
             maxBitrateMbps = minOf(maxBitrateMbps, LOW_POWER_TV_BITRATE_CAP_MBPS),
             fps = minOf(fps, LOW_POWER_TV_FPS_CAP),
             hdrEnabled = false,
             enableCloudGsync = false,
-        ).cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT, strict = false)
-            .withStableAndroidCloudMatchProfile()
+        ).withStableAndroidCloudMatchProfile()
             .withoutAndroidTvSharpening(report)
+        return if (effectiveCapability.supportsStreamResolution(lowPowerProfile) == true) {
+            lowPowerProfile.copy(resolution = normalizeStreamResolutionForAspect(resolution, aspectRatio))
+        } else {
+            lowPowerProfile.cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT, strict = false)
+        }
     }
 
     val capability = report?.capabilities?.firstOrNull { it.codec == codec }
     val codecSupported = capability?.streamingDecoderUsableForLaunch() ?: true
-    val effectiveCodec = if (codecSupported) codec else report.bestStreamingFallbackCodec()
+    val effectiveCodec = when {
+        !codecSupported -> report.bestStreamingFallbackCodec()
+        capability.supportsStreamResolution(this) != false -> codec
+        else -> report?.bestStreamingCodecForResolution(this) ?: codec
+    }
 
     val profileBitrateCap = when {
         !codecSupported -> 35
@@ -1451,6 +1467,28 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
 
     val maxSupportedFps = effectiveCapability?.maxFpsByResolution?.get(capabilityCap.resolution) ?: 360
     return capabilityCap.copy(fps = minOf(capabilityCap.fps, maxSupportedFps))
+}
+
+private fun RuntimeCodecReport.bestStreamingCodecForResolution(settings: StreamSettings): VideoCodec? =
+    listOf(VideoCodec.H265, VideoCodec.AV1, VideoCodec.H264)
+        .asSequence()
+        .filter { it != settings.codec }
+        .mapNotNull { candidate -> capabilities.firstOrNull { it.codec == candidate } }
+        .firstOrNull { capability ->
+            capability.streamingDecoderUsableForLaunch() && capability.supportsStreamResolution(settings) == true
+        }
+        ?.codec
+
+private fun CodecCapability?.supportsStreamResolution(settings: StreamSettings): Boolean? {
+    this ?: return null
+    val maxWidth = maxSupportedWidth ?: return null
+    val maxHeight = maxSupportedHeight ?: return null
+    val normalized = normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio)
+    val (width, height) = parseResolutionPixels(normalized)
+    val maxPixelCount = (maxWidth * maxHeight * DECODER_RESOLUTION_HEADROOM).roundToInt()
+    return width <= maxWidth * 2 &&
+        height <= maxHeight * 2 &&
+        width * height <= maxPixelCount
 }
 
 internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
@@ -1505,7 +1543,7 @@ private fun StreamSettings.cappedResolution(maxWidth: Int, maxHeight: Int, stric
     val fits = if (strict) {
         width <= maxWidth && height <= maxHeight
     } else {
-        val maxPixelCount = (maxWidth * maxHeight * 1.4f).roundToInt()
+        val maxPixelCount = (maxWidth * maxHeight * DECODER_RESOLUTION_HEADROOM).roundToInt()
         width <= maxWidth * 2 && height <= maxHeight * 2 && (width * height) <= maxPixelCount
     }
     
@@ -1526,7 +1564,7 @@ private fun StreamResolutionOption.fitsWithin(maxWidth: Int, maxHeight: Int, str
     return if (strict) {
         width <= maxWidth && height <= maxHeight
     } else {
-        val maxPixelCount = (maxWidth * maxHeight * 1.4f).roundToInt()
+        val maxPixelCount = (maxWidth * maxHeight * DECODER_RESOLUTION_HEADROOM).roundToInt()
         width <= maxWidth * 2 && height <= maxHeight * 2 && (width * height) <= maxPixelCount
     }
 }
@@ -1543,3 +1581,4 @@ private const val LOW_POWER_TV_FPS_CAP = 60
 private const val SAFE_VIDEO_FALLBACK_MAX_WIDTH = 1920
 private const val SAFE_VIDEO_FALLBACK_MAX_HEIGHT = 1080
 private const val ANDROID_1440P_PIXEL_BUDGET = 2560 * 1440
+private const val DECODER_RESOLUTION_HEADROOM = 1.4f

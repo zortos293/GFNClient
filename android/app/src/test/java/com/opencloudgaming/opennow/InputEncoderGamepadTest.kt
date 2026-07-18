@@ -210,7 +210,29 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun doesNotReserveControllerButtonsAsStreamExitShortcuts() {
+    fun defersBackKeyToModernPlatformCallbackWithoutDeferringOtherKeys() {
+        assertTrue(
+            NativeStreamInputRouter.shouldDeferStreamBackToPlatform(
+                KeyEvent.KEYCODE_BACK,
+                platformCallbackActive = true,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldDeferStreamBackToPlatform(
+                KeyEvent.KEYCODE_BACK,
+                platformCallbackActive = false,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldDeferStreamBackToPlatform(
+                KeyEvent.KEYCODE_MENU,
+                platformCallbackActive = true,
+            ),
+        )
+    }
+
+    @Test
+    fun reservesBackForStreamControlsWithoutTakingControllerButtonsOnMobile() {
         assertTrue(
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
@@ -223,6 +245,14 @@ class InputEncoderGamepadTest {
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = true,
                 hardwareKeyboardSource = false,
+            ),
+        )
+        assertTrue(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BACK,
+                controllerInputDevice = true,
+                hardwareKeyboardSource = false,
+                androidTvProfile = true,
             ),
         )
         assertFalse(

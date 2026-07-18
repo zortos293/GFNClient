@@ -608,6 +608,52 @@ private fun expiresAt(seconds: Int?, defaultSeconds: Int = 86400): Long = nowMs(
 private fun isExpired(expiresAt: Long?): Boolean = expiresAt == null || expiresAt <= nowMs()
 private fun isNearExpiry(expiresAt: Long?, windowMs: Long): Boolean = expiresAt == null || expiresAt - nowMs() < windowMs
 
+private fun JsonObject.firstString(vararg keys: String): String? =
+    keys.firstNotNullOfOrNull { key -> string(key)?.trim()?.takeIf(String::isNotEmpty) }
+
+private fun JsonObject.firstLong(vararg keys: String): Long? =
+    keys.firstNotNullOfOrNull(::long)
+
+private fun epochMilliseconds(value: Long): Long =
+    if (value in 1..9_999_999_999L) value * 1_000L else value
+
+internal fun parseManualAuthTokens(input: String, currentTimeMs: Long = nowMs()): AuthTokens {
+    val trimmed = input.trim()
+    require(trimmed.isNotEmpty()) { "Paste an NVIDIA access token or token-response JSON." }
+    require(trimmed.length <= 64_000) { "The pasted token data is too large." }
+
+    val root = if (trimmed.startsWith('{')) {
+        runCatching { OpenNowJson.parseToJsonElement(trimmed).jsonObject }
+            .getOrElse { throw IllegalArgumentException("The pasted token JSON is invalid.", it) }
+    } else {
+        null
+    }
+    val tokenObject = root?.obj("tokens") ?: root
+    val rawAccessToken = tokenObject?.firstString("access_token", "accessToken") ?: trimmed
+    val accessToken = rawAccessToken.replaceFirst(Regex("^Bearer\\s+", RegexOption.IGNORE_CASE), "").trim()
+    require(accessToken.isNotEmpty() && !accessToken.startsWith('{')) {
+        "The pasted data does not contain an access token."
+    }
+
+    val absoluteExpiry = tokenObject?.firstLong("expires_at", "expiresAt")?.let(::epochMilliseconds)
+    val expiresInSeconds = tokenObject?.firstLong("expires_in", "expiresIn")
+    require(expiresInSeconds == null || expiresInSeconds > 0) { "The pasted token expiry is invalid." }
+    val tokenExpiresAt = absoluteExpiry ?: currentTimeMs + (expiresInSeconds ?: 86_400L) * 1_000L
+    val clientTokenExpiresAt = tokenObject
+        ?.firstLong("client_token_expires_at", "clientTokenExpiresAt")
+        ?.let(::epochMilliseconds)
+
+    return AuthTokens(
+        accessToken = accessToken,
+        refreshToken = tokenObject?.firstString("refresh_token", "refreshToken"),
+        idToken = tokenObject?.firstString("id_token", "idToken"),
+        expiresAt = tokenExpiresAt,
+        clientToken = tokenObject?.firstString("client_token", "clientToken"),
+        clientTokenExpiresAt = clientTokenExpiresAt,
+        authClientId = tokenObject?.firstString("auth_client_id", "authClientId"),
+    )
+}
+
 private fun randomBase64Url(byteCount: Int): String {
     val bytes = ByteArray(byteCount)
     SecureRandom().nextBytes(bytes)
@@ -777,6 +823,15 @@ class GfnAuthRepository(
         onPrompt(deviceCode.prompt)
         val tokens = ensureClientTokenBestEffort(pollDeviceCodeToken(deviceCode))
         val session = buildSession(provider, tokens)
+        authStore.upsertSession(session)
+        return session
+    }
+
+    suspend fun loginWithToken(provider: LoginProvider, tokenInput: String): AuthSession {
+        val parsedTokens = parseManualAuthTokens(tokenInput)
+        require(!isExpired(parsedTokens.expiresAt)) { "The pasted access token has expired." }
+        val tokens = ensureClientTokenBestEffort(parsedTokens)
+        val session = buildSession(provider, tokens, requireVerifiedIdentity = true)
         authStore.upsertSession(session)
         return session
     }
@@ -1058,10 +1113,26 @@ class GfnAuthRepository(
         error("Device sign-in code expired.")
     }
 
-    private suspend fun buildSession(provider: LoginProvider, tokens: AuthTokens, fallbackUser: AuthUser? = null): AuthSession {
-        val userInfo = runCatching { fetchUserInfo(tokens.accessToken) }.getOrDefault(JsonObject(emptyMap()))
+    private suspend fun buildSession(
+        provider: LoginProvider,
+        tokens: AuthTokens,
+        fallbackUser: AuthUser? = null,
+        requireVerifiedIdentity: Boolean = false,
+    ): AuthSession {
+        val userInfoResult = runCatching { fetchUserInfo(tokens.accessToken) }
+        if (requireVerifiedIdentity && userInfoResult.isFailure) {
+            throw IllegalArgumentException(
+                "NVIDIA did not accept the pasted access token.",
+                userInfoResult.exceptionOrNull(),
+            )
+        }
+        val userInfo = userInfoResult.getOrDefault(JsonObject(emptyMap()))
         val jwt = tokens.idToken?.let(::decodeJwtPayload)
-        val userId = userInfo.string("sub") ?: jwt?.string("sub") ?: fallbackUser?.userId ?: userInfo.string("id") ?: "nvidia-user"
+        val verifiedUserId = userInfo.string("sub") ?: userInfo.string("id")
+        if (requireVerifiedIdentity) {
+            require(!verifiedUserId.isNullOrBlank()) { "The pasted access token did not identify an NVIDIA account." }
+        }
+        val userId = verifiedUserId ?: jwt?.string("sub") ?: fallbackUser?.userId ?: "nvidia-user"
         val email = userInfo.string("email") ?: jwt?.string("email") ?: fallbackUser?.email
         val displayName = userInfo.string("name")
             ?: userInfo.string("preferred_username")

@@ -62,7 +62,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "Failed to configure the patched GStreamer D3D11 plugin."
 }
 
-meson compile -C $buildRoot
+meson compile -C $buildRoot gstd3d11
 if ($LASTEXITCODE -ne 0) {
   throw "Failed to compile the patched GStreamer D3D11 plugin."
 }

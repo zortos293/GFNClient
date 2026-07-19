@@ -372,7 +372,10 @@ private fun openNowHardwareVideoDecoderFactory(sharedContext: EglBase.Context): 
         Predicate<MediaCodecInfo> { info -> CodecProbe.isOpenNowHardwareDecoderAllowed(info) },
     )
 
-private class OpenNowVideoDecoderFactory(sharedContext: EglBase.Context) : VideoDecoderFactory {
+private class OpenNowVideoDecoderFactory(
+    sharedContext: EglBase.Context,
+    private val nativeLowLatencyDecoderEnabled: Boolean = false,
+) : VideoDecoderFactory {
     private val defaultFactory = DefaultVideoDecoderFactory(sharedContext)
     private val hardwareFactory = openNowHardwareVideoDecoderFactory(sharedContext)
 
@@ -387,9 +390,14 @@ private class OpenNowVideoDecoderFactory(sharedContext: EglBase.Context) : Video
             null -> defaultFactory.createDecoder(info)
         }
         if (codec != null && hardwareDecoder != null) {
-            NativeInputDiagnostics.add("native MediaCodec decoder selected codec=${codec.name} implementation=${hardwareDecoder.getImplementationName()}")
+            val isLowLatency = nativeLowLatencyDecoderEnabled
+            NativeInputDiagnostics.add("native MediaCodec decoder selected codec=${codec.name} implementation=${hardwareDecoder.getImplementationName()} lowLatency=$isLowLatency")
         }
-        return decoder
+        return if (decoder != null && nativeLowLatencyDecoderEnabled) {
+            LowLatencyVideoDecoder(decoder)
+        } else {
+            decoder
+        }
     }
 
     override fun getSupportedCodecs(): Array<VideoCodecInfo> {
@@ -2509,10 +2517,11 @@ class NativeStreamClient(
 
     init {
         WebRtcRuntime.ensureInitialized(appContext)
+        val lowLatencyEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder
         factory = PeerConnectionFactory.builder()
             .setOptions(PeerConnectionFactory.Options())
             .setAudioDeviceModule(audioDeviceModule)
-            .setVideoDecoderFactory(OpenNowVideoDecoderFactory(eglBase.eglBaseContext))
+            .setVideoDecoderFactory(OpenNowVideoDecoderFactory(eglBase.eglBaseContext, lowLatencyEnabled))
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .createPeerConnectionFactory()
     }

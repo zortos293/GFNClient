@@ -460,7 +460,7 @@ private fun SettingsContent(
                     )
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr", "native streamer", "low latency", "native decoder", "decoder") {
                 val fallbackMembershipTier = state.authSession?.user?.membershipTier
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_stream_preset),
@@ -666,6 +666,13 @@ private fun SettingsContent(
                     description = stringResource(R.string.settings_cloud_gsync_desc),
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_native_streamer),
+                    checked = settings.nativeLowLatencyDecoder,
+                    description = stringResource(R.string.settings_native_streamer_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(nativeLowLatencyDecoder = enabled))
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, "Input", "input", "microphone", "mic", "voice", "audio", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {

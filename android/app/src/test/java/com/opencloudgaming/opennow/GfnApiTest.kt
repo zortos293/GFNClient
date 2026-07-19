@@ -203,6 +203,42 @@ class GfnApiTest {
     }
 
     @Test
+    fun physicalResolutionMetadataDoesNotUndercutRequested1440pStream() {
+        val settings = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            fps = 60,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+        )
+
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = settings,
+            physicalDisplayResolution = 1920 to 1080,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData
+            .getValue("clientRequestMonitorSettings").jsonArray
+            .single().jsonObject
+        val physicalResolution = sessionRequestData
+            .getValue("metaData").jsonArray
+            .firstNotNullOf { item ->
+                item.jsonObject.takeIf {
+                    it["key"]?.jsonPrimitive?.contentOrNull == "clientPhysicalResolution"
+                }?.get("value")?.jsonPrimitive?.contentOrNull
+            }
+            .let { OpenNowJson.parseToJsonElement(it).jsonObject }
+
+        assertEquals(2560, monitor.getValue("widthInPixels").jsonPrimitive.int)
+        assertEquals(1440, monitor.getValue("heightInPixels").jsonPrimitive.int)
+        assertEquals(2560, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
+        assertEquals(1440, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+    }
+
+    @Test
     fun claimRequestExplicitlyMarksSdrColorMetadata() {
         val settings = StreamSettings(
             resolution = "1920x1080",

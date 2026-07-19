@@ -248,9 +248,13 @@ private fun webRtcSessionMetadata(
     physicalDisplayResolution: Pair<Int, Int>? = null,
 ): JsonArray = buildJsonArray {
     baseWebRtcSessionMetadata().forEach { add(it) }
+    val requestedResolution = profile.width to profile.height
     val (physicalWidth, physicalHeight) = physicalDisplayResolution
-        ?.takeIf { (width, height) -> width > 0 && height > 0 }
-        ?: (profile.width to profile.height)
+        ?.takeIf { (width, height) ->
+            width > 0 && height > 0 &&
+                width >= requestedResolution.first && height >= requestedResolution.second
+        }
+        ?: requestedResolution
     if (physicalWidth > 0 && physicalHeight > 0) {
         add(
             metadataEntry(

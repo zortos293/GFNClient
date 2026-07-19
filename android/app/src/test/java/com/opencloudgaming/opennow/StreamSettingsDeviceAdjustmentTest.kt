@@ -515,6 +515,62 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
+    fun lowPowerAndroidTvKeeps1440pWhenHardwareDecoderLimitsAreMissing() {
+        val adjusted = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            maxBitrateMbps = 75,
+            fps = 60,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                lowPower = true,
+                tv = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+            ),
+        )
+
+        assertEquals("2560x1440", adjusted.resolution)
+        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals(VideoCodec.H265, adjusted.codec)
+        assertEquals(60, adjusted.fps)
+        assertEquals(25, adjusted.maxBitrateMbps)
+    }
+
+    @Test
+    fun lowPowerAndroidTvKeeps1440pWhenHardwareDecoderProbeUnderreportsLimits() {
+        val adjusted = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            maxBitrateMbps = 75,
+            fps = 60,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                lowPower = true,
+                tv = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+                maxSupportedWidth = 1920,
+                maxSupportedHeight = 1080,
+            ),
+        )
+
+        assertEquals("2560x1440", adjusted.resolution)
+        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals(VideoCodec.H265, adjusted.codec)
+    }
+
+    @Test
     fun keepsLowPowerAndroidTvUltrawideWithinDecoderBounds() {
         val adjusted = StreamSettings(
             resolution = "3440x1440",

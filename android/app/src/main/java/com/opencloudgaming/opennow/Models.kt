@@ -1450,7 +1450,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
             enableCloudGsync = false,
         ).withStableAndroidCloudMatchProfile()
             .withoutAndroidTvSharpening(report)
-        return if (effectiveCapability.supportsStreamResolution(lowPowerProfile) == true) {
+        return if (effectiveCapability.launchResolutionSupport(lowPowerProfile) == true) {
             lowPowerProfile.copy(resolution = normalizeStreamResolutionForAspect(resolution, aspectRatio))
         } else {
             lowPowerProfile.cappedResolution(LOW_POWER_TV_MAX_WIDTH, LOW_POWER_TV_MAX_HEIGHT, strict = false)
@@ -1488,7 +1488,9 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     }.withStableAndroidCloudMatchProfile()
         .withoutAndroidTvSharpening(report)
 
-    val capabilityCap = if (maxWidth != null && maxHeight != null) {
+    val capabilityCap = if (effectiveCapability.launchResolutionSupport(capped) == true) {
+        capped.copy(resolution = normalizeStreamResolutionForAspect(capped.resolution, capped.aspectRatio))
+    } else if (maxWidth != null && maxHeight != null) {
         capped.cappedResolution(maxWidth, maxHeight, strict = false)
     } else {
         capped
@@ -1507,6 +1509,22 @@ private fun RuntimeCodecReport.bestStreamingCodecForResolution(settings: StreamS
             capability.streamingDecoderUsableForLaunch() && capability.supportsStreamResolution(settings) == true
         }
         ?.codec
+
+private fun CodecCapability?.launchResolutionSupport(settings: StreamSettings): Boolean? {
+    this ?: return null
+    val probedSupport = supportsStreamResolution(settings)
+    if (probedSupport == true) return true
+
+    val normalized = normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio)
+    val (width, height) = parseResolutionPixels(normalized)
+    // Some Android TV codec implementations omit or underreport VideoCapabilities even
+    // though WebRTC successfully opens their hardware decoder. Honor the selected 1440p
+    // profile in that confirmed path; keep higher unknown profiles on the safety cap.
+    val confirmedHardware1440pPath = streamingDecoderUsableForLaunch() &&
+        streamingHardwareDecoderAvailable() &&
+        width * height <= ANDROID_1440P_PIXEL_BUDGET
+    return if (confirmedHardware1440pPath) true else probedSupport
+}
 
 private fun CodecCapability?.supportsStreamResolution(settings: StreamSettings): Boolean? {
     this ?: return null

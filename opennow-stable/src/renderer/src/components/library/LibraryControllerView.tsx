@@ -40,6 +40,12 @@ export interface LibraryControllerViewProps {
   detailsGame: GameInfo | null;
   onCloseDetails: () => void;
   onCycleGameVariant: (game: GameInfo | undefined) => void;
+  onSelectHint?: () => void;
+  onBackHint?: () => void;
+  onFilterHint?: () => void;
+  onSearchHint?: () => void;
+  onMoreOptionsHint?: () => void;
+  onCloseSearchHint?: () => void;
 }
 
 /**
@@ -73,6 +79,12 @@ export function LibraryControllerView({
   detailsGame,
   onCloseDetails,
   onCycleGameVariant,
+  onSelectHint,
+  onBackHint,
+  onFilterHint,
+  onSearchHint,
+  onMoreOptionsHint,
+  onCloseSearchHint,
 }: LibraryControllerViewProps): JSX.Element {
   const { t } = useTranslation();
   const heroImageUrl = featuredGame ? getControllerHeroBackgroundCandidates(featuredGame)[0] : undefined;
@@ -174,12 +186,27 @@ export function LibraryControllerView({
             )}
           </section>
 
-          <div className="controller-bottom-hints" aria-hidden="true">
-            <div className="controller-hint"><span className="controller-button controller-button--a">A</span><span>{t("app.actions.select")}</span></div>
-            <div className="controller-hint"><span className="controller-button controller-button--b">B</span><span>{t("app.actions.back")}</span></div>
-            <div className="controller-hint"><span className="controller-button controller-button--y">Y</span><span>{t("library.filter")}</span></div>
-            <div className="controller-hint"><span className="controller-button controller-button--x">X</span><span>{t("app.actions.search")}</span></div>
-            <div className="controller-hint controller-hint--more"><span className="controller-menu-button"><Menu size={22} /></span><span>{t("library.moreOptions")}</span></div>
+          <div className="controller-bottom-hints" role="toolbar">
+            <button type="button" className="controller-hint" onClick={() => onSelectHint?.()}>
+              <span className="controller-button controller-button--a" aria-hidden="true">A</span>
+              <span>{t("app.actions.select")}</span>
+            </button>
+            <button type="button" className="controller-hint" onClick={() => onBackHint?.()}>
+              <span className="controller-button controller-button--b" aria-hidden="true">B</span>
+              <span>{t("app.actions.back")}</span>
+            </button>
+            <button type="button" className="controller-hint" onClick={() => onFilterHint?.()}>
+              <span className="controller-button controller-button--y" aria-hidden="true">Y</span>
+              <span>{t("library.filter")}</span>
+            </button>
+            <button type="button" className="controller-hint" onClick={() => onSearchHint?.()}>
+              <span className="controller-button controller-button--x" aria-hidden="true">X</span>
+              <span>{t("app.actions.search")}</span>
+            </button>
+            <button type="button" className="controller-hint controller-hint--more" onClick={() => onMoreOptionsHint?.()}>
+              <span className="controller-menu-button" aria-hidden="true"><Menu size={22} /></span>
+              <span>{t("library.moreOptions")}</span>
+            </button>
           </div>
 
           {controllerStoreFilterOpen && (
@@ -219,7 +246,15 @@ export function LibraryControllerView({
                   placeholder={t("library.searchPlaceholder")}
                   className="controller-search-input"
                 />
-                <p>{t("app.actions.back")}</p>
+                <div className="controller-search-actions">
+                  <button
+                    type="button"
+                    className="controller-secondary-action"
+                    onClick={() => onCloseSearchHint?.()}
+                  >
+                    {t("app.actions.back")}
+                  </button>
+                </div>
               </div>
             </div>
           )}

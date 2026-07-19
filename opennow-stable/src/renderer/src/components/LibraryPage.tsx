@@ -562,6 +562,16 @@ export const LibraryPage = memo(function LibraryPage({
         detailsGame={detailsGame}
         onCloseDetails={() => setDetailsGame(null)}
         onCycleGameVariant={cycleGameVariant}
+        onSelectHint={() => {
+          if (selectedControllerGame) onPlayGame(selectedControllerGame);
+        }}
+        onBackHint={() => onPreviousControllerPage?.()}
+        onFilterHint={showControllerStoreFilterOverlay}
+        onSearchHint={() => setControllerSearchOpen(true)}
+        onMoreOptionsHint={() => {
+          if (selectedControllerGame) setDetailsGame(selectedControllerGame);
+        }}
+        onCloseSearchHint={() => setControllerSearchOpen(false)}
       />
     );
   }

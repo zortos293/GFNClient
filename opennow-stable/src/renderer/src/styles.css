@@ -1891,8 +1891,7 @@ body,
 
 .controller-store-hero,
 .controller-store-sections,
-.controller-store-empty,
-.controller-store-page .controller-bottom-hints {
+.controller-store-empty {
   position: relative;
   z-index: 1;
 }
@@ -3430,7 +3429,7 @@ body,
   display: flex;
   align-items: center;
   gap: clamp(18px, 2.4vw, 74px);
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .controller-hint {
@@ -3438,13 +3437,46 @@ body,
   align-items: center;
   gap: 10px;
   color: color-mix(in srgb, var(--ink) 74%, transparent);
+  font: inherit;
   font-size: clamp(0.76rem, 0.68vw, 1.05rem);
   font-weight: 850;
   white-space: nowrap;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+button.controller-hint {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.controller-hint:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: color-mix(in srgb, var(--ink) 88%, transparent);
+}
+
+.controller-hint:active {
+  transform: scale(0.97);
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .controller-hint--more {
   margin-left: auto;
+}
+
+.controller-search-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.controller-search-actions .controller-secondary-action {
+  min-width: 132px;
 }
 
 .controller-button,

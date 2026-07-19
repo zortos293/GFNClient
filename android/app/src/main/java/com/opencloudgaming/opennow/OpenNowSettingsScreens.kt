@@ -1,7 +1,10 @@
 package com.opencloudgaming.opennow
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -60,6 +63,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -102,7 +106,7 @@ private enum class SettingsCategory(
 ) {
     General("General", "Updates, privacy, advanced options, reset", R.drawable.ic_tab_settings),
     Stream("Stream", "Resolution, FPS, codec, HDR, proxy", R.drawable.ic_tab_stream),
-    Input("Input", "Mouse, keyboard, touch controls, rumble", R.drawable.ic_tab_library),
+    Input("Input", "Microphone, mouse, keyboard, touch controls, rumble", R.drawable.ic_tab_library),
     Interface("Interface", "Color, cards, stats, controller UI", R.drawable.ic_tab_store),
     Account("Account", "Sign-in, storage, connected stores", R.drawable.ic_tab_store),
     Advanced("Advanced", "Diagnostics, debug logs, advanced tools", R.drawable.ic_search),
@@ -412,7 +416,28 @@ private fun SettingsContent(
     showSessionProxyWarning: () -> Unit,
 ) {
     val settings = state.settings
+    val context = LocalContext.current
     val deviceHasBattery = rememberDeviceHasBattery()
+    var pendingMicrophoneMode by remember { mutableStateOf<MicrophoneMode?>(null) }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val requestedMode = pendingMicrophoneMode
+        pendingMicrophoneMode = null
+        if (granted && requestedMode != null) {
+            viewModel.updateSettings(
+                settings.copy(
+                    stream = settings.stream.copy(microphoneMode = requestedMode),
+                ),
+            )
+        } else if (!granted) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.settings_microphone_permission_denied),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App updates", "update", "updates", "disable update checking", "checking", "check", "download", "install", "apk") {
                 if (state.androidUpdate.apkUpdatesAllowed) {
@@ -499,20 +524,12 @@ private fun SettingsContent(
                         )
                     }
                 }
-                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fill), settings.stretchStreamToZoom) { enabled ->
+                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fit), settings.stretchStreamToFit) { enabled ->
                     viewModel.updateSettings(
                         settings.copy(
-                            stretchStreamToZoom = enabled,
-                            stretchStreamToFill = if (enabled) false else settings.stretchStreamToFill
-                        )
-                    )
-                }
-                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_zoom), settings.stretchStreamToFill) { enabled ->
-                    viewModel.updateSettings(
-                        settings.copy(
-                            stretchStreamToFill = enabled,
-                            stretchStreamToZoom = if (enabled) false else settings.stretchStreamToZoom
-                        )
+                            legacyCropStreamToFill = false,
+                            stretchStreamToFit = enabled,
+                        ),
                     )
                 }
                 val maxFps = maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
@@ -651,7 +668,32 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) }
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, "Input", "input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "button") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, "Input", "input", "microphone", "mic", "voice", "audio", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {
+                SettingSwitch(
+                    label = stringResource(R.string.settings_microphone),
+                    checked = settings.stream.microphoneMode != MicrophoneMode.Disabled,
+                    description = stringResource(R.string.settings_microphone_desc),
+                ) { enabled ->
+                    if (!enabled) {
+                        viewModel.updateSettings(
+                            settings.copy(
+                                stream = settings.stream.copy(microphoneMode = MicrophoneMode.Disabled),
+                            ),
+                        )
+                    } else if (
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        viewModel.updateSettings(
+                            settings.copy(
+                                stream = settings.stream.copy(microphoneMode = MicrophoneMode.VoiceActivity),
+                            ),
+                        )
+                    } else {
+                        pendingMicrophoneMode = MicrophoneMode.VoiceActivity
+                        microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
                 NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
                 }
@@ -681,6 +723,17 @@ private fun SettingsContent(
                 ChoiceOptionRow("Touch controller style", touchStyleOptions, settings.androidTouch.touchControllerStyle.name) { styleName ->
                     val style = TouchControllerStyle.valueOf(styleName)
                     viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(touchControllerStyle = style)))
+                }
+                val joystickModeOptions = listOf(
+                    SettingsChoiceOption(TouchJoystickMode.Fixed.name, "Fixed"),
+                    SettingsChoiceOption(TouchJoystickMode.Dynamic.name, "Dynamic"),
+                )
+                ChoiceOptionRow("Touch joystick", joystickModeOptions, settings.androidTouch.joystickMode.name) { modeName ->
+                    val mode = TouchJoystickMode.valueOf(modeName)
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(joystickMode = mode)))
+                }
+                NumberSlider("Joystick dead zone", settings.androidTouch.joystickDeadZone, 0f, 0.3f, 0.01f) { value ->
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(joystickDeadZone = value)))
                 }
                 SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 if (settings.androidTouch.mousePad) {

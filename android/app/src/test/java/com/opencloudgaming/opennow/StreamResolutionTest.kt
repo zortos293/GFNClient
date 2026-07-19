@@ -112,10 +112,10 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun streamRendererAspectRatioKeepsRequestedAspectForUnexpectedFallbackStats() {
+    fun streamRendererAspectRatioUsesStableDecodedFallbackToPreserveFullFrame() {
         val settings = StreamSettings(resolution = "1680x720", aspectRatio = "21:9")
 
-        assertEquals(1680f / 720f, streamRendererAspectRatio(settings, "1366x768"), 0.0001f)
+        assertEquals(1366f / 768f, streamRendererAspectRatio(settings, "1366x768"), 0.0001f)
     }
 
     @Test
@@ -131,6 +131,18 @@ class StreamResolutionTest {
             ),
             0.0001f,
         )
+    }
+
+    @Test
+    fun widePhoneStretchScalesOnlyWidthWithoutCropping() {
+        val scale = streamStretchScale(
+            enabled = true,
+            viewportAspectRatio = 2400f / 1080f,
+            streamAspectRatio = 1280f / 720f,
+        )
+
+        assertEquals(1.25f, scale.first, 0.0001f)
+        assertEquals(1f, scale.second, 0.0001f)
     }
 
     @Test

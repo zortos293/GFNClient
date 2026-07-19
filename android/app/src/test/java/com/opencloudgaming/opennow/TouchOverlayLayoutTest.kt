@@ -27,4 +27,18 @@ class TouchOverlayLayoutTest {
 
         assertEquals(30f, clearance, 0.001f)
     }
+
+    @Test
+    fun touchJoystickDeadZoneKeepsCenterStableAndPreservesFullRange() {
+        assertEquals(0f, applyTouchJoystickDeadZone(0.05f, 0.08f), 0.0001f)
+        assertEquals(0f, applyTouchJoystickDeadZone(-0.05f, 0.08f), 0.0001f)
+        assertEquals(1f, applyTouchJoystickDeadZone(1f, 0.08f), 0.0001f)
+        assertEquals(-1f, applyTouchJoystickDeadZone(-1f, 0.08f), 0.0001f)
+    }
+
+    @Test
+    fun touchJoystickDeadZoneRescalesInputBeyondCenter() {
+        assertEquals(0.5f, applyTouchJoystickDeadZone(0.54f, 0.08f), 0.0001f)
+        assertEquals(-0.5f, applyTouchJoystickDeadZone(-0.54f, 0.08f), 0.0001f)
+    }
 }

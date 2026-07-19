@@ -150,6 +150,38 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun whiteButtonFocusTreatmentRequiresTvOrPhysicalController() {
+        assertTrue(
+            shouldShowControllerFocus(
+                focused = true,
+                tvProfile = true,
+                physicalControllerConnected = false,
+            ),
+        )
+        assertTrue(
+            shouldShowControllerFocus(
+                focused = true,
+                tvProfile = false,
+                physicalControllerConnected = true,
+            ),
+        )
+        assertFalse(
+            shouldShowControllerFocus(
+                focused = true,
+                tvProfile = false,
+                physicalControllerConnected = false,
+            ),
+        )
+        assertFalse(
+            shouldShowControllerFocus(
+                focused = false,
+                tvProfile = true,
+                physicalControllerConnected = true,
+            ),
+        )
+    }
+
+    @Test
     fun tvCatalogCardsNeverShowStoreLabels() {
         assertFalse(shouldShowGameStoreLabels(tvProfile = true, enabled = true))
         assertTrue(shouldShowGameStoreLabels(tvProfile = false, enabled = true))
@@ -196,11 +228,12 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun screenEdgePaddingAppliesOutsideStreamOnEveryDeviceLayout() {
+    fun screenEdgePaddingOnlyAppliesToTvOutsideStream() {
         val settings = AppSettings(tvSafeAreaPaddingDp = 20f)
 
-        assertEquals(20f, appContentEdgePaddingDp(settings, inStream = false), 0f)
-        assertEquals(0f, appContentEdgePaddingDp(settings, inStream = true), 0f)
+        assertEquals(20f, appContentEdgePaddingDp(settings, inStream = false, tvProfile = true), 0f)
+        assertEquals(0f, appContentEdgePaddingDp(settings, inStream = true, tvProfile = true), 0f)
+        assertEquals(0f, appContentEdgePaddingDp(settings, inStream = false, tvProfile = false), 0f)
     }
 
     @Test

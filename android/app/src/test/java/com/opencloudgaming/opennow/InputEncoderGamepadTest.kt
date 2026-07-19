@@ -210,28 +210,6 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun defersBackKeyToModernPlatformCallbackWithoutDeferringOtherKeys() {
-        assertTrue(
-            NativeStreamInputRouter.shouldDeferStreamBackToPlatform(
-                KeyEvent.KEYCODE_BACK,
-                platformCallbackActive = true,
-            ),
-        )
-        assertFalse(
-            NativeStreamInputRouter.shouldDeferStreamBackToPlatform(
-                KeyEvent.KEYCODE_BACK,
-                platformCallbackActive = false,
-            ),
-        )
-        assertFalse(
-            NativeStreamInputRouter.shouldDeferStreamBackToPlatform(
-                KeyEvent.KEYCODE_MENU,
-                platformCallbackActive = true,
-            ),
-        )
-    }
-
-    @Test
     fun reservesBackForStreamControlsWithoutTakingControllerButtonsOnMobile() {
         assertTrue(
             NativeStreamInputRouter.shouldHandleStreamExitKey(

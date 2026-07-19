@@ -91,6 +91,14 @@ data class DiagnosticShareState(
     val error: String? = null,
 )
 
+@Immutable
+data class BugReportSubmissionState(
+    val uploading: Boolean = false,
+    val submitted: Boolean = false,
+    val reference: String? = null,
+    val error: String? = null,
+)
+
 private data class PendingActiveSessionLaunch(
     val game: GameInfo,
     val launchAppId: String,
@@ -154,6 +162,7 @@ data class OpenNowUiState(
     val dismissedAndroidUpdateNoticeKey: String? = null,
     val androidPictureInPictureActive: Boolean = false,
     val diagnosticShare: DiagnosticShareState = DiagnosticShareState(),
+    val bugReportSubmission: BugReportSubmissionState = BugReportSubmissionState(),
     val loginToolsVisible: Boolean = false,
     val localTvConnector: LocalTvConnectorState = LocalTvConnectorState(),
     val remoteStreamMenuRequestToken: Int = 0,
@@ -163,10 +172,15 @@ data class OpenNowUiState(
 internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
     streamStatus != "idle" || streamSession != null || activeStreamSettings != null
 
+internal fun OpenNowUiState.isNativeStreamReady(): Boolean =
+    streamStatus in setOf("connecting", "streaming") &&
+        streamSession?.isReadyForStream() == true
+
 class OpenNowViewModel(application: Application) : AndroidViewModel(application) {
     private val openNowApplication = application as OpenNowApplication
     private val http: OkHttpClient = openNowApplication.httpClient
     private val settingsStore = SettingsStore(application)
+    private val sessionTimerAnchorStore = SessionTimerAnchorStore(application)
     private val authStore = openNowApplication.authStore
     private val authRepository = openNowApplication.authRepository
     private val catalogRepository = GfnCatalogRepository(http)
@@ -383,13 +397,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val recommendation = recommendedAndroidStreamProfile(getApplication(), codecReport)
             deviceRecommendation = recommendation
             val currentSettings = settingsStore.settings.value
+            val recommendedStream = recommendation.stream.withMicrophoneSettingsFrom(currentSettings.stream)
             if (
                 currentSettings.streamPreset == StreamPreset.Recommended &&
-                currentSettings.stream != recommendation.stream
+                currentSettings.stream != recommendedStream
             ) {
                 settingsStore.update { settings ->
                     if (settings.streamPreset == StreamPreset.Recommended) {
-                        settings.copy(stream = recommendation.stream)
+                        settings.copy(stream = recommendedStream)
                     } else {
                         settings
                     }
@@ -500,6 +515,67 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun requestDiagnosticShare() {
         _state.update {
             it.copy(diagnosticShare = DiagnosticShareState(awaitingConsent = true))
+        }
+    }
+
+    fun resetBugReportSubmission() {
+        if (state.value.bugReportSubmission.uploading) return
+        _state.update { it.copy(bugReportSubmission = BugReportSubmissionState()) }
+    }
+
+    fun submitBugReport(title: String, description: String) {
+        if (state.value.bugReportSubmission.uploading) return
+        _state.update {
+            it.copy(bugReportSubmission = BugReportSubmissionState(uploading = true))
+        }
+        viewModelScope.launch {
+            try {
+                val logFileName = debugLogFileName()
+                val metadata = buildAndroidBugReportMetadata(logFileName)
+                val logBytes = withContext(Dispatchers.Default) {
+                    sanitizedDebugLogText().toByteArray(Charsets.UTF_8)
+                }
+                val receipt = uploadAndroidBugReport(
+                    http = http,
+                    report = AndroidBugReport(
+                        title = title,
+                        description = description,
+                        versionName = BuildConfig.VERSION_NAME,
+                        versionCode = BuildConfig.VERSION_CODE.toString(),
+                        metadata = metadata,
+                        files = listOf(
+                            AndroidBugReportAttachment(
+                                fileName = logFileName,
+                                contentType = "text/plain; charset=utf-8",
+                                bytes = logBytes,
+                            ),
+                        ),
+                    ),
+                )
+                recordDebugEvent("bug-report", "PrintedWaste bug report submitted")
+                _state.update {
+                    it.copy(
+                        bugReportSubmission = BugReportSubmissionState(
+                            submitted = true,
+                            reference = receipt.reference,
+                        ),
+                    )
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                recordDebugEvent(
+                    "bug-report",
+                    "PrintedWaste bug report failed error=${error.debugMessage()}",
+                )
+                _state.update {
+                    it.copy(
+                        bugReportSubmission = BugReportSubmissionState(
+                            error = error.message ?: "Could not send the bug report",
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -1329,11 +1405,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun applyStreamPreset(preset: StreamPreset) {
         val snapshot = state.value
         settingsStore.update { settings ->
-            val presetStream = if (preset == StreamPreset.Recommended) {
+            val presetStream = (if (preset == StreamPreset.Recommended) {
                 (deviceRecommendation ?: recommendedAndroidStreamProfile(getApplication(), snapshot.codecReport)).stream
             } else {
                 settings.stream.applyingStreamPreset(preset)
-            }
+            }).withMicrophoneSettingsFrom(settings.stream)
             settings.copy(
                 streamPreset = preset,
                 stream = presetStream
@@ -1560,10 +1636,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun markSessionReadyForNativeStream(readySession: SessionInfo, settings: StreamSettings) {
-        recordDebugEvent("stream", "Session ready for native stream ${readySession.debugSummary()}")
+        val anchoredSession = readySession.withSessionTimerAnchor()
+        recordDebugEvent("stream", "Session ready for native stream ${anchoredSession.debugSummary()}")
         _state.update {
             it.copy(
-                streamSession = readySession,
+                streamSession = anchoredSession,
                 activeStreamSettings = settings,
                 streamStatus = "connecting",
                 launchPhase = "Connecting stream",
@@ -1593,7 +1670,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val streamSettings = snapshot.activeStreamSettings ?: effectiveStreamSettings()
             if (auth != null && session != null) {
                 runCatching { sessionRepository.stopSession(auth.tokens.idToken ?: auth.tokens.accessToken, session, streamSettings) }
-                    .onSuccess { recordDebugEvent("stream", "Stopped cloud session ${session.shortDebugId()}") }
+                    .onSuccess {
+                        sessionTimerAnchorStore.clear(session.sessionId)
+                        recordDebugEvent("stream", "Stopped cloud session ${session.shortDebugId()}")
+                    }
                     .onFailure { error -> recordDebugEvent("stream", "Failed to stop cloud session ${session.shortDebugId()} error=${error.debugMessage()}") }
             } else if (auth != null) {
                 val token = auth.tokens.idToken ?: auth.tokens.accessToken
@@ -1604,7 +1684,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     }.getOrNull()
                 if (active != null) {
                     runCatching { sessionRepository.stopActiveSession(token, active, streamSettings) }
-                        .onSuccess { recordDebugEvent("stream", "Stopped active session ${active.shortDebugId()}") }
+                        .onSuccess {
+                            sessionTimerAnchorStore.clear(active.sessionId)
+                            recordDebugEvent("stream", "Stopped active session ${active.shortDebugId()}")
+                        }
                         .onFailure { error -> recordDebugEvent("stream", "Failed to stop active session ${active.shortDebugId()} error=${error.debugMessage()}") }
                 } else {
                     recordDebugEvent("stream", "No cloud session found to stop")
@@ -1722,7 +1805,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             runCatching {
                 runCatching { sessionRepository.stopActiveSession(token, pending.activeSession, pending.settings) }
-                    .onSuccess { recordDebugEvent("queue", "Stopped active session before new launch ${pending.activeSession.shortDebugId()}") }
+                    .onSuccess {
+                        sessionTimerAnchorStore.clear(pending.activeSession.sessionId)
+                        recordDebugEvent("queue", "Stopped active session before new launch ${pending.activeSession.shortDebugId()}")
+                    }
                     .onFailure { error -> recordDebugEvent("queue", "Failed to stop active session before new launch ${pending.activeSession.shortDebugId()} error=${error.debugMessage()}") }
                 _state.update { it.copy(activeSession = null, launchPhase = "Creating session") }
                 val created = sessionRepository.createSession(
@@ -2250,11 +2336,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent("recovery", "Claiming recovery candidate ${fallbackCandidate.debugSummary()}")
                 claimActiveSessionOrContinuePolling(token, fallbackCandidate, currentSettings)
             }.onSuccess { readySession ->
-                recordDebugEvent("recovery", "Recovery claim ready ${readySession.debugSummary()}")
+                val anchoredSession = readySession.withSessionTimerAnchor()
+                recordDebugEvent("recovery", "Recovery claim ready ${anchoredSession.debugSummary()}")
                 _state.update {
                     it.copy(
-                        streamSession = readySession,
-                        activeSession = readySession.toActiveRecoverySession(active),
+                        streamSession = anchoredSession,
+                        activeSession = anchoredSession.toActiveRecoverySession(active),
                         activeStreamSettings = currentSettings,
                         streamStatus = "connecting",
                         launchPhase = "Reconnecting stream",
@@ -2283,6 +2370,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
+
+    private fun SessionInfo.withSessionTimerAnchor(): SessionInfo =
+        copy(
+            timerStartedAtMs = sessionTimerAnchorStore.startedAtMsFor(
+                sessionId = sessionId,
+                preferredStartedAtMs = timerStartedAtMs,
+            ),
+        )
 
     fun handleExternalLaunchIntent(intent: Intent?) {
         if (intent == null) return
@@ -2493,37 +2588,84 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         gamesJob?.cancel()
         gamesJob = viewModelScope.launch {
             runCatching {
-                withContext(Dispatchers.IO) {
+                coroutineScope {
                     val includeSupplementalPublicVariants = !androidTvProfile
-                    val catalog = catalogRepository.browseCatalog(
-                        token = token,
-                        providerStreamingBaseUrl = baseUrl,
-                        searchQuery = initialCatalogSearch,
-                        sortId = initialCatalogSortId,
-                        filterIds = initialCatalogFilterIds,
-                        maxPages = if (androidTvProfile) TV_INITIAL_CATALOG_PAGE_COUNT else 3,
-                        includeSupplementalPublicVariants = includeSupplementalPublicVariants,
-                    )
+                    val catalogDeferred = async(Dispatchers.IO) {
+                        catalogRepository.browseCatalog(
+                            token = token,
+                            providerStreamingBaseUrl = baseUrl,
+                            searchQuery = initialCatalogSearch,
+                            sortId = initialCatalogSortId,
+                            filterIds = initialCatalogFilterIds,
+                            maxPages = if (androidTvProfile) TV_INITIAL_CATALOG_PAGE_COUNT else 3,
+                            includeSupplementalPublicVariants = includeSupplementalPublicVariants,
+                        ).also { catalog ->
+                            _state.update { current ->
+                                if (
+                                    current.authSession?.user?.userId == session.user.userId &&
+                                    current.catalogSearch == initialCatalogSearch &&
+                                    current.catalogSortId == initialCatalogSortId &&
+                                    current.catalogFilterIds == initialCatalogFilterIds
+                                ) {
+                                    current.copy(
+                                        catalogResult = catalog,
+                                        games = if (androidTvProfile) catalog.games else current.games,
+                                    )
+                                } else {
+                                    current
+                                }
+                            }
+                        }
+                    }
                     // MainV2 is a ~600KB personalized panel response on this TV and then
                     // triggers additional metadata batches. The bounded catalog already
                     // contains the launchable TV store data; retain MainV2 on mobile.
-                    val main = if (androidTvProfile) {
-                        catalog.games
+                    val mainDeferred = if (androidTvProfile) {
+                        null
                     } else {
-                        catalogRepository.fetchMainGames(token, baseUrl, includeSupplementalPublicVariants)
+                        async(Dispatchers.IO) {
+                            catalogRepository.fetchMainGames(token, baseUrl, includeSupplementalPublicVariants)
+                                .also { main ->
+                                    _state.update { current ->
+                                        if (current.authSession?.user?.userId == session.user.userId) {
+                                            current.copy(games = main)
+                                        } else {
+                                            current
+                                        }
+                                    }
+                                }
+                        }
                     }
-                    val library = catalogRepository.fetchLibraryGames(token, baseUrl, includeSupplementalPublicVariants)
-                    val mergedLibrary = mergeKnownLibraryGames(library, main, catalog.games)
-                    catalogCacheStore.saveMainGames(session.user.userId, baseUrl, main)
-                    catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, mergedLibrary)
-                    catalogCacheStore.saveCatalog(
-                        userId = session.user.userId,
-                        providerStreamingBaseUrl = baseUrl,
-                        searchQuery = initialCatalogSearch,
-                        sortId = initialCatalogSortId,
-                        filterIds = initialCatalogFilterIds,
-                        result = catalog,
-                    )
+                    val libraryDeferred = async(Dispatchers.IO) {
+                        catalogRepository.fetchLibraryGames(token, baseUrl, includeSupplementalPublicVariants)
+                            .also { library ->
+                                _state.update { current ->
+                                    if (current.authSession?.user?.userId == session.user.userId) {
+                                        current.copy(libraryGames = library)
+                                    } else {
+                                        current
+                                    }
+                                }
+                            }
+                    }
+                    val catalog = catalogDeferred.await()
+                    val main = mainDeferred?.await() ?: catalog.games
+                    val library = libraryDeferred.await()
+                    val mergedLibrary = withContext(Dispatchers.Default) {
+                        mergeKnownLibraryGames(library, main, catalog.games)
+                    }
+                    withContext(Dispatchers.IO) {
+                        catalogCacheStore.saveMainGames(session.user.userId, baseUrl, main)
+                        catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, mergedLibrary)
+                        catalogCacheStore.saveCatalog(
+                            userId = session.user.userId,
+                            providerStreamingBaseUrl = baseUrl,
+                            searchQuery = initialCatalogSearch,
+                            sortId = initialCatalogSortId,
+                            filterIds = initialCatalogFilterIds,
+                            result = catalog,
+                        )
+                    }
                     Triple(main, mergedLibrary, catalog)
                 }
             }.onSuccess { (main, library, catalog) ->
@@ -2539,8 +2681,19 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 refreshActiveSession()
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
-                val hasUsableCache = cachedMain != null || cachedLibrary != null || cachedCatalog != null
-                _state.update { it.copy(loadingGames = false, error = if (hasUsableCache) null else error.message ?: "Failed to load games") }
+                _state.update { current ->
+                    val hasUsableGames =
+                        cachedMain != null ||
+                        cachedLibrary != null ||
+                        cachedCatalog != null ||
+                        current.games.isNotEmpty() ||
+                        current.libraryGames.isNotEmpty() ||
+                        current.catalogResult.games.isNotEmpty()
+                    current.copy(
+                        loadingGames = false,
+                        error = if (hasUsableGames) null else error.message ?: "Failed to load games",
+                    )
+                }
             }
         }
         subscriptionJob.join()

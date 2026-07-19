@@ -1,11 +1,14 @@
 package com.opencloudgaming.opennow
 
+import android.Manifest
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.AudioAttributes
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
+import android.media.MediaRecorder
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.os.Build
@@ -20,6 +23,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,6 +49,7 @@ import okhttp3.TlsVersion
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
@@ -65,6 +70,7 @@ import org.webrtc.RTCStatsCollectorCallback
 import org.webrtc.RendererCommon
 import org.webrtc.RtpCapabilities
 import org.webrtc.RtpReceiver
+import org.webrtc.RtpSender
 import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
@@ -473,6 +479,24 @@ private fun streamDiagnosticId(value: String?): String {
 private fun signalingUrlForDiagnostics(url: String, sessionId: String): String =
     redactDiagnosticUrl(url).replace(sessionId, streamDiagnosticId(sessionId))
 
+internal enum class SignalingFailureDisposition {
+    RetryTransport,
+    RecoverSession,
+    SessionEnded,
+}
+
+internal fun signalingFailureDisposition(
+    message: String,
+    normalClosureMeansSessionEnded: Boolean = false,
+): SignalingFailureDisposition = when {
+    message.contains("http=410", ignoreCase = true) -> SignalingFailureDisposition.SessionEnded
+    message.contains("http=404", ignoreCase = true) ||
+        message.contains("Not Found", ignoreCase = true) -> SignalingFailureDisposition.RecoverSession
+    normalClosureMeansSessionEnded && message.contains("code=1000", ignoreCase = true) ->
+        SignalingFailureDisposition.SessionEnded
+    else -> SignalingFailureDisposition.RetryTransport
+}
+
 private fun IceCandidate.diagnosticSummary(): String {
     val raw = sdp
     val protocol = Regex("""\s(udp|tcp)\s""", RegexOption.IGNORE_CASE)
@@ -732,22 +756,15 @@ object NativeStreamInputRouter {
     private var client: NativeStreamClient? = null
     @Volatile
     private var androidTvProfile = false
-    @Volatile
-    private var platformBackCallbackActive = false
-
     fun setAndroidTvProfile(enabled: Boolean) {
         androidTvProfile = enabled
-    }
-
-    fun setPlatformBackCallbackActive(active: Boolean) {
-        platformBackCallbackActive = active
     }
     @Volatile
     private var touchMouseEnabled = false
     @Volatile
     private var mouseDirectClick = false
     @Volatile
-    private var stretchToFill = false
+    private var stretchToFit = false
     @Volatile
     private var renderingAspectRatio = 0f
     @Volatile
@@ -793,8 +810,8 @@ object NativeStreamInputRouter {
         mouseDirectClick = enabled
     }
 
-    fun setStretchToFill(enabled: Boolean) {
-        stretchToFill = enabled
+    fun setStretchToFit(enabled: Boolean) {
+        stretchToFit = enabled
     }
 
     fun setRenderingAspectRatio(ratio: Float) {
@@ -952,7 +969,7 @@ object NativeStreamInputRouter {
             directClick = mouseDirectClick,
             width = width,
             height = height,
-            stretchToFill = stretchToFill,
+            stretchToFit = stretchToFit,
             renderingAspectRatio = renderingAspectRatio,
         )
     }
@@ -966,12 +983,6 @@ object NativeStreamInputRouter {
     }
 
     fun dispatchKey(event: KeyEvent): Boolean {
-        if (shouldDeferStreamBackToPlatform(event.keyCode, platformBackCallbackActive)) {
-            // Android 13+ can deliver the same remote press as both a KeyEvent and
-            // OnBackInvokedCallback. Consume the key copy so the platform callback
-            // toggles Stream Controls exactly once.
-            return true
-        }
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamSystemMenuKey()) {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
@@ -1030,9 +1041,6 @@ object NativeStreamInputRouter {
 
     fun shouldOpenStreamSystemMenuKey(keyCode: Int, controllerInputDevice: Boolean): Boolean =
         keyCode == KeyEvent.KEYCODE_MENU && !controllerInputDevice
-
-    fun shouldDeferStreamBackToPlatform(keyCode: Int, platformCallbackActive: Boolean): Boolean =
-        platformCallbackActive && keyCode == KeyEvent.KEYCODE_BACK
 
     fun shouldHandleStreamExitKey(
         keyCode: Int,
@@ -2040,7 +2048,7 @@ private class TouchMouseState {
         directClick: Boolean = false,
         width: Int = 0,
         height: Int = 0,
-        stretchToFill: Boolean = false,
+        stretchToFit: Boolean = false,
         renderingAspectRatio: Float = 0f,
     ): Boolean {
         if (!enabled) {
@@ -2058,7 +2066,7 @@ private class TouchMouseState {
             var offsetX = 0f
             var offsetY = 0f
 
-            if (!stretchToFill && width > 0 && height > 0) {
+            if (!stretchToFit && width > 0 && height > 0) {
                 val streamAspectRatio = if (renderingAspectRatio > 0f) renderingAspectRatio else (streamWidth.toFloat() / streamHeight.toFloat())
                 val screenAspectRatio = width.toFloat() / height.toFloat()
                 if (screenAspectRatio > streamAspectRatio) {
@@ -2358,7 +2366,11 @@ class NativeStreamClient(
     private val audioDeviceModule: AudioDeviceModule =
         JavaAudioDeviceModule.builder(appContext)
             .setUseLowLatency(shouldUseLowLatencyStreamAudio(initialAndroidTvProfile))
+            .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setUseStereoInput(false)
             .setUseStereoOutput(true)
+            .setUseHardwareAcousticEchoCanceler(true)
+            .setUseHardwareNoiseSuppressor(true)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_GAME)
@@ -2375,6 +2387,9 @@ class NativeStreamClient(
     private var hapticsAdvertised: Boolean? = null
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
+    private var microphoneSource: AudioSource? = null
+    private var microphoneTrack: AudioTrack? = null
+    private var microphoneSender: RtpSender? = null
     private var renderer: SurfaceViewRenderer? = null
     private var rendererSharpnessDrawer: StreamSharpnessGlDrawer? = null
     private var rendererSurfaceCallback: SurfaceHolder.Callback? = null
@@ -2394,6 +2409,7 @@ class NativeStreamClient(
     private var sessionRecoveryRequested = false
     private var lastIceState: PeerConnection.IceConnectionState? = null
     private var audioMuted = false
+    private var microphoneMuted = false
     private var virtualButtons = 0
     private var virtualLeftTrigger = 0
     private var virtualRightTrigger = 0
@@ -2501,7 +2517,7 @@ class NativeStreamClient(
             .createPeerConnectionFactory()
     }
 
-    fun createRenderer(context: Context, settings: StreamSettings, stretchToFill: Boolean = false): SurfaceViewRenderer =
+    fun createRenderer(context: Context, settings: StreamSettings): SurfaceViewRenderer =
         SurfaceViewRenderer(context).also {
             renderer?.let { oldRenderer ->
                 releaseRendererInternal(oldRenderer)
@@ -2537,7 +2553,7 @@ class NativeStreamClient(
             // frames are presented by a separate Surface layer, so a normal View
             // background can cover every rendered frame on physical devices. The
             // Compose stream container already supplies the black pre-frame backdrop.
-            it.setStreamScaling(stretchToFill)
+            it.setStreamScaling()
             renderer = it
             rendererSurfaceCallback = object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {
@@ -2598,7 +2614,7 @@ class NativeStreamClient(
         visibility = View.GONE
     }
 
-    fun updateRendererSettings(settings: StreamSettings, stretchToFill: Boolean = false) {
+    fun updateRendererSettings(settings: StreamSettings) {
         this.settings = this.settings.copy(
             mouseSensitivity = settings.mouseSensitivity,
             mouseAcceleration = settings.mouseAcceleration,
@@ -2606,22 +2622,13 @@ class NativeStreamClient(
             streamSharpeningAmount = settings.streamSharpeningAmount,
         )
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
-        renderer?.setStreamScaling(stretchToFill)
+        renderer?.setStreamScaling()
     }
 
-    private fun SurfaceViewRenderer.setStreamScaling(stretchToFill: Boolean) {
-        setScalingType(
-            if (stretchToFill) {
-                // SCALE_ASPECT_FILL: video fills the entire View by cropping the edges
-                // that don't fit. This is the correct "stretch to fill" behaviour —
-                // no black bars, slight edge crop on the axis that doesn't match.
-                RendererCommon.ScalingType.SCALE_ASPECT_FILL
-            } else {
-                // SCALE_ASPECT_FIT: video fits inside the View, preserving aspect ratio.
-                // Black bars (pillarbox/letterbox) appear on the mismatching axis.
-                RendererCommon.ScalingType.SCALE_ASPECT_FIT
-            },
-        )
+    private fun SurfaceViewRenderer.setStreamScaling() {
+        // Keep the complete decoded frame inside the SurfaceView. Phone edge-to-edge
+        // presentation is applied by scaling the View itself, never by cropping video.
+        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
     }
 
     fun updateHapticsSettings(phoneFallbackEnabled: Boolean) {
@@ -2709,10 +2716,13 @@ class NativeStreamClient(
         firstVideoFrameWatchdog.reset()
         onStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
+        audioDeviceModule.setMicrophoneMute(
+            settings.microphoneMode == MicrophoneMode.Disabled || microphoneMuted,
+        )
         closeTransport(clearInputState = false)
         armControllerMouseAssistForSession()
         recordStreamDiagnostic(
-            "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps}",
+            "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps} microphone=${settings.microphoneMode.name}",
         )
         startTransport(session, settings, transportGeneration)
         startControllerMouseLoop()
@@ -3068,6 +3078,13 @@ class NativeStreamClient(
         audioTrack?.setEnabled(!muted)
     }
 
+    fun setMicrophoneEnabled(enabled: Boolean) {
+        microphoneMuted = !enabled
+        audioDeviceModule.setMicrophoneMute(!enabled)
+        microphoneTrack?.setEnabled(enabled)
+        recordStreamDiagnostic("microphone ${if (enabled) "enabled" else "muted"}")
+    }
+
     fun setTouchMouseButton(pressed: Boolean): Boolean {
         return sendMouseButton(button = 1, pressed = pressed, source = "touch mouse")
     }
@@ -3229,6 +3246,9 @@ class NativeStreamClient(
         firstVideoFrameWatchdog.reset()
         emitStats(StreamRuntimeStats())
         audioDeviceModule.setSpeakerMute(audioMuted)
+        audioDeviceModule.setMicrophoneMute(
+            settings.microphoneMode == MicrophoneMode.Disabled || microphoneMuted,
+        )
         recordStreamDiagnostic(
             "transport start generation=$generation reconnectAttempts=$reconnectAttempts session=${streamDiagnosticId(session.sessionId)} iceServers=${session.iceServers.size} media=${session.mediaConnectionInfo?.let { "${it.ip}:${it.port}" } ?: "unknown"}",
         )
@@ -3269,6 +3289,7 @@ class NativeStreamClient(
             videoTrack?.removeSink(renderer)
             rendererSinkAttached = false
         }
+        releaseMicrophoneTrack()
         videoTrack = null
         audioTrack = null
         peerConnection?.close()
@@ -3286,31 +3307,34 @@ class NativeStreamClient(
             }
             is SignalingEvent.Disconnected -> {
                 recordStreamDiagnostic("signaling disconnected ${event.reason}")
-                val reason = event.reason
-                val isSessionTerminated = reason.contains("code=1000", ignoreCase = true) ||
-                        reason.contains("http=410", ignoreCase = true) ||
-                        reason.contains("http=404", ignoreCase = true) ||
-                        reason.contains("Not Found", ignoreCase = true)
-                if (isSessionTerminated) {
-                    recordStreamDiagnostic("Signaling disconnected normally. Stopping stream.")
-                    stop()
-                    scope.launch { onStreamStopped() }
-                } else {
-                    scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
+                when (signalingFailureDisposition(event.reason, normalClosureMeansSessionEnded = true)) {
+                    SignalingFailureDisposition.SessionEnded -> {
+                        recordStreamDiagnostic("Signaling disconnected normally. Stopping stream.")
+                        stop()
+                        scope.launch { onStreamStopped() }
+                    }
+                    SignalingFailureDisposition.RecoverSession -> {
+                        recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
+                        requestSessionRecovery("Signaling endpoint became unavailable while connecting to the cloud session.")
+                    }
+                    SignalingFailureDisposition.RetryTransport ->
+                        scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
                 }
             }
             is SignalingEvent.Error -> {
                 recordStreamDiagnostic("signaling error ${event.message}")
-                val message = event.message
-                val isSessionTerminated = message.contains("http=410", ignoreCase = true) ||
-                        message.contains("http=404", ignoreCase = true) ||
-                        message.contains("Not Found", ignoreCase = true)
-                if (isSessionTerminated) {
-                    recordStreamDiagnostic("Signaling error indicates session terminated. Stopping stream.")
-                    stop()
-                    scope.launch { onStreamStopped() }
-                } else {
-                    scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
+                when (signalingFailureDisposition(event.message)) {
+                    SignalingFailureDisposition.SessionEnded -> {
+                        recordStreamDiagnostic("Signaling error indicates session terminated. Stopping stream.")
+                        stop()
+                        scope.launch { onStreamStopped() }
+                    }
+                    SignalingFailureDisposition.RecoverSession -> {
+                        recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
+                        requestSessionRecovery("Signaling endpoint became unavailable while connecting to the cloud session.")
+                    }
+                    SignalingFailureDisposition.RetryTransport ->
+                        scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
                 }
             }
             is SignalingEvent.Log -> recordStreamDiagnostic(event.message)
@@ -3344,6 +3368,7 @@ class NativeStreamClient(
             object : SimpleSdpObserver() {
                 override fun onSetSuccess() {
                     recordStreamDiagnostic("remote description set")
+                    attachMicrophoneTrack(pc)
                     applyVideoCodecPreferences(pc)
                     pc.createAnswer(
                         object : SimpleSdpObserver() {
@@ -3448,6 +3473,79 @@ class NativeStreamClient(
         } else {
             NativeInputDiagnostics.add("codec preferences failed codec=${settings.codec} error=${result.error()?.message.orEmpty()}")
         }
+    }
+
+    private fun attachMicrophoneTrack(pc: PeerConnection) {
+        val permissionGranted = ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!shouldCaptureMicrophone(settings.microphoneMode, permissionGranted)) {
+            recordStreamDiagnostic(
+                "microphone not attached mode=${settings.microphoneMode.name} permission=$permissionGranted",
+            )
+            return
+        }
+
+        releaseMicrophoneTrack()
+        val audioConstraints = MediaConstraints().apply {
+            optional.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            optional.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            optional.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            optional.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+        }
+        val source = requireNotNull(factory).createAudioSource(audioConstraints)
+        val track = requireNotNull(factory).createAudioTrack(MICROPHONE_TRACK_ID, source)
+        track.setEnabled(!microphoneMuted)
+
+        val audioTransceivers = pc.transceivers.filter {
+            it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO ||
+                it.receiver?.track()?.kind() == MediaStreamTrack.AUDIO_TRACK_KIND
+        }
+        val transceiver = audioTransceivers.firstOrNull { it.mid == GFN_MICROPHONE_MID }
+            ?: audioTransceivers.firstOrNull {
+                it.direction == RtpTransceiver.RtpTransceiverDirection.SEND_ONLY &&
+                    it.sender?.track() == null
+            }
+            ?: audioTransceivers.firstOrNull { it.sender?.track() == null }
+
+        val sender = if (transceiver != null) {
+            when (transceiver.direction) {
+                RtpTransceiver.RtpTransceiverDirection.RECV_ONLY ->
+                    transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV)
+                RtpTransceiver.RtpTransceiverDirection.INACTIVE ->
+                    transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_ONLY)
+                else -> Unit
+            }
+            transceiver.sender.apply {
+                setStreams(listOf(MICROPHONE_STREAM_ID))
+            }.takeIf { it.setTrack(track, false) }
+        } else {
+            pc.addTrack(track, listOf(MICROPHONE_STREAM_ID))
+        }
+
+        if (sender == null) {
+            track.dispose()
+            source.dispose()
+            recordStreamDiagnostic("microphone sender attachment failed")
+            return
+        }
+        microphoneSource = source
+        microphoneTrack = track
+        microphoneSender = sender
+        audioDeviceModule.setMicrophoneMute(microphoneMuted)
+        recordStreamDiagnostic(
+            "microphone track attached mid=${transceiver?.mid ?: "new"} direction=${transceiver?.direction?.name ?: "new"} muted=$microphoneMuted",
+        )
+    }
+
+    private fun releaseMicrophoneTrack() {
+        microphoneSender?.setTrack(null, false)
+        microphoneSender = null
+        microphoneTrack?.dispose()
+        microphoneTrack = null
+        microphoneSource?.dispose()
+        microphoneSource = null
     }
 
     private fun receiverCodecPreferences(codec: VideoCodec): List<RtpCapabilities.CodecCapability> {
@@ -5687,9 +5785,17 @@ private fun timestampUs(): Long = SystemClock.elapsedRealtimeNanos() / 1000L
 
 internal fun shouldUseLowLatencyStreamAudio(androidTvProfile: Boolean): Boolean = !androidTvProfile
 
+internal fun shouldCaptureMicrophone(
+    mode: MicrophoneMode,
+    permissionGranted: Boolean,
+): Boolean = mode != MicrophoneMode.Disabled && permissionGranted
+
 internal fun advancedCodecRestartSettleDelayMs(codec: VideoCodec, hadStableMedia: Boolean): Long =
     if (hadStableMedia && codec != VideoCodec.H264) ANDROID_CODEC_RESTART_SETTLE_MS else 0L
 
+private const val GFN_MICROPHONE_MID = "3"
+private const val MICROPHONE_STREAM_ID = "mic"
+private const val MICROPHONE_TRACK_ID = "mic"
 private const val DEFAULT_INPUT_PROTOCOL_VERSION = 2
 private const val INPUT_HANDSHAKE_MARKER = 0x0e
 private const val INPUT_HANDSHAKE_MAGIC_WORD = 526

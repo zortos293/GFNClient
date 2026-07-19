@@ -1,7 +1,9 @@
 package com.opencloudgaming.opennow
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.content.Intent
 import android.hardware.input.InputManager
@@ -143,6 +145,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -217,6 +220,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -228,7 +232,6 @@ import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.floor
 import kotlin.math.roundToInt
@@ -300,6 +303,12 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
 fun OpenNowApp(viewModel: OpenNowViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !state.androidTvProfile)
+    val controllerFocusEnabled = shouldShowControllerFocus(
+        focused = true,
+        tvProfile = state.androidTvProfile,
+        physicalControllerConnected = physicalControllerConnected,
+    )
     val launchAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     val playIntroOnAppLaunch = remember { state.settings.streamIntroMusic }
     val introStartsMutedOnLaunch = remember {
@@ -423,7 +432,10 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
 
     OpenNowTheme(state.settings) {
         val primaryColor = MaterialTheme.colorScheme.primary
-        CompositionLocalProvider(LocalTvLoadingProfile provides state.androidTvProfile) {
+        CompositionLocalProvider(
+            LocalTvLoadingProfile provides state.androidTvProfile,
+            LocalControllerFocusEnabled provides controllerFocusEnabled,
+        ) {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -1460,7 +1472,11 @@ private fun MainShell(
         val tvCatalogChrome = tvProfile && scrollChromePage
         val storeControlsInTopBar = (phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Home
         val libraryControlsInTopBar = (phoneLandscapeChrome || tvCatalogChrome) && state.page == AppPage.Library
-        val screenEdgePadding = appContentEdgePaddingDp(state.settings, inStream).dp
+        val screenEdgePadding = appContentEdgePaddingDp(
+            settings = state.settings,
+            inStream = inStream,
+            tvProfile = tvProfile,
+        ).dp
         LaunchedEffect(phoneLandscapeChrome, scrollChromePage) {
             if (!phoneLandscapeChrome || !scrollChromePage) {
                 phoneLandscapeScrollChromeHidden = false
@@ -2905,10 +2921,11 @@ private fun RefreshingGamesPlaceholder(
     )
 }
 
-private val LocalShimmerOffset = staticCompositionLocalOf<Float?> { null }
-private val LocalTvLoadingPulse = staticCompositionLocalOf<Float?> { null }
+private val LocalShimmerOffset = staticCompositionLocalOf<State<Float>?> { null }
+private val LocalTvLoadingPulse = staticCompositionLocalOf<State<Float>?> { null }
 private val LocalTvLoadingProfile = staticCompositionLocalOf { false }
 private val LocalTouchControllerStyle = staticCompositionLocalOf { TouchControllerStyle.V1 }
+private const val SHIMMER_CYCLE_DURATION_MS = 760
 
 @Composable
 private fun GameGridSkeleton(
@@ -2921,11 +2938,11 @@ private fun GameGridSkeleton(
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-    val shimmerOffset: Float?
-    val tvPulse: Float?
+    val shimmerOffset: State<Float>?
+    val tvPulse: State<Float>?
     if (tvProfile) {
         val transition = rememberInfiniteTransition(label = "loading-pulse-global")
-        val pulse by transition.animateFloat(
+        val pulse = transition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
@@ -2938,11 +2955,11 @@ private fun GameGridSkeleton(
         tvPulse = pulse
     } else {
         val transition = rememberInfiniteTransition(label = "shimmer-global")
-        val shimmer by transition.animateFloat(
+        val shimmer = transition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1_150, easing = LinearEasing),
+                animation = tween(durationMillis = SHIMMER_CYCLE_DURATION_MS, easing = LinearEasing),
             ),
             label = "shimmer-offset-global",
         )
@@ -4021,8 +4038,11 @@ private fun gameGridSpec(
     }
 }
 
-internal fun appContentEdgePaddingDp(settings: AppSettings, inStream: Boolean): Float =
-    if (inStream) 0f else settings.tvSafeAreaPaddingDp.coerceIn(0f, 120f)
+internal fun appContentEdgePaddingDp(
+    settings: AppSettings,
+    inStream: Boolean,
+    tvProfile: Boolean,
+): Float = if (inStream || !tvProfile) 0f else settings.tvSafeAreaPaddingDp.coerceIn(0f, 120f)
 
 internal fun scaledGameCardColumnCount(
     baseColumns: Int,
@@ -4892,23 +4912,25 @@ private fun LongPressPlayButton(
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val controllerFocusEnabled = LocalControllerFocusEnabled.current
     var focused by remember { mutableStateOf(false) }
+    val controllerFocused = focused && controllerFocusEnabled
     val shape = RoundedCornerShape(999.dp)
     val accent = MaterialTheme.colorScheme.primary
     val focusScale by animateFloatAsState(
-        targetValue = gameDetailsPlayFocusScale(focused),
+        targetValue = gameDetailsPlayFocusScale(controllerFocused),
         animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
         label = "game-details-play-focus-scale",
     )
     val containerColor by animateColorAsState(
-        targetValue = if (focused) Color.White else accent,
+        targetValue = if (controllerFocused) Color.White else accent,
         animationSpec = tween(durationMillis = 120),
         label = "game-details-play-focus-color",
     )
     Surface(
         modifier = modifier
             .height(48.dp)
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged { focusState -> focused = focusState.isFocused }
             .graphicsLayer {
                 scaleX = focusScale
                 scaleY = focusScale
@@ -4928,9 +4950,9 @@ private fun LongPressPlayButton(
                 onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
             )
             .then(
-                if (focused) {
+                if (controllerFocused) {
                     Modifier.border(
-                        width = gameDetailsPlayFocusBorderWidthDp(focused).dp,
+                        width = gameDetailsPlayFocusBorderWidthDp(controllerFocused).dp,
                         color = accent,
                         shape = shape,
                     )
@@ -4941,7 +4963,7 @@ private fun LongPressPlayButton(
         shape = shape,
         color = containerColor,
         tonalElevation = 0.dp,
-        shadowElevation = if (focused) 12.dp else 0.dp,
+        shadowElevation = if (controllerFocused) 12.dp else 0.dp,
     ) {
         Row(
             Modifier.fillMaxSize().padding(horizontal = 18.dp),
@@ -4956,7 +4978,7 @@ private fun LongPressPlayButton(
             Text(
                 stringResource(R.string.action_play),
                 color = Color.Black,
-                fontWeight = if (focused) FontWeight.ExtraBold else FontWeight.SemiBold,
+                fontWeight = if (controllerFocused) FontWeight.ExtraBold else FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -5771,7 +5793,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     var controllerMouseAssistEnabled by remember(session?.sessionId) { mutableStateOf(false) }
     var controllerMouseEmulationEnabled by remember(session?.sessionId) { mutableStateOf(state.settings.controllerMouseEmulation) }
-    val streamReady = session?.isReadyForStream() == true
+    val streamReady = state.isNativeStreamReady()
     val tvProfile = state.androidTvProfile
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = streamReady)
     var showTouchControlsWithPhysicalController by remember(session?.sessionId) { mutableStateOf(false) }
@@ -5789,16 +5811,42 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         touchControlsEnabled = state.settings.androidTouch.enabled,
         suppressedByPhysicalController = touchControlsSuppressedByPhysicalController,
     )
-    val sessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
+    val fallbackSessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
+    val sessionStartedAtMs = session?.timerStartedAtMs ?: fallbackSessionStartedAtMs
     var timerNowMs by remember(session?.sessionId) { mutableStateOf(System.currentTimeMillis()) }
     val smartSessionLimit = smartSessionLimitFor(state.subscriptionInfo, state.authSession?.user?.membershipTier)
     val buttonToneEnabled = state.settings.controllerUiSounds
-    val stretchToFill = state.settings.stretchStreamToFill
-    val stretchToZoom = state.settings.stretchStreamToZoom
+    val stretchToFit = state.settings.stretchStreamToFit
     val playButtonTone = {
         audioController.playButtonTone(buttonToneEnabled)
     }
     val launchStreamSettings = state.activeStreamSettings ?: state.settings.stream
+    val microphoneRequested = launchStreamSettings.microphoneMode != MicrophoneMode.Disabled
+    val initialMicrophonePermissionGranted = remember(session?.sessionId, microphoneRequested) {
+        !microphoneRequested ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+    var microphonePermissionGranted by remember(session?.sessionId, microphoneRequested) {
+        mutableStateOf(initialMicrophonePermissionGranted)
+    }
+    var microphonePermissionResolved by remember(session?.sessionId, microphoneRequested) {
+        mutableStateOf(!microphoneRequested || initialMicrophonePermissionGranted)
+    }
+    var microphoneEnabled by remember(session?.sessionId) { mutableStateOf(false) }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        microphonePermissionGranted = granted
+        microphonePermissionResolved = true
+        if (!granted) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.settings_microphone_permission_denied),
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
     val streamSettings = launchStreamSettings.copy(
         mouseSensitivity = state.settings.stream.mouseSensitivity,
         mouseAcceleration = state.settings.stream.mouseAcceleration,
@@ -6019,9 +6067,34 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     LaunchedEffect(state.settings.phoneRumbleFallback) {
         client.updateHapticsSettings(state.settings.phoneRumbleFallback)
     }
-    LaunchedEffect(session?.sessionId, session?.status, streamReady) {
-        if (session != null && streamReady) {
-            client.start(session, launchStreamSettings)
+    LaunchedEffect(streamReady, microphoneRequested, microphonePermissionResolved, session?.sessionId) {
+        if (streamReady && microphoneRequested && !microphonePermissionResolved) {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    LaunchedEffect(
+        session,
+        streamReady,
+        microphonePermissionGranted,
+        microphonePermissionResolved,
+    ) {
+        if (session != null && streamReady && microphonePermissionResolved) {
+            val captureMicrophone = shouldCaptureMicrophone(
+                mode = launchStreamSettings.microphoneMode,
+                permissionGranted = microphonePermissionGranted,
+            )
+            microphoneEnabled = captureMicrophone
+            client.setMicrophoneEnabled(captureMicrophone)
+            client.start(
+                session,
+                launchStreamSettings.copy(
+                    microphoneMode = if (captureMicrophone) {
+                        launchStreamSettings.microphoneMode
+                    } else {
+                        MicrophoneMode.Disabled
+                    },
+                ),
+            )
         }
     }
     LaunchedEffect(client, controllerMouseEmulationEnabled, streamReady) {
@@ -6081,8 +6154,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 touchMouseEnabled = touchInputEnabled && state.settings.androidTouch.mousePad,
                 externalMouseRoot = activity?.window?.decorView,
                 onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
-                stretchToFill = stretchToFill,
-                stretchToZoom = stretchToZoom,
+                stretchToFit = stretchToFit,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -6233,11 +6305,23 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     sessionStartedAtMs = sessionStartedAtMs,
                     sessionNowMs = timerNowMs,
                     audioMuted = audioMuted,
+                    microphoneRequested = microphoneRequested,
+                    microphonePermissionGranted = microphonePermissionGranted,
+                    microphoneEnabled = microphoneEnabled,
                     statsVisible = statsVisible,
                     touchLayoutEditing = touchLayoutEditing,
+                    bugReportSubmission = state.bugReportSubmission,
                     onAudioToggle = {
                         audioMuted = !audioMuted
                         client.setAudioMuted(audioMuted)
+                    },
+                    onMicrophoneToggle = {
+                        if (!microphonePermissionGranted) {
+                            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            microphoneEnabled = !microphoneEnabled
+                            client.setMicrophoneEnabled(microphoneEnabled)
+                        }
                     },
                     onStatsToggle = {
                         statsVisible = !statsVisible
@@ -6325,6 +6409,25 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             ),
                         )
                     },
+                    onJoystickModeToggle = {
+                        val nextMode = if (state.settings.androidTouch.joystickMode == TouchJoystickMode.Fixed) {
+                            TouchJoystickMode.Dynamic
+                        } else {
+                            TouchJoystickMode.Fixed
+                        }
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(joystickMode = nextMode),
+                            ),
+                        )
+                    },
+                    onJoystickDeadZoneChange = { value ->
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(joystickDeadZone = value),
+                            ),
+                        )
+                    },
                     onSharpeningToggle = {
                         viewModel.updateStreamSettings { settings ->
                             settings.copy(streamSharpeningEnabled = !settings.streamSharpeningEnabled)
@@ -6335,24 +6438,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             settings.copy(streamSharpeningAmount = value)
                         }
                     },
-                    onStretchToFillToggle = {
-                        // Mutually exclusive: turning on fill clears zoom.
-                        val next = !state.settings.stretchStreamToFill
+                    onStretchToFitToggle = {
+                        val next = !state.settings.stretchStreamToFit
                         viewModel.updateSettings(
                             state.settings.copy(
-                                stretchStreamToFill = next,
-                                stretchStreamToZoom = if (next) false else state.settings.stretchStreamToZoom,
-                            )
-                        )
-                    },
-                    onStretchToZoomToggle = {
-                        // Mutually exclusive: turning on zoom clears fill.
-                        val next = !state.settings.stretchStreamToZoom
-                        viewModel.updateSettings(
-                            state.settings.copy(
-                                stretchStreamToZoom = next,
-                                stretchStreamToFill = if (next) false else state.settings.stretchStreamToFill,
-                            )
+                                legacyCropStreamToFill = false,
+                                stretchStreamToFit = next,
+                            ),
                         )
                     },
                     onTouchScaleChange = { value ->
@@ -6386,6 +6478,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             )
                         )
                     },
+                    onBugReportSubmit = viewModel::submitBugReport,
+                    onBugReportReset = viewModel::resetBugReportSubmission,
                     onButtonTone = playButtonTone,
                     highlightDone = streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone,
                     onClose = {
@@ -6556,8 +6650,7 @@ private fun StreamVideoSurface(
     touchMouseEnabled: Boolean,
     externalMouseRoot: android.view.View?,
     onMouseCaptureInput: () -> Unit,
-    stretchToFill: Boolean,
-    stretchToZoom: Boolean,
+    stretchToFit: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
@@ -6577,8 +6670,7 @@ private fun StreamVideoSurface(
             0f
         }
     }
-    val rendererModifier = if (stretchToFill || viewportAspectRatio <= 0f) {
-        // For stretchToFill (native zoom), the View must fill all space.
+    val rendererModifier = if (viewportAspectRatio <= 0f) {
         Modifier.fillMaxSize()
     } else if (viewportAspectRatio > streamAspectRatio) {
         // Screen is wider than stream (e.g. 2400×1080 screen, 1920×1080 stream).
@@ -6594,33 +6686,19 @@ private fun StreamVideoSurface(
             .aspectRatio(streamAspectRatio)
     }
 
-    // Non-uniform scale factors used to stretch the renderer view to fill the
-    // viewport when stretchToZoom is active. SCALE_ASPECT_FIT keeps content
-    // intact inside the renderer; these View-level scales expand it to screen
-    // edges without any cropping.
-    val stretchScaleX = remember(stretchToZoom, viewportAspectRatio, streamAspectRatio) {
-        if (stretchToZoom && viewportAspectRatio > 0f && streamAspectRatio > 0f &&
-            viewportAspectRatio > streamAspectRatio
-        ) {
-            (viewportAspectRatio / streamAspectRatio).coerceIn(1f, 3f)
-        } else {
-            1f
-        }
-    }
-    val stretchScaleY = remember(stretchToZoom, viewportAspectRatio, streamAspectRatio) {
-        if (stretchToZoom && viewportAspectRatio > 0f && streamAspectRatio > 0f &&
-            viewportAspectRatio < streamAspectRatio
-        ) {
-            (streamAspectRatio / viewportAspectRatio).coerceIn(1f, 3f)
-        } else {
-            1f
-        }
+    // SCALE_ASPECT_FIT preserves every decoded pixel. Stretching the View on only
+    // the mismatching axis removes the bars without cropping HUD or edge content.
+    val stretchScale = remember(stretchToFit, viewportAspectRatio, streamAspectRatio) {
+        streamStretchScale(
+            enabled = stretchToFit,
+            viewportAspectRatio = viewportAspectRatio,
+            streamAspectRatio = streamAspectRatio,
+        )
     }
     LaunchedEffect(
         settings.resolution,
         settings.aspectRatio,
-        stretchToFill,
-        stretchToZoom,
+        stretchToFit,
         streamAspectRatio,
         configuration.orientation,
         configuration.screenWidthDp,
@@ -6629,8 +6707,8 @@ private fun StreamVideoSurface(
         zoomScale = 1f
         zoomOffset = Offset.Zero
     }
-    LaunchedEffect(stretchToFill, stretchToZoom) {
-        NativeStreamInputRouter.setStretchToFill(stretchToFill || stretchToZoom)
+    LaunchedEffect(stretchToFit) {
+        NativeStreamInputRouter.setStretchToFit(stretchToFit)
     }
     LaunchedEffect(streamAspectRatio) {
         NativeStreamInputRouter.setRenderingAspectRatio(streamAspectRatio)
@@ -6682,18 +6760,18 @@ private fun StreamVideoSurface(
                 AndroidView(
                     modifier = rendererModifier,
                     factory = { ctx ->
-                        client.createRenderer(ctx, settings, stretchToFill).apply {
+                        client.createRenderer(ctx, settings).apply {
                             isFocusable = false
                             isFocusableInTouchMode = false
                             hideAndroidPointerTree()
-                            scaleX = stretchScaleX
-                            scaleY = stretchScaleY
+                            scaleX = stretchScale.first
+                            scaleY = stretchScale.second
                         }
                     },
                     update = { renderer ->
-                        client.updateRendererSettings(settings, stretchToFill)
-                        renderer.scaleX = stretchScaleX
-                        renderer.scaleY = stretchScaleY
+                        client.updateRendererSettings(settings)
+                        renderer.scaleX = stretchScale.first
+                        renderer.scaleY = stretchScale.second
                         renderer.isFocusable = false
                         renderer.isFocusableInTouchMode = false
                         pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
@@ -6741,20 +6819,25 @@ internal fun streamRendererAspectRatio(
     serverNegotiatedResolution: String? = null,
 ): Float {
     val expectedPixels = streamResolutionPixels(settings)
-    val expectedAspectRatio = streamAspectRatioForPixels(expectedPixels)
     val decodedPixels = parseResolutionPixelsOrNull(decodedResolution)
         ?.takeIf(::isStableDecodedStreamResolution)
-        ?: return expectedAspectRatio
-    val decodedAspectRatio = streamAspectRatioForPixels(decodedPixels)
     val negotiatedPixels = parseResolutionPixelsOrNull(serverNegotiatedResolution)
-    return if (
-        decodedPixels == expectedPixels ||
-        decodedPixels == negotiatedPixels ||
-        streamAspectRatiosClose(decodedAspectRatio, expectedAspectRatio)
-    ) {
-        decodedAspectRatio
-    } else {
-        expectedAspectRatio
+        ?.takeIf(::isStableDecodedStreamResolution)
+    return streamAspectRatioForPixels(decodedPixels ?: negotiatedPixels ?: expectedPixels)
+}
+
+internal fun streamStretchScale(
+    enabled: Boolean,
+    viewportAspectRatio: Float,
+    streamAspectRatio: Float,
+): Pair<Float, Float> {
+    if (!enabled || viewportAspectRatio <= 0f || streamAspectRatio <= 0f) return 1f to 1f
+    return when {
+        viewportAspectRatio > streamAspectRatio ->
+            (viewportAspectRatio / streamAspectRatio).coerceIn(1f, 3f) to 1f
+        viewportAspectRatio < streamAspectRatio ->
+            1f to (streamAspectRatio / viewportAspectRatio).coerceIn(1f, 3f)
+        else -> 1f to 1f
     }
 }
 
@@ -6768,14 +6851,8 @@ private fun isStableDecodedStreamResolution(pixels: Pair<Int, Int>): Boolean =
     pixels.first >= MIN_STABLE_DECODED_STREAM_WIDTH_PX &&
         pixels.second >= MIN_STABLE_DECODED_STREAM_HEIGHT_PX
 
-private fun streamAspectRatiosClose(first: Float, second: Float): Boolean {
-    val baseline = maxOf(second, 0.001f)
-    return abs(first - second) / baseline <= STREAM_RENDERER_ASPECT_TOLERANCE
-}
-
 private const val MIN_STABLE_DECODED_STREAM_WIDTH_PX = 320
 private const val MIN_STABLE_DECODED_STREAM_HEIGHT_PX = 180
-private const val STREAM_RENDERER_ASPECT_TOLERANCE = 0.08f
 
 private fun clampStreamZoomOffset(offset: Offset, zoomScale: Float, viewportSize: IntSize): Offset {
     if (zoomScale <= 1.001f || viewportSize.width <= 0 || viewportSize.height <= 0) return Offset.Zero
@@ -7372,6 +7449,12 @@ private fun StreamGuidePoint(number: Int, body: String) {
     }
 }
 
+private enum class StreamControlsPage {
+    Main,
+    StatusBar,
+    Joysticks,
+}
+
 @Composable
 private fun StreamControlsPanel(
     gameTitle: String,
@@ -7386,9 +7469,14 @@ private fun StreamControlsPanel(
     sessionStartedAtMs: Long,
     sessionNowMs: Long,
     audioMuted: Boolean,
+    microphoneRequested: Boolean,
+    microphonePermissionGranted: Boolean,
+    microphoneEnabled: Boolean,
     statsVisible: Boolean,
     touchLayoutEditing: Boolean,
+    bugReportSubmission: BugReportSubmissionState,
     onAudioToggle: () -> Unit,
+    onMicrophoneToggle: () -> Unit,
     onStatsToggle: () -> Unit,
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
@@ -7407,10 +7495,11 @@ private fun StreamControlsPanel(
     onMousePadToggle: () -> Unit,
     onMouseDirectClickToggle: () -> Unit,
     onToggleTouchControllerStyle: () -> Unit,
+    onJoystickModeToggle: () -> Unit,
+    onJoystickDeadZoneChange: (Float) -> Unit,
     onSharpeningToggle: () -> Unit,
     onSharpeningAmountChange: (Float) -> Unit,
-    onStretchToFillToggle: () -> Unit,
-    onStretchToZoomToggle: () -> Unit,
+    onStretchToFitToggle: () -> Unit,
     onTouchScaleChange: (Float) -> Unit,
     onButtonScaleChange: (Float) -> Unit,
     onStickScaleChange: (Float) -> Unit,
@@ -7420,21 +7509,23 @@ private fun StreamControlsPanel(
     onTouchLeftOffsetChange: (Float) -> Unit,
     onTouchRightOffsetChange: (Float) -> Unit,
     onTouchLayoutReset: () -> Unit,
+    onBugReportSubmit: (String, String) -> Unit,
+    onBugReportReset: () -> Unit,
     onButtonTone: () -> Unit,
     highlightDone: Boolean = false,
     onClose: () -> Unit,
 ) {
     val doneFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
-    var statusBarOptionsOpen by remember { mutableStateOf(false) }
+    var page by remember { mutableStateOf(StreamControlsPage.Main) }
     var keyboardFocused by remember { mutableStateOf(false) }
     var exitFocused by remember { mutableStateOf(false) }
     var doneFocused by remember { mutableStateOf(false) }
-    BackHandler(enabled = statusBarOptionsOpen) {
-        statusBarOptionsOpen = false
+    BackHandler(enabled = page != StreamControlsPage.Main) {
+        page = StreamControlsPage.Main
     }
-    LaunchedEffect(statusBarOptionsOpen) {
-        if (!statusBarOptionsOpen) {
+    LaunchedEffect(page) {
+        if (page == StreamControlsPage.Main) {
             delay(120)
             runCatching { doneFocusRequester.requestFocus() }
         }
@@ -7463,7 +7554,7 @@ private fun StreamControlsPanel(
             contentPadding = PaddingValues(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (statusBarOptionsOpen) {
+            if (page == StreamControlsPage.StatusBar) {
                 item {
                     StatusBarSettingsPage(
                         settings = settings,
@@ -7473,7 +7564,18 @@ private fun StreamControlsPanel(
                         onStatsPositionCycle = onStatsPositionCycle,
                         onStatsMetricsChange = onStatsMetricsChange,
                         onButtonTone = onButtonTone,
-                        onBack = { statusBarOptionsOpen = false },
+                        onBack = { page = StreamControlsPage.Main },
+                    )
+                }
+            } else if (page == StreamControlsPage.Joysticks) {
+                item {
+                    JoystickSettingsPage(
+                        settings = settings.androidTouch,
+                        onModeToggle = onJoystickModeToggle,
+                        onDeadZoneChange = onJoystickDeadZoneChange,
+                        onStickScaleChange = onStickScaleChange,
+                        onButtonTone = onButtonTone,
+                        onBack = { page = StreamControlsPage.Main },
                     )
                 }
             } else {
@@ -7575,7 +7677,7 @@ private fun StreamControlsPanel(
                         if (!statsVisible) "Off" else "${settings.streamStatsStyle.label} · ${settings.streamStatsMetrics.enabledCount()} items",
                     ) {
                         onButtonTone()
-                        statusBarOptionsOpen = true
+                        page = StreamControlsPage.StatusBar
                     }
                     StreamControlSwitch("Stream sharpening", if (settings.stream.streamSharpeningEnabled) "On" else "Off", settings.stream.streamSharpeningEnabled) {
                         onButtonTone()
@@ -7584,18 +7686,28 @@ private fun StreamControlsPanel(
                     if (settings.stream.streamSharpeningEnabled) {
                         CompactSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, onSharpeningAmountChange)
                     }
-                    StreamControlSwitch("Stretch to fill", if (settings.stretchStreamToZoom) "On" else "Off", settings.stretchStreamToZoom) {
+                    StreamControlSwitch("Stretch to fit", if (settings.stretchStreamToFit) "On" else "Off", settings.stretchStreamToFit) {
                         onButtonTone()
-                        onStretchToZoomToggle()
-                    }
-                    StreamControlSwitch("Stretch to zoom", if (settings.stretchStreamToFill) "On" else "Off", settings.stretchStreamToFill) {
-                        onButtonTone()
-                        onStretchToFillToggle()
+                        onStretchToFitToggle()
                     }
                 }
             }
             item {
                 StreamPanelSection("Input") {
+                    if (microphoneRequested) {
+                        StreamControlSwitch(
+                            label = "Microphone",
+                            value = when {
+                                !microphonePermissionGranted -> "Permission required"
+                                microphoneEnabled -> "On"
+                                else -> "Muted"
+                            },
+                            checked = microphoneEnabled && microphonePermissionGranted,
+                        ) {
+                            onButtonTone()
+                            onMicrophoneToggle()
+                        }
+                    }
                     StreamControlAction(
                         label = "Steam Menu",
                         value = "Send Home to the streamed PC",
@@ -7653,6 +7765,16 @@ private fun StreamControlsPanel(
                             onButtonTone()
                             onTouchControlsToggle()
                         }
+                        StreamControlNavigation(
+                            "Joysticks",
+                            when (settings.androidTouch.joystickMode) {
+                                TouchJoystickMode.Fixed -> "Fixed"
+                                TouchJoystickMode.Dynamic -> "Dynamic"
+                            },
+                        ) {
+                            onButtonTone()
+                            page = StreamControlsPage.Joysticks
+                        }
                         if (touchControlsVisible) {
                             StreamControlSwitch("Clean style", if (settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2) "On" else "Off", settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2) {
                                 onButtonTone()
@@ -7688,13 +7810,20 @@ private fun StreamControlsPanel(
                     }
                     CompactSlider("Layout scale", settings.androidTouch.scale, 0.6f, 1.4f, onTouchScaleChange)
                     CompactSlider("Button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, onButtonScaleChange)
-                    CompactSlider("Stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, onStickScaleChange)
                     CompactSlider("Opacity", settings.androidTouch.opacity, 0.15f, 1f, onOpacityChange)
                     CompactDpSlider("Edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, onTouchEdgePaddingChange)
                     CompactDpSlider("Bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, onTouchBottomPaddingChange)
                     CompactDpSlider("Left position", settings.androidTouch.leftOffsetYDp, -160f, 160f, onTouchLeftOffsetChange)
                     CompactDpSlider("Right position", settings.androidTouch.rightOffsetYDp, -160f, 160f, onTouchRightOffsetChange)
                 }
+            }
+            item {
+                StreamBugReporter(
+                    submission = bugReportSubmission,
+                    onSubmit = onBugReportSubmit,
+                    onReset = onBugReportReset,
+                    onButtonTone = onButtonTone,
+                )
             }
             }
         }
@@ -7703,6 +7832,356 @@ private fun StreamControlsPanel(
         onDispose {
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
         }
+    }
+}
+
+@Composable
+private fun StreamBugReporter(
+    submission: BugReportSubmissionState,
+    onSubmit: (String, String) -> Unit,
+    onReset: () -> Unit,
+    onButtonTone: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var title by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var consentChecked by remember { mutableStateOf(false) }
+    var confirmationOpen by remember { mutableStateOf(false) }
+
+    StreamPanelSection("Bug reporter") {
+        if (!expanded) {
+            StreamControlAction(
+                label = "Report a stream bug",
+                value = "Send an issue and redacted diagnostics",
+                action = "Open",
+            ) {
+                onButtonTone()
+                expanded = true
+            }
+            return@StreamPanelSection
+        }
+
+        if (submission.submitted) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = Green.copy(alpha = 0.12f),
+                contentColor = TextPrimary,
+                border = BorderStroke(1.dp, Green.copy(alpha = 0.45f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
+                        Text("Bug report sent", fontWeight = FontWeight.Bold)
+                    }
+                    Text(
+                        submission.reference?.let { "PrintedWaste reference: $it" }
+                            ?: "PrintedWaste received your report.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                onButtonTone()
+                                title = ""
+                                description = ""
+                                consentChecked = false
+                                confirmationOpen = false
+                                onReset()
+                            },
+                        ) {
+                            Text("Send another")
+                        }
+                        TextButton(
+                            onClick = {
+                                onButtonTone()
+                                expanded = false
+                            },
+                        ) {
+                            Text("Close")
+                        }
+                    }
+                }
+            }
+            return@StreamPanelSection
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Report a stream bug", fontWeight = FontWeight.Bold)
+                    Text(
+                        "Describe the problem without leaving your game.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                TextButton(
+                    enabled = !submission.uploading,
+                    onClick = {
+                        onButtonTone()
+                        expanded = false
+                    },
+                ) {
+                    Text("Cancel")
+                }
+            }
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0xffffc266).copy(alpha = 0.10f),
+                contentColor = TextPrimary,
+                border = BorderStroke(1.dp, Color(0xffffc266).copy(alpha = 0.38f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    Text(
+                        "Before you send",
+                        color = Color(0xffffc266),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Text(
+                        "This uploads to https://api.printedwaste.com/releases/opennow/bug-reports. PrintedWaste and OpenNOW maintainers may view your issue text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, and a redacted diagnostic log.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "The automatic log removes account names, credentials, session IDs, and network addresses before upload. Your typed title and description are sent exactly as written, so do not include personal or sensitive information.",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Your data is not sold and is used only to investigate and fix bugs.",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "The same timestamped log available from Settings > Advanced > Debug Logs is attached automatically. No other files are added.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = title,
+                onValueChange = { value ->
+                    title = value
+                    if (submission.error != null) onReset()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !submission.uploading,
+                singleLine = true,
+                label = { Text("Issue title") },
+                placeholder = { Text("Stream froze after reconnecting") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            )
+            OutlinedTextField(
+                value = description,
+                onValueChange = { value ->
+                    description = value
+                    if (submission.error != null) onReset()
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(128.dp),
+                enabled = !submission.uploading,
+                minLines = 4,
+                maxLines = 7,
+                label = { Text("What happened?") },
+                placeholder = { Text("What were you doing, what went wrong, and can you reproduce it?") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(enabled = !submission.uploading) {
+                        consentChecked = !consentChecked
+                    }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = consentChecked,
+                    onCheckedChange = { consentChecked = it },
+                    enabled = !submission.uploading,
+                )
+                Text(
+                    "I understand what will be uploaded and consent to send it to PrintedWaste.",
+                    modifier = Modifier.weight(1f),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
+            submission.error?.let { error ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                    contentColor = MaterialTheme.colorScheme.error,
+                ) {
+                    Text(
+                        error,
+                        modifier = Modifier.padding(10.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            Button(
+                onClick = {
+                    onButtonTone()
+                    confirmationOpen = true
+                },
+                enabled = title.isNotBlank() &&
+                    description.isNotBlank() &&
+                    consentChecked &&
+                    !submission.uploading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (submission.uploading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Uploading report…")
+                } else {
+                    Text("Send bug report")
+                }
+            }
+        }
+    }
+
+    if (confirmationOpen) {
+        AlertDialog(
+            onDismissRequest = { confirmationOpen = false },
+            title = { Text("Upload bug report?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Your report will be uploaded to the PrintedWaste API and may be viewed by PrintedWaste and OpenNOW maintainers.",
+                    )
+                    Text(
+                        "It includes your title and description exactly as written, the API's app/build fields, and the same redacted log file available from Settings > Advanced > Debug Logs. No other files are uploaded.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "This data is not sold. It is used only to investigate and fix bugs.",
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onButtonTone()
+                        confirmationOpen = false
+                        onSubmit(title, description)
+                    },
+                ) {
+                    Text("Upload to PrintedWaste")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        onButtonTone()
+                        confirmationOpen = false
+                    },
+                ) {
+                    Text("Go back")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun JoystickSettingsPage(
+    settings: AndroidTouchSettings,
+    onModeToggle: () -> Unit,
+    onDeadZoneChange: (Float) -> Unit,
+    onStickScaleChange: (Float) -> Unit,
+    onButtonTone: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val backFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(120)
+        runCatching { backFocusRequester.requestFocus() }
+    }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = {
+                    onButtonTone()
+                    onBack()
+                },
+                modifier = Modifier.focusRequester(backFocusRequester),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_arrow_back),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Back")
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Joysticks", fontWeight = FontWeight.Bold)
+                Text("Tune the touch analog controls", color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        StreamControlSwitch(
+            label = "Dynamic placement",
+            value = if (settings.joystickMode == TouchJoystickMode.Dynamic) {
+                "Starts centered beneath your thumb"
+            } else {
+                "Uses the saved fixed center"
+            },
+            checked = settings.joystickMode == TouchJoystickMode.Dynamic,
+        ) {
+            onButtonTone()
+            onModeToggle()
+        }
+        CompactSlider("Stick size", settings.stickScale, 0.65f, 1.5f, onStickScaleChange)
+        CompactSlider("Dead zone", settings.joystickDeadZone, 0f, 0.3f, onDeadZoneChange)
+        Text(
+            "Dynamic mode keeps the saved stick area, but treats wherever your thumb first lands as neutral. This avoids sudden movement when you miss the exact center.",
+            color = TextMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
@@ -9723,6 +10202,8 @@ private fun TouchOverlay(
                         layoutScale = layoutScale,
                         buttonScale = buttonScale,
                         stickScale = stickScale,
+                        joystickMode = touch.joystickMode,
+                        joystickDeadZone = touch.joystickDeadZone,
                         viewportHeight = maxHeight,
                         layoutEditing = layoutEditing,
                         getLocalOffset = getOrientationLocalOffset,
@@ -9736,6 +10217,8 @@ private fun TouchOverlay(
                         layoutScale = layoutScale,
                         buttonScale = buttonScale,
                         stickScale = stickScale,
+                        joystickMode = touch.joystickMode,
+                        joystickDeadZone = touch.joystickDeadZone,
                         layoutEditing = layoutEditing,
                         getLocalOffset = getOrientationLocalOffset,
                         onLocalOffsetChange = onOrientationLocalOffsetChange,
@@ -9754,6 +10237,8 @@ private fun PortraitTouchControls(
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
+    joystickMode: TouchJoystickMode,
+    joystickDeadZone: Float,
     layoutEditing: Boolean,
     getLocalOffset: (String) -> TouchOffset,
     onLocalOffsetChange: (String, Float, Float) -> Unit,
@@ -9824,6 +10309,8 @@ private fun PortraitTouchControls(
                 client = client,
                 opacity = opacity,
                 diameter = leftStickDiameter,
+                mode = joystickMode,
+                deadZone = joystickDeadZone,
                 onChange = client::setVirtualLeftStick,
             )
         }
@@ -9927,6 +10414,8 @@ private fun PortraitTouchControls(
                 client = client,
                 opacity = opacity,
                 diameter = rightStickDiameter,
+                mode = joystickMode,
+                deadZone = joystickDeadZone,
                 onChange = client::setVirtualRightStick,
             )
         }
@@ -9965,6 +10454,8 @@ private fun BoxScope.LandscapeTouchControls(
     layoutScale: Float,
     buttonScale: Float,
     stickScale: Float,
+    joystickMode: TouchJoystickMode,
+    joystickDeadZone: Float,
     viewportHeight: Dp,
     layoutEditing: Boolean,
     getLocalOffset: (String) -> TouchOffset,
@@ -10106,6 +10597,8 @@ private fun BoxScope.LandscapeTouchControls(
                 client = client,
                 opacity = opacity,
                 diameter = leftStickDiameter,
+                mode = joystickMode,
+                deadZone = joystickDeadZone,
                 onChange = client::setVirtualLeftStick,
             )
         }
@@ -10142,6 +10635,8 @@ private fun BoxScope.LandscapeTouchControls(
                 client = client,
                 opacity = opacity,
                 diameter = rightStickDiameter,
+                mode = joystickMode,
+                deadZone = joystickDeadZone,
                 onChange = client::setVirtualRightStick,
             )
         }
@@ -10259,6 +10754,15 @@ private fun clampStickOffset(offset: Offset, maxRadius: Float): Offset {
     return Offset(offset.x * scale, offset.y * scale)
 }
 
+internal fun applyTouchJoystickDeadZone(value: Float, deadZone: Float): Float {
+    val clampedValue = value.coerceIn(-1f, 1f)
+    val clampedDeadZone = deadZone.coerceIn(0f, 0.95f)
+    val magnitude = kotlin.math.abs(clampedValue)
+    if (magnitude <= clampedDeadZone) return 0f
+    val adjusted = (magnitude - clampedDeadZone) / (1f - clampedDeadZone)
+    return if (clampedValue < 0f) -adjusted else adjusted
+}
+
 @Composable
 private fun StickWithThumbButton(
     stickLabel: String,
@@ -10268,6 +10772,8 @@ private fun StickWithThumbButton(
     opacity: Float,
     diameter: Dp,
     buttonScale: Float,
+    mode: TouchJoystickMode = TouchJoystickMode.Fixed,
+    deadZone: Float = 0f,
     onButtonTone: () -> Unit,
     onChange: (Float, Float) -> Unit,
 ) {
@@ -10289,6 +10795,8 @@ private fun StickWithThumbButton(
             client = client,
             opacity = opacity,
             diameter = diameter,
+            mode = mode,
+            deadZone = deadZone,
             onChange = onChange,
         )
     }
@@ -10300,10 +10808,13 @@ private fun VirtualStick(
     client: NativeStreamClient,
     opacity: Float,
     diameter: androidx.compose.ui.unit.Dp,
+    mode: TouchJoystickMode,
+    deadZone: Float,
     onChange: (Float, Float) -> Unit,
 ) {
     val currentOnChange by rememberUpdatedState(onChange)
     var knobOffset by remember { mutableStateOf(Offset.Zero) }
+    var baseOffset by remember { mutableStateOf(Offset.Zero) }
     val style = LocalTouchControllerStyle.current
 
     DisposableEffect(client) {
@@ -10315,30 +10826,42 @@ private fun VirtualStick(
     Box(
         Modifier
             .size(diameter)
-            .clip(CircleShape)
-            .background(Color.Transparent)
-            .border(1.dp, Color.White.copy(alpha = opacity * 0.3f), CircleShape)
-            .pointerInput(client) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.pressed }
-                        val maxRadius = min(size.width, size.height) * 0.34f
-                        if (change == null) {
-                            if (knobOffset != Offset.Zero) {
-                                currentOnChange(0f, 0f)
-                                knobOffset = Offset.Zero
-                            }
-                            continue
-                        }
-                        val center = Offset(size.width / 2f, size.height / 2f)
-                        val clamped = clampStickOffset(change.position - center, maxRadius)
-                        currentOnChange(
-                            (clamped.x / maxRadius).coerceIn(-1f, 1f),
-                            (clamped.y / maxRadius).coerceIn(-1f, 1f),
-                        )
+            .pointerInput(client, mode, deadZone) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val fixedCenter = Offset(size.width / 2f, size.height / 2f)
+                    val gestureCenter = if (mode == TouchJoystickMode.Dynamic) down.position else fixedCenter
+                    val maxRadius = min(size.width, size.height) * 0.34f
+                    baseOffset = gestureCenter - fixedCenter
+
+                    fun updateStick(position: Offset) {
+                        val clamped = clampStickOffset(position - gestureCenter, maxRadius)
+                        val rawX = (clamped.x / maxRadius).coerceIn(-1f, 1f)
+                        val rawY = (clamped.y / maxRadius).coerceIn(-1f, 1f)
+                        val magnitude = sqrt(rawX * rawX + rawY * rawY).coerceIn(0f, 1f)
+                        val adjustedMagnitude = applyTouchJoystickDeadZone(magnitude, deadZone)
+                        val adjustment = if (magnitude > 0f) adjustedMagnitude / magnitude else 0f
+                        currentOnChange(rawX * adjustment, rawY * adjustment)
                         knobOffset = clamped
-                        change.consume()
+                    }
+
+                    try {
+                        updateStick(down.position)
+                        down.consume()
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                change.consume()
+                                break
+                            }
+                            updateStick(change.position)
+                            change.consume()
+                        }
+                    } finally {
+                        currentOnChange(0f, 0f)
+                        knobOffset = Offset.Zero
+                        baseOffset = Offset.Zero
                     }
                 }
             },
@@ -10356,15 +10879,28 @@ private fun VirtualStick(
         }
         Box(
             Modifier
-                .size(diameter * 0.44f)
+                .size(diameter)
                 .graphicsLayer {
-                    translationX = knobOffset.x
-                    translationY = knobOffset.y
+                    translationX = baseOffset.x
+                    translationY = baseOffset.y
                 }
                 .clip(CircleShape)
-                .background(knobBackground)
-                .then(knobBorderModifier)
-        )
+                .background(Color.Transparent)
+                .border(1.dp, Color.White.copy(alpha = opacity * 0.3f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier
+                    .size(diameter * 0.44f)
+                    .graphicsLayer {
+                        translationX = knobOffset.x
+                        translationY = knobOffset.y
+                    }
+                    .clip(CircleShape)
+                    .background(knobBackground)
+                    .then(knobBorderModifier)
+            )
+        }
     }
 }
 
@@ -11576,7 +12112,7 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
     val sharedPulse = LocalTvLoadingPulse.current
     val localPulse = if (LocalTvLoadingProfile.current && sharedPulse == null) {
         val transition = rememberInfiniteTransition(label = "loading-pulse-local")
-        val pulse by transition.animateFloat(
+        val pulse = transition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
@@ -11592,16 +12128,16 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
     val pulse = sharedPulse ?: localPulse
     val shimmer = LocalShimmerOffset.current ?: if (pulse == null) run {
         val transition = rememberInfiniteTransition(label = "shimmer-local")
-        val localOffset by transition.animateFloat(
+        val localOffset = transition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1150, easing = LinearEasing),
+                animation = tween(durationMillis = SHIMMER_CYCLE_DURATION_MS, easing = LinearEasing),
             ),
             label = "shimmer-offset-local",
         )
         localOffset
-    } else 0f
+    } else null
     val baseColor = Color(0xff0d1216)
     val highlightColor1 = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
     val highlightColor2 = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
@@ -11611,21 +12147,25 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
             .background(baseColor)
             .drawBehind {
                 if (pulse != null) {
-                    drawRect(highlightColor1.copy(alpha = 0.08f + pulse * 0.18f))
+                    drawRect(highlightColor1.copy(alpha = 0.08f + pulse.value * 0.18f))
                 } else {
                     val width = size.width
                     val height = size.height
-                    val xOffset = -width + shimmer * (width * 2)
+                    // Keep the highlight narrow and move it fully beyond both edges. The
+                    // repeat seam then joins two identical base-color frames instead of
+                    // visibly snapping a full-card gradient back to the beginning.
+                    val bandWidth = (width * 0.52f).coerceAtLeast(1f)
+                    val bandCenter = -2f * bandWidth + (shimmer?.value ?: 0f) * (width + 4f * bandWidth)
                     val brush = Brush.linearGradient(
                         colors = listOf(
-                            baseColor,
+                            Color.Transparent,
                             highlightColor1,
                             highlightColor2,
                             highlightColor1,
-                            baseColor,
+                            Color.Transparent,
                         ),
-                        start = Offset(xOffset, 0f),
-                        end = Offset(xOffset + width, height),
+                        start = Offset(bandCenter - bandWidth, -height),
+                        end = Offset(bandCenter + bandWidth, height * 2f),
                     )
                     drawRect(brush)
                 }

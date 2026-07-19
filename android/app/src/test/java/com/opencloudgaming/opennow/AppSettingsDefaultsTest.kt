@@ -33,6 +33,8 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
+        assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
+        assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
     }
 
     @Test
@@ -50,6 +52,26 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
+    }
+
+    @Test
+    fun phonePresentationDefaultsToNoCropStretchAndPreservesLaterOptOut() {
+        val migrated = AppSettings().withCurrentStreamPresentationDefaults(androidTvProfile = false)
+
+        assertFalse(migrated.legacyCropStreamToFill)
+        assertTrue(migrated.stretchStreamToFit)
+        assertEquals(STREAM_PRESENTATION_PROFILE_VERSION, migrated.streamPresentationProfileVersion)
+
+        val optedOut = migrated.copy(stretchStreamToFit = false)
+        assertEquals(optedOut, optedOut.withCurrentStreamPresentationDefaults(androidTvProfile = false))
+    }
+
+    @Test
+    fun tvPresentationKeepsAspectFitByDefault() {
+        val migrated = AppSettings().withCurrentStreamPresentationDefaults(androidTvProfile = true)
+
+        assertFalse(migrated.legacyCropStreamToFill)
+        assertFalse(migrated.stretchStreamToFit)
     }
 
     @Test

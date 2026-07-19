@@ -82,6 +82,9 @@
     <string name="settings_l4s_desc">Requests NVIDIA\'s low-latency, low-loss transport path when the server and network support it. Leave off if your network gets unstable.</string>
     <string name="settings_cloud_gsync">Cloud G-Sync / VRR request</string>
     <string name="settings_cloud_gsync_desc">Asks the cloud session to use variable refresh timing when supported by your device, display, plan, and the GFN session.</string>
+    <string name="settings_microphone">Microphone</string>
+    <string name="settings_microphone_desc">Sends your default Android microphone to the streamed game. You can mute it from Stream Controls.</string>
+    <string name="settings_microphone_permission_denied">Microphone permission was not granted. OpenNOW will keep microphone streaming off.</string>
     <string name="settings_dynamic_color">Use system colors</string>
     <string name="settings_accent">Accent</string>
     <string name="settings_launch_page">Launch page</string>
@@ -117,8 +120,7 @@
     <string name="intro_music_start_playing">Playing</string>
     <string name="settings_queue_ready_music">Play music when queue finishes</string>
     <string name="action_mute_music">Mute music</string>
-    <string name="settings_stretch_stream_to_fill">Stretch stream to fill</string>
-    <string name="settings_stretch_stream_to_zoom">Stretch stream to zoom</string>
+    <string name="settings_stretch_stream_to_fit">Stretch stream to fit</string>
     <string name="settings_session_counter">Smart session timer</string>
     <string name="settings_thanks_body">Thanks to the people helping improve OpenNOW for everyone.</string>
     <string name="settings_thanks_darkevilpt">DarkevilPT</string>

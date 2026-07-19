@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import androidx.compose.runtime.Immutable
 import java.util.Locale
@@ -183,10 +184,22 @@ data class StreamSettings(
     val microphoneDeviceId: String = "",
 )
 
+internal fun StreamSettings.withMicrophoneSettingsFrom(source: StreamSettings): StreamSettings =
+    copy(
+        microphoneMode = source.microphoneMode,
+        microphoneDeviceId = source.microphoneDeviceId,
+    )
+
 @Serializable
 enum class TouchControllerStyle {
     V1,
     V2
+}
+
+@Serializable
+enum class TouchJoystickMode {
+    Fixed,
+    Dynamic,
 }
 
 @Serializable
@@ -200,6 +213,8 @@ data class AndroidTouchSettings(
     val scale: Float = 1f,
     val buttonScale: Float = 1.102468f,
     val stickScale: Float = 1f,
+    val joystickMode: TouchJoystickMode = TouchJoystickMode.Fixed,
+    val joystickDeadZone: Float = 0f,
     val edgePaddingDp: Float = 14f,
     val bottomPaddingDp: Float = 10f,
     val leftOffsetXDp: Float = 0f,
@@ -287,8 +302,11 @@ data class AppSettings(
     val streamIntroMusic: Boolean = false,
     val streamIntroStartMode: IntroMusicStartMode = IntroMusicStartMode.Muted,
     val queueReadyMusic: Boolean = false,
-    val stretchStreamToFill: Boolean = false,
-    val stretchStreamToZoom: Boolean = false,
+    @SerialName("stretchStreamToFill")
+    val legacyCropStreamToFill: Boolean = false,
+    @SerialName("stretchStreamToZoom")
+    val stretchStreamToFit: Boolean = false,
+    val streamPresentationProfileVersion: Int = 0,
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = true,
@@ -307,6 +325,16 @@ data class AppSettings(
 
 internal const val MIN_GAME_CARD_SCALE = 0.75f
 internal const val MAX_GAME_CARD_SCALE = 1.4f
+internal const val STREAM_PRESENTATION_PROFILE_VERSION = 1
+
+internal fun AppSettings.withCurrentStreamPresentationDefaults(androidTvProfile: Boolean): AppSettings {
+    if (streamPresentationProfileVersion >= STREAM_PRESENTATION_PROFILE_VERSION) return this
+    return copy(
+        legacyCropStreamToFill = false,
+        stretchStreamToFit = !androidTvProfile,
+        streamPresentationProfileVersion = STREAM_PRESENTATION_PROFILE_VERSION,
+    )
+}
 
 internal val AppSettings.analyticsSharingEnabled: Boolean
     get() = analyticsConsentAsked && !analyticsOptOut
@@ -1240,6 +1268,7 @@ data class StreamingFeatures(
 data class SessionInfo(
     val sessionId: String,
     val status: Int,
+    val timerStartedAtMs: Long? = null,
     val queuePosition: Int? = null,
     val seatSetupStep: Int? = null,
     val adState: SessionAdState? = null,

@@ -75,6 +75,7 @@ function resolveVendorDir(runtimeVersion) {
     const [major, minor] = runtimeVersion.split(".");
     const sameSeries = versions.find((version) => version.startsWith(`${major}.${minor}.`));
     if (sameSeries) return join(vendorRoot, sameSeries);
+    return null;
   }
   return join(vendorRoot, versions[0]);
 }
@@ -82,8 +83,12 @@ function resolveVendorDir(runtimeVersion) {
 function injectVulkanPlugins(runtimeRoot, vendorDir) {
   const pluginSource = join(vendorDir, "lib", "gstreamer-1.0", "gstvulkan.dll");
   const librarySource = join(vendorDir, "bin", "gstvulkan-1.0-0.dll");
+  const loaderSource = join(packageRoot, "node_modules", "electron", "dist", "vulkan-1.dll");
   if (!isExistingFile(pluginSource) || !isExistingFile(librarySource)) {
     throw new Error(`Vendored Vulkan artifacts are incomplete under ${vendorDir}`);
+  }
+  if (!isExistingFile(loaderSource)) {
+    throw new Error(`Electron Vulkan loader was not found: ${loaderSource}`);
   }
 
   const pluginDestDir = join(runtimeRoot, "lib", "gstreamer-1.0");
@@ -92,6 +97,7 @@ function injectVulkanPlugins(runtimeRoot, vendorDir) {
   mkdirSync(binDestDir, { recursive: true });
   copyFileSync(pluginSource, join(pluginDestDir, "gstvulkan.dll"));
   copyFileSync(librarySource, join(binDestDir, "gstvulkan-1.0-0.dll"));
+  copyFileSync(loaderSource, join(binDestDir, "vulkan-1.dll"));
 
   const metadataPath = join(runtimeRoot, "OPENNOW-GSTREAMER-RUNTIME.txt");
   if (isExistingFile(metadataPath)) {
@@ -105,7 +111,7 @@ function injectVulkanPlugins(runtimeRoot, vendorDir) {
     }
   }
 
-  console.log(`Injected Windows GStreamer Vulkan plugins from ${vendorDir} into ${runtimeRoot}.`);
+  console.log(`Injected Windows GStreamer Vulkan plugins and loader into ${runtimeRoot}.`);
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -130,7 +136,7 @@ try {
   const vendorDir = resolveVendorDir(runtimeVersion);
   if (!vendorDir) {
     throw new Error(
-      "No vendored Windows GStreamer Vulkan plugins were found. "
+      `No compatible vendored Windows GStreamer Vulkan plugins were found for runtime ${runtimeVersion ?? "unknown"}. `
       + `Expected artifacts under ${vendorRoot}/<gstreamer-version>/.`,
     );
   }

@@ -1,8 +1,7 @@
 import {
-  Check, Globe, Heart, MapPin, Monitor, ScanLine, Gauge, Film, SlidersHorizontal, HardDrive, Sparkles, Wifi, Zap, Search, X, Cpu,
+  Check, Globe, Heart, MapPin, Monitor, SlidersHorizontal, Wifi, Zap, Search, X, Cpu,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
-import { m } from "motion/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   ColorQuality,
   EntitledResolution,
@@ -33,12 +32,13 @@ import {
   getFpsForResolution,
   groupResolutions,
   inferAspectRatioFromResolution,
-  NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS,
   STATIC_FPS_PRESETS,
   STATIC_RESOLUTION_PRESETS,
 } from "../settingsFormatters";
-import { dialogMotion, overlayMotion } from "../../MotionProvider";
 import { MotionSpinner } from "../../MotionSpinner";
+import { ModalSurface } from "../../ui/ModalSurface";
+import { SelectDropdown, type SelectDropdownOption } from "../../ui/SelectDropdown";
+import { SettingRange } from "../SettingRange";
 
 export interface SettingsStreamSectionProps {
   settings: Settings;
@@ -48,6 +48,7 @@ export interface SettingsStreamSectionProps {
   showStreamVideo: boolean;
   showStreamCodecDiagnostics: boolean;
   handleChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  handlePreview: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   codecResults: CodecTestResult[] | null;
   codecTesting: boolean;
   onRunCodecTest: () => Promise<void>;
@@ -65,6 +66,7 @@ export function SettingsStreamSection({
   showStreamVideo,
   showStreamCodecDiagnostics,
   handleChange,
+  handlePreview,
   codecResults,
   codecTesting,
   onRunCodecTest,
@@ -76,10 +78,13 @@ export function SettingsStreamSection({
   const { locale, t } = useTranslation();
   const [regionSearch, setRegionSearch] = useState("");
   const [regionDropdownOpen, setRegionDropdownOpen] = useState(false);
+  const [activeRegionValue, setActiveRegionValue] = useState("");
+  const regionSelectorRef = useRef<HTMLDivElement | null>(null);
+  const regionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const regionSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const regionListboxId = "settings-stream-region-listbox";
   const codecTestOpen = codecResults !== null || codecTesting;
   const [codecAdvancedOpen, setCodecAdvancedOpen] = useState(false);
-  const [resolutionDropdownOpen, setResolutionDropdownOpen] = useState(false);
-  const resolutionDropdownRef = useRef<HTMLDivElement | null>(null);
 
   const initialPingResults = useMemo(() => loadStoredRegionPingResults(), []);
   const [pingResults, setPingResults] = useState<Map<string, number | null>>(initialPingResults ?? new Map());
@@ -98,24 +103,21 @@ export function SettingsStreamSection({
   });
 
   const [zortosCommunityProxyPromptOpen, setZortosCommunityProxyPromptOpen] = useState(false);
-  const [zortosCommunityProxyPromptClosing, setZortosCommunityProxyPromptClosing] = useState(false);
   const [zortosCommunityProxyProvisioning, setZortosCommunityProxyProvisioning] = useState(false);
   const [zortosCommunityProxyError, setZortosCommunityProxyError] = useState<string | null>(null);
-  const zortosCommunityProxyPromptRef = useRef<HTMLDivElement | null>(null);
   const zortosCommunityProxyPromptContinueRef = useRef<HTMLButtonElement | null>(null);
-  const zortosCommunityProxyPromptPreviousFocusRef = useRef<HTMLElement | null>(null);
-  const zortosCommunityProxyPromptCloseTimerRef = useRef<number | null>(null);
-  const zortosCommunityProxyPromptVisible =
-    zortosCommunityProxyPromptOpen || zortosCommunityProxyPromptClosing;
   const isUsingZortosCommunityProxy = useMemo(
     () => settings.sessionProxyEnabled && isZortosCommunityProxyUrl(settings.sessionProxyUrl),
     [settings.sessionProxyEnabled, settings.sessionProxyUrl],
   );
 
   useEffect(() => {
-    onBlockingOverlayChange?.(zortosCommunityProxyPromptVisible);
-    return () => onBlockingOverlayChange?.(false);
-  }, [zortosCommunityProxyPromptVisible, onBlockingOverlayChange]);
+    if (zortosCommunityProxyPromptOpen) {
+      onBlockingOverlayChange?.(true);
+    }
+  }, [onBlockingOverlayChange, zortosCommunityProxyPromptOpen]);
+
+  useEffect(() => () => onBlockingOverlayChange?.(false), [onBlockingOverlayChange]);
 
   const runPingTest = useCallback(async () => {
     if (regions.length === 0) return;
@@ -191,17 +193,19 @@ export function SettingsStreamSection({
     [effectiveEntitledResolutions, settings.fps, settings.resolution],
   );
 
-  const selectedResolutionLabel = useMemo(() => {
-    if (useEntitledStreamOptions) {
-      for (const group of resolutionGroups) {
-        const found = group.resolutions.find(r => r.value === settings.resolution);
-        if (found) return found.label;
-      }
-      return settings.resolution || "Select";
-    }
-    const found = STATIC_RESOLUTION_PRESETS.find(r => r.value === settings.resolution);
-    return found ? found.label : settings.resolution || "Select";
-  }, [settings.resolution, useEntitledStreamOptions, resolutionGroups]);
+  const resolutionOptions = useMemo<SelectDropdownOption[]>(
+    () => useEntitledStreamOptions
+      ? resolutionGroups.flatMap((group) => group.resolutions.map((resolution) => ({
+          value: resolution.value,
+          label: resolution.label,
+          group: group.category,
+        })))
+      : STATIC_RESOLUTION_PRESETS.map((resolution) => ({
+          value: resolution.value,
+          label: resolution.label,
+        })),
+    [resolutionGroups, useEntitledStreamOptions],
+  );
 
   const handleResolutionChange = useCallback((resolution: string) => {
     handleChange("resolution", resolution);
@@ -278,42 +282,140 @@ export function SettingsStreamSection({
     return found?.name ?? settings.region;
   }, [settings.region, regions, locale, t]);
 
+  const regionOptionValues = useMemo(
+    () => ["", ...filteredRegions.map((region) => region.url)],
+    [filteredRegions],
+  );
+  const activeRegionIndex = Math.max(0, regionOptionValues.indexOf(activeRegionValue));
+  const activeRegionOptionId = regionDropdownOpen && regionOptionValues[activeRegionIndex] !== undefined
+    ? `${regionListboxId}-option-${activeRegionIndex}`
+    : undefined;
+
+  const openRegionDropdown = useCallback((preferredIndex?: number): void => {
+    const selectedIndex = regionOptionValues.indexOf(settings.region);
+    const nextIndex = Math.max(
+      0,
+      Math.min(regionOptionValues.length - 1, preferredIndex ?? (selectedIndex >= 0 ? selectedIndex : 0)),
+    );
+    setActiveRegionValue(regionOptionValues[nextIndex] ?? "");
+    setRegionDropdownOpen(true);
+  }, [regionOptionValues, settings.region]);
+
+  const selectRegion = useCallback((regionUrl: string): void => {
+    handleChange("region", regionUrl);
+    setActiveRegionValue(regionUrl);
+    setRegionDropdownOpen(false);
+    setRegionSearch("");
+    regionTriggerRef.current?.focus({ preventScroll: true });
+  }, [handleChange]);
+
+  const handleRegionTriggerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>): void => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const selectedIndex = regionOptionValues.indexOf(settings.region);
+      const fallbackIndex = event.key === "ArrowDown" ? 0 : regionOptionValues.length - 1;
+      openRegionDropdown(selectedIndex >= 0 ? selectedIndex : fallbackIndex);
+    } else if (event.key === "Escape" && regionDropdownOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      setRegionDropdownOpen(false);
+      setRegionSearch("");
+    }
+  }, [openRegionDropdown, regionDropdownOpen, regionOptionValues, settings.region]);
+
+  const handleRegionSearchKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>): void => {
+    if (regionOptionValues.length === 0) return;
+
+    const currentIndex = Math.max(0, regionOptionValues.indexOf(activeRegionValue));
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        setActiveRegionValue(regionOptionValues[(currentIndex + 1) % regionOptionValues.length] ?? "");
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        setActiveRegionValue(regionOptionValues[(currentIndex - 1 + regionOptionValues.length) % regionOptionValues.length] ?? "");
+        break;
+      case "Home":
+        event.preventDefault();
+        setActiveRegionValue(regionOptionValues[0] ?? "");
+        break;
+      case "End":
+        event.preventDefault();
+        setActiveRegionValue(regionOptionValues.at(-1) ?? "");
+        break;
+      case "Enter":
+        event.preventDefault();
+        selectRegion(regionOptionValues.includes(activeRegionValue) ? activeRegionValue : (regionOptionValues[0] ?? ""));
+        break;
+      case "Escape":
+        event.preventDefault();
+        event.stopPropagation();
+        setRegionDropdownOpen(false);
+        setRegionSearch("");
+        regionTriggerRef.current?.focus({ preventScroll: true });
+        break;
+      default:
+        break;
+    }
+  }, [activeRegionValue, regionOptionValues, selectRegion]);
+
   useEffect(() => {
-    const handlePointerDown = (event: MouseEvent): void => {
-      const target = event.target as Node;
-      if (resolutionDropdownRef.current && !resolutionDropdownRef.current.contains(target)) {
-        setResolutionDropdownOpen(false);
+    if (!regionDropdownOpen) return;
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      regionSearchInputRef.current?.focus({ preventScroll: true });
+    });
+    const closeRegionDropdownWhenOutside = (target: EventTarget | null): void => {
+      if (!regionSelectorRef.current?.contains(target as Node)) {
+        setRegionDropdownOpen(false);
+        setRegionSearch("");
       }
     };
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => document.removeEventListener("mousedown", handlePointerDown);
-  }, []);
+    const handlePointerDown = (event: PointerEvent): void => {
+      closeRegionDropdownWhenOutside(event.target);
+    };
+    const handleFocusIn = (event: FocusEvent): void => {
+      closeRegionDropdownWhenOutside(event.target);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("focusin", handleFocusIn);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("focusin", handleFocusIn);
+    };
+  }, [regionDropdownOpen]);
+
+  useEffect(() => {
+    if (!regionDropdownOpen) return;
+    if (regionOptionValues.includes(activeRegionValue)) return;
+    setActiveRegionValue(regionOptionValues.includes(settings.region) ? settings.region : (regionOptionValues[0] ?? ""));
+  }, [activeRegionValue, regionDropdownOpen, regionOptionValues, settings.region]);
+
+  useEffect(() => {
+    if (!regionDropdownOpen || !activeRegionOptionId) return;
+    document.getElementById(activeRegionOptionId)?.scrollIntoView({ block: "nearest" });
+  }, [activeRegionOptionId, regionDropdownOpen]);
 
   const openZortosCommunityProxyPrompt = useCallback((): void => {
-    if (zortosCommunityProxyPromptCloseTimerRef.current !== null) {
-      window.clearTimeout(zortosCommunityProxyPromptCloseTimerRef.current);
-      zortosCommunityProxyPromptCloseTimerRef.current = null;
-    }
-
     setZortosCommunityProxyError(null);
     setZortosCommunityProxyProvisioning(false);
-    setZortosCommunityProxyPromptClosing(false);
     setZortosCommunityProxyPromptOpen(true);
   }, []);
 
   const closeZortosCommunityProxyPrompt = useCallback((): void => {
-    if (zortosCommunityProxyPromptCloseTimerRef.current !== null || zortosCommunityProxyProvisioning) {
+    if (zortosCommunityProxyProvisioning) {
       return;
     }
-
     setZortosCommunityProxyPromptOpen(false);
-    setZortosCommunityProxyPromptClosing(true);
-    zortosCommunityProxyPromptCloseTimerRef.current = window.setTimeout(() => {
-      zortosCommunityProxyPromptCloseTimerRef.current = null;
-      setZortosCommunityProxyPromptClosing(false);
-      setZortosCommunityProxyError(null);
-    }, NATIVE_STREAMER_ENABLE_PROMPT_EXIT_MS);
   }, [zortosCommunityProxyProvisioning]);
+
+  const handleZortosCommunityProxyPromptExit = useCallback((): void => {
+    setZortosCommunityProxyError(null);
+    onBlockingOverlayChange?.(false);
+  }, [onBlockingOverlayChange]);
 
   const handleOpenZortosSponsors = useCallback((): void => {
     void window.openNow.openExternalUrl(ZORTOS_GITHUB_SPONSORS_URL).catch((error) => {
@@ -345,46 +447,6 @@ export function SettingsStreamSection({
     }
   }, [closeZortosCommunityProxyPrompt, handleChange, t, zortosCommunityProxyProvisioning]);
 
-  useEffect(() => {
-    return () => {
-      if (zortosCommunityProxyPromptCloseTimerRef.current !== null) {
-        window.clearTimeout(zortosCommunityProxyPromptCloseTimerRef.current);
-        zortosCommunityProxyPromptCloseTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!zortosCommunityProxyPromptVisible) {
-      return;
-    }
-
-    zortosCommunityProxyPromptPreviousFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !zortosCommunityProxyProvisioning) {
-        event.preventDefault();
-        closeZortosCommunityProxyPrompt();
-      }
-    };
-
-    const focusFrame = window.requestAnimationFrame(() => {
-      zortosCommunityProxyPromptContinueRef.current?.focus({ preventScroll: true });
-    });
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener("keydown", handleKeyDown);
-      const previousFocus = zortosCommunityProxyPromptPreviousFocusRef.current;
-      zortosCommunityProxyPromptPreviousFocusRef.current = null;
-      if (previousFocus?.isConnected) {
-        previousFocus.focus({ preventScroll: true });
-      }
-    };
-  }, [closeZortosCommunityProxyPrompt, zortosCommunityProxyPromptVisible, zortosCommunityProxyProvisioning]);
-
   return (
     <>
       <>
@@ -398,11 +460,24 @@ export function SettingsStreamSection({
           </div>
           <div className="settings-rows">
             <div className="settings-row settings-row--column settings-row--region">
-            <div className="region-selector">
+            <div className="region-selector" ref={regionSelectorRef}>
       <button
+        ref={regionTriggerRef}
+        id="settings-stream-region-trigger"
         className={`region-selected ${regionDropdownOpen ? "open" : ""}`}
-        onClick={() => setRegionDropdownOpen(!regionDropdownOpen)}
+        onClick={() => {
+          if (regionDropdownOpen) {
+            setRegionDropdownOpen(false);
+            setRegionSearch("");
+          } else {
+            openRegionDropdown();
+          }
+        }}
+        onKeyDown={handleRegionTriggerKeyDown}
         type="button"
+        aria-haspopup="listbox"
+        aria-expanded={regionDropdownOpen}
+        aria-controls={regionListboxId}
       >
         <span className="region-selected-leading">
           <Globe size={15} className="region-selected-icon" />
@@ -450,16 +525,31 @@ export function SettingsStreamSection({
             <div className="region-dropdown-search">
               <Search size={14} className="region-dropdown-search-icon" />
               <input
+                ref={regionSearchInputRef}
                 type="text"
+                role="combobox"
                 className="region-dropdown-search-input"
                 placeholder={t("settings.region.searchPlaceholder")}
                 value={regionSearch}
                 onChange={(e) => setRegionSearch(e.target.value)}
-                autoFocus
+                onKeyDown={handleRegionSearchKeyDown}
+                aria-label={t("settings.region.searchPlaceholder")}
+                aria-expanded="true"
+                aria-controls={regionListboxId}
+                aria-activedescendant={activeRegionOptionId}
+                aria-autocomplete="list"
               />
               {regionSearch && (
-                <button className="region-dropdown-clear" onClick={() => setRegionSearch("")} type="button">
-                  <X size={12} />
+                <button
+                  className="region-dropdown-clear"
+                  onClick={() => {
+                    setRegionSearch("");
+                    regionSearchInputRef.current?.focus({ preventScroll: true });
+                  }}
+                  type="button"
+                  aria-label="Clear region search"
+                >
+                  <X size={12} aria-hidden="true" />
                 </button>
               )}
             </div>
@@ -469,6 +559,7 @@ export function SettingsStreamSection({
               disabled={isPinging}
               type="button"
               title={t("settings.region.refreshPing")}
+              aria-label={t("settings.region.refreshPing")}
             >
               {isPinging ? (
                 <MotionSpinner size={14} label="Testing regions" />
@@ -478,15 +569,21 @@ export function SettingsStreamSection({
             </button>
           </div>
 
-          <div className="region-dropdown-list">
+          <div
+            id={regionListboxId}
+            className="region-dropdown-list"
+            role="listbox"
+            aria-labelledby="settings-stream-region-trigger"
+          >
             <button
-              className={`region-dropdown-item ${!settings.region ? "active" : ""}`}
-              onClick={() => {
-                handleChange("region", "");
-                setRegionDropdownOpen(false);
-                setRegionSearch("");
-              }}
+              id={`${regionListboxId}-option-0`}
+              className={`region-dropdown-item ${!settings.region ? "active" : ""} ${activeRegionIndex === 0 ? "is-active" : ""}`}
+              onClick={() => selectRegion("")}
+              onMouseEnter={() => setActiveRegionValue("")}
               type="button"
+              role="option"
+              aria-selected={!settings.region}
+              tabIndex={-1}
             >
               <Globe size={14} />
               <div className="region-auto-best-info">
@@ -507,16 +604,19 @@ export function SettingsStreamSection({
               {!settings.region && <Check size={14} className="region-check" />}
             </button>
 
-            {filteredRegions.map((region) => (
+            {filteredRegions.map((region, index) => {
+              const optionIndex = index + 1;
+              return (
               <button
                 key={region.url}
-                className={`region-dropdown-item ${settings.region === region.url ? "active" : ""}`}
-                onClick={() => {
-                  handleChange("region", region.url);
-                  setRegionDropdownOpen(false);
-                  setRegionSearch("");
-                }}
+                id={`${regionListboxId}-option-${optionIndex}`}
+                className={`region-dropdown-item ${settings.region === region.url ? "active" : ""} ${activeRegionIndex === optionIndex ? "is-active" : ""}`}
+                onClick={() => selectRegion(region.url)}
+                onMouseEnter={() => setActiveRegionValue(region.url)}
                 type="button"
+                role="option"
+                aria-selected={settings.region === region.url}
+                tabIndex={-1}
               >
                 <Globe size={14} />
                 <span className="region-name-with-badge">
@@ -547,7 +647,8 @@ export function SettingsStreamSection({
                 </span>
                 {settings.region === region.url && <Check size={14} className="region-check" />}
               </button>
-            ))}
+              );
+            })}
 
             {filteredRegions.length === 0 && regions.length > 0 && (
               <div className="region-dropdown-empty">{t("settings.region.noRegionsMatch", { query: regionSearch })}</div>
@@ -570,148 +671,124 @@ export function SettingsStreamSection({
       </div>
       <div className="settings-rows">
         {/* Resolution — grouped dropdown */}
-        <div className="settings-row settings-row--column">
-          <label className="settings-label settings-label--with-icon">
-            <ScanLine size={15} className="settings-label-icon" />
-            {t("settings.video.resolution")}
-            {subscriptionLoading && <MotionSpinner size={12} className="settings-loading-icon" />}
+        <div className="settings-row">
+          <label className="settings-label" htmlFor="settings-stream-resolution">
+            <span className="settings-label-title">
+              {t("settings.video.resolution")}
+              {subscriptionLoading && <MotionSpinner size={12} className="settings-loading-icon" />}
+            </span>
           </label>
-          <div className="settings-dropdown settings-resolution-dropdown" ref={resolutionDropdownRef}>
-            <button
-              type="button"
-              className={`settings-dropdown-selected ${resolutionDropdownOpen ? "open" : ""}`}
-              onClick={() => setResolutionDropdownOpen(o => !o)}
-            >
-              <span className="settings-dropdown-selected-name">{selectedResolutionLabel}</span>
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" className={`settings-dropdown-chevron ${resolutionDropdownOpen ? "flipped" : ""}`}>
-                <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-              </svg>
-            </button>
-            {resolutionDropdownOpen && (
-              <div className="settings-dropdown-menu settings-dropdown-menu--grouped">
-                {(useEntitledStreamOptions ? resolutionGroups : [{ category: "All", resolutions: STATIC_RESOLUTION_PRESETS.map(p => ({ ...p, width: 0, height: 0 })) }]).map(group => (
-                  <div key={group.category} className="settings-dropdown-group">
-                    <div className="settings-dropdown-group-label">{group.category}</div>
-                    {group.resolutions.map(res => (
-                      <button
-                        key={res.value}
-                        type="button"
-                        className={`settings-dropdown-item ${settings.resolution === res.value ? "active" : ""}`}
-                        onClick={() => { handleResolutionChange(res.value); setResolutionDropdownOpen(false); }}
-                      >
-                        <span>{res.label}</span>
-                        {settings.resolution === res.value && <Check size={14} className="settings-dropdown-check" />}
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
+          <div className="settings-row-control">
+            <SelectDropdown
+              id="settings-stream-resolution"
+              value={settings.resolution}
+              options={resolutionOptions}
+              onChange={handleResolutionChange}
+              menuClassName="select-dropdown__menu--grouped"
+            />
           </div>
         </div>
 
         {/* FPS — dynamic or static chips */}
         <div className="settings-row">
-          <label className="settings-label settings-label--with-icon">
-            <Gauge size={15} className="settings-label-icon" />
-            {t("settings.video.fps")}
-          </label>
-          <div className="settings-chip-row">
-            {(useEntitledStreamOptions ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
-              <button
-                key={preset.value}
-                className={`settings-chip ${settings.fps === preset.value ? "active" : ""}`}
-                onClick={() => { handleChange("fps", preset.value); }}
-              >
-                <span>{preset.value}</span>
-              </button>
-            ))}
+          <label className="settings-label">{t("settings.video.fps")}</label>
+          <div className="settings-row-control">
+            <div className="settings-chip-row">
+              {(useEntitledStreamOptions ? dynamicFpsOptions.map((v) => ({ value: v })) : STATIC_FPS_PRESETS).map((preset) => (
+                <button
+                  key={preset.value}
+                  className={`settings-chip ${settings.fps === preset.value ? "active" : ""}`}
+                  aria-pressed={settings.fps === preset.value}
+                  onClick={() => { handleChange("fps", preset.value); }}
+                >
+                  <span>{preset.value}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
         {/* Codec */}
         <div className="settings-row">
-          <label className="settings-label settings-label--with-icon">
-            <Film size={15} className="settings-label-icon" />
-            {t("settings.video.codec")}
-          </label>
-          <div className="settings-chip-row">
-            {codecOptions.map((codec) => {
-              const badgeState = getCodecDecodeBadgeState(codec, codecResults, codecTesting);
-              return (
-                <button
-                  key={codec}
-                  className={`settings-chip settings-chip--codec ${settings.codec === codec ? "active" : ""}`}
-                  onClick={() => handleCodecChange(codec)}
-                >
-                  <span>{codec}</span>
-                  {badgeState && (
-                    <span className={`settings-inline-badge settings-inline-badge--codec settings-inline-badge--codec-${badgeState}`}>
-                      {badgeState === "gpu" ? t("settings.video.gpu") : badgeState === "cpu" ? t("settings.video.cpu") : t("settings.video.testing")}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+          <label className="settings-label">{t("settings.video.codec")}</label>
+          <div className="settings-row-control">
+            <div className="settings-chip-row">
+              {codecOptions.map((codec) => {
+                const badgeState = getCodecDecodeBadgeState(codec, codecResults, codecTesting);
+                return (
+                  <button
+                    key={codec}
+                    className={`settings-chip settings-chip--codec ${settings.codec === codec ? "active" : ""}`}
+                    aria-pressed={settings.codec === codec}
+                    onClick={() => handleCodecChange(codec)}
+                  >
+                    <span>{codec}</span>
+                    {badgeState && (
+                      <span className={`settings-inline-badge settings-inline-badge--codec settings-inline-badge--codec-${badgeState}`}>
+                        {badgeState === "gpu" ? t("settings.video.gpu") : badgeState === "cpu" ? t("settings.video.cpu") : t("settings.video.testing")}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
         {/* Color Quality */}
-        <div className="settings-row settings-row--column">
-          <label className="settings-label settings-label--with-icon">
-            <SlidersHorizontal size={15} className="settings-label-icon" />
-            {t("settings.video.colorDepth")}
-          </label>
-          <div className="settings-chip-row">
-            {colorQualityOptions.map((opt) => {
-              const needsHevc = colorQualityRequiresHevc(opt.value);
-              const colorDescription = opt.value === "8bit_420"
-                ? t("settings.colorQuality.mostCompatible")
-                : opt.value === "8bit_444"
-                  ? t("settings.colorQuality.sharperChroma")
-                  : opt.value === "10bit_420"
-                    ? t("settings.colorQuality.higherBitDepth")
-                    : t("settings.colorQuality.highestChromaAndBitDepth");
-              return (
-                <button
-                  key={opt.value}
-                  className={`settings-chip ${settings.colorQuality === opt.value ? "active" : ""}`}
-                  onClick={() => handleColorQualityChange(opt.value)}
-                  title={needsHevc ? t("settings.colorQuality.requiresH265OrAv1Title", { description: colorDescription }) : colorDescription}
-                >
-                  <span>{opt.label}</span>
-                </button>
-              );
-            })}
+        <div className="settings-row">
+          <label className="settings-label">{t("settings.video.colorDepth")}</label>
+          <div className="settings-row-control">
+            <div className="settings-chip-row">
+              {colorQualityOptions.map((opt) => {
+                const needsHevc = colorQualityRequiresHevc(opt.value);
+                const colorDescription = opt.value === "8bit_420"
+                  ? t("settings.colorQuality.mostCompatible")
+                  : opt.value === "8bit_444"
+                    ? t("settings.colorQuality.sharperChroma")
+                    : opt.value === "10bit_420"
+                      ? t("settings.colorQuality.higherBitDepth")
+                      : t("settings.colorQuality.highestChromaAndBitDepth");
+                return (
+                  <button
+                    key={opt.value}
+                    className={`settings-chip ${settings.colorQuality === opt.value ? "active" : ""}`}
+                    aria-pressed={settings.colorQuality === opt.value}
+                    onClick={() => handleColorQualityChange(opt.value)}
+                    title={needsHevc ? t("settings.colorQuality.requiresH265OrAv1Title", { description: colorDescription }) : colorDescription}
+                  >
+                    <span>{opt.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {colorQualityRequiresHevc(settings.colorQuality) && settings.codec === "H264" && (
+              <span className="settings-input-hint">{t("settings.video.requiresH265OrAv1")}</span>
+            )}
           </div>
-          {colorQualityRequiresHevc(settings.colorQuality) && settings.codec === "H264" && (
-            <span className="settings-input-hint">{t("settings.video.requiresH265OrAv1")}</span>
-          )}
         </div>
 
         {/* Bitrate slider */}
         <div className="settings-row settings-row--column">
           <div className="settings-row-top">
-            <label className="settings-label settings-label--with-icon">
-              <HardDrive size={15} className="settings-label-icon" />
-              {t("settings.video.maxBitrate")}
-            </label>
+            <label className="settings-label" htmlFor="settings-stream-max-bitrate">{t("settings.video.maxBitrate")}</label>
             <span className="settings-value-badge">{settings.maxBitrateMbps} Mbps</span>
           </div>
-          <input
-            type="range"
+          <SettingRange
+            id="settings-stream-max-bitrate"
             className="settings-slider"
             min={5}
             max={150}
             step={5}
             value={settings.maxBitrateMbps}
-            onChange={(e) => handleChange("maxBitrateMbps", parseInt(e.target.value, 10))}
+            onPreview={(value) => handlePreview("maxBitrateMbps", value)}
+            onCommit={(value) => handleChange("maxBitrateMbps", value)}
           />
         </div>
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top">
-            <label className="settings-label">{t("settings.video.recordingBitrate")}</label>
+            <label className="settings-label" htmlFor="settings-stream-recording-bitrate">{t("settings.video.recordingBitrate")}</label>
             <span className="settings-value-badge">
               {settings.recordingBitrateMbps === null
                 ? t("app.labels.auto")
@@ -722,6 +799,7 @@ export function SettingsStreamSection({
             <button
               type="button"
               className={`settings-chip ${settings.recordingBitrateMbps === null ? "active" : ""}`}
+              aria-pressed={settings.recordingBitrateMbps === null}
               onClick={() => handleChange("recordingBitrateMbps", null)}
             >
               <span>{t("app.labels.auto")}</span>
@@ -729,27 +807,29 @@ export function SettingsStreamSection({
             <button
               type="button"
               className={`settings-chip ${settings.recordingBitrateMbps !== null ? "active" : ""}`}
+              aria-pressed={settings.recordingBitrateMbps !== null}
               onClick={() => handleChange("recordingBitrateMbps", settings.recordingBitrateMbps ?? 75)}
             >
               <span>{t("settings.video.customBitrate")}</span>
             </button>
           </div>
-          <input
-            type="range"
+          <SettingRange
+            id="settings-stream-recording-bitrate"
             className="settings-slider"
             min={5}
             max={200}
             step={5}
             value={settings.recordingBitrateMbps ?? 75}
             disabled={settings.recordingBitrateMbps === null}
-            onChange={(e) => handleChange("recordingBitrateMbps", parseInt(e.target.value, 10))}
+            onPreview={(value) => handlePreview("recordingBitrateMbps", value)}
+            onCommit={(value) => handleChange("recordingBitrateMbps", value)}
           />
           <span className="settings-subtle-hint">{t("settings.video.recordingBitrateHint")}</span>
         </div>
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-stream-session-proxy">
               <span className="settings-label-title">
                 {t("settings.video.sessionProxy")}
                 <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
@@ -757,6 +837,7 @@ export function SettingsStreamSection({
             </label>
             <label className="settings-toggle">
               <input
+                id="settings-stream-session-proxy"
                 type="checkbox"
                 checked={settings.sessionProxyEnabled}
                 onChange={(e) => handleChange("sessionProxyEnabled", e.target.checked)}
@@ -796,7 +877,7 @@ export function SettingsStreamSection({
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-stream-enable-l4s">
               <span className="settings-label-title">
                 {t("settings.video.experimentalL4SRequest")}
                 <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
@@ -804,6 +885,7 @@ export function SettingsStreamSection({
             </label>
             <label className="settings-toggle">
               <input
+                id="settings-stream-enable-l4s"
                 type="checkbox"
                 checked={settings.enableL4S}
                 onChange={(e) => handleChange("enableL4S", e.target.checked)}
@@ -818,13 +900,14 @@ export function SettingsStreamSection({
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-stream-launch-console-mode">
               <span className="settings-label-title">
                 {t("settings.video.launchInConsoleMode")}
               </span>
             </label>
             <label className="settings-toggle">
               <input
+                id="settings-stream-launch-console-mode"
                 type="checkbox"
                 checked={settings.launchInConsoleMode}
                 onChange={(e) => handleChange("launchInConsoleMode", e.target.checked)}
@@ -840,15 +923,15 @@ export function SettingsStreamSection({
         {/* Video filters (client-side GPU shaders) */}
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-stream-video-filters-enabled">
               <span className="settings-label-title">
-                <Sparkles size={15} className="settings-label-icon" />
                 {t("settings.videoFilters.title")}
                 <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
               </span>
             </label>
             <label className="settings-toggle">
               <input
+                id="settings-stream-video-filters-enabled"
                 type="checkbox"
                 checked={settings.videoShader.enabled}
                 onChange={(e) => handleChange("videoShader", { ...settings.videoShader, enabled: e.target.checked })}
@@ -873,21 +956,21 @@ export function SettingsStreamSection({
               ] as const).map((control) => (
                 <div key={control.key} className="settings-row settings-row--column">
                   <div className="settings-row-top">
-                    <label className="settings-label">{t(control.labelKey)}</label>
+                    <label className="settings-label" htmlFor={`settings-stream-video-filter-${control.key}`}>{t(control.labelKey)}</label>
                     <span className="settings-value-badge">{settings.videoShader[control.key]}%</span>
                   </div>
-                  <input
-                    type="range"
+                  <SettingRange
+                    id={`settings-stream-video-filter-${control.key}`}
                     className="settings-slider"
                     min={control.min}
                     max={control.max}
                     step={1}
                     value={settings.videoShader[control.key]}
-                    onChange={(e) => {
-                      const next = parseInt(e.target.value, 10);
-                      if (Number.isFinite(next)) {
-                        handleChange("videoShader", { ...settings.videoShader, [control.key]: next });
-                      }
+                    onPreview={(value) => {
+                      handlePreview("videoShader", { ...settings.videoShader, [control.key]: value });
+                    }}
+                    onCommit={(value) => {
+                      handleChange("videoShader", { ...settings.videoShader, [control.key]: value });
                     }}
                   />
                 </div>
@@ -931,50 +1014,50 @@ export function SettingsStreamSection({
           <div className="settings-rows">
             {showStreamVideo && (
               <>
-                <div className="settings-row settings-row--column">
-                  <label className="settings-label settings-label--with-icon">
-                    <Cpu size={15} className="settings-label-icon" />
-                    {t("settings.video.decoder")}
-                  </label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`decoder-${option.value}`}
-                        className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("decoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
+                <div className="settings-row">
+                  <label className="settings-label">{t("settings.video.decoder")}</label>
+                  <div className="settings-row-control">
+                    <div className="settings-chip-row">
+                      {accelerationOptions.map((option) => (
+                        <button
+                          key={`decoder-${option.value}`}
+                          className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
+                          aria-pressed={settings.decoderPreference === option.value}
+                          onClick={() => handleChange("decoderPreference", option.value)}
+                        >
+                          {option.value === "auto"
+                            ? t("app.labels.auto")
+                            : option.value === "hardware"
+                              ? t("app.labels.hardware")
+                              : t("settings.video.softwareCpu")}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                   </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                 </div>
 
-                <div className="settings-row settings-row--column">
-                  <label className="settings-label settings-label--with-icon">
-                    <Film size={15} className="settings-label-icon" />
-                    {t("settings.video.encoder")}
-                  </label>
-                  <div className="settings-chip-row">
-                    {accelerationOptions.map((option) => (
-                      <button
-                        key={`encoder-${option.value}`}
-                        className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
-                        onClick={() => handleChange("encoderPreference", option.value)}
-                      >
-                        {option.value === "auto"
-                          ? t("app.labels.auto")
-                          : option.value === "hardware"
-                            ? t("app.labels.hardware")
-                            : t("settings.video.softwareCpu")}
-                      </button>
-                    ))}
+                <div className="settings-row">
+                  <label className="settings-label">{t("settings.video.encoder")}</label>
+                  <div className="settings-row-control">
+                    <div className="settings-chip-row">
+                      {accelerationOptions.map((option) => (
+                        <button
+                          key={`encoder-${option.value}`}
+                          className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
+                          aria-pressed={settings.encoderPreference === option.value}
+                          onClick={() => handleChange("encoderPreference", option.value)}
+                        >
+                          {option.value === "auto"
+                            ? t("app.labels.auto")
+                            : option.value === "hardware"
+                              ? t("app.labels.hardware")
+                              : t("settings.video.softwareCpu")}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                   </div>
-                  <span className="settings-subtle-hint">{t("settings.video.appliesAfterRestart")}</span>
                 </div>
               </>
             )}
@@ -982,8 +1065,7 @@ export function SettingsStreamSection({
             {showStreamCodecDiagnostics && (
               <>
             <div className="settings-row codec-test-row">
-              <label className="settings-label codec-test-description settings-label--with-icon">
-                <Zap size={15} className="settings-label-icon" />
+              <label className="settings-label codec-test-description">
                 {t("settings.codecDiagnostics.description")}
               </label>
               <button
@@ -1058,37 +1140,21 @@ export function SettingsStreamSection({
                   </div>
                   )}
                 </>
-      {zortosCommunityProxyPromptVisible && (
-        <m.div
-          className={`native-streamer-warning ${zortosCommunityProxyPromptClosing ? "native-streamer-warning--closing" : ""}`}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="zortos-community-proxy-title"
-          aria-describedby="zortos-community-proxy-copy"
-          initial={overlayMotion.initial}
-          animate={zortosCommunityProxyPromptClosing ? overlayMotion.exit : overlayMotion.animate}
-          transition={overlayMotion.transition}
-        >
-          <m.button
-            type="button"
-            className="native-streamer-warning-backdrop"
-            aria-label={t("app.actions.cancel")}
-            aria-hidden="true"
-            tabIndex={-1}
-            disabled={zortosCommunityProxyProvisioning}
-            onClick={closeZortosCommunityProxyPrompt}
-            initial={overlayMotion.initial}
-            animate={zortosCommunityProxyPromptClosing ? overlayMotion.exit : overlayMotion.animate}
-            transition={overlayMotion.transition}
-          />
-          <m.div
-            ref={zortosCommunityProxyPromptRef}
-            className="native-streamer-warning-card"
-            tabIndex={-1}
-            initial={dialogMotion.initial}
-            animate={zortosCommunityProxyPromptClosing ? dialogMotion.exit : dialogMotion.animate}
-            transition={dialogMotion.transition}
-          >
+      <ModalSurface
+        open={zortosCommunityProxyPromptOpen}
+        onClose={closeZortosCommunityProxyPrompt}
+        onExitComplete={handleZortosCommunityProxyPromptExit}
+        motion="compact"
+        overlayClassName="native-streamer-warning"
+        backdropClassName="native-streamer-warning-backdrop"
+        panelClassName="native-streamer-warning-card"
+        ariaLabelledBy="zortos-community-proxy-title"
+        ariaDescribedBy="zortos-community-proxy-copy"
+        backdropLabel={t("app.actions.cancel")}
+        initialFocusRef={zortosCommunityProxyPromptContinueRef}
+        closeOnBackdrop={!zortosCommunityProxyProvisioning}
+        closeOnEscape={!zortosCommunityProxyProvisioning}
+      >
             <div className="native-streamer-warning-kicker">
               <Heart size={14} />
               {t("settings.video.zortosCommunityProxy.enablePromptKicker")}
@@ -1122,7 +1188,6 @@ export function SettingsStreamSection({
                 }}
                 ref={zortosCommunityProxyPromptContinueRef}
                 disabled={zortosCommunityProxyProvisioning}
-                autoFocus
               >
                 {zortosCommunityProxyProvisioning
                   ? t("settings.video.zortosCommunityProxy.provisioning")
@@ -1132,9 +1197,7 @@ export function SettingsStreamSection({
             <div className="native-streamer-warning-hint">
               <kbd>Esc</kbd> {t("settings.video.zortosCommunityProxy.enablePromptEsc")}
             </div>
-          </m.div>
-        </m.div>
-      )}
+      </ModalSurface>
     </>
   );
 }

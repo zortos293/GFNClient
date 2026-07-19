@@ -102,3 +102,30 @@ test("does not derive modes that exceed entitlement dimensions", () => {
     { resolution: "1920x1080", fps: 120 },
   );
 });
+
+test("derives 90 FPS modes only from entitlements that cover 90 FPS", () => {
+  const highFpsEntitlements = [{ width: 1920, height: 1080, fps: 120 }];
+  const highFpsExpanded = expandEntitledStreamResolutions(highFpsEntitlements);
+
+  assert.equal(
+    highFpsExpanded.some(
+      (resolution) =>
+        resolution.width === 1280 &&
+        resolution.height === 800 &&
+        resolution.fps === 90,
+    ),
+    true,
+  );
+  assert.deepEqual(
+    resolveEntitledStreamProfile(highFpsEntitlements, { resolution: "1280x800", fps: 90 }),
+    { resolution: "1280x800", fps: 90 },
+  );
+
+  const sixtyFpsExpanded = expandEntitledStreamResolutions([
+    { width: 1920, height: 1080, fps: 60 },
+  ]);
+  assert.equal(
+    sixtyFpsExpanded.some((resolution) => resolution.fps === 90),
+    false,
+  );
+});

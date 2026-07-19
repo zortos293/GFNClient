@@ -852,6 +852,8 @@ export class AuthService {
         let refreshedTokens: AuthTokens = {
           ...tokens,
           ...refreshedOAuth,
+          // OAuth refresh often omits id_token; never drop the prior JWT.
+          idToken: refreshedOAuth.idToken ?? tokens.idToken,
           // OAuth refresh does not always return a new client token.
           clientToken: tokens.clientToken,
           clientTokenExpiresAt: tokens.clientTokenExpiresAt,

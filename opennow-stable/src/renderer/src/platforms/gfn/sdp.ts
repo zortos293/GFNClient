@@ -536,6 +536,7 @@ export function buildNvstSdp(params: NvstParams): string {
   const maxBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(params.maxBitrateKbps));
   const startupBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.round(maxBitrate / 4));
   const isHighFps = params.fps >= 90;
+  const is90Fps = params.fps === 90;
   const is120Fps = params.fps === 120;
   const is240Fps = params.fps >= 240;
   const isAv1 = params.codec === "AV1";
@@ -649,8 +650,8 @@ export function buildNvstSdp(params: NvstParams): string {
       "a=video.encoderFeatureSetting:47",
       "a=video.encoderPreset:6",
       "a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600",
-      "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9",
-      `a=video.fbcDynamicFpsGrabTimeoutMs:${is120Fps ? 6 : 18}`,
+      `a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:${is90Fps ? 11 : 9}`,
+      `a=video.fbcDynamicFpsGrabTimeoutMs:${is90Fps ? 9 : is120Fps ? 6 : 18}`,
       `a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:${is120Fps ? 6000 : 12000}`,
     );
   }

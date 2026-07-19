@@ -10,6 +10,32 @@ export const pageTransition = {
   ease: smoothEase,
 } as const;
 
+export const largeSurfaceTransition = {
+  duration: 0.28,
+  ease: smoothEase,
+} as const;
+
+export const compactDialogTransition = {
+  duration: 0.2,
+  ease: smoothEase,
+} as const;
+
+export const disclosureTransition = {
+  duration: 0.24,
+  ease: smoothEase,
+} as const;
+
+export const streamRevealTransition = {
+  duration: 0.62,
+  ease: standardEase,
+} as const;
+
+export const statusPulseTransition = {
+  duration: 1.8,
+  repeat: Infinity,
+  ease: "easeInOut",
+} as const;
+
 /** Shared reveal timing for floating panels (stats HUD, settings modal, etc.). */
 export const surfaceRevealTransition = {
   duration: 0.34,
@@ -30,12 +56,36 @@ export const overlayMotion = {
   transition: { duration: 0.18, ease: standardEase },
 } as const;
 
+export const largeSurfaceMotion = {
+  initial: { opacity: 0, y: 12 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: 8 },
+  transition: largeSurfaceTransition,
+} as const;
+
 export const dialogMotion = {
   initial: { opacity: 0, scale: 0.97, y: 10 },
   animate: { opacity: 1, scale: 1, y: 0 },
   exit: { opacity: 0, scale: 0.985, y: 6 },
-  transition: { duration: 0.2, ease: smoothEase },
+  transition: compactDialogTransition,
 } as const;
+
+export function getStatusPulseMotion(reducedMotion: boolean | null): {
+  animate: { opacity: number | number[]; scale: number | number[] };
+  transition: typeof statusPulseTransition | { duration: 0 };
+} {
+  if (reducedMotion) {
+    return {
+      animate: { opacity: 1, scale: 1 },
+      transition: { duration: 0 },
+    };
+  }
+
+  return {
+    animate: { opacity: [0.55, 1, 0.55], scale: [0.94, 1.06, 0.94] },
+    transition: statusPulseTransition,
+  };
+}
 
 export const spinnerTransition = {
   duration: 0.85,

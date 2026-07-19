@@ -10,6 +10,7 @@ const ShaderAtmosphereCanvas = lazy(async () => {
 export function LazyShaderAtmosphere({
   variant = "controller",
   className,
+  active = true,
 }: ShaderAtmosphereProps): JSX.Element {
   const fallbackClassName = [
     "shader-atmosphere",
@@ -19,7 +20,7 @@ export function LazyShaderAtmosphere({
 
   return (
     <Suspense fallback={<div className={fallbackClassName} aria-hidden="true" />}>
-      <ShaderAtmosphereCanvas variant={variant} className={className} />
+      <ShaderAtmosphereCanvas variant={variant} className={className} active={active} />
     </Suspense>
   );
 }

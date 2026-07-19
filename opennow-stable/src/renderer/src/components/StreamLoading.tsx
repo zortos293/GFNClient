@@ -1,7 +1,7 @@
 import { Cpu, Monitor, Radio, Wifi, X, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { JSX, Ref } from "react";
-import { m } from "motion/react";
+import { m, useReducedMotion } from "motion/react";
 import {
   getPreferredSessionAdMediaUrl,
   getSessionAdItems,
@@ -14,6 +14,7 @@ import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
 import { LazyShaderAtmosphere } from "./LazyShaderAtmosphere";
 import { useTranslation } from "../i18n";
+import { getStatusPulseMotion } from "./MotionProvider";
 
 type TranslateFunction = typeof import("../i18n").t;
 
@@ -136,6 +137,8 @@ export function StreamLoading({
   onCancel,
 }: StreamLoadingProps): JSX.Element {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
+  const statusPulseMotion = getStatusPulseMotion(reducedMotion);
   const [startedAt] = useState(() => Date.now());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const hasError = Boolean(error);
@@ -190,9 +193,11 @@ export function StreamLoading({
                 <div className={`sload-stage sload-stage--${state}`} key={stage.id}>
                   <m.span
                     className="sload-stage-icon"
-                    animate={state === "active" ? { scale: [1, 1.08, 1] } : { scale: 1 }}
+                    animate={state === "active"
+                      ? statusPulseMotion.animate
+                      : { opacity: 1, scale: 1 }}
                     transition={state === "active"
-                      ? { duration: 1.8, repeat: Infinity, ease: "easeInOut" }
+                      ? statusPulseMotion.transition
                       : { duration: 0.2 }}
                   >
                     <StageIcon size={18} />
@@ -211,8 +216,8 @@ export function StreamLoading({
             <m.span
               className="sload-live-dot"
               aria-hidden="true"
-              animate={{ opacity: [0.55, 1, 0.55], scale: [0.9, 1.12, 0.9] }}
-              transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+              animate={statusPulseMotion.animate}
+              transition={statusPulseMotion.transition}
             />
           )}
           <div className="sload-status-text">

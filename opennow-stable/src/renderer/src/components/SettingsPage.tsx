@@ -34,7 +34,8 @@ interface SettingsPageProps {
   codecResults: CodecTestResult[] | null;
   codecTesting: boolean;
   onRunCodecTest: () => Promise<void>;
-  onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  onSettingPreview: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  onSettingChange: <K extends keyof Settings>(key: K, value: Settings[K]) => Promise<void>;
   onClose: () => void;
   focusSection?: SettingsSectionId;
   /** Called when the user clicks "What's new" in the About section */
@@ -44,6 +45,7 @@ interface SettingsPageProps {
 export function SettingsPage({
   settings,
   regions,
+  onSettingPreview,
   onSettingChange,
   codecResults,
   codecTesting,
@@ -60,6 +62,8 @@ export function SettingsPage({
   const settingsContentRef = useRef<HTMLDivElement | null>(null);
   const [nativeOverlayBlocking, setNativeOverlayBlocking] = useState(false);
   const [streamOverlayBlocking, setStreamOverlayBlocking] = useState(false);
+  const saveRequestRef = useRef(0);
+  const savedIndicatorTimerRef = useRef<number | null>(null);
 
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
@@ -75,21 +79,55 @@ export function SettingsPage({
     setSettingsSearch("");
   }, [focusSection]);
 
+  const showSavedIndicator = useCallback((requestId: number): void => {
+    if (requestId !== saveRequestRef.current) return;
+    if (savedIndicatorTimerRef.current !== null) {
+      window.clearTimeout(savedIndicatorTimerRef.current);
+    }
+    setSavedIndicator(true);
+    savedIndicatorTimerRef.current = window.setTimeout(() => {
+      savedIndicatorTimerRef.current = null;
+      if (requestId === saveRequestRef.current) {
+        setSavedIndicator(false);
+      }
+    }, 1500);
+  }, []);
+
   const handleChange = useCallback(
-    <K extends keyof Settings>(key: K, value: Settings[K]) => {
-      onSettingChange(key, value);
-      setSavedIndicator(true);
-      setTimeout(() => setSavedIndicator(false), 1500);
+    <K extends keyof Settings>(key: K, value: Settings[K]): void => {
+      const requestId = ++saveRequestRef.current;
+      if (savedIndicatorTimerRef.current !== null) {
+        window.clearTimeout(savedIndicatorTimerRef.current);
+        savedIndicatorTimerRef.current = null;
+      }
+      setSavedIndicator(false);
+      void onSettingChange(key, value)
+        .then(() => showSavedIndicator(requestId))
+        .catch((error) => {
+          if (requestId === saveRequestRef.current) {
+            console.warn(`[Settings] Failed to save ${String(key)}:`, error);
+          }
+        });
     },
-    [onSettingChange],
+    [onSettingChange, showSavedIndicator],
+  );
+
+  const handlePreview = useCallback(
+    <K extends keyof Settings>(key: K, value: Settings[K]): void => {
+      onSettingPreview(key, value);
+    },
+    [onSettingPreview],
   );
 
   const markSaved = useCallback(() => {
-    setSavedIndicator(true);
-    setTimeout(() => setSavedIndicator(false), 1500);
-  }, []);
+    showSavedIndicator(++saveRequestRef.current);
+  }, [showSavedIndicator]);
 
-  const escapeBlocked = nativeOverlayBlocking || streamOverlayBlocking;
+  useEffect(() => () => {
+    if (savedIndicatorTimerRef.current !== null) {
+      window.clearTimeout(savedIndicatorTimerRef.current);
+    }
+  }, []);
 
   const loadSubscriptionData = useCallback(async (isCancelled: () => boolean = () => false): Promise<void> => {
     setSubscriptionLoading(true);
@@ -183,24 +221,6 @@ export function SettingsPage({
   const hasAnySearchMatches = showAccount || showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !escapeBlocked) {
-        event.preventDefault();
-        onClose();
-      }
-    };
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [escapeBlocked, onClose]);
-
   return (
     <>
       <header className="settings-modal-header">
@@ -260,6 +280,7 @@ export function SettingsPage({
                       showStreamVideo={showStream && showStreamVideo}
                       showStreamCodecDiagnostics={showStream && showStreamCodecDiagnostics}
                       handleChange={handleChange}
+                      handlePreview={handlePreview}
                       codecResults={codecResults}
                       codecTesting={codecTesting}
                       onRunCodecTest={onRunCodecTest}
@@ -297,6 +318,7 @@ export function SettingsPage({
                       settings={settings}
                       showAll={showAll}
                       handleChange={handleChange}
+                      handlePreview={handlePreview}
                     />
                   )}
                   {showInterface && (
@@ -304,6 +326,7 @@ export function SettingsPage({
                       settings={settings}
                       showAll={showAll}
                       handleChange={handleChange}
+                      handlePreview={handlePreview}
                       onSaved={markSaved}
                     />
                   )}

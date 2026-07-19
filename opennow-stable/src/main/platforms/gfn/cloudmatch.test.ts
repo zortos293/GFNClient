@@ -143,17 +143,28 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
   const calls: string[] = [];
+  type CapturedNetworkTestRequestBody = {
+    netTestRequestData: {
+      netTestProfile: {
+        framesPerSecond: number;
+      };
+    };
+  };
   type CapturedSessionRequestBody = {
     sessionRequestData: {
       networkTestSessionId?: string | null;
       appLaunchMode?: number;
       enablePersistingInGameSettings?: boolean;
+      clientRequestMonitorSettings: Array<{
+        framesPerSecond: number;
+      }>;
       requestedStreamingFeatures: {
         bitDepth?: number;
         chromaFormat?: number;
       };
     };
   };
+  let networkTestRequestBody: CapturedNetworkTestRequestBody | null = null;
   let requestBody: CapturedSessionRequestBody | null = null;
   const expectedSessionUrl = `https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?${new URLSearchParams({
     keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
@@ -178,6 +189,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     }
 
     if (url === "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession") {
+      networkTestRequestBody = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
         requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
         netTestSession: {
@@ -206,7 +218,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
             iceServers: [{ urls: "stun:127.0.0.1:19302" }],
           },
           sessionRequestData: {
-            clientRequestMonitorSettings: [{ widthInPixels: 2560, heightInPixels: 1440, framesPerSecond: 240 }],
+            clientRequestMonitorSettings: [{ widthInPixels: 2560, heightInPixels: 1440, framesPerSecond: 90 }],
             requestedStreamingFeatures: createdRequestBody.sessionRequestData.requestedStreamingFeatures,
             enablePersistingInGameSettings: createdRequestBody.sessionRequestData.enablePersistingInGameSettings,
           },
@@ -225,7 +237,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
       internalTitle: "Test Game",
       accountLinked: true,
       zone: "prod",
-      settings: makeSettings({ colorQuality: "10bit_444", enableL4S: true, appLaunchMode: "gamepadFriendly" }),
+      settings: makeSettings({ fps: 90, colorQuality: "10bit_444", enableL4S: true, appLaunchMode: "gamepadFriendly" }),
     });
 
     assert.equal(session.streamingBaseUrl, "https://np-lax-01.cloudmatchbeta.nvidiagrid.net");
@@ -235,8 +247,12 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
       "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession",
       expectedSessionUrl,
     ]);
+    const capturedNetworkTestRequestBody = networkTestRequestBody as CapturedNetworkTestRequestBody | null;
+    assert.ok(capturedNetworkTestRequestBody);
+    assert.equal(capturedNetworkTestRequestBody.netTestRequestData.netTestProfile.framesPerSecond, 90);
     const capturedRequestBody = requestBody as CapturedSessionRequestBody | null;
     assert.ok(capturedRequestBody);
+    assert.equal(capturedRequestBody.sessionRequestData.clientRequestMonitorSettings[0]?.framesPerSecond, 90);
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 1);
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 1);
     assert.equal(capturedRequestBody.sessionRequestData.appLaunchMode, 2);

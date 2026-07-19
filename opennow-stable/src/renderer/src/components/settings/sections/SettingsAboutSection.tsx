@@ -58,9 +58,14 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
     ? `${formatBytes(updaterState.progress.bytesPerSecond)}/s`
     : null;
   const updaterBadgeLabel = useMemo(() => getUpdaterBadgeLabel(updaterState), [updaterState]);
+  const updaterProgressAriaText = [
+    t("settings.about.downloadProgress", { percent: updaterProgressPercent }),
+    updaterProgressLabel,
+    updaterDownloadRateLabel,
+  ].filter(Boolean).join(" · ");
 
   return (
-    <section className="settings-section">
+    <section className="settings-section settings-about-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.about")}</div>}
       <div className="settings-section-header">
         <h2>{t("settings.sections.about")}</h2>
@@ -91,17 +96,19 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
               </span>
             ) : null}
           </label>
-          <SelectDropdown
-            id="updateChannel"
-            value={settings.updateChannel}
-            options={[
-              { value: "stable", label: t("settings.about.updateChannelStable") },
-              { value: "nightly", label: t("settings.about.updateChannelNightly") },
-            ]}
-            onChange={(value) => handleChange("updateChannel", value as Settings["updateChannel"])}
-            disabled={updaterState.status === "checking" || updaterState.status === "downloading"}
-            ariaLabel={t("settings.about.updateChannel")}
-          />
+          <div className="settings-row-control">
+            <SelectDropdown
+              id="updateChannel"
+              value={settings.updateChannel}
+              options={[
+                { value: "stable", label: t("settings.about.updateChannelStable") },
+                { value: "nightly", label: t("settings.about.updateChannelNightly") },
+              ]}
+              onChange={(value) => handleChange("updateChannel", value as Settings["updateChannel"])}
+              disabled={updaterState.status === "checking" || updaterState.status === "downloading"}
+              ariaLabel={t("settings.about.updateChannel")}
+            />
+          </div>
         </div>
 
         <div className="settings-row">
@@ -130,8 +137,8 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
               <span className="settings-hint">{t("settings.about.downloadedVersion", { version: updaterState.downloadedVersion })}</span>
             ) : null}
             {updaterState.status === "downloading" && updaterState.progress ? (
-              <span className="settings-hint">
-                {t("settings.about.downloadProgress", { percent: updaterProgressPercent })}{updaterProgressLabel ? ` · ${updaterProgressLabel}` : ""}{updaterDownloadRateLabel ? ` · ${updaterDownloadRateLabel}` : ""}
+              <span className="settings-hint" role="status" aria-live="polite" aria-atomic="true">
+                {updaterProgressAriaText}
               </span>
             ) : null}
           </label>
@@ -182,29 +189,40 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
           </div>
         </div>
 
-        <div className="settings-row">
-          <label className="settings-label settings-label--wrap">
-            {t("settings.about.automaticallyCheckForUpdates")}
-            <span className="settings-hint">
-              {t("settings.about.automaticallyCheckForUpdatesOnHint")}
-            </span>
-            <span className="settings-hint">
-              {t("settings.about.automaticallyCheckForUpdatesOffHint")}
-            </span>
-          </label>
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={settings.autoCheckForUpdates}
-              onChange={(e) => handleChange("autoCheckForUpdates", e.target.checked)}
-            />
-            <span className="settings-toggle-track" />
-          </label>
+        <div className="settings-row settings-row--column">
+          <div className="settings-row-top settings-row-top--compact">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-about-auto-check-updates">
+              <span className="settings-label-title">{t("settings.about.automaticallyCheckForUpdates")}</span>
+            </label>
+            <label className="settings-toggle">
+              <input
+                id="settings-about-auto-check-updates"
+                type="checkbox"
+                checked={settings.autoCheckForUpdates}
+                onChange={(e) => handleChange("autoCheckForUpdates", e.target.checked)}
+              />
+              <span className="settings-toggle-track" />
+            </label>
+          </div>
+          <span className="settings-subtle-hint">
+            {t("settings.about.automaticallyCheckForUpdatesOnHint")}
+          </span>
+          <span className="settings-subtle-hint">
+            {t("settings.about.automaticallyCheckForUpdatesOffHint")}
+          </span>
         </div>
 
         {updaterState.status === "downloading" && updaterState.progress ? (
           <div className="settings-row settings-row--column">
-            <div className="settings-updater-progress">
+            <div
+              className="settings-updater-progress"
+              role="progressbar"
+              aria-label={t("settings.about.downloadUpdate")}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={updaterProgressPercent}
+              aria-valuetext={updaterProgressAriaText}
+            >
               <div className="settings-updater-progress-bar" style={{ width: `${updaterProgressPercent}%` }} />
             </div>
           </div>
@@ -262,9 +280,9 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
               }
             }}
           >
-    	                  <Trash2 size={16} />
-    	                  {t("settings.about.deleteCache")}
-    	                </button>
+            <Trash2 size={16} />
+            {t("settings.about.deleteCache")}
+          </button>
         </div>
 
       </div>

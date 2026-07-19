@@ -9,7 +9,8 @@ export type GameLanguage =
 /** Keyboard layout codes for physical key mapping in remote sessions */
 export type KeyboardLayout =
   | "en-US" | "en-GB" | "tr-TR" | "de-DE" | "fr-FR" | "es-ES" | "es-MX" | "it-IT"
-  | "pt-PT" | "pt-BR" | "pl-PL" | "ru-RU" | "ja-JP" | "ko-KR" | "zh-CN" | "zh-TW";
+  | "pt-PT" | "pt-BR" | "pl-PL" | "da-DK" | "nb-NO" | "sv-SE" | "fi-FI"
+  | "ru-RU" | "ja-JP" | "ko-KR" | "zh-CN" | "zh-TW";
 
 export interface KeyboardLayoutOption {
   value: KeyboardLayout;
@@ -31,6 +32,10 @@ export const keyboardLayoutOptions: readonly KeyboardLayoutOption[] = [
   { value: "pt-PT", label: "Portuguese (Portugal)" },
   { value: "pt-BR", label: "Portuguese (Brazil)" },
   { value: "pl-PL", label: "Polish" },
+  { value: "da-DK", label: "Danish", macValue: "m-da" },
+  { value: "nb-NO", label: "Norwegian", macValue: "m-no" },
+  { value: "sv-SE", label: "Swedish", macValue: "m-sv" },
+  { value: "fi-FI", label: "Finnish", macValue: "m-fi" },
   { value: "ru-RU", label: "Russian" },
   { value: "ja-JP", label: "Japanese" },
   { value: "ko-KR", label: "Korean" },

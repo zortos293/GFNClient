@@ -231,6 +231,7 @@ export function App(): JSX.Element {
     gameLanguage: "en_US",
     enablePersistingInGameSettings: false,
     enableL4S: false,
+    identifyAsSteamDeck: false,
     enableCloudGsync: false,
     discordRichPresence: false,
     autoCheckForUpdates: true,
@@ -1621,7 +1622,14 @@ export function App(): JSX.Element {
     if (settingsLoaded) {
       await window.openNow.setSetting(key, value);
     }
-  }, [previewSetting, settingsLoaded]);
+    if (key === "identifyAsSteamDeck" && authSession) {
+      try {
+        await loadSubscriptionInfo(authSession);
+      } catch (error) {
+        console.warn("Failed to refresh subscription after Steam Deck identity change:", error);
+      }
+    }
+  }, [authSession, loadSubscriptionInfo, previewSetting, settingsLoaded]);
 
   useEffect(() => {
     if (!settingsLoaded || !subscriptionInfo) {

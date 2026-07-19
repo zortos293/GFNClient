@@ -68,6 +68,9 @@ export function SettingsPage({
   const [entitledResolutions, setEntitledResolutions] = useState<EntitledResolution[]>([]);
   const [subscriptionInfo, setSubscriptionInfo] = useState<SubscriptionInfo | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(true);
+  const identifyAsSteamDeckRef = useRef(settings.identifyAsSteamDeck);
+  const subscriptionLoadIdRef = useRef(0);
+  identifyAsSteamDeckRef.current = settings.identifyAsSteamDeck;
 
   useEffect(() => {
     settingsContentRef.current?.scrollTo({ top: 0 });
@@ -93,25 +96,6 @@ export function SettingsPage({
     }, 1500);
   }, []);
 
-  const handleChange = useCallback(
-    <K extends keyof Settings>(key: K, value: Settings[K]): void => {
-      const requestId = ++saveRequestRef.current;
-      if (savedIndicatorTimerRef.current !== null) {
-        window.clearTimeout(savedIndicatorTimerRef.current);
-        savedIndicatorTimerRef.current = null;
-      }
-      setSavedIndicator(false);
-      void onSettingChange(key, value)
-        .then(() => showSavedIndicator(requestId))
-        .catch((error) => {
-          if (requestId === saveRequestRef.current) {
-            console.warn(`[Settings] Failed to save ${String(key)}:`, error);
-          }
-        });
-    },
-    [onSettingChange, showSavedIndicator],
-  );
-
   const handlePreview = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]): void => {
       onSettingPreview(key, value);
@@ -129,56 +113,101 @@ export function SettingsPage({
     }
   }, []);
 
-  const loadSubscriptionData = useCallback(async (isCancelled: () => boolean = () => false): Promise<void> => {
+  const loadSubscriptionData = useCallback(async (
+    options?: { identifyAsSteamDeck?: boolean; preferCache?: boolean },
+  ): Promise<void> => {
+    const loadId = ++subscriptionLoadIdRef.current;
+    const isCurrentLoad = (): boolean => subscriptionLoadIdRef.current === loadId;
     setSubscriptionLoading(true);
 
     try {
       const sessionResult = await window.openNow.getAuthSession();
       const session = sessionResult.session;
-      if (!session || isCancelled()) {
+      if (!isCurrentLoad()) {
+        return;
+      }
+      if (!session) {
         setEntitledResolutions([]);
         setSubscriptionInfo(null);
         return;
       }
 
       const userId = session.user.userId;
-      const cached = loadCachedEntitledResolutions();
-      if (
-        cached &&
-        cached.userId === userId &&
-        cached.membershipTier === session.user.membershipTier &&
-        !isCancelled()
-      ) {
-        setEntitledResolutions(cached.entitledResolutions);
+      const identifyAsSteamDeck = options?.identifyAsSteamDeck ?? identifyAsSteamDeckRef.current;
+      if (options?.preferCache !== false) {
+        const cached = loadCachedEntitledResolutions(identifyAsSteamDeck);
+        if (
+          cached &&
+          cached.userId === userId &&
+          cached.membershipTier === session.user.membershipTier &&
+          isCurrentLoad()
+        ) {
+          setEntitledResolutions(cached.entitledResolutions);
+        }
       }
 
       const sub = await window.openNow.fetchSubscription({
         userId,
       });
 
-      if (!isCancelled()) {
-        setSubscriptionInfo(sub);
-        setEntitledResolutions(sub.entitledResolutions);
-        saveCachedEntitledResolutions({
-          userId,
-          membershipTier: sub.membershipTier,
-          entitledResolutions: sub.entitledResolutions,
-        });
+      if (!isCurrentLoad()) {
+        return;
       }
+
+      setSubscriptionInfo(sub);
+      setEntitledResolutions(sub.entitledResolutions);
+      saveCachedEntitledResolutions({
+        userId,
+        membershipTier: sub.membershipTier,
+        identifyAsSteamDeck,
+        entitledResolutions: sub.entitledResolutions,
+      });
     } catch (err) {
       console.warn("Failed to fetch subscription for settings:", err);
-      if (!isCancelled()) {
+      if (isCurrentLoad()) {
         setSubscriptionInfo(null);
       }
     } finally {
-      if (!isCancelled()) setSubscriptionLoading(false);
+      if (isCurrentLoad()) {
+        setSubscriptionLoading(false);
+      }
     }
   }, []);
 
+  const handleChange = useCallback(
+    <K extends keyof Settings>(key: K, value: Settings[K]): void => {
+      const requestId = ++saveRequestRef.current;
+      if (savedIndicatorTimerRef.current !== null) {
+        window.clearTimeout(savedIndicatorTimerRef.current);
+        savedIndicatorTimerRef.current = null;
+      }
+      setSavedIndicator(false);
+      void onSettingChange(key, value)
+        .then(async () => {
+          showSavedIndicator(requestId);
+          if (key === "identifyAsSteamDeck") {
+            // Refresh after the setting is persisted so MES sees the new identity.
+            // Keep the previous resolution list until the matching cache/MES result arrives.
+            await loadSubscriptionData({
+              identifyAsSteamDeck: value as boolean,
+              preferCache: true,
+            });
+          }
+        })
+        .catch((error) => {
+          if (requestId === saveRequestRef.current) {
+            console.warn(`[Settings] Failed to save ${String(key)}:`, error);
+          }
+        });
+    },
+    [loadSubscriptionData, onSettingChange, showSavedIndicator],
+  );
+
   useEffect(() => {
-    let cancelled = false;
-    void loadSubscriptionData(() => cancelled);
-    return () => { cancelled = true; };
+    void loadSubscriptionData();
+    return () => {
+      subscriptionLoadIdRef.current += 1;
+    };
   }, [loadSubscriptionData]);
 
   const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();

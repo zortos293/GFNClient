@@ -29,6 +29,11 @@ export {
 export { initSessionProxyAuth } from "./proxyFetch";
 export { normalizeSessionProxyUrl, sessionProxyHasCredentials } from "./proxyUrl";
 export { getStableDeviceId } from "./deviceId";
+export {
+  STEAM_DECK_DEVICE_IDENTITY,
+  configureIdentifyAsSteamDeck,
+  resolveGfnDeviceIdentity,
+} from "./deviceIdentity";
 export { fetchSubscription, fetchDynamicRegions } from "./subscription";
 export {
   fetchPersistentStorageLocations,

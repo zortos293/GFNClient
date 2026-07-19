@@ -900,6 +900,29 @@ export function SettingsStreamSection({
 
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-stream-identify-steam-deck">
+              <span className="settings-label-title">
+                {t("settings.video.identifyAsSteamDeck")}
+                <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
+              </span>
+            </label>
+            <label className="settings-toggle">
+              <input
+                id="settings-stream-identify-steam-deck"
+                type="checkbox"
+                checked={settings.identifyAsSteamDeck}
+                onChange={(e) => handleChange("identifyAsSteamDeck", e.target.checked)}
+              />
+              <span className="settings-toggle-track" />
+            </label>
+          </div>
+          <span className="settings-subtle-hint">
+            {t("settings.video.identifyAsSteamDeckHint")}
+          </span>
+        </div>
+
+        <div className="settings-row settings-row--column">
+          <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label settings-label--wrap" htmlFor="settings-stream-launch-console-mode">
               <span className="settings-label-title">
                 {t("settings.video.launchInConsoleMode")}

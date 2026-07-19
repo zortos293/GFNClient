@@ -150,6 +150,11 @@ export interface Settings {
   enablePersistingInGameSettings: boolean;
   /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
   enableL4S: boolean;
+  /**
+   * Advertise OpenNOW as the official Steam Deck GFN client via nv-device-* headers
+   * and clientPlatformName (does not switch OAuth client ID).
+   */
+  identifyAsSteamDeck: boolean;
   /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
   enableCloudGsync: boolean;
   /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes */
@@ -269,6 +274,7 @@ const DEFAULT_SETTINGS: Settings = {
   gameLanguage: "en_US",
   enablePersistingInGameSettings: false,
   enableL4S: false,
+  identifyAsSteamDeck: false,
   enableCloudGsync: false,
   nativeTransitionDiagnostics: undefined,
   discordRichPresence: false,
@@ -491,6 +497,10 @@ export class SettingsManager {
 
     if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
       settings.steamControllerCompatibilityMode = false;
+      migrated = true;
+    }
+    if (typeof settings.identifyAsSteamDeck !== "boolean") {
+      settings.identifyAsSteamDeck = false;
       migrated = true;
     }
 

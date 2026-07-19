@@ -376,15 +376,19 @@ export function getFpsForResolution(entitled: EntitledResolution[], resolution: 
   return [...new Set(fpsList)].sort((a, b) => a - b);
 }
 
-export const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v2";
+export const ENTITLED_RESOLUTIONS_STORAGE_KEY = "opennow.entitled-resolutions.v3";
 
 export interface EntitledResolutionsCache {
   userId: string;
   membershipTier: string;
+  /** MES resolution catalogs differ for Steam Deck vs desktop identity. */
+  identifyAsSteamDeck: boolean;
   entitledResolutions: EntitledResolution[];
 }
 
-export function loadCachedEntitledResolutions(): EntitledResolutionsCache | null {
+export function loadCachedEntitledResolutions(
+  identifyAsSteamDeck = false,
+): EntitledResolutionsCache | null {
   try {
     const raw = window.sessionStorage.getItem(ENTITLED_RESOLUTIONS_STORAGE_KEY);
     if (!raw) return null;
@@ -392,9 +396,14 @@ export function loadCachedEntitledResolutions(): EntitledResolutionsCache | null
     if (!parsed || typeof parsed.userId !== "string" || !Array.isArray(parsed.entitledResolutions)) {
       return null;
     }
+    const cachedIdentifyAsSteamDeck = parsed.identifyAsSteamDeck === true;
+    if (cachedIdentifyAsSteamDeck !== identifyAsSteamDeck) {
+      return null;
+    }
     return {
       userId: parsed.userId,
       membershipTier: typeof parsed.membershipTier === "string" ? parsed.membershipTier : "",
+      identifyAsSteamDeck: cachedIdentifyAsSteamDeck,
       entitledResolutions: parsed.entitledResolutions,
     };
   } catch {

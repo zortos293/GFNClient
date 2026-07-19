@@ -9,6 +9,7 @@ import {
 
 import type { CloudMatchRequest } from "./types";
 import { buildGfnCloudMatchHeaders } from "./clientHeaders";
+import { resolveGfnDeviceIdentity } from "./deviceIdentity";
 import { getStableDeviceId } from "./deviceId";
 import {
   appLaunchModeWireValue,
@@ -115,9 +116,10 @@ export async function createNetworkTestSession(input: {
   }
 
   const { width, height } = parseResolution(input.settings.resolution);
+  const { clientPlatformName } = resolveGfnDeviceIdentity();
   const body = {
     netTestRequestData: {
-      clientPlatformName: "windows",
+      clientPlatformName,
       netTestProfile: {
         widthInPixels: width,
         heightInPixels: height,
@@ -220,7 +222,7 @@ export function buildSessionRequestBody(
       clientVersion: "30.0",
       sdkVersion: "1.0",
       streamerVersion: 1,
-      clientPlatformName: "windows",
+      clientPlatformName: resolveGfnDeviceIdentity().clientPlatformName,
       clientRequestMonitorSettings: [
         {
           monitorId: 0,
@@ -303,7 +305,7 @@ export function buildClaimRequestBody(
       clientVersion: "30.0",
       deviceHashId: deviceId,
       internalTitle: null,
-      clientPlatformName: "windows",
+      clientPlatformName: resolveGfnDeviceIdentity().clientPlatformName,
       metaData: [
         { key: "SubSessionId", value: subSessionId },
         { key: "wssignaling", value: "1" },

@@ -40,6 +40,7 @@ import { getSettingsManager, type SettingsManager } from "./settings";
 
 import { getActiveSessions } from "./platforms/gfn/cloudmatch";
 import { AuthService } from "./platforms/gfn/auth";
+import { configureIdentifyAsSteamDeck } from "./platforms/gfn/deviceIdentity";
 import { initSessionProxyAuth } from "./platforms/gfn/proxyFetch";
 import {
   connectDiscordRpc,
@@ -517,6 +518,7 @@ app.whenReady().then(async () => {
   await authService.initialize();
 
   settingsManager = getSettingsManager();
+  configureIdentifyAsSteamDeck(() => settingsManager.get("identifyAsSteamDeck"));
   appUpdater = createAppUpdaterController({
     onStateChanged: emitUpdaterStateToRenderer,
     automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),

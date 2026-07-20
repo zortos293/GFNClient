@@ -3443,9 +3443,14 @@ class NativeStreamClient(
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
                 override fun onSetSuccess() {
+                    if (generation != transportGeneration || peerConnection !== pc) return
                     recordStreamDiagnostic("remote description set")
-                    attachMicrophoneTrack(pc)
-                    applyVideoCodecPreferences(pc)
+                    // WebRTC disposes previously returned transceiver wrappers whenever
+                    // getTransceivers() refreshes its cache. Share one snapshot so the
+                    // microphone sender remains valid through transport teardown.
+                    val transceivers = pc.transceivers
+                    applyVideoCodecPreferences(transceivers)
+                    attachMicrophoneTrack(pc, transceivers)
                     pc.createAnswer(
                         object : SimpleSdpObserver() {
                             override fun onCreateSuccess(description: SessionDescription?) {
@@ -3536,10 +3541,10 @@ class NativeStreamClient(
         return prepared
     }
 
-    private fun applyVideoCodecPreferences(pc: PeerConnection) {
+    private fun applyVideoCodecPreferences(transceivers: List<RtpTransceiver>) {
         val preferences = receiverCodecPreferences(settings.codec)
         if (preferences.isEmpty()) return
-        val transceiver = pc.transceivers.firstOrNull {
+        val transceiver = transceivers.firstOrNull {
             it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO ||
                 it.receiver?.track()?.kind() == MediaStreamTrack.VIDEO_TRACK_KIND
         } ?: return
@@ -3551,7 +3556,11 @@ class NativeStreamClient(
         }
     }
 
-    private fun attachMicrophoneTrack(pc: PeerConnection) {
+    @Synchronized
+    private fun attachMicrophoneTrack(
+        pc: PeerConnection,
+        transceivers: List<RtpTransceiver>,
+    ) {
         val permissionGranted = ContextCompat.checkSelfPermission(
             appContext,
             Manifest.permission.RECORD_AUDIO,
@@ -3574,7 +3583,7 @@ class NativeStreamClient(
         val track = requireNotNull(factory).createAudioTrack(MICROPHONE_TRACK_ID, source)
         track.setEnabled(!microphoneMuted)
 
-        val audioTransceivers = pc.transceivers.filter {
+        val audioTransceivers = transceivers.filter {
             it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO ||
                 it.receiver?.track()?.kind() == MediaStreamTrack.AUDIO_TRACK_KIND
         }
@@ -3615,13 +3624,24 @@ class NativeStreamClient(
         )
     }
 
+    @Synchronized
     private fun releaseMicrophoneTrack() {
-        microphoneSender?.setTrack(null, false)
+        val sender = microphoneSender
+        val track = microphoneTrack
+        val source = microphoneSource
         microphoneSender = null
-        microphoneTrack?.dispose()
         microphoneTrack = null
-        microphoneSource?.dispose()
         microphoneSource = null
+
+        try {
+            sender?.setTrack(null, false)
+        } catch (error: IllegalStateException) {
+            if (!isDisposedRtpSenderFailure(error)) throw error
+            recordStreamDiagnostic("microphone sender was already disposed during transport close")
+        } finally {
+            if (track?.isDisposed == false) track.dispose()
+            source?.dispose()
+        }
     }
 
     private fun receiverCodecPreferences(codec: VideoCodec): List<RtpCapabilities.CodecCapability> {
@@ -5892,6 +5912,9 @@ internal fun shouldCaptureMicrophone(
     mode: MicrophoneMode,
     permissionGranted: Boolean,
 ): Boolean = mode != MicrophoneMode.Disabled && permissionGranted
+
+internal fun isDisposedRtpSenderFailure(error: IllegalStateException): Boolean =
+    error.message == "RtpSender has been disposed."
 
 internal fun advancedCodecRestartSettleDelayMs(codec: VideoCodec, hadStableMedia: Boolean): Long =
     if (hadStableMedia && codec != VideoCodec.H264) ANDROID_CODEC_RESTART_SETTLE_MS else 0L

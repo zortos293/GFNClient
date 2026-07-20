@@ -111,14 +111,9 @@ class GfnApiTest {
 
     @Test
     fun claimRequestCarriesCommonResolutionAspectAndCodecMatrix() {
-        val cases = listOf(
-            Triple("1280x720", "16:9", 1280 to 720),
-            Triple("1920x1080", "16:9", 1920 to 1080),
-            Triple("1920x1200", "16:10", 1920 to 1200),
-            Triple("1024x768", "4:3", 1024 to 768),
-            Triple("1680x720", "21:9", 1680 to 720),
-            Triple("2560x1080", "21:9", 2560 to 1080),
-        )
+        val cases = STREAM_RESOLUTION_OPTIONS.map { option ->
+            Triple(option.value, option.aspectRatio, parseResolutionPixels(option.value))
+        }
 
         for ((resolution, aspectRatio, pixels) in cases) {
             for (codec in VideoCodec.entries) {
@@ -152,6 +147,10 @@ class GfnApiTest {
                 assertEquals("$resolution $codec fps", 60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
                 assertEquals("$resolution $codec bit depth", if (codec == VideoCodec.H264) 0 else 10, features.getValue("bitDepth").jsonPrimitive.int)
                 assertEquals(false, features.getValue("reflex").jsonPrimitive.boolean)
+                assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
+                assertEquals(0, monitor.getValue("positionX").jsonPrimitive.int)
+                assertEquals(0, monitor.getValue("positionY").jsonPrimitive.int)
+                assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
                 assertEquals(pixels.first, physicalResolution?.getValue("horizontalPixels")?.jsonPrimitive?.int)
                 assertEquals(pixels.second, physicalResolution?.getValue("verticalPixels")?.jsonPrimitive?.int)
             }
@@ -189,17 +188,34 @@ class GfnApiTest {
 
         assertEquals(1680, monitor.getValue("widthInPixels").jsonPrimitive.int)
         assertEquals(720, monitor.getValue("heightInPixels").jsonPrimitive.int)
-        assertEquals(0, monitor.getValue("dpi").jsonPrimitive.int)
-        assertFalse(monitor.containsKey("monitorId"))
-        assertFalse(monitor.containsKey("positionX"))
-        assertFalse(monitor.containsKey("positionY"))
+        assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("positionX").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("positionY").jsonPrimitive.int)
         assertEquals(JsonNull, monitor.getValue("displayData"))
         assertEquals(JsonNull, monitor.getValue("hdr10PlusGamingData"))
-        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(2, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
-        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(1, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
+        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(1920, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
         assertEquals(1080, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+    }
+
+    @Test
+    fun cloudMatchUsesDesktopNativeClientIdentity() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+        )
+
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
+        assertEquals("WINDOWS", headers["nv-device-os"])
+        assertEquals("DESKTOP", headers["nv-device-type"])
+        assertTrue(headers["User-Agent"].orEmpty().contains("NVIDIACEFClient"))
+        assertEquals("https://play.geforcenow.com", headers["Origin"])
     }
 
     @Test
@@ -308,6 +324,12 @@ class GfnApiTest {
             .single().jsonObject
 
         assertEquals(120, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+        assertEquals(
+            true,
+            body.getValue("sessionRequestData").jsonObject
+                .getValue("requestedStreamingFeatures").jsonObject
+                .getValue("reflex").jsonPrimitive.boolean,
+        )
     }
 
     @Test

@@ -46,4 +46,18 @@ class MicrophoneSupportTest {
         assertTrue(updated.microphoneMode == MicrophoneMode.VoiceActivity)
         assertTrue(updated.microphoneDeviceId == "preferred-device")
     }
+
+    @Test
+    fun microphoneCleanupOnlyIgnoresTheWebRtcDisposedSenderFailure() {
+        assertTrue(
+            isDisposedRtpSenderFailure(
+                IllegalStateException("RtpSender has been disposed."),
+            ),
+        )
+        assertFalse(
+            isDisposedRtpSenderFailure(
+                IllegalStateException("RtpSender track update failed."),
+            ),
+        )
+    }
 }

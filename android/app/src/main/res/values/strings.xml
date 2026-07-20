@@ -133,4 +133,7 @@
     <string name="accent_lime">Lime</string>
     <string name="accent_coral">Coral</string>
     <string name="accent_violet">Violet</string>
+    <string name="settings_native_streamer">Native streamer (Experimental)</string>
+    <string name="settings_native_streamer_desc">Intercepts the hardware decoder to inject low-latency vendor properties. May be unstable.</string>
 </resources>
+

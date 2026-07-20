@@ -321,6 +321,7 @@ data class AppSettings(
     val analyticsOptOut: Boolean = true,
     val analyticsConsentAsked: Boolean = false,
     val allowEscapeToExitFullscreen: Boolean = false,
+    val nativeLowLatencyDecoder: Boolean = false,
 )
 
 internal const val MIN_GAME_CARD_SCALE = 0.75f

@@ -8295,7 +8295,7 @@ private fun StatusBarSettingsPage(
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(location = !metrics.location))
                 }
-                StatusBarMetricSwitch("Dec / Enc", metrics.latency, Modifier.width(itemWidth)) {
+                StatusBarMetricSwitch("Dec / Jit", metrics.latency, Modifier.width(itemWidth)) {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(latency = !metrics.latency))
                 }
@@ -8642,8 +8642,8 @@ private fun StreamStatsMetricItems(
         streamStats.decodeMs?.let {
             StreamStatsText("Dec %.1fms".format(java.util.Locale.US, it))
         }
-        streamStats.encodeMs?.let {
-            StreamStatsText("Enc %.1fms".format(java.util.Locale.US, it))
+        streamStats.jitterMs?.let {
+            StreamStatsText("Jit %.1fms".format(java.util.Locale.US, it))
         }
     }
     if (metrics.packetLoss) {
@@ -10974,36 +10974,24 @@ private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float
         Modifier
             .size(boxSize)
             .pointerInput(client) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.pressed }
-                        
-                        if (change == null) {
-                            if (upPressed) { client.setVirtualButton(0x0001, false); upPressed = false }
-                            if (downPressed) { client.setVirtualButton(0x0002, false); downPressed = false }
-                            if (leftPressed) { client.setVirtualButton(0x0004, false); leftPressed = false }
-                            if (rightPressed) { client.setVirtualButton(0x0008, false); rightPressed = false }
-                            continue
-                        }
-                        
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+
+                    fun updateDirection(position: Offset) {
                         val w = size.width
                         val h = size.height
                         val cx = w / 2f
                         val cy = h / 2f
-                        val px = change.position.x
-                        val py = change.position.y
+                        val px = position.x
+                        val py = position.y
                         val dx = px - cx
                         val dy = py - cy
                         val touchDist = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
-                        
                         val deadzone = 12.dp.toPx()
-                        
                         var newUp = false
                         var newDown = false
                         var newLeft = false
                         var newRight = false
-                        
                         if (touchDist > deadzone) {
                             val absDx = Math.abs(dx)
                             val absDy = Math.abs(dy)
@@ -11012,17 +11000,34 @@ private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float
                             if (dx < 0 && absDx > absDy * 0.414f) newLeft = true
                             if (dx > 0 && absDx > absDy * 0.414f) newRight = true
                         }
-                        
-                        val playTone = (!upPressed && newUp) || (!downPressed && newDown) || 
+
+                        val playTone = (!upPressed && newUp) || (!downPressed && newDown) ||
                                        (!leftPressed && newLeft) || (!rightPressed && newRight)
-                        
                         if (upPressed != newUp) { client.setVirtualButton(0x0001, newUp); upPressed = newUp }
                         if (downPressed != newDown) { client.setVirtualButton(0x0002, newDown); downPressed = newDown }
                         if (leftPressed != newLeft) { client.setVirtualButton(0x0004, newLeft); leftPressed = newLeft }
                         if (rightPressed != newRight) { client.setVirtualButton(0x0008, newRight); rightPressed = newRight }
-                        
                         if (playTone) currentOnButtonTone()
-                        change.consume()
+                    }
+
+                    try {
+                        updateDirection(down.position)
+                        down.consume()
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                change.consume()
+                                break
+                            }
+                            updateDirection(change.position)
+                            change.consume()
+                        }
+                    } finally {
+                        if (upPressed) { client.setVirtualButton(0x0001, false); upPressed = false }
+                        if (downPressed) { client.setVirtualButton(0x0002, false); downPressed = false }
+                        if (leftPressed) { client.setVirtualButton(0x0004, false); leftPressed = false }
+                        if (rightPressed) { client.setVirtualButton(0x0008, false); rightPressed = false }
                     }
                 }
             }
@@ -11137,6 +11142,31 @@ private fun DpadCluster(client: NativeStreamClient, opacity: Float, scale: Float
     }
 }
 
+private fun Modifier.virtualPressInput(
+    client: NativeStreamClient,
+    controlKey: Any,
+    onPressedChange: State<(Boolean) -> Unit>,
+): Modifier = pointerInput(client, controlKey) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        onPressedChange.value(true)
+        try {
+            down.consume()
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) {
+                    change.consume()
+                    break
+                }
+                change.consume()
+            }
+        } finally {
+            onPressedChange.value(false)
+        }
+    }
+}
+
 @Composable
 private fun GamepadTriggerButton(
     label: String,
@@ -11149,6 +11179,13 @@ private fun GamepadTriggerButton(
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
+    val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
+        if (down != pressed) {
+            client.setVirtualTrigger(left, down)
+            pressed = down
+            if (down) onPressTone()
+        }
+    }
     val style = LocalTouchControllerStyle.current
     val buttonColor = if (style == TouchControllerStyle.V2) {
         Color.Transparent
@@ -11173,20 +11210,7 @@ private fun GamepadTriggerButton(
             .clip(shape)
             .background(if (pressed) pressedColor else buttonColor)
             .border(borderWidth, borderColor, shape)
-            .pointerInput(client, left) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val down = event.changes.any { it.pressed }
-                        if (down != pressed) {
-                            client.setVirtualTrigger(left, down)
-                            pressed = down
-                            if (down) onPressTone()
-                        }
-                        event.changes.forEach { it.consume() }
-                    }
-                }
-            },
+            .virtualPressInput(client, left, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
         Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
@@ -11209,6 +11233,13 @@ private fun GamepadBumperButton(
     onPressTone: () -> Unit = {},
 ) {
     var pressed by remember { mutableStateOf(false) }
+    val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
+        if (down != pressed) {
+            client.setVirtualButton(mask, down)
+            pressed = down
+            if (down) onPressTone()
+        }
+    }
     val style = LocalTouchControllerStyle.current
     val buttonColor = if (style == TouchControllerStyle.V2) {
         Color.Transparent
@@ -11234,20 +11265,7 @@ private fun GamepadBumperButton(
             .clip(shape)
             .background(if (pressed) pressedColor else buttonColor)
             .border(borderWidth, borderColor, shape)
-            .pointerInput(client, mask) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val down = event.changes.any { it.pressed }
-                        if (down != pressed) {
-                            client.setVirtualButton(mask, down)
-                            pressed = down
-                            if (down) onPressTone()
-                        }
-                        event.changes.forEach { it.consume() }
-                    }
-                }
-            },
+            .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
         Text(label, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = opacity * 0.9f))
@@ -11270,6 +11288,13 @@ private fun GamepadButton(
 ) {
     val currentOnPressTone by rememberUpdatedState(onPressTone)
     var pressed by remember { mutableStateOf(false) }
+    val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
+        if (down != pressed) {
+            client.setVirtualButton(mask, down)
+            pressed = down
+            if (down) currentOnPressTone()
+        }
+    }
     val style = LocalTouchControllerStyle.current
     val buttonColor = if (style == TouchControllerStyle.V2) {
         Color.Transparent
@@ -11293,20 +11318,7 @@ private fun GamepadButton(
             .clip(CircleShape)
             .background(if (pressed) pressedColor else buttonColor)
             .border(borderWidth, borderColor, CircleShape)
-            .pointerInput(client, mask) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val down = event.changes.any { it.pressed }
-                        if (down != pressed) {
-                            client.setVirtualButton(mask, down)
-                            pressed = down
-                            if (down) currentOnPressTone()
-                        }
-                        event.changes.forEach { it.consume() }
-                    }
-                }
-            },
+            .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -11334,6 +11346,13 @@ private fun GamepadPillButton(
 ) {
     val currentOnPressTone by rememberUpdatedState(onPressTone)
     var pressed by remember { mutableStateOf(false) }
+    val currentOnPressedChange = rememberUpdatedState<(Boolean) -> Unit> { down ->
+        if (down != pressed) {
+            client.setVirtualButton(mask, down)
+            pressed = down
+            if (down) currentOnPressTone()
+        }
+    }
     val style = LocalTouchControllerStyle.current
     val buttonColor = if (style == TouchControllerStyle.V2) {
         Color.Transparent
@@ -11358,20 +11377,7 @@ private fun GamepadPillButton(
             .clip(RoundedCornerShape(999.dp))
             .background(if (pressed) pressedColor else buttonColor)
             .border(borderWidth, borderColor, RoundedCornerShape(999.dp))
-            .pointerInput(client, mask) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val down = event.changes.any { it.pressed }
-                        if (down != pressed) {
-                            client.setVirtualButton(mask, down)
-                            pressed = down
-                            if (down) currentOnPressTone()
-                        }
-                        event.changes.forEach { it.consume() }
-                    }
-                }
-            },
+            .virtualPressInput(client, mask, currentOnPressedChange),
         contentAlignment = Alignment.Center,
     ) {
         Text(

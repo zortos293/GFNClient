@@ -291,8 +291,51 @@ class StreamResolutionTest {
 
         assertEquals(60, requested.withFpsAllowed(SubscriptionInfo(membershipTier = "FREE"), null).fps)
         assertEquals(60, requested.withFpsAllowed(SubscriptionInfo(membershipTier = "PERFORMANCE"), null).fps)
-        assertEquals(360, requested.withFpsAllowed(SubscriptionInfo(membershipTier = "ULTIMATE"), null).fps)
-        assertEquals(360, maxStreamFpsFor(null, "ULTIMATE"))
+        assertEquals(240, requested.withFpsAllowed(SubscriptionInfo(membershipTier = "ULTIMATE"), null).fps)
+        assertEquals(240, maxStreamFpsFor(null, "ULTIMATE"))
+    }
+
+    @Test
+    fun fpsPlanCapsDoNotChangeSelectedResolution() {
+        val freeRequested = StreamSettings(resolution = "1920x1200", aspectRatio = "16:10", fps = 240)
+        val ultimateRequested = StreamSettings(resolution = "3840x2160", aspectRatio = "16:9", fps = 360)
+
+        assertEquals(
+            freeRequested.copy(fps = 60),
+            freeRequested.withFpsAllowed(SubscriptionInfo(membershipTier = "FREE"), null),
+        )
+        assertEquals(
+            ultimateRequested.copy(fps = 240),
+            ultimateRequested.withFpsAllowed(SubscriptionInfo(membershipTier = "ULTIMATE"), null),
+        )
+    }
+
+    @Test
+    fun fpsPlanCapsPreserveEveryKnownResolutionAndCodec() {
+        val freeSubscription = SubscriptionInfo(membershipTier = "FREE")
+        val ultimateSubscription = SubscriptionInfo(membershipTier = "ULTIMATE")
+
+        STREAM_RESOLUTION_OPTIONS.forEach { option ->
+            VideoCodec.entries.forEach { codec ->
+                val requested = StreamSettings(
+                    resolution = option.value,
+                    aspectRatio = option.aspectRatio,
+                    fps = 360,
+                    codec = codec,
+                )
+
+                assertEquals(
+                    "Free ${option.value} $codec",
+                    requested.copy(fps = 60),
+                    requested.withFpsAllowed(freeSubscription, null),
+                )
+                assertEquals(
+                    "Ultimate ${option.value} $codec",
+                    requested.copy(fps = 240),
+                    requested.withFpsAllowed(ultimateSubscription, null),
+                )
+            }
+        }
     }
 
     @Test
@@ -310,10 +353,10 @@ class StreamResolutionTest {
     fun authenticatedUltimateTierWinsWhenSubscriptionPayloadDefaultsToFree() {
         val incompleteSubscription = SubscriptionInfo(membershipTier = "FREE")
         val fourK = streamResolutionChoicesForAspect("16:9").first { it.value == "3840x2160" }
-        val requested = StreamSettings(resolution = "3840x2160", aspectRatio = "16:9", fps = 360)
+        val requested = StreamSettings(resolution = "3840x2160", aspectRatio = "16:9", fps = 240)
 
         assertEquals(true, fourK.isAvailableFor(incompleteSubscription, "ULTIMATE"))
-        assertEquals(360, maxStreamFpsFor(incompleteSubscription, "ULTIMATE"))
+        assertEquals(240, maxStreamFpsFor(incompleteSubscription, "ULTIMATE"))
         assertEquals(
             requested,
             requested

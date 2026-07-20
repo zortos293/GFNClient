@@ -2159,6 +2159,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun markStreamConnected() {
+        if (state.value.streamStatus == "streaming") return
         recordDebugEvent("stream", "Native stream connected session=${state.value.streamSession?.shortDebugId().orEmpty()} game=${state.value.streamGame?.title.orEmpty()}")
         OpenNowAnalytics.capture(
             event = "stream_connected",
@@ -2457,7 +2458,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 appendLine("active.resolution=${active.resolution} fps=${active.fps} codec=${active.codec} bitrate=${active.maxBitrateMbps}")
             }
             appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} touch=${snapshot.settings.androidTouch}")
-            appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} tv=${codecReport?.androidTvProfile}")
+            appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} constrained=${codecReport?.constrainedRuntimeProfile} tv=${codecReport?.androidTvProfile}")
             appendLine("device.runtime=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}")
             appendLine("stream.runtime.latest=${latestStreamRuntimeStats?.debugSummary(System.currentTimeMillis()) ?: "empty"}")
             codecReport?.capabilities?.forEach { cap ->

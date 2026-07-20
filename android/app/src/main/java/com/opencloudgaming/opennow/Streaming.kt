@@ -140,10 +140,17 @@ object CodecProbe {
                 ?.getMemoryInfo(memoryInfo)
             memoryInfo.totalMem.takeIf { it > 0L }
         }.getOrNull()
+        val is64BitRuntime = android.os.Process.is64Bit()
+        val constrainedRuntime = isConstrainedStreamingRuntime(
+            androidTvProfile = isTv,
+            is64BitRuntime = is64BitRuntime,
+            totalMemoryBytes = totalMemoryBytes,
+        )
         val lowPower = isLowPowerStreamingProfile(
             androidTvProfile = isTv,
             renderer = renderer,
             totalMemoryBytes = totalMemoryBytes,
+            is64BitRuntime = is64BitRuntime,
         )
         val webRtcDecoders = probeWebRtcDecoders()
         val capabilities = VideoCodec.entries.map { codec ->
@@ -179,9 +186,11 @@ object CodecProbe {
             nativeRuntimeSummary = runCatching { NativeCodecProbe.nativeRuntimeSummary() }.getOrElse { "{\"nativeLibrary\":\"unavailable\"}" },
             androidTvProfile = isTv,
             lowPowerGpuProfile = lowPower,
+            constrainedRuntimeProfile = constrainedRuntime,
         ).also { report ->
             NativeInputDiagnostics.add(
                 "codec probe device=${Build.MANUFACTURER}/${Build.MODEL} hardware=${Build.HARDWARE} tv=$isTv lowPower=$lowPower " +
+                    "constrained=$constrainedRuntime runtimeBits=${if (is64BitRuntime) 64 else 32} " +
                     "memoryMiB=${totalMemoryBytes?.div(BYTES_PER_MEBIBYTE) ?: 0L}",
             )
             report.capabilities.forEach { capability ->
@@ -354,16 +363,29 @@ internal fun isLowPowerStreamingProfile(
     androidTvProfile: Boolean,
     renderer: String,
     totalMemoryBytes: Long?,
+    is64BitRuntime: Boolean = true,
 ): Boolean {
     val normalizedRenderer = renderer.lowercase(Locale.US)
     val knownLowPowerGpu =
         normalizedRenderer.contains("powervr") ||
             normalizedRenderer.contains("ge8320") ||
             normalizedRenderer.contains("ge83")
+    return knownLowPowerGpu || isConstrainedStreamingRuntime(
+        androidTvProfile = androidTvProfile,
+        is64BitRuntime = is64BitRuntime,
+        totalMemoryBytes = totalMemoryBytes,
+    )
+}
+
+internal fun isConstrainedStreamingRuntime(
+    androidTvProfile: Boolean,
+    is64BitRuntime: Boolean,
+    totalMemoryBytes: Long?,
+): Boolean {
     val constrainedTvMemory = androidTvProfile &&
         totalMemoryBytes != null &&
         totalMemoryBytes in 1..LOW_POWER_TV_MEMORY_LIMIT_BYTES
-    return knownLowPowerGpu || constrainedTvMemory
+    return !is64BitRuntime || constrainedTvMemory
 }
 
 private fun openNowHardwareVideoDecoderFactory(sharedContext: EglBase.Context): VideoDecoderFactory =
@@ -2469,7 +2491,6 @@ class NativeStreamClient(
     private val lastRumbleEffectAtMs = LongArray(GAMEPAD_MAX_CONTROLLERS)
     private val hapticsSupportLogged = BooleanArray(GAMEPAD_MAX_CONTROLLERS)
     private var lastHapticsWarningAtMs = 0L
-    private var lastHapticsAdvertisementAtMs = 0L
     private var phoneRumbleFallbackEnabled = true
     private var phoneRumbleSupportLogged = false
     private var released = false
@@ -2672,13 +2693,14 @@ class NativeStreamClient(
             virtualLeftStickY = 0
         }
         controllerMouseEmulationActive = enabled
+        updateControllerMouseLoop()
         // Push a fresh gamepad state immediately so the zeroed stick is sent before any next frame.
         sendCurrentGamepadState()
         NativeInputDiagnostics.add("controller mouse emulation ${if (enabled) "enabled" else "disabled"}")
     }
 
     private fun startControllerMouseLoop() {
-        controllerMouseLoopJob?.cancel()
+        if (controllerMouseLoopJob?.isActive == true) return
         controllerMouseLoopJob = scope.launch {
             val currentJob = coroutineContext[Job]
             while (currentJob?.isActive == true) {
@@ -2691,6 +2713,14 @@ class NativeStreamClient(
                     sendControllerMouseMove(physicalRightStickX, physicalRightStickY)
                 }
             }
+        }
+    }
+
+    private fun updateControllerMouseLoop() {
+        if (shouldRunControllerMouseLoop(controllerMouseAssistActive, controllerMouseEmulationActive)) {
+            startControllerMouseLoop()
+        } else {
+            stopControllerMouseLoop()
         }
     }
 
@@ -2725,7 +2755,7 @@ class NativeStreamClient(
             "start session=${streamDiagnosticId(session.sessionId)} status=${session.status} server=${session.serverIp.take(96)} signaling=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)} settings=${settings.resolution}/${settings.fps}/${settings.codec} bitrate=${settings.maxBitrateMbps} microphone=${settings.microphoneMode.name}",
         )
         startTransport(session, settings, transportGeneration)
-        startControllerMouseLoop()
+        updateControllerMouseLoop()
     }
 
     fun stop() {
@@ -3116,6 +3146,7 @@ class NativeStreamClient(
         if (!active) releaseControllerMouseButtons()
         controllerMouseAssistActive = active
         controllerMouseAssistAutoArmed = autoArmed && active
+        updateControllerMouseLoop()
         controllerMouseMoveLogged = false
         sendCurrentGamepadState()
         emitControllerMouseAssistChanged(active)
@@ -3283,7 +3314,6 @@ class NativeStreamClient(
         partiallyReliableInput = null
         partiallyReliableGamepadMask = 0
         hapticsAdvertised = null
-        lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
         if (rendererSinkAttached) {
             videoTrack?.removeSink(renderer)
@@ -3842,8 +3872,14 @@ class NativeStreamClient(
     }
 
     private fun attachVideo(track: VideoTrack) {
+        val currentTrack = videoTrack
+        if (currentTrack?.id() == track.id() && currentTrack.state() != MediaStreamTrack.State.ENDED) {
+            currentTrack.setEnabled(true)
+            renderer?.let(::attachRendererSinkIfAvailable)
+            return
+        }
         if (rendererSinkAttached) {
-            videoTrack?.removeSink(renderer)
+            currentTrack?.removeSink(renderer)
             rendererSinkAttached = false
         }
         videoTrack = track
@@ -3996,6 +4032,7 @@ class NativeStreamClient(
         val width = members["frameWidth"].statsLong()
         val height = members["frameHeight"].statsLong()
         val totalDecodeTime = members["totalDecodeTime"].statsDouble() ?: 0.0
+        val jitterMs = members["jitter"].statsDouble()?.let { (it * 1000.0).coerceAtLeast(0.0) }
         val packetsLost = members["packetsLost"].statsLong() ?: 0L
         val packetsReceived = members["packetsReceived"].statsLong() ?: 0L
 
@@ -4039,13 +4076,6 @@ class NativeStreamClient(
             null
         }
 
-        val encodeMs = if (bitrateKbps != null) {
-            val base = if (height != null && height > 1080) 2.2 else 1.7
-            base + (kotlin.random.Random.nextFloat() * 0.4f - 0.2f)
-        } else {
-            null
-        }
-
         if (bytesReceived != null || framesDecoded != null) {
             lastStatsSample = StreamStatsSample(
                 atMs = timestampMs,
@@ -4074,7 +4104,7 @@ class NativeStreamClient(
                 resolution = resolution,
                 codec = codec,
                 decodeMs = decodeMs,
-                encodeMs = encodeMs,
+                jitterMs = jitterMs,
                 packetLossPct = packetLossPct,
             ),
             bytesReceived = bytesReceived,
@@ -4548,17 +4578,12 @@ class NativeStreamClient(
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
         if (reliableInput?.state() != DataChannel.State.OPEN) return
-        val now = SystemClock.elapsedRealtime()
-        if (!force && hapticsAdvertised != null && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
+        if (!force && hapticsAdvertised != null) return
         val enabled = hapticsOutputAvailable()
-        val changed = hapticsAdvertised != enabled
-        if (!force && hapticsAdvertised == enabled && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
+        if (hapticsAdvertised == enabled) return
         if (sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))) {
             hapticsAdvertised = enabled
-            lastHapticsAdvertisementAtMs = now
-            if (force || changed) {
-                NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled force=$force")
-            }
+            NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled force=$force")
         }
     }
 
@@ -4898,7 +4923,6 @@ class NativeStreamClient(
         private const val GAMEPAD_MAX_CONTROLLERS = 4
         private const val RUMBLE_EFFECT_MS = 90L
         private const val RUMBLE_THROTTLE_MS = 35L
-        private const val HAPTICS_ADVERTISEMENT_REFRESH_MS = 5000L
         private const val HAPTICS_LOG_INTERVAL_MS = 5000L
     }
 
@@ -5784,6 +5808,11 @@ class InputEncoder {
 private fun timestampUs(): Long = SystemClock.elapsedRealtimeNanos() / 1000L
 
 internal fun shouldUseLowLatencyStreamAudio(androidTvProfile: Boolean): Boolean = !androidTvProfile
+
+internal fun shouldRunControllerMouseLoop(
+    controllerMouseAssistActive: Boolean,
+    controllerMouseEmulationActive: Boolean,
+): Boolean = controllerMouseAssistActive || controllerMouseEmulationActive
 
 internal fun shouldCaptureMicrophone(
     mode: MicrophoneMode,

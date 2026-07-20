@@ -64,7 +64,7 @@ internal fun recommendedAndroidStreamProfile(
         ?.firstOrNull { it.codec == VideoCodec.H265 }
         ?.streamingDecoderUsableForLaunch() == true
     val preferH265 = !lowPower && !tvProfile && maxHeight >= 1440 && h265Ready
-    val fps = if (lowPower && processorCount <= 4) 30 else 60
+    val fps = if (report?.constrainedRuntimeProfile == true || (lowPower && processorCount <= 4)) 30 else 60
     val bitrate = when {
         lowPower -> if (fps <= 30) 12 else 18
         selected.height >= 1440 -> 45

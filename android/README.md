@@ -10,6 +10,8 @@ Open it from Android Studio with **File > Open > `OpenNOW/android`**. Android St
 - `:app:assembleRelease` builds the direct-distribution release APK with APK update support.
 - `:app:bundleRelease` builds the Google Play Android App Bundle. This task removes `REQUEST_INSTALL_PACKAGES` and disables APK self-updates so Play installs use Google Play's update mechanism.
 
+Release and debug builds include `arm64-v8a`, `armeabi-v7a`, and `x86_64`. The `armeabi-v7a` slice supports 32-bit ARM phones and 32-bit Android TV firmware. OpenNOW recommends 720p/30 FPS/12 Mbps for 32-bit processes and memory-constrained TVs, and warns when a custom profile exceeds that recommendation without overriding the user's selection.
+
 ## APK Update Manifest
 
 APK and debug builds check `https://api.printedwaste.com/releases/opennow/latest` and can download the returned APK. App Bundle builds installed from Google Play detect `com.android.vending` as the install source and do not check, download, or install APK updates. The manifest should look like this:

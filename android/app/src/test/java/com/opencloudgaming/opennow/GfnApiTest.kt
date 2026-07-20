@@ -311,11 +311,11 @@ class GfnApiTest {
     }
 
     @Test
-    fun claimRequestCarriesRequested360FpsMonitorSetting() {
+    fun claimRequestCarriesRequested240FpsMonitorSetting() {
         val settings = StreamSettings(
             resolution = "1920x1080",
             aspectRatio = "16:9",
-            fps = 360,
+            fps = 240,
             maxBitrateMbps = 75,
             codec = VideoCodec.AV1,
             colorQuality = ColorQuality.EightBit420,
@@ -327,7 +327,7 @@ class GfnApiTest {
             .getValue("clientRequestMonitorSettings").jsonArray
             .single().jsonObject
 
-        assertEquals(360, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+        assertEquals(240, monitor.getValue("framesPerSecond").jsonPrimitive.int)
     }
 
     @Test

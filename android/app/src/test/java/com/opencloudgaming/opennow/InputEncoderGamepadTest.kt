@@ -170,6 +170,24 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun classifies32BitPhonesAndMemoryConstrainedTvsAsConstrainedRuntimes() {
+        val twoGiB = 2L * 1024L * 1024L * 1024L
+        val fourGiB = 4L * 1024L * 1024L * 1024L
+
+        assertTrue(isConstrainedStreamingRuntime(androidTvProfile = false, is64BitRuntime = false, totalMemoryBytes = fourGiB))
+        assertTrue(isConstrainedStreamingRuntime(androidTvProfile = true, is64BitRuntime = true, totalMemoryBytes = twoGiB))
+        assertFalse(isConstrainedStreamingRuntime(androidTvProfile = false, is64BitRuntime = true, totalMemoryBytes = twoGiB))
+        assertTrue(
+            isLowPowerStreamingProfile(
+                androidTvProfile = false,
+                renderer = "adreno",
+                totalMemoryBytes = fourGiB,
+                is64BitRuntime = false,
+            ),
+        )
+    }
+
+    @Test
     fun mapsControllerActivationKeysToPrimaryGamepadButtonOnlyForControllers() {
         assertEquals(
             GamepadButtonMapping.A,
@@ -254,5 +272,12 @@ class InputEncoderGamepadTest {
         assertEquals(0f, streamSharpnessShaderStrength(enabled = false, amount = 1f), 0.0001f)
         assertEquals(0f, streamSharpnessShaderStrength(enabled = true, amount = -1f), 0.0001f)
         assertEquals(0.28f, streamSharpnessShaderStrength(enabled = true, amount = 2f), 0.0001f)
+    }
+
+    @Test
+    fun controllerMouseLoopOnlyRunsWhileAMouseModeIsActive() {
+        assertFalse(shouldRunControllerMouseLoop(controllerMouseAssistActive = false, controllerMouseEmulationActive = false))
+        assertTrue(shouldRunControllerMouseLoop(controllerMouseAssistActive = true, controllerMouseEmulationActive = false))
+        assertTrue(shouldRunControllerMouseLoop(controllerMouseAssistActive = false, controllerMouseEmulationActive = true))
     }
 }

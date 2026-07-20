@@ -243,10 +243,10 @@ class SdpToolsTest {
     }
 
     @Test
-    fun nvstSdpCarriesRequested360FpsEstimate() {
+    fun nvstSdpCarriesRequested240FpsEstimate() {
         val nvst = SdpTools.buildNvstSdp(
             offerSdp = "a=ri.partialReliableThresholdMs:42",
-            settings = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 360, codec = VideoCodec.AV1),
+            settings = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 240, codec = VideoCodec.AV1),
             localAnswer = """
                 a=ice-ufrag:testUfrag
                 a=ice-pwd:testPassword
@@ -254,8 +254,8 @@ class SdpToolsTest {
             """.trimIndent(),
         )
 
-        assertTrue(nvst.contains("a=video.maxFPS:360"))
-        assertTrue(nvst.contains("a=vqos.maxStreamFpsEstimate:360"))
+        assertTrue(nvst.contains("a=video.maxFPS:240"))
+        assertTrue(nvst.contains("a=vqos.maxStreamFpsEstimate:240"))
     }
 
     private fun buildNvstSdp(settings: StreamSettings): String =

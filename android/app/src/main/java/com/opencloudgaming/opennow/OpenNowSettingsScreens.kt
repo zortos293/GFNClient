@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -474,6 +475,10 @@ private fun SettingsContent(
                 ) { value ->
                     viewModel.applyStreamPreset(StreamPreset.valueOf(value))
                 }
+                val performanceWarningReasons = settings.stream.lowPowerPerformanceWarningReasons(state.codecReport)
+                if (performanceWarningReasons.isNotEmpty()) {
+                    LowPowerStreamWarning(performanceWarningReasons)
+                }
                 val resolutionChoices = streamResolutionChoicesForAspect(settings.stream.aspectRatio).ifEmpty {
                     streamResolutionChoicesForAspect("16:9")
                 }
@@ -853,6 +858,40 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "donate", "paypal", "printedwaste") {
                 ThanksPanel()
             }
+    }
+}
+
+@Composable
+private fun LowPowerStreamWarning(reasons: List<String>) {
+    val warningColor = Color(0xffffc266)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = warningColor.copy(alpha = 0.10f),
+        contentColor = SettingsText,
+        border = BorderStroke(1.dp, warningColor.copy(alpha = 0.38f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                "This device may struggle with these settings",
+                color = warningColor,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                reasons.joinToString(", "),
+                color = SettingsText,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "OpenNOW won't lower these settings just because this device is low-powered. The Recommended preset is the safer option.",
+                color = SettingsTextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 

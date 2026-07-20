@@ -522,7 +522,7 @@ internal fun hasHdrStreamingPlan(subscriptionInfo: SubscriptionInfo?, fallbackMe
         streamResolutionPlanRank(StreamResolutionPlan.Priority)
 
 internal fun maxStreamFpsFor(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): Int =
-    if (hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) 360 else 60
+    if (hasUltimateStreamingPlan(subscriptionInfo, fallbackMembershipTier)) MAX_ULTIMATE_STREAM_FPS else MAX_STANDARD_STREAM_FPS
 
 internal fun StreamSettings.withFpsAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
     val maxFps = maxStreamFpsFor(subscriptionInfo, fallbackMembershipTier)
@@ -714,7 +714,7 @@ private fun streamPresetTargetForAspect(preset: StreamPreset, aspectRatio: Strin
         StreamPreset.Recommended -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 60, 35)
         StreamPreset.LowDataSaver -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 30, 12)
         StreamPreset.Medium -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 60, 35)
-        StreamPreset.High -> StreamPresetTarget(resolution.value, resolution.aspectRatio, 360, 75)
+        StreamPreset.High -> StreamPresetTarget(resolution.value, resolution.aspectRatio, MAX_ULTIMATE_STREAM_FPS, 75)
     }
 }
 
@@ -1384,6 +1384,7 @@ data class RuntimeCodecReport(
     val nativeRuntimeSummary: String,
     val androidTvProfile: Boolean,
     val lowPowerGpuProfile: Boolean,
+    val constrainedRuntimeProfile: Boolean = false,
 )
 
 data class StreamRuntimeStats(
@@ -1393,7 +1394,7 @@ data class StreamRuntimeStats(
     val resolution: String? = null,
     val codec: String? = null,
     val decodeMs: Double? = null,
-    val encodeMs: Double? = null,
+    val jitterMs: Double? = null,
     val packetLossPct: Double? = null,
 )
 
@@ -1431,7 +1432,11 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     val availableSettings = withAndroidSettingsAvailability()
     if (availableSettings != this) return availableSettings.adjustedForDevice(report)
 
-    if (report?.androidTvProfile == true && report.lowPowerGpuProfile) {
+    if (
+        report?.androidTvProfile == true &&
+        report.lowPowerGpuProfile &&
+        !report.constrainedRuntimeProfile
+    ) {
         val requestedCapability = report.capabilities.firstOrNull { it.codec == codec }
         val requestedCodecUsable = requestedCapability?.streamingDecoderUsableForLaunch() ?: (codec == VideoCodec.H264)
         val usableCodec = if (requestedCodecUsable) codec else report.bestStreamingFallbackCodec()
@@ -1467,6 +1472,7 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
 
     val profileBitrateCap = when {
         !codecSupported -> 35
+        report?.constrainedRuntimeProfile == true -> 75
         report?.lowPowerGpuProfile == true -> 25
         report?.androidTvProfile == true -> 35
         effectiveCodec == VideoCodec.H264 -> 75
@@ -1496,8 +1502,19 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         capped
     }
 
-    val maxSupportedFps = effectiveCapability?.maxFpsByResolution?.get(capabilityCap.resolution) ?: 360
-    return capabilityCap.copy(fps = minOf(capabilityCap.fps, maxSupportedFps))
+    val maxSupportedFps = effectiveCapability?.maxFpsByResolution?.get(capabilityCap.resolution)
+    return capabilityCap.copy(
+        fps = cloudStreamFpsAtOrBelow(
+            requestedFps = capabilityCap.fps,
+            decoderMaxFps = maxSupportedFps,
+        ),
+    )
+}
+
+internal fun cloudStreamFpsAtOrBelow(requestedFps: Int, decoderMaxFps: Int?): Int {
+    if (decoderMaxFps == null) return requestedFps
+    val cappedFps = minOf(requestedFps, decoderMaxFps)
+    return ((cappedFps / STREAM_FPS_STEP) * STREAM_FPS_STEP).coerceAtLeast(MIN_STREAM_FPS)
 }
 
 private fun RuntimeCodecReport.bestStreamingCodecForResolution(settings: StreamSettings): VideoCodec? =
@@ -1566,18 +1583,34 @@ private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
 }
 
 private fun StreamSettings.withStableAndroidCloudMatchProfile(): StreamSettings {
-    val (width, height) = streamResolutionPixels(this)
-    val pixels = width * height
-    val maxFps = if (pixels > ANDROID_1440P_PIXEL_BUDGET) 120 else 360
     return copy(
-        fps = minOf(fps, maxFps),
+        fps = minOf(fps, MAX_ULTIMATE_STREAM_FPS),
         hdrEnabled = hdrEnabled && codec != VideoCodec.H264,
         enableCloudGsync = enableCloudGsync && codec != VideoCodec.H264,
     )
 }
 
+internal fun StreamSettings.lowPowerPerformanceWarningReasons(report: RuntimeCodecReport?): List<String> {
+    if (report?.lowPowerGpuProfile != true && report?.constrainedRuntimeProfile != true) return emptyList()
+
+    val normalizedResolution = normalizeStreamResolutionForAspect(resolution, aspectRatio)
+    val (width, height) = parseResolutionPixels(normalizedResolution)
+    return buildList {
+        if (width * height > LOW_POWER_RECOMMENDED_PIXEL_COUNT) add("$normalizedResolution resolution")
+        if (fps > LOW_POWER_RECOMMENDED_FPS) add("$fps FPS")
+        if (maxBitrateMbps > LOW_POWER_RECOMMENDED_BITRATE_MBPS) add("$maxBitrateMbps Mbps bitrate")
+        if (hdrEnabled) add("HDR")
+        if (enableCloudGsync) add("Cloud G-Sync")
+        if (streamSharpeningEnabled) add("stream sharpening")
+    }
+}
+
 private fun StreamSettings.withoutAndroidTvSharpening(report: RuntimeCodecReport?): StreamSettings =
-    if (report?.androidTvProfile == true && streamSharpeningEnabled) {
+    if (
+        report?.androidTvProfile == true &&
+        report.constrainedRuntimeProfile == false &&
+        streamSharpeningEnabled
+    ) {
         copy(streamSharpeningEnabled = false)
     } else {
         this
@@ -1625,6 +1658,13 @@ private const val LOW_POWER_TV_MAX_WIDTH = 1920
 private const val LOW_POWER_TV_MAX_HEIGHT = 1080
 private const val LOW_POWER_TV_BITRATE_CAP_MBPS = 25
 private const val LOW_POWER_TV_FPS_CAP = 60
+private const val MAX_STANDARD_STREAM_FPS = 60
+private const val MAX_ULTIMATE_STREAM_FPS = 240
+private const val MIN_STREAM_FPS = 30
+private const val STREAM_FPS_STEP = 30
+private const val LOW_POWER_RECOMMENDED_PIXEL_COUNT = 1280 * 720
+private const val LOW_POWER_RECOMMENDED_FPS = 30
+private const val LOW_POWER_RECOMMENDED_BITRATE_MBPS = 12
 private const val SAFE_VIDEO_FALLBACK_MAX_WIDTH = 1920
 private const val SAFE_VIDEO_FALLBACK_MAX_HEIGHT = 1080
 private const val ANDROID_1440P_PIXEL_BUDGET = 2560 * 1440

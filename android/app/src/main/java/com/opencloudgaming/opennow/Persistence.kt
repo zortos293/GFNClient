@@ -301,7 +301,7 @@ class SettingsStore(context: Context) {
             codec = compatibleStream.codec,
             sessionProxyUrl = stream.sessionProxyUrl.trim(),
             maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
-            fps = compatibleStream.fps.coerceIn(30, 360),
+            fps = compatibleStream.fps.coerceIn(30, 240),
             streamSharpeningAmount = compatibleStream.streamSharpeningAmount.coerceIn(0f, 1f),
         )
         return copy(

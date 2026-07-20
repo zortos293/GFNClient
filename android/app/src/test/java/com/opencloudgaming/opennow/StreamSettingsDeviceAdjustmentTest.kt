@@ -114,13 +114,13 @@ class StreamSettingsDeviceAdjustmentTest {
 
         val high = base.applyingStreamPreset(StreamPreset.High)
         assertEquals("3440x1440", high.resolution)
-        assertEquals(360, high.fps)
+        assertEquals(240, high.fps)
         assertEquals(75, high.maxBitrateMbps)
     }
 
     @Test
-    fun preservesUltimate360FpsForStableAndroidProfile() {
-        val adjusted = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 360, codec = VideoCodec.AV1)
+    fun preservesUltimate240FpsAt4kForStableAndroidProfile() {
+        val adjusted = StreamSettings(resolution = "3840x2160", aspectRatio = "16:9", fps = 240, codec = VideoCodec.AV1)
             .adjustedForDevice(
                 codecReport(
                     VideoCodec.AV1,
@@ -131,7 +131,8 @@ class StreamSettingsDeviceAdjustmentTest {
                 ),
             )
 
-        assertEquals(360, adjusted.fps)
+        assertEquals("3840x2160", adjusted.resolution)
+        assertEquals(240, adjusted.fps)
     }
 
     @Test
@@ -337,7 +338,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals("5120x1440", adjusted.resolution)
         assertEquals("32:9", adjusted.aspectRatio)
-        assertEquals(120, adjusted.fps)
+        assertEquals(240, adjusted.fps)
         assertEquals(75, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
@@ -372,7 +373,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals("5120x2160", adjusted.resolution)
         assertEquals("21:9", adjusted.aspectRatio)
-        assertEquals(120, adjusted.fps)
+        assertEquals(240, adjusted.fps)
         assertEquals(75, adjusted.maxBitrateMbps)
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
@@ -415,6 +416,9 @@ class StreamSettingsDeviceAdjustmentTest {
             maxBitrateMbps = 75,
             codec = VideoCodec.H265,
             colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+            enableCloudGsync = true,
+            streamSharpeningEnabled = true,
         ).androidSafeVideoFallback()
 
         assertEquals("1680x720", fallback.resolution)
@@ -444,6 +448,131 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(60, adjusted.fps)
         assertEquals(25, adjusted.maxBitrateMbps)
         assertEquals(false, adjusted.streamSharpeningEnabled)
+    }
+
+    @Test
+    fun preservesHighCustomProfileOn32BitPhone() {
+        val adjusted = StreamSettings(
+            resolution = "3840x2160",
+            aspectRatio = "16:9",
+            fps = 120,
+            maxBitrateMbps = 75,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+            enableCloudGsync = true,
+            streamSharpeningEnabled = true,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                lowPower = true,
+                constrainedRuntime = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+                maxSupportedWidth = 3840,
+                maxSupportedHeight = 2160,
+            ),
+        )
+
+        assertEquals("3840x2160", adjusted.resolution)
+        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals(120, adjusted.fps)
+        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(VideoCodec.H265, adjusted.codec)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(true, adjusted.hdrEnabled)
+        assertEquals(true, adjusted.enableCloudGsync)
+        assertEquals(true, adjusted.streamSharpeningEnabled)
+    }
+
+    @Test
+    fun preservesHighCustomProfileOnMemoryConstrainedTv() {
+        val adjusted = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            fps = 60,
+            maxBitrateMbps = 75,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+            enableCloudGsync = true,
+            streamSharpeningEnabled = true,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                lowPower = true,
+                tv = true,
+                constrainedRuntime = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+                maxSupportedWidth = 3840,
+                maxSupportedHeight = 2160,
+            ),
+        )
+
+        assertEquals("2560x1440", adjusted.resolution)
+        assertEquals(60, adjusted.fps)
+        assertEquals(75, adjusted.maxBitrateMbps)
+        assertEquals(VideoCodec.H265, adjusted.codec)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+        assertEquals(true, adjusted.hdrEnabled)
+        assertEquals(true, adjusted.enableCloudGsync)
+        assertEquals(true, adjusted.streamSharpeningEnabled)
+    }
+
+    @Test
+    fun warnsAboutDemandingSettingsWithoutChangingThem() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            aspectRatio = "16:9",
+            fps = 60,
+            maxBitrateMbps = 35,
+            hdrEnabled = true,
+            enableCloudGsync = true,
+            streamSharpeningEnabled = true,
+        )
+        val report = codecReport(
+            VideoCodec.H264,
+            hardwareDecoder = true,
+            realtimeSafe = true,
+            lowPower = true,
+            constrainedRuntime = true,
+        )
+
+        assertEquals(
+            listOf(
+                "1920x1080 resolution",
+                "60 FPS",
+                "35 Mbps bitrate",
+                "HDR",
+                "Cloud G-Sync",
+                "stream sharpening",
+            ),
+            settings.lowPowerPerformanceWarningReasons(report),
+        )
+    }
+
+    @Test
+    fun recommendedLowPowerProfileDoesNotWarn() {
+        val settings = StreamSettings(
+            resolution = "1280x720",
+            aspectRatio = "16:9",
+            fps = 30,
+            maxBitrateMbps = 12,
+        )
+        val report = codecReport(
+            VideoCodec.H264,
+            hardwareDecoder = true,
+            realtimeSafe = true,
+            lowPower = true,
+            constrainedRuntime = true,
+        )
+
+        assertTrue(settings.lowPowerPerformanceWarningReasons(report).isEmpty())
     }
 
     @Test
@@ -747,7 +876,7 @@ class StreamSettingsDeviceAdjustmentTest {
             maxSupportedWidth = 3840,
             maxSupportedHeight = 2160,
             maxFpsByResolution = mapOf(
-                "3456x2160" to 60,
+                "3456x2160" to 36,
                 "2560x1600" to 120,
             )
         )
@@ -761,7 +890,19 @@ class StreamSettingsDeviceAdjustmentTest {
 
         val adjusted = settings.adjustedForDevice(report)
         assertEquals("3456x2160", adjusted.resolution)
-        assertEquals(60, adjusted.fps)
+        assertEquals(30, adjusted.fps)
+    }
+
+    @Test
+    fun decoderFpsCapUsesCloudStreamCadence() {
+        assertEquals(30, cloudStreamFpsAtOrBelow(requestedFps = 120, decoderMaxFps = 36))
+        assertEquals(60, cloudStreamFpsAtOrBelow(requestedFps = 120, decoderMaxFps = 89))
+        assertEquals(120, cloudStreamFpsAtOrBelow(requestedFps = 120, decoderMaxFps = 144))
+    }
+
+    @Test
+    fun decoderFpsCapDoesNotChangeSettingsWithoutProbeData() {
+        assertEquals(120, cloudStreamFpsAtOrBelow(requestedFps = 120, decoderMaxFps = null))
     }
 
     private fun codecReport(
@@ -771,6 +912,7 @@ class StreamSettingsDeviceAdjustmentTest {
         realtimeSafe: Boolean,
         lowPower: Boolean = false,
         tv: Boolean = false,
+        constrainedRuntime: Boolean = false,
         nativeDecoderAvailable: Boolean? = null,
         webRtcDecoderAvailable: Boolean? = null,
         webRtcHardwareDecoderAvailable: Boolean? = null,
@@ -798,5 +940,6 @@ class StreamSettingsDeviceAdjustmentTest {
             nativeRuntimeSummary = "{}",
             androidTvProfile = tv,
             lowPowerGpuProfile = lowPower,
+            constrainedRuntimeProfile = constrainedRuntime,
         )
 }

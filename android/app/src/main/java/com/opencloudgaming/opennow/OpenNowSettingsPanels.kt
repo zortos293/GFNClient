@@ -1183,6 +1183,7 @@ private fun formatCodecDiagnosticReport(report: RuntimeCodecReport): String = bu
     appendLine("nativeRuntimeSummary=${report.nativeRuntimeSummary}")
     appendLine("androidTvProfile=${report.androidTvProfile}")
     appendLine("lowPowerGpuProfile=${report.lowPowerGpuProfile}")
+    appendLine("constrainedRuntimeProfile=${report.constrainedRuntimeProfile}")
     report.capabilities.forEach { capability ->
         appendLine()
         appendLine("codec=${capability.codec}")

@@ -96,6 +96,65 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun reusesPrimarySlotWhenAndroidReassignsControllerDeviceId() {
+        val controllerSlots = linkedMapOf<Int, Int>()
+        val initial = AndroidControllerSlotRegistry.assign(
+            controllerSlots = controllerSlots,
+            deviceId = 21,
+            connectedDeviceIds = setOf(21),
+            maxControllers = 4,
+        )
+
+        val reconnected = AndroidControllerSlotRegistry.assign(
+            controllerSlots = controllerSlots,
+            deviceId = 44,
+            connectedDeviceIds = setOf(44),
+            maxControllers = 4,
+        )
+
+        assertEquals(0, initial.slot)
+        assertEquals(mapOf(21 to 0), reconnected.removedDevices)
+        assertEquals(0, reconnected.slot)
+        assertEquals(mapOf(44 to 0), controllerSlots)
+    }
+
+    @Test
+    fun disconnectScanReleasesControllerSlotBeforeReconnect() {
+        val controllerSlots = linkedMapOf(21 to 0)
+
+        val removed = AndroidControllerSlotRegistry.retainConnected(
+            controllerSlots = controllerSlots,
+            connectedDeviceIds = emptySet(),
+        )
+        val reconnected = AndroidControllerSlotRegistry.assign(
+            controllerSlots = controllerSlots,
+            deviceId = 44,
+            connectedDeviceIds = setOf(44),
+            maxControllers = 4,
+        )
+
+        assertEquals(mapOf(21 to 0), removed)
+        assertEquals(0, reconnected.slot)
+        assertEquals(mapOf(44 to 0), controllerSlots)
+    }
+
+    @Test
+    fun reconnectReusesOnlyTheSlotVacatedByDisconnectedController() {
+        val controllerSlots = linkedMapOf(21 to 0, 32 to 1)
+
+        val reconnected = AndroidControllerSlotRegistry.assign(
+            controllerSlots = controllerSlots,
+            deviceId = 44,
+            connectedDeviceIds = setOf(32, 44),
+            maxControllers = 4,
+        )
+
+        assertEquals(mapOf(21 to 0), reconnected.removedDevices)
+        assertEquals(0, reconnected.slot)
+        assertEquals(mapOf(32 to 1, 44 to 0), controllerSlots)
+    }
+
+    @Test
     fun recognizesStadiaControllerNamesWithDpadOnlySources() {
         assertTrue(AndroidControllerInput.isKnownControllerName("Stadia Controller rev. A"))
         assertTrue(AndroidControllerInput.isKnownControllerName("Google Stadia Controller"))

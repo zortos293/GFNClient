@@ -1397,6 +1397,43 @@ internal object AndroidControllerInput {
     private fun Int.hasSource(source: Int): Boolean = (this and source) == source
 }
 
+internal data class AndroidControllerSlotAssignment(
+    val slot: Int,
+    val removedDevices: Map<Int, Int>,
+)
+
+internal object AndroidControllerSlotRegistry {
+    fun retainConnected(
+        controllerSlots: MutableMap<Int, Int>,
+        connectedDeviceIds: Set<Int>,
+    ): Map<Int, Int> {
+        val removedDevices = controllerSlots.filterKeys { it !in connectedDeviceIds }
+        removedDevices.keys.forEach(controllerSlots::remove)
+        return removedDevices
+    }
+
+    fun assign(
+        controllerSlots: MutableMap<Int, Int>,
+        deviceId: Int,
+        connectedDeviceIds: Set<Int>,
+        maxControllers: Int,
+    ): AndroidControllerSlotAssignment {
+        val stableDeviceId = if (deviceId >= 0) deviceId else 0
+        val removedDevices = retainConnected(
+            controllerSlots = controllerSlots,
+            connectedDeviceIds = connectedDeviceIds + stableDeviceId,
+        )
+        val existingSlot = controllerSlots[stableDeviceId]
+        if (existingSlot != null) {
+            return AndroidControllerSlotAssignment(existingSlot, removedDevices)
+        }
+        val usedSlots = controllerSlots.values.toSet()
+        val slot = (0 until maxControllers).firstOrNull { it !in usedSlots } ?: 0
+        controllerSlots[stableDeviceId] = slot
+        return AndroidControllerSlotAssignment(slot, removedDevices)
+    }
+}
+
 internal data class ControllerMouseDelta(
     val dx: Int,
     val dy: Int,
@@ -4526,15 +4563,47 @@ class NativeStreamClient(
         return true
     }
 
+    private fun clearPhysicalControllerInputState() {
+        physicalControllerActive = false
+        physicalButtons = 0
+        physicalHatButtons = 0
+        physicalSteamOverlayChord.reset()
+        physicalSteamOverlayChordReleaseJob?.cancel()
+        physicalSteamOverlayChordReleaseJob = null
+        physicalLeftTriggerButtonPressed = false
+        physicalRightTriggerButtonPressed = false
+        lastLeftTrigger = 0
+        lastRightTrigger = 0
+        lastLeftStickX = 0
+        lastLeftStickY = 0
+        lastRightStickX = 0
+        lastRightStickY = 0
+        physicalLeftStickX = 0f
+        physicalLeftStickY = 0f
+        physicalRightStickX = 0f
+        physicalRightStickY = 0f
+    }
+
     private fun refreshConnectedPhysicalControllers() {
         controllerAxisAvailability.clear()
+        val availableDeviceIds = InputDevice.getDeviceIds()
         val connectedDevices = mutableListOf<InputDevice>()
-        InputDevice.getDeviceIds().forEach { deviceId ->
+        availableDeviceIds.forEach { deviceId ->
             val device = InputDevice.getDevice(deviceId) ?: return@forEach
             if (AndroidControllerInput.isControllerDevice(device)) {
                 connectedDevices += device
             }
         }
+        val removedControllerSlots = AndroidControllerSlotRegistry.retainConnected(
+            controllerSlots = controllerSlots,
+            connectedDeviceIds = availableDeviceIds.toSet(),
+        )
+        if (removedControllerSlots.isNotEmpty()) {
+            NativeInputDiagnostics.add(
+                "physical gamepad slots released=${removedControllerSlots.entries.joinToString { "${it.key}:${it.value}" }}",
+            )
+        }
+        val activeControllerDisconnected = activeControllerId in removedControllerSlots.values
         val connected = connectedDevices.isNotEmpty()
         val connectionChanged = connected != physicalControllerConnected
         if (connectionChanged) {
@@ -4546,25 +4615,11 @@ class NativeStreamClient(
         if (connected && !physicalControllerActive && controllerSlots.isEmpty()) {
             activeControllerId = controllerIdFor(connectedDevices.first().id)
         }
-        if (!connected && physicalControllerActive) {
-            physicalControllerActive = false
-            physicalButtons = 0
-            physicalHatButtons = 0
-            physicalSteamOverlayChord.reset()
-            physicalSteamOverlayChordReleaseJob?.cancel()
-            physicalSteamOverlayChordReleaseJob = null
-            physicalLeftTriggerButtonPressed = false
-            physicalRightTriggerButtonPressed = false
-            lastLeftTrigger = 0
-            lastRightTrigger = 0
-            lastLeftStickX = 0
-            lastLeftStickY = 0
-            lastRightStickX = 0
-            lastRightStickY = 0
-            physicalLeftStickX = 0f
-            physicalLeftStickY = 0f
-            physicalRightStickX = 0f
-            physicalRightStickY = 0f
+        if (physicalControllerActive && (!connected || activeControllerDisconnected)) {
+            clearPhysicalControllerInputState()
+            if (connected) {
+                activeControllerId = controllerIdFor(connectedDevices.first().id)
+            }
             sendCurrentGamepadState()
         }
         updateHapticsAdvertisement(force = connectionChanged)
@@ -4798,12 +4853,22 @@ class NativeStreamClient(
     private fun controllerIdFor(event: MotionEvent): Int = controllerIdFor(event.deviceId)
 
     private fun controllerIdFor(deviceId: Int): Int {
-        val stableDeviceId = if (deviceId >= 0) deviceId else 0
-        controllerSlots[stableDeviceId]?.let { return it }
-        val used = controllerSlots.values.toSet()
-        val slot = (0 until 4).firstOrNull { it !in used } ?: 0
-        controllerSlots[stableDeviceId] = slot
-        return slot
+        val assignment = AndroidControllerSlotRegistry.assign(
+            controllerSlots = controllerSlots,
+            deviceId = deviceId,
+            connectedDeviceIds = InputDevice.getDeviceIds().toSet(),
+            maxControllers = GAMEPAD_MAX_CONTROLLERS,
+        )
+        if (physicalControllerActive && activeControllerId in assignment.removedDevices.values) {
+            clearPhysicalControllerInputState()
+        }
+        if (assignment.removedDevices.isNotEmpty()) {
+            NativeInputDiagnostics.add(
+                "physical gamepad slots reconciled removed=${assignment.removedDevices.entries.joinToString { "${it.key}:${it.value}" }} " +
+                    "device=$deviceId slot=${assignment.slot}",
+            )
+        }
+        return assignment.slot
     }
 
     private fun currentGamepadBitmap(controllerId: Int): Int {

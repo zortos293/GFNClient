@@ -1,6 +1,8 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamResolutionTest {
@@ -143,6 +145,28 @@ class StreamResolutionTest {
 
         assertEquals(1.25f, scale.first, 0.0001f)
         assertEquals(1f, scale.second, 0.0001f)
+    }
+
+    @Test
+    fun pinchZoomIsDisabledWhileTouchControllerIsVisible() {
+        assertFalse(
+            streamPinchZoomEnabled(
+                touchMouseEnabled = true,
+                touchControllerVisible = true,
+            ),
+        )
+        assertTrue(
+            streamPinchZoomEnabled(
+                touchMouseEnabled = true,
+                touchControllerVisible = false,
+            ),
+        )
+        assertFalse(
+            streamPinchZoomEnabled(
+                touchMouseEnabled = false,
+                touchControllerVisible = false,
+            ),
+        )
     }
 
     @Test

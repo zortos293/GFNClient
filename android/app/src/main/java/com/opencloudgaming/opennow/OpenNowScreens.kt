@@ -6152,6 +6152,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 serverNegotiatedResolution = session.negotiatedStreamProfile?.resolution,
                 hideExternalMousePointer = externalMousePassthroughActive,
                 touchMouseEnabled = touchInputEnabled && state.settings.androidTouch.mousePad,
+                pinchZoomEnabled = streamPinchZoomEnabled(
+                    touchMouseEnabled = touchInputEnabled && state.settings.androidTouch.mousePad,
+                    touchControllerVisible = touchControlsVisible,
+                ),
                 externalMouseRoot = activity?.window?.decorView,
                 onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
                 stretchToFit = stretchToFit,
@@ -6648,6 +6652,7 @@ private fun StreamVideoSurface(
     serverNegotiatedResolution: String?,
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
+    pinchZoomEnabled: Boolean,
     externalMouseRoot: android.view.View?,
     onMouseCaptureInput: () -> Unit,
     stretchToFit: Boolean,
@@ -6698,6 +6703,9 @@ private fun StreamVideoSurface(
     LaunchedEffect(
         settings.resolution,
         settings.aspectRatio,
+        settings.streamSharpeningEnabled,
+        touchMouseEnabled,
+        pinchZoomEnabled,
         stretchToFit,
         streamAspectRatio,
         configuration.orientation,
@@ -6799,6 +6807,7 @@ private fun StreamVideoSurface(
         }
         FingerMouseInputLayer(
             enabled = touchMouseEnabled,
+            pinchZoomEnabled = pinchZoomEnabled,
             onZoomGesture = { scaleChange, pan ->
                 val nextScale = (zoomScale * scaleChange).coerceIn(1f, 3f)
                 zoomScale = nextScale
@@ -6840,6 +6849,11 @@ internal fun streamStretchScale(
         else -> 1f to 1f
     }
 }
+
+internal fun streamPinchZoomEnabled(
+    touchMouseEnabled: Boolean,
+    touchControllerVisible: Boolean,
+): Boolean = touchMouseEnabled && !touchControllerVisible
 
 private fun streamAspectRatioForPixels(pixels: Pair<Int, Int>): Float {
     val (width, height) = pixels
@@ -6927,6 +6941,7 @@ private fun android.view.View.applyAndroidPointerIconTree(icon: PointerIcon?) {
 @Composable
 private fun FingerMouseInputLayer(
     enabled: Boolean,
+    pinchZoomEnabled: Boolean,
     onZoomGesture: (scaleChange: Float, pan: Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -6961,6 +6976,14 @@ private fun FingerMouseInputLayer(
                         return@pointerInteropFilter true
                     }
                     NativeStreamInputRouter.cancelTouchMouse()
+                    if (!pinchZoomEnabled) {
+                        // Multiple fingers while the touch controller is visible are
+                        // controller input, not a request to crop the video surface.
+                        pinchActive = true
+                        lastPinchDistance = 0f
+                        lastPinchCentroid = Offset.Zero
+                        return@pointerInteropFilter true
+                    }
                     val distance = event.firstTwoPointerDistance()
                     val centroid = event.firstTwoPointerCentroid()
                     if (pinchActive && lastPinchDistance > 0f && distance > 0f) {

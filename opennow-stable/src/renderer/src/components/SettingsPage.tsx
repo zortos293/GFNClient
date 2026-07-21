@@ -40,6 +40,8 @@ interface SettingsPageProps {
   focusSection?: SettingsSectionId;
   /** Called when the user clicks "What's new" in the About section */
   onOpenWhatsNew?: () => void;
+  /** Called when the user clicks "Send feedback" in the About section */
+  onOpenFeedback?: () => void;
 }
 
 export function SettingsPage({
@@ -53,6 +55,7 @@ export function SettingsPage({
   onClose,
   focusSection,
   onOpenWhatsNew,
+  onOpenFeedback,
 }: SettingsPageProps): JSX.Element {
   const { t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
@@ -365,6 +368,7 @@ export function SettingsPage({
                       showAll={showAll}
                       handleChange={handleChange}
                       onOpenWhatsNew={onOpenWhatsNew}
+                      onOpenFeedback={onOpenFeedback}
                     />
                   )}
                 </>

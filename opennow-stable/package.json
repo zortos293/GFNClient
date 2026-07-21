@@ -30,11 +30,14 @@
     "test": "node scripts/run-tests.mjs && node --test scripts/after-sign-mac.test.mjs"
   },
   "dependencies": {
+    "@formkit/auto-animate": "^0.10.0",
     "@react-three/fiber": "^9.6.1",
     "discord-rpc": "^4.0.1",
     "electron-updater": "^6.8.9",
     "lucide-react": "^1.25.0",
     "motion": "^12.42.2",
+    "posthog-js": "^1.406.2",
+    "posthog-node": "^5.46.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

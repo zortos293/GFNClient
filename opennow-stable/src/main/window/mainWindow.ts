@@ -11,6 +11,7 @@ import {
   resolveEscapeHoldCaptureAction,
   type EscapeHoldCaptureState,
 } from "../escapeFullscreenGuard";
+import { captureMainException } from "../telemetry/posthog";
 import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
 
 export interface CreateMainWindowDeps {
@@ -82,6 +83,10 @@ export async function createMainWindow(
 
   window.webContents.on("render-process-gone", (_event, details) => {
     console.error("[Main] Renderer process gone:", details);
+    captureMainException(new Error(`Renderer process gone: ${details.reason}`), {
+      reason: details.reason,
+      exit_code: details.exitCode,
+    });
   });
   window.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     if (level < 2) return;

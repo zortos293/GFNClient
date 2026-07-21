@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { captureRendererException } from "../telemetry/posthog";
 
 interface Props {
   children: ReactNode;
@@ -19,6 +20,10 @@ export class PageErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error(`[PageErrorBoundary:${this.props.label ?? "page"}]`, error, info.componentStack);
+    captureRendererException(error, {
+      component_stack: info.componentStack ?? undefined,
+      boundary_label: this.props.label ?? "page",
+    });
   }
 
   render(): ReactNode {

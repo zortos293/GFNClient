@@ -768,6 +768,10 @@
       "deleteCacheFailed": "Failed to delete cache. Please try again.",
       "whatsNew": "What's new",
       "whatsNewHint": "View the release notes for the current version of OpenNOW.",
+      "errorReporting": "Send anonymous diagnostics",
+      "errorReportingHint": "Sends anonymous crash reports and app opens (install ID, version, OS). Never includes your NVIDIA account, games library, or gameplay.",
+      "sendFeedback": "Send feedback",
+      "sendFeedbackHint": "Share a bug report or idea with the OpenNOW team.",
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
         "checking": "Checking",
@@ -859,6 +863,7 @@
     }
   },
   "navbar": {
+    "sendFeedback": "Feedback",
     "subscriptionDetails": "Subscription details",
     "playtimeDetails": "Playtime Details",
     "storageDetails": "Storage Details",
@@ -939,5 +944,43 @@
     "viewOnGitHub": "View full release on GitHub",
     "unavailable": "Release notes couldn't be loaded right now.",
     "settingsLink": "What's new"
+  },
+  "telemetryConsent": {
+    "kicker": "Privacy",
+    "title": "Help improve OpenNOW?",
+    "body": "OpenNOW can send anonymous diagnostics so we can find crashes and understand how many installs are active.",
+    "sendsErrors": "Sends crash details, app version, and OS information",
+    "sendsAppOpens": "Sends an anonymous signal when the app opens (for install counts)",
+    "sendsAnonymousId": "Uses a random install ID — not linked to your name or email",
+    "neverSendsAccount": "Never sends your NVIDIA account, tokens, or library",
+    "neverSendsGameplay": "Never records gameplay, streams, or session content",
+    "changeLater": "You can change this anytime in Settings → About.",
+    "accept": "Send anonymous diagnostics",
+    "decline": "Not now"
+  },
+  "feedback": {
+    "kicker": "Feedback",
+    "title": "Send feedback",
+    "category": "Category",
+    "categories": {
+      "bug": "Bug report",
+      "idea": "Idea / feature request",
+      "other": "Other"
+    },
+    "message": "Message",
+    "messagePlaceholder": "Tell us what happened or what you'd like to see…",
+    "includeSystemInfo": "Include app version and system info",
+    "includeLogs": "Include recent app logs",
+    "includeLogsHint": "Attaches redacted main + renderer console logs (no passwords, tokens, or emails). Helpful for bug reports.",
+    "send": "Send feedback",
+    "sending": "Sending…",
+    "cancel": "Cancel",
+    "close": "Close",
+    "success": "Thanks — your feedback was sent.",
+    "errors": {
+      "empty": "Please enter a message before sending.",
+      "notConfigured": "Feedback is unavailable because PostHog is not configured in this build.",
+      "sendFailed": "Couldn't send feedback. Please try again."
+    }
   }
 }

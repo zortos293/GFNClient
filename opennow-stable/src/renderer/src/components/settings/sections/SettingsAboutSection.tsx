@@ -1,4 +1,4 @@
-import { Info, RefreshCcw, Download, FileDown, Trash2 } from "lucide-react";
+import { Info, MessageSquareText, RefreshCcw, Download, FileDown, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type JSX } from "react";
 import type { AppUpdaterState, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
@@ -11,9 +11,16 @@ export interface SettingsAboutSectionProps {
   showAll: boolean;
   handleChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   onOpenWhatsNew?: () => void;
+  onOpenFeedback?: () => void;
 }
 
-export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWhatsNew }: SettingsAboutSectionProps): JSX.Element {
+export function SettingsAboutSection({
+  settings,
+  showAll,
+  handleChange,
+  onOpenWhatsNew,
+  onOpenFeedback,
+}: SettingsAboutSectionProps): JSX.Element {
   const { t } = useTranslation();
   const [updaterState, setUpdaterState] = useState<AppUpdaterState>({
     status: "idle",
@@ -227,6 +234,41 @@ export function SettingsAboutSection({ settings, showAll, handleChange, onOpenWh
             </div>
           </div>
         ) : null}
+
+        <div className="settings-row settings-row--column">
+          <div className="settings-row-top settings-row-top--compact">
+            <label className="settings-label settings-label--wrap" htmlFor="settings-about-error-reporting">
+              <span className="settings-label-title">{t("settings.about.errorReporting")}</span>
+            </label>
+            <label className="settings-toggle">
+              <input
+                id="settings-about-error-reporting"
+                type="checkbox"
+                checked={settings.errorReportingConsent === "granted"}
+                onChange={(e) => handleChange("errorReportingConsent", e.target.checked ? "granted" : "denied")}
+              />
+              <span className="settings-toggle-track" />
+            </label>
+          </div>
+          <span className="settings-subtle-hint">
+            {t("settings.about.errorReportingHint")}
+          </span>
+        </div>
+
+        <div className="settings-row">
+          <label className="settings-label">
+            {t("settings.about.sendFeedback")}
+            <span className="settings-hint">{t("settings.about.sendFeedbackHint")}</span>
+          </label>
+          <button
+            type="button"
+            className="settings-export-logs-btn"
+            onClick={() => onOpenFeedback?.()}
+          >
+            <MessageSquareText size={16} />
+            {t("settings.about.sendFeedback")}
+          </button>
+        </div>
 
         <div className="settings-row">
           <label className="settings-label">

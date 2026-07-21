@@ -115,9 +115,12 @@ import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
+import { ErrorReportingConsentModal } from "./components/ErrorReportingConsentModal";
+import { FeedbackModal } from "./components/FeedbackModal";
 import { ModalSurface } from "./components/ui/ModalSurface";
 import { overlayMotion, pageTransition, streamRevealTransition } from "./components/MotionProvider";
 import { LazyShaderAtmosphere } from "./components/LazyShaderAtmosphere";
+import { syncRendererTelemetry } from "./telemetry/posthog";
 
 const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
@@ -238,10 +241,15 @@ export function App(): JSX.Element {
     updateChannel: "stable",
     lastSeenReleaseHighlightsVersion: "",
     videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
+    errorReportingConsent: "unset",
+    telemetryInstallId: "",
   });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [releaseHighlightsPayload, setReleaseHighlightsPayload] = useState<ReleaseHighlightsPayload | null>(null);
   const [releaseHighlightsIsAuto, setReleaseHighlightsIsAuto] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackSurfacePresent, setFeedbackSurfacePresent] = useState(false);
+  const [consentSurfacePresent, setConsentSurfacePresent] = useState(false);
   const activeSessionProxyUrl = useMemo(
     () => getEnabledSessionProxyUrl(settings),
     [settings.sessionProxyEnabled, settings.sessionProxyUrl],
@@ -404,6 +412,27 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (releaseHighlightsPayload) setReleaseHighlightsSurfacePresent(true);
   }, [releaseHighlightsPayload]);
+
+  useEffect(() => {
+    if (feedbackOpen) setFeedbackSurfacePresent(true);
+  }, [feedbackOpen]);
+
+  useEffect(() => {
+    if (settingsLoaded && settings.errorReportingConsent === "unset") {
+      setConsentSurfacePresent(true);
+    }
+  }, [settings.errorReportingConsent, settingsLoaded]);
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return;
+    }
+    void syncRendererTelemetry(settings).catch((error) => {
+      console.warn("[Telemetry] Failed to sync renderer PostHog:", error);
+    });
+    // Only re-sync when consent or install identity changes — not on every settings keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrow deps
+  }, [settings.errorReportingConsent, settings.telemetryInstallId, settingsLoaded]);
 
   useEffect(() => {
     if (streamStatus === "streaming" && audioRef.current) {
@@ -3594,6 +3623,22 @@ export function App(): JSX.Element {
     setReleaseHighlightsIsAuto(false);
   }, [releaseHighlightsIsAuto]);
 
+  const handleErrorReportingConsent = useCallback(async (granted: boolean): Promise<void> => {
+    await updateSetting("errorReportingConsent", granted ? "granted" : "denied");
+    try {
+      const refreshed = await window.openNow.getSettings();
+      setSettings((prev) => ({
+        ...prev,
+        errorReportingConsent: refreshed.errorReportingConsent,
+        telemetryInstallId: refreshed.telemetryInstallId,
+      }));
+    } catch (error) {
+      console.warn("[Telemetry] Failed to refresh settings after consent change:", error);
+    }
+  }, [updateSetting]);
+
+  const showErrorReportingConsent = settingsLoaded && settings.errorReportingConsent === "unset";
+
   const mainPage: AppPage = currentPage === "settings" ? pageBeforeSettings : currentPage;
 
   // Show login screen if not authenticated
@@ -3619,6 +3664,22 @@ export function App(): JSX.Element {
           onDismiss={handleDismissReleaseHighlights}
           onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
         />
+        <ErrorReportingConsentModal
+          open={showErrorReportingConsent}
+          onAccept={() => {
+            void handleErrorReportingConsent(true);
+          }}
+          onDecline={() => {
+            void handleErrorReportingConsent(false);
+          }}
+          onExitComplete={() => setConsentSurfacePresent(false)}
+        />
+        <FeedbackModal
+          open={feedbackOpen}
+          settings={settings}
+          onClose={() => setFeedbackOpen(false)}
+          onExitComplete={() => setFeedbackSurfacePresent(false)}
+        />
       </>
     );
   }
@@ -3643,6 +3704,10 @@ export function App(): JSX.Element {
     || queueModalGame !== null
     || releaseHighlightsPayload !== null
     || releaseHighlightsSurfacePresent
+    || showErrorReportingConsent
+    || consentSurfacePresent
+    || feedbackOpen
+    || feedbackSurfacePresent
     || logoutConfirmOpen
     || logoutConfirmSurfacePresent
     || removeAccountConfirmOpen
@@ -3711,6 +3776,7 @@ export function App(): JSX.Element {
           accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
           handleLogout();
         }}
+        onOpenFeedback={() => setFeedbackOpen(true)}
         onBlockingOverlayChange={setNavbarOverlayBlocking}
         controllerMode={effectiveControllerMode}
       />
@@ -3953,6 +4019,7 @@ export function App(): JSX.Element {
           onClose={handleCloseSettings}
           focusSection={settingsFocusSection}
           onOpenWhatsNew={handleOpenWhatsNew}
+          onOpenFeedback={() => setFeedbackOpen(true)}
         />
       </SettingsModalHost>
       {logoutConfirmModal}
@@ -3969,6 +4036,22 @@ export function App(): JSX.Element {
         payload={releaseHighlightsPayload}
         onDismiss={handleDismissReleaseHighlights}
         onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
+      />
+      <ErrorReportingConsentModal
+        open={showErrorReportingConsent}
+        onAccept={() => {
+          void handleErrorReportingConsent(true);
+        }}
+        onDecline={() => {
+          void handleErrorReportingConsent(false);
+        }}
+        onExitComplete={() => setConsentSurfacePresent(false)}
+      />
+      <FeedbackModal
+        open={feedbackOpen}
+        settings={settings}
+        onClose={() => setFeedbackOpen(false)}
+        onExitComplete={() => setFeedbackSurfacePresent(false)}
       />
     </div>
   );

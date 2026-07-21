@@ -1,5 +1,5 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon } from "lucide-react";
+import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon, MessageSquareText } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import { useTranslation } from "../i18n";
 import { OpenNowLogoMark } from "./OpenNowLogoMark";
@@ -22,6 +22,7 @@ interface NavbarProps {
   onRemoveAccount: (userId: string, restoreFocusTarget?: HTMLElement) => void;
   onAddAccount: () => void;
   onLogoutAll: (restoreFocusTarget?: HTMLElement) => void;
+  onOpenFeedback?: () => void;
   onBlockingOverlayChange?: (blocking: boolean) => void;
   controllerMode?: boolean;
 }
@@ -51,6 +52,7 @@ export function Navbar({
   onRemoveAccount,
   onAddAccount,
   onLogoutAll,
+  onOpenFeedback,
   onBlockingOverlayChange,
   controllerMode = false,
 }: NavbarProps): JSX.Element {
@@ -306,6 +308,18 @@ export function Navbar({
           <OpenNowLogoMark className="opennow-logo-mark" />
         </div>
         <span className="navbar-logo-text">OpenNOW</span>
+        {onOpenFeedback && !controllerMode && (
+          <button
+            type="button"
+            className="navbar-feedback-btn"
+            onClick={onOpenFeedback}
+            title={t("navbar.sendFeedback")}
+            aria-label={t("navbar.sendFeedback")}
+          >
+            <MessageSquareText size={14} />
+            <span>{t("navbar.sendFeedback")}</span>
+          </button>
+        )}
       </div>
 
       <div className="navbar-nav">

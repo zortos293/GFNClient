@@ -40,6 +40,7 @@ import type { SettingsManager } from "../settings";
 import type { AppUpdaterController } from "../updater";
 import type { SignalingCoordinator } from "../signaling/signalingCoordinator";
 import { fetchThanksData } from "../thanks/fetchThanksData";
+import { applyTelemetrySettingsChange, syncMainTelemetry } from "../telemetry/posthog";
 import { openExternalHttpUrl } from "../window/externalUrl";
 
 type DiscordMonitor = {
@@ -243,6 +244,7 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
             void destroyDiscordRpc();
           }
         }
+        applyTelemetrySettingsChange(settingsManager, key, appliedValue);
       } catch (err) {
         console.warn("Failed to apply setting change in main process:", err);
       }
@@ -257,6 +259,7 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
     deps.getAppUpdater()?.setUpdateChannel(resetSettings.updateChannel);
     deps.getSignalingCoordinator()?.stopNativeStreamer("settings reset");
     deps.getSignalingCoordinator()?.resetNativeStreamerContext();
+    syncMainTelemetry(settingsManager);
     return resetSettings;
   });
 

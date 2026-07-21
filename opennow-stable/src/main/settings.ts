@@ -17,6 +17,7 @@ import type {
   NativeTransitionDiagnostics,
   AppAccentColor,
   AppTheme,
+  ErrorReportingConsent,
   VideoShaderSettings,
   UpdateChannel,
 } from "@shared/gfn";
@@ -171,6 +172,13 @@ export interface Settings {
   lastSeenReleaseHighlightsVersion: string;
   /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
   videoShader: VideoShaderSettings;
+  /**
+   * First-run consent for anonymous error reporting.
+   * `"unset"` shows the one-time prompt; only `"granted"` enables exception capture.
+   */
+  errorReportingConsent: ErrorReportingConsent;
+  /** Anonymous install UUID used as PostHog distinct ID (empty until first grant or feedback) */
+  telemetryInstallId: string;
 }
 
 const defaultStopShortcut = "Ctrl+Shift+Q";
@@ -283,7 +291,21 @@ const DEFAULT_SETTINGS: Settings = {
   allowEscapeToExitFullscreen: false,
   lastSeenReleaseHighlightsVersion: "",
   videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
+  errorReportingConsent: "unset",
+  telemetryInstallId: "",
 };
+
+const ERROR_REPORTING_CONSENTS = new Set<ErrorReportingConsent>(["unset", "granted", "denied"]);
+
+function normalizeErrorReportingConsent(raw: unknown): ErrorReportingConsent {
+  return ERROR_REPORTING_CONSENTS.has(raw as ErrorReportingConsent)
+    ? (raw as ErrorReportingConsent)
+    : "unset";
+}
+
+function normalizeTelemetryInstallId(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim() : "";
+}
 
 const SHORTCUT_SETTING_KEYS = [
   "shortcutToggleStats",
@@ -507,6 +529,18 @@ export class SettingsManager {
     const videoShader = normalizeVideoShaderSettings(settings.videoShader);
     if (JSON.stringify(settings.videoShader) !== JSON.stringify(videoShader)) {
       settings.videoShader = videoShader;
+      migrated = true;
+    }
+
+    const consentBefore = settings.errorReportingConsent;
+    settings.errorReportingConsent = normalizeErrorReportingConsent(settings.errorReportingConsent);
+    if (settings.errorReportingConsent !== consentBefore) {
+      migrated = true;
+    }
+
+    const installIdBefore = settings.telemetryInstallId;
+    settings.telemetryInstallId = normalizeTelemetryInstallId(settings.telemetryInstallId);
+    if (settings.telemetryInstallId !== installIdBefore) {
       migrated = true;
     }
 

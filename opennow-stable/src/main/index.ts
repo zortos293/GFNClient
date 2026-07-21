@@ -75,6 +75,7 @@ import {
 } from "./chromiumCommandLine";
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
 import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./releaseHighlights";
+import { shutdownMainTelemetry, syncMainTelemetry } from "./telemetry/posthog";
 import { createMainWindow } from "./window/mainWindow";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -239,6 +240,7 @@ function runShutdownCleanup(reason = "app-quit"): void {
   });
   signalingCoordinator = null;
   void destroyDiscordRpc();
+  void shutdownMainTelemetry();
   appUpdater?.dispose();
   appUpdater = null;
 
@@ -536,6 +538,9 @@ app.whenReady().then(async () => {
   if (settingsManager.get("discordRichPresence")) {
     void connectDiscordRpc().then(() => discordMonitor.start());
   }
+
+  // Start anonymous error reporting only when the user has granted consent
+  syncMainTelemetry(settingsManager);
 
   // Set up permission handlers for getUserMedia, fullscreen, pointer lock
   session.defaultSession.setPermissionRequestHandler(

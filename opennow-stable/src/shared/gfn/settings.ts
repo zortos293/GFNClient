@@ -20,6 +20,7 @@ export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
 export type AppTheme = "light" | "dark" | "auto";
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
+export type ErrorReportingConsent = "unset" | "granted" | "denied";
 export type RuntimePlatform =
   | "aix"
   | "android"
@@ -141,6 +142,13 @@ export interface Settings {
   lastSeenReleaseHighlightsVersion: string;
   /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
   videoShader: VideoShaderSettings;
+  /**
+   * First-run consent for anonymous error reporting.
+   * `"unset"` shows the one-time prompt; only `"granted"` enables exception capture.
+   */
+  errorReportingConsent: ErrorReportingConsent;
+  /** Anonymous install UUID used as PostHog distinct ID (empty until first grant or feedback) */
+  telemetryInstallId: string;
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({

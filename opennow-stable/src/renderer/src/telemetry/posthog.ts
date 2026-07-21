@@ -13,8 +13,9 @@ import {
 let initialized = false;
 let exceptionsEnabled = false;
 let activeDistinctId: string | null = null;
+let registeredVersionProperties: Record<string, string | undefined> | null = null;
 
-function buildSystemProperties(): Record<string, string | undefined> {
+function buildRendererBaseProperties(): Record<string, string | undefined> {
   return {
     app_platform: navigator.platform,
     app_user_agent: navigator.userAgent,
@@ -22,7 +23,37 @@ function buildSystemProperties(): Record<string, string | undefined> {
   };
 }
 
-function ensureClient(distinctId: string, enableExceptions: boolean): boolean {
+async function getAppVersionProperties(): Promise<Record<string, string | undefined>> {
+  try {
+    const state = await window.openNow.getUpdaterState();
+    const version = state.currentVersion?.trim();
+    if (!version) {
+      return {};
+    }
+    return {
+      app_version: version,
+      app_display_version: state.currentDisplayVersion?.trim() || version,
+      app_build_number: state.currentBuildNumber?.trim() || undefined,
+    };
+  } catch (error) {
+    console.warn("[Telemetry] Failed to read app version for PostHog:", error);
+    return {};
+  }
+}
+
+async function registerClientProperties(): Promise<void> {
+  if (!initialized) {
+    return;
+  }
+  const versionProperties = await getAppVersionProperties();
+  registeredVersionProperties = versionProperties;
+  posthog.register({
+    ...buildRendererBaseProperties(),
+    ...versionProperties,
+  });
+}
+
+async function ensureClient(distinctId: string, enableExceptions: boolean): Promise<boolean> {
   if (!isPostHogConfigured()) {
     return false;
   }
@@ -48,13 +79,14 @@ function ensureClient(distinctId: string, enableExceptions: boolean): boolean {
         : false,
       loaded: (client) => {
         client.register({
-          ...buildSystemProperties(),
+          ...buildRendererBaseProperties(),
         });
       },
     });
     initialized = true;
     exceptionsEnabled = enableExceptions;
     activeDistinctId = distinctId;
+    await registerClientProperties();
     return true;
   }
 
@@ -73,6 +105,10 @@ function ensureClient(distinctId: string, enableExceptions: boolean): boolean {
   } else if (!enableExceptions && exceptionsEnabled) {
     posthog.stopExceptionAutocapture();
     exceptionsEnabled = false;
+  }
+
+  if (!registeredVersionProperties?.app_version) {
+    await registerClientProperties();
   }
 
   return true;
@@ -115,7 +151,7 @@ export async function syncRendererTelemetry(settings: Settings): Promise<void> {
   }
 
   const distinctId = await ensureInstallId(settings);
-  ensureClient(distinctId, true);
+  await ensureClient(distinctId, true);
 }
 
 export function captureRendererException(
@@ -176,7 +212,7 @@ export async function captureFeedback(
   }
 
   const distinctId = await ensureInstallId(settings);
-  if (!ensureClient(distinctId, settings.errorReportingConsent === "granted")) {
+  if (!(await ensureClient(distinctId, settings.errorReportingConsent === "granted"))) {
     return false;
   }
 
@@ -189,10 +225,15 @@ export async function captureFeedback(
     logs_included: payload.includeLogs,
   };
   if (payload.includeSystemInfo) {
-    Object.assign(properties, buildSystemProperties());
+    const versionProperties = registeredVersionProperties?.app_version
+      ? registeredVersionProperties
+      : await getAppVersionProperties();
+    Object.assign(properties, buildRendererBaseProperties(), versionProperties);
   }
   if (payload.includeLogs) {
     const { logs, logsBytes } = await collectFeedbackLogs();
+    // `app_logs` is the canonical property for dashboards; keep `logs` for older events.
+    properties.app_logs = logs;
     properties.logs = logs;
     properties.logs_bytes = logsBytes;
   }

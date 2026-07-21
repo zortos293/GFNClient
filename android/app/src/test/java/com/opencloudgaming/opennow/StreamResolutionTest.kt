@@ -104,6 +104,71 @@ class StreamResolutionTest {
 
         assertEquals(null, streamRuntimeResolutionMismatch(settings, null))
         assertEquals(null, streamRuntimeResolutionMismatch(settings, "1680x720"))
+        assertEquals(null, streamRuntimeResolutionMismatch(settings, "2x2"))
+    }
+
+    @Test
+    fun activeStreamModeSeparatesServerFallbackFromLaterProviderOrGameChange() {
+        val requested = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            codec = VideoCodec.AV1,
+        )
+
+        val serverFallback = activeStreamModeStatus(
+            requestedSettings = requested,
+            transportSettings = requested,
+            decodedResolution = "1366x768",
+            serverNegotiatedResolution = "1366x768",
+        )
+        val laterModeChange = activeStreamModeStatus(
+            requestedSettings = requested,
+            transportSettings = requested,
+            decodedResolution = "1230x768",
+            serverNegotiatedResolution = "1366x768",
+        )
+        val finalServerMode = activeStreamModeStatus(
+            requestedSettings = requested,
+            transportSettings = requested,
+            decodedResolution = "1230x768",
+            serverNegotiatedResolution = "1366x768",
+            serverFinalSelectedResolution = "1230x768",
+        )
+
+        assertEquals(StreamResolutionChangeSource.ServerNegotiatedFallback, serverFallback?.resolutionSource)
+        assertEquals("1366x768", serverFallback?.displayedResolution)
+        assertEquals(false, serverFallback?.safeVideoRecoveryActive)
+        assertEquals(StreamResolutionChangeSource.ProviderOrGameModeChange, laterModeChange?.resolutionSource)
+        assertEquals("1230x768", laterModeChange?.displayedResolution)
+        assertEquals(false, laterModeChange?.safeVideoRecoveryActive)
+        assertEquals(StreamResolutionChangeSource.ServerNegotiatedFallback, finalServerMode?.resolutionSource)
+        assertEquals("1230x768", finalServerMode?.serverFinalSelectedResolution)
+    }
+
+    @Test
+    fun activeStreamModeSurfacesClientSafeRecoveryWithoutInventingResolutionChange() {
+        val requested = StreamSettings(
+            resolution = "3840x2160",
+            aspectRatio = "16:9",
+            fps = 120,
+            maxBitrateMbps = 150,
+            codec = VideoCodec.AV1,
+            colorQuality = ColorQuality.TenBit420,
+        )
+        val recovery = requested.androidSafeVideoFallback()
+
+        val status = activeStreamModeStatus(
+            requestedSettings = requested,
+            transportSettings = recovery,
+            decodedResolution = "3840x2160",
+            serverNegotiatedResolution = "3840x2160",
+        )
+
+        assertEquals(null, status?.resolutionSource)
+        assertEquals(true, status?.safeVideoRecoveryActive)
+        assertEquals(VideoCodec.H264, status?.transportCodec)
+        assertEquals("3840x2160", status?.requestedResolution)
+        assertEquals("3840x2160", status?.displayedResolution)
     }
 
     @Test

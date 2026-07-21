@@ -353,6 +353,21 @@ internal data class StreamResolutionMismatch(
     val serverNegotiatedResolution: String? = null,
 )
 
+internal enum class StreamResolutionChangeSource {
+    ServerNegotiatedFallback,
+    ProviderOrGameModeChange,
+}
+
+internal data class ActiveStreamModeStatus(
+    val requestedResolution: String,
+    val displayedResolution: String,
+    val serverNegotiatedResolution: String? = null,
+    val serverFinalSelectedResolution: String? = null,
+    val resolutionSource: StreamResolutionChangeSource? = null,
+    val safeVideoRecoveryActive: Boolean = false,
+    val transportCodec: VideoCodec,
+)
+
 internal val StreamResolutionMismatch.isServerNegotiatedFallback: Boolean
     get() = serverNegotiatedResolution == actualResolution
 
@@ -361,7 +376,9 @@ internal fun streamRuntimeResolutionMismatch(
     actualResolution: String?,
     serverNegotiatedResolution: String? = null,
 ): StreamResolutionMismatch? {
-    val actualPixels = parseResolutionPixelsOrNull(actualResolution) ?: return null
+    val actualPixels = parseResolutionPixelsOrNull(actualResolution)
+        ?.takeIf { (width, height) -> width >= 320 && height >= 180 }
+        ?: return null
     val expectedPixels = streamResolutionPixels(settings)
     if (actualPixels == expectedPixels) return null
     val negotiatedPixels = parseResolutionPixelsOrNull(serverNegotiatedResolution)
@@ -373,6 +390,51 @@ internal fun streamRuntimeResolutionMismatch(
             ?.let { "${it.first}x${it.second}" },
     )
 }
+
+internal fun activeStreamModeStatus(
+    requestedSettings: StreamSettings,
+    transportSettings: StreamSettings,
+    decodedResolution: String?,
+    serverNegotiatedResolution: String? = null,
+    serverFinalSelectedResolution: String? = null,
+): ActiveStreamModeStatus? {
+    val requestedPixels = streamResolutionPixels(requestedSettings)
+    val requestedResolution = "${requestedPixels.first}x${requestedPixels.second}"
+    val decodedPixels = parseResolutionPixelsOrNull(decodedResolution)
+        ?.takeIf { (width, height) -> width >= 320 && height >= 180 }
+    val negotiatedPixels = parseResolutionPixelsOrNull(serverNegotiatedResolution)
+        ?.takeIf { (width, height) -> width >= 320 && height >= 180 }
+    val finalSelectedPixels = parseResolutionPixelsOrNull(serverFinalSelectedResolution)
+        ?.takeIf { (width, height) -> width >= 320 && height >= 180 }
+    val displayedPixels = decodedPixels ?: finalSelectedPixels ?: negotiatedPixels ?: requestedPixels
+    val resolutionSource = when {
+        displayedPixels == requestedPixels -> null
+        negotiatedPixels == displayedPixels || finalSelectedPixels == displayedPixels ->
+            StreamResolutionChangeSource.ServerNegotiatedFallback
+        else -> StreamResolutionChangeSource.ProviderOrGameModeChange
+    }
+    val safeVideoRecoveryActive = !requestedSettings.hasSameVideoTransportProfile(transportSettings)
+    if (resolutionSource == null && !safeVideoRecoveryActive) return null
+    return ActiveStreamModeStatus(
+        requestedResolution = requestedResolution,
+        displayedResolution = "${displayedPixels.first}x${displayedPixels.second}",
+        serverNegotiatedResolution = negotiatedPixels?.let { "${it.first}x${it.second}" },
+        serverFinalSelectedResolution = finalSelectedPixels?.let { "${it.first}x${it.second}" },
+        resolutionSource = resolutionSource,
+        safeVideoRecoveryActive = safeVideoRecoveryActive,
+        transportCodec = transportSettings.codec,
+    )
+}
+
+private fun StreamSettings.hasSameVideoTransportProfile(other: StreamSettings): Boolean =
+    resolution == other.resolution &&
+        aspectRatio == other.aspectRatio &&
+        fps == other.fps &&
+        maxBitrateMbps == other.maxBitrateMbps &&
+        codec == other.codec &&
+        colorQuality == other.colorQuality &&
+        hdrEnabled == other.hdrEnabled &&
+        enableCloudGsync == other.enableCloudGsync
 
 internal fun streamResolutionOptionsForAspect(aspectRatio: String): List<String> =
     STREAM_RESOLUTION_OPTIONS.filter { it.aspectRatio == aspectRatio }.map { it.value }
@@ -1212,6 +1274,15 @@ data class NegotiatedStreamProfile(
 )
 
 @Serializable
+data class SessionMonitorSnapshot(
+    val requestedResolution: String? = null,
+    val requestedFps: Int? = null,
+    val returnedResolution: String? = null,
+    val returnedFps: Int? = null,
+    val finalSelectedResolution: String? = null,
+)
+
+@Serializable
 data class SessionAdMediaFile(
     val mediaFileUrl: String? = null,
     val encodingProfile: String? = null,
@@ -1282,6 +1353,7 @@ data class SessionInfo(
     val iceServers: List<IceServer> = emptyList(),
     val mediaConnectionInfo: MediaConnectionInfo? = null,
     val negotiatedStreamProfile: NegotiatedStreamProfile? = null,
+    val monitorSnapshot: SessionMonitorSnapshot? = null,
     val requestedStreamingFeatures: StreamingFeatures? = null,
     val finalizedStreamingFeatures: StreamingFeatures? = null,
     val clientId: String? = null,
@@ -1397,6 +1469,8 @@ data class StreamRuntimeStats(
     val decodeMs: Double? = null,
     val jitterMs: Double? = null,
     val packetLossPct: Double? = null,
+    val packetsLostDelta: Long? = null,
+    val packetsReceivedDelta: Long? = null,
 )
 
 internal fun CodecCapability.streamingDecoderAvailable(): Boolean =
@@ -1565,7 +1639,7 @@ internal fun StreamSettings.androidSafeVideoFallback(): StreamSettings =
         hdrEnabled = false,
         enableCloudGsync = false,
         streamSharpeningEnabled = false,
-    ).cappedResolution(SAFE_VIDEO_FALLBACK_MAX_WIDTH, SAFE_VIDEO_FALLBACK_MAX_HEIGHT, strict = false)
+    )
 
 private fun StreamSettings.androidWebRtcColorQuality(): ColorQuality {
     val compatible = withCodecColorCompatibility()
@@ -1666,7 +1740,5 @@ private const val STREAM_FPS_STEP = 30
 private const val LOW_POWER_RECOMMENDED_PIXEL_COUNT = 1280 * 720
 private const val LOW_POWER_RECOMMENDED_FPS = 30
 private const val LOW_POWER_RECOMMENDED_BITRATE_MBPS = 12
-private const val SAFE_VIDEO_FALLBACK_MAX_WIDTH = 1920
-private const val SAFE_VIDEO_FALLBACK_MAX_HEIGHT = 1080
 private const val ANDROID_1440P_PIXEL_BUDGET = 2560 * 1440
 private const val DECODER_RESOLUTION_HEADROOM = 1.4f

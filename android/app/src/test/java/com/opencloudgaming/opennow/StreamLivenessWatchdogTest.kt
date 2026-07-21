@@ -14,16 +14,46 @@ class StreamLivenessWatchdogTest {
     }
 
     @Test
-    fun usesPlatformSpecificRecoveryThresholds() {
+    fun androidTvAllowsSlowHardwareDecoderStartupBeforeSafeFallback() {
         val tv = streamRecoveryTiming(androidTvProfile = true)
         val mobile = streamRecoveryTiming(androidTvProfile = false)
 
-        assertEquals(3_000L, tv.keyframeAfterMs)
-        assertEquals(2_000L, tv.keyframeIntervalMs)
-        assertEquals(8_000L, tv.restartAfterMs)
+        assertEquals(5_000L, tv.keyframeAfterMs)
+        assertEquals(2_500L, tv.keyframeIntervalMs)
+        assertEquals(14_000L, tv.restartAfterMs)
         assertEquals(5_000L, mobile.keyframeAfterMs)
         assertEquals(2_500L, mobile.keyframeIntervalMs)
         assertEquals(10_000L, mobile.restartAfterMs)
+        assertEquals(14_000L, firstVideoFrameRecoveryTimeoutMs(androidTvProfile = true))
+        assertEquals(10_000L, firstVideoFrameRecoveryTimeoutMs(androidTvProfile = false))
+    }
+
+    @Test
+    fun firstFrameRecoveryRetriesRequestedProfileThenAppliesSafeFallbackOnlyOnce() {
+        assertEquals(
+            FirstFrameRecoveryStep.RetryRequestedProfile,
+            firstFrameRecoveryStep(
+                transportHasStableMedia = false,
+                reconnectAttempts = 0,
+                safeVideoFallbackApplied = false,
+            ),
+        )
+        assertEquals(
+            FirstFrameRecoveryStep.ApplySafeVideoFallback,
+            firstFrameRecoveryStep(
+                transportHasStableMedia = false,
+                reconnectAttempts = 1,
+                safeVideoFallbackApplied = false,
+            ),
+        )
+        assertEquals(
+            FirstFrameRecoveryStep.ContinueBoundedTransportRecovery,
+            firstFrameRecoveryStep(
+                transportHasStableMedia = false,
+                reconnectAttempts = 2,
+                safeVideoFallbackApplied = true,
+            ),
+        )
     }
 
     @Test

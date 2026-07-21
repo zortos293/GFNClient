@@ -77,6 +77,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -325,9 +326,15 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     var hiddenUpdatePromptKey by remember { mutableStateOf<String?>(null) }
     val updatePromptKey = state.androidUpdate.visibleNoticeKey(state.dismissedAndroidUpdateNoticeKey)
     val showAnalyticsConsent = !state.settings.analyticsConsentAsked
+    val diagnosticDialogVisible = state.diagnosticShare.awaitingConsent ||
+        state.diagnosticShare.uploading ||
+        state.diagnosticShare.pasteUrl != null
+    val showSessionReport = state.sessionReport != null && !showAnalyticsConsent && !diagnosticDialogVisible
     val showUpdatePrompt = updatePromptKey != null &&
         updatePromptKey != hiddenUpdatePromptKey &&
         !showAnalyticsConsent &&
+        !showSessionReport &&
+        !diagnosticDialogVisible &&
         state.androidUpdate.status in setOf(AndroidUpdateStatus.Available, AndroidUpdateStatus.Downloaded)
 
     DisposableEffect(launchAudioController) {
@@ -460,6 +467,12 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                         else -> LoginScreen(state, viewModel)
                     }
                 }
+                state.sessionReport?.takeIf { showSessionReport }?.let { report ->
+                    SessionReportDialog(
+                        report = report,
+                        onDismiss = viewModel::dismissSessionReport,
+                    )
+                }
                 updatePromptKey?.takeIf { showUpdatePrompt }?.let { promptKey ->
                     AndroidUpdatePromptDialog(
                         update = state.androidUpdate,
@@ -507,6 +520,174 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         }
     }
 }
+
+@Composable
+private fun SessionReportDialog(
+    report: SessionReport,
+    onDismiss: () -> Unit,
+) {
+    val scoreColor = when (report.rating) {
+        SessionReportRating.Excellent -> Green
+        SessionReportRating.Good -> Color(0xffc7ef6b)
+        SessionReportRating.Fair -> Color(0xffffc95a)
+        SessionReportRating.Poor -> Color(0xffff8d7a)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Session report") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Surface(
+                    color = scoreColor.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(18.dp),
+                    border = BorderStroke(1.dp, scoreColor.copy(alpha = 0.38f)),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(report.gameTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                "${formatSessionTimerDuration(report.durationSeconds)} • ${report.sampleCount} quality samples",
+                                color = TextMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                "${report.score}/100",
+                                color = scoreColor,
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Black,
+                            )
+                            Text(report.rating.label, color = scoreColor, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                if (report.limitedData) {
+                    Text(
+                        "This was a short session, so the score is based on limited samples and may vary more than usual.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Text("Connection", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    SessionReportMetric(
+                        label = "Latency",
+                        value = report.averagePingMs?.let { "$it ms avg" } ?: "Not measured",
+                        detail = report.peakPingMs?.let { "$it ms peak" },
+                    )
+                    SessionReportMetric(
+                        label = "Stream speed",
+                        value = formatRuntimeBitrate(report.averageBitrateKbps),
+                        detail = report.peakBitrateKbps?.let { "${formatRuntimeBitrate(it)} peak" },
+                    )
+                    SessionReportMetric(
+                        label = "Packet loss",
+                        value = report.packetLossPct?.let { "%.2f%%".format(Locale.US, it) } ?: "Not measured",
+                        detail = report.packetLossPct?.let { if (it <= 0.5) "Stable" else "May affect clarity" },
+                    )
+                    SessionReportMetric(
+                        label = "Jitter",
+                        value = report.averageJitterMs?.let { "%.1f ms".format(Locale.US, it) } ?: "Not measured",
+                        detail = "Timing variation",
+                    )
+                    SessionReportMetric(
+                        label = "Frame rate",
+                        value = report.averageFps?.let { "%.1f / %d".format(Locale.US, it, report.targetFps) } ?: "Not measured",
+                        detail = "Average / target FPS",
+                    )
+                    SessionReportMetric(
+                        label = "Decode",
+                        value = report.averageDecodeMs?.let { "%.1f ms".format(Locale.US, it) } ?: "Not measured",
+                        detail = "Per video frame",
+                    )
+                }
+                val networkLabel = when (report.networkKind) {
+                    AndroidNetworkKind.Wifi -> report.wifiBand.label
+                    else -> report.networkKind.label
+                }
+                Text(
+                    buildString {
+                        append("Network: $networkLabel")
+                        report.estimatedLinkDownstreamKbps?.let {
+                            append(" • Android link estimate ${formatRuntimeBitrate(it)}")
+                        }
+                    },
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text("Delivered profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    buildString {
+                        append(formatRuntimeResolution(report.deliveredResolution ?: report.requestedResolution))
+                        append(" • ")
+                        append(report.deliveredCodec ?: report.requestedCodec.name)
+                        if (
+                            normalizeSessionReportResolution(report.deliveredResolution) !=
+                            normalizeSessionReportResolution(report.requestedResolution) ||
+                            report.deliveredCodec?.contains(report.requestedCodec.name, ignoreCase = true) == false
+                        ) {
+                            append(" (requested ${formatRuntimeResolution(report.requestedResolution)} • ${report.requestedCodec.name})")
+                        }
+                    },
+                    color = TextPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (report.downgrades.isNotEmpty()) {
+                    Text("Why the profile changed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    report.downgrades.forEach { finding -> SessionReportFindingRow(finding) }
+                }
+                Text("What to do next", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                report.recommendations.forEach { finding -> SessionReportFindingRow(finding) }
+            }
+        },
+        confirmButton = { Button(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun SessionReportMetric(
+    label: String,
+    value: String,
+    detail: String?,
+) {
+    Surface(
+        modifier = Modifier.width(136.dp),
+        color = PanelAlt,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
+            Text(label, color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            Text(value, color = TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            detail?.let { Text(it, color = TextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+        }
+    }
+}
+
+@Composable
+private fun SessionReportFindingRow(finding: SessionReportFinding) {
+    val titleColor = if (finding.kind == SessionReportFindingKind.Warning) Color(0xffffc95a) else Green
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(finding.title, color = titleColor, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Text(finding.detail, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private fun normalizeSessionReportResolution(value: String?): Pair<Int, Int>? =
+    value?.let(::parseResolutionPixelsOrNull)
 
 @Composable
 private fun DiagnosticShareDialog(
@@ -5821,6 +6002,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         audioController.playButtonTone(buttonToneEnabled)
     }
     val launchStreamSettings = state.activeStreamSettings ?: state.settings.stream
+    // activeStreamSettings tracks the transport profile and can deliberately
+    // change during safe-codec recovery. Keep the original launch profile so
+    // requested, server-selected, decoded, and recovery modes remain distinct.
+    val requestedStreamSettings = remember(session?.sessionId) { launchStreamSettings }
     val microphoneRequested = launchStreamSettings.microphoneMode != MicrophoneMode.Disabled
     val initialMicrophonePermissionGranted = remember(session?.sessionId, microphoneRequested) {
         !microphoneRequested ||
@@ -6102,25 +6287,21 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             client.setControllerMouseEmulationActive(controllerMouseEmulationEnabled)
         }
     }
+    val activeStreamMode = activeStreamModeStatus(
+        requestedSettings = requestedStreamSettings,
+        transportSettings = launchStreamSettings,
+        decodedResolution = streamStats.resolution,
+        serverNegotiatedResolution = session?.monitorSnapshot?.returnedResolution
+            ?: session?.negotiatedStreamProfile?.resolution,
+        serverFinalSelectedResolution = session?.monitorSnapshot?.finalSelectedResolution,
+    )
     LaunchedEffect(
         session?.sessionId,
         streamReady,
-        streamStats,
-        launchStreamSettings.resolution,
-        launchStreamSettings.aspectRatio,
-        session?.negotiatedStreamProfile?.resolution,
+        activeStreamMode,
     ) {
-        val mismatch = streamRuntimeResolutionMismatch(
-            launchStreamSettings,
-            streamStats.resolution,
-            session?.negotiatedStreamProfile?.resolution,
-        )
-        if (streamReady && mismatch != null) {
-            viewModel.recordRuntimeResolutionChange(
-                actualResolution = mismatch.actualResolution,
-                expectedResolution = mismatch.expectedResolution,
-                serverNegotiatedFallback = mismatch.isServerNegotiatedFallback,
-            )
+        if (streamReady && activeStreamMode != null) {
+            viewModel.recordActiveStreamMode(activeStreamMode)
         }
     }
 
@@ -6168,6 +6349,14 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     metrics = state.settings.streamStatsMetrics,
                     serverLocation = session.zone,
                     modifier = Modifier.align(statsAlignment),
+                )
+            }
+            if (activeStreamMode != null) {
+                ActiveStreamModePill(
+                    status = activeStreamMode,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = if (statsVisible && statsAlignment == Alignment.TopCenter) 48.dp else 8.dp),
                 )
             }
             if (touchControlsVisible) {
@@ -8637,6 +8826,46 @@ private fun StreamStatsPill(
                 StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, serverLocation)
             }
         }
+    }
+}
+
+@Composable
+private fun ActiveStreamModePill(
+    status: ActiveStreamModeStatus,
+    modifier: Modifier = Modifier,
+) {
+    val modeLabel = when (status.resolutionSource) {
+        StreamResolutionChangeSource.ServerNegotiatedFallback ->
+            "Server ${formatRuntimeResolution(status.displayedResolution)}"
+        StreamResolutionChangeSource.ProviderOrGameModeChange ->
+            "Stream ${formatRuntimeResolution(status.displayedResolution)}"
+        null -> null
+    }
+    val recoveryLabel = if (status.safeVideoRecoveryActive) {
+        "Recovery ${status.transportCodec.name}"
+    } else {
+        null
+    }
+    val text = buildList {
+        modeLabel?.let(::add)
+        add("Requested ${formatRuntimeResolution(status.requestedResolution)}")
+        recoveryLabel?.let(::add)
+    }.joinToString(" • ")
+    Surface(
+        modifier = modifier.padding(horizontal = 8.dp),
+        shape = RoundedCornerShape(999.dp),
+        color = Color(0xff4a2f0b).copy(alpha = 0.88f),
+        tonalElevation = 0.dp,
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            color = Color(0xffffd38a),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

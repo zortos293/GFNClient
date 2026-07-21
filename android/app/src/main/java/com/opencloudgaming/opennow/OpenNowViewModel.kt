@@ -54,6 +54,7 @@ private const val DEBUG_PAYLOAD_LIMIT = 12
 private const val DEBUG_PAYLOAD_BODY_LIMIT = 8_000
 private const val LOGIN_PHASE_GETTING_TOKENS = "Getting sign-in tokens"
 private const val STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS = 30_000L
+private const val SESSION_REPORT_NETWORK_SAMPLE_INTERVAL_MS = 5_000L
 
 private data class DebugLogEvent(
     val timestampMs: Long,
@@ -167,6 +168,7 @@ data class OpenNowUiState(
     val localTvConnector: LocalTvConnectorState = LocalTvConnectorState(),
     val remoteStreamMenuRequestToken: Int = 0,
     val remoteStatsToggleRequestToken: Int = 0,
+    val sessionReport: SessionReport? = null,
 )
 
 internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
@@ -209,6 +211,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     @Volatile
     private var latestStreamRuntimeStats: TimedStreamRuntimeStats? = null
     private var lastRuntimeStatsEventAtMs: Long = 0L
+    private var streamReportLaunchProfile: StreamReportLaunchProfile? = null
+    private var streamSessionReportAccumulator: StreamSessionReportAccumulator? = null
+    private var lastSessionReportNetworkSampleAtMs: Long = 0L
+    private var sessionReportFinalizedForStop: Boolean = false
     private var deviceRecommendation: AndroidDeviceRecommendation? = null
     private val settingsDiagnosticTapTracker = RapidTapTracker()
     private val loginIconTapTracker = RapidTapTracker()
@@ -510,6 +516,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun dismissDiagnosticShare() {
         _state.update { it.copy(diagnosticShare = DiagnosticShareState()) }
+    }
+
+    fun dismissSessionReport() {
+        _state.update { it.copy(sessionReport = null) }
     }
 
     fun requestDiagnosticShare() {
@@ -1508,6 +1518,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             val requestedSettings = streamSettingsBeforeDeviceAdjustment()
             val settings = requestedSettings.adjustedForDevice(state.value.codecReport)
+            prepareSessionReport(
+                gameTitle = game.title,
+                selectedSettings = state.value.settings.stream,
+                eligibleSettings = requestedSettings,
+                initialSettings = settings,
+            )
             if (settings != requestedSettings) {
                 recordDebugEvent(
                     "launch",
@@ -1550,6 +1566,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     activeSessionDecision = null,
                     printedWasteError = null,
                     printedWastePings = emptyMap(),
+                    sessionReport = null,
                 )
             }
             runCatching {
@@ -1637,6 +1654,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun markSessionReadyForNativeStream(readySession: SessionInfo, settings: StreamSettings) {
         val anchoredSession = readySession.withSessionTimerAnchor()
+        if (streamReportLaunchProfile == null) {
+            prepareSessionReport(
+                gameTitle = state.value.streamGame?.title.orEmpty(),
+                selectedSettings = state.value.settings.stream,
+                eligibleSettings = settings,
+                initialSettings = settings,
+            )
+        }
         recordDebugEvent("stream", "Session ready for native stream ${anchoredSession.debugSummary()}")
         _state.update {
             it.copy(
@@ -1653,8 +1678,59 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun prepareSessionReport(
+        gameTitle: String,
+        selectedSettings: StreamSettings,
+        eligibleSettings: StreamSettings,
+        initialSettings: StreamSettings,
+    ) {
+        streamReportLaunchProfile = StreamReportLaunchProfile(
+            gameTitle = gameTitle,
+            selectedSettings = selectedSettings,
+            eligibleSettings = eligibleSettings,
+            initialSettings = initialSettings,
+        )
+        streamSessionReportAccumulator = null
+        lastSessionReportNetworkSampleAtMs = 0L
+        sessionReportFinalizedForStop = false
+    }
+
+    private fun ensureSessionReportAccumulator(nowMs: Long = System.currentTimeMillis()) {
+        if (sessionReportFinalizedForStop || streamSessionReportAccumulator != null) return
+        val snapshot = state.value
+        if (snapshot.streamSession == null || snapshot.streamStatus !in setOf("connecting", "streaming")) return
+        val initialSettings = snapshot.activeStreamSettings ?: return
+        val profile = streamReportLaunchProfile ?: StreamReportLaunchProfile(
+            gameTitle = snapshot.streamGame?.title.orEmpty(),
+            selectedSettings = snapshot.settings.stream,
+            eligibleSettings = initialSettings,
+            initialSettings = initialSettings,
+        ).also { streamReportLaunchProfile = it }
+        streamSessionReportAccumulator = StreamSessionReportAccumulator(profile, startedAtMs = nowMs)
+        lastSessionReportNetworkSampleAtMs = 0L
+    }
+
+    private fun finishSessionReport(nowMs: Long = System.currentTimeMillis()): SessionReport? {
+        if (sessionReportFinalizedForStop) return null
+        sessionReportFinalizedForStop = true
+        val report = streamSessionReportAccumulator?.finish(nowMs)
+        if (report != null) {
+            recordDebugEvent(
+                "stream",
+                "Session report score=${report.score} samples=${report.sampleCount} " +
+                    "ping=${report.averagePingMs ?: -1} loss=${report.packetLossPct ?: -1.0} " +
+                    "bitrate=${report.averageBitrateKbps ?: -1}",
+            )
+        }
+        streamSessionReportAccumulator = null
+        streamReportLaunchProfile = null
+        lastSessionReportNetworkSampleAtMs = 0L
+        return report
+    }
+
     fun stopStream() {
         val beforeStop = state.value
+        val completedSessionReport = finishSessionReport()
         recordDebugEvent(
             "stream",
             "Stop requested status=${beforeStop.streamStatus} session=${beforeStop.streamSession?.shortDebugId().orEmpty()} game=${beforeStop.streamGame?.title.orEmpty()}",
@@ -1714,6 +1790,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     pendingStoreChoiceGame = null,
                     activeSessionDecision = null,
                     page = returnPage,
+                    sessionReport = completedSessionReport ?: it.sessionReport,
                 )
             }
             refreshActiveSession()
@@ -1801,6 +1878,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     error = null,
                     queuePosition = null,
                     queueAdActiveId = null,
+                    sessionReport = null,
                 )
             }
             runCatching {
@@ -1882,6 +1960,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     error = null,
                     queuePosition = null,
                     queueAdActiveId = null,
+                    sessionReport = null,
                 )
             }
             runCatching {
@@ -1889,6 +1968,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     .let { activeSessionLaunchConflict(it, launchAppId = null, settings = settings) }
                     ?: error("No active cloud session was found. Start a game to create a new one.")
                 val resumeSettings = resumeSettingsForActiveSession(active, settings)
+                prepareSessionReport(
+                    gameTitle = gameForActiveSession(active)?.title.orEmpty(),
+                    selectedSettings = state.value.settings.stream,
+                    eligibleSettings = streamSettingsBeforeDeviceAdjustment(),
+                    initialSettings = resumeSettings,
+                )
                 recordDebugEvent("queue", "Resume found active ${active.debugSummary()} base=${hostForDebug(baseUrl)} settings=${resumeSettings.debugSummary()}")
                 val matchingGame = gameForActiveSession(active)
                 _state.update {
@@ -1939,6 +2024,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val resumeSettings = resumeSettingsForActiveSession(pending.activeSession, pending.settings)
             val pendingSession = pending.activeSession.toPendingSession(zone = "prod")
+            prepareSessionReport(
+                gameTitle = gameForActiveSession(pending.activeSession)?.title ?: pending.game.title,
+                selectedSettings = state.value.settings.stream,
+                eligibleSettings = streamSettingsBeforeDeviceAdjustment(),
+                initialSettings = resumeSettings,
+            )
             _state.update {
                 it.copy(
                     streamStatus = "queue",
@@ -1954,6 +2045,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     error = null,
                     queuePosition = queueDisplayPosition(pendingSession),
                     queueAdActiveId = null,
+                    sessionReport = null,
                 )
             }
             runCatching {
@@ -2159,6 +2251,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun markStreamConnected() {
+        ensureSessionReportAccumulator()
         if (state.value.streamStatus == "streaming") return
         recordDebugEvent("stream", "Native stream connected session=${state.value.streamSession?.shortDebugId().orEmpty()} game=${state.value.streamGame?.title.orEmpty()}")
         OpenNowAnalytics.capture(
@@ -2183,6 +2276,14 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun updateStreamRuntimeStats(stats: StreamRuntimeStats) {
         if (!stats.hasDebugValues()) return
         val now = System.currentTimeMillis()
+        ensureSessionReportAccumulator(now)
+        val reportNetwork = if (now - lastSessionReportNetworkSampleAtMs >= SESSION_REPORT_NETWORK_SAMPLE_INTERVAL_MS) {
+            lastSessionReportNetworkSampleAtMs = now
+            AndroidRuntimeDiagnostics.networkSnapshot(getApplication())
+        } else {
+            null
+        }
+        streamSessionReportAccumulator?.record(stats, reportNetwork)
         latestStreamRuntimeStats = TimedStreamRuntimeStats(
             capturedAtMs = now,
             sessionId = state.value.streamSession?.sessionId,
@@ -2215,6 +2316,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun recordLocalSafeVideoFallback(reason: String) {
+        ensureSessionReportAccumulator()
         val currentSettings = state.value.activeStreamSettings ?: effectiveStreamSettings()
         val safeSettings = currentSettings.androidSafeVideoFallback()
         _state.update { current ->
@@ -2224,36 +2326,101 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 current.copy(activeStreamSettings = safeSettings)
             }
         }
+        streamSessionReportAccumulator?.recordRecovery(reason, safeSettings)
         recordDebugEvent(
             "recovery",
             "Restarted local transport with safe video profile while keeping cloud session reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} current=${currentSettings.debugSummary()} safe=${safeSettings.debugSummary()}",
         )
     }
 
-    fun recordRuntimeResolutionChange(
-        actualResolution: String,
-        expectedResolution: String,
-        serverNegotiatedFallback: Boolean,
-    ) {
+    internal fun recordActiveStreamMode(status: ActiveStreamModeStatus) {
+        ensureSessionReportAccumulator()
+        streamSessionReportAccumulator?.recordActiveMode(status)
         val current = state.value
         val currentSettings = current.activeStreamSettings ?: effectiveStreamSettings()
         val noticeKey = listOf(
             current.streamGame?.id ?: current.activeSession?.appId?.toString() ?: current.streamSession?.sessionId.orEmpty(),
             streamSettingsSessionSignature(currentSettings),
-            actualResolution,
-            expectedResolution,
-            serverNegotiatedFallback.toString(),
+            status.displayedResolution,
+            status.requestedResolution,
+            status.serverNegotiatedResolution.orEmpty(),
+            status.serverFinalSelectedResolution.orEmpty(),
+            status.resolutionSource?.name.orEmpty(),
+            status.safeVideoRecoveryActive.toString(),
+            status.transportCodec.name,
         ).joinToString("|")
         if (!runtimeResolutionNoticeKeys.add(noticeKey)) return
-        val resolutionSource = if (serverNegotiatedFallback) {
-            "Server negotiated fallback"
+        val resolutionSource = when (status.resolutionSource) {
+            StreamResolutionChangeSource.ServerNegotiatedFallback -> "Server negotiated fallback"
+            StreamResolutionChangeSource.ProviderOrGameModeChange -> "Provider/game runtime mode changed"
+            null -> "Client transport profile changed"
+        }
+        val recovery = if (status.safeVideoRecoveryActive) {
+            " clientRecovery=safe-${status.transportCodec.name}"
         } else {
-            "Runtime video mode changed"
+            ""
         }
         recordDebugEvent(
             "stream",
-            "$resolutionSource actual=$actualResolution expected=$expectedResolution; keeping connected stream settings=${currentSettings.debugSummary()}",
+            "$resolutionSource displayed=${status.displayedResolution} requested=${status.requestedResolution} " +
+                "server=${status.serverNegotiatedResolution.orEmpty()} final=${status.serverFinalSelectedResolution.orEmpty()}" +
+                "$recovery; keeping connected transport=${currentSettings.debugSummary()}",
         )
+        if (status.resolutionSource != null) {
+            refreshRuntimeSessionSnapshot(status)
+        }
+    }
+
+    private fun refreshRuntimeSessionSnapshot(observedMode: ActiveStreamModeStatus) {
+        val initial = state.value
+        val auth = initial.authSession ?: return
+        val session = initial.streamSession ?: return
+        val settings = initial.activeStreamSettings ?: effectiveStreamSettings()
+        viewModelScope.launch {
+            val latest = runCatching {
+                sessionRepository.pollSession(
+                    token = auth.tokens.idToken ?: auth.tokens.accessToken,
+                    streamingBaseUrl = session.streamingBaseUrl ?: effectiveStreamingBaseUrl(auth),
+                    serverIp = session.serverIp,
+                    zone = session.zone,
+                    sessionId = session.sessionId,
+                    clientId = session.clientId,
+                    deviceId = session.deviceId,
+                    settings = settings,
+                )
+            }.getOrElse { error ->
+                if (error is CancellationException) throw error
+                recordDebugEvent(
+                    "stream",
+                    "Runtime mode server snapshot failed session=${session.shortDebugId()} " +
+                        "displayed=${observedMode.displayedResolution} error=${error.debugMessage()}",
+                )
+                return@launch
+            }
+            if (state.value.streamSession?.sessionId != session.sessionId) return@launch
+            recordDebugEvent(
+                "stream",
+                "Runtime mode server snapshot session=${session.shortDebugId()} status=${latest.status} " +
+                    "source=${observedMode.resolutionSource?.name.orEmpty()} displayed=${observedMode.displayedResolution} " +
+                    "${latest.monitorSnapshot?.debugSummary().orEmpty()}",
+            )
+            _state.update { current ->
+                val currentSession = current.streamSession
+                if (currentSession?.sessionId != session.sessionId) {
+                    current
+                } else {
+                    current.copy(
+                        streamSession = currentSession.copy(
+                            status = latest.status,
+                            negotiatedStreamProfile = latest.negotiatedStreamProfile,
+                            monitorSnapshot = latest.monitorSnapshot,
+                            requestedStreamingFeatures = latest.requestedStreamingFeatures,
+                            finalizedStreamingFeatures = latest.finalizedStreamingFeatures,
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     fun recoverStreamSession(reason: String) {
@@ -2450,7 +2617,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("sessionId=${session?.sessionId.orEmpty()} sessionStatus=${session?.status} seatSetupStep=${session?.seatSetupStep} serverIp=${session?.serverIp.orEmpty()} base=${session?.streamingBaseUrl.orEmpty()}")
             appendLine("adsRequired=${isSessionAdsRequired(session?.adState)} ads=${sessionAdItems(session?.adState).size} activeAd=${snapshot.queueAdActiveId.orEmpty()} queuePaused=${session?.adState?.isQueuePaused}")
             appendLine("adMessage=${session?.adState?.message.orEmpty()} grace=${session?.adState?.gracePeriodSeconds} serverSentEmptyAds=${session?.adState?.serverSentEmptyAds}")
-            appendLine("negotiated=${session?.negotiatedStreamProfile?.debugSummary().orEmpty()} requestedFeatures=${session?.requestedStreamingFeatures?.debugSummary().orEmpty()} finalizedFeatures=${session?.finalizedStreamingFeatures?.debugSummary().orEmpty()}")
+            appendLine("negotiated=${session?.negotiatedStreamProfile?.debugSummary().orEmpty()} monitors=${session?.monitorSnapshot?.debugSummary().orEmpty()} requestedFeatures=${session?.requestedStreamingFeatures?.debugSummary().orEmpty()} finalizedFeatures=${session?.finalizedStreamingFeatures?.debugSummary().orEmpty()}")
             appendLine("printedWaste.loading=${snapshot.printedWasteLoading} queueZones=${snapshot.printedWasteQueue.size} mappingZones=${snapshot.printedWasteMapping.size} pings=${snapshot.printedWastePings.size} error=${snapshot.printedWasteError.orEmpty()}")
             appendLine("settings.resolution=${snapshot.settings.stream.resolution} fps=${snapshot.settings.stream.fps} codec=${snapshot.settings.stream.codec} bitrate=${snapshot.settings.stream.maxBitrateMbps}")
             appendLine("settings.preset=${snapshot.settings.streamPreset} recommendation=${deviceRecommendation?.debugSummary() ?: "pending"}")
@@ -3232,6 +3399,10 @@ private fun ActiveSessionInfo.debugSummary(): String =
 
 private fun NegotiatedStreamProfile.debugSummary(): String =
     "res=${resolution.orEmpty()} fps=${fps ?: 0} codec=${codec?.name.orEmpty()} color=${colorQuality?.name.orEmpty()} l4s=$enableL4S gsync=$enableCloudGsync reflex=$enableReflex"
+
+private fun SessionMonitorSnapshot.debugSummary(): String =
+    "requested=${requestedResolution.orEmpty()}@${requestedFps ?: 0} " +
+        "returned=${returnedResolution.orEmpty()}@${returnedFps ?: 0} final=${finalSelectedResolution.orEmpty()}"
 
 private fun StreamingFeatures.debugSummary(): String =
     "reflex=$reflex bitDepth=$bitDepth gsync=$cloudGsync chroma=$chromaFormat l4s=$enabledL4S hdr=$trueHdr"

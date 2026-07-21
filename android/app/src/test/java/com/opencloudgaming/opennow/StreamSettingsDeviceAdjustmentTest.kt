@@ -383,7 +383,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun safeVideoFallbackUsesBasicWorkingAndroidProfile() {
+    fun safeVideoFallbackChangesCodecWithoutChangingRequested4kGeometry() {
         val fallback = StreamSettings(
             resolution = "3840x2160",
             aspectRatio = "16:9",
@@ -396,7 +396,7 @@ class StreamSettingsDeviceAdjustmentTest {
             streamSharpeningEnabled = true,
         ).androidSafeVideoFallback()
 
-        assertEquals("1920x1080", fallback.resolution)
+        assertEquals("3840x2160", fallback.resolution)
         assertEquals("16:9", fallback.aspectRatio)
         assertEquals(60, fallback.fps)
         assertEquals(75, fallback.maxBitrateMbps)
@@ -427,6 +427,55 @@ class StreamSettingsDeviceAdjustmentTest {
         assertEquals(75, fallback.maxBitrateMbps)
         assertEquals(VideoCodec.H264, fallback.codec)
         assertEquals(ColorQuality.EightBit420, fallback.colorQuality)
+    }
+
+    @Test
+    fun safeVideoFallbackPreservesEveryKnownResolutionAndAspect() {
+        STREAM_RESOLUTION_OPTIONS.forEach { option ->
+            val fallback = StreamSettings(
+                resolution = option.value,
+                aspectRatio = option.aspectRatio,
+                fps = 240,
+                maxBitrateMbps = 150,
+                codec = VideoCodec.AV1,
+                colorQuality = ColorQuality.TenBit420,
+            ).androidSafeVideoFallback()
+
+            assertEquals(option.value, fallback.resolution)
+            assertEquals(option.aspectRatio, fallback.aspectRatio)
+            assertEquals(VideoCodec.H264, fallback.codec)
+        }
+    }
+
+    @Test
+    fun constrainedTvFirstFrameRecoveryChangesCodecOnceWithoutReducing1440p() {
+        val launch = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            fps = 60,
+            maxBitrateMbps = 75,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+        ).adjustedForDevice(
+            codecReport(
+                VideoCodec.H265,
+                hardwareDecoder = true,
+                realtimeSafe = true,
+                lowPower = true,
+                tv = true,
+                constrainedRuntime = true,
+                webRtcDecoderAvailable = true,
+                webRtcHardwareDecoderAvailable = true,
+            ),
+        )
+        val recovery = launch.androidSafeVideoFallback()
+
+        assertEquals("2560x1440", launch.resolution)
+        assertEquals(VideoCodec.H265, launch.codec)
+        assertEquals("2560x1440", recovery.resolution)
+        assertEquals("16:9", recovery.aspectRatio)
+        assertEquals(VideoCodec.H264, recovery.codec)
+        assertEquals(recovery, recovery.androidSafeVideoFallback())
     }
 
     @Test

@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
@@ -19,20 +21,36 @@ internal data class AndroidRuntimeDiagnosticsSnapshot(
     val networkSignalBars: Int? = null,
     val cellularGeneration: String? = null,
     val networkDownstreamKbps: Int? = null,
+    val wifiFrequencyMhz: Int? = null,
+    val wifiBand: AndroidWifiBand = AndroidWifiBand.Unknown,
 ) {
     fun debugSummary(): String {
         val temperature = batteryTemperatureC?.let { "%.1f".format(java.util.Locale.US, it) } ?: "unknown"
-        return "battery=${batteryPercent?.toString() ?: "unknown"} charging=$batteryCharging batteryTempC=$temperature thermal=${thermalStatus.logValue} network=${networkKind.logValue} generation=${cellularGeneration ?: "unknown"} bars=${networkSignalBars?.toString() ?: "unknown"} downKbps=${networkDownstreamKbps ?: 0}"
+        return "battery=${batteryPercent?.toString() ?: "unknown"} charging=$batteryCharging batteryTempC=$temperature thermal=${thermalStatus.logValue} network=${networkKind.logValue} generation=${cellularGeneration ?: "unknown"} bars=${networkSignalBars?.toString() ?: "unknown"} downKbps=${networkDownstreamKbps ?: 0} wifiMhz=${wifiFrequencyMhz ?: 0} wifiBand=${wifiBand.logValue}"
     }
 }
 
-internal enum class AndroidNetworkKind(val label: String, val logValue: String) {
+enum class AndroidNetworkKind(val label: String, val logValue: String) {
     Wifi("WiFi", "wifi"),
     Cellular("Cell", "cellular"),
     Ethernet("LAN", "ethernet"),
     Other("Net", "other"),
     None("Off", "none"),
     Unknown("Net", "unknown"),
+}
+
+enum class AndroidWifiBand(val label: String, val logValue: String) {
+    TwoPointFourGhz("2.4 GHz", "2.4ghz"),
+    FiveGhz("5 GHz", "5ghz"),
+    SixGhz("6 GHz", "6ghz"),
+    Unknown("Wi-Fi", "unknown"),
+}
+
+internal fun androidWifiBandForFrequency(frequencyMhz: Int?): AndroidWifiBand = when (frequencyMhz) {
+    in 2_400..2_500 -> AndroidWifiBand.TwoPointFourGhz
+    in 4_900..5_900 -> AndroidWifiBand.FiveGhz
+    in 5_925..7_125 -> AndroidWifiBand.SixGhz
+    else -> AndroidWifiBand.Unknown
 }
 
 internal enum class AndroidThermalStatus(val logValue: String) {
@@ -60,6 +78,20 @@ internal object AndroidRuntimeDiagnostics {
             networkSignalBars = network.signalBars,
             cellularGeneration = network.cellularGeneration,
             networkDownstreamKbps = network.downstreamKbps,
+            wifiFrequencyMhz = network.wifiFrequencyMhz,
+            wifiBand = androidWifiBandForFrequency(network.wifiFrequencyMhz),
+        )
+    }
+
+    fun networkSnapshot(context: Context): AndroidRuntimeDiagnosticsSnapshot {
+        val network = readNetwork(context.applicationContext)
+        return AndroidRuntimeDiagnosticsSnapshot(
+            networkKind = network.kind,
+            networkSignalBars = network.signalBars,
+            cellularGeneration = network.cellularGeneration,
+            networkDownstreamKbps = network.downstreamKbps,
+            wifiFrequencyMhz = network.wifiFrequencyMhz,
+            wifiBand = androidWifiBandForFrequency(network.wifiFrequencyMhz),
         )
     }
 
@@ -124,7 +156,23 @@ internal object AndroidRuntimeDiagnostics {
             },
             cellularGeneration = if (kind == AndroidNetworkKind.Cellular) CellularNetworkStatus.displayLabel(context) else null,
             downstreamKbps = capabilities?.linkDownstreamBandwidthKbps?.takeIf { it > 0 },
+            wifiFrequencyMhz = if (kind == AndroidNetworkKind.Wifi) {
+                wifiFrequencyMhz(context, capabilities)
+            } else {
+                null
+            },
         )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun wifiFrequencyMhz(context: Context, capabilities: NetworkCapabilities?): Int? {
+        val networkInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            capabilities?.transportInfo as? WifiInfo
+        } else {
+            null
+        }
+        val wifiInfo = networkInfo ?: (context.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.connectionInfo
+        return wifiInfo?.frequency?.takeIf { it > 0 }
     }
 
     private fun networkBars(capabilities: NetworkCapabilities?): Int? {
@@ -167,5 +215,6 @@ internal object AndroidRuntimeDiagnostics {
         val signalBars: Int?,
         val cellularGeneration: String?,
         val downstreamKbps: Int?,
+        val wifiFrequencyMhz: Int?,
     )
 }

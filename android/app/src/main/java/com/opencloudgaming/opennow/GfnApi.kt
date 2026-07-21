@@ -264,11 +264,12 @@ private fun webRtcSessionMetadata(
 ): JsonArray = buildJsonArray {
     baseWebRtcSessionMetadata().forEach { add(it) }
     val requestedResolution = profile.width to profile.height
+    // The desktop client describes the requested stream viewport here. Sending a
+    // differently shaped Android panel (for example 2688x1216 for a 1680x720
+    // request) can make CloudMatch provision a different VM monitor mode even
+    // though clientRequestMonitorSettings is correct.
     val (physicalWidth, physicalHeight) = physicalDisplayResolution
-        ?.takeIf { (width, height) ->
-            width > 0 && height > 0 &&
-                width >= requestedResolution.first && height >= requestedResolution.second
-        }
+        ?.takeIf { it == requestedResolution }
         ?: requestedResolution
     if (physicalWidth > 0 && physicalHeight > 0) {
         add(
@@ -287,6 +288,48 @@ private fun webRtcSessionMetadata(
 internal fun activeSessionMonitorSettings(session: JsonObject): JsonObject? =
     session.arr("monitorSettings")?.firstOrNull()?.asObject()
         ?: session.obj("sessionRequestData")?.arr("clientRequestMonitorSettings")?.firstOrNull()?.asObject()
+
+private fun monitorResolution(monitor: JsonObject?): String? {
+    val width = monitor?.int("widthInPixels")
+        ?: monitor?.int("horizontalPixels")
+        ?: monitor?.int("width")
+    val height = monitor?.int("heightInPixels")
+        ?: monitor?.int("verticalPixels")
+        ?: monitor?.int("height")
+    return if (width != null && height != null && width > 0 && height > 0) "${width}x$height" else null
+}
+
+private fun selectedResolution(value: JsonElement?): String? {
+    val objectResolution = value.asObject()?.let(::monitorResolution)
+    if (objectResolution != null) return objectResolution
+    val arrayResolution = value.asArray()?.firstOrNull()?.asObject()?.let(::monitorResolution)
+    if (arrayResolution != null) return arrayResolution
+    val text = value.asString()?.trim().orEmpty()
+    val match = Regex("""(\d{3,5})\s*[xX]\s*(\d{3,5})""").find(text) ?: return null
+    return "${match.groupValues[1]}x${match.groupValues[2]}"
+}
+
+internal fun extractSessionMonitorSnapshot(session: JsonObject): SessionMonitorSnapshot? {
+    val requested = session.obj("sessionRequestData")
+        ?.arr("clientRequestMonitorSettings")
+        ?.firstOrNull()
+        ?.asObject()
+    val returned = session.arr("monitorSettings")?.firstOrNull()?.asObject()
+    val snapshot = SessionMonitorSnapshot(
+        requestedResolution = monitorResolution(requested),
+        requestedFps = requested?.int("framesPerSecond"),
+        returnedResolution = monitorResolution(returned),
+        returnedFps = returned?.int("framesPerSecond"),
+        finalSelectedResolution = selectedResolution(session["finalSelectedScreenResolution"]),
+    )
+    return snapshot.takeIf {
+        it.requestedResolution != null ||
+            it.requestedFps != null ||
+            it.returnedResolution != null ||
+            it.returnedFps != null ||
+            it.finalSelectedResolution != null
+    }
+}
 
 internal fun activeSessionSettingsSignature(session: JsonObject): String? =
     session.obj("sessionRequestData")?.arr("metaData")?.metadataValue(OPENNOW_STREAM_SETTINGS_METADATA_KEY)
@@ -2645,6 +2688,7 @@ class GfnSessionRepository(
             iceServers = normalizeIceServers(payload),
             mediaConnectionInfo = signaling?.mediaConnectionInfo,
             negotiatedStreamProfile = extractNegotiatedStreamProfile(session),
+            monitorSnapshot = extractSessionMonitorSnapshot(session),
             requestedStreamingFeatures = normalizeStreamingFeatures(session.obj("sessionRequestData")?.obj("requestedStreamingFeatures")),
             finalizedStreamingFeatures = normalizeStreamingFeatures(session.obj("finalizedStreamingFeatures")),
             clientId = clientId,
@@ -2735,12 +2779,13 @@ class GfnSessionRepository(
     }
 
     private fun extractNegotiatedStreamProfile(session: JsonObject): NegotiatedStreamProfile? {
-        val monitor = activeSessionMonitorSettings(session)
+        val monitorSnapshot = extractSessionMonitorSnapshot(session)
         val finalized = session.obj("finalizedStreamingFeatures")
         val requested = session.obj("sessionRequestData")?.obj("requestedStreamingFeatures")
-        val width = monitor?.int("widthInPixels")
-        val height = monitor?.int("heightInPixels")
-        val fps = monitor?.int("framesPerSecond")
+        val resolution = monitorSnapshot?.returnedResolution
+            ?: monitorSnapshot?.finalSelectedResolution
+            ?: monitorSnapshot?.requestedResolution
+        val fps = monitorSnapshot?.returnedFps ?: monitorSnapshot?.requestedFps
         val bitDepth = finalized?.int("bitDepth") ?: requested?.int("bitDepth")
         val chroma = finalized?.int("chromaFormat") ?: requested?.int("chromaFormat")
         val cq = when {
@@ -2750,7 +2795,6 @@ class GfnSessionRepository(
             bitDepth == 0 -> ColorQuality.EightBit420
             else -> null
         }
-        val resolution = if (width != null && height != null && width > 0 && height > 0) "${width}x$height" else null
         return NegotiatedStreamProfile(
             resolution = resolution,
             fps = fps,

@@ -2043,6 +2043,26 @@ internal fun streamRecoveryTiming(androidTvProfile: Boolean): StreamRecoveryTimi
         )
     }
 
+internal fun firstVideoFrameRecoveryTimeoutMs(androidTvProfile: Boolean): Long =
+    streamRecoveryTiming(androidTvProfile).restartAfterMs
+
+internal enum class FirstFrameRecoveryStep {
+    RetryRequestedProfile,
+    ApplySafeVideoFallback,
+    ContinueBoundedTransportRecovery,
+}
+
+internal fun firstFrameRecoveryStep(
+    transportHasStableMedia: Boolean,
+    reconnectAttempts: Int,
+    safeVideoFallbackApplied: Boolean,
+): FirstFrameRecoveryStep = when {
+    transportHasStableMedia -> FirstFrameRecoveryStep.ContinueBoundedTransportRecovery
+    reconnectAttempts == 0 -> FirstFrameRecoveryStep.RetryRequestedProfile
+    !safeVideoFallbackApplied -> FirstFrameRecoveryStep.ApplySafeVideoFallback
+    else -> FirstFrameRecoveryStep.ContinueBoundedTransportRecovery
+}
+
 private fun newStreamLivenessWatchdog(androidTvProfile: Boolean): StreamLivenessWatchdog {
     val timing = streamRecoveryTiming(androidTvProfile)
     return StreamLivenessWatchdog(
@@ -2527,7 +2547,9 @@ class NativeStreamClient(
     private var lastStatsSample: StreamStatsSample? = null
     private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
-    private val firstVideoFrameWatchdog = FirstVideoFrameWatchdog()
+    private var firstVideoFrameWatchdog = FirstVideoFrameWatchdog(
+        timeoutMs = firstVideoFrameRecoveryTimeoutMs(androidTvProfile),
+    )
     private val textSendMutex = Mutex()
     private var guideAutoReleaseJob: Job? = null
     private var steamMenuChordJob: Job? = null
@@ -2718,6 +2740,9 @@ class NativeStreamClient(
         if (androidTvProfile == enabled) return
         androidTvProfile = enabled
         livenessWatchdog = newStreamLivenessWatchdog(enabled)
+        firstVideoFrameWatchdog = FirstVideoFrameWatchdog(
+            timeoutMs = firstVideoFrameRecoveryTimeoutMs(enabled),
+        )
         recordStreamDiagnostic("recovery profile=${if (enabled) "android-tv" else "mobile"}")
     }
 
@@ -4141,6 +4166,8 @@ class NativeStreamClient(
         } else {
             null
         }
+        val packetsLostDelta = previous?.let { (packetsLost - it.packetsLost).coerceAtLeast(0L) }
+        val packetsReceivedDelta = previous?.let { (packetsReceived - it.packetsReceived).coerceAtLeast(0L) }
 
         if (bytesReceived != null || framesDecoded != null) {
             lastStatsSample = StreamStatsSample(
@@ -4172,6 +4199,8 @@ class NativeStreamClient(
                 decodeMs = decodeMs,
                 jitterMs = jitterMs,
                 packetLossPct = packetLossPct,
+                packetsLostDelta = packetsLostDelta,
+                packetsReceivedDelta = packetsReceivedDelta,
             ),
             bytesReceived = bytesReceived,
             framesDecoded = framesDecoded,
@@ -4192,15 +4221,26 @@ class NativeStreamClient(
             rendererSinkAttached &&
             firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
         ) {
-            if (
-                !transportHasStableMedia &&
-                requestSafeVideoFallback(
-                    message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",
-                    diagnosticReason = "first frame timeout",
-                    restartWhenAlreadySafe = true,
-                )
-            ) {
-                return
+            when (firstFrameRecoveryStep(transportHasStableMedia, reconnectAttempts, videoSafeFallbackApplied)) {
+                FirstFrameRecoveryStep.RetryRequestedProfile -> {
+                    NativeInputDiagnostics.add(
+                        "first frame timeout requested profile retry codec=${settings.codec} resolution=${settings.resolution}",
+                    )
+                    restartTransport("First video frame timed out")
+                    return
+                }
+                FirstFrameRecoveryStep.ApplySafeVideoFallback -> {
+                    if (
+                        requestSafeVideoFallback(
+                            message = "Video packets arrived but no frame rendered; restarting with safe H264 profile",
+                            diagnosticReason = "first frame timeout",
+                            restartWhenAlreadySafe = true,
+                        )
+                    ) {
+                        return
+                    }
+                }
+                FirstFrameRecoveryStep.ContinueBoundedTransportRecovery -> Unit
             }
         }
         when (action) {
@@ -5409,7 +5449,10 @@ object SdpTools {
             add("a=video.encoderCscMode:3")
             add("a=video.dynamicRangeMode:0")
             add("a=video.bitDepth:$bitDepth")
-            add("a=video.scalingFeature1:${if (isAv1) 1 else 0}")
+            // Keep the encoded geometry fixed for every codec. AV1 value 1 was
+            // added during the June SDP expansion and permits the horizontal
+            // scaling seen as 1366x768 -> 1230x768 in affected sessions.
+            add("a=video.scalingFeature1:0")
             add("a=video.prefilterParams.prefilterModel:0")
             add("m=audio 0 RTP/AVP")
             add("a=msid:audio")
@@ -5934,9 +5977,13 @@ private const val OFFER_TIMEOUT_MS = 12_000L
 private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
 private const val MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
 private const val MEDIA_STALL_RESTART_AFTER_MS = 10_000L
-private const val TV_MEDIA_STALL_KEYFRAME_AFTER_MS = 3_000L
-private const val TV_MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_000L
-private const val TV_MEDIA_STALL_RESTART_AFTER_MS = 8_000L
+// Low-power TV MediaCodec implementations can open an advanced decoder several
+// seconds before they produce their first frame. Keep the pre-TV-optimization
+// startup window so a slow H.265/AV1 decoder is not mistaken for a dead one and
+// immediately replaced by the safe-codec profile.
+private const val TV_MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
+private const val TV_MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
+private const val TV_MEDIA_STALL_RESTART_AFTER_MS = 14_000L
 private const val FIRST_VIDEO_FRAME_TIMEOUT_MS = 8_000L
 private const val STABLE_TRANSPORT_PROGRESS_SAMPLES = 3
 private const val GAMEPAD_GUIDE_AUTO_RELEASE_MS = 160L

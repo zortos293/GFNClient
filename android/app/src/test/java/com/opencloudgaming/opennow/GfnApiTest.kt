@@ -7,6 +7,7 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -158,7 +159,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun ultrawideMetadataKeepsPhysicalDisplaySeparateFromStreamResolution() {
+    fun ultrawideMetadataUsesRequestedViewportInsteadOfDifferentPanelGeometry() {
         val settings = StreamSettings(
             resolution = "1680x720",
             aspectRatio = "21:9",
@@ -197,8 +198,90 @@ class GfnApiTest {
         assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(1, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
         assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
-        assertEquals(1920, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
-        assertEquals(1080, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+        assertEquals(1680, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
+        assertEquals(720, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+    }
+
+    @Test
+    fun larger4kPanelDoesNotOverrideRequested1440pViewportMetadata() {
+        val settings = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            fps = 120,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+        )
+
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = settings,
+            physicalDisplayResolution = 3840 to 2160,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+        val physicalResolution = sessionRequestData
+            .getValue("metaData").jsonArray
+            .firstNotNullOf { item ->
+                item.jsonObject.takeIf {
+                    it["key"]?.jsonPrimitive?.contentOrNull == "clientPhysicalResolution"
+                }?.get("value")?.jsonPrimitive?.contentOrNull
+            }
+            .let { OpenNowJson.parseToJsonElement(it).jsonObject }
+
+        assertEquals(2560, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
+        assertEquals(1440, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+    }
+
+    @Test
+    fun sessionMonitorSnapshotKeepsRequestedReturnedAndFinalModesSeparate() {
+        val session = buildJsonObject {
+            putJsonObject("sessionRequestData") {
+                putJsonArray("clientRequestMonitorSettings") {
+                    add(buildJsonObject {
+                        put("widthInPixels", JsonPrimitive(1680))
+                        put("heightInPixels", JsonPrimitive(720))
+                        put("framesPerSecond", JsonPrimitive(60))
+                    })
+                }
+            }
+            putJsonArray("monitorSettings") {
+                add(buildJsonObject {
+                    put("widthInPixels", JsonPrimitive(1366))
+                    put("heightInPixels", JsonPrimitive(768))
+                    put("framesPerSecond", JsonPrimitive(60))
+                })
+            }
+            putJsonObject("finalSelectedScreenResolution") {
+                put("horizontalPixels", JsonPrimitive(1230))
+                put("verticalPixels", JsonPrimitive(768))
+            }
+        }
+
+        val snapshot = extractSessionMonitorSnapshot(session)
+
+        assertEquals("1680x720", snapshot?.requestedResolution)
+        assertEquals(60, snapshot?.requestedFps)
+        assertEquals("1366x768", snapshot?.returnedResolution)
+        assertEquals(60, snapshot?.returnedFps)
+        assertEquals("1230x768", snapshot?.finalSelectedResolution)
+    }
+
+    @Test
+    fun sessionMonitorSnapshotAcceptsStringFinalResolutionWithoutReplacingReturnedMode() {
+        val session = buildJsonObject {
+            putJsonArray("monitorSettings") {
+                add(buildJsonObject {
+                    put("widthInPixels", JsonPrimitive(2560))
+                    put("heightInPixels", JsonPrimitive(1440))
+                })
+            }
+            put("finalSelectedScreenResolution", JsonPrimitive("1920x1080"))
+        }
+
+        val snapshot = extractSessionMonitorSnapshot(session)
+
+        assertEquals("2560x1440", snapshot?.returnedResolution)
+        assertEquals("1920x1080", snapshot?.finalSelectedResolution)
     }
 
     @Test

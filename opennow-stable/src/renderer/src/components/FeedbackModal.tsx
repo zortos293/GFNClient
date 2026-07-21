@@ -1,10 +1,11 @@
-import { Bug, CheckCircle2, Lightbulb, MessageSquareText, X } from "lucide-react";
+import { MessageSquareText, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type JSX } from "react";
 import type { Settings } from "@shared/gfn";
 import { FEEDBACK_CATEGORIES, type FeedbackCategory } from "@shared/telemetry";
 import { useTranslation } from "../i18n";
 import { captureFeedback, isTelemetryConfigured } from "../telemetry/posthog";
 import { ModalSurface } from "./ui/ModalSurface";
+import { SelectDropdown } from "./ui/SelectDropdown";
 
 export interface FeedbackModalProps {
   open: boolean;
@@ -12,14 +13,6 @@ export interface FeedbackModalProps {
   onClose: () => void;
   onExitComplete?: () => void;
 }
-
-const CATEGORY_ICONS: Record<FeedbackCategory, typeof Bug> = {
-  bug: Bug,
-  idea: Lightbulb,
-  other: MessageSquareText,
-};
-
-const MESSAGE_MAX_LENGTH = 4000;
 
 export function FeedbackModal({
   open,
@@ -90,143 +83,102 @@ export function FeedbackModal({
       onClose={onClose}
       onExitComplete={onExitComplete}
       motion="compact"
-      overlayClassName="feedback-modal"
-      backdropClassName="feedback-modal-backdrop"
-      panelClassName="feedback-modal-card"
+      overlayClassName="rh-overlay telemetry-feedback-overlay"
+      backdropClassName="rh-backdrop"
+      panelClassName="rh-card telemetry-feedback-card"
       ariaLabel={t("feedback.title")}
       backdropLabel={t("app.actions.close")}
       initialFocusRef={messageRef}
     >
-      <button
-        type="button"
-        className="feedback-modal-close"
-        onClick={onClose}
-        aria-label={t("app.actions.close")}
-      >
-        <X size={16} className="shrink-0" />
-      </button>
+      <div className="rh-header">
+        <div className="rh-kicker">{t("feedback.kicker")}</div>
+        <h2 className="rh-title">{t("feedback.title")}</h2>
+        <button
+          type="button"
+          className="rh-close-btn"
+          onClick={onClose}
+          aria-label={t("app.actions.close")}
+        >
+          <X size={18} />
+        </button>
+      </div>
 
       {submitted ? (
-        <div className="feedback-modal-success">
-          <CheckCircle2 size={28} className="feedback-modal-success-icon shrink-0" aria-hidden="true" />
-          <div className="feedback-modal-kicker">{t("feedback.kicker")}</div>
-          <h2 className="feedback-modal-title">{t("feedback.successTitle")}</h2>
-          <p className="feedback-modal-lead">{t("feedback.success")}</p>
-          <div className="feedback-modal-actions">
-            <button type="button" className="feedback-modal-btn feedback-modal-btn-primary" onClick={onClose}>
+        <>
+          <div className="rh-body telemetry-feedback-body">
+            <p className="telemetry-feedback-success">{t("feedback.success")}</p>
+          </div>
+          <div className="rh-footer">
+            <button type="button" className="rh-btn-primary" onClick={onClose}>
               {t("feedback.close")}
             </button>
           </div>
-        </div>
+        </>
       ) : (
-        <form className="feedback-modal-form" onSubmit={(event) => void handleSubmit(event)}>
-          <div className="feedback-modal-kicker">{t("feedback.kicker")}</div>
-          <h2 className="feedback-modal-title">{t("feedback.title")}</h2>
-          <p className="feedback-modal-lead">{t("feedback.description")}</p>
-
-          <fieldset className="feedback-modal-fieldset">
-            <legend className="feedback-modal-label">{t("feedback.category")}</legend>
-            <div className="feedback-modal-categories" role="radiogroup" aria-label={t("feedback.category")}>
-              {FEEDBACK_CATEGORIES.map((value) => {
-                const Icon = CATEGORY_ICONS[value];
-                const selected = category === value;
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    className={`feedback-modal-category${selected ? " is-selected" : ""}`}
-                    onClick={() => setCategory(value)}
-                    disabled={submitting}
-                  >
-                    <Icon size={14} className="shrink-0" aria-hidden="true" />
-                    <span>{t(`feedback.categories.${value}`)}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </fieldset>
-
-          <label className="feedback-modal-label" htmlFor="feedback-message">
-            {t("feedback.message")}
-          </label>
-          <textarea
-            id="feedback-message"
-            name="message"
-            ref={messageRef}
-            className="feedback-modal-textarea"
-            value={message}
-            onChange={(event) => setMessage(event.target.value)}
-            rows={5}
-            maxLength={MESSAGE_MAX_LENGTH}
-            placeholder={t("feedback.messagePlaceholder")}
-            disabled={submitting}
-          />
-          <div className="feedback-modal-meta">
-            <span>
-              {message.length}/{MESSAGE_MAX_LENGTH}
-            </span>
-          </div>
-
-          <div className="feedback-modal-attach">
-            <label className="feedback-modal-check" htmlFor="feedback-include-system">
-              <span className="feedback-modal-check-control">
-                <input
-                  id="feedback-include-system"
-                  name="includeSystemInfo"
-                  type="checkbox"
-                  checked={includeSystemInfo}
-                  onChange={(event) => setIncludeSystemInfo(event.target.checked)}
-                  disabled={submitting}
-                />
-                <span className="feedback-modal-check-box" aria-hidden="true" />
-              </span>
-              <span className="feedback-modal-check-copy">
-                <span className="feedback-modal-check-title">{t("feedback.includeSystemInfo")}</span>
-              </span>
+        <form
+          className="telemetry-feedback-form"
+          onSubmit={(event) => void handleSubmit(event)}
+        >
+          <div className="rh-body telemetry-feedback-body">
+            <label className="telemetry-feedback-label" htmlFor="feedback-category">
+              {t("feedback.category")}
             </label>
+            <SelectDropdown
+              id="feedback-category"
+              value={category}
+              options={FEEDBACK_CATEGORIES.map((value) => ({
+                value,
+                label: t(`feedback.categories.${value}`),
+              }))}
+              onChange={(value) => setCategory(value as FeedbackCategory)}
+              ariaLabel={t("feedback.category")}
+            />
 
-            <label className="feedback-modal-check" htmlFor="feedback-include-logs">
-              <span className="feedback-modal-check-control">
-                <input
-                  id="feedback-include-logs"
-                  name="includeLogs"
-                  type="checkbox"
-                  checked={includeLogs}
-                  onChange={(event) => setIncludeLogs(event.target.checked)}
-                  disabled={submitting}
-                />
-                <span className="feedback-modal-check-box" aria-hidden="true" />
-              </span>
-              <span className="feedback-modal-check-copy">
-                <span className="feedback-modal-check-title">{t("feedback.includeLogs")}</span>
-                <span className="feedback-modal-check-hint">{t("feedback.includeLogsHint")}</span>
-              </span>
+            <label className="telemetry-feedback-label" htmlFor="feedback-message">
+              {t("feedback.message")}
             </label>
-          </div>
-
-          {error ? (
-            <p className="feedback-modal-error" role="alert">
-              {error}
-            </p>
-          ) : null}
-
-          <div className="feedback-modal-actions">
-            <button
-              type="button"
-              className="feedback-modal-btn feedback-modal-btn-secondary"
-              onClick={onClose}
+            <textarea
+              id="feedback-message"
+              ref={messageRef}
+              className="telemetry-feedback-textarea"
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              rows={6}
+              maxLength={4000}
+              placeholder={t("feedback.messagePlaceholder")}
               disabled={submitting}
-            >
+            />
+
+            <label className="telemetry-feedback-checkbox">
+              <input
+                type="checkbox"
+                checked={includeSystemInfo}
+                onChange={(event) => setIncludeSystemInfo(event.target.checked)}
+                disabled={submitting}
+              />
+              <span>{t("feedback.includeSystemInfo")}</span>
+            </label>
+
+            <label className="telemetry-feedback-checkbox">
+              <input
+                type="checkbox"
+                checked={includeLogs}
+                onChange={(event) => setIncludeLogs(event.target.checked)}
+                disabled={submitting}
+              />
+              <span>{t("feedback.includeLogs")}</span>
+            </label>
+            <p className="telemetry-feedback-hint">{t("feedback.includeLogsHint")}</p>
+
+            {error ? <p className="telemetry-feedback-error" role="alert">{error}</p> : null}
+          </div>
+
+          <div className="rh-footer">
+            <button type="button" className="rh-btn-secondary" onClick={onClose} disabled={submitting}>
               {t("feedback.cancel")}
             </button>
-            <button
-              type="submit"
-              className="feedback-modal-btn feedback-modal-btn-primary"
-              disabled={submitting}
-            >
-              <MessageSquareText size={14} className="shrink-0" aria-hidden="true" />
+            <button type="submit" className="rh-btn-primary" disabled={submitting}>
+              <MessageSquareText size={14} />
               {submitting ? t("feedback.sending") : t("feedback.send")}
             </button>
           </div>

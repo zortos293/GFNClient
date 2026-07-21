@@ -10411,11 +10411,13 @@ button.game-card-store-chip.owned.active:hover {
   text-underline-offset: 2px;
 }
 
-.telemetry-consent-card {
+.telemetry-consent-card,
+.telemetry-feedback-card {
   max-width: 480px;
 }
 
-.telemetry-consent-body p {
+.telemetry-consent-body p,
+.telemetry-feedback-body p {
   margin: 0 0 12px;
   color: var(--ink);
   line-height: 1.5;
@@ -10438,454 +10440,82 @@ button.game-card-store-chip.owned.active:hover {
   font-size: 13px;
 }
 
-/* Feedback modal — matches logout-confirm popup language */
-.feedback-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 3300;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.feedback-modal-backdrop {
-  position: absolute;
-  inset: 0;
-  border: none;
-  background:
-    radial-gradient(circle at 16% 20%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 42%),
-    radial-gradient(circle at 84% 78%, color-mix(in srgb, var(--info) 14%, transparent), transparent 40%),
-    linear-gradient(180deg, rgba(8, 10, 12, 0.74), rgba(5, 6, 8, 0.82));
-  backdrop-filter: blur(14px) saturate(135%);
-  cursor: pointer;
-}
-
-.feedback-modal-card {
-  --feedback-radius: 18px;
-  --feedback-pad: 22px;
-  position: relative;
-  z-index: 1;
-  width: min(520px, calc(100vw - 32px));
-  max-height: min(88vh, 720px);
-  padding: var(--feedback-pad);
-  border-radius: var(--feedback-radius);
-  border: 1px solid color-mix(in srgb, var(--panel-border-solid) 70%, color-mix(in srgb, var(--ink) 8%, transparent));
-  background:
-    linear-gradient(180deg, rgba(19, 22, 25, 0.96), rgba(10, 12, 14, 0.98)),
-    rgba(12, 14, 16, 0.96);
-  box-shadow:
-    0 30px 90px rgba(0, 0, 0, 0.56),
-    0 0 0 1px color-mix(in srgb, var(--ink) 3%, transparent) inset,
-    0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
-  backdrop-filter: blur(24px) saturate(140%);
-  overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--panel-border-solid) transparent;
-}
-
-.feedback-modal-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 3px;
-  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 40%, var(--info)), var(--info));
-  opacity: 0.95;
-}
-
-[data-theme="light"] .feedback-modal-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.99)),
-    rgba(255, 255, 255, 0.98);
-}
-
-.feedback-modal-close {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  z-index: 2;
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--ink-muted);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.feedback-modal-close:hover {
-  background: color-mix(in srgb, var(--ink) 7%, transparent);
-  color: var(--ink);
-}
-
-.feedback-modal-form,
-.feedback-modal-success {
+.telemetry-feedback-form {
   display: flex;
   flex-direction: column;
-  min-width: 0;
-  padding-right: 28px;
-}
-
-.feedback-modal-kicker {
-  display: inline-flex;
-  align-self: flex-start;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 14%, color-mix(in srgb, var(--ink) 3%, transparent));
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
-  color: var(--accent);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.feedback-modal-title {
-  margin: 14px 0 0;
-  font-size: 1.4rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-  text-wrap: balance;
-}
-
-.feedback-modal-lead {
-  margin: 8px 0 0;
-  max-width: 46ch;
-  font-size: 0.94rem;
-  line-height: 1.55;
-  color: var(--ink-soft);
-  text-wrap: pretty;
-}
-
-.feedback-modal-fieldset {
-  margin: 18px 0 0;
-  padding: 0;
-  border: none;
-  min-width: 0;
-}
-
-.feedback-modal-label {
-  display: block;
-  margin: 16px 0 0;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--ink-soft);
-}
-
-.feedback-modal-fieldset > .feedback-modal-label,
-.feedback-modal-fieldset > legend.feedback-modal-label {
-  margin-top: 0;
-  margin-bottom: 8px;
-  padding: 0;
-}
-
-.feedback-modal-categories {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.feedback-modal-category {
-  min-height: 40px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid var(--panel-border);
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
-  color: var(--ink-soft);
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  min-width: 0;
-}
-
-.feedback-modal-category span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.feedback-modal-category:hover:not(:disabled) {
-  border-color: var(--panel-border-solid);
-  color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
-}
-
-.feedback-modal-category.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: var(--accent-surface);
-  color: var(--accent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent) inset;
-}
-
-.feedback-modal-category:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.feedback-modal-textarea {
-  width: 100%;
-  margin-top: 8px;
-  resize: vertical;
-  min-height: 118px;
-  max-height: 240px;
-  border: 1px solid var(--panel-border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--ink) 3.5%, transparent);
-  color: var(--ink);
-  padding: 12px 14px;
-  font: inherit;
-  font-size: 0.92rem;
-  line-height: 1.5;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 3%, transparent);
-}
-
-.feedback-modal-textarea::placeholder {
-  color: var(--ink-muted);
-}
-
-.feedback-modal-textarea:focus {
-  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  outline-offset: -1px;
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-}
-
-.feedback-modal-textarea:disabled {
-  opacity: 0.6;
-}
-
-.feedback-modal-meta {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 6px;
-  font-size: 0.72rem;
-  color: var(--ink-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.feedback-modal-attach {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 14px;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--panel-border-solid) 55%, transparent);
-  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
-}
-
-.feedback-modal-check {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-  cursor: pointer;
-}
-
-.feedback-modal-check-control {
-  position: relative;
-  display: inline-grid;
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  flex-shrink: 0;
-}
-
-.feedback-modal-check-control input {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  margin: 0;
-  cursor: pointer;
-}
-
-.feedback-modal-check-box {
-  position: relative;
-  grid-area: 1 / 1;
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
-  border: 1px solid var(--panel-border-solid);
-  background: color-mix(in srgb, var(--ink) 4%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent);
-}
-
-.feedback-modal-check-box::after {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 2px;
-  width: 5px;
-  height: 9px;
-  border: solid var(--accent-on);
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg) scale(0.6);
-  opacity: 0;
-}
-
-.feedback-modal-check-control input:checked + .feedback-modal-check-box {
-  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
-  background: var(--accent);
-}
-
-.feedback-modal-check-control input:checked + .feedback-modal-check-box::after {
-  opacity: 1;
-}
-
-.feedback-modal-check-control input:focus-visible + .feedback-modal-check-box {
-  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  outline-offset: 2px;
-}
-
-.feedback-modal-check-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.feedback-modal-check-title {
-  font-size: 0.86rem;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.feedback-modal-check-hint {
-  font-size: 0.78rem;
-  line-height: 1.45;
-  color: var(--ink-muted);
-  text-wrap: pretty;
-}
-
-.feedback-modal-error {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--error-border);
-  background: var(--error-bg);
-  color: var(--error);
-  font-size: 0.84rem;
-  line-height: 1.4;
-}
-
-.feedback-modal-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.feedback-modal-btn {
+  min-height: 0;
   flex: 1;
-  min-height: 44px;
-  border-radius: 12px;
-  border: 1px solid var(--panel-border);
-  font-family: inherit;
-  font-size: 0.84rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  transition:
-    transform var(--t-fast),
-    border-color var(--t-fast),
-    background var(--t-fast),
-    color var(--t-fast),
-    box-shadow var(--t-fast);
 }
 
-.feedback-modal-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-}
-
-.feedback-modal-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.feedback-modal-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.feedback-modal-btn-secondary {
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
+.telemetry-feedback-label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--ink);
 }
 
-.feedback-modal-btn-secondary:hover:not(:disabled) {
-  border-color: var(--panel-border-solid);
-  background: color-mix(in srgb, var(--ink) 7%, transparent);
+.telemetry-feedback-body .select-dropdown {
+  margin-bottom: 14px;
 }
 
-.feedback-modal-btn-primary {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 88%, #0f766e),
-    color-mix(in srgb, var(--accent) 96%, #22c55e)
-  );
-  color: var(--accent-on);
-  box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.feedback-modal-btn-primary:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 75%, transparent);
-  box-shadow: 0 16px 32px color-mix(in srgb, var(--accent) 28%, transparent);
-}
-
-.feedback-modal-success {
-  align-items: flex-start;
-  padding-top: 4px;
-}
-
-.feedback-modal-success-icon {
-  color: var(--accent);
-  margin-bottom: 10px;
-}
-
-.feedback-modal-success .feedback-modal-actions {
+.telemetry-feedback-textarea {
   width: 100%;
+  resize: vertical;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-elevated, color-mix(in srgb, var(--ink) 4%, var(--panel)));
+  color: var(--ink);
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 1.45;
+  margin-bottom: 14px;
 }
 
-@media (max-width: 520px) {
-  .feedback-modal {
-    padding: 16px;
-  }
+.telemetry-feedback-textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent, #76b900) 55%, transparent);
+  outline-offset: 1px;
+}
 
-  .feedback-modal-card {
-    --feedback-pad: 18px;
-    width: min(520px, calc(100vw - 24px));
-    border-radius: 16px;
-  }
+.telemetry-feedback-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
 
-  .feedback-modal-categories {
-    grid-template-columns: 1fr;
-  }
+.telemetry-feedback-checkbox input {
+  margin-top: 2px;
+}
 
-  .feedback-modal-actions {
-    flex-direction: column-reverse;
-  }
+.telemetry-feedback-hint {
+  margin: -2px 0 12px 24px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-muted);
+}
 
-  .feedback-modal-title {
-    font-size: 1.25rem;
-  }
+.telemetry-feedback-error {
+  margin: 0 0 4px;
+  color: #ff6b6b;
+  font-size: 13px;
+}
 
-  .feedback-modal-lead {
-    font-size: 0.95rem;
-  }
+.telemetry-feedback-success {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.telemetry-feedback-card .rh-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* ======================================================

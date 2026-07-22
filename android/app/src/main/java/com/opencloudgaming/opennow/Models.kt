@@ -358,6 +358,33 @@ internal enum class StreamResolutionChangeSource {
     ProviderOrGameModeChange,
 }
 
+internal data class ActiveStreamTransportProfile(
+    val resolution: String,
+    val aspectRatio: String,
+    val fps: Int,
+    val maxBitrateMbps: Int,
+    val codec: VideoCodec,
+    val colorQuality: ColorQuality,
+    val hdrEnabled: Boolean,
+    val enableCloudGsync: Boolean,
+    val enableL4S: Boolean,
+    val streamSharpeningEnabled: Boolean,
+)
+
+internal fun StreamSettings.toActiveStreamTransportProfile(): ActiveStreamTransportProfile =
+    ActiveStreamTransportProfile(
+        resolution = resolution,
+        aspectRatio = aspectRatio,
+        fps = fps,
+        maxBitrateMbps = maxBitrateMbps,
+        codec = codec,
+        colorQuality = colorQuality,
+        hdrEnabled = hdrEnabled,
+        enableCloudGsync = enableCloudGsync,
+        enableL4S = enableL4S,
+        streamSharpeningEnabled = streamSharpeningEnabled,
+    )
+
 internal data class ActiveStreamModeStatus(
     val requestedResolution: String,
     val displayedResolution: String,
@@ -365,8 +392,12 @@ internal data class ActiveStreamModeStatus(
     val serverFinalSelectedResolution: String? = null,
     val resolutionSource: StreamResolutionChangeSource? = null,
     val safeVideoRecoveryActive: Boolean = false,
-    val transportCodec: VideoCodec,
-)
+    val requestedProfile: ActiveStreamTransportProfile,
+    val transportProfile: ActiveStreamTransportProfile,
+) {
+    val transportCodec: VideoCodec
+        get() = transportProfile.codec
+}
 
 internal val StreamResolutionMismatch.isServerNegotiatedFallback: Boolean
     get() = serverNegotiatedResolution == actualResolution
@@ -413,7 +444,9 @@ internal fun activeStreamModeStatus(
             StreamResolutionChangeSource.ServerNegotiatedFallback
         else -> StreamResolutionChangeSource.ProviderOrGameModeChange
     }
-    val safeVideoRecoveryActive = !requestedSettings.hasSameVideoTransportProfile(transportSettings)
+    val requestedProfile = requestedSettings.toActiveStreamTransportProfile()
+    val transportProfile = transportSettings.toActiveStreamTransportProfile()
+    val safeVideoRecoveryActive = requestedProfile != transportProfile
     if (resolutionSource == null && !safeVideoRecoveryActive) return null
     return ActiveStreamModeStatus(
         requestedResolution = requestedResolution,
@@ -422,19 +455,10 @@ internal fun activeStreamModeStatus(
         serverFinalSelectedResolution = finalSelectedPixels?.let { "${it.first}x${it.second}" },
         resolutionSource = resolutionSource,
         safeVideoRecoveryActive = safeVideoRecoveryActive,
-        transportCodec = transportSettings.codec,
+        requestedProfile = requestedProfile,
+        transportProfile = transportProfile,
     )
 }
-
-private fun StreamSettings.hasSameVideoTransportProfile(other: StreamSettings): Boolean =
-    resolution == other.resolution &&
-        aspectRatio == other.aspectRatio &&
-        fps == other.fps &&
-        maxBitrateMbps == other.maxBitrateMbps &&
-        codec == other.codec &&
-        colorQuality == other.colorQuality &&
-        hdrEnabled == other.hdrEnabled &&
-        enableCloudGsync == other.enableCloudGsync
 
 internal fun streamResolutionOptionsForAspect(aspectRatio: String): List<String> =
     STREAM_RESOLUTION_OPTIONS.filter { it.aspectRatio == aspectRatio }.map { it.value }
@@ -566,7 +590,7 @@ internal data class StreamResolutionChoice(
     val requiredPlanLabel: String?
         get() = when (requiredPlan) {
             StreamResolutionPlan.Free -> null
-            StreamResolutionPlan.Priority -> "Priority"
+            StreamResolutionPlan.Priority -> "Performance"
             StreamResolutionPlan.Ultimate -> "Ultimate"
         }
 
@@ -629,7 +653,9 @@ internal fun ColorQuality.availableForAndroidSettings(): Boolean =
     !isChroma444()
 
 internal fun ColorQuality.availableForCodec(codec: VideoCodec): Boolean =
-    availableForAndroidSettings() && codec.availableForAndroidSettings()
+    availableForAndroidSettings() &&
+        codec.availableForAndroidSettings() &&
+        (codec != VideoCodec.AV1 || !isTenBit())
 
 internal fun StreamSettings.withAndroidSettingsAvailability(): StreamSettings {
     val availableCodec = if (codec.availableForAndroidSettings()) codec else VideoCodec.H264
@@ -638,13 +664,22 @@ internal fun StreamSettings.withAndroidSettingsAvailability(): StreamSettings {
 }
 
 internal fun StreamSettings.withCodecColorCompatibility(): StreamSettings {
+    val compatibleHdr = hdrEnabled && codec != VideoCodec.AV1
     val compatibleColor = when {
+        codec == VideoCodec.AV1 -> ColorQuality.EightBit420
         colorQuality.isChroma444() -> colorQuality.asChroma420()
-        hdrEnabled && !colorQuality.isTenBit() -> ColorQuality.TenBit420
+        compatibleHdr && !colorQuality.isTenBit() -> ColorQuality.TenBit420
         else -> colorQuality
     }
-    return if (compatibleColor == colorQuality) this else copy(colorQuality = compatibleColor)
+    return if (compatibleColor == colorQuality && compatibleHdr == hdrEnabled) {
+        this
+    } else {
+        copy(colorQuality = compatibleColor, hdrEnabled = compatibleHdr)
+    }
 }
+
+internal fun StreamSettings.usesTenBitStreamProfile(): Boolean =
+    hdrEnabled || colorQuality.isTenBit()
 
 internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSettings {
     if (preset == StreamPreset.Custom) return this
@@ -656,9 +691,12 @@ internal fun StreamSettings.applyingStreamPreset(preset: StreamPreset): StreamSe
         maxBitrateMbps = target.maxBitrateMbps,
         colorQuality = ColorQuality.EightBit420,
         hdrEnabled = false,
-        enableCloudGsync = false,
-    ).withAndroidSettingsAvailability()
+    ).withoutExperimentalTransportRequests()
+        .withAndroidSettingsAvailability()
 }
+
+internal fun StreamSettings.withoutExperimentalTransportRequests(): StreamSettings =
+    if (!enableL4S && !enableCloudGsync) this else copy(enableL4S = false, enableCloudGsync = false)
 
 internal fun StreamSettings.withResolutionAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings {
     val customResolution = customStreamResolutionOrNull(resolution)
@@ -696,12 +734,21 @@ private fun customResolutionAllowedForPlan(
     subscriptionInfo: SubscriptionInfo?,
     fallbackMembershipTier: String?,
 ): Boolean {
+    val (width, height) = resolution
+    val isUltrawide = width.toLong() * 9L > height.toLong() * 16L
+    if (
+        isUltrawide &&
+        streamResolutionPlanRank(effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) <
+        streamResolutionPlanRank(StreamResolutionPlan.Priority)
+    ) {
+        return false
+    }
+
     val availableChoices = STREAM_RESOLUTION_OPTIONS
         .map { it.toChoice() }
         .filter { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }
     if (availableChoices.isEmpty()) return false
 
-    val (width, height) = resolution
     val pixels = width * height
     return width <= availableChoices.maxOf { it.width } &&
         height <= availableChoices.maxOf { it.height } &&
@@ -721,7 +768,8 @@ internal val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1112x834", "4:3", "834"),
     StreamResolutionOption("1600x1200", "4:3", "1080"),
     StreamResolutionOption("1280x1024", "5:4", "1050"),
-    StreamResolutionOption("1680x720", "21:9", "720"),
+    StreamResolutionOption("1376x640", "19.5:9", "720", StreamResolutionPlan.Priority),
+    StreamResolutionOption("1680x720", "21:9", "720", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1080", "21:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("3840x1080", "32:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1440", "16:9", "1440", StreamResolutionPlan.Priority),
@@ -736,7 +784,7 @@ internal val STREAM_RESOLUTION_OPTIONS = listOf(
 )
 
 private val PREFERRED_RESOLUTION_BY_TIER_AND_ASPECT = mapOf(
-    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800", "4:3" to "1024x768", "21:9" to "1680x720"),
+    "720" to mapOf("16:9" to "1280x720", "16:10" to "1280x800", "4:3" to "1024x768", "19.5:9" to "1376x640", "21:9" to "1680x720"),
     "768" to mapOf("16:9" to "1366x768", "4:3" to "1024x768"),
     "834" to mapOf("4:3" to "1112x834"),
     "900" to mapOf("16:9" to "1600x900", "16:10" to "1440x900"),
@@ -784,7 +832,7 @@ private fun streamPresetTargetForAspect(preset: StreamPreset, aspectRatio: Strin
 private fun ColorQuality.isChroma444(): Boolean =
     this == ColorQuality.EightBit444 || this == ColorQuality.TenBit444
 
-private fun ColorQuality.isTenBit(): Boolean =
+internal fun ColorQuality.isTenBit(): Boolean =
     this == ColorQuality.TenBit420 || this == ColorQuality.TenBit444
 
 private fun ColorQuality.asChroma420(): ColorQuality =
@@ -1449,7 +1497,6 @@ data class CodecCapability(
     val webRtcCodecProfiles: List<String> = emptyList(),
     val maxSupportedWidth: Int? = null,
     val maxSupportedHeight: Int? = null,
-    val maxFpsByResolution: Map<String, Int> = emptyMap(),
 )
 
 data class RuntimeCodecReport(
@@ -1464,6 +1511,8 @@ data class StreamRuntimeStats(
     val bitrateKbps: Int? = null,
     val pingMs: Int? = null,
     val fps: Int? = null,
+    val receivedFps: Int? = null,
+    val decodedFps: Int? = null,
     val resolution: String? = null,
     val codec: String? = null,
     val decodeMs: Double? = null,
@@ -1484,6 +1533,14 @@ internal fun CodecCapability.streamingDecoderName(): String? =
 
 internal fun CodecCapability.streamingRealtimeSafe(): Boolean =
     streamingDecoderUsableForLaunch()
+
+internal fun CodecCapability.hasKnownHighResolutionAv1Failure(settings: StreamSettings): Boolean {
+    if (codec != VideoCodec.AV1) return false
+    val decoder = streamingDecoderName()?.lowercase(Locale.US).orEmpty()
+    if (decoder != KNOWN_AMLOGIC_AV1_DECODER) return false
+    val (width, height) = streamResolutionPixels(settings)
+    return width.toLong() * height.toLong() >= ANDROID_1440P_PIXEL_BUDGET.toLong()
+}
 
 internal fun CodecCapability.streamingDecoderUsableForLaunch(): Boolean {
     if (codec == VideoCodec.H264) return webRtcDecoderAvailable ?: decoderAvailable
@@ -1514,7 +1571,12 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     ) {
         val requestedCapability = report.capabilities.firstOrNull { it.codec == codec }
         val requestedCodecUsable = requestedCapability?.streamingDecoderUsableForLaunch() ?: (codec == VideoCodec.H264)
-        val usableCodec = if (requestedCodecUsable) codec else report.bestStreamingFallbackCodec()
+        val knownAv1Failure = requestedCapability?.hasKnownHighResolutionAv1Failure(this) == true
+        val usableCodec = when {
+            knownAv1Failure -> report.bestCodecForKnownHighResolutionAv1Failure(this)
+            requestedCodecUsable -> codec
+            else -> report.bestStreamingFallbackCodec()
+        }
         val effectiveCodec = if (report.capabilities.firstOrNull { it.codec == usableCodec }.supportsStreamResolution(this) != false) {
             usableCodec
         } else {
@@ -1539,7 +1601,10 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
 
     val capability = report?.capabilities?.firstOrNull { it.codec == codec }
     val codecSupported = capability?.streamingDecoderUsableForLaunch() ?: true
+    val knownAv1Failure = report?.androidTvProfile == true &&
+        capability?.hasKnownHighResolutionAv1Failure(this) == true
     val effectiveCodec = when {
+        knownAv1Failure -> report.bestCodecForKnownHighResolutionAv1Failure(this)
         !codecSupported -> report.bestStreamingFallbackCodec()
         capability.supportsStreamResolution(this) != false -> codec
         else -> report?.bestStreamingCodecForResolution(this) ?: codec
@@ -1577,20 +1642,18 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
         capped
     }
 
-    val maxSupportedFps = effectiveCapability?.maxFpsByResolution?.get(capabilityCap.resolution)
-    return capabilityCap.copy(
-        fps = cloudStreamFpsAtOrBelow(
-            requestedFps = capabilityCap.fps,
-            decoderMaxFps = maxSupportedFps,
-        ),
-    )
+    return capabilityCap
 }
 
-internal fun cloudStreamFpsAtOrBelow(requestedFps: Int, decoderMaxFps: Int?): Int {
-    if (decoderMaxFps == null) return requestedFps
-    val cappedFps = minOf(requestedFps, decoderMaxFps)
-    return ((cappedFps / STREAM_FPS_STEP) * STREAM_FPS_STEP).coerceAtLeast(MIN_STREAM_FPS)
-}
+private fun RuntimeCodecReport.bestCodecForKnownHighResolutionAv1Failure(settings: StreamSettings): VideoCodec =
+    listOf(VideoCodec.H265, VideoCodec.H264)
+        .firstOrNull { codec ->
+            val capability = capabilities.firstOrNull { it.codec == codec }
+            capability != null &&
+                capability.streamingDecoderUsableForLaunch() &&
+                capability.launchResolutionSupport(settings.copy(codec = codec)) != false
+        }
+        ?: VideoCodec.H264
 
 private fun RuntimeCodecReport.bestStreamingCodecForResolution(settings: StreamSettings): VideoCodec? =
     listOf(VideoCodec.H265, VideoCodec.AV1, VideoCodec.H264)
@@ -1734,11 +1797,11 @@ private const val LOW_POWER_TV_MAX_HEIGHT = 1080
 private const val LOW_POWER_TV_BITRATE_CAP_MBPS = 25
 private const val LOW_POWER_TV_FPS_CAP = 60
 private const val MAX_STANDARD_STREAM_FPS = 60
-private const val MAX_ULTIMATE_STREAM_FPS = 240
+private const val MAX_ULTIMATE_STREAM_FPS = 360
 private const val MIN_STREAM_FPS = 30
-private const val STREAM_FPS_STEP = 30
 private const val LOW_POWER_RECOMMENDED_PIXEL_COUNT = 1280 * 720
 private const val LOW_POWER_RECOMMENDED_FPS = 30
 private const val LOW_POWER_RECOMMENDED_BITRATE_MBPS = 12
 private const val ANDROID_1440P_PIXEL_BUDGET = 2560 * 1440
+private const val KNOWN_AMLOGIC_AV1_DECODER = "omx.amlogic.av1.decoder.awesome"
 private const val DECODER_RESOLUTION_HEADROOM = 1.4f

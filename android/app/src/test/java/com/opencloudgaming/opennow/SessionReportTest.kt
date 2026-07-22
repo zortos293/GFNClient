@@ -124,7 +124,8 @@ class SessionReportTest {
                 serverNegotiatedResolution = "1920x1080",
                 resolutionSource = StreamResolutionChangeSource.ServerNegotiatedFallback,
                 safeVideoRecoveryActive = true,
-                transportCodec = VideoCodec.H264,
+                requestedProfile = initial.toActiveStreamTransportProfile(),
+                transportProfile = safe.toActiveStreamTransportProfile(),
             ),
         )
         accumulator.record(

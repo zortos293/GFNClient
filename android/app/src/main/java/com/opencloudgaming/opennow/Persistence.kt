@@ -267,7 +267,11 @@ class ExternalPrefs private constructor(context: Context, val name: String) {
 class SettingsStore(context: Context) {
     private val prefs = ExternalPrefs.get(context, STORE_NAME)
     private val androidTvProfile = isAndroidTvProfile(context)
-    private val _settings = MutableStateFlow(load().withCurrentStreamPresentationDefaults(androidTvProfile))
+    private val _settings = MutableStateFlow(
+        load()
+            .withCurrentStreamPresentationDefaults(androidTvProfile)
+            .normalizedForAndroid(),
+    )
     val settings: StateFlow<AppSettings> = _settings
 
     private fun load(): AppSettings {
@@ -301,7 +305,7 @@ class SettingsStore(context: Context) {
             codec = compatibleStream.codec,
             sessionProxyUrl = stream.sessionProxyUrl.trim(),
             maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
-            fps = compatibleStream.fps.coerceIn(30, 240),
+            fps = compatibleStream.fps.coerceIn(30, 360),
             streamSharpeningAmount = compatibleStream.streamSharpeningAmount.coerceIn(0f, 1f),
         )
         return copy(

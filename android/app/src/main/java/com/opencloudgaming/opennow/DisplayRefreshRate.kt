@@ -94,6 +94,6 @@ private fun Float.formatRefreshRate(): String {
 }
 
 private const val MIN_STREAM_DISPLAY_FPS = 30
-private const val MAX_STREAM_DISPLAY_FPS = 240
+private const val MAX_STREAM_DISPLAY_FPS = 360
 private const val STREAM_REFRESH_TOLERANCE_FPS = 0.5f
 private const val STREAM_CADENCE_TOLERANCE = 0.01f

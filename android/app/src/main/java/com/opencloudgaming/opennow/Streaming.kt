@@ -125,7 +125,6 @@ object CodecProbe {
     private data class DecoderLimits(
         val maxSupportedWidth: Int?,
         val maxSupportedHeight: Int?,
-        val maxFpsByResolution: Map<String, Int>,
     )
 
     fun report(context: Context): RuntimeCodecReport {
@@ -178,7 +177,6 @@ object CodecProbe {
                 webRtcCodecProfiles = webRtc?.profiles.orEmpty(),
                 maxSupportedWidth = decoderLimits.maxSupportedWidth,
                 maxSupportedHeight = decoderLimits.maxSupportedHeight,
-                maxFpsByResolution = decoderLimits.maxFpsByResolution,
             )
         }
         return RuntimeCodecReport(
@@ -208,36 +206,23 @@ object CodecProbe {
 
     private fun decoderLimits(mime: String, decoders: List<MediaCodecInfo>): DecoderLimits {
         val candidates = decoders.filter(::isHardwareCodec).ifEmpty { decoders }
-        if (candidates.isEmpty()) return DecoderLimits(null, null, emptyMap())
+        if (candidates.isEmpty()) return DecoderLimits(null, null)
         val knownResolutions = streamAspectRatioOptions()
             .flatMap(::streamResolutionOptionsForAspect)
             .distinct()
         val supportedPixels = mutableListOf<Pair<Int, Int>>()
-        val maxFpsByResolution = buildMap {
-            for (resolution in knownResolutions) {
-                val (width, height) = parseResolutionPixelsOrNull(resolution) ?: continue
-                val videoCapabilities = candidates.mapNotNull { decoder ->
-                    runCatching { decoder.getCapabilitiesForType(mime).videoCapabilities }.getOrNull()
-                }.filter { video ->
-                    runCatching { video.isSizeSupported(width, height) }.getOrDefault(false)
-                }
-                if (videoCapabilities.isEmpty()) continue
-                supportedPixels += width to height
-                val maxFps = videoCapabilities.mapNotNull { video ->
-                    runCatching {
-                        video.getSupportedFrameRatesFor(width, height).upper
-                            .takeIf { it.isFinite() && it > 0.0 }
-                            ?.roundToInt()
-                            ?.coerceIn(1, 360)
-                    }.getOrNull()
-                }.maxOrNull()
-                if (maxFps != null) put(resolution, maxFps)
+        for (resolution in knownResolutions) {
+            val (width, height) = parseResolutionPixelsOrNull(resolution) ?: continue
+            val sizeSupported = candidates.any { decoder ->
+                runCatching {
+                    decoder.getCapabilitiesForType(mime).videoCapabilities?.isSizeSupported(width, height) == true
+                }.getOrDefault(false)
             }
+            if (sizeSupported) supportedPixels += width to height
         }
         return DecoderLimits(
             maxSupportedWidth = supportedPixels.maxOfOrNull { it.first },
             maxSupportedHeight = supportedPixels.maxOfOrNull { it.second },
-            maxFpsByResolution = maxFpsByResolution,
         )
     }
 
@@ -397,6 +382,7 @@ private fun openNowHardwareVideoDecoderFactory(sharedContext: EglBase.Context): 
 private class OpenNowVideoDecoderFactory(
     sharedContext: EglBase.Context,
     private val nativeLowLatencyDecoderEnabled: Boolean = false,
+    private val requestedFps: () -> Int = { 60 },
 ) : VideoDecoderFactory {
     private val defaultFactory = DefaultVideoDecoderFactory(sharedContext)
     private val hardwareFactory = openNowHardwareVideoDecoderFactory(sharedContext)
@@ -411,12 +397,21 @@ private class OpenNowVideoDecoderFactory(
             -> hardwareDecoder
             null -> defaultFactory.createDecoder(info)
         }
+        val exactRequestedFps = requestedFps().coerceAtLeast(1)
+        val tuneDecoderPerformance = mediaCodecPerformanceTargetFps(exactRequestedFps) != null
         if (codec != null && hardwareDecoder != null) {
-            val isLowLatency = nativeLowLatencyDecoderEnabled
-            NativeInputDiagnostics.add("native MediaCodec decoder selected codec=${codec.name} implementation=${hardwareDecoder.getImplementationName()} lowLatency=$isLowLatency")
+            NativeInputDiagnostics.add(
+                "native MediaCodec decoder selected codec=${codec.name} " +
+                    "implementation=${hardwareDecoder.getImplementationName()} requestedFps=$exactRequestedFps " +
+                    "performanceTuning=$tuneDecoderPerformance lowLatency=$nativeLowLatencyDecoderEnabled",
+            )
         }
-        return if (decoder != null && nativeLowLatencyDecoderEnabled) {
-            LowLatencyVideoDecoder(decoder)
+        return if (decoder != null && (nativeLowLatencyDecoderEnabled || tuneDecoderPerformance)) {
+            LowLatencyVideoDecoder(
+                delegate = decoder,
+                requestedFps = exactRequestedFps,
+                lowLatencyEnabled = nativeLowLatencyDecoderEnabled,
+            )
         } else {
             decoder
         }
@@ -1066,7 +1061,6 @@ object NativeStreamInputRouter {
             keyCode = keyCode,
             controllerInputDevice = isControllerInputDevice(),
             hardwareKeyboardSource = isHardwareKeyboardSource(),
-            androidTvProfile = androidTvProfile,
         )
 
     fun shouldOpenStreamSystemMenuKey(keyCode: Int, controllerInputDevice: Boolean): Boolean =
@@ -1076,9 +1070,8 @@ object NativeStreamInputRouter {
         keyCode: Int,
         controllerInputDevice: Boolean,
         hardwareKeyboardSource: Boolean,
-        androidTvProfile: Boolean = false,
     ): Boolean =
-        (keyCode == KeyEvent.KEYCODE_BACK && (androidTvProfile || !controllerInputDevice)) ||
+        (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
             (keyCode == KeyEvent.KEYCODE_ESCAPE && !hardwareKeyboardSource)
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =
@@ -2052,6 +2045,43 @@ internal enum class FirstFrameRecoveryStep {
     ContinueBoundedTransportRecovery,
 }
 
+internal enum class CatastrophicResolutionRecoveryStep {
+    None,
+    RetryWithH265,
+    RetryWithH264,
+}
+
+internal fun catastrophicFirstDecodedResolutionRecoveryStep(
+    transportCodec: VideoCodec,
+    expectedResolution: String?,
+    decodedResolution: String?,
+    completedCodecFallbacks: Int,
+): CatastrophicResolutionRecoveryStep {
+    val expected = parseResolutionPixelsOrNull(expectedResolution) ?: return CatastrophicResolutionRecoveryStep.None
+    val decoded = parseResolutionPixelsOrNull(decodedResolution) ?: return CatastrophicResolutionRecoveryStep.None
+    val expectedArea = expected.first.toLong() * expected.second.toLong()
+    val decodedArea = decoded.first.toLong() * decoded.second.toLong()
+    if (decoded == expected || decodedArea * CATASTROPHIC_DECODED_AREA_DIVISOR > expectedArea) {
+        return CatastrophicResolutionRecoveryStep.None
+    }
+    return when {
+        completedCodecFallbacks == 0 && transportCodec == VideoCodec.AV1 ->
+            CatastrophicResolutionRecoveryStep.RetryWithH265
+        completedCodecFallbacks == 1 && transportCodec == VideoCodec.H265 ->
+            CatastrophicResolutionRecoveryStep.RetryWithH264
+        else -> CatastrophicResolutionRecoveryStep.None
+    }
+}
+
+internal fun StreamSettings.forCatastrophicResolutionRecovery(
+    step: CatastrophicResolutionRecoveryStep,
+): StreamSettings? = when (step) {
+    CatastrophicResolutionRecoveryStep.RetryWithH265 ->
+        copy(codec = VideoCodec.H265).withCodecColorCompatibility()
+    CatastrophicResolutionRecoveryStep.RetryWithH264 -> androidSafeVideoFallback()
+    CatastrophicResolutionRecoveryStep.None -> null
+}
+
 internal fun firstFrameRecoveryStep(
     transportHasStableMedia: Boolean,
     reconnectAttempts: Int,
@@ -2062,6 +2092,12 @@ internal fun firstFrameRecoveryStep(
     !safeVideoFallbackApplied -> FirstFrameRecoveryStep.ApplySafeVideoFallback
     else -> FirstFrameRecoveryStep.ContinueBoundedTransportRecovery
 }
+
+internal fun transportRestartShouldApplySafeVideoFallback(
+    videoFailure: Boolean,
+    reconnectAttempts: Int,
+    transportHasStableMedia: Boolean,
+): Boolean = videoFailure && reconnectAttempts >= 1 && !transportHasStableMedia
 
 private fun newStreamLivenessWatchdog(androidTvProfile: Boolean): StreamLivenessWatchdog {
     val timing = streamRecoveryTiming(androidTvProfile)
@@ -2432,7 +2468,7 @@ class NativeStreamClient(
     context: Context,
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit,
-    private val onSafeVideoFallbackApplied: (String) -> Unit = {},
+    private val onVideoTransportFallbackApplied: (String, StreamSettings) -> Unit = { _, _ -> },
     private val onSessionRecoveryRequired: (String) -> Unit = {},
     private val onFirstVideoFrameRendered: () -> Unit = {},
     private val onStats: (StreamRuntimeStats) -> Unit = {},
@@ -2491,6 +2527,8 @@ class NativeStreamClient(
     private var transportGeneration = 0
     private var reconnectAttempts = 0
     private var videoSafeFallbackApplied = false
+    private var catastrophicResolutionCodecFallbacks = 0
+    private var firstDecodedResolutionEvaluated = false
     private var transportHasStableMedia = false
     private var consecutiveTransportProgressSamples = 0
     private var sessionRecoveryRequested = false
@@ -2579,6 +2617,7 @@ class NativeStreamClient(
     private data class StreamStatsSample(
         val atMs: Double,
         val bytesReceived: Long,
+        val framesReceived: Long,
         val framesDecoded: Long,
         val totalDecodeTime: Double,
         val packetsLost: Long,
@@ -2601,7 +2640,13 @@ class NativeStreamClient(
         factory = PeerConnectionFactory.builder()
             .setOptions(PeerConnectionFactory.Options())
             .setAudioDeviceModule(audioDeviceModule)
-            .setVideoDecoderFactory(OpenNowVideoDecoderFactory(eglBase.eglBaseContext, lowLatencyEnabled))
+            .setVideoDecoderFactory(
+                OpenNowVideoDecoderFactory(
+                    sharedContext = eglBase.eglBaseContext,
+                    nativeLowLatencyDecoderEnabled = lowLatencyEnabled,
+                    requestedFps = { settings.fps },
+                ),
+            )
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .createPeerConnectionFactory()
     }
@@ -2811,6 +2856,7 @@ class NativeStreamClient(
         transportGeneration += 1
         reconnectAttempts = 0
         videoSafeFallbackApplied = false
+        catastrophicResolutionCodecFallbacks = 0
         sessionRecoveryRequested = false
         lastStatsSample = null
         livenessWatchdog.reset()
@@ -3343,6 +3389,7 @@ class NativeStreamClient(
         inputDropLogged = false
         lastIceState = null
         lastStatsSample = null
+        firstDecodedResolutionEvaluated = false
         transportHasStableMedia = false
         consecutiveTransportProgressSamples = 0
         firstVideoFrameWatchdog.reset()
@@ -3717,7 +3764,7 @@ class NativeStreamClient(
             ) {
                 return@launch
             }
-            restartTransport("Timed out waiting for video offer")
+            restartTransport("Timed out waiting for video offer", videoFailure = true)
         }
     }
 
@@ -3858,13 +3905,16 @@ class NativeStreamClient(
         }
     }
 
-    private fun restartTransport(reason: String) {
+    private fun restartTransport(reason: String, videoFailure: Boolean = false) {
         val currentSession = session ?: return
         val currentSettings = settings
         val hadStableMedia = transportHasStableMedia
         if (
-            reconnectAttempts >= 1 &&
-            !transportHasStableMedia &&
+            transportRestartShouldApplySafeVideoFallback(
+                videoFailure = videoFailure,
+                reconnectAttempts = reconnectAttempts,
+                transportHasStableMedia = transportHasStableMedia,
+            ) &&
             requestSafeVideoFallback(
                 message = "$reason. Restarting the local transport with safe H264 profile.",
                 diagnosticReason = "transport reconnect",
@@ -3930,8 +3980,8 @@ class NativeStreamClient(
         scope.launch { onError(message) }
     }
 
-    private fun emitSafeVideoFallbackApplied(message: String) {
-        scope.launch { onSafeVideoFallbackApplied(message) }
+    private fun emitVideoTransportFallbackApplied(message: String, fallback: StreamSettings) {
+        scope.launch { onVideoTransportFallbackApplied(message, fallback) }
     }
 
     private fun emitSessionRecoveryRequired(message: String) {
@@ -4091,6 +4141,10 @@ class NativeStreamClient(
             val snapshot = buildRuntimeStatsSnapshot(report.timestampUs / 1000.0, report.statsMap.values)
             scope.launch {
                 if (generation != transportGeneration) return@launch
+                if (handleCatastrophicFirstDecodedResolution(snapshot)) {
+                    onStats(snapshot.stats)
+                    return@launch
+                }
                 handleMediaLiveness(snapshot)
                 onStats(snapshot.stats)
             }
@@ -4118,6 +4172,7 @@ class NativeStreamClient(
 
         val members = inboundVideo?.members.orEmpty()
         val bytesReceived = members["bytesReceived"].statsLong()
+        val framesReceived = members["framesReceived"].statsLong()
         val framesDecoded = members["framesDecoded"].statsLong()
         val explicitFps = members["framesPerSecond"].statsDouble()
         val width = members["frameWidth"].statsLong()
@@ -4138,6 +4193,11 @@ class NativeStreamClient(
         }
         val derivedFps = if (previous != null && framesDecoded != null && elapsedSeconds != null) {
             ((framesDecoded - previous.framesDecoded).coerceAtLeast(0) / elapsedSeconds).roundToInt()
+        } else {
+            null
+        }
+        val receivedFps = if (previous != null && framesReceived != null && elapsedSeconds != null) {
+            ((framesReceived - previous.framesReceived).coerceAtLeast(0) / elapsedSeconds).roundToInt()
         } else {
             null
         }
@@ -4173,6 +4233,7 @@ class NativeStreamClient(
             lastStatsSample = StreamStatsSample(
                 atMs = timestampMs,
                 bytesReceived = bytesReceived ?: previous?.bytesReceived ?: 0L,
+                framesReceived = framesReceived ?: previous?.framesReceived ?: 0L,
                 framesDecoded = framesDecoded ?: previous?.framesDecoded ?: 0L,
                 totalDecodeTime = totalDecodeTime,
                 packetsLost = packetsLost,
@@ -4194,6 +4255,8 @@ class NativeStreamClient(
                 bitrateKbps = bitrateKbps,
                 pingMs = pingMs,
                 fps = explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 },
+                receivedFps = receivedFps?.takeIf { it > 0 },
+                decodedFps = derivedFps?.takeIf { it > 0 },
                 resolution = resolution,
                 codec = codec,
                 decodeMs = decodeMs,
@@ -4205,6 +4268,75 @@ class NativeStreamClient(
             bytesReceived = bytesReceived,
             framesDecoded = framesDecoded,
         )
+    }
+
+    private fun handleCatastrophicFirstDecodedResolution(snapshot: RuntimeStatsSnapshot): Boolean {
+        if (firstDecodedResolutionEvaluated || (snapshot.framesDecoded ?: 0L) <= 0L) return false
+        val decodedResolution = snapshot.stats.resolution ?: return false
+        firstDecodedResolutionEvaluated = true
+        val currentSession = session ?: return false
+        val requestedResolution = currentSession.monitorSnapshot?.requestedResolution
+            ?: streamResolutionPixels(settings).let { "${it.first}x${it.second}" }
+        val serverReturnedResolution = currentSession.monitorSnapshot?.returnedResolution
+            ?: currentSession.negotiatedStreamProfile?.resolution
+        val serverFinalResolution = currentSession.monitorSnapshot?.finalSelectedResolution
+        val expectedResolution = serverReturnedResolution ?: serverFinalResolution ?: requestedResolution
+        val step = catastrophicFirstDecodedResolutionRecoveryStep(
+            transportCodec = settings.codec,
+            expectedResolution = expectedResolution,
+            decodedResolution = decodedResolution,
+            completedCodecFallbacks = catastrophicResolutionCodecFallbacks,
+        )
+        recordStreamDiagnostic(
+            "first decoded mode requested=$requestedResolution returned=${serverReturnedResolution.orEmpty()} " +
+                "final=${serverFinalResolution.orEmpty()} expected=$expectedResolution decoded=$decodedResolution " +
+                "codec=${settings.codec} recoveryStage=$catastrophicResolutionCodecFallbacks action=$step",
+        )
+        if (step == CatastrophicResolutionRecoveryStep.None) return false
+        return requestCatastrophicResolutionCodecFallback(step, expectedResolution, decodedResolution)
+    }
+
+    private fun requestCatastrophicResolutionCodecFallback(
+        step: CatastrophicResolutionRecoveryStep,
+        expectedResolution: String,
+        decodedResolution: String,
+    ): Boolean {
+        val currentSession = session ?: return false
+        val currentSettings = settings
+        val fallback = currentSettings.forCatastrophicResolutionRecovery(step) ?: return false
+        catastrophicResolutionCodecFallbacks += 1
+        if (fallback.codec == VideoCodec.H264) videoSafeFallbackApplied = true
+        settings = fallback
+        reconnectAttempts = (reconnectAttempts + 1).coerceAtMost(MAX_TRANSPORT_RECONNECT_ATTEMPTS)
+        NativeInputDiagnostics.add(
+            "catastrophic resolution codec fallback stage=$catastrophicResolutionCodecFallbacks " +
+                "from=${currentSettings.codec} to=${fallback.codec} expected=$expectedResolution decoded=$decodedResolution " +
+                "resolution=${fallback.resolution} fps=${fallback.fps}",
+        )
+        transportGeneration += 1
+        val generation = transportGeneration
+        closeTransport(clearInputState = false)
+        firstVideoFrameWatchdog.reset()
+        val message = "${currentSettings.codec} decoded at $decodedResolution instead of $expectedResolution; " +
+            "retrying ${fallback.codec} at ${fallback.resolution}"
+        recordStreamDiagnostic(
+            "catastrophic resolution transport restart generation=$generation " +
+                "session=${streamDiagnosticId(currentSession.sessionId)} message=$message",
+        )
+        emitState("Reconnecting stream with ${fallback.codec} profile")
+        emitVideoTransportFallbackApplied(message, fallback)
+        val settleDelayMs = advancedCodecRestartSettleDelayMs(currentSettings.codec, hadStableMedia = true)
+        if (settleDelayMs == 0L) {
+            startTransport(currentSession, fallback, generation)
+        } else {
+            iceRecoveryJob = scope.launch {
+                delay(settleDelayMs)
+                if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
+                iceRecoveryJob = null
+                startTransport(currentSession, fallback, generation)
+            }
+        }
+        return true
     }
 
     private fun handleMediaLiveness(snapshot: RuntimeStatsSnapshot) {
@@ -4226,7 +4358,7 @@ class NativeStreamClient(
                     NativeInputDiagnostics.add(
                         "first frame timeout requested profile retry codec=${settings.codec} resolution=${settings.resolution}",
                     )
-                    restartTransport("First video frame timed out")
+                    restartTransport("First video frame timed out", videoFailure = true)
                     return
                 }
                 FirstFrameRecoveryStep.ApplySafeVideoFallback -> {
@@ -4265,7 +4397,7 @@ class NativeStreamClient(
                     return
                 }
                 NativeInputDiagnostics.add("media stall transport restart stalledMs=${action.stalledMs}")
-                restartTransport("Media stalled for ${action.stalledMs / 1000}s")
+                restartTransport("Media stalled for ${action.stalledMs / 1000}s", videoFailure = true)
             }
         }
     }
@@ -4311,7 +4443,7 @@ class NativeStreamClient(
             "safe video transport restart generation=$generation session=${streamDiagnosticId(currentSession.sessionId)} codec=${fallback.codec} reason=$diagnosticReason",
         )
         emitState("Reconnecting stream with safe H264 profile")
-        emitSafeVideoFallbackApplied(message)
+        emitVideoTransportFallbackApplied(message, fallback)
         startTransport(currentSession, fallback, generation)
         return true
     }
@@ -5332,13 +5464,17 @@ object SdpTools {
         val fingerprint = Regex("a=fingerprint:sha-256 ([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val threshold = Regex("a=ri\\.partialReliableThresholdMs:(\\d+)").find(offerSdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 30
         val bitDepth = if (settings.hdrEnabled || settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444) 10 else 8
-        val maxBitrate = settings.maxBitrateMbps * 1000
-        val minBitrate = max(5000, (maxBitrate * 0.35f).roundToInt())
-        val initialBitrate = max(minBitrate, (maxBitrate * 0.7f).roundToInt())
-        val isHighFps = settings.fps >= 90
+        val maxBitrate = max(OFFICIAL_MIN_BITRATE_KBPS, settings.maxBitrateMbps * 1000)
+        val minBitrate = OFFICIAL_MIN_BITRATE_KBPS
+        val initialBitrate = max(minBitrate, maxBitrate / 4)
+        val isHighFps = settings.fps > 60
+        val isAtLeast120Fps = settings.fps >= 120
+        val is90Fps = settings.fps == 90
         val is120Fps = settings.fps == 120
-        val is240Fps = settings.fps >= 240
+        val isAtLeast240Fps = settings.fps >= 240
         val isAv1 = settings.codec == VideoCodec.AV1
+        val minTargetFrameTimeUs = ((1_000_000L * 95L) / (settings.fps.coerceAtLeast(1) * 100L))
+            .coerceAtLeast(1000L)
         return buildList {
             add("v=0")
             add("o=SdpTest test_id_13 14 IN IPv4 127.0.0.1")
@@ -5354,46 +5490,83 @@ object SdpTools {
             add("a=vqos.fec.repairMinPercent:5")
             add("a=vqos.fec.repairPercent:5")
             add("a=vqos.fec.repairMaxPercent:35")
+            add("a=vqos.bllFec.enable:0")
             add("a=vqos.dynamicStreamingMode:0")
             add("a=vqos.drc.enable:0")
+            add("a=vqos.calculateAvgVideoStreamingBitrate:1")
             add("a=video.dx9EnableNv12:1")
             add("a=video.dx9EnableHdr:${if (settings.hdrEnabled) 1 else 0}")
             add("a=vqos.qpg.enable:1")
             add("a=vqos.resControl.qp.qpg.featureSetting:7")
+            add("a=video.adaptiveQuantization.spatialAQSetting:7")
+            add("a=video.adaptiveQuantization.temporalAQSetting:0")
+            add("a=video.adaptiveQuantization.spatialAQStrength:12")
+            add("a=video.adaptiveQuantization.qpThresholdAdjPercent:2")
+            add("a=video.adaptiveQuantization.saqAdaptMinQpThresholdPercent:40")
+            add("a=video.adaptiveQuantization.saqAdaptMaxQpThresholdPercent:100")
+            add("a=video.adaptiveQuantization.saqAdaptDecayStrengthX100:250")
+            add("a=video.adaptiveQuantization.perfAdjEnablement:1")
+            add("a=video.framePacing.mode:2")
+            add("a=video.framePacing.pid.minTargetFrameTimeUs:$minTargetFrameTimeUs")
             add("a=bwe.useOwdCongestionControl:1")
             add("a=video.enableRtpNack:1")
             add("a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200")
             add("a=vqos.drc.bitrateIirFilterFactor:18")
             add("a=video.packetSize:1140")
+            add("a=packetPacing.version:3")
+            add("a=packetPacing.mode:1")
             add("a=packetPacing.minNumPacketsPerGroup:15")
+            add("a=packetPacing.enableAccurateSleep:1")
+            add("a=packetPacing.enableSmoothTransition:1")
+            add("a=packetPacing.allowFpsBasedToggle:1")
+            add("a=vqos.relaxMaxBitrate.overrideAvgBitrateThresholdPercent:4")
+            add("a=vqos.relaxMaxBitrate.customAvgBitrateThresholdPercent:65")
+            add("a=vqos.relaxMaxBitrate.overrideAvgQpThresholdPercent:7")
+            add("a=vqos.relaxMaxBitrate.customAvgQpThresholdPercent:51")
+            add("a=vqos.relaxMaxBitrate.iirFilterFactor:120")
+            add("a=vqos.qpDelta.qpDeltaMaxPercent:10")
+            add("a=vqos.qpDelta.qpDeltaSurfaceAdjustmentStrengthPercent:70")
+            add("a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH264:100")
+            add("a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH265:100")
+            add("a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentAv1:100")
+            add("a=vqos.qpDelta.qpDeltaMinPercent:60")
+            add("a=vqos.qpDelta.qpDeltaIirFactor:60")
+            add("a=vqos.qpDelta.qpDeltaThrottlePercent:100")
             if (isHighFps) {
                 add("a=vqos.dfc.enable:1")
                 add("a=vqos.dfc.decodeFpsAdjPercent:85")
                 add("a=vqos.dfc.targetDownCooldownMs:250")
-                add("a=vqos.dfc.dfcAlgoVersion:${if (is120Fps || is240Fps) 2 else 1}")
-                add("a=vqos.dfc.minTargetFps:${if (is120Fps || is240Fps) 100 else 60}")
+                add("a=vqos.dfc.dfcAlgoVersion:${if (isAtLeast120Fps) 2 else 1}")
+                add("a=vqos.dfc.minTargetFps:${if (isAtLeast120Fps) 100 else 60}")
                 add("a=vqos.resControl.dfc.useClientFpsPerf:0")
                 add("a=vqos.dfc.adjustResAndFps:0")
                 add("a=bwe.iirFilterFactor:8")
                 add("a=video.encoderFeatureSetting:47")
                 add("a=video.encoderPreset:6")
-                add("a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600")
-                add("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9")
-                add("a=video.fbcDynamicFpsGrabTimeoutMs:${if (is120Fps) 6 else 18}")
-                add("a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:${if (is120Fps) 6000 else 12000}")
+                val captureTuning = when {
+                    is90Fps -> 9 to 11
+                    is120Fps -> 6 to 9
+                    isAtLeast240Fps -> 18 to 9
+                    else -> null
+                }
+                captureTuning?.let { (grabTimeoutMs, decodeThresholdMs) ->
+                    add("a=video.fbcDynamicFpsGrabTimeoutMs:$grabTimeoutMs")
+                    add("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:$decodeThresholdMs")
+                }
             } else {
                 add("a=vqos.dfc.enable:0")
                 add("a=vqos.dfc.adjustResAndFps:0")
             }
-            if (is240Fps) {
+            if (isAtLeast240Fps) {
                 add("a=video.enableNextCaptureMode:1")
                 add("a=vqos.maxStreamFpsEstimate:${settings.fps}")
-                add("a=video.videoSplitEncodeStripsPerFrame:3")
+                val splitEncodeStrips = if (isAv1 && width * height >= HIGH_RESOLUTION_AV1_SPLIT_ENCODE_PIXELS) 63 else 3
+                add("a=video.videoSplitEncodeStripsPerFrame:$splitEncodeStrips")
                 add("a=video.updateSplitEncodeStateDynamically:1")
                 add("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535")
                 add("a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535")
             }
-            add("a=vqos.adjustStreamingFpsDuringOutOfFocus:0")
+            add("a=vqos.adjustStreamingFpsDuringOutOfFocus:1")
             add("a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1")
             add("a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1")
             add("a=vqos.resControl.cpmRtc.featureMask:0")
@@ -5435,7 +5608,7 @@ object SdpTools {
             add("a=video.clientViewportHt:$height")
             add("a=video.maxFPS:${settings.fps}")
             add("a=video.initialBitrateKbps:$initialBitrate")
-            add("a=video.initialPeakBitrateKbps:$maxBitrate")
+            add("a=video.initialPeakBitrateKbps:$initialBitrate")
             add("a=vqos.bw.maximumBitrateKbps:$maxBitrate")
             add("a=vqos.bw.minimumBitrateKbps:$minBitrate")
             add("a=vqos.bw.peakBitrateKbps:$maxBitrate")
@@ -5521,6 +5694,8 @@ object SdpTools {
         return parsed ?: fallback
     }
 
+    private const val OFFICIAL_MIN_BITRATE_KBPS = 4000
+    private const val HIGH_RESOLUTION_AV1_SPLIT_ENCODE_PIXELS = 2_764_800
     private const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
 }
 
@@ -5986,6 +6161,7 @@ private const val TV_MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L
 private const val TV_MEDIA_STALL_RESTART_AFTER_MS = 14_000L
 private const val FIRST_VIDEO_FRAME_TIMEOUT_MS = 8_000L
 private const val STABLE_TRANSPORT_PROGRESS_SAMPLES = 3
+private const val CATASTROPHIC_DECODED_AREA_DIVISOR = 8L
 private const val GAMEPAD_GUIDE_AUTO_RELEASE_MS = 160L
 private const val STEAM_MENU_MODIFIER_DELAY_MS = 40L
 private const val STREAM_TEXT_SEND_MAX_CHARS = 4096

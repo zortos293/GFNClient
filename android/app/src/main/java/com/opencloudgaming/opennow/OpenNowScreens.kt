@@ -155,6 +155,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.CompositionLocalProvider
@@ -214,6 +215,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -250,6 +252,7 @@ private val TopBarCompactControlHeight = 30.dp
 private const val DEVICE_LOGIN_SIDE_BY_SIDE_MIN_WIDTH_DP = 520
 private const val COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS = 5_000L
 private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
+private const val ACTIVE_STREAM_MODE_NOTICE_DURATION_MS = 3_000L
 private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> Green
@@ -324,16 +327,22 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     var queuedForStartCue by remember { mutableStateOf(false) }
     var lastStartCueSessionId by remember { mutableStateOf<String?>(null) }
     var hiddenUpdatePromptKey by remember { mutableStateOf<String?>(null) }
+    var completedSessionBugReportOpen by rememberSaveable { mutableStateOf(false) }
     val updatePromptKey = state.androidUpdate.visibleNoticeKey(state.dismissedAndroidUpdateNoticeKey)
     val showAnalyticsConsent = !state.settings.analyticsConsentAsked
     val diagnosticDialogVisible = state.diagnosticShare.awaitingConsent ||
         state.diagnosticShare.uploading ||
         state.diagnosticShare.pasteUrl != null
-    val showSessionReport = state.sessionReport != null && !showAnalyticsConsent && !diagnosticDialogVisible
+    val showCompletedSessionBugReport = completedSessionBugReportOpen && !showAnalyticsConsent && !diagnosticDialogVisible
+    val showSessionReport = state.sessionReport != null &&
+        !showAnalyticsConsent &&
+        !diagnosticDialogVisible &&
+        !showCompletedSessionBugReport
     val showUpdatePrompt = updatePromptKey != null &&
         updatePromptKey != hiddenUpdatePromptKey &&
         !showAnalyticsConsent &&
         !showSessionReport &&
+        !showCompletedSessionBugReport &&
         !diagnosticDialogVisible &&
         state.androidUpdate.status in setOf(AndroidUpdateStatus.Available, AndroidUpdateStatus.Downloaded)
 
@@ -471,6 +480,24 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                     SessionReportDialog(
                         report = report,
                         onDismiss = viewModel::dismissSessionReport,
+                        onReportBug = {
+                            viewModel.dismissSessionReport()
+                            viewModel.resetBugReportSubmission()
+                            completedSessionBugReportOpen = true
+                        },
+                    )
+                }
+                if (showCompletedSessionBugReport) {
+                    CompletedSessionBugReportDialog(
+                        submission = state.bugReportSubmission,
+                        onSubmit = viewModel::submitBugReport,
+                        onReset = viewModel::resetBugReportSubmission,
+                        onDismiss = {
+                            if (!state.bugReportSubmission.uploading) {
+                                completedSessionBugReportOpen = false
+                                viewModel.resetBugReportSubmission()
+                            }
+                        },
                     )
                 }
                 updatePromptKey?.takeIf { showUpdatePrompt }?.let { promptKey ->
@@ -525,6 +552,7 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
 private fun SessionReportDialog(
     report: SessionReport,
     onDismiss: () -> Unit,
+    onReportBug: () -> Unit,
 ) {
     val scoreColor = when (report.rating) {
         SessionReportRating.Excellent -> Green
@@ -652,9 +680,52 @@ private fun SessionReportDialog(
                 }
                 Text("What to do next", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 report.recommendations.forEach { finding -> SessionReportFindingRow(finding) }
+                TextButton(
+                    onClick = onReportBug,
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+                ) {
+                    Text("Experienced a bug? ", color = TextMuted)
+                    Text(
+                        "Report it",
+                        color = MaterialTheme.colorScheme.primary,
+                        textDecoration = TextDecoration.Underline,
+                    )
+                }
             }
         },
         confirmButton = { Button(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun CompletedSessionBugReportDialog(
+    submission: BugReportSubmissionState,
+    onSubmit: (String, String) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = {
+            if (!submission.uploading) onDismiss()
+        },
+        title = { Text("Report a bug") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 620.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                StreamBugReporter(
+                    submission = submission,
+                    onSubmit = onSubmit,
+                    onReset = onReset,
+                    onButtonTone = {},
+                    initiallyExpanded = true,
+                    onExpandedClose = onDismiss,
+                )
+            }
+        },
+        confirmButton = {},
     )
 }
 
@@ -5972,10 +6043,14 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var streamGuideStep by remember(session?.sessionId) { mutableStateOf(StreamGuideStep.OpenControls) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
+    var videoTransportFallbackReason by remember { mutableStateOf<String?>(null) }
     var controllerMouseAssistEnabled by remember(session?.sessionId) { mutableStateOf(false) }
     var controllerMouseEmulationEnabled by remember(session?.sessionId) { mutableStateOf(state.settings.controllerMouseEmulation) }
     val streamReady = state.isNativeStreamReady()
     val tvProfile = state.androidTvProfile
+    LaunchedEffect(session?.sessionId) {
+        videoTransportFallbackReason = null
+    }
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = streamReady)
     var showTouchControlsWithPhysicalController by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptOpen by remember(session?.sessionId) { mutableStateOf(false) }
@@ -6100,9 +6175,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 streamState = it
                 viewModel.markStreamError(it)
             },
-            onSafeVideoFallbackApplied = {
-                streamState = it
-                viewModel.recordLocalSafeVideoFallback(it)
+            onVideoTransportFallbackApplied = { reason, fallback ->
+                streamState = reason
+                videoTransportFallbackReason = reason
+                viewModel.recordLocalVideoTransportFallback(reason, fallback)
             },
             onSessionRecoveryRequired = {
                 streamState = it
@@ -6354,6 +6430,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             if (activeStreamMode != null) {
                 ActiveStreamModePill(
                     status = activeStreamMode,
+                    recoveryReason = videoTransportFallbackReason,
+                    bugReportSubmission = state.bugReportSubmission,
+                    onBugReportSubmit = viewModel::submitBugReport,
+                    onBugReportReset = viewModel::resetBugReportSubmission,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = if (statsVisible && statsAlignment == Alignment.TopCenter) 48.dp else 8.dp),
@@ -8048,17 +8128,76 @@ private fun StreamControlsPanel(
 }
 
 @Composable
+private fun BugReportDataDisclosure(
+    title: String,
+    includeTypedTextWarning: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xffffc266).copy(alpha = 0.10f),
+        contentColor = TextPrimary,
+        border = BorderStroke(1.dp, Color(0xffffc266).copy(alpha = 0.38f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Text(
+                title,
+                color = Color(0xffffc266),
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                "This uploads to $ANDROID_BUG_REPORT_ENDPOINT. PrintedWaste and OpenNOW maintainers may view the report text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, and a redacted diagnostic log.",
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "The automatic log removes account names, credentials, session IDs, and network addresses before upload.",
+                color = TextPrimary,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (includeTypedTextWarning) {
+                Text(
+                    "Your typed title and description are sent exactly as written, so do not include personal or sensitive information.",
+                    color = TextPrimary,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text(
+                "Your data is not sold and is used only to investigate and fix bugs.",
+                color = TextPrimary,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                "The same timestamped log available from Settings > Advanced > Debug Logs is attached automatically. No other files are added.",
+                color = TextMuted,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
+@Composable
 private fun StreamBugReporter(
     submission: BugReportSubmissionState,
     onSubmit: (String, String) -> Unit,
     onReset: () -> Unit,
     onButtonTone: () -> Unit,
+    initiallyExpanded: Boolean = false,
+    onExpandedClose: () -> Unit = {},
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var consentChecked by remember { mutableStateOf(false) }
-    var confirmationOpen by remember { mutableStateOf(false) }
+    var expanded by rememberSaveable(initiallyExpanded) { mutableStateOf(initiallyExpanded) }
+    var title by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var consentChecked by rememberSaveable { mutableStateOf(false) }
+    var confirmationOpen by rememberSaveable { mutableStateOf(false) }
 
     StreamPanelSection("Bug reporter") {
         if (!expanded) {
@@ -8115,6 +8254,7 @@ private fun StreamBugReporter(
                             onClick = {
                                 onButtonTone()
                                 expanded = false
+                                onExpandedClose()
                             },
                         ) {
                             Text("Close")
@@ -8144,53 +8284,17 @@ private fun StreamBugReporter(
                     onClick = {
                         onButtonTone()
                         expanded = false
+                        onExpandedClose()
                     },
                 ) {
                     Text("Cancel")
                 }
             }
 
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = Color(0xffffc266).copy(alpha = 0.10f),
-                contentColor = TextPrimary,
-                border = BorderStroke(1.dp, Color(0xffffc266).copy(alpha = 0.38f)),
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(7.dp),
-                ) {
-                    Text(
-                        "Before you send",
-                        color = Color(0xffffc266),
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                    Text(
-                        "This uploads to https://api.printedwaste.com/releases/opennow/bug-reports. PrintedWaste and OpenNOW maintainers may view your issue text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, and a redacted diagnostic log.",
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        "The automatic log removes account names, credentials, session IDs, and network addresses before upload. Your typed title and description are sent exactly as written, so do not include personal or sensitive information.",
-                        color = TextPrimary,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        "Your data is not sold and is used only to investigate and fix bugs.",
-                        color = TextPrimary,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        "The same timestamped log available from Settings > Advanced > Debug Logs is attached automatically. No other files are added.",
-                        color = TextMuted,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-            }
+            BugReportDataDisclosure(
+                title = "Before you send",
+                includeTypedTextWarning = true,
+            )
 
             OutlinedTextField(
                 value = title,
@@ -8832,41 +8936,379 @@ private fun StreamStatsPill(
 @Composable
 private fun ActiveStreamModePill(
     status: ActiveStreamModeStatus,
+    recoveryReason: String?,
+    bugReportSubmission: BugReportSubmissionState,
+    onBugReportSubmit: (String, String) -> Unit,
+    onBugReportReset: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val modeLabel = when (status.resolutionSource) {
-        StreamResolutionChangeSource.ServerNegotiatedFallback ->
-            "Server ${formatRuntimeResolution(status.displayedResolution)}"
-        StreamResolutionChangeSource.ProviderOrGameModeChange ->
-            "Stream ${formatRuntimeResolution(status.displayedResolution)}"
-        null -> null
+    val changes = remember(status) { activeStreamModeDisplayChanges(status) }
+    if (changes.isEmpty()) return
+    val causeAssessment = remember(status, recoveryReason) {
+        activeStreamModeCauseAssessment(status, recoveryReason)
     }
-    val recoveryLabel = if (status.safeVideoRecoveryActive) {
-        "Recovery ${status.transportCodec.name}"
-    } else {
-        null
+    val developerReport = remember(status, recoveryReason) {
+        activeStreamModeDeveloperReport(status, recoveryReason)
     }
-    val text = buildList {
-        modeLabel?.let(::add)
-        add("Requested ${formatRuntimeResolution(status.requestedResolution)}")
-        recoveryLabel?.let(::add)
-    }.joinToString(" • ")
-    Surface(
+    val headline = changes.first().let { "${it.label} ${it.requestedValue} → ${it.actualValue}" }
+    val noticeKey = remember(changes, recoveryReason) {
+        changes.joinToString("|") { "${it.label}:${it.requestedValue}:${it.actualValue}" } +
+            "|${recoveryReason.orEmpty()}"
+    }
+    var noticeVisible by remember(noticeKey) { mutableStateOf(true) }
+    var detailsOpen by remember(noticeKey) { mutableStateOf(false) }
+    var reportConfirmationOpen by remember(noticeKey) { mutableStateOf(false) }
+
+    LaunchedEffect(noticeKey) {
+        noticeVisible = true
+        delay(ACTIVE_STREAM_MODE_NOTICE_DURATION_MS)
+        noticeVisible = false
+    }
+
+    AnimatedVisibility(
+        visible = noticeVisible,
         modifier = modifier.padding(horizontal = 8.dp),
-        shape = RoundedCornerShape(999.dp),
-        color = Color(0xff4a2f0b).copy(alpha = 0.88f),
-        tonalElevation = 0.dp,
+        enter = fadeIn(),
+        exit = fadeOut(),
     ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-            color = Color(0xffffd38a),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Surface(
+            modifier = Modifier
+                .semantics { contentDescription = "$headline. Tap for details." }
+                .clickable {
+                    if (!bugReportSubmission.uploading) onBugReportReset()
+                    detailsOpen = true
+                }
+                .focusable(),
+            shape = RoundedCornerShape(999.dp),
+            color = Color(0xff4a2f0b).copy(alpha = 0.88f),
+            tonalElevation = 0.dp,
+        ) {
+            Text(
+                text = headline,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                color = Color(0xffffd38a),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+
+    if (detailsOpen) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!bugReportSubmission.uploading) detailsOpen = false
+            },
+            title = { Text("Stream profile changed") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xffffc266).copy(alpha = 0.10f),
+                        contentColor = TextPrimary,
+                        border = BorderStroke(1.dp, Color(0xffffc266).copy(alpha = 0.32f)),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = "Why it happened",
+                                color = Color(0xffffc266),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = causeAssessment.summary,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        changes.forEach { change ->
+                            Column {
+                                Text(
+                                    text = change.label,
+                                    color = TextMuted,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                                Text(
+                                    text = "${change.requestedValue} → ${change.actualValue}",
+                                    color = TextPrimary,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                    }
+                    when {
+                        bugReportSubmission.uploading -> Text(
+                            text = "Sending the report and redacted diagnostics…",
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        bugReportSubmission.submitted -> Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = Green.copy(alpha = 0.12f),
+                            contentColor = Green,
+                        ) {
+                            Text(
+                                text = bugReportSubmission.reference?.let { "Sent to developer • Reference $it" }
+                                    ?: "Sent to developer",
+                                modifier = Modifier.padding(10.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        bugReportSubmission.error != null -> Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ) {
+                            Text(
+                                text = bugReportSubmission.error,
+                                modifier = Modifier.padding(10.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Your saved stream settings were not changed.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                when {
+                    bugReportSubmission.uploading -> Button(
+                        enabled = false,
+                        onClick = {},
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Sending…")
+                    }
+                    bugReportSubmission.submitted -> TextButton(onClick = { detailsOpen = false }) {
+                        Text("Done")
+                    }
+                    else -> Button(
+                        onClick = {
+                            onBugReportReset()
+                            detailsOpen = false
+                            reportConfirmationOpen = true
+                        },
+                    ) {
+                        Text(if (bugReportSubmission.error == null) "Send to developer" else "Try again")
+                    }
+                }
+            },
+            dismissButton = {
+                if (!bugReportSubmission.uploading && !bugReportSubmission.submitted) {
+                    TextButton(onClick = { detailsOpen = false }) {
+                        Text("Close")
+                    }
+                }
+            },
         )
     }
+
+    if (reportConfirmationOpen) {
+        AlertDialog(
+            onDismissRequest = {
+                reportConfirmationOpen = false
+                detailsOpen = true
+            },
+            title = { Text("Send stream diagnostics?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "This sends the profile-change summary and likely cause to PrintedWaste and OpenNOW maintainers so they can investigate it.",
+                    )
+                    BugReportDataDisclosure(
+                        title = "Your device information will also be sent",
+                        includeTypedTextWarning = false,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        reportConfirmationOpen = false
+                        onBugReportSubmit(developerReport.title, developerReport.description)
+                        detailsOpen = true
+                    },
+                ) {
+                    Text("Send diagnostics")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        reportConfirmationOpen = false
+                        detailsOpen = true
+                    },
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+}
+
+internal data class ActiveStreamModeDisplayChange(
+    val label: String,
+    val requestedValue: String,
+    val actualValue: String,
+)
+
+internal fun activeStreamModeDisplayChanges(status: ActiveStreamModeStatus): List<ActiveStreamModeDisplayChange> {
+    val requested = status.requestedProfile
+    val actual = status.transportProfile
+    return buildList {
+        if (status.requestedResolution != status.displayedResolution) {
+            add(
+                ActiveStreamModeDisplayChange(
+                    label = "Resolution",
+                    requestedValue = formatRuntimeResolution(status.requestedResolution),
+                    actualValue = formatRuntimeResolution(status.displayedResolution),
+                ),
+            )
+        }
+        if (requested.codec != actual.codec) {
+            add(ActiveStreamModeDisplayChange("Codec", requested.codec.name, actual.codec.name))
+        }
+        if (requested.fps != actual.fps) {
+            add(ActiveStreamModeDisplayChange("FPS", requested.fps.toString(), actual.fps.toString()))
+        }
+        if (requested.maxBitrateMbps != actual.maxBitrateMbps) {
+            add(
+                ActiveStreamModeDisplayChange(
+                    "Bitrate",
+                    "${requested.maxBitrateMbps} Mbps",
+                    "${actual.maxBitrateMbps} Mbps",
+                ),
+            )
+        }
+        if (requested.hdrEnabled != actual.hdrEnabled) {
+            add(ActiveStreamModeDisplayChange("HDR", requested.hdrEnabled.onOffLabel(), actual.hdrEnabled.onOffLabel()))
+        }
+        if (requested.colorQuality != actual.colorQuality) {
+            add(ActiveStreamModeDisplayChange("Color", requested.colorQuality.label, actual.colorQuality.label))
+        }
+        if (requested.enableCloudGsync != actual.enableCloudGsync) {
+            add(
+                ActiveStreamModeDisplayChange(
+                    "Cloud G-Sync",
+                    requested.enableCloudGsync.onOffLabel(),
+                    actual.enableCloudGsync.onOffLabel(),
+                ),
+            )
+        }
+        if (requested.enableL4S != actual.enableL4S) {
+            add(ActiveStreamModeDisplayChange("L4S", requested.enableL4S.onOffLabel(), actual.enableL4S.onOffLabel()))
+        }
+        if (requested.streamSharpeningEnabled != actual.streamSharpeningEnabled) {
+            add(
+                ActiveStreamModeDisplayChange(
+                    "Sharpening",
+                    requested.streamSharpeningEnabled.onOffLabel(),
+                    actual.streamSharpeningEnabled.onOffLabel(),
+                ),
+            )
+        }
+    }
+}
+
+private fun Boolean.onOffLabel(): String = if (this) "On" else "Off"
+
+internal data class ActiveStreamModeCauseAssessment(
+    val summary: String,
+)
+
+internal fun activeStreamModeCauseAssessment(
+    status: ActiveStreamModeStatus,
+    recoveryReason: String?,
+): ActiveStreamModeCauseAssessment {
+    val requestedCodec = status.requestedProfile.codec.name
+    val actualCodec = status.transportProfile.codec.name
+    val primaryChange = activeStreamModeDisplayChanges(status).firstOrNull()
+    val saferProfileSummary = primaryChange?.let {
+        "a safer profile (${it.label} ${it.requestedValue} to ${it.actualValue})"
+    } ?: "a safer live profile"
+    val recordedReason = recoveryReason?.trim()?.takeIf(String::isNotEmpty)
+    val lowerReason = recordedReason?.lowercase(Locale.US).orEmpty()
+    val summary = when {
+        "did not negotiate" in lowerReason ->
+            "WebRTC could not negotiate the requested $requestedCodec codec for this connection, so OpenNOW retried the local video transport with $actualCodec."
+        "video offer" in lowerReason ->
+            "The session did not provide a video offer before the startup timeout, so OpenNOW retried the local video transport with $actualCodec."
+        "no frame rendered" in lowerReason || "first video frame" in lowerReason ->
+            "Video data arrived, but the device did not render a frame before the recovery timeout. OpenNOW applied $saferProfileSummary to restore video."
+        "decoder stalled" in lowerReason || "media stall" in lowerReason ->
+            "The device decoder stopped producing video frames during startup. OpenNOW applied $saferProfileSummary while keeping the same cloud session."
+        "decoded at" in lowerReason ->
+            "The decoder produced an unexpected output size for the requested stream mode, so OpenNOW tried the $actualCodec transport profile. Recorded detail: $recordedReason"
+        status.resolutionSource == StreamResolutionChangeSource.ServerNegotiatedFallback ->
+            "The cloud server selected ${status.displayedResolution} instead of the requested ${status.requestedResolution}. This was a server/session negotiation decision, not a change to your saved setting."
+        status.resolutionSource == StreamResolutionChangeSource.ProviderOrGameModeChange ->
+            "The decoded stream changed to ${status.displayedResolution} after startup without matching the server's initial mode. This points to a game or cloud-provider output-mode change."
+        recordedReason != null ->
+            "OpenNOW recorded this recovery reason: $recordedReason"
+        status.safeVideoRecoveryActive ->
+            "The original video transport stopped progressing, so OpenNOW adjusted the local profile to keep video playing without ending the cloud session."
+        else ->
+            "The live stream profile no longer matched the requested profile."
+    }
+    return ActiveStreamModeCauseAssessment(summary)
+}
+
+internal data class ActiveStreamModeDeveloperReport(
+    val title: String,
+    val description: String,
+)
+
+internal fun activeStreamModeDeveloperReport(
+    status: ActiveStreamModeStatus,
+    recoveryReason: String?,
+): ActiveStreamModeDeveloperReport {
+    val changes = activeStreamModeDisplayChanges(status)
+    val primary = changes.first()
+    val cause = activeStreamModeCauseAssessment(status, recoveryReason)
+    return ActiveStreamModeDeveloperReport(
+        title = "Automatic stream change: ${primary.label} ${primary.requestedValue} to ${primary.actualValue}",
+        description = buildString {
+            appendLine("OpenNOW detected an automatic stream profile change while the session was active.")
+            appendLine()
+            appendLine("Cause assessment:")
+            appendLine(cause.summary)
+            appendLine()
+            appendLine("Requested to actual changes:")
+            changes.forEach { change ->
+                appendLine("- ${change.label}: ${change.requestedValue} -> ${change.actualValue}")
+            }
+            recoveryReason?.trim()?.takeIf(String::isNotEmpty)?.let { reason ->
+                appendLine()
+                appendLine("Recorded recovery event:")
+                appendLine(reason)
+            }
+            appendLine()
+            append("Sent from the in-stream profile-change notice. The user's saved stream settings were not changed.")
+        },
+    )
 }
 
 @Composable

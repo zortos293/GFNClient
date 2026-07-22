@@ -287,7 +287,7 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun reservesBackForStreamControlsWithoutTakingControllerButtonsOnMobile() {
+    fun reservesRemoteBackForStreamControlsWithoutTakingControllerSelect() {
         assertTrue(
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
@@ -300,14 +300,6 @@ class InputEncoderGamepadTest {
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = true,
                 hardwareKeyboardSource = false,
-            ),
-        )
-        assertTrue(
-            NativeStreamInputRouter.shouldHandleStreamExitKey(
-                KeyEvent.KEYCODE_BACK,
-                controllerInputDevice = true,
-                hardwareKeyboardSource = false,
-                androidTvProfile = true,
             ),
         )
         assertFalse(

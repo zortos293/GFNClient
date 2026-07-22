@@ -1,10 +1,117 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamLivenessWatchdogTest {
+    @Test
+    fun catastrophic1440pAv1FirstFrameRetriesH265OnlyOnce() {
+        assertEquals(
+            CatastrophicResolutionRecoveryStep.RetryWithH265,
+            catastrophicFirstDecodedResolutionRecoveryStep(
+                transportCodec = VideoCodec.AV1,
+                expectedResolution = "2560x1440",
+                decodedResolution = "320x180",
+                completedCodecFallbacks = 0,
+            ),
+        )
+        assertEquals(
+            CatastrophicResolutionRecoveryStep.None,
+            catastrophicFirstDecodedResolutionRecoveryStep(
+                transportCodec = VideoCodec.AV1,
+                expectedResolution = "2560x1440",
+                decodedResolution = "320x180",
+                completedCodecFallbacks = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun stable1440pH265DoesNotTriggerResolutionRecovery() {
+        assertEquals(
+            CatastrophicResolutionRecoveryStep.None,
+            catastrophicFirstDecodedResolutionRecoveryStep(
+                transportCodec = VideoCodec.H265,
+                expectedResolution = "2560x1440",
+                decodedResolution = "2560x1440",
+                completedCodecFallbacks = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun legitimatelyRequested320x180DoesNotTriggerResolutionRecovery() {
+        assertEquals(
+            CatastrophicResolutionRecoveryStep.None,
+            catastrophicFirstDecodedResolutionRecoveryStep(
+                transportCodec = VideoCodec.AV1,
+                expectedResolution = "320x180",
+                decodedResolution = "320x180",
+                completedCodecFallbacks = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun ordinaryProviderModeChangeDoesNotTriggerResolutionRecovery() {
+        assertEquals(
+            CatastrophicResolutionRecoveryStep.None,
+            catastrophicFirstDecodedResolutionRecoveryStep(
+                transportCodec = VideoCodec.AV1,
+                expectedResolution = "2560x1440",
+                decodedResolution = "1920x1080",
+                completedCodecFallbacks = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun failedH265RecoveryGetsOneFinalH264AttemptWithoutLooping() {
+        assertEquals(
+            CatastrophicResolutionRecoveryStep.RetryWithH264,
+            catastrophicFirstDecodedResolutionRecoveryStep(
+                transportCodec = VideoCodec.H265,
+                expectedResolution = "2560x1440",
+                decodedResolution = "320x180",
+                completedCodecFallbacks = 1,
+            ),
+        )
+        assertEquals(
+            CatastrophicResolutionRecoveryStep.None,
+            catastrophicFirstDecodedResolutionRecoveryStep(
+                transportCodec = VideoCodec.H264,
+                expectedResolution = "2560x1440",
+                decodedResolution = "320x180",
+                completedCodecFallbacks = 2,
+            ),
+        )
+    }
+
+    @Test
+    fun catastrophicCodecRecoveryPreservesRequested1440pGeometry() {
+        val requested = StreamSettings(
+            resolution = "2560x1440",
+            aspectRatio = "16:9",
+            fps = 60,
+            codec = VideoCodec.AV1,
+        )
+        val h265 = requested.forCatastrophicResolutionRecovery(
+            CatastrophicResolutionRecoveryStep.RetryWithH265,
+        )
+        val h264 = h265?.forCatastrophicResolutionRecovery(
+            CatastrophicResolutionRecoveryStep.RetryWithH264,
+        )
+
+        assertEquals("2560x1440", h265?.resolution)
+        assertEquals("16:9", h265?.aspectRatio)
+        assertEquals(VideoCodec.H265, h265?.codec)
+        assertEquals("2560x1440", h264?.resolution)
+        assertEquals("16:9", h264?.aspectRatio)
+        assertEquals(VideoCodec.H264, h264?.codec)
+    }
+
     @Test
     fun advancedCodecRestartWaitsForDecoderReleaseAfterStablePlayback() {
         assertEquals(180L, advancedCodecRestartSettleDelayMs(VideoCodec.AV1, hadStableMedia = true))
@@ -52,6 +159,24 @@ class StreamLivenessWatchdogTest {
                 transportHasStableMedia = false,
                 reconnectAttempts = 2,
                 safeVideoFallbackApplied = true,
+            ),
+        )
+    }
+
+    @Test
+    fun networkTransportRetriesPreserveTheRequestedCodec() {
+        assertFalse(
+            transportRestartShouldApplySafeVideoFallback(
+                videoFailure = false,
+                reconnectAttempts = 1,
+                transportHasStableMedia = false,
+            ),
+        )
+        assertTrue(
+            transportRestartShouldApplySafeVideoFallback(
+                videoFailure = true,
+                reconnectAttempts = 1,
+                transportHasStableMedia = false,
             ),
         )
     }

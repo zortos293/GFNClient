@@ -78,6 +78,22 @@ class DisplayRefreshRateTest {
     }
 
     @Test
+    fun selects360HzModeForUltimateStream() {
+        val selected = selectStreamDisplayMode(
+            supportedModes = listOf(
+                mode(id = 1, refreshRate = 120f),
+                mode(id = 2, refreshRate = 240f),
+                mode(id = 3, refreshRate = 360f),
+            ),
+            currentMode = mode(id = 1, refreshRate = 120f),
+            requestedFps = 360,
+        )
+
+        assertEquals(3, selected?.id)
+        assertEquals(360f, normalizedStreamDisplayFps(360))
+    }
+
+    @Test
     fun prefersCurrentPhysicalResolutionWhenModesIncludeMultipleSizes() {
         val selected = selectStreamDisplayMode(
             supportedModes = listOf(

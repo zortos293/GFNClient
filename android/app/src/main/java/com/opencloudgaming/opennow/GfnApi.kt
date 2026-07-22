@@ -264,12 +264,11 @@ private fun webRtcSessionMetadata(
 ): JsonArray = buildJsonArray {
     baseWebRtcSessionMetadata().forEach { add(it) }
     val requestedResolution = profile.width to profile.height
-    // The desktop client describes the requested stream viewport here. Sending a
-    // differently shaped Android panel (for example 2688x1216 for a 1680x720
-    // request) can make CloudMatch provision a different VM monitor mode even
-    // though clientRequestMonitorSettings is correct.
     val (physicalWidth, physicalHeight) = physicalDisplayResolution
-        ?.takeIf { it == requestedResolution }
+        ?.takeIf { (width, height) ->
+            width > 0 && height > 0 &&
+                width >= requestedResolution.first && height >= requestedResolution.second
+        }
         ?: requestedResolution
     if (physicalWidth > 0 && physicalHeight > 0) {
         add(

@@ -13,12 +13,19 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.Locale
 
-class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder {
+class LowLatencyVideoDecoder(
+    private val delegate: VideoDecoder,
+    private val requestedFps: Int,
+    private val lowLatencyEnabled: Boolean,
+) : VideoDecoder {
 
     private var patched = false
 
     override fun initDecode(settings: VideoDecoder.Settings?, decodeCallback: VideoDecoder.Callback?): VideoCodecStatus {
-        NativeInputDiagnostics.add("LowLatencyVideoDecoder initDecode called on delegate class ${delegate.javaClass.name}")
+        NativeInputDiagnostics.add(
+            "MediaCodecVideoDecoder initDecode delegate=${delegate.javaClass.name} " +
+                "requestedFps=$requestedFps lowLatency=$lowLatencyEnabled",
+        )
         patchMediaCodecWrapperFactory()
         return delegate.initDecode(settings, decodeCallback)
     }
@@ -32,7 +39,8 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
     }
 
     override fun getImplementationName(): String {
-        return delegate.implementationName + "+opennow-low-latency"
+        val suffix = if (lowLatencyEnabled) "low-latency" else "performance"
+        return delegate.implementationName + "+opennow-$suffix"
     }
 
     private fun patchMediaCodecWrapperFactory() {
@@ -63,7 +71,11 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
             val proxyFactory = Proxy.newProxyInstance(
                 factoryInterface.classLoader,
                 arrayOf(factoryInterface),
-                MediaCodecWrapperFactoryHandler(originalFactory)
+                MediaCodecWrapperFactoryHandler(
+                    delegateFactory = originalFactory,
+                    requestedFps = requestedFps,
+                    lowLatencyEnabled = lowLatencyEnabled,
+                )
             )
             factoryField.set(delegate, proxyFactory)
             val msg = "Successfully patched MediaCodecWrapperFactory on ${delegate.javaClass.name}"
@@ -91,7 +103,11 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
         return null
     }
 
-    private class MediaCodecWrapperFactoryHandler(private val delegateFactory: Any) : InvocationHandler {
+    private class MediaCodecWrapperFactoryHandler(
+        private val delegateFactory: Any,
+        private val requestedFps: Int,
+        private val lowLatencyEnabled: Boolean,
+    ) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
             val originalCodecName = if ("createByCodecName" == method.name && args != null && args.isNotEmpty() && args[0] is String) {
                 args[0] as String
@@ -99,7 +115,7 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
                 ""
             }
 
-            val modifiedCodecName = if (originalCodecName.isNotEmpty()) {
+            val modifiedCodecName = if (lowLatencyEnabled && originalCodecName.isNotEmpty()) {
                 getLowLatencyCodecNameIfApplicable(originalCodecName)
             } else {
                 originalCodecName
@@ -140,21 +156,35 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
             return Proxy.newProxyInstance(
                 codecWrapperInterface.classLoader,
                 arrayOf(codecWrapperInterface),
-                MediaCodecWrapperHandler(result, codecName)
+                MediaCodecWrapperHandler(
+                    delegateCodec = result,
+                    codecName = codecName,
+                    requestedFps = requestedFps,
+                    lowLatencyEnabled = lowLatencyEnabled,
+                )
             )
         }
     }
 
-    private class MediaCodecWrapperHandler(private val delegateCodec: Any, private val codecName: String) : InvocationHandler {
+    private class MediaCodecWrapperHandler(
+        private val delegateCodec: Any,
+        private val codecName: String,
+        private val requestedFps: Int,
+        private val lowLatencyEnabled: Boolean,
+    ) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
             if ("configure" == method.name && args != null && args.isNotEmpty() && args[0] is MediaFormat) {
                 val format = args[0] as MediaFormat
-                NativeInputDiagnostics.add("LowLatencyVideoDecoder: Intercepted configure() for codec=$codecName. Format before: $format")
-                applyLowLatencyFormat(format, codecName)
-                NativeInputDiagnostics.add("LowLatencyVideoDecoder: Format after: $format")
+                NativeInputDiagnostics.add(
+                    "MediaCodecVideoDecoder: configure codec=$codecName requestedFps=$requestedFps " +
+                        "lowLatency=$lowLatencyEnabled before=$format",
+                )
+                applyDecoderPerformanceFormat(format, requestedFps, lowLatencyEnabled)
+                if (lowLatencyEnabled) applyLowLatencyFormat(format, codecName)
+                NativeInputDiagnostics.add("MediaCodecVideoDecoder: configured format=$format")
             }
             val result = invokeDelegate(delegateCodec, method, args)
-            if ("start" == method.name) {
+            if ("start" == method.name && lowLatencyEnabled) {
                 NativeInputDiagnostics.add("LowLatencyVideoDecoder: Intercepted start() for codec=$codecName")
                 applyLowLatencyParameters(delegateCodec)
             }
@@ -165,6 +195,25 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
     companion object {
         private const val TAG = "LowLatencyDecoder"
         private const val OPERATING_RATE = 0x7FFF
+
+        private fun applyDecoderPerformanceFormat(
+            format: MediaFormat,
+            requestedFps: Int,
+            lowLatencyEnabled: Boolean,
+        ) {
+            val exactTargetFps = mediaCodecPerformanceTargetFps(requestedFps)
+            if (exactTargetFps != null) {
+                putInt(format, MediaFormat.KEY_FRAME_RATE, exactTargetFps)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && (exactTargetFps != null || lowLatencyEnabled)) {
+                putInt(format, MediaFormat.KEY_PRIORITY, 0)
+                putInt(
+                    format,
+                    MediaFormat.KEY_OPERATING_RATE,
+                    if (lowLatencyEnabled) OPERATING_RATE else exactTargetFps!!,
+                )
+            }
+        }
 
         private fun findInterface(clazz: Class<*>?, interfaceName: String): Class<*>? {
             var current = clazz
@@ -200,11 +249,6 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
 
         private fun applyLowLatencyFormat(format: MediaFormat, codecName: String) {
             putInt(format, "low-latency", 1)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                putInt(format, "priority", 0)
-                putInt(format, "operating-rate", OPERATING_RATE)
-            }
 
             putInt(format, "allow-frame-drop", 1)
             putInt(format, "vdec-lowlatency", 1)
@@ -327,7 +371,7 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
                 bundle.putInt("vendor.mtk.dec.lowlatency", 1)
                 bundle.putInt("vendor.mtk.dec.low-latency", 1)
                 bundle.putInt("vendor.mtk.ext.dec.lowlatency.enable", 1)
-                
+
                 mediaCodec.setParameters(bundle)
                 Log.i(TAG, "LowLatencyVideoDecoder: Successfully set MediaCodec parameters: $bundle")
                 NativeInputDiagnostics.add("LowLatencyVideoDecoder: Successfully set MediaCodec parameters: $bundle")
@@ -351,3 +395,6 @@ class LowLatencyVideoDecoder(private val delegate: VideoDecoder) : VideoDecoder 
         }
     }
 }
+
+internal fun mediaCodecPerformanceTargetFps(requestedFps: Int): Int? =
+    requestedFps.takeIf { it >= 60 }

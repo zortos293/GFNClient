@@ -146,7 +146,7 @@ class GfnApiTest {
                 assertEquals("$resolution $codec width", pixels.first, monitor.getValue("widthInPixels").jsonPrimitive.int)
                 assertEquals("$resolution $codec height", pixels.second, monitor.getValue("heightInPixels").jsonPrimitive.int)
                 assertEquals("$resolution $codec fps", 60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
-                assertEquals("$resolution $codec bit depth", if (codec == VideoCodec.H264) 0 else 10, features.getValue("bitDepth").jsonPrimitive.int)
+                assertEquals("$resolution $codec bit depth", if (codec == VideoCodec.H265) 10 else 0, features.getValue("bitDepth").jsonPrimitive.int)
                 assertEquals(false, features.getValue("reflex").jsonPrimitive.boolean)
                 assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
                 assertEquals(0, monitor.getValue("positionX").jsonPrimitive.int)
@@ -159,7 +159,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun ultrawideMetadataUsesRequestedViewportInsteadOfDifferentPanelGeometry() {
+    fun ultrawideMetadataKeepsPhysicalDisplaySeparateFromStreamResolution() {
         val settings = StreamSettings(
             resolution = "1680x720",
             aspectRatio = "21:9",
@@ -198,12 +198,12 @@ class GfnApiTest {
         assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(1, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
         assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
-        assertEquals(1680, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
-        assertEquals(720, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+        assertEquals(1920, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
+        assertEquals(1080, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
     }
 
     @Test
-    fun larger4kPanelDoesNotOverrideRequested1440pViewportMetadata() {
+    fun larger4kPanelRemainsPhysicalMetadataForRequested1440pViewport() {
         val settings = StreamSettings(
             resolution = "2560x1440",
             aspectRatio = "16:9",
@@ -228,8 +228,8 @@ class GfnApiTest {
             }
             .let { OpenNowJson.parseToJsonElement(it).jsonObject }
 
-        assertEquals(2560, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
-        assertEquals(1440, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
+        assertEquals(3840, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
+        assertEquals(2160, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
     }
 
     @Test
@@ -416,11 +416,11 @@ class GfnApiTest {
     }
 
     @Test
-    fun claimRequestCarriesRequested240FpsMonitorSetting() {
+    fun claimRequestCarriesRequested360FpsMonitorSetting() {
         val settings = StreamSettings(
             resolution = "1920x1080",
             aspectRatio = "16:9",
-            fps = 240,
+            fps = 360,
             maxBitrateMbps = 75,
             codec = VideoCodec.AV1,
             colorQuality = ColorQuality.EightBit420,
@@ -432,7 +432,7 @@ class GfnApiTest {
             .getValue("clientRequestMonitorSettings").jsonArray
             .single().jsonObject
 
-        assertEquals(240, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+        assertEquals(360, monitor.getValue("framesPerSecond").jsonPrimitive.int)
     }
 
     @Test
@@ -456,6 +456,35 @@ class GfnApiTest {
 
         assertEquals(0, features.getValue("chromaFormat").jsonPrimitive.int)
         assertTrue(signature?.contains("color=EightBit420") == true)
+    }
+
+    @Test
+    fun claimRequestDoesNotAdvertiseAv1TenBitOrHdr() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            codec = VideoCodec.AV1,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+        )
+
+        val sessionRequestData = buildMinimalClaimRequestBody("123", "device", settings)
+            .getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData
+            .getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+        val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
+        val signature = sessionRequestData.getValue("metaData").jsonArray.firstNotNullOfOrNull { item ->
+            item.jsonObject.takeIf {
+                it["key"]?.jsonPrimitive?.contentOrNull == OPENNOW_STREAM_SETTINGS_METADATA_KEY
+            }?.get("value")?.jsonPrimitive?.contentOrNull
+        }
+
+        assertEquals(0, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(JsonNull, monitor.getValue("displayData"))
+        assertEquals(0, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(false, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(0, features.getValue("hdrColorSpace").jsonPrimitive.int)
+        assertEquals(JsonNull, sessionRequestData.getValue("clientDisplayHdrCapabilities"))
+        assertTrue(signature?.contains("codec=AV1;color=EightBit420;hdr=0") == true)
     }
 
     @Test

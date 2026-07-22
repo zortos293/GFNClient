@@ -110,7 +110,7 @@ private enum class SettingsCategory(
     Input("Input", "Microphone, mouse, keyboard, touch controls, rumble", R.drawable.ic_tab_library),
     Interface("Interface", "Color, cards, stats, controller UI", R.drawable.ic_tab_store),
     Account("Account", "Sign-in, storage, connected stores", R.drawable.ic_tab_store),
-    Advanced("Advanced", "Diagnostics, debug logs, advanced tools", R.drawable.ic_search),
+    Advanced("Advanced", "Experimental streaming, diagnostics, debug logs", R.drawable.ic_search),
     About("About", "Version, credits, and support", R.drawable.ic_tab_settings),
 }
 
@@ -461,7 +461,7 @@ private fun SettingsContent(
                     )
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "l4s", "cloud g-sync", "vrr", "native streamer", "low latency", "native decoder", "decoder") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "native streamer", "low latency", "native decoder", "decoder") {
                 val fallbackMembershipTier = state.authSession?.user?.membershipTier
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_stream_preset),
@@ -556,6 +556,7 @@ private fun SettingsContent(
                 }
                 val comingSoonLabel = stringResource(R.string.option_coming_soon)
                 val unavailableLabel = "Unavailable"
+                val h264H265OnlyLabel = stringResource(R.string.settings_av1_ten_bit_badge)
                 val settingsAvailableStream = settings.stream.withAndroidSettingsAvailability()
                 val effectiveCodec = settingsAvailableStream.adjustedForDevice(state.codecReport).codec
                 ChoiceMenuRow(
@@ -584,9 +585,19 @@ private fun SettingsContent(
                     } else {
                         "${settings.stream.codec.name} -> ${effectiveCodec.name}"
                     },
-                ) {
+                ) { value ->
+                    val selectedCodec = VideoCodec.valueOf(value)
+                    val downgradedTenBit = selectedCodec == VideoCodec.AV1 &&
+                        settings.stream.usesTenBitStreamProfile()
                     viewModel.updateStreamSettings { s ->
-                        s.copy(codec = VideoCodec.valueOf(it)).withCodecColorCompatibility()
+                        s.copy(codec = selectedCodec).withCodecColorCompatibility()
+                    }
+                    if (downgradedTenBit) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.settings_av1_ten_bit_downgraded),
+                            Toast.LENGTH_LONG,
+                        ).show()
                     }
                 }
                 val effectiveColorQuality = settingsAvailableStream.withCodecColorCompatibility().colorQuality
@@ -598,7 +609,11 @@ private fun SettingsContent(
                             value = quality.name,
                             label = quality.label,
                             enabled = available,
-                            badge = if (available) null else comingSoonLabel,
+                            badge = when {
+                                available -> null
+                                settingsAvailableStream.codec == VideoCodec.AV1 && quality == ColorQuality.TenBit420 -> h264H265OnlyLabel
+                                else -> comingSoonLabel
+                            },
                         )
                     },
                     selectedLabel = if (effectiveColorQuality == settings.stream.colorQuality) {
@@ -611,7 +626,15 @@ private fun SettingsContent(
                         s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()
                     }
                 }
-                val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier)
+                if (settingsAvailableStream.codec == VideoCodec.AV1) {
+                    Text(
+                        stringResource(R.string.settings_av1_ten_bit_hint),
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier) &&
+                    settingsAvailableStream.codec != VideoCodec.AV1
                 SettingSwitch(
                     stringResource(R.string.settings_hdr),
                     settings.stream.hdrEnabled && hdrAvailable,
@@ -657,20 +680,6 @@ private fun SettingsContent(
                         label = { Text(stringResource(R.string.settings_session_proxy_url)) },
                         placeholder = { Text("http://127.0.0.1:8080") },
                     )
-                }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_l4s),
-                    checked = settings.stream.enableL4S,
-                    description = stringResource(R.string.settings_l4s_desc),
-                ) {
-                    viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) }
-                }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_cloud_gsync),
-                    checked = settings.stream.enableCloudGsync,
-                    description = stringResource(R.string.settings_cloud_gsync_desc),
-                ) {
-                    viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) }
                 }
                 SettingSwitch(
                     label = stringResource(R.string.settings_native_streamer),
@@ -845,6 +854,27 @@ private fun SettingsContent(
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Account, searchQuery, "Account", "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription") {
                 AccountSettingsPanel(state = state, viewModel = viewModel)
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "l4s", "cloud g-sync", "gsync", "vrr", "session", "launch", "failure") {
+                Text(
+                    stringResource(R.string.settings_experimental_streaming_warning),
+                    color = SettingsTextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                SettingSwitch(
+                    label = stringResource(R.string.settings_l4s),
+                    checked = settings.stream.enableL4S,
+                    description = stringResource(R.string.settings_l4s_desc),
+                ) {
+                    viewModel.updateStreamSettings { s -> s.copy(enableL4S = it) }
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_cloud_gsync),
+                    checked = settings.stream.enableCloudGsync,
+                    description = stringResource(R.string.settings_cloud_gsync_desc),
+                ) {
+                    viewModel.updateStreamSettings { s -> s.copy(enableCloudGsync = it) }
+                }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, "Codec Diagnostics", "codec", "diagnostics", "probe", "av1", "h264", "h265", "hevc", "decode") {
                     CodecDiagnosticsPanel(state.codecReport)

@@ -196,7 +196,7 @@ class SdpToolsTest {
 
         for ((resolution, aspectRatio, pixels) in modes) {
             for (codec in VideoCodec.entries) {
-                for (fps in listOf(60, 120, 240)) {
+                for (fps in listOf(60, 120, 240, 360)) {
                     val settings = StreamSettings(
                         resolution = resolution,
                         aspectRatio = aspectRatio,
@@ -244,10 +244,10 @@ class SdpToolsTest {
     }
 
     @Test
-    fun nvstSdpCarriesRequested240FpsEstimate() {
+    fun nvstSdpCarriesRequested360FpsEstimate() {
         val nvst = SdpTools.buildNvstSdp(
             offerSdp = "a=ri.partialReliableThresholdMs:42",
-            settings = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 240, codec = VideoCodec.AV1),
+            settings = StreamSettings(resolution = "1920x1080", aspectRatio = "16:9", fps = 360, codec = VideoCodec.AV1),
             localAnswer = """
                 a=ice-ufrag:testUfrag
                 a=ice-pwd:testPassword
@@ -255,8 +255,28 @@ class SdpToolsTest {
             """.trimIndent(),
         )
 
-        assertTrue(nvst.contains("a=video.maxFPS:240"))
-        assertTrue(nvst.contains("a=vqos.maxStreamFpsEstimate:240"))
+        assertTrue(nvst.contains("a=video.maxFPS:360"))
+        assertTrue(nvst.contains("a=vqos.maxStreamFpsEstimate:360"))
+        assertTrue(nvst.contains("a=video.framePacing.mode:2"))
+        assertTrue(nvst.contains("a=video.framePacing.pid.minTargetFrameTimeUs:2638"))
+        assertTrue(nvst.contains("a=packetPacing.version:3"))
+        assertTrue(nvst.contains("a=packetPacing.enableAccurateSleep:1"))
+        assertTrue(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:3"))
+    }
+
+    @Test
+    fun nvstSdpUsesWideSplitEncodeFor1440p240Av1Only() {
+        val av1 = buildNvstSdp(
+            StreamSettings(resolution = "2560x1440", aspectRatio = "16:9", fps = 240, codec = VideoCodec.AV1),
+        )
+        val h265 = buildNvstSdp(
+            StreamSettings(resolution = "2560x1440", aspectRatio = "16:9", fps = 240, codec = VideoCodec.H265),
+        )
+
+        assertTrue(av1.contains("a=video.videoSplitEncodeStripsPerFrame:63"))
+        assertTrue(h265.contains("a=video.videoSplitEncodeStripsPerFrame:3"))
+        assertTrue(av1.contains("a=vqos.bllFec.enable:0"))
+        assertTrue(h265.contains("a=vqos.bllFec.enable:0"))
     }
 
     private fun buildNvstSdp(settings: StreamSettings): String =

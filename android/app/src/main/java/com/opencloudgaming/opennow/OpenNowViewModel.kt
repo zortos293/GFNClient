@@ -1417,6 +1417,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settingsStore.update { settings ->
             val presetStream = (if (preset == StreamPreset.Recommended) {
                 (deviceRecommendation ?: recommendedAndroidStreamProfile(getApplication(), snapshot.codecReport)).stream
+                    .withoutExperimentalTransportRequests()
             } else {
                 settings.stream.applyingStreamPreset(preset)
             }).withMicrophoneSettingsFrom(settings.stream)
@@ -2315,21 +2316,20 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         recordDebugEvent("native", "state=$message session=${state.value.streamSession?.shortDebugId().orEmpty()}")
     }
 
-    fun recordLocalSafeVideoFallback(reason: String) {
+    fun recordLocalVideoTransportFallback(reason: String, fallbackSettings: StreamSettings) {
         ensureSessionReportAccumulator()
         val currentSettings = state.value.activeStreamSettings ?: effectiveStreamSettings()
-        val safeSettings = currentSettings.androidSafeVideoFallback()
         _state.update { current ->
             if (current.streamSession == null || current.streamStatus == "idle") {
                 current
             } else {
-                current.copy(activeStreamSettings = safeSettings)
+                current.copy(activeStreamSettings = fallbackSettings)
             }
         }
-        streamSessionReportAccumulator?.recordRecovery(reason, safeSettings)
+        streamSessionReportAccumulator?.recordRecovery(reason, fallbackSettings)
         recordDebugEvent(
             "recovery",
-            "Restarted local transport with safe video profile while keeping cloud session reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} current=${currentSettings.debugSummary()} safe=${safeSettings.debugSummary()}",
+            "Restarted local transport with codec fallback while keeping cloud session reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} current=${currentSettings.debugSummary()} fallback=${fallbackSettings.debugSummary()}",
         )
     }
 
@@ -3375,11 +3375,13 @@ private fun StreamRuntimeStats.hasDebugValues(): Boolean =
     bitrateKbps != null ||
         pingMs != null ||
         fps != null ||
+        receivedFps != null ||
+        decodedFps != null ||
         !resolution.isNullOrBlank() ||
         !codec.isNullOrBlank()
 
 private fun StreamRuntimeStats.debugSummary(): String =
-    "bitrateKbps=${bitrateKbps ?: 0} pingMs=${pingMs ?: -1} fps=${fps ?: 0} resolution=${resolution.orEmpty()} codec=${codec.orEmpty()}"
+    "bitrateKbps=${bitrateKbps ?: 0} pingMs=${pingMs ?: -1} fps=${fps ?: 0} receivedFps=${receivedFps ?: 0} decodedFps=${decodedFps ?: 0} resolution=${resolution.orEmpty()} codec=${codec.orEmpty()}"
 
 private fun TimedStreamRuntimeStats.debugSummary(nowMs: Long): String {
     val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)

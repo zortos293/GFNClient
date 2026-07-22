@@ -250,17 +250,22 @@ class LowLatencyVideoDecoder(
         private fun applyLowLatencyFormat(format: MediaFormat, codecName: String) {
             putInt(format, "low-latency", 1)
 
+            val normalizedCodecName = codecName.lowercase(Locale.US)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                putInt(format, "priority", 0)
+                // Use Short.MAX_VALUE (0x7FFF) for non-Snapdragon decoders; for Qualcomm,
+                // forcing 32767 fps operating rate forces Adreno GPU/VPU clocks to maximum state,
+                // causing extreme power drain and overheating. Use 120 (or target FPS) instead.
+                val operatingRate = if (isQualcommDecoder(normalizedCodecName)) 120 else OPERATING_RATE
+                putInt(format, "operating-rate", operatingRate)
+            }
             putInt(format, "allow-frame-drop", 1)
             putInt(format, "vdec-lowlatency", 1)
             putInt(format, "vendor.low-latency.enable", 1)
 
-            val normalizedCodecName = codecName.lowercase(Locale.US)
             if (isQualcommDecoder(normalizedCodecName)) {
                 putInt(format, "vendor.qti-ext-dec-picture-order.enable", 1)
                 putInt(format, "vendor.qti-ext-dec-low-latency.enable", 1)
-                putInt(format, "vendor.qti-ext-output-sw-fence-enable.value", 1)
-                putInt(format, "vendor.qti-ext-output-fence.enable", 1)
-                putInt(format, "vendor.qti-ext-output-fence.fence_type", 1)
                 putInt(format, "vendor.rtc-ext-dec-low-latency.enable", 1)
             }
 

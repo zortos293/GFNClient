@@ -2327,9 +2327,9 @@ private class TouchMouseState {
 
                         if (idx != 0 || idy != 0) {
                             client.sendRawMouseMove(idx, idy)
-                            virtualCursorX = (virtualCursorX + idx).coerceIn(0f, streamWidth.toFloat())
-                            virtualCursorY = (virtualCursorY + idy).coerceIn(0f, streamHeight.toFloat())
                         }
+                        virtualCursorX = targetX
+                        virtualCursorY = targetY
 
                         client.setTouchMouseButton(true)
                     }
@@ -2354,9 +2354,9 @@ private class TouchMouseState {
 
                             if (idx != 0 || idy != 0) {
                                 client.sendRawMouseMove(idx, idy)
-                                virtualCursorX = (virtualCursorX + idx).coerceIn(0f, streamWidth.toFloat())
-                                virtualCursorY = (virtualCursorY + idy).coerceIn(0f, streamHeight.toFloat())
                             }
+                            virtualCursorX = targetX
+                            virtualCursorY = targetY
                         }
                     }
                     return true

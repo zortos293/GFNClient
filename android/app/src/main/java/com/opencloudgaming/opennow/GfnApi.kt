@@ -100,7 +100,7 @@ private object CloudMatchDesktopIdentity {
     // WebRTC is the transport, but CloudMatch uses the desktop/native identity and
     // monitor descriptor to allocate the full requested resolution and frame rate.
     const val PLATFORM_NAME = "windows"
-    const val APP_LAUNCH_MODE = 1
+    const val APP_LAUNCH_MODE = 2
     const val PERSIST_GAME_SETTINGS = true
     const val STREAMER = "NVIDIA-CLASSIC"
     const val CLIENT_TYPE = "NATIVE"

@@ -847,11 +847,17 @@ object NativeStreamInputRouter {
     }
 
     fun setStretchToFit(enabled: Boolean) {
-        stretchToFit = enabled
+        if (stretchToFit != enabled) {
+            stretchToFit = enabled
+            touchMouseState.reset(client)
+        }
     }
 
     fun setRenderingAspectRatio(ratio: Float) {
-        renderingAspectRatio = ratio
+        if (renderingAspectRatio != ratio) {
+            renderingAspectRatio = ratio
+            touchMouseState.reset(client)
+        }
     }
 
     fun setCaptureAllTouch(enabled: Boolean) {
@@ -2230,6 +2236,8 @@ private class TouchMouseState {
     private var virtualCursorInitialized = false
     private var lastStreamWidth = 0
     private var lastStreamHeight = 0
+    private var lastViewWidth = 0
+    private var lastViewHeight = 0
     private var twoFingerTapCandidate = false
     private val motionAccumulator = TouchMouseMotionAccumulator()
 
@@ -2241,6 +2249,8 @@ private class TouchMouseState {
         virtualCursorInitialized = false
         lastStreamWidth = 0
         lastStreamHeight = 0
+        lastViewWidth = 0
+        lastViewHeight = 0
         twoFingerTapCandidate = false
         motionAccumulator.reset()
     }
@@ -2287,12 +2297,14 @@ private class TouchMouseState {
                 }
             }
 
-            if (!virtualCursorInitialized || lastStreamWidth != streamWidth || lastStreamHeight != streamHeight) {
+            if (!virtualCursorInitialized || lastStreamWidth != streamWidth || lastStreamHeight != streamHeight || lastViewWidth != width || lastViewHeight != height) {
                 virtualCursorX = streamWidth / 2f
                 virtualCursorY = streamHeight / 2f
                 virtualCursorInitialized = true
                 lastStreamWidth = streamWidth
                 lastStreamHeight = streamHeight
+                lastViewWidth = width
+                lastViewHeight = height
             }
 
             when (event.actionMasked) {

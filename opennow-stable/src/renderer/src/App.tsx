@@ -74,7 +74,7 @@ import {
   sortLibraryGames,
 } from "./lib/gameCatalog";
 import { chooseAccountLinked, getEpicOwnershipLaunchError, resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
-import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl, pickBestPrintedWasteZone, constructPrintedWasteZoneUrl, isStandardPrintedWasteZone } from "./lib/printedWaste";
+import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl, pickBestPrintedWasteZone, constructPrintedWasteZoneUrl, isStandardPrintedWasteZone, isPrintedWasteZoneFresh } from "./lib/printedWaste";
 import {
   mergePolledSessionState,
   normalizeMembershipTier,
@@ -641,8 +641,9 @@ export function App(): JSX.Element {
   const handlePlayGameRef = useRef<((game: GameInfo, options?: { bypassGuards?: boolean; streamingBaseUrl?: string; variantId?: string }) => Promise<void>) | null>(null);
   const prePingSmartUrlRef = useRef<string | null>(null);
   const prePingInFlightRef = useRef<boolean>(false);
+  const prePingPromiseRef = useRef<Promise<string | null> | null>(null);
   const consecutiveAutoRejoinAttemptsRef = useRef<number>(0);
-  const autoRejoinInFlightRef = useRef<boolean>(false);
+  const autoRejoinSessionIdRef = useRef<string | null>(null);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setShowStatsOverlay(settings.showStatsOnLaunch);
@@ -782,7 +783,7 @@ export function App(): JSX.Element {
     }
     prePingSmartUrlRef.current = null;
     prePingInFlightRef.current = false;
-    autoRejoinInFlightRef.current = false;
+    prePingPromiseRef.current = null;
     if (remoteIceGraceTimerRef.current !== null) {
       window.clearTimeout(remoteIceGraceTimerRef.current);
       remoteIceGraceTimerRef.current = null;
@@ -1703,7 +1704,7 @@ export function App(): JSX.Element {
     prePingInFlightRef.current = true;
     console.log("[AutoRejoin] Fetching queue + pinging servers at", sessionTimeRemainingSeconds, "s remaining");
 
-    void (async () => {
+    const prefetchPromise = (async (): Promise<string | null> => {
       try {
         const [queueData, serverMapping] = await Promise.all([
           window.openNow.fetchPrintedWasteQueue(),
@@ -1717,11 +1718,8 @@ export function App(): JSX.Element {
           }
         }
 
-        // Only standard NP-* zones (same filter as QueueServerSelectModal)
-        const isStandardZone = (id: string): boolean => id.startsWith("NP-") && !id.startsWith("NPA-");
-
         const candidates = Object.entries(queueData)
-          .filter(([zoneId]) => isStandardZone(zoneId) && !nukedIds.has(zoneId))
+          .filter(([zoneId, zone]) => isStandardPrintedWasteZone(zoneId) && isPrintedWasteZoneFresh(zone) && !nukedIds.has(zoneId))
           .map(([zoneId]) => ({
             zoneId,
             routingUrl: constructPrintedWasteZoneUrl(zoneId),
@@ -1729,7 +1727,7 @@ export function App(): JSX.Element {
 
         if (candidates.length === 0) {
           console.warn("[AutoRejoin] No valid candidate zones found");
-          return;
+          return null;
         }
 
         const regionsToTest = candidates.map((c) => ({ name: c.zoneId, url: c.routingUrl }));
@@ -1739,22 +1737,26 @@ export function App(): JSX.Element {
         const best = pickBestPrintedWasteZone(queueData, serverMapping, pingMap);
         if (!best) {
           console.warn("[AutoRejoin] No best server found by the picker algorithm");
-          return;
+          return null;
         }
 
         if (!prePingInFlightRef.current || (targetSessionId && sessionRef.current?.sessionId !== targetSessionId)) {
           console.log("[AutoRejoin] Pre-fetch completed after session reset or end — ignoring stale result");
-          return;
+          return null;
         }
 
         prePingSmartUrlRef.current = best.routingUrl;
         console.log(`[AutoRejoin] Best server: ${best.zoneId} (ping: ${best.pingMs}ms, queue: ${best.queuePosition})`);
+        return best.routingUrl;
       } catch (err) {
         console.error("[AutoRejoin] Pre-fetch failed:", err);
+        return null;
       } finally {
         prePingInFlightRef.current = false;
       }
     })();
+
+    prePingPromiseRef.current = prefetchPromise;
   }, [authSession, effectiveStreamingBaseUrl, selectedProvider, sessionTimeRemainingSeconds, settings.enableFastQueueJoin]);
 
   useEffect(() => {
@@ -3060,9 +3062,10 @@ export function App(): JSX.Element {
       return false;
     }
 
-    if (autoRejoinInFlightRef.current) {
-      console.log("[AutoRejoin] Skipping: auto-rejoin is already in flight for this session close");
-      return false;
+    const currentSessionId = sessionRef.current?.sessionId ?? "active-session";
+    if (autoRejoinSessionIdRef.current === currentSessionId) {
+      console.log("[AutoRejoin] Already handling auto-rejoin for session:", currentSessionId);
+      return true;
     }
 
     if (consecutiveAutoRejoinAttemptsRef.current >= 3) {
@@ -3071,17 +3074,17 @@ export function App(): JSX.Element {
       return false;
     }
 
-    autoRejoinInFlightRef.current = true;
+    autoRejoinSessionIdRef.current = currentSessionId;
     consecutiveAutoRejoinAttemptsRef.current += 1;
 
     if (!game) {
       console.error("[AutoRejoin] Skipping: streamingGameRef is null (no active game)");
-      autoRejoinInFlightRef.current = false;
+      autoRejoinSessionIdRef.current = null;
       return false;
     }
     if (!playGame) {
       console.error("[AutoRejoin] Skipping: handlePlayGameRef is null (ref not synced yet)");
-      autoRejoinInFlightRef.current = false;
+      autoRejoinSessionIdRef.current = null;
       return false;
     }
 
@@ -3091,6 +3094,7 @@ export function App(): JSX.Element {
       console.log("[AutoRejoin] ✅ Launching rejoin to:", streamingBaseUrl ?? "default region");
       prePingSmartUrlRef.current = null;
       prePingInFlightRef.current = false;
+      prePingPromiseRef.current = null;
       resetLaunchRuntime();
       void refreshNavbarActiveSession();
       launchInFlightRef.current = false;
@@ -3114,8 +3118,13 @@ export function App(): JSX.Element {
     if (cachedUrl) {
       console.log("[AutoRejoin] Using pre-fetched URL:", cachedUrl);
       launch(cachedUrl);
+    } else if (prePingInFlightRef.current && prePingPromiseRef.current) {
+      console.log("[AutoRejoin] Pre-fetch is still in flight — awaiting in-flight result...");
+      void prePingPromiseRef.current.then((inFlightUrl) => {
+        launch(inFlightUrl ?? undefined);
+      });
     } else {
-      console.warn("[AutoRejoin] No cached URL available — attempting live server pick fallback...");
+      console.warn("[AutoRejoin] No cached or in-flight URL available — attempting live server pick fallback...");
       void (async () => {
         try {
           const [queueData, serverMapping] = await Promise.all([
@@ -3123,7 +3132,7 @@ export function App(): JSX.Element {
             window.openNow.fetchPrintedWasteServerMapping().catch(() => null),
           ]);
           const candidates = Object.entries(queueData)
-            .filter(([zoneId]) => isStandardPrintedWasteZone(zoneId) && serverMapping?.[zoneId]?.nuked !== true)
+            .filter(([zoneId, zone]) => isStandardPrintedWasteZone(zoneId) && isPrintedWasteZoneFresh(zone) && serverMapping?.[zoneId]?.nuked !== true)
             .map(([zoneId]) => ({ zoneId, routingUrl: constructPrintedWasteZoneUrl(zoneId) }));
           if (candidates.length > 0) {
             const regionsToTest = candidates.map((c) => ({ name: c.zoneId, url: c.routingUrl }));
@@ -3514,16 +3523,14 @@ export function App(): JSX.Element {
             }
             clientRef.current?.dispose();
             clientRef.current = null;
-            if (!startAutoRejoin(event.reason)) {
-              setLaunchError({
-                stage: streamStatusToLoadingStage(streamStatusRef.current),
-                title: t("errors.sessionConnectionLostTitle"),
-                description: t("errors.sessionConnectionLostDescription"),
-              });
-              resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
-              void refreshNavbarActiveSession();
-              launchInFlightRef.current = false;
-            }
+            setLaunchError({
+              stage: streamStatusToLoadingStage(streamStatusRef.current),
+              title: t("errors.sessionConnectionLostTitle"),
+              description: t("errors.sessionConnectionLostDescription"),
+            });
+            resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+            void refreshNavbarActiveSession();
+            launchInFlightRef.current = false;
           }
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);

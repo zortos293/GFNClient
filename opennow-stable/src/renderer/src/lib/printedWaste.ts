@@ -25,6 +25,14 @@ export interface EnrichedZoneInfo {
   pingMs: number | null;
 }
 
+export function isPrintedWasteZoneFresh(zone: { "Last Updated"?: number }, maxAgeSeconds = 300): boolean {
+  if (!zone || typeof zone["Last Updated"] !== "number" || isNaN(zone["Last Updated"])) return false;
+  const now = Math.floor(Date.now() / 1000);
+  const ts = zone["Last Updated"] > 1e11 ? Math.floor(zone["Last Updated"] / 1000) : zone["Last Updated"];
+  const diff = now - ts;
+  return diff >= -60 && diff <= maxAgeSeconds;
+}
+
 export function pickBestPrintedWasteZone(
   queueData: PrintedWasteQueueData,
   serverMapping: PrintedWasteServerMapping | null,
@@ -38,7 +46,7 @@ export function pickBestPrintedWasteZone(
   }
 
   const candidates = Object.entries(queueData)
-    .filter(([zoneId]) => isStandardPrintedWasteZone(zoneId) && !nukedIds.has(zoneId))
+    .filter(([zoneId, zone]) => isStandardPrintedWasteZone(zoneId) && isPrintedWasteZoneFresh(zone) && !nukedIds.has(zoneId))
     .map(([zoneId, zone]) => ({
       zoneId,
       queuePosition: zone.QueuePosition,

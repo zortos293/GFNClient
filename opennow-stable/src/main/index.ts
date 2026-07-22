@@ -96,13 +96,8 @@ import {
 import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaunch";
 import { getReleaseHighlightsPayload, normalizeReleaseVersion, shouldShowReleaseHighlights } from "./releaseHighlights";
 
-import { initDnsInterceptor } from "./services/dnsInterceptor";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// Initialize the DNS interceptor before any connection is made
-initDnsInterceptor();
 
 // Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 

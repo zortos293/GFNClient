@@ -3783,7 +3783,15 @@ class NativeStreamClient(
             }
             transceiver.sender.apply {
                 setStreams(listOf(MICROPHONE_STREAM_ID))
-            }.takeIf { it.setTrack(track, false) }
+            }.takeIf { sender ->
+                runCatching { sender.setTrack(track, false) }
+                    .onFailure { error ->
+                        if (error is IllegalStateException && isDisposedRtpSenderFailure(error)) {
+                            recordStreamDiagnostic("microphone sender was disposed during setTrack attachment")
+                        } else throw error
+                    }
+                    .getOrDefault(false)
+            }
         } else {
             pc.addTrack(track, listOf(MICROPHONE_STREAM_ID))
         }

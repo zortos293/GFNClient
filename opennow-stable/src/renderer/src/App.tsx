@@ -3062,8 +3062,8 @@ export function App(): JSX.Element {
       return false;
     }
 
-    const currentSessionId = sessionRef.current?.sessionId ?? "active-session";
-    if (autoRejoinSessionIdRef.current === currentSessionId) {
+    const currentSessionId = sessionRef.current?.sessionId;
+    if (currentSessionId && autoRejoinSessionIdRef.current === currentSessionId) {
       console.log("[AutoRejoin] Already handling auto-rejoin for session:", currentSessionId);
       return true;
     }
@@ -3074,7 +3074,7 @@ export function App(): JSX.Element {
       return false;
     }
 
-    autoRejoinSessionIdRef.current = currentSessionId;
+    autoRejoinSessionIdRef.current = currentSessionId ?? null;
     consecutiveAutoRejoinAttemptsRef.current += 1;
 
     if (!game) {

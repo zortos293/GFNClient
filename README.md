@@ -22,8 +22,8 @@
   <a href="https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow">
     <img src="https://img.shields.io/badge/Android-Google%20Play-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Download Android from Google Play">
   </a>
-  <a href="https://github.com/OpenCloudGaming/OpenNOW-Switch">
-    <img src="https://img.shields.io/badge/Nintendo%20Switch-Homebrew%20Prototype-E60012?style=for-the-badge&logo=nintendoswitch&logoColor=white" alt="OpenNOW Nintendo Switch homebrew prototype">
+  <a href="https://github.com/OpenCloudGaming/OpenNOW-Switch/releases/latest">
+    <img src="https://img.shields.io/github/v/release/OpenCloudGaming/OpenNOW-Switch?style=for-the-badge&label=Nintendo%20Switch&color=E60012&logo=nintendoswitch&logoColor=white" alt="Download OpenNOW for Nintendo Switch">
   </a>
   <a href="https://opennow.zortos.me">
     <img src="https://img.shields.io/badge/Docs-opennow.zortos.me-blue?style=for-the-badge" alt="Documentation">
@@ -70,7 +70,7 @@ Grab the latest desktop build from [GitHub Releases](https://github.com/OpenClou
 
 - iOS beta: [join TestFlight](https://testflight.apple.com/join/u1XPJKH2). The SwiftUI prototype currently lives on the [`kief5555/ios` branch](https://github.com/OpenCloudGaming/OpenNOW/tree/kief5555/ios/ios/OpenNOWiOS) under `ios/OpenNOWiOS/`; that folder is not present on this branch.
 - Android: download from [Google Play](https://play.google.com/store/apps/details?id=com.opencloudgaming.opennow).
-- Nintendo Switch: follow the native homebrew prototype in [OpenCloudGaming/OpenNOW-Switch](https://github.com/OpenCloudGaming/OpenNOW-Switch). It currently provides the app scaffold and parts of the GFN protocol flow, but streaming is not implemented yet.
+- Nintendo Switch: download the latest native Horizon OS homebrew build from [OpenNOW-Switch Releases](https://github.com/OpenCloudGaming/OpenNOW-Switch/releases/latest). It supports controller-first catalog browsing and native WebRTC streaming with H.264 video, Opus audio, and low-latency input on modded Switch systems.
 
 For macOS users looking for a more performant OpenNOW version, Jayian1890 maintains the separate [OpenNOW-Mac](https://github.com/OpenCloudGaming/OpenNOW-Mac) repository.
 

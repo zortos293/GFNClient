@@ -17,9 +17,11 @@ use crate::gstreamer_liveness::{
     watch_video_sink_caps_transitions, watch_video_sink_rate, VideoLivenessMonitor,
 };
 use crate::gstreamer_platform::{
-    arm_internal_child_input, primary_display_refresh_hz, release_native_input_capture,
-    start_external_renderer_window_guard, update_external_renderer_surface,
+    primary_display_refresh_hz, release_native_input_capture, start_external_renderer_window_guard,
+    update_external_renderer_surface,
 };
+#[cfg(target_os = "windows")]
+use crate::gstreamer_platform::arm_internal_child_input;
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
 use crate::internal_renderer::InternalRenderer;
 use crate::nvst_video::{
@@ -35,11 +37,11 @@ use gst::prelude::*;
 use gstreamer as gst;
 use gstreamer_sdp as gst_sdp;
 use gstreamer_webrtc as gst_webrtc;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 const WEBRTC_LATENCY_MS: u32 = 2;
@@ -90,6 +92,7 @@ pub(crate) enum RtpVideoApi {
     D3D11,
     D3D12,
     VideoToolbox,
+    Nvdec,
     Vaapi,
     V4L2,
     Vulkan,
@@ -102,6 +105,7 @@ impl RtpVideoApi {
             Self::D3D11 => "D3D11",
             Self::D3D12 => "D3D12",
             Self::VideoToolbox => "VideoToolbox",
+            Self::Nvdec => "NVIDIA NVDEC",
             Self::Vaapi => "VAAPI",
             Self::V4L2 => "V4L2",
             Self::Vulkan => "Vulkan",
@@ -114,6 +118,7 @@ impl RtpVideoApi {
             Self::D3D11 => "d3d11",
             Self::D3D12 => "d3d12",
             Self::VideoToolbox => "videotoolbox",
+            Self::Nvdec => "nvdec",
             Self::Vaapi => "vaapi",
             Self::V4L2 => "v4l2",
             Self::Vulkan => "vulkan",
@@ -125,7 +130,7 @@ impl RtpVideoApi {
         match self {
             Self::D3D11 | Self::D3D12 => "windows",
             Self::VideoToolbox => "macos",
-            Self::Vaapi | Self::V4L2 => "linux",
+            Self::Nvdec | Self::Vaapi | Self::V4L2 => "linux",
             Self::Vulkan if current_platform_label() == "windows" => "windows",
             Self::Vulkan => "linux",
             Self::Software => "cross-platform",
@@ -159,7 +164,10 @@ impl RtpVideoApi {
             Self::VideoToolbox | Self::Vaapi if zero_copy_requested() => None,
             // Non-D3D hardware decoders are not guaranteed to negotiate directly with every
             // platform sink. Keep these paths reliable with an explicit raw-video conversion stage.
-            Self::VideoToolbox | Self::Vaapi | Self::V4L2 | Self::Software => Some("videoconvert"),
+            Self::VideoToolbox | Self::Nvdec | Self::Vaapi | Self::Software => Some("videoconvert"),
+            // V4L2 stateless decoders expose DMABuf on devices such as Raspberry Pi.
+            // Let glimagesink import it directly instead of forcing a CPU copy.
+            Self::V4L2 => None,
         }
     }
 
@@ -175,6 +183,7 @@ impl RtpVideoApi {
             Self::D3D11 => "d3d11videosink",
             Self::D3D12 => "d3d12videosink",
             Self::VideoToolbox => "glimagesink",
+            Self::Nvdec => "glimagesink",
             Self::Vaapi => "glimagesink",
             Self::V4L2 => "glimagesink",
             Self::Vulkan => "vulkansink",
@@ -191,18 +200,24 @@ impl RtpVideoApi {
             (Self::D3D12, "H264") => Some("d3d12h264dec"),
             (Self::D3D12, "AV1") => Some("d3d12av1dec"),
             (Self::VideoToolbox, "H265" | "HEVC" | "H264") => Some("vtdec_hw"),
+            (Self::Nvdec, "H265" | "HEVC") => Some("nvh265dec"),
+            (Self::Nvdec, "H264") => Some("nvh264dec"),
+            (Self::Nvdec, "AV1") => Some("nvav1dec"),
             (Self::Vaapi, "H265" | "HEVC") => Some("vah265dec"),
             (Self::Vaapi, "H264") => Some("vah264dec"),
             (Self::Vaapi, "AV1") => Some("vaav1dec"),
             (Self::V4L2, "H265" | "HEVC") => Some("v4l2slh265dec"),
             (Self::V4L2, "H264") => Some("v4l2slh264dec"),
+            (Self::V4L2, "AV1") => Some("v4l2slav1dec"),
             // vulkanh264dec/vulkanh265dec SIGSEGV on current NVIDIA Windows drivers;
             // use DXVA decode (prefer D3D12) and either D3D present (Internal) or
             // upload into Vulkan (External).
             (Self::Vulkan, "H265" | "HEVC") if cfg!(target_os = "windows") => Some("d3d12h265dec"),
             (Self::Vulkan, "H264") if cfg!(target_os = "windows") => Some("d3d12h264dec"),
+            (Self::Vulkan, "AV1") if cfg!(target_os = "windows") => Some("d3d12av1dec"),
             (Self::Vulkan, "H265" | "HEVC") => Some("vulkanh265dec"),
             (Self::Vulkan, "H264") => Some("vulkanh264dec"),
+            (Self::Vulkan, "AV1") => Some("vulkanav1dec"),
             (Self::Software, "H265" | "HEVC") => Some("avdec_h265"),
             (Self::Software, "H264") => Some("avdec_h264"),
             (Self::Software, "AV1") => Some("avdec_av1"),
@@ -217,6 +232,7 @@ impl RtpVideoApi {
             (Self::Vaapi, "AV1") => &["vaapiav1dec"],
             (Self::V4L2, "H265" | "HEVC") => &["v4l2h265dec"],
             (Self::V4L2, "H264") => &["v4l2h264dec"],
+            (Self::V4L2, "AV1") => &["v4l2av1dec"],
             (Self::VideoToolbox, "H265" | "HEVC" | "H264") => &["vtdec"],
             (Self::Vulkan, "H265" | "HEVC") if cfg!(target_os = "windows") => {
                 &["d3d11h265dec", "nvh265dec"]
@@ -224,6 +240,10 @@ impl RtpVideoApi {
             (Self::Vulkan, "H264") if cfg!(target_os = "windows") => {
                 &["d3d11h264dec", "nvh264dec"]
             }
+            (Self::Vulkan, "AV1") if cfg!(target_os = "windows") => {
+                &["d3d11av1dec", "nvav1dec"]
+            }
+            (Self::Software, "AV1") => &["dav1ddec", "av1dec"],
             _ => &[],
         }
     }
@@ -233,7 +253,7 @@ impl RtpVideoApi {
             Self::VideoToolbox => &["osxvideosink", "autovideosink"],
             // Prefer X11-capable sinks first: Internal Linux embeds via GstVideoOverlay
             // into an X11 child. waylandsink cannot paint into that handle.
-            Self::Vaapi | Self::V4L2 => {
+            Self::Nvdec | Self::Vaapi | Self::V4L2 => {
                 &["ximagesink", "xvimagesink", "glimagesink", "waylandsink", "autovideosink"]
             }
             Self::Software => &["ximagesink", "xvimagesink", "glimagesink", "waylandsink"],
@@ -244,9 +264,12 @@ impl RtpVideoApi {
     /// Sinks that can bind to the Internal X11 child via GstVideoOverlay.
     fn internal_x11_sink_candidates(self) -> &'static [&'static str] {
         match self {
-            Self::Vaapi | Self::V4L2 | Self::Software | Self::Vulkan => {
+            Self::Nvdec | Self::Vaapi | Self::V4L2 | Self::Software => {
                 &["glimagesink", "ximagesink", "xvimagesink"]
             }
+            // vulkansink implements GstVideoOverlay on Linux, so it can bind
+            // directly to the X11 child while retaining VulkanImage memory.
+            Self::Vulkan => &["vulkansink"],
             _ => &[],
         }
     }
@@ -1168,7 +1191,25 @@ fn nice_stream_from_ice_transport(
 }
 
 pub(crate) fn init_gstreamer() -> Result<(), String> {
-    gst::init().map_err(|error| format!("Failed to initialize GStreamer: {error}"))
+    gst::init().map_err(|error| format!("Failed to initialize GStreamer: {error}"))?;
+    #[cfg(target_os = "linux")]
+    {
+        static RTP_PLUGIN_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
+        RTP_PLUGIN_REGISTRATION
+            .get_or_init(|| {
+                if gst::ElementFactory::find("rtpav1depay").is_some() {
+                    return Ok(());
+                }
+                gstrsrtp::plugin_register_static().map_err(|error| {
+                    format!("Failed to register the bundled AV1 RTP plugin: {error}")
+                })
+            })
+            .clone()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
 }
 
 pub(crate) fn set_property_if_supported<T: Into<glib::Value>>(
@@ -1915,6 +1956,7 @@ pub(crate) fn preferred_rtp_video_apis_for(
         "d3d11" => vec![RtpVideoApi::D3D11],
         "d3d12" => vec![RtpVideoApi::D3D12],
         "videotoolbox" | "vt" => vec![RtpVideoApi::VideoToolbox],
+        "nvdec" | "nvcodec" | "nvidia" => vec![RtpVideoApi::Nvdec],
         "vaapi" | "va" => vec![RtpVideoApi::Vaapi],
         "v4l2" | "v4l2stateless" => vec![RtpVideoApi::V4L2],
         "vulkan" | "vk" => vec![RtpVideoApi::Vulkan],
@@ -1985,6 +2027,7 @@ pub(crate) fn default_rtp_video_api_priority(requested_fps: Option<u32>) -> Vec<
         let _ = requested_fps;
         vec![
             RtpVideoApi::V4L2,
+            RtpVideoApi::Nvdec,
             RtpVideoApi::Vaapi,
             RtpVideoApi::Vulkan,
             RtpVideoApi::Software,
@@ -1994,6 +2037,7 @@ pub(crate) fn default_rtp_video_api_priority(requested_fps: Option<u32>) -> Vec<
     {
         let _ = requested_fps;
         vec![
+            RtpVideoApi::Nvdec,
             RtpVideoApi::Vaapi,
             RtpVideoApi::Vulkan,
             RtpVideoApi::V4L2,
@@ -2170,7 +2214,30 @@ fn select_decoder_factory(video_api: RtpVideoApi, codec: &str) -> Option<&'stati
     let primary = video_api.decoder_factory(codec)?;
     std::iter::once(primary)
         .chain(video_api.fallback_decoder_factories(codec).iter().copied())
-        .find(|factory| gst::ElementFactory::find(factory).is_some())
+        .find(|factory| decoder_factory_usable(factory))
+}
+
+fn decoder_factory_usable(factory: &'static str) -> bool {
+    static DECODER_PROBES: OnceLock<Mutex<HashMap<&'static str, bool>>> = OnceLock::new();
+    let probes = DECODER_PROBES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(probes) = probes.lock() {
+        if let Some(usable) = probes.get(factory) {
+            return *usable;
+        }
+    }
+
+    let usable = gst::ElementFactory::make(factory)
+        .build()
+        .ok()
+        .is_some_and(|decoder| {
+            let usable = decoder.set_state(gst::State::Ready).is_ok();
+            let _ = decoder.set_state(gst::State::Null);
+            usable
+        });
+    if let Ok(mut probes) = probes.lock() {
+        probes.insert(factory, usable);
+    }
+    usable
 }
 
 fn select_sink_factory(video_api: RtpVideoApi) -> Option<&'static str> {
@@ -2217,6 +2284,7 @@ fn all_rtp_video_apis() -> &'static [RtpVideoApi] {
         RtpVideoApi::D3D12,
         RtpVideoApi::D3D11,
         RtpVideoApi::VideoToolbox,
+        RtpVideoApi::Nvdec,
         RtpVideoApi::Vaapi,
         RtpVideoApi::V4L2,
         RtpVideoApi::Vulkan,
@@ -2255,7 +2323,7 @@ pub(crate) fn backend_runs_on_platform(video_api: RtpVideoApi, platform: &str) -
     match video_api {
         RtpVideoApi::D3D11 | RtpVideoApi::D3D12 => platform == "windows",
         RtpVideoApi::VideoToolbox => platform == "macos",
-        RtpVideoApi::Vaapi | RtpVideoApi::V4L2 => platform == "linux",
+        RtpVideoApi::Nvdec | RtpVideoApi::Vaapi | RtpVideoApi::V4L2 => platform == "linux",
         RtpVideoApi::Vulkan => matches!(platform, "windows" | "linux"),
         RtpVideoApi::Software => true,
     }
@@ -2402,12 +2470,14 @@ fn zero_copy_modes_for_backend(video_api: RtpVideoApi) -> Vec<String> {
         RtpVideoApi::D3D11 => vec!["D3D11Memory".to_owned()],
         RtpVideoApi::D3D12 => vec!["D3D12Memory".to_owned()],
         RtpVideoApi::VideoToolbox => vec!["GLMemory".to_owned()],
+        RtpVideoApi::Nvdec => Vec::new(),
         RtpVideoApi::Vaapi => vec!["VAMemory".to_owned()],
         // Linux keeps decoded frames as VulkanImage. Windows uses DXVA→upload,
         // so there is no end-to-end VulkanImage zero-copy path yet.
         RtpVideoApi::Vulkan if cfg!(target_os = "windows") => Vec::new(),
         RtpVideoApi::Vulkan => vec!["VulkanImage".to_owned()],
-        RtpVideoApi::V4L2 | RtpVideoApi::Software => Vec::new(),
+        RtpVideoApi::V4L2 => vec!["DMABuf".to_owned()],
+        RtpVideoApi::Software => Vec::new(),
     }
 }
 

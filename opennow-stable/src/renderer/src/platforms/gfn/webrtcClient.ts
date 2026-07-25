@@ -178,7 +178,7 @@ function describeNativeHardwareAcceleration(): string {
   if (platform.includes("mac")) {
     return "GStreamer VideoToolbox";
   }
-  return "GStreamer VAAPI/V4L2";
+  return "GStreamer NVDEC/VAAPI/V4L2/Vulkan";
 }
 
 interface ClientOptions {

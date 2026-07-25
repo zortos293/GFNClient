@@ -127,11 +127,6 @@ pub(crate) fn arm_internal_child_input(hwnd: usize) -> bool {
     unsafe { win32_renderer_window::arm_internal_child_input(hwnd) }
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn arm_internal_child_input(_hwnd: usize) -> bool {
-    false
-}
-
 #[cfg(target_os = "windows")]
 pub(crate) fn update_external_renderer_surface(surface: &NativeRenderSurface) {
     let target = surface

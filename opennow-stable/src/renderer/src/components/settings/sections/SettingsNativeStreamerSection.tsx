@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import type { NativeStreamerStatus, NativeVideoBackendCapability, Settings } from "@shared/gfn";
 import {
   createUnsupportedNativeStreamerStatus,
-  isNativeDirectXBackendSupported,
   isNativeExternalRendererSupported,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
@@ -23,7 +22,6 @@ import { ModalSurface } from "../../ui/ModalSurface";
 const nativePlatformHint = `${navigator.platform} ${navigator.userAgent}`;
 const isNativeStreamerPlatform = isNativeStreamerSupportedPlatform(nativePlatformHint);
 const supportsNativeExternalRenderer = isNativeExternalRendererSupported(nativePlatformHint);
-const supportsNativeDirectXBackend = isNativeDirectXBackendSupported(nativePlatformHint);
 
 function getNativeHostPlatform(): "windows" | "macos" | "linux" | "other" {
   const normalized = nativePlatformHint.toLowerCase();
@@ -61,6 +59,10 @@ export function SettingsNativeStreamerSection({
   const [nativeStreamerEnablePromptOpen, setNativeStreamerEnablePromptOpen] = useState(false);
   const nativeStreamerEnablePromptConfirmRef = useRef<HTMLButtonElement | null>(null);
   const hostVideoBackends = getHostVideoBackends(nativeStreamerStatus);
+  const selectableVideoBackendOptions = nativeVideoBackendOptions.filter(
+    (option) => option.value === "auto"
+      || hostVideoBackends.some((backend) => backend.backend === option.value),
+  );
   const readyHardwareBackendCount = hostVideoBackends.filter(
     (backend) => backend.available && backend.backend !== "software",
   ).length;
@@ -385,10 +387,10 @@ export function SettingsNativeStreamerSection({
                 )}
               </div>
 
-              {supportsNativeDirectXBackend && <div className="settings-row settings-row--column">
+              {isNativeStreamerPlatform && selectableVideoBackendOptions.length > 1 && <div className="settings-row settings-row--column">
                 <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
                 <div className="settings-chip-row">
-                  {nativeVideoBackendOptions.map((option) => {
+                  {selectableVideoBackendOptions.map((option) => {
                     const capability = option.value === "auto"
                       ? undefined
                       : hostVideoBackends.find((backend) => backend.backend === option.value);

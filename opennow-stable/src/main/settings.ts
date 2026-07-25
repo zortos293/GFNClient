@@ -192,7 +192,11 @@ const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>([
   "auto",
   "d3d11",
   "d3d12",
+  "nvdec",
+  "vaapi",
+  "v4l2",
   "vulkan",
+  "software",
 ]);
 const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
 const APP_THEMES = new Set<AppTheme>(["light", "dark", "auto"]);

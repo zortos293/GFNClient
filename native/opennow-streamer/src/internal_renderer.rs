@@ -99,6 +99,7 @@ impl InternalRenderer {
         self.child_height.store(2, Ordering::SeqCst);
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) fn child_handle(&self) -> usize {
         self.child_handle.load(Ordering::SeqCst)
     }

@@ -575,7 +575,7 @@ mod tests {
     use crate::gstreamer_pipeline::{
         backend_runs_on_platform, configure_stats_overlay_element,
         default_rtp_video_api_priority, effective_present_max_fps, format_video_chain_selection,
-        preferred_rtp_video_apis_for, resolve_gstreamer_stun_server,
+        init_gstreamer, preferred_rtp_video_apis_for, resolve_gstreamer_stun_server,
         rtp_video_chain_definition, RtpVideoApi, RtpVideoChainRole,
     };
     use crate::gstreamer_transitions::resolve_queue_mode;
@@ -739,6 +739,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn bundles_av1_rtp_depayloading() {
+        init_gstreamer().expect("GStreamer initializes");
+        assert!(gst::ElementFactory::find("rtpav1depay").is_some());
+    }
+
+    #[test]
     fn parses_input_handshake_versions() {
         assert_eq!(
             parse_input_handshake_version(&[0x0e, 0x02, 0x03, 0x00]),
@@ -808,9 +815,18 @@ mod tests {
         assert!(vaapi.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(vaapi.last().map(|spec| spec.factory), Some("glimagesink"));
 
+        let nvdec = rtp_video_chain_definition("AV1", RtpVideoApi::Nvdec).expect("NVDEC AV1");
+        assert_eq!(nvdec[3].factory, "nvav1dec");
+        assert!(nvdec.iter().any(|spec| spec.factory == "videoconvert"));
+        assert_eq!(nvdec.last().map(|spec| spec.factory), Some("glimagesink"));
+
         let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2).expect("V4L2 H265");
         assert_eq!(v4l2[3].factory, "v4l2slh265dec");
-        assert!(v4l2.iter().any(|spec| spec.factory == "videoconvert"));
+        assert!(!v4l2.iter().any(|spec| spec.factory == "videoconvert"));
+
+        let v4l2_av1 =
+            rtp_video_chain_definition("AV1", RtpVideoApi::V4L2).expect("V4L2 AV1");
+        assert_eq!(v4l2_av1[3].factory, "v4l2slav1dec");
 
         let vulkan = rtp_video_chain_definition("H265", RtpVideoApi::Vulkan).expect("Vulkan H265");
         #[cfg(target_os = "windows")]
@@ -835,7 +851,12 @@ mod tests {
                 .any(|spec| spec.factory == "vulkancolorconvert"));
             assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
         }
-        assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).is_none());
+        let vulkan_av1 =
+            rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).expect("Vulkan AV1");
+        #[cfg(target_os = "windows")]
+        assert_eq!(vulkan_av1[3].factory, "d3d12av1dec");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(vulkan_av1[3].factory, "vulkanav1dec");
 
         let software =
             rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");
@@ -856,7 +877,19 @@ mod tests {
     }
 
     #[test]
-    fn explicit_vulkan_selection_does_not_fall_back() {
+    fn explicit_linux_backend_selection_does_not_fall_back() {
+        assert_eq!(
+            preferred_rtp_video_apis_for("nvdec", Some(120)),
+            vec![RtpVideoApi::Nvdec]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("vaapi", Some(120)),
+            vec![RtpVideoApi::Vaapi]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("v4l2", Some(120)),
+            vec![RtpVideoApi::V4L2]
+        );
         assert_eq!(
             preferred_rtp_video_apis_for("vulkan", Some(240)),
             vec![RtpVideoApi::Vulkan]
@@ -884,6 +917,36 @@ mod tests {
                 RtpVideoApi::D3D11,
                 RtpVideoApi::D3D12,
                 RtpVideoApi::Software
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    fn linux_arm64_prefers_v4l2_for_raspberry_pi_and_arm_devices() {
+        assert_eq!(
+            default_rtp_video_api_priority(Some(60)),
+            vec![
+                RtpVideoApi::V4L2,
+                RtpVideoApi::Nvdec,
+                RtpVideoApi::Vaapi,
+                RtpVideoApi::Vulkan,
+                RtpVideoApi::Software,
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+    fn linux_desktop_prefers_vendor_decoders_before_generic_paths() {
+        assert_eq!(
+            default_rtp_video_api_priority(Some(120)),
+            vec![
+                RtpVideoApi::Nvdec,
+                RtpVideoApi::Vaapi,
+                RtpVideoApi::Vulkan,
+                RtpVideoApi::V4L2,
+                RtpVideoApi::Software,
             ]
         );
     }

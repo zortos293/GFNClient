@@ -164,9 +164,11 @@ jobs:
         id: test
         run: npm test
 
-      - name: Test Linux native streamer
+      - name: Test and build Linux native streamer
         if: runner.os == 'Linux'
-        run: cargo test --manifest-path ../native/opennow-streamer/Cargo.toml --features gstreamer
+        run: |
+          cargo test --manifest-path ../native/opennow-streamer/Cargo.toml --features gstreamer
+          npm run native:build
 
       - name: CI summary
         if: always()

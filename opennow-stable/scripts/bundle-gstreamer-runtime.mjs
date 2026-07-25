@@ -10,9 +10,10 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, extname, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { collectBundledPeDependencies } from "./windows-pe-imports.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -149,21 +150,6 @@ function writeMetadata(destination, source, platform) {
   );
 }
 
-const WINDOWS_LOADER_DLLS = [
-  "gstreamer-1.0-0.dll",
-  "glib-2.0-0.dll",
-  "gobject-2.0-0.dll",
-  "gio-2.0-0.dll",
-  "gmodule-2.0-0.dll",
-  "gthread-2.0-0.dll",
-  "intl-8.dll",
-  "ffi-8.dll",
-  "pcre2-8-0.dll",
-  "orc-0.4-0.dll",
-  "winpthread-1.dll",
-  "zlib1.dll",
-];
-
 const WINDOWS_VC_RUNTIME_DLLS = [
   "vcruntime140.dll",
   "vcruntime140_1.dll",
@@ -191,9 +177,11 @@ function copyWindowsLoaderDlls({ sdkRoot, destination, binary }) {
   const copiedLoader = [];
   const copiedVc = [];
 
-  for (const name of WINDOWS_LOADER_DLLS) {
-    const source = join(sdkBin, name);
-    if (!isExistingFile(source)) continue;
+  if (!binary) {
+    throw new Error("A native streamer executable is required to collect its Windows DLL dependencies.");
+  }
+  for (const source of collectBundledPeDependencies(binary, sdkBin)) {
+    const name = basename(source);
     copyFileSync(source, join(executableDir, name));
     copiedLoader.push(name);
   }

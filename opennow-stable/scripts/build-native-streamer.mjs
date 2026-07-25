@@ -435,6 +435,27 @@ function verifyGstreamerBinary(binaryPath, env) {
   console.log(`Verified native streamer GStreamer capabilities: ${availableVideoBackends.join(", ")}.`);
 }
 
+function verifyBundledWindowsLoader(binaryPath, baseEnv) {
+  const result = spawnSync(binaryPath, {
+    cwd: dirname(binaryPath),
+    input: `${JSON.stringify({ id: verifyCommandId, type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
+    encoding: "utf8",
+    env: {
+      SystemRoot: baseEnv.SystemRoot,
+      WINDIR: baseEnv.WINDIR,
+      PATH: dirname(binaryPath),
+      OPENNOW_NATIVE_STREAMER_BACKEND: "gstreamer",
+    },
+  });
+  if (result.status !== 0) {
+    console.error(result.stderr || result.stdout);
+    console.error("Bundled native streamer could not start using only DLLs next to its executable.");
+    process.exit(result.status ?? 1);
+  }
+  parseNativeStreamerResponse(result.stdout);
+  console.log("Verified native streamer Windows loader dependency closure.");
+}
+
 function verifyBundledWindowsVulkanPlugin(binaryPath, env) {
   const gstInspect = join(dirname(binaryPath), "gstreamer", "bin", "gst-inspect-1.0.exe");
   const result = spawnSync(gstInspect, ["vulkanupload"], {
@@ -501,6 +522,7 @@ if (hasFeature(nativeFeatures, "gstreamer")) {
   if (bundleGstreamerRuntime(gstreamerSdkRoot, nativeFeatures)) {
     const bundledEnv = buildBundledGstreamerEnv(buildEnv, packagePlatformBinary);
     if (process.platform === "win32") {
+      verifyBundledWindowsLoader(packagePlatformBinary, buildEnv);
       verifyBundledWindowsVulkanPlugin(packagePlatformBinary, bundledEnv);
     }
     verifyGstreamerBinary(packagePlatformBinary, bundledEnv);

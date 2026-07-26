@@ -481,7 +481,6 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                         report = report,
                         onDismiss = viewModel::dismissSessionReport,
                         onReportBug = {
-                            viewModel.dismissSessionReport()
                             viewModel.resetBugReportSubmission()
                             completedSessionBugReportOpen = true
                         },
@@ -492,9 +491,22 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                         submission = state.bugReportSubmission,
                         onSubmit = viewModel::submitBugReport,
                         onReset = viewModel::resetBugReportSubmission,
+                        preflightProvider = {
+                            buildBugReportPreflightDeck(
+                                BugReportPreflightEvidence(
+                                    requestedSettings = state.activeStreamSettings ?: state.settings.stream,
+                                    runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
+                                    sessionReport = state.sessionReport,
+                                    codecReport = state.codecReport,
+                                    androidTvProfile = state.androidTvProfile,
+                                    inputDiagnostics = NativeInputDiagnostics.snapshot(),
+                                ),
+                            )
+                        },
                         onDismiss = {
                             if (!state.bugReportSubmission.uploading) {
                                 completedSessionBugReportOpen = false
+                                viewModel.dismissSessionReport()
                                 viewModel.resetBugReportSubmission()
                             }
                         },
@@ -506,7 +518,7 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                         onPrimary = {
                             hiddenUpdatePromptKey = promptKey
                             when (state.androidUpdate.status) {
-                                AndroidUpdateStatus.Available -> viewModel.downloadAndroidUpdate()
+                                AndroidUpdateStatus.Available -> viewModel.performAndroidUpdatePrimaryAction()
                                 AndroidUpdateStatus.Downloaded -> viewModel.installAndroidUpdate()
                                 else -> Unit
                             }
@@ -702,6 +714,7 @@ private fun CompletedSessionBugReportDialog(
     submission: BugReportSubmissionState,
     onSubmit: (String, String) -> Unit,
     onReset: () -> Unit,
+    preflightProvider: () -> BugReportPreflightDeck,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -720,6 +733,7 @@ private fun CompletedSessionBugReportDialog(
                     onSubmit = onSubmit,
                     onReset = onReset,
                     onButtonTone = {},
+                    preflightProvider = preflightProvider,
                     initiallyExpanded = true,
                     onExpandedClose = onDismiss,
                 )
@@ -884,6 +898,8 @@ private fun AndroidUpdatePromptDialog(
                 Text(
                     if (update.status == AndroidUpdateStatus.Downloaded) {
                         "$version is downloaded and ready to install."
+                    } else if (update.installSource.isGooglePlay) {
+                        "You are on build ${update.currentVersionCode}. Google Play has ${version.lowercase()}."
                     } else {
                         "$version is available for this device."
                     },
@@ -901,7 +917,13 @@ private fun AndroidUpdatePromptDialog(
         },
         confirmButton = {
             Button(onClick = onPrimary) {
-                Text(if (update.status == AndroidUpdateStatus.Downloaded) "Install" else "Download")
+                Text(
+                    when {
+                        update.status == AndroidUpdateStatus.Downloaded -> "Install"
+                        update.installSource.isGooglePlay -> "Update"
+                        else -> "Download"
+                    },
+                )
             }
         },
         dismissButton = {
@@ -6584,6 +6606,24 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     statsVisible = statsVisible,
                     touchLayoutEditing = touchLayoutEditing,
                     bugReportSubmission = state.bugReportSubmission,
+                    bugReportPreflightProvider = {
+                        buildBugReportPreflightDeck(
+                            BugReportPreflightEvidence(
+                                requestedSettings = requestedStreamSettings,
+                                runtimeStats = streamStats,
+                                runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
+                                deliveredResolution = activeStreamMode?.displayedResolution
+                                    ?: session.monitorSnapshot?.returnedResolution
+                                    ?: streamStats.resolution,
+                                deliveredCodec = activeStreamMode?.transportCodec?.name
+                                    ?: streamStats.codec,
+                                codecReport = state.codecReport,
+                                androidTvProfile = tvProfile,
+                                serverZone = session.zone,
+                                inputDiagnostics = NativeInputDiagnostics.snapshot(),
+                            ),
+                        )
+                    },
                     onAudioToggle = {
                         audioMuted = !audioMuted
                         client.setAudioMuted(audioMuted)
@@ -7275,7 +7315,9 @@ private fun FingerMouseInputLayer(
                     return@pointerInteropFilter true
                 }
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                    NativeInputDiagnostics.add("compose finger layer down size=${width}x$height")
+                    NativeInputDiagnostics.retainTouchRoute("compose.finger-layer") {
+                        "compose finger layer down size=${width}x$height"
+                    }
                 }
                 NativeStreamInputRouter.dispatchTouch(event, width, height)
             },
@@ -7767,6 +7809,7 @@ private fun StreamControlsPanel(
     statsVisible: Boolean,
     touchLayoutEditing: Boolean,
     bugReportSubmission: BugReportSubmissionState,
+    bugReportPreflightProvider: () -> BugReportPreflightDeck,
     onAudioToggle: () -> Unit,
     onMicrophoneToggle: () -> Unit,
     onStatsToggle: () -> Unit,
@@ -8115,6 +8158,7 @@ private fun StreamControlsPanel(
                     onSubmit = onBugReportSubmit,
                     onReset = onBugReportReset,
                     onButtonTone = onButtonTone,
+                    preflightProvider = bugReportPreflightProvider,
                 )
             }
             }
@@ -8185,11 +8229,203 @@ private fun BugReportDataDisclosure(
 }
 
 @Composable
+private fun BugReportSubmissionRequirements(modifier: Modifier = Modifier) {
+    Text(
+        "Bug reports are currently supported only in English. Be as detailed and descriptive as possible. Non-English or non-descriptive reports will be ignored.",
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.error,
+        fontWeight = FontWeight.Bold,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BugReportPreflightDeckView(
+    deck: BugReportPreflightDeck,
+    page: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onRefresh: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val card = deck.cards[page]
+    val accent = when (card.tone) {
+        BugReportPreflightTone.Healthy -> Green
+        BugReportPreflightTone.Notice -> MaterialTheme.colorScheme.primary
+        BugReportPreflightTone.Warning -> Color(0xffffc266)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Before you report", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Live checks from this device and session",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Text(
+                "${page + 1} / ${deck.cards.size}",
+                color = accent,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            deck.cards.indices.forEach { index ->
+                Box(
+                    Modifier
+                        .height(4.dp)
+                        .weight(1f)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (index <= page) accent else Color.White.copy(alpha = 0.10f)),
+                )
+            }
+        }
+
+        AnimatedContent(
+            targetState = page,
+            transitionSpec = { fadeIn(tween(140)) togetherWith fadeOut(tween(100)) },
+            label = "bug-report-preflight-card",
+        ) { targetPage ->
+            val targetCard = deck.cards[targetPage]
+            val targetAccent = when (targetCard.tone) {
+                BugReportPreflightTone.Healthy -> Green
+                BugReportPreflightTone.Notice -> MaterialTheme.colorScheme.primary
+                BugReportPreflightTone.Warning -> Color(0xffffc266)
+            }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = targetAccent.copy(alpha = 0.08f),
+                border = BorderStroke(1.dp, targetAccent.copy(alpha = 0.34f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(15.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        targetCard.label,
+                        color = targetAccent,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                    )
+                    Text(
+                        targetCard.title,
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        targetCard.summary,
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (targetCard.facts.isNotEmpty()) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            targetCard.facts.forEach { fact ->
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = PanelAlt,
+                                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                                ) {
+                                    Text(
+                                        fact,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                        color = TextPrimary,
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (targetCard.recommendations.isNotEmpty()) {
+                        Text(
+                            "MATCHED SUGGESTIONS",
+                            color = targetAccent,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        targetCard.recommendations.forEach { finding ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                verticalAlignment = Alignment.Top,
+                            ) {
+                                Surface(
+                                    modifier = Modifier.size(7.dp).offset(y = 6.dp),
+                                    shape = CircleShape,
+                                    color = targetAccent,
+                                ) {}
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        finding.title,
+                                        color = TextPrimary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                    Text(
+                                        finding.detail,
+                                        color = TextMuted,
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            "No irrelevant fixes are being suggested for this check.",
+                            color = targetAccent,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+        }
+
+        Text(
+            "Still happening after any matched suggestion? Continue and the measured evidence will be attached automatically.",
+            color = TextMuted,
+            style = MaterialTheme.typography.labelSmall,
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onRefresh) {
+                Text("Refresh")
+            }
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(onClick = if (page == 0) onCancel else onPrevious) {
+                Text(if (page == 0) "Cancel" else "Back")
+            }
+            Button(onClick = onNext) {
+                Text(if (page == deck.cards.lastIndex) "Continue" else "Next")
+            }
+        }
+    }
+}
+
+@Composable
 private fun StreamBugReporter(
     submission: BugReportSubmissionState,
     onSubmit: (String, String) -> Unit,
     onReset: () -> Unit,
     onButtonTone: () -> Unit,
+    preflightProvider: () -> BugReportPreflightDeck,
     initiallyExpanded: Boolean = false,
     onExpandedClose: () -> Unit = {},
 ) {
@@ -8198,6 +8434,15 @@ private fun StreamBugReporter(
     var description by rememberSaveable { mutableStateOf("") }
     var consentChecked by rememberSaveable { mutableStateOf(false) }
     var confirmationOpen by rememberSaveable { mutableStateOf(false) }
+    var preflightReviewed by rememberSaveable { mutableStateOf(false) }
+    var preflightPage by rememberSaveable { mutableStateOf(0) }
+    var preflightDeck by remember { mutableStateOf<BugReportPreflightDeck?>(null) }
+
+    LaunchedEffect(expanded) {
+        if (expanded && !preflightReviewed && preflightDeck == null) {
+            preflightDeck = preflightProvider()
+        }
+    }
 
     StreamPanelSection("Bug reporter") {
         if (!expanded) {
@@ -8207,6 +8452,9 @@ private fun StreamBugReporter(
                 action = "Open",
             ) {
                 onButtonTone()
+                preflightReviewed = false
+                preflightPage = 0
+                preflightDeck = preflightProvider()
                 expanded = true
             }
             return@StreamPanelSection
@@ -8245,6 +8493,9 @@ private fun StreamBugReporter(
                                 description = ""
                                 consentChecked = false
                                 confirmationOpen = false
+                                preflightReviewed = false
+                                preflightPage = 0
+                                preflightDeck = preflightProvider()
                                 onReset()
                             },
                         ) {
@@ -8253,6 +8504,9 @@ private fun StreamBugReporter(
                         TextButton(
                             onClick = {
                                 onButtonTone()
+                                preflightReviewed = false
+                                preflightPage = 0
+                                preflightDeck = null
                                 expanded = false
                                 onExpandedClose()
                             },
@@ -8261,6 +8515,52 @@ private fun StreamBugReporter(
                         }
                     }
                 }
+            }
+            return@StreamPanelSection
+        }
+
+        if (!preflightReviewed) {
+            val deck = preflightDeck
+            if (deck == null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text("Checking this session…", color = TextMuted)
+                }
+            } else {
+                BugReportPreflightDeckView(
+                    deck = deck,
+                    page = preflightPage.coerceIn(deck.cards.indices),
+                    onPrevious = {
+                        onButtonTone()
+                        preflightPage = (preflightPage - 1).coerceAtLeast(0)
+                    },
+                    onNext = {
+                        onButtonTone()
+                        if (preflightPage < deck.cards.lastIndex) {
+                            preflightPage += 1
+                        } else {
+                            preflightReviewed = true
+                        }
+                    },
+                    onRefresh = {
+                        onButtonTone()
+                        preflightPage = 0
+                        preflightDeck = preflightProvider()
+                    },
+                    onCancel = {
+                        onButtonTone()
+                        preflightReviewed = false
+                        preflightPage = 0
+                        preflightDeck = null
+                        expanded = false
+                        onExpandedClose()
+                    },
+                )
             }
             return@StreamPanelSection
         }
@@ -8283,6 +8583,20 @@ private fun StreamBugReporter(
                     enabled = !submission.uploading,
                     onClick = {
                         onButtonTone()
+                        preflightReviewed = false
+                        preflightPage = 0
+                        preflightDeck = preflightProvider()
+                    },
+                ) {
+                    Text("Checks")
+                }
+                TextButton(
+                    enabled = !submission.uploading,
+                    onClick = {
+                        onButtonTone()
+                        preflightReviewed = false
+                        preflightPage = 0
+                        preflightDeck = null
                         expanded = false
                         onExpandedClose()
                     },
@@ -8290,6 +8604,8 @@ private fun StreamBugReporter(
                     Text("Cancel")
                 }
             }
+
+            BugReportSubmissionRequirements()
 
             BugReportDataDisclosure(
                 title = "Before you send",
@@ -8396,6 +8712,7 @@ private fun StreamBugReporter(
             title = { Text("Upload bug report?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BugReportSubmissionRequirements()
                     Text(
                         "Your report will be uploaded to the PrintedWaste API and may be viewed by PrintedWaste and OpenNOW maintainers.",
                     )

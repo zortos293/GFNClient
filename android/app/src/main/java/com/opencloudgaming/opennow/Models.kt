@@ -734,21 +734,12 @@ private fun customResolutionAllowedForPlan(
     subscriptionInfo: SubscriptionInfo?,
     fallbackMembershipTier: String?,
 ): Boolean {
-    val (width, height) = resolution
-    val isUltrawide = width.toLong() * 9L > height.toLong() * 16L
-    if (
-        isUltrawide &&
-        streamResolutionPlanRank(effectiveStreamingPlan(subscriptionInfo, fallbackMembershipTier)) <
-        streamResolutionPlanRank(StreamResolutionPlan.Priority)
-    ) {
-        return false
-    }
-
     val availableChoices = STREAM_RESOLUTION_OPTIONS
         .map { it.toChoice() }
         .filter { it.isAvailableFor(subscriptionInfo, fallbackMembershipTier) }
     if (availableChoices.isEmpty()) return false
 
+    val (width, height) = resolution
     val pixels = width * height
     return width <= availableChoices.maxOf { it.width } &&
         height <= availableChoices.maxOf { it.height } &&
@@ -768,8 +759,8 @@ internal val STREAM_RESOLUTION_OPTIONS = listOf(
     StreamResolutionOption("1112x834", "4:3", "834"),
     StreamResolutionOption("1600x1200", "4:3", "1080"),
     StreamResolutionOption("1280x1024", "5:4", "1050"),
-    StreamResolutionOption("1376x640", "19.5:9", "720", StreamResolutionPlan.Priority),
-    StreamResolutionOption("1680x720", "21:9", "720", StreamResolutionPlan.Priority),
+    StreamResolutionOption("1376x640", "19.5:9", "720"),
+    StreamResolutionOption("1680x720", "21:9", "720"),
     StreamResolutionOption("2560x1080", "21:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("3840x1080", "32:9", "1080", StreamResolutionPlan.Priority),
     StreamResolutionOption("2560x1440", "16:9", "1440", StreamResolutionPlan.Priority),

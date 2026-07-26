@@ -291,22 +291,27 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun freePlanResolutionNormalizationFallsBackFromPremiumUltrawide() {
+    fun freePlanResolutionNormalizationKeepsFreeUltrawide() {
         val freeSubscription = SubscriptionInfo(membershipTier = "FREE")
 
         assertEquals(
-            "1920x1080",
+            "1680x720",
             normalizeStreamResolutionForAspectAndPlan("1920x1080", "21:9", freeSubscription, null),
         )
         val adjusted = StreamSettings(resolution = "2560x1080", aspectRatio = "21:9")
             .withResolutionAllowed(freeSubscription, null)
-        assertEquals("1920x1080", adjusted.resolution)
-        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals("1680x720", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
 
         val selectedWhd = StreamSettings(resolution = "1680x720", aspectRatio = "21:9")
             .withResolutionAllowed(freeSubscription, null)
-        assertEquals("1280x720", selectedWhd.resolution)
-        assertEquals("16:9", selectedWhd.aspectRatio)
+        assertEquals("1680x720", selectedWhd.resolution)
+        assertEquals("21:9", selectedWhd.aspectRatio)
+
+        val selectedNineteenPointFiveByNine = StreamSettings(resolution = "1376x640", aspectRatio = "19.5:9")
+            .withResolutionAllowed(freeSubscription, null)
+        assertEquals("1376x640", selectedNineteenPointFiveByNine.resolution)
+        assertEquals("19.5:9", selectedNineteenPointFiveByNine.aspectRatio)
     }
 
     @Test
@@ -317,21 +322,21 @@ class StreamResolutionTest {
     }
 
     @Test
-    fun freePlanRejectsCustomUltrawideResolutionInsidePixelBounds() {
+    fun freePlanPreservesCustomUltrawideResolutionInsidePixelBounds() {
         val adjusted = StreamSettings(resolution = "1728x720", aspectRatio = "21:9")
             .withResolutionAllowed(SubscriptionInfo(membershipTier = "FREE"), null)
 
-        assertEquals("1280x720", adjusted.resolution)
-        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals("1728x720", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
     }
 
     @Test
-    fun freePlanClampsCustomResolutionOutsidePlanBounds() {
+    fun freePlanClampsUltimateUltrawideToFreeUltrawide() {
         val adjusted = StreamSettings(resolution = "5120x2160", aspectRatio = "21:9")
             .withResolutionAllowed(SubscriptionInfo(membershipTier = "FREE"), null)
 
-        assertEquals("1920x1080", adjusted.resolution)
-        assertEquals("16:9", adjusted.aspectRatio)
+        assertEquals("1680x720", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
     }
 
     @Test
@@ -417,8 +422,8 @@ class StreamResolutionTest {
         val fiveK = streamResolutionChoicesForAspect("16:9").first { it.value == "5120x2880" }
 
         assertEquals(true, fhd.isAvailableFor(freeSubscription, null))
-        assertEquals(false, nineteenPointFiveByNine.isAvailableFor(freeSubscription, null))
-        assertEquals(false, whd.isAvailableFor(freeSubscription, null))
+        assertEquals(true, nineteenPointFiveByNine.isAvailableFor(freeSubscription, null))
+        assertEquals(true, whd.isAvailableFor(freeSubscription, null))
         assertEquals(false, wfhd.isAvailableFor(freeSubscription, null))
         assertEquals(false, qhd.isAvailableFor(freeSubscription, null))
         assertEquals(true, fhd.isAvailableFor(prioritySubscription, null))

@@ -17,7 +17,6 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
-import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -399,14 +398,25 @@ private class OpenNowVideoDecoderFactory(
         }
         val exactRequestedFps = requestedFps().coerceAtLeast(1)
         val tuneDecoderPerformance = mediaCodecPerformanceTargetFps(exactRequestedFps) != null
+        val tuneSelectedDecoder = shouldUseMediaCodecDecoderTuning(
+            selectedDecoder = decoder,
+            approvedHardwareDecoder = hardwareDecoder,
+            requestedFps = exactRequestedFps,
+            lowLatencyEnabled = nativeLowLatencyDecoderEnabled,
+        )
         if (codec != null && hardwareDecoder != null) {
             NativeInputDiagnostics.add(
                 "native MediaCodec decoder selected codec=${codec.name} " +
                     "implementation=${hardwareDecoder.getImplementationName()} requestedFps=$exactRequestedFps " +
                     "performanceTuning=$tuneDecoderPerformance lowLatency=$nativeLowLatencyDecoderEnabled",
             )
+        } else if (codec != null && decoder != null && (nativeLowLatencyDecoderEnabled || tuneDecoderPerformance)) {
+            NativeInputDiagnostics.add(
+                "MediaCodec tuning skipped codec=${codec.name} decoder=${decoder.javaClass.name} " +
+                    "reason=non-approved-hardware-decoder",
+            )
         }
-        return if (decoder != null && (nativeLowLatencyDecoderEnabled || tuneDecoderPerformance)) {
+        return if (decoder != null && tuneSelectedDecoder) {
             LowLatencyVideoDecoder(
                 delegate = decoder,
                 requestedFps = exactRequestedFps,
@@ -1016,10 +1026,23 @@ object NativeStreamInputRouter {
             systemMenuHandler?.invoke()
             return systemMenuHandler != null
         }
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isStreamExitShortcutKey()) {
+        val streamExitShortcut = event.isStreamExitShortcutKey()
+        if (
+            androidTvProfile &&
+            event.action == KeyEvent.ACTION_DOWN &&
+            event.repeatCount == 0 &&
+            (event.keyCode == KeyEvent.KEYCODE_BACK || event.keyCode == KeyEvent.KEYCODE_BUTTON_B)
+        ) {
+            NativeInputDiagnostics.add(
+                "tv back key key=${event.keyCode} source=${event.source} device=${event.deviceId}:${event.device?.name.orEmpty()} " +
+                    "controller=${event.isControllerInputDevice()} dpad=${event.isDpadSource()} " +
+                    "route=${if (streamExitShortcut) "stream_overlay" else "cloud_input"}",
+            )
+        }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && streamExitShortcut) {
             return dispatchSystemBack()
         }
-        if (event.action == KeyEvent.ACTION_UP && event.isStreamExitShortcutKey()) {
+        if (event.action == KeyEvent.ACTION_UP && streamExitShortcut) {
             return systemBackHandler != null
         }
         if (streamUiActive) return false
@@ -1061,6 +1084,8 @@ object NativeStreamInputRouter {
             keyCode = keyCode,
             controllerInputDevice = isControllerInputDevice(),
             hardwareKeyboardSource = isHardwareKeyboardSource(),
+            androidTvProfile = androidTvProfile,
+            dpadSource = isDpadSource(),
         )
 
     fun shouldOpenStreamSystemMenuKey(keyCode: Int, controllerInputDevice: Boolean): Boolean =
@@ -1070,8 +1095,14 @@ object NativeStreamInputRouter {
         keyCode: Int,
         controllerInputDevice: Boolean,
         hardwareKeyboardSource: Boolean,
+        androidTvProfile: Boolean = false,
+        dpadSource: Boolean = false,
     ): Boolean =
         (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
+            (androidTvProfile &&
+                dpadSource &&
+                keyCode == KeyEvent.KEYCODE_BUTTON_B &&
+                !controllerInputDevice) ||
             (keyCode == KeyEvent.KEYCODE_ESCAPE && !hardwareKeyboardSource)
 
     private fun KeyEvent.isControllerInputDevice(): Boolean =
@@ -1300,32 +1331,6 @@ object NativeStreamInputRouter {
     }
 
     private const val TOUCH_CONTROLLER_FALLBACK_TOP_RATIO = 0.52f
-}
-
-object NativeInputDiagnostics {
-    private const val MAX_LINES = 240
-    private val lines = ArrayDeque<String>()
-
-    @Synchronized
-    fun add(message: String) {
-        if (lines.size >= MAX_LINES) {
-            lines.removeFirst()
-        }
-        lines.addLast("${SystemClock.elapsedRealtime()} $message")
-        Log.d("OpenNOWInput", message)
-    }
-
-    @Synchronized
-    fun snapshot(): String =
-        if (lines.isEmpty()) {
-            "input.diagnostics=empty"
-        } else {
-            buildString {
-                appendLine("input.diagnostics:")
-                lines.forEach { appendLine(it) }
-            }.trimEnd()
-        }
-
 }
 
 enum class InputDataChannelRole {
@@ -2137,6 +2142,76 @@ internal class FirstVideoFrameWatchdog(
     }
 }
 
+internal data class TouchMouseDelta(
+    val dx: Int,
+    val dy: Int,
+)
+
+internal class TouchMouseMotionAccumulator(
+    private val minimumSendIntervalMs: Long = 8L,
+) {
+    private var pendingDx = 0f
+    private var pendingDy = 0f
+    private var lastSendTimeMs = Long.MIN_VALUE
+
+    fun reset() {
+        pendingDx = 0f
+        pendingDy = 0f
+        lastSendTimeMs = Long.MIN_VALUE
+    }
+
+    fun add(
+        dx: Float,
+        dy: Float,
+        eventTimeMs: Long,
+        sensitivity: Float,
+        acceleration: Int,
+        force: Boolean = false,
+    ): TouchMouseDelta? {
+        if (!dx.isFinite() || !dy.isFinite() || !sensitivity.isFinite()) {
+            reset()
+            return null
+        }
+        var adjustedDx = dx * sensitivity
+        var adjustedDy = dy * sensitivity
+        if (acceleration > 1) {
+            val speed = sqrt(adjustedDx * adjustedDx + adjustedDy * adjustedDy)
+            val strength = (acceleration - 1f) / 149f
+            val accelerationFactor = 1f + min(0.6f * strength, (speed / 50f) * strength)
+            adjustedDx *= accelerationFactor
+            adjustedDy *= accelerationFactor
+        }
+        if (!adjustedDx.isFinite() || !adjustedDy.isFinite()) {
+            reset()
+            return null
+        }
+        pendingDx += adjustedDx
+        pendingDy += adjustedDy
+        if (!pendingDx.isFinite() || !pendingDy.isFinite()) {
+            reset()
+            return null
+        }
+
+        val elapsedSinceSend = eventTimeMs - lastSendTimeMs
+        if (
+            !force &&
+            lastSendTimeMs != Long.MIN_VALUE &&
+            elapsedSinceSend in 0 until minimumSendIntervalMs
+        ) {
+            return null
+        }
+
+        val sendDx = pendingDx.roundToInt()
+        val sendDy = pendingDy.roundToInt()
+        if (sendDx == 0 && sendDy == 0) return null
+
+        pendingDx -= sendDx
+        pendingDy -= sendDy
+        lastSendTimeMs = eventTimeMs
+        return TouchMouseDelta(sendDx, sendDy)
+    }
+}
+
 private class TouchMouseState {
     private var activePointerId = -1
     private var downX = 0f
@@ -2153,6 +2228,7 @@ private class TouchMouseState {
     private var virtualCursorY = 0f
     private var virtualCursorInitialized = false
     private var twoFingerTapCandidate = false
+    private val motionAccumulator = TouchMouseMotionAccumulator()
 
     fun reset(client: NativeStreamClient?) {
         if (selecting) client?.setTouchMouseButton(false)
@@ -2161,6 +2237,7 @@ private class TouchMouseState {
         doubleTapDragCandidate = false
         virtualCursorInitialized = false
         twoFingerTapCandidate = false
+        motionAccumulator.reset()
     }
 
     fun handle(
@@ -2356,7 +2433,7 @@ private class TouchMouseState {
                         NativeInputDiagnostics.add("touch double tap drag start")
                     }
                 }
-                sendMouseDelta(dx, dy, client)
+                sendMouseDelta(dx, dy, event.eventTime, client)
                 lastX = x
                 lastY = y
                 return true
@@ -2389,6 +2466,7 @@ private class TouchMouseState {
         downTimeMs = event.eventTime
         lastX = downX
         lastY = downY
+        motionAccumulator.reset()
         selecting = false
         doubleTapDragCandidate = isDoubleTap(event, index)
         if (doubleTapDragCandidate) {
@@ -2399,6 +2477,15 @@ private class TouchMouseState {
     private fun finishPointer(event: MotionEvent, index: Int, client: NativeStreamClient) {
         val x = event.getX(index)
         val y = event.getY(index)
+        sendMouseDelta(
+            dx = x - lastX,
+            dy = y - lastY,
+            eventTimeMs = event.eventTime,
+            client = client,
+            force = true,
+        )
+        lastX = x
+        lastY = y
         val tapDistanceX = abs(x - downX)
         val tapDistanceY = abs(y - downY)
         val wasTap = activePointerId >= 0 &&
@@ -2445,14 +2532,20 @@ private class TouchMouseState {
     private fun sendMouseDelta(
         dx: Float,
         dy: Float,
+        eventTimeMs: Long,
         client: NativeStreamClient,
         partiallyReliable: Boolean = true,
+        force: Boolean = false,
     ) {
-        val ix = dx.roundToInt()
-        val iy = dy.roundToInt()
-        if (ix != 0 || iy != 0) {
-            client.sendTouchMouseMove(ix, iy, partiallyReliable)
-        }
+        val delta = motionAccumulator.add(
+            dx = dx,
+            dy = dy,
+            eventTimeMs = eventTimeMs,
+            sensitivity = client.settings.mouseSensitivity,
+            acceleration = client.settings.mouseAcceleration,
+            force = force,
+        ) ?: return
+        client.sendRawMouseMove(delta.dx, delta.dy, partiallyReliable)
     }
 
     companion object {
@@ -3170,8 +3263,15 @@ class NativeStreamClient(
     fun sendKeyCode(keyCode: Int) {
         val down = KeyEvent(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), KeyEvent.ACTION_DOWN, keyCode, 0)
         val up = KeyEvent(SystemClock.uptimeMillis(), SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, keyCode, 0)
-        dispatchKey(down)
-        dispatchKey(up)
+        val mapped = InputEncoder.mapKeyEvent(down)
+        val downQueued = dispatchKey(down)
+        val upQueued = dispatchKey(up)
+        NativeInputDiagnostics.add(
+            "overlay keyboard key=$keyCode mapped=${mapped != null} " +
+                "vk=${mapped?.keycode} scan=${mapped?.scancode} " +
+                "downQueued=$downQueued upQueued=$upQueued " +
+                "reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+        )
     }
 
     fun sendText(text: String) {
@@ -4033,7 +4133,10 @@ class NativeStreamClient(
         val label = channel.label()
         val normalizedLabel = label.lowercase(Locale.US)
         val role = InputDataChannelLabels.classify(label)
-        NativeInputDiagnostics.add("data channel attached label=$normalizedLabel role=$role state=${channel.state()}")
+        NativeInputDiagnostics.addRetained(
+            key = "channel.$normalizedLabel",
+            message = "data channel attached label=$normalizedLabel role=$role state=${channel.state()}",
+        )
         when (role) {
             InputDataChannelRole.Reliable -> reliableInput = channel
             InputDataChannelRole.PartiallyReliable -> partiallyReliableInput = channel
@@ -4042,7 +4145,10 @@ class NativeStreamClient(
         channel.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() {
-                NativeInputDiagnostics.add("input channel state label=$normalizedLabel state=${channel.state()}")
+                NativeInputDiagnostics.addRetained(
+                    key = "channel.$normalizedLabel",
+                    message = "input channel state label=$normalizedLabel role=$role state=${channel.state()}",
+                )
                 if (channel.state() == DataChannel.State.OPEN) {
                     inputDropLogged = false
                     NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
@@ -4088,7 +4194,10 @@ class NativeStreamClient(
 
         inputEncoder.setProtocolVersion(version)
         inputEncoder.resetGamepadSequences()
-        NativeInputDiagnostics.add("input handshake protocol=$version bytes=$size")
+        NativeInputDiagnostics.addRetained(
+            key = "protocol",
+            message = "input handshake protocol=$version bytes=$size",
+        )
         updateHapticsAdvertisement(force = true)
         schedulePrimeConnectedGamepadState(reason = "input handshake")
         return true
@@ -4462,16 +4571,20 @@ class NativeStreamClient(
         val controllerId = controllerIdFor(event)
         activeControllerId = controllerId
         if (!physicalControllerActive) {
-            NativeInputDiagnostics.add("physical gamepad motion source=${event.source} device=${event.deviceId} slot=$controllerId")
+            NativeInputDiagnostics.addRetained(
+                key = "controller.device.$controllerId",
+                message = "physical gamepad motion source=${event.source} device=${event.deviceId}:${event.device?.name.orEmpty()} slot=$controllerId",
+            )
         }
         physicalControllerConnected = true
         physicalControllerActive = true
-        val axes = AndroidGamepadAxisMapping.resolve(event.rawGamepadAxes(), event.axisAvailability())
+        val raw = event.rawGamepadAxes()
+        val axes = AndroidGamepadAxisMapping.resolve(raw, event.axisAvailability())
         if (!physicalGamepadAxisLogged) {
             physicalGamepadAxisLogged = true
-            val raw = event.rawGamepadAxes()
-            NativeInputDiagnostics.add(
-                "physical gamepad axes left=${axes.leftSource} right=${axes.rightSource} hatAsLeft=${axes.hatUsedAsLeftStick} " +
+            NativeInputDiagnostics.addRetained(
+                key = "controller.axes.$controllerId",
+                message = "physical gamepad axes left=${axes.leftSource} right=${axes.rightSource} hatAsLeft=${axes.hatUsedAsLeftStick} " +
                     "x=${raw.x.formatAxis()} y=${raw.y.formatAxis()} z=${raw.z.formatAxis()} rz=${raw.rz.formatAxis()} " +
                     "rx=${raw.rx.formatAxis()} ry=${raw.ry.formatAxis()} hatX=${raw.hatX.formatAxis()} hatY=${raw.hatY.formatAxis()}",
             )
@@ -4515,7 +4628,26 @@ class NativeStreamClient(
         physicalLeftStickY = leftY
         physicalRightStickX = rightX
         physicalRightStickY = rightY
-        return sendCurrentGamepadState(controllerId = controllerId)
+        val sent = sendCurrentGamepadState(controllerId = controllerId)
+        if (
+            abs(leftX) > ANALOG_ACTIVITY_THRESHOLD ||
+            abs(leftY) > ANALOG_ACTIVITY_THRESHOLD ||
+            abs(rightX) > ANALOG_ACTIVITY_THRESHOLD ||
+            abs(rightY) > ANALOG_ACTIVITY_THRESHOLD ||
+            lt > ANALOG_ACTIVITY_THRESHOLD ||
+            rt > ANALOG_ACTIVITY_THRESHOLD
+        ) {
+            NativeInputDiagnostics.retainThrottled(
+                key = "controller.last-analog.$controllerId",
+                minimumIntervalMs = ANALOG_DIAGNOSTIC_INTERVAL_MS,
+            ) {
+                "physical gamepad analog device=${event.deviceId}:${event.device?.name.orEmpty()} slot=$controllerId " +
+                    "left=${leftX.formatAxis()},${leftY.formatAxis()} right=${rightX.formatAxis()},${rightY.formatAxis()} " +
+                    "triggers=${lt.formatAxis()},${rt.formatAxis()} sources=${axes.leftSource}/${axes.rightSource} " +
+                    "sent=$sent reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}"
+            }
+        }
+        return sent
     }
 
     private fun dispatchGamepadKey(event: KeyEvent): Boolean {
@@ -4633,23 +4765,53 @@ class NativeStreamClient(
 
     private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
         val partiallyReliable = canSendGamepadPartiallyReliable(controllerId)
+        val buttons =
+            physicalSteamOverlayChord.effectiveButtons(physicalButtons) or
+                physicalHatButtons or
+                virtualSteamOverlayChord.effectiveButtons(virtualButtons) or
+                steamMenuChordButtons
+        val leftTrigger = max(lastLeftTrigger, virtualLeftTrigger)
+        val rightTrigger = max(lastRightTrigger, virtualRightTrigger)
+        val leftStickX = effectiveLeftStickX()
+        val leftStickY = effectiveLeftStickY()
+        val rightStickX = effectiveRightStickX()
+        val rightStickY = effectiveRightStickY()
+        val bitmap = currentGamepadBitmap(controllerId)
         val packet = inputEncoder.encodeGamepadState(
             controllerId = controllerId,
-            buttons =
-                physicalSteamOverlayChord.effectiveButtons(physicalButtons) or
-                    physicalHatButtons or
-                    virtualSteamOverlayChord.effectiveButtons(virtualButtons) or
-                    steamMenuChordButtons,
-            leftTrigger = max(lastLeftTrigger, virtualLeftTrigger),
-            rightTrigger = max(lastRightTrigger, virtualRightTrigger),
-            leftStickX = effectiveLeftStickX(),
-            leftStickY = effectiveLeftStickY(),
-            rightStickX = effectiveRightStickX(),
-            rightStickY = effectiveRightStickY(),
-            bitmap = currentGamepadBitmap(controllerId),
+            buttons = buttons,
+            leftTrigger = leftTrigger,
+            rightTrigger = rightTrigger,
+            leftStickX = leftStickX,
+            leftStickY = leftStickY,
+            rightStickX = rightStickX,
+            rightStickY = rightStickY,
+            bitmap = bitmap,
             partiallyReliable = partiallyReliable,
         )
-        return sendInput(packet, partiallyReliable = partiallyReliable, fallbackToReliable = !partiallyReliable)
+        val sent = sendInput(packet, partiallyReliable = partiallyReliable, fallbackToReliable = !partiallyReliable)
+        NativeInputDiagnostics.retainThrottled(
+            key = "controller.packet.$controllerId",
+            minimumIntervalMs = GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS,
+        ) {
+            "gamepad packet slot=$controllerId sent=$sent partialRequested=$partiallyReliable " +
+                "bitmap=$bitmap buttons=$buttons triggers=$leftTrigger,$rightTrigger " +
+                "left=$leftStickX,$leftStickY right=$rightStickX,$rightStickY " +
+                "physicalActive=$physicalControllerActive virtualVisible=$virtualControllerVisible " +
+                "reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}"
+        }
+        if (leftStickX != 0 || leftStickY != 0 || rightStickX != 0 || rightStickY != 0) {
+            NativeInputDiagnostics.retainThrottled(
+                key = "controller.last-stick.$controllerId",
+                minimumIntervalMs = ANALOG_DIAGNOSTIC_INTERVAL_MS,
+            ) {
+                "gamepad stick packet slot=$controllerId sent=$sent left=$leftStickX,$leftStickY right=$rightStickX,$rightStickY " +
+                    "leftSource=${if (virtualLeftStickActive) "virtual" else "physical"} " +
+                    "rightSource=${if (virtualRightStickActive) "virtual" else "physical"} " +
+                    "reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}"
+            }
+        }
+        return sent
     }
 
     private fun updateGuideAutoRelease(mask: Int, pressed: Boolean, controllerId: Int) {
@@ -4738,13 +4900,22 @@ class NativeStreamClient(
         if (channel?.state() != DataChannel.State.OPEN) {
             if (!inputDropLogged) {
                 inputDropLogged = true
-                NativeInputDiagnostics.add(
-                    "input dropped noOpenChannel requestedPartial=$partiallyReliable reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()} bytes=${bytes.size}",
+                NativeInputDiagnostics.addRetained(
+                    key = "input.last-drop",
+                    message = "input dropped noOpenChannel requestedPartial=$partiallyReliable reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()} bytes=${bytes.size}",
                 )
             }
             return false
         }
-        if (channel.bufferedAmount() > 65536) {
+        val bufferedAmount = channel.bufferedAmount()
+        if (bufferedAmount > 65536) {
+            NativeInputDiagnostics.retainThrottled(
+                key = "input.last-drop",
+                minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
+            ) {
+                "input dropped backpressure requestedPartial=$partiallyReliable label=${channel.label()} " +
+                    "bufferedAmount=$bufferedAmount bytes=${bytes.size}"
+            }
             return false
         }
         inputScope.launch {
@@ -4798,10 +4969,12 @@ class NativeStreamClient(
         val activeControllerDisconnected = activeControllerId in removedControllerSlots.values
         val connected = connectedDevices.isNotEmpty()
         val connectionChanged = connected != physicalControllerConnected
+        val connectionMessage =
+            "physical gamepad connected=$connected devices=${connectedDevices.joinToString { "${it.id}:${it.name}" }}"
         if (connectionChanged) {
-            NativeInputDiagnostics.add(
-                "physical gamepad connected=$connected devices=${connectedDevices.joinToString { "${it.id}:${it.name}" }}",
-            )
+            NativeInputDiagnostics.addRetained("controller.connection", connectionMessage)
+        } else {
+            NativeInputDiagnostics.retain("controller.connection", connectionMessage)
         }
         physicalControllerConnected = connected
         if (connected && !physicalControllerActive && controllerSlots.isEmpty()) {
@@ -4827,8 +5000,9 @@ class NativeStreamClient(
         refreshConnectedPhysicalControllers()
         if (!hasAnyControllerState()) return
         val sent = sendCurrentGamepadState()
-        NativeInputDiagnostics.add(
-            "gamepad state prime reason=$reason sent=$sent connected=$physicalControllerConnected active=$physicalControllerActive slot=$activeControllerId reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+        NativeInputDiagnostics.addRetained(
+            key = "controller.prime",
+            message = "gamepad state prime reason=$reason sent=$sent connected=$physicalControllerConnected active=$physicalControllerActive slot=$activeControllerId reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
         )
     }
 
@@ -5190,6 +5364,10 @@ class NativeStreamClient(
         private const val RUMBLE_EFFECT_MS = 90L
         private const val RUMBLE_THROTTLE_MS = 35L
         private const val HAPTICS_LOG_INTERVAL_MS = 5000L
+        private const val ANALOG_ACTIVITY_THRESHOLD = 0.01f
+        private const val ANALOG_DIAGNOSTIC_INTERVAL_MS = 250L
+        private const val GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS = 1_000L
+        private const val INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS = 1_000L
     }
 
     private fun radialDeadzoneScale(x: Float, y: Float, deadzone: Float = 0.15f): Float {

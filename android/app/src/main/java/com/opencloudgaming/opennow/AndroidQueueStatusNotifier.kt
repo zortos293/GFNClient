@@ -159,6 +159,12 @@ class AndroidQueueStatusService : Service() {
         return START_NOT_STICKY
     }
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(QUEUE_SERVICE_TAG, "Queue foreground service timed out startId=$startId type=$fgsType; stopping")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startQueueForeground(title: String, text: String) {
@@ -269,4 +275,3 @@ private fun buildQueueReadyNotification(context: Context, gameTitle: String): No
         .setContentIntent(pendingIntent)
         .build()
 }
-

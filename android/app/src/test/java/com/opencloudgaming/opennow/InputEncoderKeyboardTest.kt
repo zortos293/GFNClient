@@ -33,6 +33,20 @@ class InputEncoderKeyboardTest {
     }
 
     @Test
+    fun mapsOverlayEscapeWhenAndroidReportsNoScanCode() {
+        val escape = InputEncoder.mapKeyboardPayload(
+            keyCode = KeyEvent.KEYCODE_ESCAPE,
+            unicode = 0,
+            scanCode = 0,
+            timestampUs = 0L,
+        )
+
+        assertNotNull(escape)
+        assertEquals(0x1b, escape?.keycode)
+        assertEquals(0x0001, escape?.scancode)
+    }
+
+    @Test
     fun mapsOverlayTextCharactersLikeDesktopTextInput() {
         val upperD = InputEncoder.mapTextCharToKeySpec('D')
         val lowerA = InputEncoder.mapTextCharToKeySpec('a')

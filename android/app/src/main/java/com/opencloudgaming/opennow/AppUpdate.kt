@@ -9,11 +9,15 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import com.google.android.play.core.appupdate.AppUpdateInfo
+import com.google.android.play.core.appupdate.AppUpdateManagerFactory
+import com.google.android.play.core.install.model.UpdateAvailability
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -28,10 +32,13 @@ import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
 internal const val ANDROID_UPDATE_SOURCE_URL = "https://api.printedwaste.com/releases/opennow/latest"
 internal const val GOOGLE_PLAY_STORE_PACKAGE = "com.android.vending"
+internal const val GOOGLE_PLAY_STORE_LISTING_URL = "https://play.google.com/store/apps/details?id=${BuildConfig.APPLICATION_ID}"
 private const val UPDATE_FILE_PROVIDER_AUTHORITY_SUFFIX = ".updates"
 private val UPDATE_USER_AGENT = "OpenNOW-AndroidUpdater/${BuildConfig.VERSION_NAME}"
 private val KNOWN_PACKAGE_INSTALLER_GRANT_TARGETS = setOf(
@@ -110,18 +117,24 @@ data class AndroidUpdateState(
     val apkUpdatesAllowed: Boolean
         get() = installSource.allowsApkUpdates
 
+    val updateChecksSupported: Boolean
+        get() = apkUpdatesAllowed || installSource.isGooglePlay
+
     val canCheck: Boolean
-        get() = apkUpdatesAllowed && status != AndroidUpdateStatus.Checking && status != AndroidUpdateStatus.Downloading
+        get() = updateChecksSupported && status != AndroidUpdateStatus.Checking && status != AndroidUpdateStatus.Downloading
 
     val canDownload: Boolean
         get() = apkUpdatesAllowed && status == AndroidUpdateStatus.Available
 
     val canInstall: Boolean
         get() = apkUpdatesAllowed && status == AndroidUpdateStatus.Downloaded
+
+    val canOpenPlayStore: Boolean
+        get() = installSource.isGooglePlay && status == AndroidUpdateStatus.Available
 }
 
 internal fun AndroidUpdateState.shouldRunAutomaticCheck(): Boolean {
-    if (!apkUpdatesAllowed) return false
+    if (!updateChecksSupported) return false
     return when (status) {
         AndroidUpdateStatus.Checking,
         AndroidUpdateStatus.Available,
@@ -132,7 +145,7 @@ internal fun AndroidUpdateState.shouldRunAutomaticCheck(): Boolean {
 }
 
 internal fun androidUpdateNoticeKey(update: AndroidUpdateState): String? =
-    if (!update.apkUpdatesAllowed) {
+    if (!update.updateChecksSupported) {
         null
     } else when (update.status) {
         AndroidUpdateStatus.Available,
@@ -148,7 +161,7 @@ internal fun androidUpdateNoticeKey(update: AndroidUpdateState): String? =
 
 internal fun androidUpdateUnavailableMessage(installSource: AndroidAppInstallSource): String =
     when {
-        installSource.isGooglePlay -> "Installed from Google Play. Updates are handled by Google Play."
+        installSource.isGooglePlay -> "Ready to check Google Play for updates."
         !installSource.apkUpdatesSupportedByBuild -> "APK self-updates are disabled in this Play release."
         else -> "Ready to check for sideload APK updates."
     }
@@ -175,6 +188,7 @@ class AndroidAppUpdater(
 ) {
     private val appContext = context.applicationContext
     private val installSource = detectAndroidAppInstallSource(appContext)
+    private val playAppUpdateManager by lazy { AppUpdateManagerFactory.create(appContext) }
     private val _state = MutableStateFlow(
         AndroidUpdateState(
             installSource = installSource,
@@ -187,6 +201,10 @@ class AndroidAppUpdater(
     private var downloadedApk: File? = null
 
     suspend fun checkForUpdate(sourceUrl: String = ANDROID_UPDATE_SOURCE_URL) {
+        if (_state.value.installSource.isGooglePlay) {
+            checkForPlayStoreUpdate()
+            return
+        }
         if (!_state.value.apkUpdatesAllowed) {
             publishApkUpdatesUnavailable()
             return
@@ -244,7 +262,7 @@ class AndroidAppUpdater(
     }
 
     fun markCheckDeferredForStreaming() {
-        if (!_state.value.apkUpdatesAllowed) {
+        if (!_state.value.updateChecksSupported) {
             publishApkUpdatesUnavailable()
             return
         }
@@ -260,6 +278,38 @@ class AndroidAppUpdater(
             message = "Update checks pause while streaming.",
             progress = null,
         )
+    }
+
+    fun openPlayStoreListing() {
+        if (!_state.value.installSource.isGooglePlay) return
+        val marketIntent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("market://details?id=${BuildConfig.APPLICATION_ID}"),
+        ).apply {
+            setPackage(GOOGLE_PLAY_STORE_PACKAGE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(GOOGLE_PLAY_STORE_LISTING_URL))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            appContext.startActivity(marketIntent)
+        } catch (_: ActivityNotFoundException) {
+            runCatching { appContext.startActivity(webIntent) }
+                .onFailure { error ->
+                    publishError(
+                        GOOGLE_PLAY_STORE_LISTING_URL,
+                        error.message ?: "Google Play could not be opened.",
+                    )
+                }
+        } catch (error: SecurityException) {
+            runCatching { appContext.startActivity(webIntent) }
+                .onFailure {
+                    publishError(
+                        GOOGLE_PLAY_STORE_LISTING_URL,
+                        error.message ?: "Android blocked access to Google Play.",
+                    )
+                }
+        }
     }
 
     suspend fun downloadUpdate(sourceUrl: String = ANDROID_UPDATE_SOURCE_URL) {
@@ -351,6 +401,60 @@ class AndroidAppUpdater(
             publishError(_state.value.sourceUrl, error.message ?: "Android blocked package install access.")
         }
     }
+
+    private suspend fun checkForPlayStoreUpdate() {
+        publish(
+            status = AndroidUpdateStatus.Checking,
+            sourceUrl = GOOGLE_PLAY_STORE_LISTING_URL,
+            message = "Checking Google Play...",
+            progress = null,
+            clearCandidate = true,
+        )
+        try {
+            val updateInfo = awaitPlayStoreUpdateInfo()
+            val currentBuild = BuildConfig.VERSION_CODE.toLong()
+            val availableBuild = playStoreAvailableVersionCode(
+                currentVersionCode = currentBuild,
+                updateAvailability = updateInfo.updateAvailability(),
+                availableVersionCode = updateInfo.availableVersionCode(),
+            )
+            val checkedAt = System.currentTimeMillis()
+            if (availableBuild != null) {
+                publish(
+                    status = AndroidUpdateStatus.Available,
+                    sourceUrl = GOOGLE_PLAY_STORE_LISTING_URL,
+                    message = "Installed build $currentBuild is older than Google Play build $availableBuild.",
+                    availableVersionCode = availableBuild,
+                    lastCheckedAt = checkedAt,
+                )
+            } else {
+                publish(
+                    status = AndroidUpdateStatus.NotAvailable,
+                    sourceUrl = GOOGLE_PLAY_STORE_LISTING_URL,
+                    message = "OpenNOW is up to date on Google Play (build $currentBuild).",
+                    availableVersionCode = currentBuild,
+                    lastCheckedAt = checkedAt,
+                )
+            }
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            publishError(
+                GOOGLE_PLAY_STORE_LISTING_URL,
+                error.message ?: "Google Play update check failed.",
+            )
+        }
+    }
+
+    private suspend fun awaitPlayStoreUpdateInfo(): AppUpdateInfo =
+        suspendCancellableCoroutine { continuation ->
+            playAppUpdateManager.appUpdateInfo
+                .addOnSuccessListener { updateInfo ->
+                    if (continuation.isActive) continuation.resume(updateInfo)
+                }
+                .addOnFailureListener { error ->
+                    if (continuation.isActive) continuation.resumeWithException(error)
+                }
+        }
 
     private fun fetchCandidate(sourceUrl: String): AndroidUpdateCandidate {
         val request = Request.Builder()
@@ -497,6 +601,16 @@ class AndroidAppUpdater(
             }
         }
     }
+}
+
+internal fun playStoreAvailableVersionCode(
+    currentVersionCode: Long,
+    updateAvailability: Int,
+    availableVersionCode: Int,
+): Long? {
+    val updateAvailable = updateAvailability == UpdateAvailability.UPDATE_AVAILABLE ||
+        updateAvailability == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS
+    return availableVersionCode.toLong().takeIf { updateAvailable && it > currentVersionCode }
 }
 
 internal fun androidUpdateStorageDir(context: Context): File =

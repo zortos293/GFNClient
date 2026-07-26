@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import com.google.android.play.core.install.model.UpdateAvailability
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -162,7 +163,7 @@ class AppUpdateTest {
     }
 
     @Test
-    fun googlePlayInstallSourceDisablesApkUpdater() {
+    fun googlePlayInstallSourceUsesPlayChecksWithoutEnablingApkUpdater() {
         val update = AndroidUpdateState(
             status = AndroidUpdateStatus.Available,
             installSource = AndroidAppInstallSource(setOf(GOOGLE_PLAY_STORE_PACKAGE)),
@@ -172,11 +173,40 @@ class AppUpdateTest {
 
         assertTrue(update.installSource.isGooglePlay)
         assertFalse(update.apkUpdatesAllowed)
-        assertFalse(update.canCheck)
+        assertTrue(update.updateChecksSupported)
+        assertTrue(update.canCheck)
         assertFalse(update.canDownload)
         assertFalse(update.canInstall)
+        assertTrue(update.canOpenPlayStore)
         assertFalse(update.shouldRunAutomaticCheck())
-        assertNull(androidUpdateNoticeKey(update))
+        assertEquals("code:22|name:0.6.7", androidUpdateNoticeKey(update))
+        assertTrue(update.copy(status = AndroidUpdateStatus.Idle).shouldRunAutomaticCheck())
+    }
+
+    @Test
+    fun playStoreBuildComparisonRequiresAnAvailableNewerBuild() {
+        assertEquals(
+            58L,
+            playStoreAvailableVersionCode(
+                currentVersionCode = 51,
+                updateAvailability = UpdateAvailability.UPDATE_AVAILABLE,
+                availableVersionCode = 58,
+            ),
+        )
+        assertNull(
+            playStoreAvailableVersionCode(
+                currentVersionCode = 58,
+                updateAvailability = UpdateAvailability.UPDATE_AVAILABLE,
+                availableVersionCode = 58,
+            ),
+        )
+        assertNull(
+            playStoreAvailableVersionCode(
+                currentVersionCode = 51,
+                updateAvailability = UpdateAvailability.UPDATE_NOT_AVAILABLE,
+                availableVersionCode = 58,
+            ),
+        )
     }
 
     @Test

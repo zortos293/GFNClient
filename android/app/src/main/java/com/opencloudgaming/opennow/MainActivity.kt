@@ -154,7 +154,9 @@ class MainActivity : ComponentActivity() {
             if (decorView != null && NativeStreamInputRouter.dispatchExternalMouseTouch(event, decorView.width, decorView.height)) return true
             if (decorView != null && NativeStreamInputRouter.shouldForwardTouchBeforeViews(event, decorView.width, decorView.height)) {
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                    NativeInputDiagnostics.add("activity touch forwardBeforeViews size=${decorView.width}x${decorView.height}")
+                    NativeInputDiagnostics.retainTouchRoute("activity.forward-before-views") {
+                        "activity touch forwardBeforeViews size=${decorView.width}x${decorView.height}"
+                    }
                 }
                 val forwarded = NativeStreamInputRouter.dispatchTouch(event, decorView.width, decorView.height)
                 if (NativeStreamInputRouter.shouldCaptureTouchBeforeViews(event, decorView.width, decorView.height) && forwarded) {
@@ -164,13 +166,17 @@ class MainActivity : ComponentActivity() {
             val handled = super.dispatchTouchEvent(event)
             if (handled) {
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                    NativeInputDiagnostics.add("activity touch consumedByView action=${event.actionMasked}")
+                    NativeInputDiagnostics.retainTouchRoute("activity.consumed-by-view") {
+                        "activity touch consumedByView action=${event.actionMasked}"
+                    }
                 }
                 return true
             }
             return if (decorView != null) {
                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                    NativeInputDiagnostics.add("activity touch fallback size=${decorView.width}x${decorView.height}")
+                    NativeInputDiagnostics.retainTouchRoute("activity.fallback") {
+                        "activity touch fallback size=${decorView.width}x${decorView.height}"
+                    }
                 }
                 NativeStreamInputRouter.dispatchTouch(event, decorView.width, decorView.height)
             } else {

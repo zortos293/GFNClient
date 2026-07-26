@@ -404,7 +404,7 @@ private fun buildSessionDowngrades(
     }
 }
 
-private fun buildSessionRecommendations(
+internal fun buildSessionRecommendations(
     averagePingMs: Int?,
     packetLossPct: Double?,
     averageJitterMs: Double?,

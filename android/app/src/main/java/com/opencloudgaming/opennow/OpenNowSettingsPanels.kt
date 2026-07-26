@@ -140,7 +140,7 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
 @Composable
 internal fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     val update = state.androidUpdate
-    if (!update.apkUpdatesAllowed) {
+    if (!update.updateChecksSupported) {
         AndroidUpdateUnavailablePanel(update)
         return
     }
@@ -215,11 +215,15 @@ internal fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewMod
                 when {
                     update.status == AndroidUpdateStatus.Available -> {
                         Button(
-                            onClick = viewModel::downloadAndroidUpdate,
-                            enabled = update.canDownload,
+                            onClick = viewModel::performAndroidUpdatePrimaryAction,
+                            enabled = update.canDownload || update.canOpenPlayStore,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("Download", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                if (update.installSource.isGooglePlay) "Update" else "Download",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                     }
                     update.status == AndroidUpdateStatus.Downloaded -> {
@@ -286,7 +290,7 @@ private fun AndroidUpdateUnavailablePanel(update: AndroidUpdateState) {
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.52f),
             ) {
                 Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    UpdateInfoValue("Current", update.currentVersionName.ifBlank { "Installed" }, Modifier.weight(1f))
+                    UpdateInfoValue("Current", formatCurrentUpdateVersion(update), Modifier.weight(1f))
                     UpdateInfoValue("Source", update.installSource.displayName, Modifier.weight(1f))
                 }
             }
@@ -330,7 +334,7 @@ private fun UpdateVersionSummary(update: AndroidUpdateState) {
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                UpdateInfoValue("Current", update.currentVersionName.ifBlank { "Installed" }, Modifier.weight(1f))
+                UpdateInfoValue("Current", formatCurrentUpdateVersion(update), Modifier.weight(1f))
                 availableVersion?.let {
                     UpdateInfoValue("Available", it, Modifier.weight(1f))
                 }
@@ -403,6 +407,12 @@ private fun formatAvailableUpdateVersion(update: AndroidUpdateState): String? {
     return pieces.takeIf { it.isNotEmpty() }?.joinToString(" ")
 }
 
+private fun formatCurrentUpdateVersion(update: AndroidUpdateState): String =
+    listOfNotNull(
+        update.currentVersionName.takeIf(String::isNotBlank)?.let { "v$it" },
+        "build ${update.currentVersionCode}",
+    ).joinToString(" ")
+
 private fun updateStatusTitle(update: AndroidUpdateState): String =
     when (update.status) {
         AndroidUpdateStatus.Available -> "Update available"
@@ -416,11 +426,15 @@ private fun updateStatusTitle(update: AndroidUpdateState): String =
 
 private fun updateStatusSubtitle(update: AndroidUpdateState): String =
     when (update.status) {
-        AndroidUpdateStatus.Available -> update.availableVersionName?.let { "Version $it is available." } ?: "A new build is available."
+        AndroidUpdateStatus.Available -> if (update.installSource.isGooglePlay) {
+            update.message
+        } else {
+            update.availableVersionName?.let { "Version $it is available." } ?: "A new build is available."
+        }
         AndroidUpdateStatus.Downloading -> "Keep OpenNOW open while the APK downloads."
         AndroidUpdateStatus.Downloaded -> update.availableVersionName?.let { "Version $it has been downloaded." } ?: "The update has been downloaded."
         AndroidUpdateStatus.NotAvailable -> update.message
-        AndroidUpdateStatus.Checking -> "Contacting the update source."
+        AndroidUpdateStatus.Checking -> if (update.installSource.isGooglePlay) "Checking Google Play." else "Contacting the update source."
         AndroidUpdateStatus.Error -> update.message
         AndroidUpdateStatus.Idle -> update.message
     }

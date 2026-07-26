@@ -332,7 +332,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
         }
-        if (appUpdater.state.value.apkUpdatesAllowed) {
+        if (appUpdater.state.value.updateChecksSupported) {
             startAndroidUpdateAutoChecks()
         }
         initialize()
@@ -1035,7 +1035,17 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             pendingActiveSessionLaunch = null
             authStore.setActiveSession(userId)
-            val session = authRepository.restore(forceRefresh = false) ?: return@launch
+            val session = restoreAuthSession().getOrElse { error ->
+                _state.update {
+                    it.copy(
+                        authSession = authStore.activeSession(),
+                        savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                        error = error.message ?: "Could not refresh the selected account. Please sign in again.",
+                    )
+                }
+                recordDebugEvent("auth", "Account switch refresh failed error=${error.debugMessage()}")
+                return@launch
+            } ?: return@launch
             gamesJob?.cancel()
             _state.update {
                 it.copy(
@@ -1189,6 +1199,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun performAndroidUpdatePrimaryAction() {
+        val update = state.value.androidUpdate
+        if (update.canOpenPlayStore) {
+            OpenNowAnalytics.capture(
+                event = "app_update_opened_play_store",
+                properties = buildMap {
+                    put("current_version_code", update.currentVersionCode)
+                    update.availableVersionCode?.let { put("available_version_code", it) }
+                },
+            )
+            appUpdater.openPlayStoreListing()
+        } else {
+            downloadAndroidUpdate()
+        }
+    }
+
     fun installAndroidUpdate() {
         if (!state.value.androidUpdate.canInstall) return
         appUpdater.installDownloadedUpdate()
@@ -1196,7 +1222,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun startAndroidUpdateAutoChecks() {
         if (androidUpdateAutoJob?.isActive == true) return
-        if (!state.value.androidUpdate.apkUpdatesAllowed) return
+        if (!state.value.androidUpdate.updateChecksSupported) return
         androidUpdateAutoJob = viewModelScope.launch {
             delay(ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS)
             while (true) {
@@ -1207,7 +1233,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun runAutomaticAndroidUpdateCheck() {
-        if (!state.value.androidUpdate.apkUpdatesAllowed) return
+        if (!state.value.androidUpdate.updateChecksSupported) return
         if (!state.value.settings.autoCheckForUpdates) return
         waitForAndroidUpdateCheckWindow()
         val snapshot = state.value
@@ -1223,7 +1249,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun startAndroidUpdateCheck(automatic: Boolean): Job? {
         if (androidUpdateJob?.isActive == true) return null
-        if (!state.value.androidUpdate.apkUpdatesAllowed) return null
+        if (!state.value.androidUpdate.updateChecksSupported) return null
         if (state.value.isAndroidUpdateCheckBlockedByStream()) {
             if (!automatic) {
                 appUpdater.markCheckDeferredForStreaming()

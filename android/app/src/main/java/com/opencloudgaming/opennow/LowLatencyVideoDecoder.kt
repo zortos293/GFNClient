@@ -398,3 +398,13 @@ class LowLatencyVideoDecoder(
 
 internal fun mediaCodecPerformanceTargetFps(requestedFps: Int): Int? =
     requestedFps.takeIf { it >= 60 }
+
+internal fun shouldUseMediaCodecDecoderTuning(
+    selectedDecoder: VideoDecoder?,
+    approvedHardwareDecoder: VideoDecoder?,
+    requestedFps: Int,
+    lowLatencyEnabled: Boolean,
+): Boolean =
+    selectedDecoder != null &&
+        selectedDecoder === approvedHardwareDecoder &&
+        (lowLatencyEnabled || mediaCodecPerformanceTargetFps(requestedFps) != null)

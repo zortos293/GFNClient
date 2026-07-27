@@ -11,8 +11,8 @@ import type {
   NativeVideoBackendPreference,
   StreamTransportMode,
 } from "./nativeStreamer";
-import type { GameLanguage, KeyboardLayout } from "./keyboard";
-import type { VideoShaderSettings } from "./videoShader";
+import { DEFAULT_KEYBOARD_LAYOUT, type GameLanguage, type KeyboardLayout } from "./keyboard";
+import { DEFAULT_VIDEO_SHADER_SETTINGS, type VideoShaderSettings } from "./videoShader";
 import type { UpdateChannel } from "./updater";
 import { normalizeStreamPreferences } from "./stream";
 
@@ -149,6 +149,140 @@ export interface Settings {
   errorReportingConsent: ErrorReportingConsent;
   /** Anonymous install UUID used as PostHog distinct ID (empty until first grant or feedback) */
   telemetryInstallId: string;
+}
+
+export const SHORTCUT_SETTING_KEYS = [
+  "shortcutToggleStats",
+  "shortcutTogglePointerLock",
+  "shortcutToggleFullscreen",
+  "shortcutStopStream",
+  "shortcutToggleAntiAfk",
+  "shortcutToggleMicrophone",
+  "shortcutScreenshot",
+  "shortcutToggleRecording",
+] as const satisfies readonly (keyof Settings)[];
+
+export type ShortcutSettingKey = typeof SHORTCUT_SETTING_KEYS[number];
+export type ShortcutSettings = Pick<Settings, ShortcutSettingKey>;
+
+export const DEFAULT_SHORTCUT_SETTINGS: Readonly<ShortcutSettings> = Object.freeze({
+  shortcutToggleStats: "F3",
+  shortcutTogglePointerLock: "F8",
+  shortcutToggleFullscreen: "F10",
+  shortcutStopStream: "Ctrl+Shift+Q",
+  shortcutToggleAntiAfk: "Ctrl+Shift+K",
+  shortcutToggleMicrophone: "Ctrl+Shift+M",
+  shortcutScreenshot: "F11",
+  shortcutToggleRecording: "F12",
+});
+
+export interface PlatformShortcutDefaults {
+  bindings: ShortcutSettings;
+  sidebarToggle: string;
+  sidebarToggleAliases: string[];
+}
+
+export function resolveRuntimePlatform(platform: string): RuntimePlatform {
+  const normalized = platform.trim().toLowerCase();
+  const exactPlatforms: readonly RuntimePlatform[] = [
+    "aix",
+    "android",
+    "cygwin",
+    "darwin",
+    "freebsd",
+    "haiku",
+    "linux",
+    "netbsd",
+    "openbsd",
+    "sunos",
+    "win32",
+  ];
+  if (exactPlatforms.includes(normalized as RuntimePlatform)) {
+    return normalized as RuntimePlatform;
+  }
+  if (normalized.includes("mac")) return "darwin";
+  if (normalized.includes("win")) return "win32";
+  if (normalized.includes("linux")) return "linux";
+  return "unknown";
+}
+
+export function createPlatformShortcutDefaults(platform: string): PlatformShortcutDefaults {
+  const isMacOs = resolveRuntimePlatform(platform) === "darwin";
+  const sidebarToggle = isMacOs ? "Meta+G" : "Ctrl+G";
+  return {
+    bindings: { ...DEFAULT_SHORTCUT_SETTINGS },
+    sidebarToggle,
+    sidebarToggleAliases: isMacOs ? [sidebarToggle] : [sidebarToggle, "Ctrl+Shift+G"],
+  };
+}
+
+export function createDefaultSettings(platform: string): Settings {
+  const shortcuts = createPlatformShortcutDefaults(platform);
+  return {
+    resolution: "1920x1080",
+    aspectRatio: "16:9",
+    posterSizeScale: 1.05,
+    fps: 60,
+    maxBitrateMbps: 75,
+    recordingBitrateMbps: null,
+    streamClientMode: "web",
+    nativeStreamerBackend: "gstreamer",
+    nativeVideoBackend: "auto",
+    nativeStreamerExecutablePath: "",
+    nativeCloudGsyncMode: "auto",
+    nativeD3dFullscreenMode: "auto",
+    nativeExternalRenderer: false,
+    transportMode: "webrtc",
+    showNativeStreamerStats: false,
+    codec: DEFAULT_STREAM_PREFERENCES.codec,
+    decoderPreference: "auto",
+    encoderPreference: "auto",
+    colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
+    region: "",
+    sessionProxyEnabled: false,
+    sessionProxyUrl: "",
+    clipboardPaste: false,
+    enableGyroscopeControls: false,
+    steamControllerCompatibilityMode: false,
+    nativeCursorOverlay: true,
+    mouseSensitivity: 1,
+    mouseAcceleration: 1,
+    ...shortcuts.bindings,
+    microphoneMode: "disabled",
+    microphoneDeviceId: "",
+    hideStreamButtons: false,
+    showAntiAfkIndicator: true,
+    showStatsOnLaunch: false,
+    hideServerSelector: false,
+    appAccentColor: "green",
+    appTheme: "auto",
+    translucentUI: false,
+    controllerMode: false,
+    launchInConsoleMode: false,
+    autoFullScreen: false,
+    favoriteGameIds: [],
+    sessionCounterEnabled: false,
+    showSessionTimeRemainingInStatsOverlay: false,
+    sessionClockShowEveryMinutes: 60,
+    sessionClockShowDurationSeconds: 30,
+    windowWidth: 1400,
+    windowHeight: 900,
+    keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
+    gameLanguage: "en_US",
+    enablePersistingInGameSettings: false,
+    enableL4S: false,
+    identifyAsSteamDeck: false,
+    enableCloudGsync: false,
+    nativeTransitionDiagnostics: undefined,
+    discordRichPresence: false,
+    autoCheckForUpdates: true,
+    updateChannel: "stable",
+    allowEscapeToExitFullscreen: false,
+    lastSeenReleaseHighlightsVersion: "",
+    videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
+    errorReportingConsent: "unset",
+    telemetryInstallId: "",
+  };
 }
 
 export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({

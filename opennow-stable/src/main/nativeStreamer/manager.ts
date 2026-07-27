@@ -1,25 +1,12 @@
 import { app } from "electron";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, resolve, join, delimiter, sep } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import {
   createUnsupportedNativeStreamerStatus,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
-  nativeStreamerFeatureModeToEnvValue,
   type IceCandidatePayload,
   type KeyframeRequest,
   type MainToRendererSignalingEvent,
@@ -28,10 +15,8 @@ import {
   type NativeVideoBackendPreference,
   type NativeStreamerStatus,
   type NativeGstreamerRuntimeStatus,
-  type NativeGstreamerInstallInstruction,
   type NativeRenderSurface,
   type NativeStreamerSessionContext,
-  type NativeVideoBackendCapability,
   type SendAnswerRequest,
 } from "@shared/gfn";
 import {
@@ -44,13 +29,19 @@ import {
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
 import type { NativeStreamerShortcutBindings } from "@shared/gfn";
+import {
+  createNativeStreamerDetectionFailureStatus,
+  createNativeStreamerStatus,
+  formatError,
+} from "./capabilities";
+import { resolveNativeStreamerExecutableCandidates } from "./executableDiscovery";
+import {
+  isNativeStreamerEvent,
+  isNativeStreamerResponse,
+  type NativeStreamerCommandInput,
+} from "./protocol";
+import { createNativeStreamerRuntimeEnvironment } from "./runtime";
 import { NativeSurfaceUpdateQueue } from "./surfaceUpdateQueue";
-
-type NativeStreamerCommandInput = NativeStreamerCommand extends infer T
-  ? T extends NativeStreamerCommand
-    ? Omit<T, "id">
-    : never
-  : never;
 
 interface NativeStreamerCallbacks {
   sendAnswer(payload: SendAnswerRequest): Promise<void>;
@@ -86,182 +77,6 @@ const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
 const MIN_NATIVE_BITRATE_KBPS = 5_000;
 const MAX_NATIVE_BITRATE_KBPS = 150_000;
 
-function nativeStreamerExecutableName(): string {
-  return process.platform === "win32" ? "opennow-streamer.exe" : "opennow-streamer";
-}
-
-function nativeStreamerPlatformKey(): string {
-  return `${process.platform}-${process.arch}`;
-}
-
-function isExistingFile(path: string): boolean {
-  try {
-    return existsSync(path) && statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function isExistingDirectory(path: string): boolean {
-  try {
-    return existsSync(path) && statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function normalizePathForComparison(path: string): string {
-  let resolvedPath = resolve(path);
-  try {
-    resolvedPath = realpathSync.native(resolvedPath);
-  } catch {
-    // The caller may compare a path that does not exist yet, such as a cache
-    // destination. Falling back to resolve still keeps comparisons stable.
-  }
-  return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
-}
-
-function isPathInside(parent: string, child: string): boolean {
-  const normalizedParent = normalizePathForComparison(parent);
-  const normalizedChild = normalizePathForComparison(child);
-  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}${sep}`);
-}
-
-function hasBundledRuntimeNextToExecutable(executablePath: string): boolean {
-  return isExistingDirectory(join(dirname(executablePath), "gstreamer"));
-}
-
-function safePathSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown";
-}
-
-function fileSha256(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
-function prependEnvPath(env: NodeJS.ProcessEnv, key: string, directory: string): void {
-  env[key] = env[key] ? `${directory}${delimiter}${env[key]}` : directory;
-}
-
-function prependProcessPath(env: NodeJS.ProcessEnv, directory: string): void {
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
-  prependEnvPath(env, pathKey, directory);
-}
-
-const LINUX_GSTREAMER_INSTALL_INSTRUCTIONS: NativeGstreamerInstallInstruction[] = [
-  {
-    distro: "Debian / Ubuntu / Mint / Pop!_OS / KDE neon",
-    command: "sudo apt update && sudo apt install libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 gstreamer1.0-tools gstreamer1.0-libav gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-nice gstreamer1.0-gl gstreamer1.0-vaapi gstreamer1.0-x gstreamer1.0-alsa libva2 libva-drm2 libvulkan1 mesa-vulkan-drivers",
-  },
-  {
-    distro: "Fedora / RHEL / Nobara / Bazzite",
-    command: "sudo dnf install gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-plugins-bad-freeworld gstreamer1-plugins-ugly gstreamer1-libav gstreamer1-vaapi gstreamer1-plugin-openh264 libnice-gstreamer1 mesa-vulkan-drivers libva",
-    note: "RPM Fusion may be required for libav, ugly, or bad-freeworld packages.",
-  },
-  {
-    distro: "Arch / Manjaro / EndeavourOS / SteamOS",
-    command: "sudo pacman -S --needed gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav gst-plugin-va libnice libva mesa vulkan-radeon",
-    note: "NVIDIA users should use their distro NVIDIA/Vulkan driver packages instead of vulkan-radeon.",
-  },
-  {
-    distro: "openSUSE Tumbleweed / Leap",
-    command: "sudo zypper install gstreamer gstreamer-plugins-base gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-ugly gstreamer-plugins-libav gstreamer-plugins-vaapi gstreamer-libnice libva2 Mesa-vulkan-device-select",
-  },
-];
-
-function linuxInstallInstructions(): NativeGstreamerInstallInstruction[] | undefined {
-  return process.platform === "linux" ? LINUX_GSTREAMER_INSTALL_INSTRUCTIONS : undefined;
-}
-
-function configureBundledGstreamerRuntime(
-  env: NodeJS.ProcessEnv,
-  executablePath: string,
-): NativeGstreamerRuntimeStatus {
-  const runtimeRoot = join(dirname(executablePath), "gstreamer");
-  if (!isExistingDirectory(runtimeRoot)) {
-    return {
-      source: "system",
-      bundled: false,
-      message: process.platform === "linux"
-        ? "No bundled GStreamer runtime was found. Linux uses distro GStreamer packages so VAAPI/V4L2/Vulkan plugins match the host driver stack."
-        : "No bundled GStreamer runtime was found; using the system runtime if available.",
-      installInstructions: linuxInstallInstructions(),
-    };
-  }
-
-  const binDir = join(runtimeRoot, "bin");
-  const libDir = join(runtimeRoot, "lib");
-  const pluginDir = join(runtimeRoot, "lib", "gstreamer-1.0");
-  const scanner = join(
-    runtimeRoot,
-    "libexec",
-    "gstreamer-1.0",
-    process.platform === "win32" ? "gst-plugin-scanner.exe" : "gst-plugin-scanner",
-  );
-  const gioModulesDir = join(runtimeRoot, "lib", "gio", "modules");
-
-  if (process.platform === "win32") prependProcessPath(env, dirname(executablePath));
-  if (isExistingDirectory(binDir)) prependProcessPath(env, binDir);
-  if (isExistingDirectory(pluginDir)) {
-    env.GST_PLUGIN_PATH = pluginDir;
-    env.GST_PLUGIN_PATH_1_0 = pluginDir;
-    env.GST_PLUGIN_SYSTEM_PATH = pluginDir;
-    env.GST_PLUGIN_SYSTEM_PATH_1_0 = pluginDir;
-  }
-  if (isExistingFile(scanner)) {
-    env.GST_PLUGIN_SCANNER = scanner;
-    env.GST_PLUGIN_SCANNER_1_0 = scanner;
-  }
-  env.GST_REGISTRY_REUSE_PLUGIN_SCANNER = "no";
-  if (isExistingDirectory(gioModulesDir)) {
-    env.GIO_MODULE_DIR = gioModulesDir;
-    env.GIO_EXTRA_MODULES = gioModulesDir;
-  }
-  const registryDir = join(app.getPath("userData"), "native-streamer", "gstreamer");
-  const registryPath = join(registryDir, `${nativeStreamerPlatformKey()}-registry.bin`);
-  mkdirSync(registryDir, { recursive: true });
-  env.GST_REGISTRY = registryPath;
-  if (process.platform === "linux") {
-    if (isExistingDirectory(libDir)) prependEnvPath(env, "LD_LIBRARY_PATH", libDir);
-    if (isExistingDirectory(binDir)) prependEnvPath(env, "LD_LIBRARY_PATH", binDir);
-  }
-  if (process.platform === "darwin") {
-    if (isExistingDirectory(libDir)) {
-      prependEnvPath(env, "DYLD_LIBRARY_PATH", libDir);
-      prependEnvPath(env, "DYLD_FALLBACK_LIBRARY_PATH", libDir);
-    }
-    if (isExistingDirectory(binDir)) {
-      prependEnvPath(env, "DYLD_LIBRARY_PATH", binDir);
-      prependEnvPath(env, "DYLD_FALLBACK_LIBRARY_PATH", binDir);
-    }
-  }
-
-  return {
-    source: "bundled",
-    bundled: true,
-    path: runtimeRoot,
-    message: "Using bundled GStreamer runtime next to the native streamer executable.",
-  };
-}
-
-function isWindowsDllLoadFailure(error: unknown): boolean {
-  const message = formatError(error);
-  return process.platform === "win32" && (message.includes("3221225781") || message.toLowerCase().includes("0xc0000135"));
-}
-
-function formatNativeStreamerDetectionFailure(error: unknown, runtime: NativeGstreamerRuntimeStatus | null): string {
-  if (isWindowsDllLoadFailure(error)) {
-    return runtime?.bundled
-      ? `Native streamer could not load a required DLL even though bundled GStreamer was detected at ${runtime.path}. The packaged runtime may be incomplete or blocked. ${formatError(error)}`
-      : `Native streamer could not load a required DLL and no bundled GStreamer runtime was detected. ${formatError(error)}`;
-  }
-  return `Native streamer was not detected: ${formatError(error)}`;
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function normalizeBitrateKbps(value: number): number {
   if (!Number.isFinite(value)) {
     return MIN_NATIVE_BITRATE_KBPS;
@@ -271,217 +86,6 @@ function normalizeBitrateKbps(value: number): number {
     MAX_NATIVE_BITRATE_KBPS,
     Math.max(MIN_NATIVE_BITRATE_KBPS, Math.round(value)),
   );
-}
-
-function formatVideoBackendName(backend: string | undefined): string {
-  switch (backend) {
-    case "d3d12":
-      return "D3D12";
-    case "d3d11":
-      return "D3D11";
-    case "videotoolbox":
-      return "VideoToolbox";
-    case "vaapi":
-      return "VAAPI";
-    case "v4l2":
-      return "V4L2";
-    case "vulkan":
-      return "Vulkan";
-    case "software":
-      return "Software";
-    default:
-      return backend ?? "Unknown";
-  }
-}
-
-function formatVideoCodec(codec: string): string {
-  switch (codec.toLowerCase()) {
-    case "h264":
-      return "H.264";
-    case "h265":
-      return "H.265";
-    case "av1":
-      return "AV1";
-    default:
-      return codec.toUpperCase();
-  }
-}
-
-function resolveActiveVideoBackend(
-  videoBackends: NativeVideoBackendCapability[],
-  preferredBackend: NativeVideoBackendPreference = "auto",
-): NativeVideoBackendCapability | undefined {
-  const currentPlatform = process.platform === "win32"
-    ? "windows"
-    : process.platform === "darwin"
-      ? "macos"
-      : process.platform === "linux"
-        ? "linux"
-        : "other";
-
-  if (preferredBackend !== "auto") {
-    const preferred = videoBackends.find((candidate) => candidate.available && candidate.backend === preferredBackend);
-    if (preferred) return preferred;
-  }
-
-  return videoBackends.find((candidate) => candidate.available && candidate.platform === currentPlatform)
-    ?? videoBackends.find((candidate) => candidate.available && candidate.platform === "cross-platform")
-    ?? videoBackends.find((candidate) => candidate.available);
-}
-
-function summarizeCodecs(backend: NativeVideoBackendCapability | undefined): string {
-  const codecs = backend?.codecs
-    .filter((codec) => codec.available)
-    .map((codec) => formatVideoCodec(codec.codec)) ?? [];
-  return codecs.length > 0 ? codecs.join(", ") : "No hardware codec path";
-}
-
-function summarizeZeroCopy(backend: NativeVideoBackendCapability | undefined): string {
-  if (!backend) {
-    return "Not available";
-  }
-  return backend.zeroCopyModes.length > 0
-    ? `Hardware memory: ${backend.zeroCopyModes.join(", ")}`
-    : "System memory";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isResponse(message: NativeStreamerMessage): message is NativeStreamerResponse {
-  return isRecord(message) && typeof (message as Record<string, unknown>)["id"] === "string";
-}
-
-function isEvent(message: NativeStreamerMessage): message is NativeStreamerEvent {
-  return isRecord(message) && typeof (message as Record<string, unknown>)["id"] !== "string";
-}
-
-interface PackagedNativeStreamerCacheMarker {
-  appVersion: string;
-  platformKey: string;
-  exeName: string;
-  exeSha256: string;
-  bundledRuntime: boolean;
-  runtimeManifestSha256?: string;
-}
-
-function shouldUseStablePackagedNativeStreamerCache(): boolean {
-  return app.isPackaged
-    && process.platform === "win32"
-    && isPathInside(tmpdir(), process.resourcesPath);
-}
-
-function buildPackagedNativeStreamerCacheMarker(
-  sourceDirectory: string,
-  exeName: string,
-  platformKey: string,
-): PackagedNativeStreamerCacheMarker {
-  const runtimeManifest = join(sourceDirectory, "gstreamer", "OPENNOW-GSTREAMER-RUNTIME.txt");
-  return {
-    appVersion: app.getVersion(),
-    platformKey,
-    exeName,
-    exeSha256: fileSha256(join(sourceDirectory, exeName)),
-    bundledRuntime: isExistingDirectory(join(sourceDirectory, "gstreamer")),
-    runtimeManifestSha256: isExistingFile(runtimeManifest) ? fileSha256(runtimeManifest) : undefined,
-  };
-}
-
-function readCacheMarker(markerPath: string): PackagedNativeStreamerCacheMarker | null {
-  try {
-    return JSON.parse(readFileSync(markerPath, "utf8")) as PackagedNativeStreamerCacheMarker;
-  } catch {
-    return null;
-  }
-}
-
-function isSameCacheMarker(
-  left: PackagedNativeStreamerCacheMarker | null,
-  right: PackagedNativeStreamerCacheMarker,
-): boolean {
-  if (!left) {
-    return false;
-  }
-
-  return left.appVersion === right.appVersion
-    && left.platformKey === right.platformKey
-    && left.exeName === right.exeName
-    && left.exeSha256 === right.exeSha256
-    && left.bundledRuntime === right.bundledRuntime
-    && left.runtimeManifestSha256 === right.runtimeManifestSha256;
-}
-
-function materializePackagedNativeStreamerCache(
-  sourceExecutablePath: string,
-  platformKey: string,
-  exeName: string,
-): string | null {
-  if (!shouldUseStablePackagedNativeStreamerCache()) {
-    return null;
-  }
-
-  const sourceDirectory = dirname(sourceExecutablePath);
-  const cacheDirectory = join(
-    app.getPath("userData"),
-    "native-streamer",
-    "runtime",
-    safePathSegment(app.getVersion()),
-    safePathSegment(platformKey),
-  );
-  const cachedExecutablePath = join(cacheDirectory, exeName);
-  const markerPath = join(cacheDirectory, ".opennow-native-runtime.json");
-  let stagingDirectory: string | null = null;
-
-  try {
-    const expectedMarker = buildPackagedNativeStreamerCacheMarker(sourceDirectory, exeName, platformKey);
-    const cachedMarker = readCacheMarker(markerPath);
-    if (
-      isExistingFile(cachedExecutablePath)
-      && isSameCacheMarker(cachedMarker, expectedMarker)
-      && (!expectedMarker.bundledRuntime || hasBundledRuntimeNextToExecutable(cachedExecutablePath))
-    ) {
-      return cachedExecutablePath;
-    }
-
-    stagingDirectory = `${cacheDirectory}.tmp-${process.pid}-${Date.now()}`;
-    rmSync(stagingDirectory, { recursive: true, force: true });
-    mkdirSync(dirname(stagingDirectory), { recursive: true });
-    cpSync(sourceDirectory, stagingDirectory, {
-      recursive: true,
-      force: true,
-      dereference: true,
-      filter: (entry) => {
-        const lower = entry.toLowerCase();
-        return !lower.endsWith(".pdb") && !lower.endsWith(".lib") && !lower.endsWith(".a");
-      },
-    });
-    writeFileSync(
-      join(stagingDirectory, ".opennow-native-runtime.json"),
-      `${JSON.stringify(expectedMarker, null, 2)}\n`,
-      "utf8",
-    );
-
-    if (!isExistingFile(join(stagingDirectory, exeName))) {
-      throw new Error(`Cached native streamer executable was not created: ${join(stagingDirectory, exeName)}`);
-    }
-    if (expectedMarker.bundledRuntime && !hasBundledRuntimeNextToExecutable(join(stagingDirectory, exeName))) {
-      throw new Error("Cached native streamer runtime is missing its bundled GStreamer directory.");
-    }
-
-    rmSync(cacheDirectory, { recursive: true, force: true });
-    renameSync(stagingDirectory, cacheDirectory);
-    stagingDirectory = null;
-    console.log("[NativeStreamer] Cached packaged native streamer in stable runtime path:", cachedExecutablePath);
-    return cachedExecutablePath;
-  } catch (error) {
-    console.warn("[NativeStreamer] Failed to prepare stable packaged runtime cache; using packaged resource path:", error);
-    return null;
-  } finally {
-    if (stagingDirectory) {
-      rmSync(stagingDirectory, { recursive: true, force: true });
-    }
-  }
 }
 
 export class NativeStreamerManager {
@@ -602,70 +206,18 @@ export class NativeStreamerManager {
 
     try {
       await this.ensureProcess();
-      const backend = this.capabilities?.backend;
-      const gstreamerAvailable = backend === "gstreamer" && this.capabilities?.supportsOfferAnswer === true;
-      const videoBackends = this.capabilities?.videoBackends ?? [];
-      const activeVideoBackend = resolveActiveVideoBackend(
-        videoBackends,
+      return createNativeStreamerStatus(
+        this.capabilities,
+        this.gstreamerRuntime,
         this.options.getVideoBackendPreference(),
+        process.platform,
       );
-      const codecSummary = summarizeCodecs(activeVideoBackend);
-      const zeroCopySummary = summarizeZeroCopy(activeVideoBackend);
-      const runtime = this.gstreamerRuntime ?? {
-        source: "unknown",
-        bundled: false,
-        message: "GStreamer runtime has not been checked yet.",
-        installInstructions: linuxInstallInstructions(),
-      } satisfies NativeGstreamerRuntimeStatus;
-      const effectiveRuntime: NativeGstreamerRuntimeStatus = gstreamerAvailable
-        ? runtime.bundled
-          ? runtime
-          : {
-            ...runtime,
-            source: "system",
-            message: "Using system GStreamer runtime; packaged Windows/macOS builds should use the bundled runtime.",
-          }
-        : {
-          ...runtime,
-          source: runtime.bundled ? "bundled" : process.platform === "linux" ? "missing" : runtime.source,
-          message: runtime.bundled
-            ? "Bundled GStreamer runtime was found, but the GStreamer backend is not ready."
-            : process.platform === "linux"
-              ? "GStreamer is not ready. Install distro GStreamer packages so plugins match the host GPU/driver stack."
-              : runtime.message,
-          installInstructions: runtime.installInstructions ?? linuxInstallInstructions(),
-        };
-      return {
-        detected: true,
-        gstreamerAvailable,
-        supportsOfferAnswer: this.capabilities?.supportsOfferAnswer === true,
-        backend,
-        fallbackReason: this.capabilities?.fallbackReason,
-        videoBackends,
-        activeVideoBackend,
-        codecSummary,
-        zeroCopySummary,
-        gstreamerRuntime: effectiveRuntime,
-        message: gstreamerAvailable
-          ? `${effectiveRuntime.message} Video path: ${formatVideoBackendName(activeVideoBackend?.backend)}.`
-          : this.capabilities?.fallbackReason ?? effectiveRuntime.message,
-      };
     } catch (error) {
-      const runtime = this.gstreamerRuntime ?? {
-        source: process.platform === "linux" ? "missing" : "unknown",
-        bundled: false,
-        message: process.platform === "linux"
-          ? "GStreamer is not ready. Linux uses distro packages because private AppImage GStreamer bundling is unreliable across glibc, libdrm/VAAPI/Vulkan, and GPU driver stacks."
-          : "GStreamer runtime could not be checked because the native streamer did not start.",
-        installInstructions: linuxInstallInstructions(),
-      } satisfies NativeGstreamerRuntimeStatus;
-      return {
-        detected: false,
-        gstreamerAvailable: false,
-        supportsOfferAnswer: false,
-        gstreamerRuntime: runtime,
-        message: formatNativeStreamerDetectionFailure(error, runtime),
-      };
+      return createNativeStreamerDetectionFailureStatus(
+        error,
+        this.gstreamerRuntime,
+        process.platform,
+      );
     }
   }
 
@@ -832,7 +384,24 @@ export class NativeStreamerManager {
       const backendPreference = this.options.getBackendPreference();
       let lastError: Error | null = null;
 
-      for (const executablePath of this.resolveExecutableCandidates()) {
+      for (const executablePath of resolveNativeStreamerExecutableCandidates({
+        platform: process.platform,
+        arch: process.arch,
+        resourcesPath: process.resourcesPath,
+        appPath: app.getAppPath(),
+        mainDir: this.options.mainDir,
+        isPackaged: app.isPackaged,
+        envExecutablePath: process.env.OPENNOW_NATIVE_STREAMER,
+        getConfiguredPath: () => this.options.getExecutablePathOverride(),
+        cacheContext: {
+          appVersion: app.getVersion(),
+          isPackaged: app.isPackaged,
+          platform: process.platform,
+          resourcesPath: process.resourcesPath,
+          tempDirectory: tmpdir(),
+          userDataPath: app.getPath("userData"),
+        },
+      })) {
         try {
           await this.startProcess(executablePath, backendPreference);
           return;
@@ -871,32 +440,21 @@ export class NativeStreamerManager {
     const videoBackendPreference = this.options.getVideoBackendPreference();
     console.log("[NativeStreamer] Video backend preference:", videoBackendPreference);
 
-    const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      OPENNOW_NATIVE_STREAMER_PROTOCOL: String(NATIVE_STREAMER_PROTOCOL_VERSION),
-    };
-    delete childEnv.OPENNOW_NATIVE_VIDEO_API;
-    delete childEnv.OPENNOW_NATIVE_VIDEO_BACKEND;
-    if (videoBackendPreference !== "auto") {
-      childEnv.OPENNOW_NATIVE_VIDEO_BACKEND = videoBackendPreference;
-    }
-    if (process.platform === "linux") {
-      // Linux ships Internal-only; never spawn the floating external renderer.
-      childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = "0";
-      if ((process.arch === "arm64" || process.arch === "arm") && !childEnv.GST_V4L2_ENABLE_PROBE) {
-        // Raspberry Pi's stateful H.264 decoder is hidden unless V4L2 probing is enabled.
-        childEnv.GST_V4L2_ENABLE_PROBE = "1";
-      }
-    } else if (process.platform === "win32") {
-      childEnv.OPENNOW_NATIVE_EXTERNAL_RENDERER = this.options.getExternalRendererEnabled() ? "1" : "0";
-      childEnv.OPENNOW_NATIVE_D3D_ALLOW_TEARING = "1";
-    }
-    childEnv.OPENNOW_NATIVE_CLOUD_GSYNC = nativeStreamerFeatureModeToEnvValue(this.options.getCloudGsyncMode());
-    childEnv.OPENNOW_NATIVE_D3D_FULLSCREEN = nativeStreamerFeatureModeToEnvValue(this.options.getD3dFullscreenMode());
-    if (backendPreference !== "auto") {
-      childEnv.OPENNOW_NATIVE_STREAMER_BACKEND = backendPreference;
-    }
-    const runtimeStatus = configureBundledGstreamerRuntime(childEnv, executablePath);
+    const { env: childEnv, runtimeStatus } = createNativeStreamerRuntimeEnvironment({
+      executablePath,
+      baseEnv: process.env,
+      platform: process.platform,
+      arch: process.arch,
+      userDataPath: app.getPath("userData"),
+      protocolVersion: NATIVE_STREAMER_PROTOCOL_VERSION,
+      backendPreference,
+      videoBackendPreference,
+      externalRendererEnabled: process.platform === "win32"
+        ? this.options.getExternalRendererEnabled()
+        : false,
+      cloudGsyncMode: this.options.getCloudGsyncMode(),
+      d3dFullscreenMode: this.options.getD3dFullscreenMode(),
+    });
     this.gstreamerRuntime = runtimeStatus;
     if (runtimeStatus.bundled) {
       console.log("[NativeStreamer] Using bundled GStreamer runtime:", runtimeStatus.path);
@@ -974,98 +532,6 @@ export class NativeStreamerManager {
     );
   }
 
-  private resolveExecutableCandidates(): string[] {
-    const exeName = nativeStreamerExecutableName();
-    const platformKey = nativeStreamerPlatformKey();
-    const bundledCandidates = [
-      join(process.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
-      join(process.resourcesPath, "native", "opennow-streamer", exeName),
-    ];
-    const candidates: string[] = [];
-    const addCandidate = (candidate: string | undefined): void => {
-      if (!candidate || !isExistingFile(candidate) || candidates.includes(candidate)) {
-        return;
-      }
-      candidates.push(candidate);
-    };
-
-    if (app.isPackaged) {
-      for (const candidate of bundledCandidates) {
-        if (!isExistingFile(candidate) || !hasBundledRuntimeNextToExecutable(candidate)) {
-          continue;
-        }
-        addCandidate(materializePackagedNativeStreamerCache(candidate, platformKey, exeName) ?? undefined);
-      }
-    }
-    bundledCandidates.forEach(addCandidate);
-    if (app.isPackaged && candidates.length > 0) {
-      const packagedBundledCandidates = candidates.filter((candidate) =>
-        hasBundledRuntimeNextToExecutable(candidate),
-      );
-      return packagedBundledCandidates.length > 0 ? packagedBundledCandidates : candidates;
-    }
-
-    const configuredPath = this.options.getExecutablePathOverride().trim();
-    if (configuredPath) {
-      if (isExistingFile(configuredPath)) {
-        if (!this.shouldIgnorePackagedExecutableOverride(configuredPath)) {
-          addCandidate(configuredPath);
-        } else {
-          console.warn(
-            "[NativeStreamer] Ignoring packaged executable override without bundled runtime:",
-            configuredPath,
-          );
-        }
-      } else {
-        throw new Error(`Configured native streamer executable was not found: ${configuredPath}`);
-      }
-    }
-
-    [
-      process.env.OPENNOW_NATIVE_STREAMER,
-      ...bundledCandidates,
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/bin", exeName),
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/dist", platformKey, exeName),
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/dist", exeName),
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/target/release", platformKey, exeName),
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/target/release", exeName),
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/target/debug", platformKey, exeName),
-      resolve(this.options.mainDir, "../../../native/opennow-streamer/target/debug", exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/bin", platformKey, exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/bin", exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/dist", platformKey, exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/dist", exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/target/release", platformKey, exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/target/release", exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/target/debug", platformKey, exeName),
-      resolve(app.getAppPath(), "../native/opennow-streamer/target/debug", exeName),
-    ]
-      .filter((candidate): candidate is string => Boolean(candidate))
-      .forEach(addCandidate);
-
-    if (candidates.length > 0) {
-      return candidates;
-    }
-
-    throw new Error(`Native streamer binary not found. Checked: ${candidates.join(", ")}`);
-  }
-
-  private shouldIgnorePackagedExecutableOverride(configuredPath: string): boolean {
-    if (hasBundledRuntimeNextToExecutable(configuredPath)) {
-      return false;
-    }
-
-    const packagedRoots = [
-      join(process.resourcesPath, "native", "opennow-streamer"),
-      resolve(app.getAppPath(), "../native/opennow-streamer"),
-      resolve(this.options.mainDir, "../../../dist-release/win-unpacked/resources/native/opennow-streamer"),
-      resolve(this.options.mainDir, "../../../dist-release/win-unpacked/resources/app.asar.unpacked/native/opennow-streamer"),
-    ];
-
-    return packagedRoots.some((root) => isPathInside(root, configuredPath));
-  }
-
   private request(input: NativeStreamerCommandInput, timeoutMs: number): Promise<NativeStreamerResponse> {
     const child = this.child;
     if (!child || child.killed || !child.stdin.writable) {
@@ -1130,12 +596,12 @@ export class NativeStreamerManager {
       return;
     }
 
-    if (isResponse(message)) {
+    if (isNativeStreamerResponse(message)) {
       this.handleResponse(message);
       return;
     }
 
-    if (isEvent(message)) {
+    if (isNativeStreamerEvent(message)) {
       this.handleEvent(message);
     }
   }

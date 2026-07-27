@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -20,7 +20,10 @@ test("normalizes real and symlinked paths to the same comparison path", (t) => {
   mkdirSync(join(runtime, "gstreamer"));
   symlinkSync(runtime, alias, "dir");
 
-  assert.equal(normalizePathForComparison(alias), realpathSync(runtime));
+  assert.equal(
+    normalizePathForComparison(alias),
+    normalizePathForComparison(runtime),
+  );
   assert.equal(isPathInside(alias, join(runtime, "gstreamer")), true);
 });
 

@@ -4,12 +4,99 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  canUsePartiallyReliableGamepad,
+  canUsePartiallyReliableInput,
   chooseAdaptiveMouseFlushInterval,
+  classifyDecoderPressureSample,
   classifyStreamLagReason,
   evaluateControllerOverlayShortcutGate,
   quantizeMouseDeltaWithResidual,
   subsampleCoalescedPointerEvents,
 } from "./webrtcClient";
+import { INPUT_KEY_DOWN, INPUT_MOUSE_REL } from "./inputProtocol";
+
+test("decoder pressure requires a coupled backlog, drop burst, or decode saturation", () => {
+  const stable = classifyDecoderPressureSample({
+    framesReceived: 1_000,
+    framesDecoded: 960,
+    framesDropped: 5,
+    decodeTimeMs: 4,
+    decodeFps: 120,
+    prevSample: {
+      framesReceived: 900,
+      framesDecoded: 860,
+      framesDropped: 4,
+    },
+  });
+  assert.deepEqual(stable, {
+    active: false,
+    reason: "stable",
+    backlogFrames: 40,
+    dropRatePercent: 0.5,
+  });
+
+  const pressured = classifyDecoderPressureSample({
+    framesReceived: 1_000,
+    framesDecoded: 950,
+    framesDropped: 65,
+    decodeTimeMs: 4,
+    decodeFps: 120,
+    prevSample: {
+      framesReceived: 900,
+      framesDecoded: 900,
+      framesDropped: 56,
+    },
+  });
+  assert.equal(pressured.active, true);
+  assert.equal(pressured.reason, "backlog_and_drop");
+  assert.equal(pressured.backlogFrames, 50);
+  assert.equal(pressured.dropRatePercent, 6.5);
+});
+
+test("decoder pressure detects severe zero-decode stalls independently", () => {
+  assert.deepEqual(classifyDecoderPressureSample({
+    framesReceived: 121,
+    framesDecoded: 0,
+    framesDropped: 0,
+    decodeTimeMs: 0,
+    decodeFps: 0,
+    prevSample: null,
+  }), {
+    active: true,
+    reason: "severe_stall",
+    backlogFrames: 121,
+    dropRatePercent: 0,
+  });
+});
+
+test("partially-reliable input policy requires channel, negotiated HID, and transfer masks", () => {
+  const capabilities = {
+    partialReliableThresholdMs: 300,
+    hidDeviceMask: 0xffff,
+    enablePartiallyReliableTransferGamepad: 0b0101,
+    enablePartiallyReliableTransferHid: 0xffff,
+  };
+
+  assert.equal(canUsePartiallyReliableGamepad(true, capabilities, 0), true);
+  assert.equal(canUsePartiallyReliableGamepad(true, capabilities, 1), false);
+  assert.equal(canUsePartiallyReliableGamepad(false, capabilities, 2), false);
+  assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_MOUSE_REL), true);
+  assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_KEY_DOWN), false);
+});
+
+test("partially-reliable HID policy falls back when either negotiated mask denies input", () => {
+  const capabilities = {
+    partialReliableThresholdMs: 300,
+    hidDeviceMask: 0,
+    enablePartiallyReliableTransferGamepad: 0,
+    enablePartiallyReliableTransferHid: 0xffff,
+  };
+  assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_MOUSE_REL), false);
+
+  capabilities.hidDeviceMask = 0xffff;
+  capabilities.enablePartiallyReliableTransferHid = 0;
+  assert.equal(canUsePartiallyReliableInput(true, capabilities, INPUT_MOUSE_REL), false);
+});
 
 function gamepadWithButtons(pressed: number[]): Pick<Gamepad, "buttons"> {
   const pressedButtons = new Set(pressed);

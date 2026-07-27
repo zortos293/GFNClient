@@ -1,20 +1,13 @@
-/**
- * Stream session extraction status
- * --------------------------------
- * Full `useStreamSession` was deferred: launch/claim/recovery/signaling remain in App.tsx
- * because they are tightly coupled to App-owned refs and callbacks:
- *
- * - clientRef / videoRef / audioRef
- * - launchInFlightRef / launchAbortRef / claimResumePromisesRef
- * - signalingRecoveryRef + recovery timer refs (stableRecovery, remoteIce, iceDisconnected)
- * - sessionRef / streamStatusRef / runtimeSnapshotRef
- * - resetLaunchRuntime, buildCurrentStreamSettings, applyClaimedSessionAndConnect
- * - Discord activity, native streamer bridge, queue-ad coordination
- *
- * This module re-exports the pure helpers/constants that were safe to extract.
- * A future hook can own recovery timers + claim/connect once those refs are grouped
- * into a dedicated stream-runtime context or ref bag.
- */
+import { useSessionRecoveryRuntime } from "./streamSession/useSessionRecoveryRuntime";
+import { useRuntimeSnapshotPersistence } from "./streamSession/useRuntimeSnapshotPersistence";
+import { useStreamRuntimeState } from "./streamSession/useStreamRuntimeState";
+
+export function useStreamSession() {
+  const runtime = useStreamRuntimeState();
+  const recovery = useSessionRecoveryRuntime(runtime);
+  const snapshot = useRuntimeSnapshotPersistence(runtime);
+  return { runtime, recovery, snapshot };
+}
 
 export {
   ICE_DISCONNECTED_RECOVERY_GRACE_MS,

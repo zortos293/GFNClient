@@ -1,3 +1,5 @@
+import type { ActiveSessionInfo, SessionInfo } from "@shared/gfn";
+
 import type { StreamStatus } from "./appTypes";
 
 export const RUNTIME_SNAPSHOT_LOCALSTORAGE_KEY = "opennow.runtimeSnapshot.v1";
@@ -25,6 +27,66 @@ export interface RuntimeSnapshot {
     clientId?: string;
     deviceId?: string;
   } | null;
+}
+
+export interface RuntimeSnapshotInput {
+  streamStatus: StreamStatus;
+  session: SessionInfo | null;
+  navbarSession: ActiveSessionInfo | null;
+  streamingGameId: string | null;
+  streamingStore: string | null;
+  recoveryAppId: number | null;
+  updatedAt?: number;
+}
+
+export function buildRuntimeSnapshot({
+  streamStatus,
+  session,
+  navbarSession,
+  streamingGameId,
+  streamingStore,
+  recoveryAppId,
+  updatedAt = Date.now(),
+}: RuntimeSnapshotInput): RuntimeSnapshot | null {
+  if (streamStatus === "idle" && session === null && navbarSession === null) {
+    return null;
+  }
+
+  const validRecoveryAppId = Number.isFinite(recoveryAppId ?? NaN) ? recoveryAppId : null;
+  return {
+    version: 1,
+    updatedAt,
+    streamStatus,
+    sessionId: session?.sessionId ?? navbarSession?.sessionId ?? null,
+    sessionAppId: validRecoveryAppId ?? navbarSession?.appId ?? null,
+    streamingGameId,
+    streamingStore,
+    recoveryAppId,
+    resumeContext: session
+      ? {
+        sessionId: session.sessionId,
+        serverIp: session.serverIp,
+        streamingBaseUrl: session.streamingBaseUrl,
+        signalingServer: session.signalingServer,
+        signalingUrl: session.signalingUrl,
+        appId: validRecoveryAppId ?? undefined,
+        appLaunchMode: session.appLaunchMode,
+        enablePersistingInGameSettings: session.enablePersistingInGameSettings,
+        clientId: session.clientId,
+        deviceId: session.deviceId,
+      }
+      : navbarSession?.sessionId && navbarSession.serverIp
+        ? {
+          sessionId: navbarSession.sessionId,
+          serverIp: navbarSession.serverIp,
+          streamingBaseUrl: navbarSession.streamingBaseUrl,
+          signalingUrl: navbarSession.signalingUrl,
+          appId: Number.isFinite(navbarSession.appId) ? navbarSession.appId : undefined,
+          appLaunchMode: navbarSession.appLaunchMode,
+          enablePersistingInGameSettings: navbarSession.enablePersistingInGameSettings,
+        }
+        : null,
+  };
 }
 
 export function loadRuntimeSnapshot(): RuntimeSnapshot | null {

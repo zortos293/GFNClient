@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,19 +11,22 @@ import {
   normalizePathForComparison,
 } from "./runtime";
 
-test("normalizes real and symlinked paths to the same comparison path", () => {
+test("normalizes real and symlinked paths to the same comparison path", (t) => {
   const root = mkdtempSync(join(tmpdir(), "opennow-native-path-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const runtime = join(root, "runtime");
   const alias = join(root, "runtime-alias");
   mkdirSync(runtime);
+  mkdirSync(join(runtime, "gstreamer"));
   symlinkSync(runtime, alias, "dir");
 
   assert.equal(normalizePathForComparison(alias), realpathSync(runtime));
   assert.equal(isPathInside(alias, join(runtime, "gstreamer")), true);
 });
 
-test("path containment rejects sibling names that only share a prefix", () => {
+test("path containment rejects sibling names that only share a prefix", (t) => {
   const root = mkdtempSync(join(tmpdir(), "opennow-native-path-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const runtime = join(root, "runtime");
 
   assert.equal(isPathInside(runtime, runtime), true);

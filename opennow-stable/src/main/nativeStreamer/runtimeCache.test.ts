@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,8 +10,9 @@ import {
   shouldUseStablePackagedNativeStreamerCache,
 } from "./runtimeCache";
 
-test("cache markers compare every executable and runtime identity field", () => {
+test("cache markers compare every executable and runtime identity field", (t) => {
   const source = mkdtempSync(join(tmpdir(), "opennow-native-marker-"));
+  t.after(() => rmSync(source, { recursive: true, force: true }));
   const runtime = join(source, "gstreamer");
   mkdirSync(runtime);
   writeFileSync(join(source, "opennow-streamer.exe"), "streamer-v1");
@@ -42,9 +43,11 @@ test("cache markers compare every executable and runtime identity field", () => 
   assert.equal(isSamePackagedNativeStreamerCacheMarker(null, marker), false);
 });
 
-test("stable packaged cache selection is constrained to Windows temporary resources", () => {
-  const temporaryRoot = join(tmpdir(), "OpenNOW");
+test("stable packaged cache selection is constrained to Windows temporary resources", (t) => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "opennow-native-cache-"));
+  t.after(() => rmSync(temporaryRoot, { recursive: true, force: true }));
   const resourcesPath = join(temporaryRoot, "resources");
+  mkdirSync(resourcesPath);
 
   assert.equal(shouldUseStablePackagedNativeStreamerCache({
     isPackaged: true,

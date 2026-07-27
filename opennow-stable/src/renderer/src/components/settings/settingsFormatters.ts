@@ -12,9 +12,12 @@ import type {
   MicrophonePermissionResult,
   GameLanguage,
   Settings,
+  ShortcutSettingKey,
 } from "@shared/gfn";
 import {
-  isNativeStreamerSupportedPlatform,
+  createPlatformShortcutDefaults,
+  resolveRuntimePlatform,
+  SHORTCUT_SETTING_KEYS,
   USER_FACING_VIDEO_CODEC_OPTIONS,
 } from "@shared/gfn";
 import { getAccentColorOptions } from "../../lib/uiCustomization";
@@ -187,23 +190,18 @@ export const STATIC_FPS_PRESETS: FpsPreset[] = [
   { value: 360 },
 ];
 
-export const isMac = navigator.platform.toLowerCase().includes("mac");
-export const isWindows = isNativeStreamerSupportedPlatform(`${navigator.platform} ${navigator.userAgent}`);
+const runtimePlatform = resolveRuntimePlatform(navigator.platform);
+const platformShortcutDefaults = createPlatformShortcutDefaults(runtimePlatform);
+
+export const isMac = runtimePlatform === "darwin";
 export const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
-export const shortcutDefaults = {
-  shortcutToggleStats: "F3",
-  shortcutTogglePointerLock: "F8",
-  shortcutToggleFullscreen: "F10",
-  shortcutStopStream: "Ctrl+Shift+Q",
-  shortcutToggleAntiAfk: "Ctrl+Shift+K",
-  shortcutToggleMicrophone: "Ctrl+Shift+M",
-  shortcutScreenshot: "F11",
-  shortcutToggleRecording: "F12",
-} as const;
+export const shortcutDefaults = platformShortcutDefaults.bindings;
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */
-export const SIDEBAR_TOGGLE_SHORTCUT_RAW = isMac ? "Meta+G" : "Ctrl+G";
-export const SIDEBAR_TOGGLE_SHORTCUT_ALIASES = isMac ? [SIDEBAR_TOGGLE_SHORTCUT_RAW] : [SIDEBAR_TOGGLE_SHORTCUT_RAW, "Ctrl+Shift+G"];
+export const SIDEBAR_TOGGLE_SHORTCUT_RAW = platformShortcutDefaults.sidebarToggle;
+export const SIDEBAR_TOGGLE_SHORTCUT_ALIASES = platformShortcutDefaults.sidebarToggleAliases;
+export { SHORTCUT_SETTING_KEYS };
+export type { ShortcutSettingKey };
 
 export function extractRemoteInvokeErrorMessage(error: unknown, fallback: string): string {
   if (!(error instanceof Error) || !error.message.trim()) {
@@ -213,10 +211,6 @@ export function extractRemoteInvokeErrorMessage(error: unknown, fallback: string
   const ipcMatch = error.message.match(/^Error invoking remote method '[^']+': (?:(?:Error|TypeError|RangeError): )?([\s\S]+)$/);
   return ipcMatch?.[1]?.trim() || error.message.trim();
 }
-
-export type ShortcutSettingKey = keyof typeof shortcutDefaults;
-
-export const SHORTCUT_SETTING_KEYS = Object.keys(shortcutDefaults) as ShortcutSettingKey[];
 
 export function getShortcutConflictMessage(
   editingKey: ShortcutSettingKey,

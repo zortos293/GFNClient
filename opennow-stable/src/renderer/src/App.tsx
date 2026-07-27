@@ -24,11 +24,11 @@ import type {
 } from "@shared/gfn";
 import {
   buildNativeStreamerSessionContext,
-  DEFAULT_KEYBOARD_LAYOUT,
-  DEFAULT_VIDEO_SHADER_SETTINGS,
-  getDefaultStreamPreferences,
+  createDefaultSettings,
+  createPlatformShortcutDefaults,
   isSessionAdsRequired,
   resolveEntitledStreamProfile,
+  resolveRuntimePlatform,
   SAFE_FALLBACK_STREAM_PROFILE,
 } from "@shared/gfn";
 import { GfnWebRtcClient } from "./platforms/gfn/webrtcClient";
@@ -122,8 +122,6 @@ import { overlayMotion, pageTransition, streamRevealTransition } from "./compone
 import { LazyShaderAtmosphere } from "./components/LazyShaderAtmosphere";
 import { syncRendererTelemetry } from "./telemetry/posthog";
 
-const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
-
 type AppStyle = CSSProperties & {
   "--game-poster-scale"?: string;
 };
@@ -149,18 +147,9 @@ const STREAM_WARNING_VISIBILITY_MS = 15 * 1000;
 type AppPage = "home" | "library" | "settings";
 type ExitPromptState = { open: boolean; gameTitle: string };
 
-const isMac = navigator.platform.toLowerCase().includes("mac");
-
-const DEFAULT_SHORTCUTS = {
-  shortcutToggleStats: "F3",
-  shortcutTogglePointerLock: "F8",
-  shortcutToggleFullscreen: "F10",
-  shortcutStopStream: "Ctrl+Shift+Q",
-  shortcutToggleAntiAfk: "Ctrl+Shift+K",
-  shortcutToggleMicrophone: "Ctrl+Shift+M",
-  shortcutScreenshot: "F11",
-  shortcutToggleRecording: "F12",
-} as const;
+const RUNTIME_PLATFORM = resolveRuntimePlatform(navigator.platform);
+const isMac = RUNTIME_PLATFORM === "darwin";
+const DEFAULT_SHORTCUTS = createPlatformShortcutDefaults(RUNTIME_PLATFORM).bindings;
 
 export function App(): JSX.Element {
   const { locale, t } = useTranslation();
@@ -174,76 +163,7 @@ export function App(): JSX.Element {
   const [sessionFullscreen, setSessionFullscreenState] = useState(false);
 
   // Settings State
-  const [settings, setSettings] = useState<Settings>({
-    resolution: "1920x1080",
-    aspectRatio: "16:9",
-    posterSizeScale: 1.05,
-    fps: 60,
-    maxBitrateMbps: 75,
-    recordingBitrateMbps: null,
-    streamClientMode: "web",
-    nativeStreamerBackend: "gstreamer",
-    nativeVideoBackend: "auto",
-    nativeStreamerExecutablePath: "",
-    nativeCloudGsyncMode: "auto",
-    nativeD3dFullscreenMode: "auto",
-    nativeExternalRenderer: false,
-    transportMode: "webrtc",
-    showNativeStreamerStats: false,
-    codec: DEFAULT_STREAM_PREFERENCES.codec,
-    decoderPreference: "auto",
-    encoderPreference: "auto",
-    colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
-    region: "",
-    sessionProxyEnabled: false,
-    sessionProxyUrl: "",
-    clipboardPaste: false,
-    enableGyroscopeControls: false,
-    steamControllerCompatibilityMode: false,
-    nativeCursorOverlay: true,
-    mouseSensitivity: 1,
-    mouseAcceleration: 1,
-    shortcutToggleStats: DEFAULT_SHORTCUTS.shortcutToggleStats,
-    shortcutTogglePointerLock: DEFAULT_SHORTCUTS.shortcutTogglePointerLock,
-    shortcutToggleFullscreen: DEFAULT_SHORTCUTS.shortcutToggleFullscreen,
-    shortcutStopStream: DEFAULT_SHORTCUTS.shortcutStopStream,
-    shortcutToggleAntiAfk: DEFAULT_SHORTCUTS.shortcutToggleAntiAfk,
-    shortcutToggleMicrophone: DEFAULT_SHORTCUTS.shortcutToggleMicrophone,
-    shortcutScreenshot: DEFAULT_SHORTCUTS.shortcutScreenshot,
-    shortcutToggleRecording: DEFAULT_SHORTCUTS.shortcutToggleRecording,
-    microphoneMode: "disabled",
-    microphoneDeviceId: "",
-    hideStreamButtons: false,
-    showAntiAfkIndicator: true,
-    showStatsOnLaunch: false,
-    hideServerSelector: false,
-    appAccentColor: "green",
-    appTheme: "auto",
-    translucentUI: false,
-    controllerMode: false,
-    launchInConsoleMode: false,
-    autoFullScreen: false,
-    favoriteGameIds: [],
-    sessionCounterEnabled: false,
-    showSessionTimeRemainingInStatsOverlay: false,
-    sessionClockShowEveryMinutes: 60,
-    sessionClockShowDurationSeconds: 30,
-    windowWidth: 1400,
-    windowHeight: 900,
-    keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
-    gameLanguage: "en_US",
-    enablePersistingInGameSettings: false,
-    enableL4S: false,
-    identifyAsSteamDeck: false,
-    enableCloudGsync: false,
-    discordRichPresence: false,
-    autoCheckForUpdates: true,
-    updateChannel: "stable",
-    lastSeenReleaseHighlightsVersion: "",
-    videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
-    errorReportingConsent: "unset",
-    telemetryInstallId: "",
-  });
+  const [settings, setSettings] = useState<Settings>(() => createDefaultSettings(RUNTIME_PLATFORM));
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [releaseHighlightsPayload, setReleaseHighlightsPayload] = useState<ReleaseHighlightsPayload | null>(null);
   const [releaseHighlightsIsAuto, setReleaseHighlightsIsAuto] = useState(false);

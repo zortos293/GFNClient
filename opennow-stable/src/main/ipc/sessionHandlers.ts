@@ -58,8 +58,8 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
     clearActivity,
   } = deps;
 
-  const setLaunchPresence = (session: SessionInfo, gameName: string): void => {
-    const activity = discordActivityFromSession(session, gameName);
+  const setLaunchPresence = (session: SessionInfo, gameName: string, gameImageUrl?: string): void => {
+    const activity = discordActivityFromSession(session, gameName, gameImageUrl);
     if (!settingsManager.get("discordRichPresence") || !activity) {
       return;
     }
@@ -187,7 +187,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
       if (!forceNewSession) {
         const preChecked = await tryClaimExisting();
         if (preChecked) {
-          setLaunchPresence(preChecked, payload.internalTitle || payload.appId);
+          setLaunchPresence(preChecked, payload.internalTitle || payload.appId, payload.discordGameImageUrl);
           return preChecked;
         }
       }
@@ -206,7 +206,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
           token,
           streamingBaseUrl,
         });
-        setLaunchPresence(sessionResult, payload.internalTitle || payload.appId);
+        setLaunchPresence(sessionResult, payload.internalTitle || payload.appId, payload.discordGameImageUrl);
         return sessionResult;
       } catch (error) {
         if (
@@ -219,7 +219,7 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
           );
           const fallback = await tryClaimExisting();
           if (fallback) {
-            setLaunchPresence(fallback, payload.internalTitle || payload.appId);
+            setLaunchPresence(fallback, payload.internalTitle || payload.appId, payload.discordGameImageUrl);
             return fallback;
           }
         }

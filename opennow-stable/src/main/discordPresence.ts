@@ -31,6 +31,7 @@ export function discordActivityKindForSession(session: DiscordPresenceSessionSta
 export function discordActivityFromSession(
   session: (SessionInfo | ActiveSessionInfo) & DiscordPresenceSessionState,
   gameName: string,
+  gameImageUrl?: string,
 ): DiscordActivityUpdate | null {
   const kind = discordActivityKindForSession(session);
   if (!kind) {
@@ -40,6 +41,7 @@ export function discordActivityFromSession(
   const appId = typeof session.appId === "number" ? session.appId.toString() : session.appId;
   return {
     gameName,
+    gameImageUrl,
     kind,
     appId,
     queuePosition: session.queuePosition,
@@ -52,6 +54,9 @@ export function isSameDiscordActivity(
   next: DiscordActivityUpdate,
 ): boolean {
   if (!current || current.kind !== next.kind || current.queuePosition !== next.queuePosition) {
+    return false;
+  }
+  if (current.gameImageUrl !== next.gameImageUrl) {
     return false;
   }
   if (current.appId || next.appId) {
@@ -74,7 +79,7 @@ export function discordMonitorActivityDecision(
   }
 
   const gameName = current?.appId === sessionAppId ? current.gameName : sessionAppId;
-  const nextActivity = discordActivityFromSession(activeSession, gameName);
+  const nextActivity = discordActivityFromSession(activeSession, gameName, current?.gameImageUrl);
   if (!nextActivity) {
     return current?.appId === sessionAppId ? { action: "clear" } : { action: "none" };
   }

@@ -28,10 +28,11 @@ test("discordActivityFromSession includes queue position and only timestamps str
     appId: 1001,
     status: 1,
     queuePosition: 12,
-  }, "Test Game");
+  }, "Test Game", "https://example.com/test-game.jpg");
 
   assert.deepEqual(queued, {
     gameName: "Test Game",
+    gameImageUrl: "https://example.com/test-game.jpg",
     kind: "queued",
     appId: "1001",
     queuePosition: 12,
@@ -94,6 +95,7 @@ test("discordMonitorActivityDecision does not downgrade active streaming presenc
 test("discordMonitorActivityDecision preserves current game title on queue updates", () => {
   const decision = discordMonitorActivityDecision({
     gameName: "Human Game Title",
+    gameImageUrl: "https://example.com/game.jpg",
     kind: "queued",
     appId: "1001",
     queuePosition: 12,
@@ -107,8 +109,22 @@ test("discordMonitorActivityDecision preserves current game title on queue updat
   assert.equal(decision.action, "set");
   if (decision.action === "set") {
     assert.equal(decision.activity.gameName, "Human Game Title");
+    assert.equal(decision.activity.gameImageUrl, "https://example.com/game.jpg");
     assert.equal(decision.activity.queuePosition, 11);
   }
+});
+
+test("isSameDiscordActivity detects newly available game artwork", () => {
+  assert.equal(isSameDiscordActivity({
+    gameName: "Game",
+    kind: "streaming",
+    appId: "1001",
+  }, {
+    gameName: "Game",
+    gameImageUrl: "https://example.com/game.jpg",
+    kind: "streaming",
+    appId: "1001",
+  }), false);
 });
 
 test("discordMonitorActivityDecision does not reset active streaming timer", () => {

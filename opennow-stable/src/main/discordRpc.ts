@@ -10,7 +10,7 @@ const DISCORD_CLIENT_ID = "1479944467112001669";
 
 let rpcClient: Client | null = null;
 let connected = false;
-type DiscordRpcActivity = Omit<DiscordActivityUpdate, "startTimestampMs"> & {
+export type DiscordRpcActivity = Omit<DiscordActivityUpdate, "startTimestampMs"> & {
   startTimestamp?: Date;
 };
 
@@ -85,6 +85,32 @@ function activityState(activity: DiscordRpcActivity): string {
   }
 }
 
+export function discordRpcImageUrl(imageUrl?: string): string | undefined {
+  const candidate = imageUrl?.trim();
+  if (!candidate) {
+    return undefined;
+  }
+  try {
+    return new URL(candidate).protocol === "https:" ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function discordRpcActivityPayload(activity: DiscordRpcActivity) {
+  const gameImageUrl = discordRpcImageUrl(activity.gameImageUrl);
+  return {
+    details: activity.gameName,
+    state: activityState(activity),
+    ...(activity.startTimestamp ? { startTimestamp: activity.startTimestamp } : {}),
+    ...(gameImageUrl ? {
+      largeImageKey: gameImageUrl,
+      largeImageText: activity.gameName,
+    } : {}),
+    instance: false,
+  };
+}
+
 export async function setActivity(activity: DiscordRpcActivity): Promise<void> {
   pendingActivity = activity;
 
@@ -93,15 +119,7 @@ export async function setActivity(activity: DiscordRpcActivity): Promise<void> {
   }
 
   try {
-    const rpcActivity = {
-      details: activity.gameName,
-      state: activityState(activity),
-      ...(activity.startTimestamp ? { startTimestamp: activity.startTimestamp } : {}),
-      instance: false,
-    };
-    await rpcClient.setActivity({
-      ...rpcActivity,
-    });
+    await rpcClient.setActivity(discordRpcActivityPayload(activity));
     lastActivity = pendingActivity;
     pendingActivity = null;
   } catch (err) {

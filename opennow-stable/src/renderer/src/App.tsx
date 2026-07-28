@@ -19,6 +19,7 @@ import type {
   StreamRegion,
   VideoShaderSettings,
 } from "@shared/gfn";
+import { discordGameImageUrl } from "@shared/discord";
 import {
   buildNativeStreamerSessionContext,
   createDefaultSettings,
@@ -613,9 +614,13 @@ export function App(): JSX.Element {
     }
 
     const gameName = (streamingGameRef.current?.title || activeSession.appId || "Game").trim();
+    const gameImageUrl = streamingGameRef.current
+      ? discordGameImageUrl(streamingGameRef.current)
+      : undefined;
     discordStreamingActivitySessionRef.current = activeSession.sessionId;
     void window.openNow.setDiscordActivity({
       gameName,
+      gameImageUrl,
       kind: "streaming",
       appId: activeSession.appId,
       startTimestampMs: Date.now(),

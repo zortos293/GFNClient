@@ -54,6 +54,8 @@ export interface SessionCreateRequest {
   streamingBaseUrl?: string;
   appId: string;
   internalTitle: string;
+  /** Public game artwork used only for the local Discord Rich Presence. */
+  discordGameImageUrl?: string;
   accountLinked?: boolean;
   /**
    * Official clients only enable server-side in-game graphics/settings persistence

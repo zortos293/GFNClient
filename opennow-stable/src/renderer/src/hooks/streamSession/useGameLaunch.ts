@@ -10,6 +10,7 @@ import type {
   SubscriptionInfo,
 } from "@shared/gfn";
 import { isSessionAdsRequired } from "@shared/gfn";
+import { discordGameImageUrl } from "@shared/discord";
 
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "../../lib/launchOwnership";
 import {
@@ -266,6 +267,7 @@ export function useGameLaunch({
         streamingBaseUrl: launchStreamingBaseUrl,
         appId,
         internalTitle: game.title,
+        discordGameImageUrl: discordGameImageUrl(game),
         accountLinked: chooseAccountLinked(game, selectedVariant),
         enablePersistingInGameSettings: settings.enablePersistingInGameSettings,
         supportsInGameSettingsPersistence: launchVariant?.supportsInGameSettingsPersistence === true,

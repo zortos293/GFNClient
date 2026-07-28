@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",
-    "electron-updater": "^6.8.3",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.17.0",
     "motion": "^12.42.0",
     "qrcode": "^1.5.4",
@@ -49,7 +49,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "cross-env": "^10.1.0",
     "electron": "^42.3.3",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "oxlint": "^1.67.0",
     "react-scan": "^0.5.3",

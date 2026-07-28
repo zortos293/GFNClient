@@ -49,7 +49,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "cross-env": "^10.1.0",
     "electron": "^42.3.3",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "oxlint": "^1.67.0",
     "react-scan": "^0.5.3",

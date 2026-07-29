@@ -9315,7 +9315,7 @@ private fun StreamBugReporter(
                     },
                 )
             }
-            return@StreamPanelSection
+            return@ControlSection
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

@@ -358,4 +358,25 @@ class InputEncoderGamepadTest {
         assertTrue(shouldRunControllerMouseLoop(controllerMouseAssistActive = true, controllerMouseEmulationActive = false))
         assertTrue(shouldRunControllerMouseLoop(controllerMouseAssistActive = false, controllerMouseEmulationActive = true))
     }
+
+    @Test
+    fun mapsRightStickDeflectionToScrollNotches() {
+        // Deadzone behavior
+        assertEquals(Pair(0, 0f), AndroidControllerMouseAssist.scrollNotches(0.05f, 30, 0f))
+        assertEquals(Pair(0, 0f), AndroidControllerMouseAssist.scrollNotches(-0.09f, 30, 0f))
+
+        // Pushing UP (negative stickY) should scroll UP (positive notches)
+        val (upNotches, _) = AndroidControllerMouseAssist.scrollNotches(-1.0f, 30, 0.9f)
+        assertTrue(upNotches > 0)
+
+        // Pushing DOWN (positive stickY) should scroll DOWN (negative notches)
+        val (downNotches, _) = AndroidControllerMouseAssist.scrollNotches(1.0f, 30, -0.9f)
+        assertTrue(downNotches < 0)
+
+        // Sensitivity modulations
+        // High sensitivity (low setting e.g. 10) should scroll faster (generate more/equal notches for the same deflection/accumulator)
+        val (fastNotches, _) = AndroidControllerMouseAssist.scrollNotches(-1.0f, 10, 0.9f)
+        val (slowNotches, _) = AndroidControllerMouseAssist.scrollNotches(-1.0f, 100, 0.9f)
+        assertTrue(fastNotches >= slowNotches)
+    }
 }

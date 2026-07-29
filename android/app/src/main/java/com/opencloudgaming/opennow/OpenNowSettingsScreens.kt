@@ -32,6 +32,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.annotation.StringRes
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Monitor
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material.icons.outlined.SportsEsports
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -68,16 +78,19 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
 
-internal val SettingsBackground = Color(0xff090b0d)
-internal val SettingsPanel = Color(0xff11161a)
-internal val SettingsPanelAlt = Color(0xff171d22)
-internal val SettingsText = Color(0xffeef3f5)
-internal val SettingsTextMuted = Color(0xff98a4aa)
+// Aliases onto the shared token layer — these used to be a byte-for-byte copy of the palette in
+// OpenNowScreens.kt, which meant any colour change had to be made twice or the two would drift.
+internal val SettingsBackground = OpenNowPalette.Background
+internal val SettingsPanel = OpenNowPalette.Panel
+internal val SettingsPanelAlt = OpenNowPalette.PanelAlt
+internal val SettingsText = OpenNowPalette.TextPrimary
+internal val SettingsTextMuted = OpenNowPalette.TextMuted
 internal const val DONATE_URL = "https://printedwaste.com/donate"
 internal val PHONE_NAV_RAIL_MAX_SMALLEST_WIDTH = 600.dp
 internal val APP_NAV_RAIL_WIDTH = 80.dp
@@ -100,18 +113,26 @@ internal enum class SearchTarget {
     Settings,
 }
 
+/**
+ * Titles and summaries are string resources rather than hardcoded English constants, so the twelve
+ * locales already maintained under the repo-root `locales` directory have somewhere to land.
+ *
+ * Icons come from `material-icons-extended` (already a dependency) so each category gets a distinct
+ * one. The previous set reused `ic_tab_store` for both Interface and Account, `ic_tab_settings` for
+ * both General and About, and a magnifying glass for Advanced.
+ */
 private enum class SettingsCategory(
-    val title: String,
-    val summary: String,
-    val iconRes: Int,
+    @StringRes val titleRes: Int,
+    @StringRes val summaryRes: Int,
+    val icon: ImageVector,
 ) {
-    General("General", "Updates, privacy, advanced options, reset", R.drawable.ic_tab_settings),
-    Stream("Stream", "Resolution, FPS, codec, HDR, proxy", R.drawable.ic_tab_stream),
-    Input("Input", "Microphone, mouse, keyboard, touch controls, rumble", R.drawable.ic_tab_library),
-    Interface("Interface", "Color, cards, stats, controller UI", R.drawable.ic_tab_store),
-    Account("Account", "Sign-in, storage, connected stores", R.drawable.ic_tab_store),
-    Advanced("Advanced", "Experimental streaming, diagnostics, debug logs", R.drawable.ic_search),
-    About("About", "Version, credits, and support", R.drawable.ic_tab_settings),
+    General(R.string.settings_category_general, R.string.settings_category_general_summary, Icons.Outlined.Tune),
+    Stream(R.string.settings_category_stream, R.string.settings_category_stream_summary, Icons.Outlined.Monitor),
+    Input(R.string.settings_category_input, R.string.settings_category_input_summary, Icons.Outlined.SportsEsports),
+    Interface(R.string.settings_category_interface, R.string.settings_category_interface_summary, Icons.Outlined.Palette),
+    Account(R.string.settings_category_account, R.string.settings_category_account_summary, Icons.Outlined.Person),
+    Advanced(R.string.settings_category_advanced, R.string.settings_category_advanced_summary, Icons.Outlined.Science),
+    About(R.string.settings_category_about, R.string.settings_category_about_summary, Icons.Outlined.Info),
 }
 
 internal data class LauncherBadge(
@@ -538,7 +559,7 @@ private fun SettingsContent(
                     )
                 }
                 val maxFps = maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
-                NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.coerceAtMost(maxFps).toFloat(), 30f, maxFps.toFloat(), 30f) {
+                NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.coerceAtMost(maxFps).toFloat(), 30f, maxFps.toFloat(), 30f, unit = "FPS") {
                     val fps = it.roundToInt().coerceIn(30, maxFps)
                     viewModel.updateStreamSettings { s -> s.copy(fps = fps) }
                 }
@@ -715,7 +736,7 @@ private fun SettingsContent(
                         microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 }
-                NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f) {
+                NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f, valueFormatter = { "%.2fx".format(it) }) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
                 }
                 NumberSlider("Mouse acceleration", settings.stream.mouseAcceleration.toFloat(), 1f, 150f, 1f) {
@@ -730,11 +751,45 @@ private fun SettingsContent(
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
                 SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
                 SettingSwitch(
-                    label = "Mouse mode (Left stick)",
+                    label = stringResource(R.string.stream_panel_mouse_mode),
                     checked = settings.controllerMouseEmulation,
-                    description = "Toggle in Stream Controls per session. Left stick moves the cursor, A button clicks, B button right-clicks.",
+                    description = "Toggle in Stream Controls per session. Left stick moves the cursor, right stick scrolls, A button clicks, B button right-clicks.",
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(controllerMouseEmulation = enabled))
+                }
+                if (settings.controllerMouseEmulation) {
+                    Box(Modifier.padding(start = 24.dp)) {
+                        Column {
+                            NumberSlider(
+                                label = "Mouse sensitivity",
+                                value = settings.stream.mouseSensitivity,
+                                min = 0.25f,
+                                max = 3f,
+                                step = 0.05f,
+                                valueFormatter = { "%.2fx".format(it) }
+                            ) { value ->
+                                viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = value) }
+                            }
+
+                            val scrollHint = when {
+                                settings.stream.mouseScrollSensitivity <= 20 -> "Very fast"
+                                settings.stream.mouseScrollSensitivity <= 40 -> "Standard"
+                                settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
+                                else -> "Slow"
+                            }
+
+                            NumberSlider(
+                                label = "Mouse scroll sensitivity",
+                                value = settings.stream.mouseScrollSensitivity.toFloat(),
+                                min = 10f,
+                                max = 100f,
+                                step = 5f,
+                                unit = " ($scrollHint)"
+                            ) { value ->
+                                viewModel.updateStreamSettings { s -> s.copy(mouseScrollSensitivity = value.toInt()) }
+                            }
+                        }
+                    }
                 }
                 SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
                 val touchStyleOptions = listOf(
@@ -756,22 +811,90 @@ private fun SettingsContent(
                 NumberSlider("Joystick dead zone", settings.androidTouch.joystickDeadZone, 0f, 0.3f, 0.01f) { value ->
                     viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(joystickDeadZone = value)))
                 }
+                if (!state.androidTvProfile) {
+                    // Sends fingers to the PC as a real touchscreen, so games with a touch mode switch
+                    // to it themselves. Auto limits that to games known to react; Always is the escape
+                    // hatch for when the built-in list lags behind the catalog.
+                    ChoiceMenuRow(
+                        label = "Native touch",
+                        options = NativeTouchMode.entries.map { mode ->
+                            ChoiceMenuOption(value = mode.name, label = nativeTouchModeLabel(mode))
+                        },
+                        selectedLabel = nativeTouchModeLabel(settings.androidTouch.nativeTouchMode),
+                    ) { value ->
+                        val mode = NativeTouchMode.entries.firstOrNull { it.name == value } ?: NativeTouchMode.Auto
+                        viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(nativeTouchMode = mode)))
+                    }
+                    if (settings.androidTouch.nativeTouchMode != NativeTouchMode.Off) {
+                        Box(Modifier.padding(start = 24.dp)) {
+                            Column {
+                                val scrollSpeedLabel = when {
+                                    settings.androidTouch.nativeTouchScrollScale <= 0.5f -> "Very slow"
+                                    settings.androidTouch.nativeTouchScrollScale <= 0.8f -> "Slow"
+                                    settings.androidTouch.nativeTouchScrollScale <= 1.2f -> "Normal"
+                                    settings.androidTouch.nativeTouchScrollScale <= 1.6f -> "Fast"
+                                    else -> "Very fast"
+                                }
+                                NumberSlider(
+                                    label = "Native touch scroll speed",
+                                    value = settings.androidTouch.nativeTouchScrollScale,
+                                    min = 0.25f,
+                                    max = 2.0f,
+                                    step = 0.05f,
+                                    unit = " ($scrollSpeedLabel)",
+                                ) { value ->
+                                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(nativeTouchScrollScale = value)))
+                                }
+                                NumberSlider(
+                                    label = "Native touch tap stability",
+                                    value = settings.androidTouch.nativeTouchJitterThresholdDp,
+                                    min = 0f,
+                                    max = 24f,
+                                    step = 1f,
+                                    unit = "dp",
+                                ) { value ->
+                                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(nativeTouchJitterThresholdDp = value)))
+                                }
+                            }
+                        }
+                    }
+                }
                 SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 if (settings.androidTouch.mousePad) {
                     Box(Modifier.padding(start = 24.dp)) {
-                        SettingSwitch("Direct click", settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
+                        Column {
+                            SettingSwitch("Direct click", settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
+
+                            val scrollHint = when {
+                                settings.stream.mouseScrollSensitivity <= 20 -> "Very fast"
+                                settings.stream.mouseScrollSensitivity <= 40 -> "Standard"
+                                settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
+                                else -> "Slow"
+                            }
+
+                            NumberSlider(
+                                label = "Mouse scroll sensitivity",
+                                value = settings.stream.mouseScrollSensitivity.toFloat(),
+                                min = 10f,
+                                max = 100f,
+                                step = 5f,
+                                unit = " ($scrollHint)"
+                            ) { value ->
+                                viewModel.updateStreamSettings { s -> s.copy(mouseScrollSensitivity = value.toInt()) }
+                            }
+                        }
                     }
                 }
                 NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
                 NumberSlider("Touch button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(buttonScale = value))) }
                 NumberSlider("Touch stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(stickScale = value))) }
                 NumberSlider("Touch opacity", settings.androidTouch.opacity, 0.15f, 1f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(opacity = value))) }
-                NumberSlider("Touch edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, 1f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(edgePaddingDp = value))) }
-                NumberSlider("Touch bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, 1f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(bottomPaddingDp = value))) }
-                NumberSlider("Left controls horizontal offset", settings.androidTouch.leftOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetXDp = value))) }
-                NumberSlider("Left controls vertical offset", settings.androidTouch.leftOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetYDp = value))) }
-                NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
-                NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
+                NumberSlider("Touch edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, 1f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(edgePaddingDp = value))) }
+                NumberSlider("Touch bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, 1f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(bottomPaddingDp = value))) }
+                NumberSlider("Left controls horizontal offset", settings.androidTouch.leftOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetXDp = value))) }
+                NumberSlider("Left controls vertical offset", settings.androidTouch.leftOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetYDp = value))) }
+                NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
+                NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "launch page", "default page", "store", "library", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "position", "server selector", "controller", "sounds", "button", "tone", "tv", "safe area", "screen padding", "overscan", "session counter", "intro", "music", "queue", "stretch", "fill") {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
@@ -800,11 +923,12 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(expressiveUi = it))
                 }
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
+                SettingSwitch(stringResource(R.string.settings_show_card_titles), settings.showCardTitles) { viewModel.updateSettings(settings.copy(showCardTitles = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
                 NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 0.05f) { value ->
                     viewModel.updateSettings(settings.copy(posterSizeScale = value))
                 }
-                NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f) { value ->
+                NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f, unit = "dp") { value ->
                     viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
                 }
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
@@ -964,14 +1088,8 @@ private fun SettingsCategoryLanding(
                 }
             }
         }
-        SearchableSettingsSection("", "About", "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
-            AppVersionPanel()
-            OpenNowGitHubPanel()
-            DeveloperPanel()
-        }
-        SearchableSettingsSection("", stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "donate", "paypal", "printedwaste") {
-            ThanksPanel()
-        }
+        // About/Thanks used to be pasted in here because the category had no row of its own. It has
+        // one now, so this duplicate is gone and About renders once, inside its own category.
     }
 }
 
@@ -1307,7 +1425,7 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                 Icon(
-                    painter = painterResource(category.iconRes),
+                    imageVector = category.icon,
                     contentDescription = null,
                     tint = if (focused) MaterialTheme.colorScheme.onPrimary else accent,
                     modifier = Modifier.size(22.dp),
@@ -1316,7 +1434,7 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                category.title,
+                stringResource(category.titleRes),
                 color = if (focused) Color.White else SettingsText,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = if (focused) FontWeight.ExtraBold else FontWeight.Medium,
@@ -1324,7 +1442,7 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                category.summary,
+                stringResource(category.summaryRes),
                 color = if (focused) Color.White.copy(alpha = 0.86f) else SettingsTextMuted,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
@@ -1427,7 +1545,7 @@ private fun SettingsDetailHeader(
         }
         Column(Modifier.fillMaxWidth()) {
             Text(
-                category.title,
+                stringResource(category.titleRes),
                 color = SettingsText,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.SemiBold,
@@ -1435,7 +1553,7 @@ private fun SettingsDetailHeader(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                category.summary,
+                stringResource(category.summaryRes),
                 color = SettingsTextMuted,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
@@ -1459,14 +1577,11 @@ private fun CategorySettingsSection(
     }
 }
 
-private fun settingsCategories(): List<SettingsCategory> =
-    buildList {
-        add(SettingsCategory.General)
-        add(SettingsCategory.Stream)
-        add(SettingsCategory.Input)
-        add(SettingsCategory.Interface)
-        add(SettingsCategory.Advanced)
-    }
+/**
+ * All seven. Account was previously reachable only via the account card, and About had no row at
+ * all — its content was instead duplicated inline into the landing list, so it rendered twice in
+ * the body while being absent from the category list.
+ */
+private fun settingsCategories(): List<SettingsCategory> = SettingsCategory.entries.toList()
 
-private fun settingsDetailCategories(): List<SettingsCategory> =
-    settingsCategories() + SettingsCategory.Account
+private fun settingsDetailCategories(): List<SettingsCategory> = settingsCategories()

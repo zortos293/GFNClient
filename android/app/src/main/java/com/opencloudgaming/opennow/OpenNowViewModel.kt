@@ -196,6 +196,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         http = http,
         physicalDisplayResolutionProvider = { application.physicalStreamDisplayResolution() },
         diagnosticsSink = { response -> recordSessionDiagnosticResponse(response) },
+        isAndroidTv = isAndroidTvProfile(application),
     )
     private val appUpdater = AndroidAppUpdater(application, http)
     private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
@@ -1034,47 +1035,88 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun switchAccount(userId: String) {
         viewModelScope.launch {
             pendingActiveSessionLaunch = null
-            authStore.setActiveSession(userId)
-            val session = restoreAuthSession().getOrElse { error ->
-                _state.update {
-                    it.copy(
-                        authSession = authStore.activeSession(),
+            _state.update { it.copy(settingsRefreshing = true, error = null) }
+            try {
+                authStore.setActiveSession(userId)
+                val sessionResult = restoreAuthSession()
+                val session = sessionResult.getOrElse { error ->
+                    _state.update { current ->
+                        current.copy(
+                            authSession = authStore.activeSession(),
+                            savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                            error = error.message ?: "Could not refresh the selected account. Please sign in again.",
+                            settingsRefreshing = false,
+                        )
+                    }
+                    recordDebugEvent("auth", "Account switch refresh failed error=${error.debugMessage()}")
+                    return@launch
+                }
+                if (session == null) {
+                    // target session was expired/invalid and got removed.
+                    // Fall back to whatever active session is left.
+                    val fallbackSession = restoreAuthSession().getOrNull()
+                    _state.update { current ->
+                        current.copy(
+                            authSession = fallbackSession,
+                            selectedProvider = fallbackSession?.provider ?: current.selectedProvider,
+                            savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
+                            subscriptionInfo = null,
+                            accountConnectors = emptyList(),
+                            loadingAccountConnectors = false,
+                            connectorActionStore = null,
+                            games = emptyList(),
+                            libraryGames = emptyList(),
+                            catalogResult = CatalogBrowseResult(emptyList()),
+                            libraryFilterIds = emptyList(),
+                            selectedGame = null,
+                            activeSession = null,
+                            activeSessionDecision = null,
+                            error = "Failed to switch account: session expired. Please log in again.",
+                            page = AppPage.Home,
+                            settingsRefreshing = false,
+                        )
+                    }
+                    return@launch
+                }
+                gamesJob?.cancel()
+                _state.update { current ->
+                    current.copy(
+                        authSession = session,
+                        selectedProvider = session.provider,
                         savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
-                        error = error.message ?: "Could not refresh the selected account. Please sign in again.",
+                        subscriptionInfo = null,
+                        accountConnectors = emptyList(),
+                        loadingAccountConnectors = false,
+                        connectorActionStore = null,
+                        games = emptyList(),
+                        libraryGames = emptyList(),
+                        catalogResult = CatalogBrowseResult(emptyList()),
+                        libraryFilterIds = emptyList(),
+                        selectedGame = null,
+                        activeSession = null,
+                        activeSessionDecision = null,
+                        error = null,
+                        page = AppPage.Home,
+                        settingsRefreshing = false,
                     )
                 }
-                recordDebugEvent("auth", "Account switch refresh failed error=${error.debugMessage()}")
-                return@launch
-            } ?: return@launch
-            gamesJob?.cancel()
-            _state.update {
-                it.copy(
-                    authSession = session,
-                    selectedProvider = session.provider,
-                    savedAccounts = authStore.state.value.sessions.map { saved -> saved.toSavedAccount() },
-                    subscriptionInfo = null,
-                    accountConnectors = emptyList(),
-                    loadingAccountConnectors = false,
-                    connectorActionStore = null,
-                    games = emptyList(),
-                    libraryGames = emptyList(),
-                    catalogResult = CatalogBrowseResult(emptyList()),
-                    libraryFilterIds = emptyList(),
-                    selectedGame = null,
-                    activeSession = null,
-                    activeSessionDecision = null,
-                    error = null,
-                    page = AppPage.Home,
+                OpenNowAnalytics.capture(
+                    event = "account_switched",
+                    properties = mapOf(
+                        "provider" to session.provider.code,
+                        "membership_tier" to session.user.membershipTier,
+                    ),
                 )
+                refreshAfterAuth(session)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                _state.update { current ->
+                    current.copy(
+                        error = e.message ?: "Failed to switch account",
+                        settingsRefreshing = false,
+                    )
+                }
             }
-            OpenNowAnalytics.capture(
-                event = "account_switched",
-                properties = mapOf(
-                    "provider" to session.provider.code,
-                    "membership_tier" to session.user.membershipTier,
-                ),
-            )
-            refreshAfterAuth(session)
         }
     }
 
@@ -1645,6 +1687,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     zone = "prod",
                     settings = settings,
                     accountLinked = shouldSendAccountLinked(game, selectedVariant),
+                    appLaunchMode = appLaunchModeFor(game),
                 )
                 recordDebugEvent("queue", "Created session ${created.debugSummary()}")
                 pollUntilReady(token, created, settings)
@@ -1924,6 +1967,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     zone = "prod",
                     settings = pending.settings,
                     accountLinked = pending.accountLinked,
+                    appLaunchMode = appLaunchModeFor(pending.game),
                 )
                 recordDebugEvent("queue", "Created replacement session ${created.debugSummary()}")
                 pollUntilReady(token, created, pending.settings)
@@ -3116,13 +3160,28 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         return pollUntilReady(token, latest, settings)
     }
 
+    /**
+     * The host builds its virtual input devices from this when the session is created, and never
+     * revisits it. It must therefore agree with what [shouldUseNativeTouch] decides at stream time:
+     * a session created as GAMEPAD_FRIENDLY has no touchscreen, and will silently drop perfectly
+     * well-formed touch packets.
+     */
+    private fun appLaunchModeFor(game: GameInfo?): Int =
+        if (!androidTvProfile && shouldUseNativeTouch(_state.value.settings.androidTouch.nativeTouchMode, game)) {
+            GfnAppLaunchMode.TOUCH_FRIENDLY
+        } else {
+            GfnAppLaunchMode.GAMEPAD_FRIENDLY
+        }
+
     private suspend fun claimActiveSessionOrContinuePolling(
         token: String,
         active: ActiveSessionInfo,
         settings: StreamSettings,
     ): SessionInfo {
         return try {
-            sessionRepository.claimSession(token, active, settings)
+            // Claiming re-sends the session request body, so repeating the mode the session was
+            // created with keeps it from being downgraded mid-flight.
+            sessionRepository.claimSession(token, active, settings, appLaunchModeFor(_state.value.streamGame))
         } catch (error: SessionClaimNotReadyException) {
             val fallback = active.toPendingSession(zone = "prod")
             val latest = error.latestSession?.let { mergeQueueSessionState(fallback, it) } ?: fallback

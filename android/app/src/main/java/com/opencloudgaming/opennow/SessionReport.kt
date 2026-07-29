@@ -263,7 +263,32 @@ internal fun sessionReportRating(score: Int): SessionReportRating = when {
     else -> SessionReportRating.Poor
 }
 
-private fun latencyScore(value: Int): Int = when {
+/**
+ * A three-step reading of any single metric, coarse enough to drive a colour.
+ *
+ * The in-stream stats pill used to carry its own inline thresholds (ping >= 100 red, >= 50 orange;
+ * loss > 1.0 red) which disagreed with the ladders below — the pill would call a session bad while
+ * the report that followed it called the same session Good. There is now one opinion, expressed
+ * once, here.
+ */
+enum class StreamQualityLevel { Good, Fair, Poor }
+
+internal fun qualityLevelOf(score: Int): StreamQualityLevel = when {
+    score >= 85 -> StreamQualityLevel.Good
+    score >= 55 -> StreamQualityLevel.Fair
+    else -> StreamQualityLevel.Poor
+}
+
+/** Per-metric quality readings, derived from the same ladders the session score is built from. */
+object StreamQuality {
+    fun latency(ms: Int): StreamQualityLevel = qualityLevelOf(latencyScore(ms))
+    fun packetLoss(pct: Double): StreamQualityLevel = qualityLevelOf(packetLossScore(pct))
+    fun jitter(ms: Double): StreamQualityLevel = qualityLevelOf(jitterScore(ms))
+    fun decode(ms: Double, targetFps: Int): StreamQualityLevel = qualityLevelOf(decodeScore(ms, targetFps))
+    fun frameRate(fps: Double, targetFps: Int): StreamQualityLevel = qualityLevelOf(frameRateScore(fps, targetFps))
+}
+
+internal fun latencyScore(value: Int): Int = when {
     value <= 30 -> 100
     value <= 50 -> 92
     value <= 80 -> 80
@@ -272,7 +297,7 @@ private fun latencyScore(value: Int): Int = when {
     else -> 10
 }
 
-private fun packetLossScore(value: Double): Int = when {
+internal fun packetLossScore(value: Double): Int = when {
     value <= 0.1 -> 100
     value <= 0.5 -> 90
     value <= 1.0 -> 75
@@ -281,7 +306,7 @@ private fun packetLossScore(value: Double): Int = when {
     else -> 5
 }
 
-private fun jitterScore(value: Double): Int = when {
+internal fun jitterScore(value: Double): Int = when {
     value <= 5.0 -> 100
     value <= 10.0 -> 90
     value <= 20.0 -> 70
@@ -290,7 +315,7 @@ private fun jitterScore(value: Double): Int = when {
     else -> 5
 }
 
-private fun frameRateScore(value: Double, targetFps: Int): Int {
+internal fun frameRateScore(value: Double, targetFps: Int): Int {
     val ratio = value / targetFps.coerceAtLeast(1).toDouble()
     return when {
         ratio >= 0.98 -> 100
@@ -302,7 +327,7 @@ private fun frameRateScore(value: Double, targetFps: Int): Int {
     }
 }
 
-private fun decodeScore(value: Double, targetFps: Int): Int {
+internal fun decodeScore(value: Double, targetFps: Int): Int {
     val frameBudgetMs = 1000.0 / targetFps.coerceAtLeast(1).toDouble()
     val ratio = value / frameBudgetMs
     return when {

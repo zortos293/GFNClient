@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The XML mirror of OpenNowPalette (ui/theme/Color.kt). Only the handful of colours the framework
+  theme needs live here; everything Compose draws reads from the Kotlin token object.
+-->
+<resources>
+    <color name="opennow_background">#FF090B0D</color>
+    <color name="opennow_accent">#FF6AF0A0</color>
+</resources>

@@ -177,6 +177,13 @@ const api: OpenNowApi = {
       ipcRenderer.off("app:toggle-fullscreen", wrapped);
     };
   },
+  onExitFullscreen: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on(IPC_CHANNELS.EXIT_FULLSCREEN, wrapped);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.EXIT_FULLSCREEN, wrapped);
+    };
+  },
   quitApp: () => ipcRenderer.invoke(IPC_CHANNELS.QUIT_APP),
   getUpdaterState: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_GET_STATE),
   checkForUpdates: (): Promise<AppUpdaterState> => ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATER_CHECK),
@@ -204,6 +211,9 @@ const api: OpenNowApi = {
   getNativeCloudGsyncCapabilities: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_CLOUD_GSYNC_CAPABILITIES),
   notifyPointerLockChange: (active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
     ipcRenderer.send(IPC_CHANNELS.POINTER_LOCK_CHANGE, active, suppressEscapeFullscreenGrace);
+  },
+  notifyNativeInputModeChange: (active: boolean, rawInputOwnsEscape: boolean) => {
+    ipcRenderer.send(IPC_CHANNELS.NATIVE_INPUT_MODE_CHANGE, active, rawInputOwnsEscape);
   },
   onExternalEscape: (listener: () => void) => {
     const wrapped = () => listener();

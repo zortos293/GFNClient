@@ -9,7 +9,8 @@ use crate::protocol::{ColorQuality, VideoCodec};
 // Match the official web client's 240 FPS profile. Disabling split encode at
 // this frame rate can leave H265 streams smeared because the server/client
 // repair and frame-state assumptions no longer line up.
-const ENABLE_OUT_OF_FOCUS_FPS_ADJUSTMENT: bool = false;
+// Official Nvsc dumps set adjustStreamingFpsDuringOutOfFocus:1 (matches TS builder).
+const ENABLE_OUT_OF_FOCUS_FPS_ADJUSTMENT: bool = true;
 const ENABLE_240_FPS_SPLIT_ENCODE: bool = true;
 const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES: bool = true;
 
@@ -656,11 +657,17 @@ pub fn munge_answer_sdp(sdp: &str, max_bitrate_kbps: u32) -> String {
 }
 
 pub fn build_nvst_sdp(params: &NvstParams) -> String {
-    let min_bitrate = 5000.max(params.max_bitrate_kbps * 35 / 100);
-    let initial_bitrate = min_bitrate.max(params.max_bitrate_kbps * 70 / 100);
-    let is_high_fps = params.fps >= 90;
+    // Align bitrate floor/startup with the TS WebRTC companion builder
+    // (official web client uses a 4 Mbps floor and ~max/4 startup).
+    const OFFICIAL_MIN_BITRATE_KBPS: u32 = 4000;
+    let max_bitrate = params.max_bitrate_kbps.max(OFFICIAL_MIN_BITRATE_KBPS);
+    let min_bitrate = OFFICIAL_MIN_BITRATE_KBPS;
+    let initial_bitrate = OFFICIAL_MIN_BITRATE_KBPS.max(max_bitrate / 4);
+    let is_high_fps = params.fps > 60;
+    let is_at_least_120_fps = params.fps >= 120;
+    let is_90_fps = params.fps == 90;
     let is_120_fps = params.fps == 120;
-    let is_240_fps = params.fps >= 240;
+    let is_240_fps = params.fps == 240;
     let is_av1 = params.codec == VideoCodec::AV1;
     let bit_depth = params.color_quality.bit_depth();
     let hid_device_mask = params
@@ -672,6 +679,9 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
     let enable_partially_reliable_transfer_hid = params
         .enable_partially_reliable_transfer_hid
         .unwrap_or(hid_device_mask);
+    let min_target_frame_time_us = (1_000_000u32.saturating_mul(95)
+        / params.fps.max(1).saturating_mul(100))
+    .max(1000);
 
     let mut lines = vec![
         "v=0".to_owned(),
@@ -691,18 +701,48 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         "a=vqos.fec.repairMinPercent:5".to_owned(),
         "a=vqos.fec.repairPercent:5".to_owned(),
         "a=vqos.fec.repairMaxPercent:35".to_owned(),
+        "a=vqos.bllFec.enable:0".to_owned(),
         "a=vqos.dynamicStreamingMode:0".to_owned(),
         "a=vqos.drc.enable:0".to_owned(),
+        "a=vqos.calculateAvgVideoStreamingBitrate:1".to_owned(),
         "a=video.dx9EnableNv12:1".to_owned(),
         "a=video.dx9EnableHdr:1".to_owned(),
         "a=vqos.qpg.enable:1".to_owned(),
         "a=vqos.resControl.qp.qpg.featureSetting:7".to_owned(),
+        "a=video.adaptiveQuantization.spatialAQSetting:7".to_owned(),
+        "a=video.adaptiveQuantization.temporalAQSetting:0".to_owned(),
+        "a=video.adaptiveQuantization.spatialAQStrength:12".to_owned(),
+        "a=video.adaptiveQuantization.qpThresholdAdjPercent:2".to_owned(),
+        "a=video.adaptiveQuantization.saqAdaptMinQpThresholdPercent:40".to_owned(),
+        "a=video.adaptiveQuantization.saqAdaptMaxQpThresholdPercent:100".to_owned(),
+        "a=video.adaptiveQuantization.saqAdaptDecayStrengthX100:250".to_owned(),
+        "a=video.adaptiveQuantization.perfAdjEnablement:1".to_owned(),
+        "a=video.framePacing.mode:2".to_owned(),
+        format!("a=video.framePacing.pid.minTargetFrameTimeUs:{min_target_frame_time_us}"),
         "a=bwe.useOwdCongestionControl:1".to_owned(),
         "a=video.enableRtpNack:1".to_owned(),
         "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200".to_owned(),
         "a=vqos.drc.bitrateIirFilterFactor:18".to_owned(),
         "a=video.packetSize:1140".to_owned(),
+        "a=packetPacing.version:3".to_owned(),
+        "a=packetPacing.mode:1".to_owned(),
         "a=packetPacing.minNumPacketsPerGroup:15".to_owned(),
+        "a=packetPacing.enableAccurateSleep:1".to_owned(),
+        "a=packetPacing.enableSmoothTransition:1".to_owned(),
+        "a=packetPacing.allowFpsBasedToggle:1".to_owned(),
+        "a=vqos.relaxMaxBitrate.overrideAvgBitrateThresholdPercent:4".to_owned(),
+        "a=vqos.relaxMaxBitrate.customAvgBitrateThresholdPercent:65".to_owned(),
+        "a=vqos.relaxMaxBitrate.overrideAvgQpThresholdPercent:7".to_owned(),
+        "a=vqos.relaxMaxBitrate.customAvgQpThresholdPercent:51".to_owned(),
+        "a=vqos.relaxMaxBitrate.iirFilterFactor:120".to_owned(),
+        "a=vqos.qpDelta.qpDeltaMaxPercent:10".to_owned(),
+        "a=vqos.qpDelta.qpDeltaSurfaceAdjustmentStrengthPercent:70".to_owned(),
+        "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH264:100".to_owned(),
+        "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH265:100".to_owned(),
+        "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentAv1:100".to_owned(),
+        "a=vqos.qpDelta.qpDeltaMinPercent:60".to_owned(),
+        "a=vqos.qpDelta.qpDeltaIirFactor:60".to_owned(),
+        "a=vqos.qpDelta.qpDeltaThrottlePercent:100".to_owned(),
     ];
 
     if is_high_fps {
@@ -712,11 +752,11 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
             "a=vqos.dfc.targetDownCooldownMs:250".to_owned(),
             format!(
                 "a=vqos.dfc.dfcAlgoVersion:{}",
-                if is_120_fps || is_240_fps { 2 } else { 1 }
+                if is_at_least_120_fps { 2 } else { 1 }
             ),
             format!(
                 "a=vqos.dfc.minTargetFps:{}",
-                if is_120_fps || is_240_fps { 100 } else { 60 }
+                if is_at_least_120_fps { 100 } else { 60 }
             ),
             "a=vqos.resControl.dfc.useClientFpsPerf:0".to_owned(),
             "a=vqos.dfc.adjustResAndFps:0".to_owned(),
@@ -725,17 +765,24 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
             "a=bwe.iirFilterFactor:8".to_owned(),
             "a=video.encoderFeatureSetting:47".to_owned(),
             "a=video.encoderPreset:6".to_owned(),
-            "a=vqos.resControl.cpmRtc.badNwSkipFramesCount:600".to_owned(),
-            "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:9".to_owned(),
-            format!(
-                "a=video.fbcDynamicFpsGrabTimeoutMs:{}",
-                if is_120_fps { 6 } else { 18 }
-            ),
-            format!(
-                "a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:{}",
-                if is_120_fps { 6000 } else { 12000 }
-            ),
         ]);
+        let fps_specific_capture_tuning = if is_90_fps {
+            Some((9, 11))
+        } else if is_120_fps {
+            Some((6, 9))
+        } else if is_240_fps {
+            Some((18, 9))
+        } else {
+            None
+        };
+        if let Some((grab_timeout_ms, decode_threshold_ms)) = fps_specific_capture_tuning {
+            lines.push(format!(
+                "a=video.fbcDynamicFpsGrabTimeoutMs:{grab_timeout_ms}"
+            ));
+            lines.push(format!(
+                "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:{decode_threshold_ms}"
+            ));
+        }
     } else {
         lines.extend([
             "a=vqos.dfc.enable:0".to_owned(),
@@ -749,7 +796,15 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
             "a=vqos.maxStreamFpsEstimate:240".to_owned(),
         ]);
         if ENABLE_240_FPS_SPLIT_ENCODE {
-            lines.push("a=video.videoSplitEncodeStripsPerFrame:3".to_owned());
+            let strips_per_frame =
+                if is_av1 && params.width.saturating_mul(params.height) >= 2_764_800 {
+                    63
+                } else {
+                    3
+                };
+            lines.push(format!(
+                "a=video.videoSplitEncodeStripsPerFrame:{strips_per_frame}"
+            ));
             lines.push(format!(
                 "a=video.updateSplitEncodeStateDynamically:{}",
                 if ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES {
@@ -823,20 +878,14 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         format!("a=video.clientViewportHt:{}", params.height),
         format!("a=video.maxFPS:{}", params.fps),
         format!("a=video.initialBitrateKbps:{initial_bitrate}"),
-        format!(
-            "a=video.initialPeakBitrateKbps:{}",
-            params.max_bitrate_kbps
-        ),
-        format!("a=vqos.bw.maximumBitrateKbps:{}", params.max_bitrate_kbps),
+        format!("a=video.initialPeakBitrateKbps:{initial_bitrate}"),
+        format!("a=vqos.bw.maximumBitrateKbps:{max_bitrate}"),
         format!("a=vqos.bw.minimumBitrateKbps:{min_bitrate}"),
-        format!("a=vqos.bw.peakBitrateKbps:{}", params.max_bitrate_kbps),
-        format!(
-            "a=vqos.bw.serverPeakBitrateKbps:{}",
-            params.max_bitrate_kbps
-        ),
+        format!("a=vqos.bw.peakBitrateKbps:{max_bitrate}"),
+        format!("a=vqos.bw.serverPeakBitrateKbps:{max_bitrate}"),
         "a=vqos.bw.enableBandwidthEstimation:1".to_owned(),
         "a=vqos.bw.disableBitrateLimit:0".to_owned(),
-        format!("a=vqos.grc.maximumBitrateKbps:{}", params.max_bitrate_kbps),
+        format!("a=vqos.grc.maximumBitrateKbps:{max_bitrate}"),
         "a=vqos.grc.enable:0".to_owned(),
         "a=video.maxNumReferenceFrames:4".to_owned(),
         "a=video.mapRtpTimestampsToFrames:1".to_owned(),
@@ -847,6 +896,12 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         "a=video.prefilterParams.prefilterModel:0".to_owned(),
         "m=audio 0 RTP/AVP".to_owned(),
         "a=msid:audio".to_owned(),
+        "a=aqos.enableRedundancy:1".to_owned(),
+        "a=aqos.redundancyLevel:2".to_owned(),
+        "a=aqos.enableRedundancyForMic:1".to_owned(),
+        "a=aqos.redundancyLevelForMic:3".to_owned(),
+        "a=audio.enableDynamicAudioConfig:1".to_owned(),
+        "a=audio.enableTimestampAudioBuffer:1".to_owned(),
         "m=mic 0 RTP/AVP".to_owned(),
         "a=msid:mic".to_owned(),
         "a=rtpmap:0 PCMU/8000".to_owned(),
@@ -863,6 +918,8 @@ pub fn build_nvst_sdp(params: &NvstParams) -> String {
         format!(
             "a=ri.enablePartiallyReliableTransferHid:{enable_partially_reliable_transfer_hid}"
         ),
+        "a=ri.timestampsEnabled:1".to_owned(),
+        "a=ri.useMultipleGamepads:1".to_owned(),
         String::new(),
     ]);
 
@@ -1119,17 +1176,64 @@ mod tests {
 
     #[test]
     fn builds_nvst_sdp_disables_dynamic_streaming_for_high_fps() {
-        for fps in [120, 240] {
+        for fps in [90, 120, 144, 165, 240, 360] {
             let nvst = build_nvst_sdp(&nvst_params_for_fps(fps));
 
             assert!(nvst.contains("a=vqos.dynamicStreamingMode:0"));
             assert!(nvst.contains("a=vqos.dfc.adjustResAndFps:0"));
             assert!(nvst.contains("a=vqos.dfc.enable:1"));
             assert!(nvst.contains("a=vqos.resControl.dfc.useClientFpsPerf:0"));
-            assert!(nvst.contains("a=vqos.dfc.dfcAlgoVersion:2"));
-            assert!(nvst.contains("a=vqos.dfc.minTargetFps:100"));
+            if fps >= 120 {
+                assert!(nvst.contains("a=vqos.dfc.dfcAlgoVersion:2"));
+                assert!(nvst.contains("a=vqos.dfc.minTargetFps:100"));
+            } else {
+                assert!(nvst.contains("a=vqos.dfc.dfcAlgoVersion:1"));
+                assert!(nvst.contains("a=vqos.dfc.minTargetFps:60"));
+            }
             assert!(!nvst.contains("a=vqos.dfc.enable:0"));
         }
+    }
+
+    #[test]
+    fn applies_only_official_fps_specific_capture_tuning() {
+        let cases = [
+            (90, Some((9, 11))),
+            (120, Some((6, 9))),
+            (144, None),
+            (165, None),
+            (240, Some((18, 9))),
+            (360, None),
+        ];
+
+        for (fps, expected) in cases {
+            let nvst = build_nvst_sdp(&nvst_params_for_fps(fps));
+            match expected {
+                Some((grab_timeout_ms, decode_threshold_ms)) => {
+                    assert!(nvst.contains(&format!(
+                        "a=video.fbcDynamicFpsGrabTimeoutMs:{grab_timeout_ms}"
+                    )));
+                    assert!(nvst.contains(&format!(
+                        "a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:{decode_threshold_ms}"
+                    )));
+                }
+                None => {
+                    assert!(!nvst.contains("a=video.fbcDynamicFpsGrabTimeoutMs:"));
+                    assert!(!nvst.contains("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reserves_240_fps_capture_profile_for_exact_240_fps() {
+        let nvst_240 = build_nvst_sdp(&nvst_params_for_fps(240));
+        let nvst_360 = build_nvst_sdp(&nvst_params_for_fps(360));
+
+        assert!(nvst_240.contains("a=vqos.maxStreamFpsEstimate:240"));
+        assert!(nvst_240.contains("a=video.enableNextCaptureMode:1"));
+        assert!(!nvst_360.contains("a=vqos.maxStreamFpsEstimate:240"));
+        assert!(!nvst_360.contains("a=video.enableNextCaptureMode:1"));
+        assert!(!nvst_360.contains("a=video.videoSplitEncodeStripsPerFrame:"));
     }
 
     #[test]
@@ -1254,7 +1358,17 @@ mod tests {
         assert!(nvst.contains("a=video.maxFPS:120"));
         assert!(nvst.contains("a=video.bitDepth:10"));
         assert!(nvst.contains("a=packetPacing.numGroups:3"));
-        assert!(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:0"));
+        assert!(nvst.contains("a=packetPacing.enableAccurateSleep:1"));
+        assert!(nvst.contains("a=packetPacing.minNumPacketsPerGroup:15"));
+        assert!(nvst.contains("a=video.framePacing.mode:2"));
+        assert!(nvst.contains("a=vqos.fec.repairPercent:5"));
+        assert!(nvst.contains("a=vqos.fec.repairMaxPercent:35"));
+        assert!(nvst.contains("a=vqos.bllFec.enable:0"));
+        assert!(nvst.contains("a=video.rtpNackQueueLength:1024"));
+        assert!(nvst.contains("a=video.rtpNackQueueMaxPackets:512"));
+        assert!(nvst.contains("a=video.rtpNackMaxPacketCount:25"));
+        assert!(nvst.contains("a=aqos.enableRedundancy:1"));
+        assert!(nvst.contains("a=vqos.adjustStreamingFpsDuringOutOfFocus:1"));
         assert!(!nvst.contains("a=video.updateSplitEncodeStateDynamically:1"));
         assert!(nvst.contains("a=ri.partialReliableThresholdMs:16"));
         assert!(nvst.ends_with('\n'));
@@ -1283,7 +1397,20 @@ mod tests {
         assert!(nvst.contains("a=vqos.maxStreamFpsEstimate:240"));
         assert!(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:3"));
         assert!(nvst.contains("a=video.updateSplitEncodeStateDynamically:1"));
+        assert!(nvst.contains("a=video.framePacing.pid.minTargetFrameTimeUs:3958"));
         assert!(nvst.contains("a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535"));
         assert!(nvst.contains("a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535"));
+    }
+
+    #[test]
+    fn uses_wide_split_encode_only_for_high_resolution_av1() {
+        let mut params = nvst_params_for_fps(240);
+        params.codec = VideoCodec::AV1;
+        params.width = 2560;
+        params.height = 1440;
+
+        let nvst = build_nvst_sdp(&params);
+
+        assert!(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:63"));
     }
 }

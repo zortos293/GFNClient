@@ -13,7 +13,7 @@ import type {
   Settings,
   SignalingConnectRequest,
 } from "@shared/gfn";
-import { GfnSignalingClient } from "../gfn/signaling";
+import { GfnSignalingClient } from "../platforms/gfn/signaling";
 import { NativeStreamerManager } from "../nativeStreamer/manager";
 import { normalizeNativeInputPacket } from "../nativeStreamer/input";
 import { normalizeNativeRenderSurface } from "../nativeStreamer/surface";
@@ -227,7 +227,8 @@ export class SignalingCoordinator {
       key === "nativeStreamerExecutablePath" ||
       key === "nativeCloudGsyncMode" ||
       key === "nativeD3dFullscreenMode" ||
-      key === "nativeExternalRenderer"
+      key === "nativeExternalRenderer" ||
+      key === "transportMode"
     ) {
       this.stopNativeStreamer(
         key === "nativeStreamerBackend"
@@ -240,7 +241,9 @@ export class SignalingCoordinator {
                 ? "native D3D fullscreen mode changed"
                 : key === "nativeExternalRenderer"
                   ? "native external renderer setting changed"
-                  : "native streamer disabled",
+                  : key === "transportMode"
+                    ? "native transport mode changed"
+                    : "native streamer disabled",
       );
       this.resetNativeStreamerContext();
     }
@@ -270,6 +273,8 @@ export class SignalingCoordinator {
           resolution: this.nativeStreamerContext.settings.resolution,
           fps: this.nativeStreamerContext.settings.fps,
           codec: this.nativeStreamerContext.settings.codec,
+          transportMode: this.nativeStreamerContext.settings.transportMode ?? "webrtc",
+          rtspsEndpoints: this.nativeStreamerContext.session.rtspsEndpoints ?? [],
           negotiatedStreamProfile:
             this.nativeStreamerContext.session.negotiatedStreamProfile,
           requestedStreamingFeatures:
@@ -340,7 +345,8 @@ export class SignalingCoordinator {
         this.deps.settingsManager?.get("nativeCloudGsyncMode") ?? "auto",
       getD3dFullscreenMode: () =>
         this.deps.settingsManager?.get("nativeD3dFullscreenMode") ?? "auto",
-      getExternalRendererEnabled: () => true,
+      getExternalRendererEnabled: () =>
+        this.deps.settingsManager?.get("nativeExternalRenderer") ?? false,
       emit: (event) => this.emitToRenderer(event),
       sendAnswer: async (payload) => {
         if (!this.signalingClient) {

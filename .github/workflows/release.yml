@@ -3,8 +3,16 @@ name: release
 on:
   workflow_dispatch:
     inputs:
+      release_type:
+        description: Publish a stable release or a test-only nightly from dev
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - nightly
       version:
-        description: Version to release, e.g. 1.2.3 or v1.2.3
+        description: Target version (for a nightly, use the next stable version, e.g. 1.2.3)
         required: true
         type: string
   push:
@@ -22,13 +30,15 @@ permissions:
 jobs:
   preflight:
     name: preflight
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.release.outputs.version }}
       prerelease: ${{ steps.release.outputs.prerelease }}
       make_latest: ${{ steps.release.outputs.make_latest }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       source_ref: ${{ steps.release.outputs.source_ref }}
+      release_type: ${{ steps.release.outputs.release_type }}
+      release_name: ${{ steps.release.outputs.release_name }}
 
     steps:
       - name: Checkout
@@ -55,8 +65,16 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
           EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          release_type="${RELEASE_TYPE:-stable}"
           raw="${INPUT_VERSION:-$REF_NAME}"
           case "$raw" in
             opennow-stable-v*) version="${raw#opennow-stable-v}" ;;
@@ -66,6 +84,33 @@ jobs:
 
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid semver version: $raw" >&2
+            exit 1
+          fi
+
+          release_name="OpenNOW v${version}"
+          if [[ "$release_type" == "nightly" ]]; then
+            if [[ "$EVENT_NAME" != "workflow_dispatch" || "$REF_TYPE" != "branch" || "$REF_NAME" != "dev" ]]; then
+              echo "Nightly releases must be manually dispatched from the dev branch." >&2
+              exit 1
+            fi
+            if [[ "$version" == *-* || "$version" == *+* ]]; then
+              echo "Nightly target version must be a stable semver such as 1.2.3; the nightly suffix is added automatically." >&2
+              exit 1
+            fi
+            latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            latest_version="${latest_tag#opennow-stable-v}"
+            latest_version="${latest_version#v}"
+            if [[ "$latest_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              highest_version="$(printf '%s\n%s\n' "$latest_version" "$version" | sort -V | tail -n 1)"
+              if [[ "$version" == "$latest_version" || "$highest_version" != "$version" ]]; then
+                echo "Nightly target $version must be newer than the latest stable release $latest_version." >&2
+                exit 1
+              fi
+            fi
+            version="${version}-nightly.${RUN_NUMBER}.${RUN_ATTEMPT}"
+            release_name="OpenNOW Nightly v${version}"
+          elif [[ "$release_type" != "stable" ]]; then
+            echo "Unsupported release type: $release_type" >&2
             exit 1
           fi
 
@@ -93,11 +138,13 @@ jobs:
             echo "make_latest=$make_latest"
             echo "release_tag=$release_tag"
             echo "source_ref=$source_ref"
+            echo "release_type=$release_type"
+            echo "release_name=$release_name"
           } >> "$GITHUB_OUTPUT"
 
   prepare-source:
     name: prepare-source
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: preflight
     permissions:
       contents: write
@@ -120,7 +167,14 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
           SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
+          RELEASE_TYPE: ${{ needs.preflight.outputs.release_type }}
         run: |
+          if [[ "$RELEASE_TYPE" == "nightly" ]]; then
+            echo "Nightly version is applied only inside build jobs; dev remains unchanged."
+            echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ "$EVENT_NAME" != "workflow_dispatch" ]]; then
             node opennow-stable/scripts/sync-release-version.mjs --check "$RELEASE_VERSION"
             echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -155,7 +209,7 @@ jobs:
       matrix:
         include:
           - label: windows-x64
-            os: blacksmith-2vcpu-windows-2025
+            os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --x64"
             native_build: "true"
             bundle_gstreamer: "1"
@@ -166,7 +220,7 @@ jobs:
               opennow-stable/dist-release/latest*.yml
               opennow-stable/dist-release/*.blockmap
           - label: windows-arm64
-            os: blacksmith-2vcpu-windows-2025
+            os: blacksmith-4vcpu-windows-2025
             builder_args: "--win nsis portable --arm64"
             native_build: "false"
             bundle_gstreamer: "0"
@@ -199,7 +253,7 @@ jobs:
               opennow-stable/dist-release/*-arm64.zip
               opennow-stable/dist-release/latest-mac-arm64.yml
           - label: linux-x64
-            os: blacksmith-2vcpu-ubuntu-2404
+            os: blacksmith-4vcpu-ubuntu-2404
             builder_args: "--linux AppImage deb --x64"
             native_build: "true"
             bundle_gstreamer: "0"
@@ -210,7 +264,7 @@ jobs:
               opennow-stable/dist-release/*-amd64.deb
               opennow-stable/dist-release/latest-linux.yml
           - label: linux-arm64
-            os: blacksmith-2vcpu-ubuntu-2404-arm
+            os: blacksmith-4vcpu-ubuntu-2404-arm
             builder_args: "--linux AppImage deb --arm64"
             native_build: "true"
             bundle_gstreamer: "0"
@@ -232,7 +286,7 @@ jobs:
       npm_config_audit: "false"
       npm_config_fund: "false"
       GSTREAMER_VERSION: "1.28.2"
-      GSTREAMER_WINDOWS_VERSION: "1.26.8"
+      GSTREAMER_WINDOWS_VERSION: "1.28.3"
       CARGO_NET_RETRY: "10"
       CARGO_HTTP_MULTIPLEXING: "false"
       CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
@@ -294,6 +348,7 @@ jobs:
             rpm \
             build-essential \
             pkg-config \
+            libx11-dev \
             libglib2.0-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
@@ -304,8 +359,10 @@ jobs:
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly \
+            gstreamer1.0-nice \
             gstreamer1.0-vaapi \
             gstreamer1.0-gl \
+            gstreamer1.0-x \
             libva2 \
             libva-drm2 \
             libvulkan1 \
@@ -365,15 +422,14 @@ jobs:
         if: matrix.native_build == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
-          $installBase = "C:\gstreamer"
+          $installRoot = "C:\gstreamer\1.0\msvc_x86_64"
           $roots = @(
-            "C:\gstreamer\1.0\msvc_x86_64",
+            $installRoot,
             "C:\Program Files\gstreamer\1.0\msvc_x86_64"
           )
           $searchBases = @("C:\gstreamer", "C:\Program Files\gstreamer")
           $script:gstreamerPcPaths = @()
-          $script:lastRuntimeMsiExitCode = $null
-          $script:lastDevelMsiExitCode = $null
+          $script:lastInstallerExitCode = $null
           function Test-GStreamerRoot([string] $candidate) {
             return [bool]($candidate -and
               (Test-Path (Join-Path $candidate "lib\pkgconfig\gstreamer-1.0.pc")) -and
@@ -395,7 +451,7 @@ jobs:
             }
             return $null
           }
-          function Get-GStreamerMsi([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
+          function Get-GStreamerInstaller([string] $fileName, [string] $downloadDir, [string[]] $urlBases) {
             New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
             $output = Join-Path $downloadDir $fileName
             $partial = "$output.part"
@@ -431,33 +487,34 @@ jobs:
             }
             return $null
           }
-          function Install-GStreamerMsiSdk([string] $version) {
+          function Install-GStreamerSdk([string] $version) {
             $urlBases = @(
               "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc",
               "https://gstreamer.freedesktop.org/pkg/windows/$version/msvc"
             )
             $downloadDir = Join-Path $env:GITHUB_WORKSPACE ".cache\gstreamer-windows\$version"
-            $runtime = Get-GStreamerMsi "gstreamer-1.0-msvc-x86_64-$version.msi" $downloadDir $urlBases
-            if (-not $runtime) { return $false }
-            $devel = Get-GStreamerMsi "gstreamer-1.0-devel-msvc-x86_64-$version.msi" $downloadDir $urlBases
-            if (-not $devel) { return $false }
-            $runtimeInstall = Start-Process msiexec.exe -ArgumentList @("/i", $runtime, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
-            $script:lastRuntimeMsiExitCode = $runtimeInstall.ExitCode
-            if ($runtimeInstall.ExitCode -ne 0) { return $false }
-            $develInstall = Start-Process msiexec.exe -ArgumentList @("/i", $devel, "/qn", "/norestart", "INSTALLDIR=$installBase", "ADDLOCAL=ALL") -Wait -PassThru
-            $script:lastDevelMsiExitCode = $develInstall.ExitCode
-            if ($develInstall.ExitCode -ne 0) { return $false }
+            $installer = Get-GStreamerInstaller "gstreamer-1.0-msvc-x86_64-$version.exe" $downloadDir $urlBases
+            if (-not $installer) { return $false }
+            $install = Start-Process -FilePath $installer -ArgumentList @(
+              "/VERYSILENT",
+              "/SUPPRESSMSGBOXES",
+              "/NORESTART",
+              "/TYPE=devel",
+              "/DIR=$installRoot"
+            ) -Wait -PassThru -NoNewWindow
+            $script:lastInstallerExitCode = $install.ExitCode
+            if ($install.ExitCode -ne 0) { return $false }
             return [bool](Find-GStreamerRoot)
           }
           $root = Find-GStreamerRoot
           if ($root) {
             Write-Host "Using cached GStreamer Windows SDK: $root"
-          } elseif (-not (Install-GStreamerMsiSdk $env:GSTREAMER_WINDOWS_VERSION)) {
+          } elseif (-not (Install-GStreamerSdk $env:GSTREAMER_WINDOWS_VERSION)) {
             [void](Find-GStreamerRoot)
             Write-Host "GStreamer explicit roots searched: $($roots -join ', ')"
             Write-Host "GStreamer recursive search bases: $($searchBases -join ', ')"
             Write-Host "Discovered gstreamer-1.0.pc paths: $(if ($script:gstreamerPcPaths.Count) { $script:gstreamerPcPaths -join ', ' } else { 'none' })"
-            Write-Error "Failed to install/discover GStreamer Windows MSI SDK version $env:GSTREAMER_WINDOWS_VERSION. Runtime MSI exit code: $script:lastRuntimeMsiExitCode; devel MSI exit code: $script:lastDevelMsiExitCode."
+            Write-Error "Failed to install/discover GStreamer Windows SDK version $env:GSTREAMER_WINDOWS_VERSION. Installer exit code: $script:lastInstallerExitCode."
             exit 1
           }
           $root = Find-GStreamerRoot
@@ -488,8 +545,16 @@ jobs:
             Write-Error "GStreamer Windows SDK installed, but no H.264 decoder plugins were found among: $($h264Decoders -join ', ')"
             exit 1
           }
+          # Official Cerbero Windows packages disable gstvulkan. OpenNOW injects a
+          # vendored Vulkan plugin into the private runtime after bundling.
+          Write-Host "Skipping base-SDK Vulkan element checks; Vulkan is injected into the private OpenNOW runtime bundle."
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Build patched Windows GStreamer D3D11 plugin
+        if: matrix.native_build == 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-patched-gstreamer-d3d11.ps1 -GStreamerRoot "$env:GSTREAMER_1_0_ROOT_MSVC_X86_64" -Version "$env:GSTREAMER_WINDOWS_VERSION"
 
       - name: Install FPM for arm64 deb builds
         if: matrix.label == 'linux-arm64'
@@ -557,7 +622,7 @@ jobs:
 
   release:
     name: publish-release
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       - preflight
       - prepare-source
@@ -621,20 +686,38 @@ jobs:
           mv /tmp/merged.yml "$x64_feed"
           rm "$arm64_feed"
 
-      - name: Publish GitHub release
+      - name: Stage GitHub release draft
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.preflight.outputs.release_tag }}
           target_commitish: ${{ needs.prepare-source.outputs.release_sha }}
-          name: OpenNOW v${{ needs.preflight.outputs.version }}
+          name: ${{ needs.preflight.outputs.release_name }}
+          draft: true
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
           generate_release_notes: true
           files: release-artifacts/**/*
 
+      - name: Publish completed GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.preflight.outputs.make_latest }}
+        run: |
+          set -euo pipefail
+          args=(release edit "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" "--draft=false" "--prerelease=$PRERELEASE")
+          if [[ "$MAKE_LATEST" == "true" ]]; then
+            args+=(--latest)
+          fi
+          gh "${args[@]}"
+
   finalize:
     name: finalize-version-bump
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    if: needs.preflight.outputs.release_type != 'nightly'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs:
       - preflight
       - release

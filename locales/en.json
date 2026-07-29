@@ -1,4 +1,7 @@
 {
+  "common": {
+    "loading": "Loading..."
+  },
   "app": {
     "name": "OpenNOW",
     "tagline": "Open-source cloud gaming client",
@@ -261,11 +264,13 @@
     "labels": {
       "launchError": "Launch Error",
       "nowLoading": "Now Loading",
-      "adQueue": "Ad Queue"
+      "adQueue": "Ad Queue",
+      "launchProgress": "Game launch progress"
     },
     "steps": {
       "queue": "Queue",
       "setup": "Setup",
+      "connect": "Connect",
       "ready": "Ready"
     },
     "status": {
@@ -278,6 +283,28 @@
       "connectingToServer": "Connecting to server...",
       "settingUpStream": "Setting up stream...",
       "loading": "Loading..."
+    },
+    "detail": {
+      "queueMoving": "The live queue is moving. Your place is secured at #{{position}}.",
+      "findingCapacity": "Finding the best available cloud rig for this session.",
+      "rigReserved": "A gaming rig is reserved. Applying your session configuration now.",
+      "servicesStarting": "Starting game services and preparing the remote display.",
+      "mediaHandshake": "Negotiating the low-latency video and input channels."
+    },
+    "cozy": {
+      "queue": "Settle in. We'll keep your place and bring the game in when it's ready.",
+      "setup": "Your cloud rig is reserved and getting comfortable for you.",
+      "starting": "The game is starting on your cloud rig.",
+      "connecting": "The game is ready. Waiting for the first clear frame.",
+      "next": "Up next"
+    },
+    "telemetry": {
+      "queuePosition": "Queue position",
+      "calculating": "Calculating",
+      "cleared": "Cleared",
+      "elapsed": "Elapsed",
+      "session": "Session",
+      "protected": "Secured"
     },
     "ads": {
       "resumeToStayInQueue": "Resume ads to stay in queue.",
@@ -564,6 +591,8 @@
       },
       "experimentalL4SRequest": "Experimental L4S Request",
       "experimentalL4SRequestHint": "Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.",
+      "identifyAsSteamDeck": "Identify as Steam Deck",
+      "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
       "launchInConsoleMode": "Console Mode (TV / Big Picture)",
       "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
     },
@@ -692,7 +721,7 @@
       "controllerMode": "Controller Mode",
       "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
       "escapeExitsFullscreen": "Escape Exits Fullscreen",
-      "escapeExitsFullscreenHint": "When enabled, pressing Escape will exit fullscreen. When disabled (default), Escape is forwarded to the game while the mouse is pointer-locked.",
+      "escapeExitsFullscreenHint": "When enabled, pressing Escape exits fullscreen immediately. When disabled (default), Escape is forwarded to the game while pointer-locked; hold Escape ~1.5s to exit fullscreen.",
       "discordRichPresence": "Discord Rich Presence",
       "discordRichPresenceHint": "Show the game you are streaming as your Discord activity, including elapsed time.",
       "posterSize": "Poster Size",
@@ -721,6 +750,11 @@
       "checkForUpdates": "Check for Updates",
       "downloadUpdate": "Download Update",
       "restartToInstall": "Restart to Install",
+      "updateChannel": "Update Channel",
+      "updateChannelHint": "Choose Stable for regular releases or Nightly to preview the latest builds from the dev branch.",
+      "updateChannelStable": "Stable (Default)",
+      "updateChannelNightly": "Nightly",
+      "updateChannelNightlyHint": "Nightly builds may be less reliable. Switching channels immediately checks for an available update.",
       "automaticallyCheckForUpdates": "Automatically Check for Updates",
       "automaticallyCheckForUpdatesOnHint": "When on, packaged builds check GitHub Releases in the background after startup and periodically while OpenNOW is running.",
       "automaticallyCheckForUpdatesOffHint": "When off, OpenNOW stays on the current version unless you use the manual update buttons below.",
@@ -734,6 +768,10 @@
       "deleteCacheFailed": "Failed to delete cache. Please try again.",
       "whatsNew": "What's new",
       "whatsNewHint": "View the release notes for the current version of OpenNOW.",
+      "errorReporting": "Send anonymous diagnostics",
+      "errorReportingHint": "Sends anonymous crash reports and app opens (install ID, version, OS). Never includes your NVIDIA account, games library, or gameplay.",
+      "sendFeedback": "Send feedback",
+      "sendFeedbackHint": "Share a bug report or idea with the OpenNOW team.",
       "updateStatus": {
         "packagedBuildsOnly": "Packaged builds only",
         "checking": "Checking",
@@ -748,10 +786,10 @@
       "nativeStreamingHint": "Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.",
       "enablePromptKicker": "Experimental",
       "enablePromptTitle": "Enable Native Streamer?",
-      "enablePromptBody": "The native streamer is still experimental. OpenNOW shortcuts do not work while the native streamer window has focus.",
+      "enablePromptBody": "The native streamer is still experimental. Internal mode keeps video inside the OpenNOW window; external floating mode is available as a fallback in settings.",
       "enablePromptNewSessions": "Native streaming applies to new sessions only.",
-      "enablePromptShortcuts": "Overlay, exit, fullscreen, stats, and other shortcuts will not trigger inside the native streamer window.",
-      "enablePromptAltTab": "Alt+Tab back into the OpenNOW window to exit the stream or use OpenNOW shortcuts.",
+      "enablePromptShortcuts": "In internal mode, OpenNOW shortcuts stay available. External floating mode captures input in its own window.",
+      "enablePromptAltTab": "If you use external floating mode, Alt+Tab back into OpenNOW to exit the stream or use app shortcuts.",
       "enablePromptCancel": "Keep Disabled",
       "enablePromptEnable": "Enable Native Streamer",
       "enablePromptEsc": "cancel",
@@ -769,15 +807,41 @@
       "runtimeDefaultHint": "Packaged Windows/macOS builds auto-detect a bundled runtime next to the native streamer. Linux uses distro packages.",
       "linuxRuntimeHint": "Linux AppImage/private GStreamer bundling is intentionally not used by default because VAAPI/V4L2/Vulkan plugins must match the host distro and GPU driver stack. .deb packages declare Debian/Ubuntu dependencies automatically.",
       "videoPath": "Video Path",
+      "thisPc": "This PC",
+      "supportedVideoBackends": "Backend Compatibility",
+      "hardwarePathsReady": "{{count}} hardware path ready",
+      "hardwarePathsReady_plural": "{{count}} hardware paths ready",
+      "supported": "Supported",
+      "unavailable": "Unavailable",
+      "autoPick": "Auto pick",
+      "selected": "Selected",
+      "codecSupport": "Codec support",
+      "noRenderer": "No renderer",
+      "systemMemory": "System memory",
+      "noCodecsAvailable": "No compatible codecs were detected for this backend.",
+      "probingBackends": "Probing the installed GPU drivers and GStreamer plugins…",
+      "activePath": "Active path",
+      "capabilityProbeHint": "Refresh the streamer status to probe the video backends supported by this PC.",
+      "backendUnavailableOnPc": "This backend is not supported by the installed GPU drivers and GStreamer plugins.",
       "codecSupportUnknown": "Codec support unknown",
       "memoryPathUnknown": "Memory path unknown",
       "videoPathDefaultHint": "OpenNOW will show the active hardware decode path after GStreamer is detected.",
-      "directxBackend": "DirectX Backend",
-      "directxBackendHint": "Applies to the next native streamer process. Auto uses the fastest default path; choose DirectX 11 or DirectX 12 to force a specific Windows renderer.",
+      "directxBackend": "Video Backend",
+      "directxBackendHint": "Applies to the next native streamer process. Unsupported choices are disabled from the live capability probe. Auto selects the best compatible path.",
       "framePacing": "Frame Pacing",
       "lowestLatency": "Lowest Latency",
       "smoothGsync": "Smooth G-Sync",
-      "framePacingHint": "Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate."
+      "framePacingHint": "Lowest Latency avoids G-Sync pacing and is best for mouse feel. Smooth G-Sync can reduce tearing, but may cap rendering to the monitor refresh rate.",
+      "renderMode": "Render Mode",
+      "renderModeInternal": "Internal (One Window)",
+      "renderModeExternal": "External (Floating)",
+      "renderModeHint": "Internal (default) embeds native video in the OpenNOW window. External keeps the floating GStreamer window for testing/fallback. Change applies to the next native streamer process.",
+      "renderModeInternalOnlyHint": "This platform uses Internal (one window) only. Keyboard, mouse, and controller input stay in Electron and are forwarded over IPC. External floating mode is Windows-only.",
+      "transportMode": "Transport Mode",
+      "transportModeWebrtc": "WebRTC (Default)",
+      "transportModeNvst": "NVST (Experimental)",
+      "transportModeHint": "WebRTC is the supported path. NVST (experimental) uses classic RTSPS + UDP video (Moonlight-hypothesis scaffold) while keyboard/mouse/controller stay on WebRTC SCTP datachannels. First live sessions may need SRTP/pcap validation.",
+      "transportModeWindowsOnlyHint": "NVST transport is Windows-only for now. This platform always uses WebRTC."
     },
     "thanks": {
       "title": "Thanks for helping OpenNOW grow",
@@ -799,6 +863,7 @@
     }
   },
   "navbar": {
+    "sendFeedback": "Feedback",
     "subscriptionDetails": "Subscription details",
     "playtimeDetails": "Playtime Details",
     "storageDetails": "Storage Details",
@@ -879,5 +944,43 @@
     "viewOnGitHub": "View full release on GitHub",
     "unavailable": "Release notes couldn't be loaded right now.",
     "settingsLink": "What's new"
+  },
+  "telemetryConsent": {
+    "kicker": "Privacy",
+    "title": "Help improve OpenNOW?",
+    "body": "OpenNOW can send anonymous diagnostics so we can find crashes and understand how many installs are active.",
+    "sendsErrors": "Sends crash details, app version, and OS information",
+    "sendsAppOpens": "Sends an anonymous signal when the app opens (for install counts)",
+    "sendsAnonymousId": "Uses a random install ID — not linked to your name or email",
+    "neverSendsAccount": "Never sends your NVIDIA account, tokens, or library",
+    "neverSendsGameplay": "Never records gameplay, streams, or session content",
+    "changeLater": "You can change this anytime in Settings → About.",
+    "accept": "Send anonymous diagnostics",
+    "decline": "Not now"
+  },
+  "feedback": {
+    "kicker": "Feedback",
+    "title": "Send feedback",
+    "category": "Category",
+    "categories": {
+      "bug": "Bug report",
+      "idea": "Idea / feature request",
+      "other": "Other"
+    },
+    "message": "Message",
+    "messagePlaceholder": "Tell us what happened or what you'd like to see…",
+    "includeSystemInfo": "Include app version and system info",
+    "includeLogs": "Include recent app logs",
+    "includeLogsHint": "Attaches redacted main + renderer console logs (no passwords, tokens, or emails). Helpful for bug reports.",
+    "send": "Send feedback",
+    "sending": "Sending…",
+    "cancel": "Cancel",
+    "close": "Close",
+    "success": "Thanks — your feedback was sent.",
+    "errors": {
+      "empty": "Please enter a message before sending.",
+      "notConfigured": "Feedback is unavailable because PostHog is not configured in this build.",
+      "sendFailed": "Couldn't send feedback. Please try again."
+    }
   }
 }

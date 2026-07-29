@@ -17,7 +17,7 @@ import type {
   PersistentStorageResetRequest,
   GameAccountOperationRequest,
 } from "@shared/gfn";
-import type { AuthService } from "../gfn/auth";
+import type { AuthService } from "../platforms/gfn/auth";
 import {
   browseCatalog,
   fetchFeaturedGames,
@@ -30,15 +30,15 @@ import {
   markGameOwned,
   resolveLaunchAppId,
   resolveStoreUrl,
-} from "../gfn/games";
-import { fetchSubscription, fetchDynamicRegions } from "../gfn/subscription";
-import { fetchPersistentStorageLocations, resetPersistentStorage } from "../gfn/persistentStorage";
+} from "../platforms/gfn/games";
+import { fetchSubscription, fetchDynamicRegions } from "../platforms/gfn/subscription";
+import { fetchPersistentStorageLocations, resetPersistentStorage } from "../platforms/gfn/persistentStorage";
 import {
   fetchGameAccountConnections,
   linkGameAccount,
   resyncGameAccount,
   unlinkGameAccount,
-} from "../gfn/accountConnections";
+} from "../platforms/gfn/accountConnections";
 
 interface RefreshSchedulerAuthContextUpdater {
   updateAuthContext(token: string, userId: string, providerStreamingBaseUrl?: string, proxyUrl?: string): void;

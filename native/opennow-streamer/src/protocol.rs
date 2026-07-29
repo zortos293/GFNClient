@@ -34,11 +34,36 @@ pub struct CommandEnvelope {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeStreamerSessionContext {
     pub session: SessionInfo,
     pub settings: StreamSettings,
     #[serde(default)]
     pub shortcuts: NativeStreamerShortcutBindings,
+    /// Classic Mjolnir UDP video (post-SETUP peer + SRTP material). When set,
+    /// the GStreamer backend receives video over UDP while keeping webrtcbin
+    /// for SCTP datachannels / input.
+    #[serde(default, rename = "nvstVideo")]
+    pub nvst_video: Option<NvstVideoSession>,
+}
+
+/// Classic NVST UDP video session parameters (Moonlight-hypothesis scaffold).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
+pub struct NvstVideoSession {
+    pub client_udp_port: u16,
+    pub video_peer_ip: String,
+    pub video_peer_port: u16,
+    /// 64 hex chars = 32-byte AES-256 key.
+    pub srtp_aes_key_hex: String,
+    pub srtp_key_id: u32,
+    /// Optional SETUP `X-Nv-Ping-Payload` token; when absent, hole-punch sends `PING`.
+    #[serde(default)]
+    pub ping_payload: Option<String>,
+    /// `H265` / `H264` (defaults to session settings codec when omitted).
+    #[serde(default)]
+    pub codec: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +71,8 @@ pub struct NativeStreamerSessionContext {
 pub struct SessionInfo {
     pub session_id: String,
     pub server_ip: String,
+    #[serde(default)]
+    pub ice_servers: Vec<IceServer>,
     #[serde(default)]
     pub media_connection_info: Option<MediaConnectionInfo>,
     #[allow(dead_code)]
@@ -57,6 +84,18 @@ pub struct SessionInfo {
     #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     #[serde(default)]
     pub finalized_streaming_features: Option<StreamingFeatures>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub username: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub credential: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -265,7 +304,7 @@ pub struct NativeRenderSurface {
     pub show_stats: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeRenderRect {
     pub x: i32,
@@ -661,5 +700,40 @@ mod tests {
         assert_eq!(value["type"], "video-transition");
         assert_eq!(value["transition"]["transitionType"], "sink-caps-change");
         assert_eq!(value["transition"]["highFpsRisk"], true);
+    }
+
+    #[test]
+    fn nvst_video_session_deserializes_camel_case() {
+        let value = serde_json::json!({
+            "session": {
+                "sessionId": "s1",
+                "serverIp": "1.2.3.4"
+            },
+            "settings": {
+                "resolution": "1920x1080",
+                "fps": 60,
+                "maxBitrateMbps": 50,
+                "codec": "H265",
+                "colorQuality": "8bit_420",
+                "enableCloudGsync": false
+            },
+            "shortcuts": {},
+            "nvstVideo": {
+                "clientUdpPort": 49005,
+                "videoPeerIp": "10.0.0.1",
+                "videoPeerPort": 5004,
+                "srtpAesKeyHex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                "srtpKeyId": 2664076126u32,
+                "pingPayload": "token",
+                "codec": "H265"
+            }
+        });
+        let ctx: NativeStreamerSessionContext =
+            serde_json::from_value(value).expect("deserialize");
+        let nvst = ctx.nvst_video.expect("nvstVideo present");
+        assert_eq!(nvst.client_udp_port, 49005);
+        assert_eq!(nvst.video_peer_port, 5004);
+        assert_eq!(nvst.srtp_key_id, 2664076126);
+        assert_eq!(nvst.ping_payload.as_deref(), Some("token"));
     }
 }

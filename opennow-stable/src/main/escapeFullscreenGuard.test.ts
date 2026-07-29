@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS,
   isEscapeKeyDownInput,
+  markEscapeHoldFired,
   nextPointerLockEscapeCaptureUntilMs,
   POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS,
+  resolveEscapeHoldCaptureAction,
   shouldCaptureEscapeFullscreenInput,
 } from "./escapeFullscreenGuard";
 
@@ -22,7 +25,9 @@ test("shouldCaptureEscapeFullscreenInput captures Escape while pointer locked", 
     { type: "keyDown", key: "Escape" },
     {
       allowEscapeToExitFullscreen: false,
+      streamInputActive: true,
       pointerLockActive: true,
+      rendererControlledFullscreen: false,
       windowFullscreen: false,
       pointerLockEscapeCaptureUntilMs: 0,
       nowMs: 100,
@@ -35,10 +40,42 @@ test("shouldCaptureEscapeFullscreenInput captures rapid Escape presses during fu
     { type: "keyDown", key: "Escape" },
     {
       allowEscapeToExitFullscreen: false,
+      streamInputActive: false,
       pointerLockActive: false,
+      rendererControlledFullscreen: false,
       windowFullscreen: true,
       pointerLockEscapeCaptureUntilMs: 1500,
       nowMs: 1000,
+    },
+  ), true);
+});
+
+test("shouldCaptureEscapeFullscreenInput captures Escape throughout renderer-controlled fullscreen", () => {
+  assert.equal(shouldCaptureEscapeFullscreenInput(
+    { type: "keyDown", key: "Escape" },
+    {
+      allowEscapeToExitFullscreen: false,
+      streamInputActive: true,
+      pointerLockActive: false,
+      rendererControlledFullscreen: true,
+      windowFullscreen: false,
+      pointerLockEscapeCaptureUntilMs: 0,
+      nowMs: 10_000,
+    },
+  ), true);
+});
+
+test("shouldCaptureEscapeFullscreenInput captures Escape for an active stream in native fullscreen", () => {
+  assert.equal(shouldCaptureEscapeFullscreenInput(
+    { type: "keyDown", key: "Escape" },
+    {
+      allowEscapeToExitFullscreen: false,
+      streamInputActive: true,
+      pointerLockActive: false,
+      rendererControlledFullscreen: false,
+      windowFullscreen: true,
+      pointerLockEscapeCaptureUntilMs: 0,
+      nowMs: 10_000,
     },
   ), true);
 });
@@ -47,21 +84,27 @@ test("shouldCaptureEscapeFullscreenInput allows Escape outside protected stream 
   const input = { type: "keyDown", key: "Escape" };
   assert.equal(shouldCaptureEscapeFullscreenInput(input, {
     allowEscapeToExitFullscreen: true,
+    streamInputActive: true,
     pointerLockActive: true,
+    rendererControlledFullscreen: true,
     windowFullscreen: true,
     pointerLockEscapeCaptureUntilMs: 1500,
     nowMs: 1000,
   }), false);
   assert.equal(shouldCaptureEscapeFullscreenInput(input, {
     allowEscapeToExitFullscreen: false,
+    streamInputActive: false,
     pointerLockActive: false,
+    rendererControlledFullscreen: false,
     windowFullscreen: true,
     pointerLockEscapeCaptureUntilMs: 999,
     nowMs: 1000,
   }), false);
   assert.equal(shouldCaptureEscapeFullscreenInput(input, {
     allowEscapeToExitFullscreen: false,
+    streamInputActive: false,
     pointerLockActive: false,
+    rendererControlledFullscreen: false,
     windowFullscreen: false,
     pointerLockEscapeCaptureUntilMs: 1500,
     nowMs: 1000,
@@ -75,4 +118,57 @@ test("nextPointerLockEscapeCaptureUntilMs only arms grace for unsuppressed point
     nextPointerLockEscapeCaptureUntilMs(false, false, 1000),
     1000 + POINTER_LOCK_ESCAPE_FULLSCREEN_GRACE_MS,
   );
+});
+
+test("resolveEscapeHoldCaptureAction arms hold then taps on early keyup", () => {
+  const guard = {
+    allowEscapeToExitFullscreen: false,
+    streamInputActive: true,
+    pointerLockActive: true,
+    rendererControlledFullscreen: true,
+    windowFullscreen: true,
+    pointerLockEscapeCaptureUntilMs: 0,
+    nowMs: 1000,
+  };
+  const armed = resolveEscapeHoldCaptureAction(
+    { type: "keyDown", key: "Escape" },
+    guard,
+    { keyDownCaptured: false, holdFired: false },
+  );
+  assert.equal(armed.action, "arm-hold");
+  assert.equal(ESCAPE_HOLD_TO_EXIT_FULLSCREEN_MS, 1500);
+
+  const tap = resolveEscapeHoldCaptureAction(
+    { type: "keyUp", key: "Escape" },
+    guard,
+    armed.nextHoldState,
+  );
+  assert.equal(tap.action, "tap");
+  assert.deepEqual(tap.nextHoldState, { keyDownCaptured: false, holdFired: false });
+});
+
+test("resolveEscapeHoldCaptureAction suppresses tap after hold fires", () => {
+  const guard = {
+    allowEscapeToExitFullscreen: false,
+    streamInputActive: true,
+    pointerLockActive: true,
+    rendererControlledFullscreen: true,
+    windowFullscreen: true,
+    pointerLockEscapeCaptureUntilMs: 0,
+    nowMs: 1000,
+  };
+  const armed = resolveEscapeHoldCaptureAction(
+    { type: "keyDown", key: "Escape" },
+    guard,
+    { keyDownCaptured: false, holdFired: false },
+  );
+  const held = markEscapeHoldFired(armed.nextHoldState);
+  assert.equal(held.holdFired, true);
+
+  const keyup = resolveEscapeHoldCaptureAction(
+    { type: "keyUp", key: "Escape" },
+    guard,
+    held,
+  );
+  assert.equal(keyup.action, "hold-consumed-keyup");
 });

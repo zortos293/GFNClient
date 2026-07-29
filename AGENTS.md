@@ -15,10 +15,22 @@ If a tradeoff is required, choose correctness and robustness over short-term con
 - `locales/` contains localization sources and generated Crowdin output. See Localization before editing.
 - `OpenNOW-Site/` is a separate repository when present; do not modify it from OpenNOW tasks unless explicitly requested.
 
+## Platform Layout (multi-provider ready)
+
+Cloud streaming providers live under a `platforms/<id>/` folder in each process boundary. GeForce NOW (`gfn`) is the first provider:
+
+- Main: `opennow-stable/src/main/platforms/gfn/`
+- Renderer stream protocol: `opennow-stable/src/renderer/src/platforms/gfn/`
+- Shared contracts: `opennow-stable/src/shared/gfn/` (barrel `@shared/gfn`)
+- Platform registry/capabilities: `opennow-stable/src/shared/platforms/` and `opennow-stable/src/main/platforms/`
+
+When adding another provider, create `platforms/<id>/` mirrors and register it in `shared/platforms` — do not sprinkle provider protocol details into app shell, IPC wiring, or unrelated UI modules.
+
 ## Module Boundaries
 
-- Shared GFN main-process protocol details belong under `opennow-stable/src/main/gfn`. Prefer focused modules with one owner per concern (`clientHeaders.ts` for client identity/header constants, `proxyFetch.ts` for proxy-aware fetches, `proxyUrl.ts` for proxy URL normalization, `request.ts` for common response handling).
-- Do not duplicate NVIDIA/GFN constants, request headers, platform/device ID mapping, auth header construction, proxy behavior, or error parsing across feature files. Add to or extract a focused shared module first, then consume it from features.
+- Shared GFN main-process protocol details belong under `opennow-stable/src/main/platforms/gfn`. Prefer focused modules with one owner per concern (`clientHeaders.ts` for client identity/header constants, `proxyFetch.ts` for proxy-aware fetches, `proxyUrl.ts` for proxy URL normalization, `request.ts` for common response handling, `endpoints` helpers via `@shared/gfn/endpoints` for public URL construction).
+- Shared GFN DTOs/helpers are split by concern under `opennow-stable/src/shared/gfn/` (`auth`, `catalog`, `session`, `stream`, `api`, …). Import from `@shared/gfn` for stability, or from a focused submodule when that keeps ownership clearer.
+- Do not duplicate NVIDIA/GFN constants, request headers, platform/device ID mapping, auth header construction, proxy behavior, zone URL construction, or error parsing across feature files. Add to or extract a focused shared module first, then consume it from features.
 - Keep feature files (`auth.ts`, `games.ts`, `cloudmatch.ts`, `subscription.ts`, etc.) responsible for product flow and payload shape, not for re-declaring shared client identity or transport details.
 - Preserve provider/alliance behavior, stable device IDs, session refresh semantics, and `SessionError.fromResponse()` handling when refactoring GFN code.
 

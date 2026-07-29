@@ -2,171 +2,43 @@ import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import type {
-  VideoCodec,
-  ColorQuality,
-  VideoAccelerationPreference,
-  MicrophoneMode,
-  GameLanguage,
-  AspectRatio,
-  KeyboardLayout,
-  StreamClientMode,
-  NativeStreamerBackendPreference,
   NativeVideoBackendPreference,
-  NativeStreamerFeatureMode,
-  NativeTransitionDiagnostics,
   AppAccentColor,
   AppTheme,
-  VideoShaderSettings,
+  ErrorReportingConsent,
+  Settings,
 } from "@shared/gfn";
 import {
-  DEFAULT_KEYBOARD_LAYOUT,
-  DEFAULT_VIDEO_SHADER_SETTINGS,
-  getDefaultStreamPreferences,
+  createDefaultSettings,
+  createPlatformShortcutDefaults,
+  SHORTCUT_SETTING_KEYS,
+  normalizeNativeExternalRendererForPlatform,
   normalizeStreamClientModeForPlatform,
   normalizeStreamPreferences,
+  normalizeTransportModeForPlatform,
   normalizeVideoShaderSettings,
+  normalizeUpdateChannel,
 } from "@shared/gfn";
 
-export interface Settings {
-  /** Video resolution (e.g., "1920x1080") */
-  resolution: string;
-  /** Aspect ratio (16:9, 16:10, 21:9, 32:9) */
-  aspectRatio: AspectRatio;
-  /** Game poster size multiplier used by the renderer */
-  posterSizeScale: number;
-  /** Target FPS (30, 60, 120, etc.) */
-  fps: number;
-  /** Maximum bitrate in Mbps (cap at 150) */
-  maxBitrateMbps: number;
-  /** Recording video bitrate in Mbps (null = MediaRecorder auto, cap at 200) */
-  recordingBitrateMbps: number | null;
-  /** Stream client implementation to use for new sessions */
-  streamClientMode: StreamClientMode;
-  /** Native streamer backend preference for new native sessions */
-  nativeStreamerBackend: NativeStreamerBackendPreference;
-  /** Native GStreamer video backend preference for Windows DirectX paths */
-  nativeVideoBackend: NativeVideoBackendPreference;
-  /** Optional path to a custom native streamer executable */
-  nativeStreamerExecutablePath: string;
-  /** Native-only override for Cloud G-Sync / VRR display detection */
-  nativeCloudGsyncMode: NativeStreamerFeatureMode;
-  /** Native D3D sink fullscreen presentation override */
-  nativeD3dFullscreenMode: NativeStreamerFeatureMode;
-  /** Use the native GStreamer renderer window instead of Electron HWND embedding */
-  nativeExternalRenderer: boolean;
-  /** Show the native streamer's own stats overlay while native streaming */
-  showNativeStreamerStats: boolean;
-  /** Preferred video codec */
-  codec: VideoCodec;
-  /** Preferred video decode acceleration mode */
-  decoderPreference: VideoAccelerationPreference;
-  /** Preferred video encode acceleration mode */
-  encoderPreference: VideoAccelerationPreference;
-  /** Color quality (bit depth + chroma subsampling) */
-  colorQuality: ColorQuality;
-  /** Preferred region URL (empty = auto) */
-  region: string;
-  /** Enable the optional proxy for Nvidia games catalog, session creation, and queue polling */
-  sessionProxyEnabled: boolean;
-  /** Optional proxy used for Nvidia games catalog, session creation, and queue polling */
-  sessionProxyUrl: string;
-  /** Enable clipboard paste into stream */
-  clipboardPaste: boolean;
-  /** Enable experimental gyroscope controller input mapping */
-  enableGyroscopeControls: boolean;
-  /** macOS-only workaround that restores Chromium's older HID path for Steam Controller compatibility */
-  steamControllerCompatibilityMode: boolean;
-  /** Use the WebRTC cursor_channel overlay instead of leaving cursor rendering to the stream */
-  nativeCursorOverlay: boolean;
-  /** Mouse sensitivity multiplier */
-  mouseSensitivity: number;
-  /** Software mouse acceleration strength percentage (1-150) */
-  mouseAcceleration: number;
-  /** Toggle stats overlay shortcut */
-  shortcutToggleStats: string;
-  /** Toggle pointer lock shortcut */
-  shortcutTogglePointerLock: string;
-  /** Toggle fullscreen shortcut */
-  shortcutToggleFullscreen: string;
-  /** Stop stream shortcut */
-  shortcutStopStream: string;
-  /** Toggle anti-AFK shortcut */
-  shortcutToggleAntiAfk: string;
-  /** Toggle microphone shortcut */
-  shortcutToggleMicrophone: string;
-  /** Take screenshot shortcut */
-  shortcutScreenshot: string;
-  /** Toggle stream recording shortcut */
-  shortcutToggleRecording: string;
-  /** How often to re-show the session timer while streaming (0 = off) */
-  sessionClockShowEveryMinutes: number;
-  /** How long the session timer stays visible when it appears */
-  sessionClockShowDurationSeconds: number;
-  /** Microphone mode: disabled, push-to-talk, or voice-activity */
-  microphoneMode: MicrophoneMode;
-  /** Preferred microphone device ID (empty = default) */
-  microphoneDeviceId: string;
-  /** Hide stream buttons (mic/fullscreen/end-session) while streaming */
-  hideStreamButtons: boolean;
-  /** Show the Anti-AFK indicator badge while streaming */
-  showAntiAfkIndicator: boolean;
-  /** Show the stats overlay automatically when a stream launches */
-  showStatsOnLaunch: boolean;
-  /** Skip the free-tier queue server selection modal and launch with default routing */
-  hideServerSelector: boolean;
-  /** Desktop UI accent preset */
-  appAccentColor: AppAccentColor;
-  /** UI Theme */
-  appTheme: AppTheme;
-  /** Use translucent overlays for settings and navbars */
-  translucentUI: boolean;
-  /** Use the large-screen controller-oriented shell and library layout */
-  controllerMode: boolean;
-  /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
-  launchInConsoleMode: boolean;
-  /** Automatically enter fullscreen when launching a stream */
-  autoFullScreen: boolean;
-  favoriteGameIds: string[];
-  /** Enable the live elapsed session counter */
-  sessionCounterEnabled: boolean;
-  /** Also show the session-limit countdown in the stats overlay while streaming */
-  showSessionTimeRemainingInStatsOverlay: boolean;
-  /** Window width */
-  windowWidth: number;
-  /** Window height */
-  windowHeight: number;
-  /** Keyboard layout for mapping physical keys inside the remote session */
-  keyboardLayout: KeyboardLayout;
-  /** In-game language setting (sent to GFN servers via languageCode parameter) */
-  gameLanguage: GameLanguage;
-  /** User opt-in for NVIDIA's per-game in-game graphics/settings persistence */
-  enablePersistingInGameSettings: boolean;
-  /** Experimental request for Low Latency, Low Loss, Scalable throughput on new sessions */
-  enableL4S: boolean;
-  /** Request Cloud G-Sync / Variable Refresh Rate on new sessions */
-  enableCloudGsync: boolean;
-  /** Hidden diagnostics for native transition recovery and 240 FPS server-side stream changes */
-  nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
-  /** Show the currently streaming game as Discord Rich Presence activity */
-  discordRichPresence: boolean;
-  /** Automatically check GitHub Releases for app updates in the background */
-  autoCheckForUpdates: boolean;
-  /** When true, pressing Escape will exit fullscreen; when false Escape is sent to the game while pointer-locked */
-  allowEscapeToExitFullscreen?: boolean;
-  /** Last version for which the release highlights modal was acknowledged (empty = never) */
-  lastSeenReleaseHighlightsVersion: string;
-  /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
-  videoShader: VideoShaderSettings;
-}
+export type { Settings } from "@shared/gfn";
 
-const defaultStopShortcut = "Ctrl+Shift+Q";
-const defaultAntiAfkShortcut = "Ctrl+Shift+K";
-const defaultMicShortcut = "Ctrl+Shift+M";
+const DEFAULT_SHORTCUTS = createPlatformShortcutDefaults(process.platform).bindings;
+const defaultStopShortcut = DEFAULT_SHORTCUTS.shortcutStopStream;
+const defaultAntiAfkShortcut = DEFAULT_SHORTCUTS.shortcutToggleAntiAfk;
+const defaultMicShortcut = DEFAULT_SHORTCUTS.shortcutToggleMicrophone;
 const LEGACY_STOP_SHORTCUTS = new Set(["META+SHIFT+Q", "CMD+SHIFT+Q"]);
 const LEGACY_ANTI_AFK_SHORTCUTS = new Set(["META+SHIFT+F10", "CMD+SHIFT+F10", "CTRL+SHIFT+F10"]);
-const DEFAULT_STREAM_PREFERENCES = getDefaultStreamPreferences();
 
-const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>(["auto", "d3d11", "d3d12"]);
+const NATIVE_VIDEO_BACKEND_PREFERENCES = new Set<NativeVideoBackendPreference>([
+  "auto",
+  "d3d11",
+  "d3d12",
+  "nvdec",
+  "vaapi",
+  "v4l2",
+  "vulkan",
+  "software",
+]);
 const APP_ACCENT_COLORS = new Set<AppAccentColor>(["green", "blue", "violet", "amber", "rose"]);
 const APP_THEMES = new Set<AppTheme>(["light", "dark", "auto"]);
 
@@ -195,84 +67,18 @@ function normalizeRecordingBitrateMbps(raw: unknown): number | null {
   return Math.max(1, Math.min(200, Math.round(value)));
 }
 
-const DEFAULT_SETTINGS: Settings = {
-  resolution: "1920x1080",
-  aspectRatio: "16:9",
-  posterSizeScale: 1,
-  fps: 60,
-  maxBitrateMbps: 75,
-  recordingBitrateMbps: null,
-  streamClientMode: "web",
-  nativeStreamerBackend: "gstreamer",
-  nativeVideoBackend: "auto",
-  nativeStreamerExecutablePath: "",
-  nativeCloudGsyncMode: "auto",
-  nativeD3dFullscreenMode: "auto",
-  nativeExternalRenderer: true,
-  showNativeStreamerStats: false,
-  codec: DEFAULT_STREAM_PREFERENCES.codec,
-  decoderPreference: "auto",
-  encoderPreference: "auto",
-  colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
-  region: "",
-  sessionProxyEnabled: false,
-  sessionProxyUrl: "",
-  clipboardPaste: false,
-  enableGyroscopeControls: false,
-  steamControllerCompatibilityMode: false,
-  nativeCursorOverlay: true,
-  mouseSensitivity: 1,
-  mouseAcceleration: 1,
-  shortcutToggleStats: "F3",
-  shortcutTogglePointerLock: "F8",
-  shortcutToggleFullscreen: "F10",
-  shortcutStopStream: defaultStopShortcut,
-  shortcutToggleAntiAfk: defaultAntiAfkShortcut,
-  shortcutToggleMicrophone: defaultMicShortcut,
-  shortcutScreenshot: "F11",
-  shortcutToggleRecording: "F12",
-  microphoneMode: "disabled",
-  microphoneDeviceId: "",
-  hideStreamButtons: false,
-  showAntiAfkIndicator: true,
-  showStatsOnLaunch: false,
-  hideServerSelector: false,
-  appAccentColor: "green",
-  appTheme: "auto",
-  translucentUI: false,
-  controllerMode: false,
-  launchInConsoleMode: false,
-  autoFullScreen: false,
-  favoriteGameIds: [],
-  sessionCounterEnabled: false,
-  showSessionTimeRemainingInStatsOverlay: false,
-  sessionClockShowEveryMinutes: 60,
-  sessionClockShowDurationSeconds: 30,
-  windowWidth: 1400,
-  windowHeight: 900,
-  keyboardLayout: DEFAULT_KEYBOARD_LAYOUT,
-  gameLanguage: "en_US",
-  enablePersistingInGameSettings: false,
-  enableL4S: false,
-  enableCloudGsync: false,
-  nativeTransitionDiagnostics: undefined,
-  discordRichPresence: false,
-  autoCheckForUpdates: true,
-  allowEscapeToExitFullscreen: false,
-  lastSeenReleaseHighlightsVersion: "",
-  videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
-};
 
-const SHORTCUT_SETTING_KEYS = [
-  "shortcutToggleStats",
-  "shortcutTogglePointerLock",
-  "shortcutToggleFullscreen",
-  "shortcutStopStream",
-  "shortcutToggleAntiAfk",
-  "shortcutToggleMicrophone",
-  "shortcutScreenshot",
-  "shortcutToggleRecording",
-] as const satisfies readonly (keyof Settings)[];
+const ERROR_REPORTING_CONSENTS = new Set<ErrorReportingConsent>(["unset", "granted", "denied"]);
+
+function normalizeErrorReportingConsent(raw: unknown): ErrorReportingConsent {
+  return ERROR_REPORTING_CONSENTS.has(raw as ErrorReportingConsent)
+    ? (raw as ErrorReportingConsent)
+    : "unset";
+}
+
+function normalizeTelemetryInstallId(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim() : "";
+}
 
 type ShortcutSettingKey = typeof SHORTCUT_SETTING_KEYS[number];
 
@@ -332,7 +138,7 @@ export class SettingsManager {
   private load(): Settings {
     try {
       if (!existsSync(this.settingsPath)) {
-        const defaults = { ...DEFAULT_SETTINGS };
+        const defaults = createDefaultSettings(process.platform);
         this.enforceCompatibility(defaults);
         return defaults;
       }
@@ -349,7 +155,7 @@ export class SettingsManager {
 
       // Merge with defaults to ensure all fields exist
       const merged: Settings = {
-        ...DEFAULT_SETTINGS,
+        ...createDefaultSettings(process.platform),
         ...parsedSettings,
       };
 
@@ -393,7 +199,7 @@ export class SettingsManager {
       return merged;
     } catch (error) {
       console.error("Failed to load settings, using defaults:", error);
-      const defaults = { ...DEFAULT_SETTINGS };
+      const defaults = createDefaultSettings(process.platform);
       this.enforceCompatibility(defaults);
       return defaults;
     }
@@ -431,12 +237,34 @@ export class SettingsManager {
       settings.appTheme = appTheme;
       migrated = true;
     }
+    const updateChannel = normalizeUpdateChannel(settings.updateChannel);
+    if (settings.updateChannel !== updateChannel) {
+      settings.updateChannel = updateChannel;
+      migrated = true;
+    }
     if (typeof settings.translucentUI !== "boolean") {
       settings.translucentUI = false;
       migrated = true;
     }
-    if (!settings.nativeExternalRenderer) {
-      settings.nativeExternalRenderer = true;
+    if (typeof settings.nativeExternalRenderer !== "boolean") {
+      settings.nativeExternalRenderer = false;
+      migrated = true;
+    }
+    const nativeExternalRenderer = normalizeNativeExternalRendererForPlatform(
+      settings.nativeExternalRenderer,
+      process.platform,
+    );
+    if (settings.nativeExternalRenderer !== nativeExternalRenderer) {
+      settings.nativeExternalRenderer = nativeExternalRenderer;
+      migrated = true;
+    }
+    const transportMode = normalizeTransportModeForPlatform(
+      settings.transportMode === "nvst" ? "nvst" : "webrtc",
+      process.platform,
+      settings.streamClientMode,
+    );
+    if (settings.transportMode !== transportMode) {
+      settings.transportMode = transportMode;
       migrated = true;
     }
     const nativeVideoBackend = normalizeNativeVideoBackendPreference(settings.nativeVideoBackend);
@@ -455,10 +283,26 @@ export class SettingsManager {
       settings.steamControllerCompatibilityMode = false;
       migrated = true;
     }
+    if (typeof settings.identifyAsSteamDeck !== "boolean") {
+      settings.identifyAsSteamDeck = false;
+      migrated = true;
+    }
 
     const videoShader = normalizeVideoShaderSettings(settings.videoShader);
     if (JSON.stringify(settings.videoShader) !== JSON.stringify(videoShader)) {
       settings.videoShader = videoShader;
+      migrated = true;
+    }
+
+    const consentBefore = settings.errorReportingConsent;
+    settings.errorReportingConsent = normalizeErrorReportingConsent(settings.errorReportingConsent);
+    if (settings.errorReportingConsent !== consentBefore) {
+      migrated = true;
+    }
+
+    const installIdBefore = settings.telemetryInstallId;
+    settings.telemetryInstallId = normalizeTelemetryInstallId(settings.telemetryInstallId);
+    if (settings.telemetryInstallId !== installIdBefore) {
       migrated = true;
     }
 
@@ -489,7 +333,7 @@ export class SettingsManager {
 
       const fallback = SIDEBAR_RESERVED_SHORTCUT_FALLBACKS[key].find((candidate) =>
         isShortcutAvailable(settings, key, candidate),
-      ) ?? DEFAULT_SETTINGS[key];
+      ) ?? DEFAULT_SHORTCUTS[key];
       settings[key] = fallback;
       migrated = true;
     }
@@ -552,7 +396,7 @@ export class SettingsManager {
    * Reset all settings to defaults
    */
   reset(): Settings {
-    this.settings = { ...DEFAULT_SETTINGS };
+    this.settings = createDefaultSettings(process.platform);
     this.enforceCompatibility(this.settings);
     this.save();
     return { ...this.settings };
@@ -562,7 +406,7 @@ export class SettingsManager {
    * Get the default settings
    */
   getDefaults(): Settings {
-    const defaults = { ...DEFAULT_SETTINGS };
+    const defaults = createDefaultSettings(process.platform);
     this.enforceCompatibility(defaults);
     return defaults;
   }
@@ -577,5 +421,3 @@ export function getSettingsManager(): SettingsManager {
   }
   return settingsManager;
 }
-
-export { DEFAULT_SETTINGS };

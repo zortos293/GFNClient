@@ -4,8 +4,9 @@ use crate::backend::{
     web_rtc_media_connection_info,
 };
 use crate::gstreamer_config::{
-    resolve_d3d_fullscreen_sink, resolve_present_max_fps, NATIVE_D3D_FULLSCREEN_ENV,
-    NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
+    resolve_d3d_fullscreen_sink, resolve_present_max_fps, use_internal_renderer,
+    NATIVE_D3D_FULLSCREEN_ENV, NATIVE_PRESENT_MAX_FPS_ENV, PRESENT_LIMITER_AUTO_SENTINEL,
+    PRESENT_LIMITER_VRR_SENTINEL,
 };
 use crate::gstreamer_platform::{clear_native_shortcut_bindings, set_native_shortcut_bindings};
 use crate::gstreamer_pipeline::{
@@ -135,7 +136,10 @@ impl NativeStreamerBackend for GstreamerBackend {
         };
 
         let session_id = context.session.session_id.clone();
-        let pipeline = match GstreamerPipeline::build(self.event_sender.clone()) {
+        let pipeline = match GstreamerPipeline::build(
+            self.event_sender.clone(),
+            &context.session.ice_servers,
+        ) {
             Ok(pipeline) => pipeline,
             Err(message) => {
                 return BackendReply {
@@ -165,6 +169,78 @@ impl NativeStreamerBackend for GstreamerBackend {
         self.remote_description_set = false;
         let webrtc_name = pipeline.webrtc_name();
         self.pipeline = Some(pipeline);
+
+        let mut events = vec![Event::Status {
+            status: "ready",
+            message: Some(format!(
+                "GStreamer backend selected for session {session_id}; {} pipeline is ready.",
+                webrtc_name
+            )),
+        }];
+
+        if let Some(nvst) = self
+            .active_context
+            .as_ref()
+            .and_then(|ctx| ctx.nvst_video.clone())
+        {
+            let fallback_codec = self
+                .active_context
+                .as_ref()
+                .map(|ctx| ctx.settings.codec.as_str().to_owned())
+                .unwrap_or_else(|| "H265".to_owned());
+            let requested_fps = self
+                .active_context
+                .as_ref()
+                .map(|ctx| ctx.settings.fps);
+            let d3d_fullscreen = resolve_d3d_fullscreen_sink(
+                self.active_context
+                    .as_ref()
+                    .map(|ctx| ctx.settings.enable_cloud_gsync)
+                    .unwrap_or(false),
+            );
+            let cloud_gsync_enabled = self
+                .active_context
+                .as_ref()
+                .map(|ctx| ctx.settings.enable_cloud_gsync)
+                .unwrap_or(false);
+            let present_max_fps = resolve_present_max_fps(cloud_gsync_enabled);
+            if let Some(pipeline) = self.pipeline.as_mut() {
+                pipeline.set_present_max_fps(present_max_fps);
+                pipeline.set_d3d_fullscreen_sink(d3d_fullscreen);
+                if let Some(ctx) = self.active_context.as_ref() {
+                    let bitrate_kbps = ctx.settings.max_bitrate_mbps.saturating_mul(1000);
+                    pipeline.configure_stats(ctx, bitrate_kbps);
+                }
+                match pipeline.attach_nvst_video(
+                    nvst,
+                    &fallback_codec,
+                    requested_fps.filter(|fps| *fps > 0),
+                    d3d_fullscreen,
+                ) {
+                    Ok(()) => events.push(Event::Log {
+                        level: "info",
+                        message: "NVST classic UDP video receive scaffold attached (hybrid WebRTC input)."
+                            .to_owned(),
+                    }),
+                    Err(message) => {
+                        events.push(Event::Error {
+                            code: "nvst-video-attach-failed".to_owned(),
+                            message: message.clone(),
+                        });
+                        return BackendReply {
+                            events,
+                            response: Some(Response::Error {
+                                id: Some(id),
+                                code: "nvst-video-attach-failed".to_owned(),
+                                message,
+                            }),
+                            should_continue: true,
+                        };
+                    }
+                }
+            }
+        }
+
         if let (Some(surface), Some(pipeline)) =
             (self.render_surface.clone(), self.pipeline.as_ref())
         {
@@ -172,13 +248,7 @@ impl NativeStreamerBackend for GstreamerBackend {
         }
 
         BackendReply {
-            events: vec![Event::Status {
-                status: "ready",
-                message: Some(format!(
-                    "GStreamer backend selected for session {session_id}; {} pipeline is ready.",
-                    webrtc_name
-                )),
-            }],
+            events,
             response: Some(Response::Ok { id }),
             should_continue: true,
         }
@@ -226,19 +296,45 @@ impl NativeStreamerBackend for GstreamerBackend {
             };
         };
 
-        let present_max_fps = resolve_present_max_fps(context.settings.fps);
+        let present_max_fps = resolve_present_max_fps(context.settings.enable_cloud_gsync);
+        // Internal child-surface mode never uses exclusive D3D fullscreen present.
         let d3d_fullscreen_sink = resolve_d3d_fullscreen_sink(context.settings.enable_cloud_gsync);
         set_native_shortcut_bindings(&context.shortcuts);
         pipeline.set_present_max_fps(present_max_fps);
         pipeline.set_d3d_fullscreen_sink(d3d_fullscreen_sink);
         pipeline.configure_stats(&context, prepared.nvst_params.max_bitrate_kbps);
-        if present_max_fps > 0 && present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL {
+        if present_max_fps > 0
+            && present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL
+            && present_max_fps != PRESENT_LIMITER_VRR_SENTINEL
+        {
             events.push(Event::Log {
                 level: "info",
                 message: format!(
                     "Native present limiter enabled at {present_max_fps} fps for {} fps stream; set {NATIVE_PRESENT_MAX_FPS_ENV}=0 to disable.",
                     context.settings.fps
                 ),
+            });
+        } else if present_max_fps == PRESENT_LIMITER_AUTO_SENTINEL {
+            events.push(Event::Log {
+                level: "info",
+                message: format!(
+                    "Native present limiter auto mode for {} fps stream (D3D11 caps to display Hz when stream fps exceeds it); set {NATIVE_PRESENT_MAX_FPS_ENV}=0 to disable.",
+                    context.settings.fps
+                ),
+            });
+        } else if present_max_fps == PRESENT_LIMITER_VRR_SENTINEL {
+            events.push(Event::Log {
+                level: "info",
+                message: format!(
+                    "Native VRR present limiter auto mode for {} fps stream (caps below the display refresh ceiling when needed).",
+                    context.settings.fps
+                ),
+            });
+        } else {
+            events.push(Event::Log {
+                level: "info",
+                message: "Native present limiter disabled for uncapped VSync-off presentation."
+                    .to_owned(),
             });
         }
         if d3d_fullscreen_sink {
@@ -247,6 +343,12 @@ impl NativeStreamerBackend for GstreamerBackend {
                 message: format!(
                     "Native D3D fullscreen presentation is enabled for Cloud G-Sync/VRR; set {NATIVE_D3D_FULLSCREEN_ENV}=0 to disable."
                 ),
+            });
+        } else if use_internal_renderer() {
+            events.push(Event::Log {
+                level: "info",
+                message: "Native Internal renderer keeps exclusive D3D fullscreen off (child HWND present; sync=false, depth-1 post-decode queue)."
+                    .to_owned(),
             });
         }
 
@@ -465,17 +567,19 @@ impl NativeStreamerBackend for GstreamerBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gstreamer_config::{automatic_present_max_fps, PRESENT_LIMITER_AUTO_SENTINEL};
+    use crate::gstreamer_config::PRESENT_LIMITER_AUTO_SENTINEL;
     use crate::gstreamer_input::parse_input_handshake_version;
     use crate::gstreamer_liveness::{
         caps_framerate_summary, sink_stats_summary, VideoStallAction, VideoStallTracker,
     };
     use crate::gstreamer_pipeline::{
-        configure_stats_overlay_element, effective_present_max_fps, format_video_chain_selection,
+        backend_runs_on_platform, configure_stats_overlay_element,
+        default_rtp_video_api_priority, effective_present_max_fps, format_video_chain_selection,
+        init_gstreamer, preferred_rtp_video_apis_for, resolve_gstreamer_stun_server,
         rtp_video_chain_definition, RtpVideoApi, RtpVideoChainRole,
     };
     use crate::gstreamer_transitions::resolve_queue_mode;
-    use crate::protocol::{NativeQueueMode, StreamSettings, VideoCodec};
+    use crate::protocol::{IceServer, NativeQueueMode, StreamSettings, VideoCodec};
     use crate::sdp::IceCredentials;
     use gst::prelude::*;
     use gstreamer as gst;
@@ -483,8 +587,40 @@ mod tests {
 
     #[test]
     fn builds_and_stops_webrtc_pipeline() {
-        let pipeline = GstreamerPipeline::build(None).expect("GStreamer webrtcbin pipeline");
+        let pipeline = GstreamerPipeline::build(None, &[]).expect("GStreamer webrtcbin pipeline");
         assert_eq!(pipeline.webrtc.name(), "opennow-webrtcbin");
+        assert_eq!(
+            pipeline.webrtc.property::<String>("stun-server"),
+            "stun://stun2.l.google.com:19302"
+        );
+        pipeline.stop().expect("pipeline stops");
+    }
+
+    #[test]
+    fn configures_session_stun_server_for_gstreamer() {
+        let servers = vec![
+            IceServer {
+                urls: vec!["turn:relay.example.test:3478".to_owned()],
+                username: None,
+                credential: None,
+            },
+            IceServer {
+                urls: vec!["stun:192.0.2.10:19302".to_owned()],
+                username: None,
+                credential: None,
+            },
+        ];
+
+        assert_eq!(
+            resolve_gstreamer_stun_server(&servers),
+            "stun://192.0.2.10:19302"
+        );
+        let pipeline =
+            GstreamerPipeline::build(None, &servers).expect("GStreamer webrtcbin pipeline");
+        assert_eq!(
+            pipeline.webrtc.property::<String>("stun-server"),
+            "stun://192.0.2.10:19302"
+        );
         pipeline.stop().expect("pipeline stops");
     }
 
@@ -508,7 +644,8 @@ mod tests {
 
     #[test]
     fn defers_gfn_uuid_ice_password_until_actual_ice_stream_exists() {
-        let mut pipeline = GstreamerPipeline::build(None).expect("GStreamer webrtcbin pipeline");
+        let mut pipeline =
+            GstreamerPipeline::build(None, &[]).expect("GStreamer webrtcbin pipeline");
         let credentials = IceCredentials {
             ufrag: "2efecf37".to_owned(),
             pwd: "26b335b8-6cb2-4c18-96d0-963e5e586c9a".to_owned(),
@@ -524,7 +661,8 @@ mod tests {
 
     #[test]
     fn remote_ice_credential_restore_after_remote_description_does_not_probe_fake_streams() {
-        let mut pipeline = GstreamerPipeline::build(None).expect("GStreamer webrtcbin pipeline");
+        let mut pipeline =
+            GstreamerPipeline::build(None, &[]).expect("GStreamer webrtcbin pipeline");
         let sdp = concat!(
             "v=0\r\n",
             "o=- 4373647202393833435 2 IN IP4 127.0.0.1\r\n",
@@ -601,6 +739,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn bundles_av1_rtp_depayloading() {
+        init_gstreamer().expect("GStreamer initializes");
+        assert!(gst::ElementFactory::find("rtpav1depay").is_some());
+    }
+
+    #[test]
     fn parses_input_handshake_versions() {
         assert_eq!(
             parse_input_handshake_version(&[0x0e, 0x02, 0x03, 0x00]),
@@ -670,17 +815,48 @@ mod tests {
         assert!(vaapi.iter().any(|spec| spec.factory == "videoconvert"));
         assert_eq!(vaapi.last().map(|spec| spec.factory), Some("glimagesink"));
 
+        let nvdec = rtp_video_chain_definition("AV1", RtpVideoApi::Nvdec).expect("NVDEC AV1");
+        assert_eq!(nvdec[3].factory, "nvav1dec");
+        assert!(nvdec.iter().any(|spec| spec.factory == "videoconvert"));
+        assert_eq!(nvdec.last().map(|spec| spec.factory), Some("glimagesink"));
+
         let v4l2 = rtp_video_chain_definition("H265", RtpVideoApi::V4L2).expect("V4L2 H265");
         assert_eq!(v4l2[3].factory, "v4l2slh265dec");
-        assert!(v4l2.iter().any(|spec| spec.factory == "videoconvert"));
+        assert!(!v4l2.iter().any(|spec| spec.factory == "videoconvert"));
+
+        let v4l2_av1 =
+            rtp_video_chain_definition("AV1", RtpVideoApi::V4L2).expect("V4L2 AV1");
+        assert_eq!(v4l2_av1[3].factory, "v4l2slav1dec");
 
         let vulkan = rtp_video_chain_definition("H265", RtpVideoApi::Vulkan).expect("Vulkan H265");
-        assert_eq!(vulkan[3].factory, "vulkanh265dec");
-        assert!(vulkan
-            .iter()
-            .any(|spec| spec.factory == "vulkancolorconvert"));
-        assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
-        assert!(rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).is_none());
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(vulkan[3].factory, "d3d12h265dec");
+            assert!(!vulkan.iter().any(|spec| spec.factory == "vulkanh265dec"));
+            // Default Internal renderer: Electron cannot composite vulkansink.
+            assert_eq!(
+                vulkan.last().map(|spec| spec.factory),
+                Some("d3d12videosink")
+            );
+            assert!(vulkan.iter().any(|spec| {
+                spec.role == RtpVideoChainRole::StatsOverlay && spec.factory == "dwritetextoverlay"
+            }));
+            assert!(!vulkan.iter().any(|spec| spec.factory == "vulkanupload"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(vulkan[3].factory, "vulkanh265dec");
+            assert!(vulkan
+                .iter()
+                .any(|spec| spec.factory == "vulkancolorconvert"));
+            assert_eq!(vulkan.last().map(|spec| spec.factory), Some("vulkansink"));
+        }
+        let vulkan_av1 =
+            rtp_video_chain_definition("AV1", RtpVideoApi::Vulkan).expect("Vulkan AV1");
+        #[cfg(target_os = "windows")]
+        assert_eq!(vulkan_av1[3].factory, "d3d12av1dec");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(vulkan_av1[3].factory, "vulkanav1dec");
 
         let software =
             rtp_video_chain_definition("H264", RtpVideoApi::Software).expect("software H264");
@@ -689,6 +865,38 @@ mod tests {
         assert_eq!(
             software.last().map(|spec| spec.factory),
             Some("autovideosink")
+        );
+    }
+
+    #[test]
+    fn exposes_vulkan_on_windows_and_linux_only() {
+        assert!(backend_runs_on_platform(RtpVideoApi::Vulkan, "windows"));
+        assert!(backend_runs_on_platform(RtpVideoApi::Vulkan, "linux"));
+        assert!(!backend_runs_on_platform(RtpVideoApi::Vulkan, "macos"));
+        assert!(!backend_runs_on_platform(RtpVideoApi::Vulkan, "other"));
+    }
+
+    #[test]
+    fn explicit_linux_backend_selection_does_not_fall_back() {
+        assert_eq!(
+            preferred_rtp_video_apis_for("nvdec", Some(120)),
+            vec![RtpVideoApi::Nvdec]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("vaapi", Some(120)),
+            vec![RtpVideoApi::Vaapi]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("v4l2", Some(120)),
+            vec![RtpVideoApi::V4L2]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("vulkan", Some(240)),
+            vec![RtpVideoApi::Vulkan]
+        );
+        assert_eq!(
+            preferred_rtp_video_apis_for("vk", Some(120)),
+            vec![RtpVideoApi::Vulkan]
         );
     }
 
@@ -714,15 +922,37 @@ mod tests {
     }
 
     #[test]
-    fn automatic_present_limiter_uses_display_refresh_below_requested_fps() {
-        assert_eq!(automatic_present_max_fps(240, Some(165)), 165);
-        assert_eq!(automatic_present_max_fps(240, Some(240)), 0);
-        assert_eq!(automatic_present_max_fps(240, Some(1)), 0);
-        assert_eq!(automatic_present_max_fps(240, None), 0);
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    fn linux_arm64_prefers_v4l2_for_raspberry_pi_and_arm_devices() {
+        assert_eq!(
+            default_rtp_video_api_priority(Some(60)),
+            vec![
+                RtpVideoApi::V4L2,
+                RtpVideoApi::Nvdec,
+                RtpVideoApi::Vaapi,
+                RtpVideoApi::Vulkan,
+                RtpVideoApi::Software,
+            ]
+        );
     }
 
     #[test]
-    fn automatic_present_limiter_only_targets_d3d11() {
+    #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+    fn linux_desktop_prefers_vendor_decoders_before_generic_paths() {
+        assert_eq!(
+            default_rtp_video_api_priority(Some(120)),
+            vec![
+                RtpVideoApi::Nvdec,
+                RtpVideoApi::Vaapi,
+                RtpVideoApi::Vulkan,
+                RtpVideoApi::V4L2,
+                RtpVideoApi::Software,
+            ]
+        );
+    }
+
+    #[test]
+    fn automatic_present_limiter_targets_d3d_present_paths() {
         assert_eq!(
             effective_present_max_fps(
                 PRESENT_LIMITER_AUTO_SENTINEL,
@@ -739,7 +969,7 @@ mod tests {
                 RtpVideoApi::D3D12,
                 Some(165)
             ),
-            0
+            165
         );
         assert_eq!(
             effective_present_max_fps(144, Some(240), RtpVideoApi::D3D12, Some(165)),
@@ -747,6 +977,24 @@ mod tests {
         );
         assert_eq!(
             effective_present_max_fps(0, Some(240), RtpVideoApi::D3D11, Some(165)),
+            0
+        );
+        assert_eq!(
+            effective_present_max_fps(
+                PRESENT_LIMITER_VRR_SENTINEL,
+                Some(240),
+                RtpVideoApi::D3D11,
+                Some(165)
+            ),
+            162
+        );
+        assert_eq!(
+            effective_present_max_fps(
+                PRESENT_LIMITER_VRR_SENTINEL,
+                Some(120),
+                RtpVideoApi::D3D11,
+                Some(165)
+            ),
             0
         );
     }

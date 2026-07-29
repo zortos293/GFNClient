@@ -1,30 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
+import { m } from "motion/react";
 import type { GameInfo, PrintedWasteQueueData, PrintedWasteZone } from "@shared/gfn";
+import { buildGfnZoneStreamingBaseUrl, isStandardGfnZone } from "@shared/gfn";
 import {
   loadStoredPrintedWastePingResults,
   saveStoredPrintedWastePingResults,
 } from "../utils/pingResultsStorage";
+import { spinnerTransition } from "./MotionProvider";
 
 // ── Constants / helpers ───────────────────────────────────────────────────────
 
-/**
- * Only include standard NVIDIA zones (NP-*).
- * Alliance-partner zones start with NPA- and have their own routing
- * infrastructure that doesn't follow the cloudmatchbeta.nvidiagrid.net pattern.
- */
 function isStandardZone(zoneId: string): boolean {
-  return zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-");
+  return isStandardGfnZone(zoneId);
 }
 
 /**
  * Build the direct cloudmatch URL from a zone ID.
- * "NP-AMS-08" → "https://np-ams-08.cloudmatchbeta.nvidiagrid.net/"
- * This URL is used as streamingBaseUrl in createSession to route the user
- * to that specific zone's load balancer.
+ * Used as streamingBaseUrl in createSession to route the user to that zone.
  */
 function constructZoneUrl(zoneId: string): string {
-  return `https://${zoneId.toLowerCase()}.cloudmatchbeta.nvidiagrid.net/`;
+  return buildGfnZoneStreamingBaseUrl(zoneId);
 }
 
 function formatWait(etaMs: number): string {
@@ -731,18 +727,19 @@ function Chip({ color, children }: { color: string; children: React.ReactNode })
 
 function Spinner(): JSX.Element {
   return (
-    <>
-      <style>{`@keyframes on-spin{to{transform:rotate(360deg)}}`}</style>
-      <div style={{
+      <m.div
+        animate={{ rotate: 360 }}
+        transition={spinnerTransition}
+        role="status"
+        aria-label="Loading servers"
+        style={{
         display: "inline-block",
         width: 26,
         height: 26,
         border: "3px solid rgba(255,255,255,0.08)",
         borderTop: "3px solid var(--accent)",
         borderRadius: "50%",
-        animation: "on-spin 0.75s linear infinite",
       }} />
-    </>
   );
 }
 
@@ -754,13 +751,15 @@ function MiniSpinner({
   borderColor?: string;
 }): JSX.Element {
   return (
-    <div style={{
+    <m.div
+      animate={{ rotate: 360 }}
+      transition={spinnerTransition}
+      style={{
       width: 9,
       height: 9,
       border: `2px solid ${borderColor}`,
       borderTop: `2px solid ${color}`,
       borderRadius: "50%",
-      animation: "on-spin 0.75s linear infinite",
       flexShrink: 0,
     }} />
   );

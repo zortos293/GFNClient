@@ -1,9 +1,9 @@
 use crate::gstreamer_backend::send_log;
 use crate::gstreamer_config::{
     automatic_present_max_fps, requested_video_backend, use_external_renderer_window,
-    zero_copy_requested, EXTERNAL_RENDERER_ENV, NATIVE_D3D_FULLSCREEN_ENV,
-    NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV, NATIVE_VIDEO_BACKEND_ENV,
-    PRESENT_LIMITER_AUTO_SENTINEL,
+    use_internal_renderer, vrr_present_max_fps, zero_copy_requested, EXTERNAL_RENDERER_ENV,
+    NATIVE_D3D_FULLSCREEN_ENV, NATIVE_PRESENT_MAX_FPS_ENV, NATIVE_VIDEO_API_ENV,
+    NATIVE_VIDEO_BACKEND_ENV, PRESENT_LIMITER_AUTO_SENTINEL, PRESENT_LIMITER_VRR_SENTINEL,
 };
 #[cfg(target_os = "windows")]
 use crate::gstreamer_input::NativeWindowInputBridge;
@@ -17,14 +17,19 @@ use crate::gstreamer_liveness::{
     watch_video_sink_caps_transitions, watch_video_sink_rate, VideoLivenessMonitor,
 };
 use crate::gstreamer_platform::{
-    apply_render_surface_to_video_sink, primary_display_refresh_hz,
-    release_native_input_capture, start_external_renderer_window_guard,
+    primary_display_refresh_hz, release_native_input_capture, start_external_renderer_window_guard,
     update_external_renderer_surface,
 };
+#[cfg(target_os = "windows")]
+use crate::gstreamer_platform::arm_internal_child_input;
 use crate::gstreamer_transitions::DEFAULT_VIDEO_QUEUE_DEPTH;
+use crate::internal_renderer::InternalRenderer;
+use crate::nvst_video::{
+    annexb_appsrc_caps, spawn_nvst_udp_receive, NvstVideoReceiveHandle,
+};
 use crate::protocol::{
-    Event, IceCandidatePayload, NativeRenderSurface, NativeStreamerSessionContext,
-    NativeVideoBackendCapability, NativeVideoCodecCapability,
+    Event, IceCandidatePayload, IceServer, NativeRenderSurface, NativeStreamerSessionContext,
+    NativeVideoBackendCapability, NativeVideoCodecCapability, NvstVideoSession,
 };
 use crate::sdp::IceCredentials;
 use gst::glib;
@@ -32,14 +37,15 @@ use gst::prelude::*;
 use gstreamer as gst;
 use gstreamer_sdp as gst_sdp;
 use gstreamer_webrtc as gst_webrtc;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 const WEBRTC_LATENCY_MS: u32 = 2;
+const DEFAULT_GFN_STUN_SERVER: &str = "stun://stun2.l.google.com:19302";
 const VIDEO_COMPRESSED_QUEUE_MAX_BUFFERS: u32 = 6;
 pub(crate) const VIDEO_QUEUE_MAX_BUFFERS: u32 = DEFAULT_VIDEO_QUEUE_DEPTH;
 const AUDIO_QUEUE_MAX_BUFFERS: u32 = 2;
@@ -86,6 +92,7 @@ pub(crate) enum RtpVideoApi {
     D3D11,
     D3D12,
     VideoToolbox,
+    Nvdec,
     Vaapi,
     V4L2,
     Vulkan,
@@ -98,6 +105,7 @@ impl RtpVideoApi {
             Self::D3D11 => "D3D11",
             Self::D3D12 => "D3D12",
             Self::VideoToolbox => "VideoToolbox",
+            Self::Nvdec => "NVIDIA NVDEC",
             Self::Vaapi => "VAAPI",
             Self::V4L2 => "V4L2",
             Self::Vulkan => "Vulkan",
@@ -110,6 +118,7 @@ impl RtpVideoApi {
             Self::D3D11 => "d3d11",
             Self::D3D12 => "d3d12",
             Self::VideoToolbox => "videotoolbox",
+            Self::Nvdec => "nvdec",
             Self::Vaapi => "vaapi",
             Self::V4L2 => "v4l2",
             Self::Vulkan => "vulkan",
@@ -121,7 +130,9 @@ impl RtpVideoApi {
         match self {
             Self::D3D11 | Self::D3D12 => "windows",
             Self::VideoToolbox => "macos",
-            Self::Vaapi | Self::V4L2 | Self::Vulkan => "linux",
+            Self::Nvdec | Self::Vaapi | Self::V4L2 => "linux",
+            Self::Vulkan if current_platform_label() == "windows" => "windows",
+            Self::Vulkan => "linux",
             Self::Software => "cross-platform",
         }
     }
@@ -135,6 +146,10 @@ impl RtpVideoApi {
             Self::D3D12 => zero_copy_requested().then_some("video/x-raw(memory:D3D12Memory)"),
             Self::VideoToolbox => zero_copy_requested().then_some("video/x-raw(memory:GLMemory)"),
             Self::Vaapi => zero_copy_requested().then_some("video/x-raw(memory:VAMemory)"),
+            // Linux: keep Vulkan images in-GPU. Windows uses a DXVA→upload hybrid
+            // (vulkanh264dec currently SIGSEGVs on NVIDIA Windows), so skip a hard
+            // VulkanImage capsfilter on that path.
+            Self::Vulkan if cfg!(target_os = "windows") => None,
             Self::Vulkan => Some("video/x-raw(memory:VulkanImage)"),
             _ => None,
         }
@@ -143,11 +158,16 @@ impl RtpVideoApi {
     fn post_decode_converter_factory(self) -> Option<&'static str> {
         match self {
             Self::D3D11 | Self::D3D12 => None,
+            // Windows Vulkan present chain inserts download/convert/upload explicitly.
+            Self::Vulkan if cfg!(target_os = "windows") => None,
             Self::Vulkan => Some("vulkancolorconvert"),
             Self::VideoToolbox | Self::Vaapi if zero_copy_requested() => None,
             // Non-D3D hardware decoders are not guaranteed to negotiate directly with every
             // platform sink. Keep these paths reliable with an explicit raw-video conversion stage.
-            Self::VideoToolbox | Self::Vaapi | Self::V4L2 | Self::Software => Some("videoconvert"),
+            Self::VideoToolbox | Self::Nvdec | Self::Vaapi | Self::Software => Some("videoconvert"),
+            // V4L2 stateless decoders expose DMABuf on devices such as Raspberry Pi.
+            // Let glimagesink import it directly instead of forcing a CPU copy.
+            Self::V4L2 => None,
         }
     }
 
@@ -163,6 +183,7 @@ impl RtpVideoApi {
             Self::D3D11 => "d3d11videosink",
             Self::D3D12 => "d3d12videosink",
             Self::VideoToolbox => "glimagesink",
+            Self::Nvdec => "glimagesink",
             Self::Vaapi => "glimagesink",
             Self::V4L2 => "glimagesink",
             Self::Vulkan => "vulkansink",
@@ -179,13 +200,24 @@ impl RtpVideoApi {
             (Self::D3D12, "H264") => Some("d3d12h264dec"),
             (Self::D3D12, "AV1") => Some("d3d12av1dec"),
             (Self::VideoToolbox, "H265" | "HEVC" | "H264") => Some("vtdec_hw"),
+            (Self::Nvdec, "H265" | "HEVC") => Some("nvh265dec"),
+            (Self::Nvdec, "H264") => Some("nvh264dec"),
+            (Self::Nvdec, "AV1") => Some("nvav1dec"),
             (Self::Vaapi, "H265" | "HEVC") => Some("vah265dec"),
             (Self::Vaapi, "H264") => Some("vah264dec"),
             (Self::Vaapi, "AV1") => Some("vaav1dec"),
             (Self::V4L2, "H265" | "HEVC") => Some("v4l2slh265dec"),
             (Self::V4L2, "H264") => Some("v4l2slh264dec"),
+            (Self::V4L2, "AV1") => Some("v4l2slav1dec"),
+            // vulkanh264dec/vulkanh265dec SIGSEGV on current NVIDIA Windows drivers;
+            // use DXVA decode (prefer D3D12) and either D3D present (Internal) or
+            // upload into Vulkan (External).
+            (Self::Vulkan, "H265" | "HEVC") if cfg!(target_os = "windows") => Some("d3d12h265dec"),
+            (Self::Vulkan, "H264") if cfg!(target_os = "windows") => Some("d3d12h264dec"),
+            (Self::Vulkan, "AV1") if cfg!(target_os = "windows") => Some("d3d12av1dec"),
             (Self::Vulkan, "H265" | "HEVC") => Some("vulkanh265dec"),
             (Self::Vulkan, "H264") => Some("vulkanh264dec"),
+            (Self::Vulkan, "AV1") => Some("vulkanav1dec"),
             (Self::Software, "H265" | "HEVC") => Some("avdec_h265"),
             (Self::Software, "H264") => Some("avdec_h264"),
             (Self::Software, "AV1") => Some("avdec_av1"),
@@ -200,7 +232,18 @@ impl RtpVideoApi {
             (Self::Vaapi, "AV1") => &["vaapiav1dec"],
             (Self::V4L2, "H265" | "HEVC") => &["v4l2h265dec"],
             (Self::V4L2, "H264") => &["v4l2h264dec"],
+            (Self::V4L2, "AV1") => &["v4l2av1dec"],
             (Self::VideoToolbox, "H265" | "HEVC" | "H264") => &["vtdec"],
+            (Self::Vulkan, "H265" | "HEVC") if cfg!(target_os = "windows") => {
+                &["d3d11h265dec", "nvh265dec"]
+            }
+            (Self::Vulkan, "H264") if cfg!(target_os = "windows") => {
+                &["d3d11h264dec", "nvh264dec"]
+            }
+            (Self::Vulkan, "AV1") if cfg!(target_os = "windows") => {
+                &["d3d11av1dec", "nvav1dec"]
+            }
+            (Self::Software, "AV1") => &["dav1ddec", "av1dec"],
             _ => &[],
         }
     }
@@ -208,10 +251,25 @@ impl RtpVideoApi {
     fn sink_fallback_factories(self) -> &'static [&'static str] {
         match self {
             Self::VideoToolbox => &["osxvideosink", "autovideosink"],
-            Self::Vaapi | Self::V4L2 => {
-                &["waylandsink", "ximagesink", "xvimagesink", "autovideosink"]
+            // Prefer X11-capable sinks first: Internal Linux embeds via GstVideoOverlay
+            // into an X11 child. waylandsink cannot paint into that handle.
+            Self::Nvdec | Self::Vaapi | Self::V4L2 => {
+                &["ximagesink", "xvimagesink", "glimagesink", "waylandsink", "autovideosink"]
             }
-            Self::Software => &["glimagesink", "waylandsink", "ximagesink", "xvimagesink"],
+            Self::Software => &["ximagesink", "xvimagesink", "glimagesink", "waylandsink"],
+            _ => &[],
+        }
+    }
+
+    /// Sinks that can bind to the Internal X11 child via GstVideoOverlay.
+    fn internal_x11_sink_candidates(self) -> &'static [&'static str] {
+        match self {
+            Self::Nvdec | Self::Vaapi | Self::V4L2 | Self::Software => {
+                &["glimagesink", "ximagesink", "xvimagesink"]
+            }
+            // vulkansink implements GstVideoOverlay on Linux, so it can bind
+            // directly to the X11 child while retaining VulkanImage memory.
+            Self::Vulkan => &["vulkansink"],
             _ => &[],
         }
     }
@@ -246,13 +304,29 @@ impl RtpVideoChainSpec {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct GstreamerRenderState {
     surface: Arc<Mutex<Option<NativeRenderSurface>>>,
     video_sink: Arc<Mutex<Option<gst::Element>>>,
+    internal_renderer: Arc<InternalRenderer>,
     external_renderer_logged: Arc<AtomicBool>,
+    internal_renderer_logged: Arc<AtomicBool>,
     external_window_guard_started: Arc<AtomicBool>,
     external_window_guard_stop: Arc<AtomicBool>,
+}
+
+impl Default for GstreamerRenderState {
+    fn default() -> Self {
+        Self {
+            surface: Arc::new(Mutex::new(None)),
+            video_sink: Arc::new(Mutex::new(None)),
+            internal_renderer: Arc::new(InternalRenderer::new()),
+            external_renderer_logged: Arc::new(AtomicBool::new(false)),
+            internal_renderer_logged: Arc::new(AtomicBool::new(false)),
+            external_window_guard_started: Arc::new(AtomicBool::new(false)),
+            external_window_guard_stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 impl GstreamerRenderState {
@@ -265,18 +339,23 @@ impl GstreamerRenderState {
 
     fn set_video_sink(&self, sink: gst::Element, event_sender: &Option<Sender<Event>>) {
         if let Ok(mut current) = self.video_sink.lock() {
-            *current = Some(sink);
+            *current = Some(sink.clone());
+        }
+        if use_internal_renderer() {
+            if let Err(message) = self.internal_renderer.set_video_sink(sink) {
+                send_log(event_sender, "warn", message);
+            }
         }
         self.apply(event_sender);
     }
 
     fn apply(&self, event_sender: &Option<Sender<Event>>) {
-        let sink = self.video_sink.lock().ok().and_then(|sink| sink.clone());
-        let Some(sink) = sink else {
-            return;
-        };
-
         if use_external_renderer_window() {
+            let sink_ready = self.video_sink.lock().ok().and_then(|sink| sink.clone());
+            let Some(_sink) = sink_ready else {
+                return;
+            };
+
             if let Some(surface) = self.surface.lock().ok().and_then(|surface| surface.clone()) {
                 update_external_renderer_surface(&surface);
             }
@@ -296,20 +375,46 @@ impl GstreamerRenderState {
                     event_sender,
                     "info",
                     format!(
-                        "Using external native GStreamer renderer window; set {EXTERNAL_RENDERER_ENV}=0 to retry Electron HWND embedding."
+                        "Using external native GStreamer renderer window; set {EXTERNAL_RENDERER_ENV}=0 for the internal child-surface renderer."
                     ),
                 );
             }
             return;
         }
 
+        let sink_ready = self.video_sink.lock().ok().and_then(|sink| sink.clone());
+        let Some(_sink) = sink_ready else {
+            return;
+        };
+
         let surface = self.surface.lock().ok().and_then(|surface| surface.clone());
         let Some(surface) = surface else {
             return;
         };
 
-        if let Err(message) = apply_render_surface_to_video_sink(&sink, &surface) {
+        if !self.internal_renderer_logged.swap(true, Ordering::SeqCst) {
+            send_log(
+                event_sender,
+                "info",
+                format!(
+                    "Using internal native child-surface renderer; set {EXTERNAL_RENDERER_ENV}=1 for the floating GStreamer window."
+                ),
+            );
+        }
+
+        if let Err(message) = self.internal_renderer.apply_surface(&surface) {
             send_log(event_sender, "warn", message);
+        }
+
+        // Keep ClipCursor / capture rect aligned with the StreamView hole, and
+        // (re)arm RawInput if the child HWND was recreated on parent change.
+        #[cfg(target_os = "windows")]
+        {
+            update_external_renderer_surface(&surface);
+            let hwnd = self.internal_renderer.child_handle();
+            if hwnd != 0 {
+                let _ = arm_internal_child_input(hwnd);
+            }
         }
     }
 
@@ -317,6 +422,12 @@ impl GstreamerRenderState {
         self.external_window_guard_stop
             .store(true, Ordering::SeqCst);
         self.external_window_guard_started
+            .store(false, Ordering::SeqCst);
+    }
+
+    fn destroy_internal_renderer(&self) {
+        self.internal_renderer.destroy();
+        self.internal_renderer_logged
             .store(false, Ordering::SeqCst);
     }
 }
@@ -332,14 +443,19 @@ pub(crate) struct GstreamerPipeline {
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
     d3d_fullscreen_sink: Arc<AtomicBool>,
+    /// When true, WebRTC RTP video pads are ignored (classic NVST UDP owns video).
+    skip_webrtc_video: Arc<AtomicBool>,
+    nvst_receive: Option<NvstVideoReceiveHandle>,
     video_liveness: VideoLivenessMonitor,
     event_sender: Option<Sender<Event>>,
     pub(crate) original_remote_ice_credentials: Option<IceCredentials>,
-    original_remote_ice_credentials_restored: bool,
 }
 
 impl GstreamerPipeline {
-    pub(crate) fn build(event_sender: Option<Sender<Event>>) -> Result<Self, String> {
+    pub(crate) fn build(
+        event_sender: Option<Sender<Event>>,
+        ice_servers: &[IceServer],
+    ) -> Result<Self, String> {
         init_gstreamer()?;
 
         let pipeline = gst::Pipeline::new();
@@ -349,6 +465,13 @@ impl GstreamerPipeline {
             .build()
             .map_err(|error| format!("Failed to create webrtcbin: {error}"))?;
         configure_webrtc_low_latency(&webrtc);
+        let stun_server = resolve_gstreamer_stun_server(ice_servers);
+        webrtc.set_property("stun-server", &stun_server);
+        send_log(
+            &event_sender,
+            "info",
+            format!("Configured GStreamer ICE with STUN server {stun_server}."),
+        );
 
         let input_state = GstreamerInputState::default();
         let render_state = GstreamerRenderState::default();
@@ -364,6 +487,7 @@ impl GstreamerPipeline {
         );
         let present_max_fps = Arc::new(AtomicU32::new(0));
         let d3d_fullscreen_sink = Arc::new(AtomicBool::new(false));
+        let skip_webrtc_video = Arc::new(AtomicBool::new(false));
         wire_incoming_media_sink(
             &pipeline,
             &webrtc,
@@ -371,6 +495,7 @@ impl GstreamerPipeline {
             render_state.clone(),
             present_max_fps.clone(),
             d3d_fullscreen_sink.clone(),
+            skip_webrtc_video.clone(),
             video_liveness.clone(),
         );
 
@@ -391,10 +516,11 @@ impl GstreamerPipeline {
             render_state,
             present_max_fps,
             d3d_fullscreen_sink,
+            skip_webrtc_video,
+            nvst_receive: None,
             video_liveness,
             event_sender,
             original_remote_ice_credentials: None,
-            original_remote_ice_credentials_restored: false,
         })
     }
 
@@ -424,6 +550,238 @@ impl GstreamerPipeline {
         self.video_liveness.configure(context, target_bitrate_kbps);
     }
 
+    /// Attach classic NVST UDP video: appsrc → parse → decoder → sink, plus UDP recv thread.
+    /// Keeps webrtcbin for SCTP input; ignores WebRTC RTP video pads.
+    pub(crate) fn attach_nvst_video(
+        &mut self,
+        session: NvstVideoSession,
+        fallback_codec: &str,
+        requested_fps: Option<u32>,
+        d3d_fullscreen_sink: bool,
+    ) -> Result<(), String> {
+        if self.nvst_receive.is_some() {
+            return Ok(());
+        }
+
+        let codec = session
+            .codec
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .unwrap_or(fallback_codec);
+        let codec_upper = codec.to_ascii_uppercase();
+        let encoding = match codec_upper.as_str() {
+            "H264" => "H264",
+            "H265" | "HEVC" => "H265",
+            other => {
+                return Err(format!(
+                    "NVST classic UDP video scaffold supports H264/H265, got {other}"
+                ));
+            }
+        };
+
+        self.skip_webrtc_video.store(true, Ordering::SeqCst);
+
+        let (video_api, mut specs) = rtp_video_chain_specs(encoding, requested_fps).ok_or_else(|| {
+            format!(
+                "NVST Annex-B decode chain unavailable for {encoding}; install GStreamer plugins or set {NATIVE_VIDEO_BACKEND_ENV}=software."
+            )
+        })?;
+        // Drop RTP depayloader — appsrc feeds assembled Annex-B AUs.
+        specs.retain(|spec| spec.role != RtpVideoChainRole::Depayloader);
+        if specs
+            .first()
+            .is_none_or(|spec| spec.role != RtpVideoChainRole::Parser)
+        {
+            return Err(format!(
+                "NVST video chain for {encoding} is missing a parser after depayloader removal."
+            ));
+        }
+
+        let caps_str = annexb_appsrc_caps(encoding);
+        let appsrc = gst::ElementFactory::make("appsrc")
+            .name("nvst-annexb")
+            .build()
+            .map_err(|error| format!("Failed to create nvst-annexb appsrc: {error}"))?;
+        let caps = caps_str
+            .parse::<gst::Caps>()
+            .map_err(|error| format!("Invalid NVST appsrc caps: {error}"))?;
+        appsrc.set_property("caps", &caps);
+        set_property_if_supported(&appsrc, "is-live", true);
+        set_property_from_str_if_supported(&appsrc, "format", "time");
+        set_property_if_supported(&appsrc, "block", false);
+        set_property_if_supported(&appsrc, "max-bytes", 0u64);
+        set_property_from_str_if_supported(&appsrc, "stream-type", "stream");
+
+        let streaming_reported = Arc::new(AtomicBool::new(false));
+        let mut elements: Vec<gst::Element> = Vec::with_capacity(specs.len() + 1);
+
+        let result = (|| -> Result<(), String> {
+            send_log(
+                &self.event_sender,
+                "info",
+                format!(
+                    "Attaching NVST classic UDP video ({encoding}) via appsrc Annex-B → {}; {}",
+                    video_api.label(),
+                    format_video_chain_selection(encoding, video_api, &specs)
+                ),
+            );
+
+            let configured_present_max_fps = self.present_max_fps.load(Ordering::SeqCst);
+            let effective = effective_present_max_fps(
+                configured_present_max_fps,
+                requested_fps,
+                video_api,
+                primary_display_refresh_hz(),
+            );
+            self.present_max_fps.store(effective, Ordering::SeqCst);
+
+            self.pipeline
+                .add(&appsrc)
+                .map_err(|error| format!("Failed to add NVST appsrc: {error}"))?;
+            elements.push(appsrc.clone());
+
+            for spec in &specs {
+                let element = make_element(spec.factory)?;
+                configure_rtp_video_chain_element(
+                    &element,
+                    spec.clone(),
+                    video_api,
+                    d3d_fullscreen_sink,
+                );
+                if spec.role == RtpVideoChainRole::StatsOverlay {
+                    self.video_liveness.set_stats_overlay(Some(element.clone()));
+                }
+                self.pipeline.add(&element).map_err(|error| {
+                    format!(
+                        "Failed to add {} for NVST {encoding} video chain: {error}",
+                        spec.factory
+                    )
+                })?;
+                elements.push(element);
+            }
+
+            for pair in elements.windows(2) {
+                pair[0].link(&pair[1]).map_err(|error| {
+                    format!(
+                        "Failed to link {} -> {} for NVST {encoding}: {error:?}",
+                        element_factory_name(&pair[0]),
+                        element_factory_name(&pair[1])
+                    )
+                })?;
+            }
+
+            let sink = elements
+                .last()
+                .ok_or_else(|| format!("NVST {encoding} video chain has no sink."))?;
+            if let Some(post_decode_queue) =
+                specs
+                    .iter()
+                    .zip(elements.iter().skip(1))
+                    .find_map(|(spec, element)| {
+                        (spec.role == RtpVideoChainRole::PostDecodeQueue).then_some(element)
+                    })
+            {
+                self.video_liveness
+                    .set_post_decode_queue(post_decode_queue.clone());
+                watch_video_decoded_rate(
+                    post_decode_queue,
+                    &self.event_sender,
+                    Some(self.video_liveness.clone()),
+                );
+            }
+            if let Some(pre_decode_queue) =
+                specs
+                    .iter()
+                    .zip(elements.iter().skip(1))
+                    .find_map(|(spec, element)| {
+                        (spec.role == RtpVideoChainRole::PreDecodeQueue).then_some(element)
+                    })
+            {
+                self.video_liveness
+                    .set_pre_decode_queue(pre_decode_queue.clone());
+            }
+            if let Some(parser) = specs.iter().zip(elements.iter().skip(1)).find_map(
+                |(spec, element)| (spec.role == RtpVideoChainRole::Parser).then_some(element),
+            ) {
+                watch_video_caps_transitions(
+                    parser,
+                    "parser",
+                    &self.event_sender,
+                    self.video_liveness.clone(),
+                );
+            }
+            if let Some(decoder) = specs.iter().zip(elements.iter().skip(1)).find_map(
+                |(spec, element)| (spec.role == RtpVideoChainRole::Decoder).then_some(element),
+            ) {
+                self.video_liveness.set_decoder(decoder.clone());
+                watch_video_caps_transitions(
+                    decoder,
+                    "decoder",
+                    &self.event_sender,
+                    self.video_liveness.clone(),
+                );
+            }
+
+            self.render_state
+                .set_video_sink(sink.clone(), &self.event_sender);
+            install_present_limiter(
+                sink,
+                self.present_max_fps.clone(),
+                &self.event_sender,
+                Some(self.video_liveness.clone()),
+            );
+            watch_video_sink_caps_transitions(
+                sink,
+                &self.event_sender,
+                Some(self.video_liveness.clone()),
+            );
+            watch_first_sink_buffer(sink, "video", &self.event_sender, &streaming_reported);
+            watch_video_sink_rate(
+                sink,
+                &self.event_sender,
+                Some(self.video_liveness.clone()),
+            );
+
+            for element in &elements {
+                element.sync_state_with_parent().map_err(|error| {
+                    format!("Failed to sync NVST {encoding} video-chain element state: {error}")
+                })?;
+            }
+
+            self.video_liveness.update_hardware_acceleration(format!(
+                "GStreamer {} (NVST UDP)",
+                video_api.label()
+            ));
+            self.video_liveness.start(
+                self.pipeline.clone(),
+                sink.clone(),
+                self.event_sender.clone(),
+            );
+
+            let handle = spawn_nvst_udp_receive(
+                session,
+                appsrc,
+                self.event_sender.clone(),
+            )?;
+            self.nvst_receive = Some(handle);
+
+            // Ensure pipeline can run the appsrc branch even before WebRTC offer.
+            let _ = self.pipeline.set_state(gst::State::Playing);
+
+            Ok(())
+        })();
+
+        if result.is_err() {
+            self.skip_webrtc_video.store(false, Ordering::SeqCst);
+            for element in &elements {
+                let _ = element.set_state(gst::State::Null);
+                let _ = self.pipeline.remove(element);
+            }
+        }
+
+        result
+    }
+
     fn ensure_input_data_channels(
         &mut self,
         partial_reliable_threshold_ms: u32,
@@ -447,6 +805,8 @@ impl GstreamerPipeline {
 
     #[cfg(target_os = "windows")]
     fn ensure_native_window_input_bridge(&mut self) {
+        // Win32 RawInput: floating external window OR internal child HWND.
+        // Electron click-through across a topmost D3D sibling is unreliable.
         if self.native_window_input_bridge.is_some() {
             return;
         }
@@ -459,10 +819,23 @@ impl GstreamerPipeline {
             input_channels,
             self.event_sender.clone(),
         ));
+        if use_internal_renderer() {
+            let hwnd = self.render_state.internal_renderer.child_handle();
+            if hwnd != 0 && arm_internal_child_input(hwnd) {
+                send_log(
+                    &self.event_sender,
+                    "info",
+                    "Armed RawInput capture on the internal child HWND.".to_owned(),
+                );
+            }
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
     fn ensure_native_window_input_bridge(&mut self) {
+        if use_internal_renderer() {
+            return;
+        }
         send_log(
             &self.event_sender,
             "warn",
@@ -506,10 +879,6 @@ impl GstreamerPipeline {
         &mut self,
         stage: &str,
     ) -> Result<bool, String> {
-        if self.original_remote_ice_credentials_restored {
-            return Ok(true);
-        }
-
         let Some(credentials) = self.original_remote_ice_credentials.clone() else {
             return Ok(false);
         };
@@ -587,7 +956,6 @@ impl GstreamerPipeline {
             return Ok(false);
         }
 
-        self.original_remote_ice_credentials_restored = true;
         send_log(
             &self.event_sender,
             "info",
@@ -761,8 +1129,13 @@ impl GstreamerPipeline {
     }
 
     pub(crate) fn stop(mut self) -> Result<(), String> {
+        if let Some(handle) = self.nvst_receive.take() {
+            handle.stop();
+        }
+        self.skip_webrtc_video.store(false, Ordering::SeqCst);
         self.video_liveness.set_stats_overlay_visible(false);
         self.render_state.stop_external_renderer_window_guard();
+        self.render_state.destroy_internal_renderer();
         #[cfg(target_os = "windows")]
         if let Some(mut bridge) = self.native_window_input_bridge.take() {
             bridge.stop();
@@ -774,6 +1147,22 @@ impl GstreamerPipeline {
             .map(|_| ())
             .map_err(|error| format!("Failed to stop GStreamer pipeline: {error:?}"))
     }
+}
+
+pub(crate) fn resolve_gstreamer_stun_server(ice_servers: &[IceServer]) -> String {
+    ice_servers
+        .iter()
+        .flat_map(|server| server.urls.iter())
+        .find_map(|url| {
+            let url = url.trim();
+            if url.starts_with("stun://") {
+                Some(url.to_owned())
+            } else {
+                url.strip_prefix("stun:")
+                    .map(|endpoint| format!("stun://{endpoint}"))
+            }
+        })
+        .unwrap_or_else(|| DEFAULT_GFN_STUN_SERVER.to_owned())
 }
 
 fn nice_stream_from_ice_transport(
@@ -802,7 +1191,25 @@ fn nice_stream_from_ice_transport(
 }
 
 pub(crate) fn init_gstreamer() -> Result<(), String> {
-    gst::init().map_err(|error| format!("Failed to initialize GStreamer: {error}"))
+    gst::init().map_err(|error| format!("Failed to initialize GStreamer: {error}"))?;
+    #[cfg(target_os = "linux")]
+    {
+        static RTP_PLUGIN_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
+        RTP_PLUGIN_REGISTRATION
+            .get_or_init(|| {
+                if gst::ElementFactory::find("rtpav1depay").is_some() {
+                    return Ok(());
+                }
+                gstrsrtp::plugin_register_static().map_err(|error| {
+                    format!("Failed to register the bundled AV1 RTP plugin: {error}")
+                })
+            })
+            .clone()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
 }
 
 pub(crate) fn set_property_if_supported<T: Into<glib::Value>>(
@@ -856,6 +1263,9 @@ pub(crate) fn configure_queue(element: &gst::Element, max_buffers: u32, leaky_do
 }
 
 pub(crate) fn configure_sink_for_low_latency(element: &gst::Element) {
+    // GFN-aligned present: never clock-sync or QoS-throttle the sink. Latency
+    // comes from decode + a depth-1 leaky post-decode queue + optional present
+    // limiter, not from GstBaseSink pacing.
     set_property_if_supported(element, "sync", false);
     set_property_if_supported(element, "async", false);
     set_property_if_supported(element, "qos", false);
@@ -867,6 +1277,29 @@ pub(crate) fn configure_sink_for_low_latency(element: &gst::Element) {
     set_property_if_supported(element, "show-preroll-frame", false);
     set_property_if_supported(element, "redraw-on-update", true);
     set_property_if_supported(element, "force-aspect-ratio", true);
+}
+
+/// Configure d3d11/d3d12videosink for low-latency Internal/External present.
+///
+/// GStreamer docs: `fullscreen` is ignored unless `fullscreen-toggle-mode`
+/// includes `property`. Internal always keeps exclusive fullscreen off (caller
+/// passes `d3d_fullscreen_sink=false`); External + Cloud G-Sync may enable it.
+pub(crate) fn configure_d3d_video_sink(element: &gst::Element, d3d_fullscreen_sink: bool) {
+    configure_sink_for_low_latency(element);
+    // d3d12 only: attaching the swapchain directly to an external HWND can turn
+    // a present stall into upstream decode backpressure on the child-surface path.
+    set_property_if_supported(element, "direct-swapchain", false);
+    set_property_if_supported(element, "error-on-closed", false);
+    // RawInput owns mouse/keyboard; do not let the sink emit GstNavigation events.
+    set_property_if_supported(element, "enable-navigation-events", false);
+    set_property_if_supported(element, "fullscreen-on-alt-enter", false);
+    if d3d_fullscreen_sink {
+        set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "property");
+        set_property_if_supported(element, "fullscreen", true);
+    } else {
+        set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
+        set_property_if_supported(element, "fullscreen", false);
+    }
 }
 
 pub(crate) fn configure_stats_overlay_element(element: &gst::Element) {
@@ -1156,6 +1589,7 @@ fn wire_incoming_media_sink(
     render_state: GstreamerRenderState,
     present_max_fps: Arc<AtomicU32>,
     d3d_fullscreen_sink: Arc<AtomicBool>,
+    skip_webrtc_video: Arc<AtomicBool>,
     video_liveness: VideoLivenessMonitor,
 ) {
     let pipeline = pipeline.downgrade();
@@ -1179,6 +1613,21 @@ fn wire_incoming_media_sink(
         }
 
         if let Some(encoding) = rtp_video_encoding(src_pad) {
+            if skip_webrtc_video.load(Ordering::SeqCst) {
+                send_log(
+                    &event_sender,
+                    "info",
+                    format!(
+                        "Ignoring WebRTC RTP video pad ({encoding}); NVST classic UDP owns video."
+                    ),
+                );
+                if let Err(error) =
+                    link_decoded_media_to_fakesink(&pipeline, src_pad, "ignored webrtc video")
+                {
+                    send_log(&event_sender, "debug", error);
+                }
+                return;
+            }
             match link_rtp_video_pad(
                 &pipeline,
                 src_pad,
@@ -1352,6 +1801,12 @@ pub(crate) fn rtp_video_chain_definition(
     video_api: RtpVideoApi,
 ) -> Option<Vec<RtpVideoChainSpec>> {
     let codec = encoding.to_ascii_uppercase();
+
+    #[cfg(target_os = "windows")]
+    if video_api == RtpVideoApi::Vulkan {
+        return windows_vulkan_present_chain_definition(codec.as_str());
+    }
+
     let mut specs = vec![
         RtpVideoChainSpec::new(
             rtp_video_depayloader_factory(codec.as_str())?,
@@ -1399,12 +1854,109 @@ pub(crate) fn rtp_video_chain_definition(
     Some(specs)
 }
 
+/// Windows Vulkan path.
+///
+/// Electron Internal hole-punch only composites DXGI swapchains on the child HWND.
+/// A Win32 Vulkan surface on that HWND (or a GSTVULKAN child of it) presents black
+/// even though vulkansink reports rendered frames. So:
+/// - Internal: DXVA decode + `d3d12videosink` (D3D11 fallback; visible in Electron)
+/// - External: DXVA decode + convert/upload + `vulkansink` (true Vulkan present)
+///
+/// Native `vulkanh264dec` currently access-violates under NVIDIA Windows drivers.
+#[cfg(target_os = "windows")]
+fn windows_vulkan_present_chain_definition(codec: &str) -> Option<Vec<RtpVideoChainSpec>> {
+    if use_internal_renderer() {
+        windows_vulkan_internal_present_chain_definition(codec)
+    } else {
+        windows_vulkan_external_present_chain_definition(codec)
+    }
+}
+
+/// Internal Electron path: DXVA + D3D12 present (D3D11 fallback; DXGI hole-punch).
+#[cfg(target_os = "windows")]
+fn windows_vulkan_internal_present_chain_definition(codec: &str) -> Option<Vec<RtpVideoChainSpec>> {
+    let decoder = RtpVideoApi::Vulkan.decoder_factory(codec)?;
+    let prefer_d3d12 = decoder.starts_with("d3d12");
+    let sink = if prefer_d3d12 {
+        "d3d12videosink"
+    } else {
+        "d3d11videosink"
+    };
+    let memory_api = if prefer_d3d12 {
+        RtpVideoApi::D3D12
+    } else {
+        RtpVideoApi::D3D11
+    };
+    let mut specs = vec![
+        RtpVideoChainSpec::new(
+            rtp_video_depayloader_factory(codec)?,
+            RtpVideoChainRole::Depayloader,
+        ),
+        RtpVideoChainSpec::new(rtp_video_parser_factory(codec)?, RtpVideoChainRole::Parser),
+        RtpVideoChainSpec::new("queue", RtpVideoChainRole::PreDecodeQueue),
+        RtpVideoChainSpec::new(decoder, RtpVideoChainRole::Decoder),
+    ];
+    if let Some(memory_caps) = memory_api.memory_caps() {
+        specs.push(RtpVideoChainSpec::with_caps(
+            "capsfilter",
+            RtpVideoChainRole::PostDecodeCapsFilter,
+            memory_caps,
+        ));
+    }
+    specs.push(RtpVideoChainSpec::new(
+        "dwritetextoverlay",
+        RtpVideoChainRole::StatsOverlay,
+    ));
+    specs.push(RtpVideoChainSpec::new(
+        "queue",
+        RtpVideoChainRole::PostDecodeQueue,
+    ));
+    specs.push(RtpVideoChainSpec::new(sink, RtpVideoChainRole::Sink));
+    Some(specs)
+}
+
+/// External / capability path: DXVA + vulkanupload + vulkansink.
+#[cfg(target_os = "windows")]
+fn windows_vulkan_external_present_chain_definition(codec: &str) -> Option<Vec<RtpVideoChainSpec>> {
+    let decoder = RtpVideoApi::Vulkan.decoder_factory(codec)?;
+    Some(vec![
+        RtpVideoChainSpec::new(
+            rtp_video_depayloader_factory(codec)?,
+            RtpVideoChainRole::Depayloader,
+        ),
+        RtpVideoChainSpec::new(rtp_video_parser_factory(codec)?, RtpVideoChainRole::Parser),
+        RtpVideoChainSpec::new("queue", RtpVideoChainRole::PreDecodeQueue),
+        RtpVideoChainSpec::new(decoder, RtpVideoChainRole::Decoder),
+        // Composite diagnostics while frames are still in the DXVA/D3D path.
+        // dwritetextoverlay cannot consume VulkanImage memory after upload.
+        RtpVideoChainSpec::new("dwritetextoverlay", RtpVideoChainRole::StatsOverlay),
+        RtpVideoChainSpec::new("d3d11download", RtpVideoChainRole::PostDecodeConverter),
+        RtpVideoChainSpec::new("videoconvert", RtpVideoChainRole::PostDecodeConverter),
+        RtpVideoChainSpec::with_caps(
+            "capsfilter",
+            RtpVideoChainRole::PostDecodeCapsFilter,
+            "video/x-raw,format=RGBA",
+        ),
+        RtpVideoChainSpec::new("vulkanupload", RtpVideoChainRole::PostDecodeConverter),
+        RtpVideoChainSpec::new("queue", RtpVideoChainRole::PostDecodeQueue),
+        RtpVideoChainSpec::new(RtpVideoApi::Vulkan.sink_factory(), RtpVideoChainRole::Sink),
+    ])
+}
+
 fn preferred_rtp_video_apis(requested_fps: Option<u32>) -> Vec<RtpVideoApi> {
     let requested = requested_video_backend();
-    match requested.as_str() {
+    preferred_rtp_video_apis_for(requested.as_str(), requested_fps)
+}
+
+pub(crate) fn preferred_rtp_video_apis_for(
+    requested: &str,
+    requested_fps: Option<u32>,
+) -> Vec<RtpVideoApi> {
+    match requested {
         "d3d11" => vec![RtpVideoApi::D3D11],
         "d3d12" => vec![RtpVideoApi::D3D12],
         "videotoolbox" | "vt" => vec![RtpVideoApi::VideoToolbox],
+        "nvdec" | "nvcodec" | "nvidia" => vec![RtpVideoApi::Nvdec],
         "vaapi" | "va" => vec![RtpVideoApi::Vaapi],
         "v4l2" | "v4l2stateless" => vec![RtpVideoApi::V4L2],
         "vulkan" | "vk" => vec![RtpVideoApi::Vulkan],
@@ -1419,11 +1971,27 @@ pub(crate) fn effective_present_max_fps(
     video_api: RtpVideoApi,
     display_hz: Option<u32>,
 ) -> u32 {
+    if configured_present_max_fps == PRESENT_LIMITER_VRR_SENTINEL {
+        if !matches!(video_api, RtpVideoApi::D3D11 | RtpVideoApi::D3D12) {
+            return 0;
+        }
+        return requested_fps
+            .filter(|fps| *fps > 0)
+            .map(|fps| vrr_present_max_fps(fps, display_hz))
+            .unwrap_or(0);
+    }
+
     if configured_present_max_fps != PRESENT_LIMITER_AUTO_SENTINEL {
         return configured_present_max_fps;
     }
 
-    if !matches!(video_api, RtpVideoApi::D3D11) {
+    // D3D11/D3D12 present (and Internal Vulkan→D3D) need the auto limiter so
+    // stream fps above display Hz does not stall the DXGI present path.
+    if !matches!(video_api, RtpVideoApi::D3D11 | RtpVideoApi::D3D12)
+        && !(cfg!(target_os = "windows")
+            && video_api == RtpVideoApi::Vulkan
+            && use_internal_renderer())
+    {
         return 0;
     }
 
@@ -1459,6 +2027,7 @@ pub(crate) fn default_rtp_video_api_priority(requested_fps: Option<u32>) -> Vec<
         let _ = requested_fps;
         vec![
             RtpVideoApi::V4L2,
+            RtpVideoApi::Nvdec,
             RtpVideoApi::Vaapi,
             RtpVideoApi::Vulkan,
             RtpVideoApi::Software,
@@ -1468,6 +2037,7 @@ pub(crate) fn default_rtp_video_api_priority(requested_fps: Option<u32>) -> Vec<
     {
         let _ = requested_fps;
         vec![
+            RtpVideoApi::Nvdec,
             RtpVideoApi::Vaapi,
             RtpVideoApi::Vulkan,
             RtpVideoApi::V4L2,
@@ -1503,6 +2073,8 @@ fn rtp_video_chain_specs(
                     spec.factory = sink;
                 }
             }
+            align_windows_vulkan_download_factory(&mut specs, decoder);
+            align_windows_vulkan_internal_present(&mut specs, decoder);
             insert_requested_fps_capssetter(&mut specs, requested_fps);
             specs.retain(|spec| {
                 spec.role != RtpVideoChainRole::StatsOverlay
@@ -1512,11 +2084,113 @@ fn rtp_video_chain_specs(
         })
 }
 
+fn align_windows_vulkan_download_factory(specs: &mut Vec<RtpVideoChainSpec>, decoder: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let download = if decoder.starts_with("d3d12") {
+            Some("d3d12download")
+        } else if decoder.starts_with("d3d11") {
+            Some("d3d11download")
+        } else if decoder.starts_with("nv") {
+            // NVDEC Windows outputs system memory in our bundle; skip D3D download.
+            None
+        } else {
+            return;
+        };
+
+        match download {
+            Some(factory) => {
+                if let Some(spec) = specs.iter_mut().find(|spec| {
+                    spec.role == RtpVideoChainRole::PostDecodeConverter
+                        && (spec.factory == "d3d11download" || spec.factory == "d3d12download")
+                }) {
+                    spec.factory = factory;
+                }
+            }
+            None => {
+                specs.retain(|spec| {
+                    !(spec.role == RtpVideoChainRole::PostDecodeConverter
+                        && (spec.factory == "d3d11download" || spec.factory == "d3d12download"))
+                });
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (specs, decoder);
+    }
+}
+
+/// Keep Internal Vulkan→D3D present matched to the selected DXVA decoder family.
+#[cfg(target_os = "windows")]
+fn align_windows_vulkan_internal_present(specs: &mut Vec<RtpVideoChainSpec>, decoder: &str) {
+    if !use_internal_renderer() {
+        return;
+    }
+    let has_d3d_present = specs.iter().any(|spec| {
+        spec.role == RtpVideoChainRole::Sink
+            && (spec.factory == "d3d11videosink" || spec.factory == "d3d12videosink")
+    });
+    if !has_d3d_present {
+        return;
+    }
+
+    let (sink, memory_caps) = if decoder.starts_with("d3d12")
+        && gst::ElementFactory::find("d3d12videosink").is_some()
+    {
+        ("d3d12videosink", RtpVideoApi::D3D12.memory_caps())
+    } else if decoder.starts_with("d3d11")
+        && gst::ElementFactory::find("d3d11videosink").is_some()
+    {
+        ("d3d11videosink", RtpVideoApi::D3D11.memory_caps())
+    } else {
+        return;
+    };
+
+    if let Some(spec) = specs
+        .iter_mut()
+        .find(|spec| spec.role == RtpVideoChainRole::Sink)
+    {
+        spec.factory = sink;
+    }
+    if let Some(spec) = specs
+        .iter_mut()
+        .find(|spec| spec.role == RtpVideoChainRole::PostDecodeCapsFilter)
+    {
+        if let Some(caps) = memory_caps {
+            spec.caps = Some(caps.to_owned());
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn align_windows_vulkan_internal_present(_specs: &mut Vec<RtpVideoChainSpec>, _decoder: &str) {}
+
 fn insert_requested_fps_capssetter(specs: &mut Vec<RtpVideoChainSpec>, requested_fps: Option<u32>) {
     let Some(fps) = requested_fps.filter(|fps| *fps > 0) else {
         return;
     };
     if gst::ElementFactory::find("capssetter").is_none() {
+        return;
+    }
+    // Windows Vulkan hybrid / D3D present: forcing plain video/x-raw onto a D3D
+    // memory pad breaks caps negotiation.
+    if specs.iter().any(|spec| {
+        matches!(
+            spec.factory,
+            "d3d11download"
+                | "d3d12download"
+                | "vulkanupload"
+                | "d3d11videosink"
+                | "d3d12videosink"
+                | "d3d11h264dec"
+                | "d3d11h265dec"
+                | "d3d11av1dec"
+                | "d3d12h264dec"
+                | "d3d12h265dec"
+                | "d3d12av1dec"
+        )
+    }) {
         return;
     }
     let Some(decoder_index) = specs
@@ -1540,10 +2214,60 @@ fn select_decoder_factory(video_api: RtpVideoApi, codec: &str) -> Option<&'stati
     let primary = video_api.decoder_factory(codec)?;
     std::iter::once(primary)
         .chain(video_api.fallback_decoder_factories(codec).iter().copied())
-        .find(|factory| gst::ElementFactory::find(factory).is_some())
+        .find(|factory| decoder_factory_usable(factory))
+}
+
+fn decoder_factory_usable(factory: &'static str) -> bool {
+    static DECODER_PROBES: OnceLock<Mutex<HashMap<&'static str, bool>>> = OnceLock::new();
+    let probes = DECODER_PROBES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(probes) = probes.lock() {
+        if let Some(usable) = probes.get(factory) {
+            return *usable;
+        }
+    }
+
+    let usable = gst::ElementFactory::make(factory)
+        .build()
+        .ok()
+        .is_some_and(|decoder| {
+            let usable = decoder.set_state(gst::State::Ready).is_ok();
+            let _ = decoder.set_state(gst::State::Null);
+            usable
+        });
+    if let Ok(mut probes) = probes.lock() {
+        probes.insert(factory, usable);
+    }
+    usable
 }
 
 fn select_sink_factory(video_api: RtpVideoApi) -> Option<&'static str> {
+    // Internal Linux: never pick waylandsink for the X11 child overlay path.
+    #[cfg(target_os = "linux")]
+    if use_internal_renderer() {
+        let internal = video_api.internal_x11_sink_candidates();
+        if let Some(factory) = internal
+            .iter()
+            .copied()
+            .find(|factory| gst::ElementFactory::find(factory).is_some())
+        {
+            return Some(factory);
+        }
+    }
+
+    // Internal Windows + Vulkan: Electron hole-punch cannot composite Win32 Vulkan
+    // swapchains; present with D3D12 (D3D11 fallback) VideoOverlay instead.
+    #[cfg(target_os = "windows")]
+    if use_internal_renderer() && video_api == RtpVideoApi::Vulkan {
+        return ["d3d12videosink", "d3d11videosink"]
+            .into_iter()
+            .find(|factory| gst::ElementFactory::find(factory).is_some());
+    }
+
+    select_capability_sink_factory(video_api)
+}
+
+/// Sink advertised in capabilities / used when not overriding for Internal present.
+fn select_capability_sink_factory(video_api: RtpVideoApi) -> Option<&'static str> {
     std::iter::once(video_api.sink_factory())
         .chain(video_api.sink_fallback_factories().iter().copied())
         .find(|factory| gst::ElementFactory::find(factory).is_some())
@@ -1560,6 +2284,7 @@ fn all_rtp_video_apis() -> &'static [RtpVideoApi] {
         RtpVideoApi::D3D12,
         RtpVideoApi::D3D11,
         RtpVideoApi::VideoToolbox,
+        RtpVideoApi::Nvdec,
         RtpVideoApi::Vaapi,
         RtpVideoApi::V4L2,
         RtpVideoApi::Vulkan,
@@ -1591,7 +2316,17 @@ pub(crate) fn current_platform_label() -> &'static str {
 }
 
 fn backend_runs_on_current_platform(video_api: RtpVideoApi) -> bool {
-    video_api.platform() == current_platform_label() || video_api.platform() == "cross-platform"
+    backend_runs_on_platform(video_api, current_platform_label())
+}
+
+pub(crate) fn backend_runs_on_platform(video_api: RtpVideoApi, platform: &str) -> bool {
+    match video_api {
+        RtpVideoApi::D3D11 | RtpVideoApi::D3D12 => platform == "windows",
+        RtpVideoApi::VideoToolbox => platform == "macos",
+        RtpVideoApi::Nvdec | RtpVideoApi::Vaapi | RtpVideoApi::V4L2 => platform == "linux",
+        RtpVideoApi::Vulkan => matches!(platform, "windows" | "linux"),
+        RtpVideoApi::Software => true,
+    }
 }
 
 pub(crate) fn native_video_backend_capabilities() -> Vec<NativeVideoBackendCapability> {
@@ -1604,8 +2339,10 @@ pub(crate) fn native_video_backend_capabilities() -> Vec<NativeVideoBackendCapab
 
 fn native_video_backend_capability(video_api: RtpVideoApi) -> NativeVideoBackendCapability {
     let platform_supported = backend_runs_on_current_platform(video_api);
+    // Advertise the true API sink (vulkansink). Internal Windows Vulkan may present
+    // via d3d12/d3d11videosink at session time for Electron hole-punch compatibility.
     let sink_factory = platform_supported
-        .then(|| select_sink_factory(video_api))
+        .then(|| select_capability_sink_factory(video_api))
         .flatten();
     let codecs = all_video_codec_labels()
         .iter()
@@ -1658,7 +2395,22 @@ fn native_video_codec_capability(
     let decoder = platform_supported
         .then(|| select_decoder_factory(video_api, codec))
         .flatten();
-    let definition = rtp_video_chain_definition(codec, video_api);
+    // Capability checks the External Vulkan present chain so vulkansink/vulkanupload
+    // must be present even when Internal sessions present via D3D11.
+    let definition = {
+        #[cfg(target_os = "windows")]
+        {
+            if video_api == RtpVideoApi::Vulkan {
+                windows_vulkan_external_present_chain_definition(codec)
+            } else {
+                rtp_video_chain_definition(codec, video_api)
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            rtp_video_chain_definition(codec, video_api)
+        }
+    };
     let available = platform_supported
         && sink.is_some()
         && decoder.is_some()
@@ -1718,16 +2470,21 @@ fn zero_copy_modes_for_backend(video_api: RtpVideoApi) -> Vec<String> {
         RtpVideoApi::D3D11 => vec!["D3D11Memory".to_owned()],
         RtpVideoApi::D3D12 => vec!["D3D12Memory".to_owned()],
         RtpVideoApi::VideoToolbox => vec!["GLMemory".to_owned()],
+        RtpVideoApi::Nvdec => Vec::new(),
         RtpVideoApi::Vaapi => vec!["VAMemory".to_owned()],
+        // Linux keeps decoded frames as VulkanImage. Windows uses DXVA→upload,
+        // so there is no end-to-end VulkanImage zero-copy path yet.
+        RtpVideoApi::Vulkan if cfg!(target_os = "windows") => Vec::new(),
         RtpVideoApi::Vulkan => vec!["VulkanImage".to_owned()],
-        RtpVideoApi::V4L2 | RtpVideoApi::Software => Vec::new(),
+        RtpVideoApi::V4L2 => vec!["DMABuf".to_owned()],
+        RtpVideoApi::Software => Vec::new(),
     }
 }
 
 fn configure_rtp_video_chain_element(
     element: &gst::Element,
     spec: RtpVideoChainSpec,
-    _video_api: RtpVideoApi,
+    video_api: RtpVideoApi,
     d3d_fullscreen_sink: bool,
 ) {
     match spec.role {
@@ -1780,13 +2537,11 @@ fn configure_rtp_video_chain_element(
             configure_queue_for_low_latency(element, "video");
         }
         RtpVideoChainRole::Sink => {
-            configure_sink_for_low_latency(element);
-            // Direct swapchain can turn a window/present stall into upstream decode backpressure.
-            set_property_if_supported(element, "direct-swapchain", false);
-            set_property_if_supported(element, "error-on-closed", false);
-            set_property_if_supported(element, "fullscreen", d3d_fullscreen_sink);
-            set_property_if_supported(element, "fullscreen-on-alt-enter", false);
-            set_property_from_str_if_supported(element, "fullscreen-toggle-mode", "none");
+            if matches!(video_api, RtpVideoApi::D3D11 | RtpVideoApi::D3D12) {
+                configure_d3d_video_sink(element, d3d_fullscreen_sink);
+            } else {
+                configure_sink_for_low_latency(element);
+            }
         }
     }
 }
@@ -1839,8 +2594,10 @@ fn link_rtp_video_pad(
         present_max_fps.store(effective_present_max_fps, Ordering::SeqCst);
         if effective_present_max_fps > 0 {
             let reason = if configured_present_max_fps == PRESENT_LIMITER_AUTO_SENTINEL {
-                "auto-enabled for the D3D11 path to prevent display-rate present backpressure"
+                "auto-enabled for the D3D present path to prevent display-rate present backpressure"
                     .to_owned()
+            } else if configured_present_max_fps == PRESENT_LIMITER_VRR_SENTINEL {
+                "kept below the display refresh ceiling for VRR".to_owned()
             } else {
                 format!("configured by {NATIVE_PRESENT_MAX_FPS_ENV}")
             };
@@ -2007,9 +2764,15 @@ pub(crate) fn format_video_chain_selection(
         .unwrap_or("unknown");
     let converter = specs
         .iter()
-        .find(|spec| spec.role == RtpVideoChainRole::PostDecodeConverter)
+        .filter(|spec| spec.role == RtpVideoChainRole::PostDecodeConverter)
         .map(|spec| spec.factory)
-        .unwrap_or("none");
+        .collect::<Vec<_>>()
+        .join("+");
+    let converter = if converter.is_empty() {
+        "none".to_owned()
+    } else {
+        converter
+    };
     let memory = specs
         .iter()
         .find(|spec| spec.role == RtpVideoChainRole::PostDecodeCapsFilter)
@@ -2024,9 +2787,19 @@ pub(crate) fn format_video_chain_selection(
     } else {
         "software"
     };
-
+    let path_note = if cfg!(target_os = "windows") && video_api == RtpVideoApi::Vulkan {
+        if sink == "d3d12videosink" {
+            " (DXVA decode + D3D12 present; Electron cannot composite Win32 vulkansink — use External for true Vulkan present)"
+        } else if sink == "d3d11videosink" {
+            " (DXVA decode + D3D11 present; Electron cannot composite Win32 vulkansink — use External for true Vulkan present)"
+        } else {
+            " (DXVA decode + Vulkan present; native vulkanh264dec is unstable on Windows)"
+        }
+    } else {
+        ""
+    };
     format!(
-        "Selected native {acceleration} video path for RTP {encoding}: backend={}, decoder={decoder}, converter={converter}, renderer={sink}, memory={memory}.",
+        "Selected native {acceleration} video path for RTP {encoding}: backend={}, decoder={decoder}, converter={converter}, renderer={sink}, memory={memory}{path_note}.",
         video_api.label()
     )
 }
@@ -2115,12 +2888,15 @@ fn link_decoded_media_pad(
 fn video_sink_factories() -> Vec<(&'static str, Option<bool>)> {
     #[cfg(target_os = "windows")]
     {
-        if gst::ElementFactory::find("d3d11videosink").is_some() {
+        let d3d_sink = ["d3d12videosink", "d3d11videosink"]
+            .into_iter()
+            .find(|factory| gst::ElementFactory::find(factory).is_some());
+        if let Some(sink) = d3d_sink {
             let mut factories = vec![("queue", None)];
             if gst::ElementFactory::find("dwritetextoverlay").is_some() {
                 factories.push(("dwritetextoverlay", None));
             }
-            factories.push(("d3d11videosink", Some(false)));
+            factories.push((sink, Some(false)));
             return factories;
         }
     }
@@ -2165,7 +2941,12 @@ fn link_media_chain(
             }
         }
         if sync_property.is_some() || factory.ends_with("sink") {
-            configure_sink_for_low_latency(&element);
+            if factory == "d3d11videosink" || factory == "d3d12videosink" {
+                // Fallback decodebin path: never exclusive-fullscreen (Internal default).
+                configure_d3d_video_sink(&element, false);
+            } else {
+                configure_sink_for_low_latency(&element);
+            }
         }
         pipeline
             .add(&element)

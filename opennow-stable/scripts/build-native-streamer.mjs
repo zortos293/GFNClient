@@ -128,6 +128,28 @@ function formatCandidateSources(candidates) {
   return candidates.map((candidate) => candidate.source).join(", ") || "none";
 }
 
+function configureGstreamerPluginDiscovery(env, sdkRoot) {
+  const pluginDir = join(sdkRoot, "lib", "gstreamer-1.0");
+  const scanner = join(
+    sdkRoot,
+    "libexec",
+    "gstreamer-1.0",
+    process.platform === "win32" ? "gst-plugin-scanner.exe" : "gst-plugin-scanner",
+  );
+
+  if (isExistingDirectory(pluginDir)) {
+    env.GST_PLUGIN_PATH = pluginDir;
+    env.GST_PLUGIN_PATH_1_0 = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH = pluginDir;
+    env.GST_PLUGIN_SYSTEM_PATH_1_0 = pluginDir;
+  }
+  if (isExistingFile(scanner)) {
+    env.GST_PLUGIN_SCANNER = scanner;
+    env.GST_PLUGIN_SCANNER_1_0 = scanner;
+  }
+  env.GST_REGISTRY_REUSE_PLUGIN_SCANNER = "no";
+}
+
 function configureGstreamerSdk(env) {
   if (process.platform === "win32") {
     const candidates = existingConfiguredCandidates([
@@ -158,6 +180,9 @@ function configureGstreamerSdk(env) {
     env.PKG_CONFIG = sdk.pkgConfigBinary;
     env.PKG_CONFIG_PATH = env.PKG_CONFIG_PATH ? `${pkgConfigDir}${delimiter}${env.PKG_CONFIG_PATH}` : pkgConfigDir;
     prependEnvPath(env, join(sdk.root, "bin"));
+    // The Windows MSI supports a custom INSTALLDIR, but a native executable outside
+    // the SDK cannot reliably infer that relocated plugin directory from its own path.
+    configureGstreamerPluginDiscovery(env, sdk.root);
     console.log(`Configured GStreamer SDK from ${sdk.source}.`);
     console.log("Configured pkg-config executable for GStreamer SDK.");
     return sdk.root;
@@ -233,7 +258,27 @@ function bundleGstreamerRuntime(sdkRoot, nativeFeatures) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+
+  if (process.platform === "win32") {
+    injectWindowsVulkanPlugins(join(packagePlatformBinaryDir, "gstreamer"));
+  }
+
   return true;
+}
+
+function injectWindowsVulkanPlugins(runtimeRoot) {
+  const result = spawnSync(
+    process.execPath,
+    [join(__dirname, "inject-gstreamer-vulkan-windows.mjs"), "--dest", runtimeRoot],
+    {
+      cwd: packageRoot,
+      stdio: "inherit",
+      env: process.env,
+    },
+  );
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
 }
 
 function isExistingFile(path) {
@@ -390,6 +435,41 @@ function verifyGstreamerBinary(binaryPath, env) {
   console.log(`Verified native streamer GStreamer capabilities: ${availableVideoBackends.join(", ")}.`);
 }
 
+function verifyBundledWindowsLoader(binaryPath, baseEnv) {
+  const result = spawnSync(binaryPath, {
+    cwd: dirname(binaryPath),
+    input: `${JSON.stringify({ id: verifyCommandId, type: "hello", protocolVersion: nativeStreamerProtocolVersion })}\n`,
+    encoding: "utf8",
+    env: {
+      SystemRoot: baseEnv.SystemRoot,
+      WINDIR: baseEnv.WINDIR,
+      PATH: dirname(binaryPath),
+      OPENNOW_NATIVE_STREAMER_BACKEND: "gstreamer",
+    },
+  });
+  if (result.status !== 0) {
+    console.error(result.stderr || result.stdout);
+    console.error("Bundled native streamer could not start using only DLLs next to its executable.");
+    process.exit(result.status ?? 1);
+  }
+  parseNativeStreamerResponse(result.stdout);
+  console.log("Verified native streamer Windows loader dependency closure.");
+}
+
+function verifyBundledWindowsVulkanPlugin(binaryPath, env) {
+  const gstInspect = join(dirname(binaryPath), "gstreamer", "bin", "gst-inspect-1.0.exe");
+  const result = spawnSync(gstInspect, ["vulkanupload"], {
+    encoding: "utf8",
+    env,
+  });
+  if (result.status !== 0) {
+    console.error(result.stderr || result.stdout);
+    console.error("Bundled GStreamer Vulkan plugin failed to load.");
+    process.exit(result.status ?? 1);
+  }
+  console.log("Verified bundled GStreamer Vulkan plugin and loader.");
+}
+
 const cargoArgs = ["build", "--release", "--manifest-path", manifestPath];
 if (nativeTarget) {
   cargoArgs.push("--target", nativeTarget);
@@ -440,7 +520,12 @@ if (process.platform !== "win32") {
 if (hasFeature(nativeFeatures, "gstreamer")) {
   verifyGstreamerBinary(packageBinary, buildEnv);
   if (bundleGstreamerRuntime(gstreamerSdkRoot, nativeFeatures)) {
-    verifyGstreamerBinary(packagePlatformBinary, buildBundledGstreamerEnv(buildEnv, packagePlatformBinary));
+    const bundledEnv = buildBundledGstreamerEnv(buildEnv, packagePlatformBinary);
+    if (process.platform === "win32") {
+      verifyBundledWindowsLoader(packagePlatformBinary, buildEnv);
+      verifyBundledWindowsVulkanPlugin(packagePlatformBinary, bundledEnv);
+    }
+    verifyGstreamerBinary(packagePlatformBinary, bundledEnv);
   }
 }
 

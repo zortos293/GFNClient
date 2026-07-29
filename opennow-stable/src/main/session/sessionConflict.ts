@@ -2,7 +2,7 @@ import type { BrowserWindow } from "electron";
 import { serializeSessionErrorTransport } from "@shared/sessionError";
 import type { SessionConflictChoice } from "@shared/gfn";
 import { enrichErrorForIpc } from "@shared/networkError";
-import { isSessionError, SessionError } from "../gfn/errorCodes";
+import { isSessionError, SessionError } from "../platforms/gfn/errorCodes";
 
 export interface SessionConflictDialogDeps {
   dialog: Electron.Dialog;

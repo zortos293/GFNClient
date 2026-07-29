@@ -102,3 +102,50 @@ test("does not derive modes that exceed entitlement dimensions", () => {
     { resolution: "1920x1080", fps: 120 },
   );
 });
+
+test("does not synthesize 90 FPS from higher FPS entitlement envelopes", () => {
+  const highFpsEntitlements = [{ width: 1920, height: 1080, fps: 120 }];
+  const highFpsExpanded = expandEntitledStreamResolutions(highFpsEntitlements);
+
+  assert.equal(
+    highFpsExpanded.some((resolution) => resolution.fps === 90),
+    false,
+  );
+  // Envelope coverage still allows lower catalog FPS at covered resolutions.
+  assert.equal(
+    highFpsExpanded.some(
+      (resolution) =>
+        resolution.width === 1280 &&
+        resolution.height === 800 &&
+        resolution.fps === 60,
+    ),
+    true,
+  );
+  // Without an exact MES 90 tuple, request 90 and clamp to the nearest entitled FPS.
+  assert.deepEqual(
+    resolveEntitledStreamProfile(highFpsEntitlements, { resolution: "1280x800", fps: 90 }),
+    { resolution: "1280x800", fps: 60 },
+  );
+});
+
+test("preserves exact 90 FPS modes returned by MES entitlements", () => {
+  const mesNinety = [
+    { width: 1920, height: 1080, fps: 120 },
+    { width: 1280, height: 800, fps: 90 },
+  ];
+  const expanded = expandEntitledStreamResolutions(mesNinety);
+
+  assert.equal(
+    expanded.some(
+      (resolution) =>
+        resolution.width === 1280 &&
+        resolution.height === 800 &&
+        resolution.fps === 90,
+    ),
+    true,
+  );
+  assert.deepEqual(
+    resolveEntitledStreamProfile(mesNinety, { resolution: "1280x800", fps: 90 }),
+    { resolution: "1280x800", fps: 90 },
+  );
+});

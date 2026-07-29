@@ -1,0 +1,72 @@
+<UserControl x:Class="OpenNow.Playnite.OpenNowSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignHeight="450" d:DesignWidth="650">
+  <StackPanel Margin="20">
+    <TabControl>
+      <TabItem Header="{DynamicResource LOCOpenNow_SettingsLibraryHeaderLabel}">
+        <StackPanel>
+          <TextBlock VerticalAlignment="Center" Margin="0,10,0,20">
+            <Hyperlink NavigateUri="https://opennow.zortos.me/guides/getting-started/"
+                       RequestNavigate="HelpLink_RequestNavigate">
+              <Run Text="{DynamicResource LOCOpenNow_SettingsHelpLabel}" />
+            </Hyperlink>
+          </TextBlock>
+
+          <TextBlock Text="{DynamicResource LOCOpenNow_SettingsOpenNowExecutablePathLabel}" Margin="0,0,0,6" />
+          <DockPanel Margin="0,0,0,16">
+            <Button Content="{DynamicResource LOCOpenNow_SettingsBrowseExecutableLabel}"
+                    DockPanel.Dock="Right"
+                    Width="90"
+                    Margin="8,0,0,0"
+                    Click="BrowseButton_Click" />
+            <TextBox Text="{Binding Settings.OpenNowExecutablePath, UpdateSourceTrigger=PropertyChanged}" />
+          </DockPanel>
+
+          <CheckBox IsChecked="{Binding Settings.ImportDatabaseAsLibrary}"
+                    Content="{DynamicResource LOCOpenNow_SettingsImportDatabaseToLibrary}" />
+          <TextBlock Margin="40,5,0,0"
+                     TextWrapping="Wrap"
+                     Text="{DynamicResource LOCOpenNow_SettingsImportDatabaseToLibraryNote}" />
+        </StackPanel>
+      </TabItem>
+
+      <TabItem Header="{DynamicResource LOCOpenNow_SettingsOtherLibrariesHeaderLabel}">
+        <StackPanel>
+          <TextBlock VerticalAlignment="Center" Margin="0,10,0,20">
+            <Hyperlink NavigateUri="https://opennow.zortos.me/guides/getting-started/"
+                       RequestNavigate="HelpLink_RequestNavigate">
+              <Run Text="{DynamicResource LOCOpenNow_SettingsHelpLabel}" />
+            </Hyperlink>
+          </TextBlock>
+
+          <CheckBox Margin="0,0,0,15"
+                    IsChecked="{Binding Settings.ExecuteOnStartup}"
+                    Content="{DynamicResource LOCOpenNow_ExecuteOnStartupSetting}" />
+          <CheckBox Margin="0,0,0,15"
+                    IsChecked="{Binding Settings.ExecuteOnLibraryUpdate}"
+                    Content="{DynamicResource LOCOpenNow_ExecuteOnLibraryUpdateSetting}" />
+          <CheckBox x:Name="ActionsEnabled"
+                    IsChecked="{Binding Settings.ShowPlayActionsOnLaunch}"
+                    Content="{DynamicResource LOCOpenNow_ShowPlayActionsOnLaunchSetting}"
+                    ToolTip="{DynamicResource LOCOpenNow_ShowPlayActionsOnLaunchSettingTooltip}" />
+          <StackPanel Margin="40,0,0,0"
+                      IsEnabled="{Binding ElementName=ActionsEnabled, Path=IsChecked}">
+            <TextBlock Margin="0,10,10,0"
+                       TextWrapping="Wrap"
+                       Text="When enabled, OpenNOW adds a launch option for games from other libraries that are supported on GeForce NOW." />
+            <CheckBox Margin="0,10,0,0"
+                      IsChecked="{Binding Settings.OnlyShowActionsForNotLibInstalledGames}"
+                      Content="{DynamicResource LOCOpenNow_ShowActionForAlreadyInstalledGamesSetting}" />
+            <CheckBox Margin="0,10,0,0"
+                      IsChecked="{Binding Settings.MarkCompatibleGamesAsInstalled}"
+                      Content="{DynamicResource LOCOpenNow_MarkCompatibleGamesAsInstalledSetting}" />
+          </StackPanel>
+        </StackPanel>
+      </TabItem>
+    </TabControl>
+  </StackPanel>
+</UserControl>

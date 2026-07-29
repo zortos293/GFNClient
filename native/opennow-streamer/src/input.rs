@@ -286,10 +286,16 @@ pub fn is_partially_reliable_hid_transfer_eligible(input_type: u32) -> bool {
     input_type == INPUT_MOUSE_REL
 }
 
-pub(crate) fn layout_mapped_keyboard_scancode(_physical_scancode: u16) -> u16 {
+pub(crate) fn layout_mapped_keyboard_scancode(physical_scancode: u16) -> u16 {
     // GFN keyboard events use the selected remote layout plus VK; sending the local physical
     // scancode makes QWERTZ-only keys such as Y/Z resolve as their US physical positions.
-    0
+    // Escape is the exception: Chromium's synthetic/pointer-lock path sends scan code 0x01,
+    // and GFN ignores native Escape taps when that scan code is discarded.
+    if physical_scancode == 0x0001 {
+        physical_scancode
+    } else {
+        0
+    }
 }
 
 pub(crate) fn layout_mapped_keyboard_keycode(fallback_keycode: u16, physical_scancode: u16) -> u16 {
@@ -744,6 +750,11 @@ mod tests {
     fn layout_mapped_keyboard_input_omits_physical_scancodes() {
         assert_eq!(layout_mapped_keyboard_scancode(0x0015), 0);
         assert_eq!(layout_mapped_keyboard_scancode(0x002c), 0);
+    }
+
+    #[test]
+    fn layout_mapped_keyboard_input_preserves_escape_scancode() {
+        assert_eq!(layout_mapped_keyboard_scancode(0x0001), 0x0001);
     }
 
     #[test]

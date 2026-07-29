@@ -1,42 +1,58 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import afterSign from "./after-sign-mac.mjs";
+import { signMacAppPreservingValidSignatures } from "./after-sign-mac.mjs";
 
-test("re-signs only the outer macOS app bundle", { skip: process.platform !== "darwin" }, async () => {
+test("signs nested Mach-O code inside-out without replacing valid signatures", async () => {
   const root = await mkdtemp(join(tmpdir(), "opennow-after-sign-"));
-  const binDir = join(root, "bin");
-  const argsFile = join(root, "codesign-args");
   const appOutDir = join(root, "output");
-  const originalEnv = { ...process.env };
 
   try {
-    await mkdir(binDir);
-    await mkdir(join(appOutDir, "OpenNOW.app"), { recursive: true });
-    await writeFile(join(binDir, "codesign"), '#!/bin/sh\nprintf "%s\\n" "$@" >> "$CODESIGN_ARGS_FILE"\n');
-    await chmod(join(binDir, "codesign"), 0o755);
-    process.env.PATH = `${binDir}:${process.env.PATH}`;
-    process.env.CODESIGN_ARGS_FILE = argsFile;
-    process.env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
+    const appPath = join(appOutDir, "OpenNOW.app");
+    const frameworksDir = join(appPath, "Contents", "Frameworks");
+    const signedHelper = join(frameworksDir, "OpenNOW Helper.app");
+    const unsignedHelper = join(frameworksDir, "OpenNOW Helper (Plugin).app");
+    const electronFramework = join(frameworksDir, "Electron Framework.framework");
+    const frameworkBinary = join(electronFramework, "Versions", "A", "Electron Framework");
+    const crashpadHandler = join(
+      electronFramework,
+      "Versions",
+      "A",
+      "Helpers",
+      "chrome_crashpad_handler",
+    );
+    await mkdir(signedHelper, { recursive: true });
+    await mkdir(unsignedHelper, { recursive: true });
+    await mkdir(join(crashpadHandler, ".."), { recursive: true });
+    await writeFile(frameworkBinary, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
+    await writeFile(crashpadHandler, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
+    const signCalls = [];
 
-    await afterSign({
-      appOutDir,
-      packager: {
-        appInfo: { id: "com.zortos.opennow.stable", productFilename: "OpenNOW" },
-      },
+    await signMacAppPreservingValidSignatures(appPath, "com.zortos.opennow.stable", {
+      isSignatureValid: (path) => path === signedHelper,
+      sign: (path, extraArgs = []) => signCalls.push({ path, extraArgs }),
     });
 
-    const args = (await readFile(argsFile, "utf8")).trim().split("\n");
-    assert.equal(args.length, 6);
-    assert.equal(args.includes("--deep"), false);
-    assert.deepEqual(args.slice(0, 4), ["--force", "--sign", "-", "--requirements"]);
-    assert.equal(args[4], '=designated => identifier "com.zortos.opennow.stable"');
-    assert.equal(args[5], join(appOutDir, "OpenNOW.app"));
+    const signedPaths = signCalls.map(({ path }) => path);
+    assert.equal(signedPaths.includes(signedHelper), false);
+    assert.equal(signedPaths.includes(unsignedHelper), true);
+    assert.equal(signedPaths.includes(crashpadHandler), true);
+    assert.equal(signedPaths.includes(frameworkBinary), true);
+    assert.equal(signedPaths.includes(electronFramework), true);
+    assert.ok(signedPaths.indexOf(crashpadHandler) < signedPaths.indexOf(frameworkBinary));
+    assert.ok(signedPaths.indexOf(crashpadHandler) < signedPaths.indexOf(electronFramework));
+    assert.ok(signedPaths.indexOf(frameworkBinary) < signedPaths.indexOf(electronFramework));
+    assert.deepEqual(signCalls.at(-1), {
+      path: appPath,
+      extraArgs: [
+        "--requirements",
+        '=designated => identifier "com.zortos.opennow.stable"',
+      ],
+    });
   } finally {
-    process.env = originalEnv;
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,6 @@
 import type { GameInfo } from "@shared/gfn";
-import { getAccountGamesCacheKeys } from "../gfn/games";
-import { sessionProxyHasCredentials } from "../gfn/proxyUrl";
+import { getAccountGamesCacheKeys } from "../platforms/gfn/games";
+import { sessionProxyHasCredentials } from "../platforms/gfn/proxyUrl";
 import { cacheEventBus } from "./cacheEventBus";
 import { cacheManager } from "./cacheManager";
 

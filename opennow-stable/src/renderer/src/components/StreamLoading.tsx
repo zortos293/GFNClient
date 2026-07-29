@@ -1,9 +1,9 @@
-import { Loader2, Monitor, Cpu, Wifi, X, XCircle } from "lucide-react";
+import { Cpu, Monitor, Radio, Wifi, X, XCircle } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { JSX, Ref } from "react";
+import { m, useReducedMotion } from "motion/react";
 import {
   getPreferredSessionAdMediaUrl,
-  getSessionAdDurationMs,
-  getSessionAdGracePeriodSeconds,
   getSessionAdItems,
   getSessionAdMessage,
   isSessionAdsRequired,
@@ -12,9 +12,18 @@ import {
 import type { SessionAdInfo, SessionAdState } from "@shared/gfn";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { QueueAdPreview, type QueueAdPlaybackEvent, type QueueAdPreviewHandle } from "./QueueAdPreview";
+import { LazyShaderAtmosphere } from "./LazyShaderAtmosphere";
 import { useTranslation } from "../i18n";
+import { getStatusPulseMotion } from "./MotionProvider";
 
 type TranslateFunction = typeof import("../i18n").t;
+
+const launchStages = [
+  { id: "queue", icon: Radio },
+  { id: "setup", icon: Cpu },
+  { id: "connecting", icon: Wifi },
+  { id: "ready", icon: Monitor },
+] as const;
 
 export interface StreamLoadingProps {
   gameTitle: string;
@@ -38,12 +47,6 @@ export interface StreamLoadingProps {
   onCancel: () => void;
 }
 
-const steps = [
-  { id: "queue", labelKey: "streamLoading.steps.queue", icon: Monitor },
-  { id: "setup", labelKey: "streamLoading.steps.setup", icon: Cpu },
-  { id: "ready", labelKey: "streamLoading.steps.ready", icon: Wifi },
-] as const;
-
 function getStatusMessage(
   t: TranslateFunction,
   status: StreamLoadingProps["status"],
@@ -51,51 +54,66 @@ function getStatusMessage(
   adState?: SessionAdState,
   isError = false,
 ): string {
-  if (isError) {
-    return t("streamLoading.status.gameLaunchFailed");
-  }
-  if (isSessionQueuePaused(adState)) {
-    return t("streamLoading.status.queuePaused");
-  }
+  if (isError) return t("streamLoading.status.gameLaunchFailed");
+  if (isSessionQueuePaused(adState)) return t("streamLoading.status.queuePaused");
+
   switch (status) {
     case "queue":
-      return queuePosition ? t("streamLoading.status.positionInQueue", { position: queuePosition }) : t("streamLoading.status.waitingInQueue");
+      return queuePosition
+        ? t("streamLoading.status.positionInQueue", { position: queuePosition })
+        : t("streamLoading.status.waitingInQueue");
     case "setup":
       return t("streamLoading.status.settingUpRig");
     case "starting":
       return t("streamLoading.status.startingStream");
     case "connecting":
       return t("streamLoading.status.connectingToServer");
-    default:
-      return t("streamLoading.status.loading");
   }
 }
 
-function getActiveStepIndex(status: StreamLoadingProps["status"]): number {
+function getPhaseDetail(t: TranslateFunction, status: StreamLoadingProps["status"]): string {
   switch (status) {
     case "queue":
-      return 0;
+      return t("streamLoading.cozy.queue");
     case "setup":
-      return 1;
+      return t("streamLoading.cozy.setup");
     case "starting":
+      return t("streamLoading.cozy.starting");
     case "connecting":
-      return 2;
-    default:
-      return 0;
+      return t("streamLoading.cozy.connecting");
   }
+}
+
+function getNextStep(t: TranslateFunction, status: StreamLoadingProps["status"]): string {
+  switch (status) {
+    case "queue":
+      return t("streamLoading.steps.setup");
+    case "setup":
+      return t("streamLoading.status.startingStream");
+    case "starting":
+      return t("streamLoading.steps.connect");
+    case "connecting":
+      return t("streamLoading.steps.ready");
+  }
+}
+
+function getActiveStage(status: StreamLoadingProps["status"]): number {
+  if (status === "queue") return 0;
+  if (status === "setup") return 1;
+  return 2;
+}
+
+function formatWaitTime(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function getAdSummary(t: TranslateFunction, adState?: SessionAdState): string | null {
-  if (!isSessionAdsRequired(adState)) {
-    return null;
-  }
+  if (!isSessionAdsRequired(adState)) return null;
   const message = getSessionAdMessage(adState);
-  if (message) {
-    return message;
-  }
-  if (isSessionQueuePaused(adState)) {
-    return t("streamLoading.ads.resumeToStayInQueue");
-  }
+  if (message) return message;
+  if (isSessionQueuePaused(adState)) return t("streamLoading.ads.resumeToStayInQueue");
   const ads = getSessionAdItems(adState);
   return ads.length > 0
     ? t("streamLoading.ads.availableForProgression", { count: ads.length })
@@ -119,103 +137,92 @@ export function StreamLoading({
   onCancel,
 }: StreamLoadingProps): JSX.Element {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
+  const statusPulseMotion = getStatusPulseMotion(reducedMotion);
+  const [startedAt] = useState(() => Date.now());
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const hasError = Boolean(error);
-  const activeStepIndex = getActiveStepIndex(status);
   const statusMessage = getStatusMessage(t, status, queuePosition, adState, hasError);
   const platformName = platformStore ? getStoreDisplayName(platformStore) : "";
   const PlatformIcon = platformStore ? getStoreIconComponent(platformStore) : null;
   const adSummary = getAdSummary(t, adState);
   const cachedAdMediaUrl = activeAdMediaUrl ?? getPreferredSessionAdMediaUrl(activeAd);
-  const activeAdDurationMs = getSessionAdDurationMs(activeAd);
-  const activeAdDurationSeconds = activeAdDurationMs ? Math.round(activeAdDurationMs / 1000) : undefined;
-  const gracePeriodSeconds = getSessionAdGracePeriodSeconds(adState);
+  const activeStage = getActiveStage(status);
+
+  useEffect(() => {
+    if (hasError) return undefined;
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [hasError, startedAt]);
 
   return (
     <div className={`sload${hasError ? " sload--error" : ""}`}>
       <div className="sload-backdrop" />
-
-      {/* Animated accent glow behind content */}
-      <div className="sload-glow" />
+      {!hasError && <LazyShaderAtmosphere variant={status === "queue" ? "queue" : "connecting"} />}
+      <div className="sload-backdrop-wash" />
 
       <div className="sload-content">
-        {/* Game Info Header */}
         <div className="sload-game">
           <div className="sload-cover">
             {gameCover ? (
-              <img src={gameCover} alt={gameTitle} className="sload-cover-img" />
+              <img src={gameCover} alt="" className="sload-cover-img" />
             ) : (
-              <div className="sload-cover-empty">
-                <Monitor size={28} />
-              </div>
+              <div className="sload-cover-empty"><Monitor size={24} /></div>
             )}
-            <div className="sload-cover-shine" />
           </div>
           <div className="sload-game-meta">
-            <span className="sload-label">{hasError ? t("streamLoading.labels.launchError") : t("streamLoading.labels.nowLoading")}</span>
-            <h2 className="sload-title" title={gameTitle}>
-              {gameTitle}
-            </h2>
+            <p className="sload-label">{hasError ? t("streamLoading.labels.launchError") : t("streamLoading.labels.nowLoading")}</p>
+            <h2 className="sload-title" title={gameTitle}>{gameTitle}</h2>
             {PlatformIcon && (
               <div className="sload-platform" title={platformName}>
-                <span className="sload-platform-icon">
-                  <PlatformIcon />
-                </span>
+                <span className="sload-platform-icon"><PlatformIcon /></span>
                 <span>{platformName}</span>
               </div>
             )}
           </div>
         </div>
 
-        {/* Progress Steps */}
-        <div className="sload-steps">
-          {steps.map((step, index) => {
-            const StepIcon = step.icon;
-            const isFailed = hasError && index === activeStepIndex;
-            const isActive = !isFailed && index === activeStepIndex;
-            const isCompleted = index < activeStepIndex;
-            const isPending = index > activeStepIndex;
-            const nextIsFailed = hasError && index + 1 === activeStepIndex;
-
-            return (
-              <div
-                key={step.id}
-                className={`sload-step${isActive ? " active" : ""}${isCompleted ? " completed" : ""}${isPending ? " pending" : ""}${isFailed ? " failed" : ""}`}
-              >
-                <div className="sload-step-dot">
-                  {isFailed ? <X size={18} /> : <StepIcon size={18} />}
+        {!hasError && (
+          <div className="sload-stage-rail" aria-label={t("streamLoading.labels.launchProgress")}>
+            {launchStages.map((stage, index) => {
+              const StageIcon = stage.icon;
+              const state = index < activeStage ? "completed" : index === activeStage ? "active" : "pending";
+              return (
+                <div className={`sload-stage sload-stage--${state}`} key={stage.id}>
+                  <m.span
+                    className="sload-stage-icon"
+                    animate={state === "active"
+                      ? statusPulseMotion.animate
+                      : { opacity: 1, scale: 1 }}
+                    transition={state === "active"
+                      ? statusPulseMotion.transition
+                      : { duration: 0.2 }}
+                  >
+                    <StageIcon size={18} />
+                  </m.span>
+                  {index < launchStages.length - 1 && <span className="sload-stage-line" />}
                 </div>
-                <span className="sload-step-name">{t(step.labelKey)}</span>
-                {index < steps.length - 1 && (
-                  <div className={`sload-step-line${nextIsFailed ? " failed" : ""}`}>
-                    <div className="sload-step-line-fill" />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
 
-        {/* Status Display */}
         <div className={`sload-status${hasError ? " sload-status--error" : ""}`}>
-          {hasError ? <XCircle size={28} className="sload-error-icon" /> : <Loader2 size={28} className="sload-spin" />}
+          {hasError ? (
+            <XCircle size={24} className="sload-error-icon" />
+          ) : (
+            <m.span
+              className="sload-live-dot"
+              aria-hidden="true"
+              animate={statusPulseMotion.animate}
+              transition={statusPulseMotion.transition}
+            />
+          )}
           <div className="sload-status-text">
-            <p className="sload-message">{statusMessage}</p>
-            {!hasError && activeAd && cachedAdMediaUrl && (
-              <div className={`sload-ad${isSessionQueuePaused(adState) ? " sload-ad--paused" : ""}`}>
-                <div className="sload-ad-copy">
-                  <span className="sload-ad-chip">{t("streamLoading.labels.adQueue")}</span>
-                  {adSummary && <p className="sload-ad-message">{adSummary}</p>}
-                </div>
-                <div className="sload-ad-media">
-                  <QueueAdPreview
-                    ref={adPreviewRef}
-                    mediaUrl={cachedAdMediaUrl}
-                    title={activeAd.title}
-                    onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}
-                  />
-                </div>
-              </div>
-            )}
+            <p className="sload-message" role="status" aria-live="polite">{statusMessage}</p>
+            {!hasError && <p className="sload-detail">{getPhaseDetail(t, status)}</p>}
             {hasError && error && (
               <>
                 <p className="sload-error-title">{error.title}</p>
@@ -223,13 +230,46 @@ export function StreamLoading({
                 {error.code && <p className="sload-error-code">{error.code}</p>}
               </>
             )}
-            {status === "queue" && estimatedWait && (
-              <p className="sload-queue">
-                <span className="sload-wait">~{estimatedWait}</span>
-              </p>
-            )}
           </div>
         </div>
+
+        {!hasError && (
+          <div className="sload-facts">
+            <div className="sload-fact">
+              <p>{t("streamLoading.telemetry.queuePosition")}</p>
+              <strong>{status === "queue" && queuePosition ? `#${queuePosition}` : status === "queue" ? t("streamLoading.telemetry.calculating") : t("streamLoading.telemetry.cleared")}</strong>
+            </div>
+            <div className="sload-fact">
+              <p>{t("streamLoading.telemetry.elapsed")}</p>
+              <strong>{formatWaitTime(elapsedSeconds)}</strong>
+            </div>
+            <div className="sload-fact">
+              <p>{t("streamLoading.cozy.next")}</p>
+              <strong>{getNextStep(t, status)}</strong>
+            </div>
+          </div>
+        )}
+
+        {!hasError && activeAd && cachedAdMediaUrl && (
+          <div className={`sload-ad${isSessionQueuePaused(adState) ? " sload-ad--paused" : ""}`}>
+            <div className="sload-ad-copy">
+              <span className="sload-ad-chip">{t("streamLoading.labels.adQueue")}</span>
+              {adSummary && <p className="sload-ad-message">{adSummary}</p>}
+            </div>
+            <div className="sload-ad-media">
+              <QueueAdPreview
+                ref={adPreviewRef}
+                mediaUrl={cachedAdMediaUrl}
+                title={activeAd.title}
+                onPlaybackEvent={(event) => onAdPlaybackEvent?.(event, activeAd.adId)}
+              />
+            </div>
+          </div>
+        )}
+
+        {status === "queue" && estimatedWait && !hasError && (
+          <p className="sload-queue"><span className="sload-wait">~{estimatedWait}</span></p>
+        )}
 
         <div className="sload-actions">
           {hasError && error?.actionLabel && onErrorAction && (

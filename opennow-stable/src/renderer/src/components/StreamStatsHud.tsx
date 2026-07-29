@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
-import { AnimatePresence, m } from "motion/react";
+import { AnimatePresence, m, useReducedMotion } from "motion/react";
 import { AlertTriangle, ChevronDown } from "lucide-react";
 import type { JSX } from "react";
-import type { StreamLagReason } from "../gfn/webrtcClient";
+import type { StreamLagReason } from "../platforms/gfn/webrtcClient";
 import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import {
@@ -12,7 +12,12 @@ import {
   getRttColor,
   getTimingColor,
 } from "../utils/streamDiagnosticsFormat";
-import { panelSpring, smoothEase, surfaceRevealTransition } from "./MotionProvider";
+import {
+  disclosureTransition,
+  getStatusPulseMotion,
+  smoothEase,
+  surfaceRevealTransition,
+} from "./MotionProvider";
 import { useTranslation } from "../i18n";
 
 function getLagReasonLabel(reason: StreamLagReason): string {
@@ -63,6 +68,8 @@ export function StreamStatsHud({
   hintsVisible = false,
 }: StreamStatsHudProps): JSX.Element {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
+  const statusPulseMotion = getStatusPulseMotion(reducedMotion);
   const stats = useStreamDiagnosticsStore(diagnosticsStore);
   const [expanded, setExpanded] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -166,7 +173,6 @@ export function StreamStatsHud({
       animate={{ opacity: 1, x: 0, y: 0 }}
       exit={{ opacity: 0, x: -10, y: 6 }}
       transition={surfaceRevealTransition}
-      layout
       aria-label={t("stream.stats.overlayLabel")}
     >
       <button
@@ -198,9 +204,14 @@ export function StreamStatsHud({
             {inputLive ? t("stream.stats.live") : t("stream.stats.sync")}
           </span>
           {hasIssues && (
-            <span className="sv-stats-alert-dot" aria-hidden>
+            <m.span
+              className="sv-stats-alert-dot"
+              aria-hidden
+              animate={statusPulseMotion.animate}
+              transition={statusPulseMotion.transition}
+            >
               <AlertTriangle size={11} />
-            </span>
+            </m.span>
           )}
           <m.span
             className="sv-stats-chevron"
@@ -221,7 +232,7 @@ export function StreamStatsHud({
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.24, ease: smoothEase }}
+            transition={disclosureTransition}
           >
             {hasPacketLoss && (
               <span className="sv-stats-warn-pill">
@@ -245,7 +256,7 @@ export function StreamStatsHud({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={panelSpring}
+            transition={disclosureTransition}
           >
             <div className="sv-stats-details-inner">
               <div className="sv-stats-sub">
@@ -343,7 +354,7 @@ export function StreamStatsHud({
                         initial={{ height: 0, opacity: 0 }}
                         animate={{ height: "auto", opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.26, ease: smoothEase }}
+                        transition={disclosureTransition}
                       >
                         {advancedLines.map((line) => (
                           <p key={line} className="sv-stats-foot">

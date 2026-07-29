@@ -4,11 +4,6 @@ use crate::gstreamer_backend::send_log;
 use crate::protocol::NativeRenderRect;
 use crate::protocol::{Event, NativeRenderSurface, NativeStreamerShortcutBindings};
 #[cfg(target_os = "windows")]
-use gst_video::prelude::*;
-use gstreamer as gst;
-#[cfg(target_os = "windows")]
-use gstreamer_video as gst_video;
-#[cfg(target_os = "windows")]
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "windows")]
@@ -128,6 +123,11 @@ pub(crate) fn release_native_input_capture() {
 pub(crate) fn release_native_input_capture() {}
 
 #[cfg(target_os = "windows")]
+pub(crate) fn arm_internal_child_input(hwnd: usize) -> bool {
+    unsafe { win32_renderer_window::arm_internal_child_input(hwnd) }
+}
+
+#[cfg(target_os = "windows")]
 pub(crate) fn update_external_renderer_surface(surface: &NativeRenderSurface) {
     let target = surface
         .window_handle
@@ -186,6 +186,11 @@ pub(crate) mod win32_renderer_window {
     const RID_INPUT: Uint = 0x1000_0003;
     const RIDEV_REMOVE: Dword = 0x0000_0001;
     const RIDEV_NOLEGACY: Dword = 0x0000_0030;
+    // Receive WM_INPUT even when this HWND is not foreground. Required for the
+    // internal child surface: Electron stays the top-level foreground window,
+    // so keyboard RawInput never arrives without INPUTSINK. Mouse still works
+    // via RIDEV_CAPTUREMOUSE alone.
+    const RIDEV_INPUTSINK: Dword = 0x0000_0100;
     const RIDEV_CAPTUREMOUSE: Dword = 0x0000_0200;
     const RIM_TYPEMOUSE: Dword = 0;
     const RIM_TYPEKEYBOARD: Dword = 1;
@@ -438,9 +443,13 @@ pub(crate) mod win32_renderer_window {
     }
 
     pub unsafe fn set_input_event_sender(sender: Option<Sender<NativeWindowInputEvent>>) {
+        let input_stopped = sender.is_none();
         let slot = INPUT_EVENT_SENDER.get_or_init(|| Mutex::new(None));
         if let Ok(mut current) = slot.lock() {
             *current = sender;
+        }
+        if input_stopped {
+            unregister_raw_input_devices();
         }
     }
 
@@ -463,11 +472,29 @@ pub(crate) mod win32_renderer_window {
             .get()
             .and_then(|captured| captured.lock().ok().and_then(|captured| *captured))
         else {
-            unregister_raw_input_devices();
+            if !crate::gstreamer_config::use_internal_renderer() {
+                unregister_raw_input_devices();
+            }
             return;
         };
 
         release_input_capture(captured as Hwnd);
+    }
+
+    /// Arm RawInput on the internal child HWND (sibling of Intermediate D3D).
+    /// Chains over the child's existing wndproc so SET_BOUNDS still works.
+    pub unsafe fn arm_internal_child_input(hwnd: usize) -> bool {
+        if hwnd == 0 {
+            return false;
+        }
+        let hwnd = hwnd as Hwnd;
+        let protected_slot = PROTECTED_HWND.get_or_init(|| Mutex::new(None));
+        if let Ok(mut protected) = protected_slot.lock() {
+            *protected = Some(hwnd as isize);
+        }
+        let wndproc_installed = install_input_wndproc(hwnd);
+        let keyboard_registered = register_internal_raw_keyboard(hwnd);
+        wndproc_installed || keyboard_registered
     }
 
     pub unsafe fn protect_process_renderer_window() -> bool {
@@ -725,8 +752,13 @@ pub(crate) mod win32_renderer_window {
     }
 
     unsafe fn begin_input_capture(hwnd: Hwnd) {
-        SetForegroundWindow(hwnd);
-        SetFocus(hwnd);
+        // External floating window: take OS focus so RawInput + ClipCursor work
+        // without INPUTSINK. Internal child: leave Electron as foreground so its
+        // shortcut keydown handlers keep working; keyboard arrives via INPUTSINK.
+        if !crate::gstreamer_config::use_internal_renderer() {
+            SetForegroundWindow(hwnd);
+            SetFocus(hwnd);
+        }
         SetCapture(hwnd);
         register_raw_input_devices(hwnd);
         if let Some(rect) = target_renderer_rect().or_else(|| monitor_rect_for_window(hwnd)) {
@@ -763,7 +795,15 @@ pub(crate) mod win32_renderer_window {
         ClipCursor(null());
         show_cursor();
         emit_input_capture_changed(false);
-        unregister_raw_input_devices();
+        if crate::gstreamer_config::use_internal_renderer() {
+            // F10/F8 release relative mouse capture, but the internal stream
+            // must keep receiving keyboard input (especially Escape) while the
+            // Electron window remains foreground.
+            unregister_raw_mouse_device();
+            register_internal_raw_keyboard(hwnd);
+        } else {
+            unregister_raw_input_devices();
+        }
         SetWindowPos(
             hwnd,
             HWND_NOTOPMOST,
@@ -842,23 +882,42 @@ pub(crate) mod win32_renderer_window {
             return;
         }
 
+        // Consume the held Escape so key-up does not also send a tap to GFN.
+        clear_escape_key_press();
+        cancel_escape_hold_to_minimize_timer();
+
         let hwnd = hwnd as Hwnd;
         release_input_capture(hwnd);
+
         ShowWindow(hwnd, SW_MINIMIZE);
     }
 
     unsafe fn register_raw_input_devices(hwnd: Hwnd) -> bool {
+        let keyboard_flags = if crate::gstreamer_config::use_internal_renderer() {
+            // Internal: Electron stays foreground and must keep receiving legacy
+            // WM_KEYDOWN for UI shortcuts. Do NOT set RIDEV_NOLEGACY on keyboard
+            // or Electron shortcuts die. INPUTSINK delivers WM_INPUT while Electron
+            // remains the top-level foreground window.
+            RIDEV_INPUTSINK
+        } else {
+            RIDEV_NOLEGACY
+        };
+        let mouse_flags = if crate::gstreamer_config::use_internal_renderer() {
+            RIDEV_NOLEGACY | RIDEV_CAPTUREMOUSE | RIDEV_INPUTSINK
+        } else {
+            RIDEV_NOLEGACY | RIDEV_CAPTUREMOUSE
+        };
         let devices = [
             RawInputDevice {
                 us_usage_page: 0x01,
                 us_usage: 0x02,
-                dw_flags: RIDEV_NOLEGACY | RIDEV_CAPTUREMOUSE,
+                dw_flags: mouse_flags,
                 hwnd_target: hwnd,
             },
             RawInputDevice {
                 us_usage_page: 0x01,
                 us_usage: 0x06,
-                dw_flags: RIDEV_NOLEGACY,
+                dw_flags: keyboard_flags,
                 hwnd_target: hwnd,
             },
         ];
@@ -866,6 +925,36 @@ pub(crate) mod win32_renderer_window {
         RegisterRawInputDevices(
             devices.as_ptr(),
             devices.len() as u32,
+            std::mem::size_of::<RawInputDevice>() as u32,
+        ) != 0
+    }
+
+    unsafe fn register_internal_raw_keyboard(hwnd: Hwnd) -> bool {
+        let device = RawInputDevice {
+            us_usage_page: 0x01,
+            us_usage: 0x06,
+            dw_flags: RIDEV_INPUTSINK,
+            hwnd_target: hwnd,
+        };
+
+        RegisterRawInputDevices(
+            &device,
+            1,
+            std::mem::size_of::<RawInputDevice>() as u32,
+        ) != 0
+    }
+
+    unsafe fn unregister_raw_mouse_device() -> bool {
+        let device = RawInputDevice {
+            us_usage_page: 0x01,
+            us_usage: 0x02,
+            dw_flags: RIDEV_REMOVE,
+            hwnd_target: null_mut(),
+        };
+
+        RegisterRawInputDevices(
+            &device,
+            1,
             std::mem::size_of::<RawInputDevice>() as u32,
         ) != 0
     }
@@ -1087,6 +1176,13 @@ pub(crate) mod win32_renderer_window {
         }
         if keycode == VK_ESCAPE {
             drop(keys);
+            // In the internal renderer Electron must intercept the legacy Escape
+            // before Chromium exits fullscreen, then forward exactly one tap over
+            // IPC. RawInput still owns every other key in this mode. The external
+            // native window has no Electron interception and keeps this path.
+            if crate::gstreamer_config::use_internal_renderer() {
+                return;
+            }
             handle_escape_keyboard_state(scancode, pressed);
             return;
         }
@@ -1155,13 +1251,16 @@ pub(crate) mod win32_renderer_window {
 
         if pressed {
             let should_start_hold_timer = if let Some(current) = escape_press.as_mut() {
-                let should_start = !current.hold_timer_armed && captured_hwnd().is_some();
+                let should_start = !crate::gstreamer_config::use_internal_renderer()
+                    && !current.hold_timer_armed
+                    && captured_hwnd().is_some();
                 if should_start {
                     current.hold_timer_armed = true;
                 }
                 should_start
             } else {
-                let hold_timer_armed = captured_hwnd().is_some();
+                let hold_timer_armed =
+                    !crate::gstreamer_config::use_internal_renderer() && captured_hwnd().is_some();
                 *escape_press = Some(EscapeKeyPress {
                     scancode,
                     hold_timer_armed,
@@ -1304,7 +1403,10 @@ pub(crate) mod win32_renderer_window {
 
     /// Per-key modifier byte from tracked pressed keys (official GFN yS()/Cb()).
     /// Lock keys sync separately via INPUT_LOCK_KEYS_SYNC, not here.
-    unsafe fn pressed_key_modifier_flags(keys: &HashMap<u16, PressedKey>, active_keycode: u16) -> u16 {
+    unsafe fn pressed_key_modifier_flags(
+        keys: &HashMap<u16, PressedKey>,
+        active_keycode: u16,
+    ) -> u16 {
         let mut modifiers = 0u16;
         let mut shift_tracked = false;
         let mut control_tracked = false;
@@ -1452,10 +1554,21 @@ pub(crate) mod win32_renderer_window {
                         begin_input_capture(hwnd);
                     }
                 }
+                // Internal: Electron's own keydown owns the UI shortcut; only
+                // toggle RawInput capture here and keep the key out of GFN.
+                if crate::gstreamer_config::use_internal_renderer() {
+                    return;
+                }
             }
             _ => {
                 if shortcut_action_releases_input_capture(action) {
                     release_current_input_capture();
+                }
+                // Internal: Electron already owns UI shortcuts via keydown.
+                // Suppress the key from GFN (caller marks suppressed) without
+                // emitting Shortcut, or Electron would double-fire.
+                if crate::gstreamer_config::use_internal_renderer() {
+                    return;
                 }
                 emit_input_event(NativeWindowInputEvent::Shortcut { action });
             }
@@ -1522,6 +1635,8 @@ pub(crate) mod win32_renderer_window {
     }
 
     fn emit_input_capture_changed(captured: bool) {
+        // Electron maps this to notifyPointerLockChange so main-process Escape
+        // interception stays in sync with RawInput capture (tap→GFN, hold→exit).
         let Some(sender) = INPUT_EVENT_SENDER
             .get()
             .and_then(|sender| sender.lock().ok().and_then(|sender| sender.clone()))
@@ -1552,45 +1667,9 @@ pub(crate) mod win32_renderer_window {
     }
 }
 
-#[cfg(target_os = "windows")]
-pub(crate) fn apply_render_surface_to_video_sink(
-    sink: &gst::Element,
-    surface: &NativeRenderSurface,
-) -> Result<(), String> {
-    let Some(window_handle) = surface.window_handle.as_deref() else {
-        return Ok(());
-    };
-
-    let handle = parse_window_handle(window_handle)?;
-    let overlay = sink
-        .clone()
-        .dynamic_cast::<gst_video::VideoOverlay>()
-        .map_err(|_| {
-            format!(
-                "Native render sink {} does not implement GstVideoOverlay.",
-                sink.name()
-            )
-        })?;
-    let rect = normalized_render_rect(surface.visible.then_some(()).and(surface.rect.as_ref()));
-
-    unsafe {
-        overlay.set_window_handle(handle);
-    }
-    overlay.handle_events(false);
-    overlay
-        .set_render_rectangle(rect.x, rect.y, rect.width, rect.height)
-        .map_err(|error| format!("Failed to set native render rectangle: {error}"))?;
-    overlay.expose();
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn apply_render_surface_to_video_sink(
-    _sink: &gst::Element,
-    _surface: &NativeRenderSurface,
-) -> Result<(), String> {
-    Ok(())
-}
+// The old BrowserWindow-HWND GstVideoOverlay path was removed. Internal mode
+// uses `crate::internal_renderer::InternalRenderer` (child surface owned by the
+// streamer). External mode uses the floating GStreamer window + window guard.
 
 #[cfg(target_os = "windows")]
 pub(crate) fn primary_display_refresh_hz() -> Option<u32> {

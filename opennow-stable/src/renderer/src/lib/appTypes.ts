@@ -1,4 +1,4 @@
-import type { StreamTimeWarning } from "../gfn/webrtcClient";
+import type { StreamTimeWarning } from "../platforms/gfn/webrtcClient";
 
 export type StreamStatus = "idle" | "queue" | "setup" | "starting" | "connecting" | "streaming";
 export type StreamLoadingStatus = "queue" | "setup" | "starting" | "connecting";

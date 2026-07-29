@@ -1,51 +1,35 @@
 package com.opencloudgaming.opennow
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.opencloudgaming.opennow.ui.controls.ControlRow
+import com.opencloudgaming.opennow.ui.controls.ControlSection
+import com.opencloudgaming.opennow.ui.controls.ControlSliderRow
+import com.opencloudgaming.opennow.ui.controls.ControlSwitchRow
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -70,17 +54,7 @@ private fun settingsSearchMatches(searchQuery: String, vararg terms: String): Bo
 
 @Composable
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    val sectionShape = RoundedCornerShape(14.dp)
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = sectionShape,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, color = SettingsText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            content()
-        }
-    }
+    ControlSection(title = title, content = content)
 }
 
 @Composable
@@ -91,73 +65,13 @@ internal fun SettingSwitch(
     description: String? = null,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    val focusManager = LocalFocusManager.current
-    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
-    var focused by remember { mutableStateOf(false) }
-    val showFocus = controllerNavigationEnabled && focused
-    var descriptionExpanded by remember(label) { mutableStateOf(false) }
-    val shape = RoundedCornerShape(14.dp)
-    val toggle = {
-        if (enabled) {
-            onCheckedChange(!checked)
-        }
-    }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .onFocusChanged { focused = controllerNavigationEnabled && (it.isFocused || it.hasFocus) }
-            .border(
-                width = if (showFocus) 2.dp else 1.dp,
-                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = shape,
-            )
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
-            .clickable(enabled = enabled, onClick = toggle)
-            .onPreviewKeyEvent { event ->
-                when {
-                    controllerNavigationEnabled && enabled && isTvActivateKey(event) -> {
-                        toggle()
-                        true
-                    }
-                    controllerNavigationEnabled -> handleVerticalDpadFocusMove(event, focusManager)
-                    else -> false
-                }
-            }
-            .focusable(enabled = controllerNavigationEnabled)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.45f)
-        Column(
-            Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Text(label, color = contentColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (!description.isNullOrBlank() && descriptionExpanded) {
-                Text(
-                    description,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.86f else 0.45f),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        if (!description.isNullOrBlank()) {
-            IconButton(
-                onClick = { descriptionExpanded = !descriptionExpanded },
-                modifier = Modifier.width(40.dp),
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_help),
-                    contentDescription = if (descriptionExpanded) "Hide description" else "Show description",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-        Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
-    }
+    ControlSwitchRow(
+        label = label,
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        description = description,
+        enabled = enabled,
+    )
 }
 
 @Composable
@@ -188,6 +102,37 @@ internal fun SessionProxyWarningDialog(onCancel: () -> Unit, onEnable: () -> Uni
     )
 }
 
+/**
+ * Turns a raw slider value into something readable.
+ *
+ * Every sub-integer slider used to render as `"%.2f"`, so opacity showed `0.75` and card size
+ * showed `1.00` — numbers with no stated unit and no obvious meaning. Fractional 0..1 ranges now
+ * read as percentages, and anything else gets its unit appended.
+ */
+internal fun formatSliderValue(
+    value: Float,
+    min: Float,
+    max: Float,
+    step: Float,
+    unit: String? = null,
+    valueFormatter: ((Float) -> String)? = null,
+): String {
+    valueFormatter?.let { return it(value) }
+    val isFraction = step < 1f
+    val looksLikeRatio = isFraction && min >= 0f && max <= 2f
+    return when {
+        looksLikeRatio && unit == null -> "${(value * 100f).roundToInt()}%"
+        isFraction -> buildString {
+            append("%.2f".format(value))
+            unit?.let { append(' ').append(it) }
+        }
+        else -> buildString {
+            append(value.roundToInt())
+            unit?.let { append(' ').append(it) }
+        }
+    }
+}
+
 @Composable
 internal fun NumberSlider(
     label: String,
@@ -195,57 +140,24 @@ internal fun NumberSlider(
     min: Float,
     max: Float,
     step: Float,
+    /** Appended to the value, e.g. "FPS", "ms", "dp". Ignored when [valueFormatter] is supplied. */
+    unit: String? = null,
+    /** Full control over the readout when neither the percent nor the unit default fits. */
+    valueFormatter: ((Float) -> String)? = null,
     descriptionProvider: ((Float) -> String?)? = null,
-    onChange: (Float) -> Unit
+    onChange: (Float) -> Unit,
 ) {
-    var local by remember(value) { mutableFloatStateOf(value) }
-    val focusManager = LocalFocusManager.current
-    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
-    var focused by remember { mutableStateOf(false) }
-    val showFocus = controllerNavigationEnabled && focused
-    val shape = RoundedCornerShape(14.dp)
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .border(
-                width = if (showFocus) 2.dp else 1.dp,
-                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = shape,
-            )
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(if (step < 1f) "%.2f".format(local) else local.roundToInt().toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Slider(
-            modifier = Modifier
-                .onFocusChanged { focused = it.isFocused }
-                .onPreviewKeyEvent {
-                    handleSliderDpadInput(it, local, min, max, step, focusManager) { newVal ->
-                        local = ((newVal / step).roundToInt() * step).coerceIn(min, max)
-                        onChange(local)
-                    }
-                },
-            value = local,
-            onValueChange = { local = ((it / step).roundToInt() * step).coerceIn(min, max) },
-            onValueChangeFinished = { onChange(local) },
-            valueRange = min..max,
-        )
-        val description = descriptionProvider?.invoke(local)
-        if (description != null) {
-            Spacer(Modifier.height(2.dp))
-            Text(
-                description,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
+    ControlSliderRow(
+        label = label,
+        value = value,
+        min = min,
+        max = max,
+        step = step,
+        onChange = onChange,
+        unit = unit,
+        valueFormatter = valueFormatter,
+        descriptionProvider = descriptionProvider,
+    )
 }
 
 @Composable
@@ -266,38 +178,9 @@ internal fun ChoiceMenuRow(
     onSelect: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    var focused by remember { mutableStateOf(false) }
-    val focusManager = LocalFocusManager.current
-    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
-    val showFocus = controllerNavigationEnabled && focused
     val autoLabel = stringResource(R.string.option_auto)
-    val shape = RoundedCornerShape(14.dp)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .onFocusChanged { focused = controllerNavigationEnabled && (it.isFocused || it.hasFocus) }
-            .border(
-                width = if (showFocus) 2.dp else 1.dp,
-                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = shape,
-            )
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f))
-            .clickable { expanded = true }
-            .onPreviewKeyEvent { event ->
-                when {
-                    controllerNavigationEnabled && isTvActivateKey(event) -> {
-                        expanded = true
-                        true
-                    }
-                    controllerNavigationEnabled -> handleVerticalDpadFocusMove(event, focusManager)
-                    else -> false
-                }
-            }
-            .focusable(enabled = controllerNavigationEnabled)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    // Outer chrome comes from the shared row; the dropdown body below is specific to this control.
+    ControlRow(onClick = { expanded = true }) {
         Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Box {
             OutlinedButton(onClick = { expanded = true }) { Text(selectedLabel.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }

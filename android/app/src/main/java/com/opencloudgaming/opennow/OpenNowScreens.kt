@@ -11,6 +11,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
+import androidx.annotation.StringRes
 import android.speech.RecognizerIntent
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -39,6 +41,10 @@ import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -58,7 +64,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -84,6 +95,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -109,10 +121,12 @@ import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -144,7 +158,6 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -159,6 +172,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.MutableIntState
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -194,6 +210,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -206,7 +224,9 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -237,17 +257,37 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.floor
+import com.opencloudgaming.opennow.ui.controls.ControlActionRow
+import com.opencloudgaming.opennow.ui.controls.ControlNavigationRow
+import com.opencloudgaming.opennow.ui.controls.ControlRowStyle
+import com.opencloudgaming.opennow.ui.controls.ControlSection
+import com.opencloudgaming.opennow.ui.controls.ControlSectionStyle
+import com.opencloudgaming.opennow.ui.controls.ControlSliderRow
+import com.opencloudgaming.opennow.ui.controls.ControlSwitchRow
+import com.opencloudgaming.opennow.ui.controls.LocalControlRowStyle
+import com.opencloudgaming.opennow.ui.controls.LocalControlSectionStyle
+import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
+import com.opencloudgaming.opennow.ui.theme.OpenNowMotion
+import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
+import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
+import com.opencloudgaming.opennow.ui.theme.OpenNowShapes
+import com.opencloudgaming.opennow.ui.theme.OpenNowSpacing
+import com.opencloudgaming.opennow.ui.theme.OpenNowTypography
+import com.opencloudgaming.opennow.ui.theme.numeric
+import com.opencloudgaming.opennow.ui.theme.tint
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-private val Green = Color(0xff6af0a0)
-private val Background = Color(0xff090b0d)
-private val Panel = Color(0xff11161a)
-private val PanelAlt = Color(0xff171d22)
-private val TextPrimary = Color(0xffeef3f5)
-private val TextMuted = Color(0xff98a4aa)
-private val ChromeScrim = Color.Black.copy(alpha = 0.16f)
+// Aliases onto the shared token layer. The names stay so existing call sites keep working; the
+// values now live in exactly one place instead of being duplicated across two files.
+private val Green = OpenNowPalette.AccentDefault
+private val Background = OpenNowPalette.Background
+private val Panel = OpenNowPalette.Panel
+private val PanelAlt = OpenNowPalette.PanelAlt
+private val TextPrimary = OpenNowPalette.TextPrimary
+private val TextMuted = OpenNowPalette.TextMuted
+private val ChromeScrim = OpenNowPalette.ChromeScrim
 private val TopBarCompactControlHeight = 30.dp
 private const val DEVICE_LOGIN_SIDE_BY_SIDE_MIN_WIDTH_DP = 520
 private const val COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS = 5_000L
@@ -255,12 +295,12 @@ private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
 private const val ACTIVE_STREAM_MODE_NOTICE_DURATION_MS = 3_000L
 private val UiAccent.color: Color
     get() = when (this) {
-        UiAccent.OpenNow -> Green
-        UiAccent.Pixel -> Color(0xff8ab4f8)
-        UiAccent.HotPink -> Color(0xffff4fb8)
-        UiAccent.Lime -> Color(0xffc7ef6b)
-        UiAccent.Coral -> Color(0xffff8d7a)
-        UiAccent.Violet -> Color(0xffc7a4ff)
+        UiAccent.OpenNow -> OpenNowPalette.AccentDefault
+        UiAccent.Pixel -> OpenNowPalette.AccentPixel
+        UiAccent.HotPink -> OpenNowPalette.AccentHotPink
+        UiAccent.Lime -> OpenNowPalette.AccentLime
+        UiAccent.Coral -> OpenNowPalette.AccentCoral
+        UiAccent.Violet -> OpenNowPalette.AccentViolet
     }
 
 @Composable
@@ -279,28 +319,48 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
     val accent = settings.uiAccent.color
     val fallbackScheme = darkColorScheme(
         primary = accent,
-        onPrimary = Color(0xff08090c),
+        onPrimary = OpenNowPalette.OnAccent,
         background = Background,
         surface = Panel,
         surfaceVariant = PanelAlt,
         onBackground = TextPrimary,
         onSurface = TextPrimary,
         onSurfaceVariant = TextMuted,
+        errorContainer = OpenNowPalette.ErrorContainer,
+        onErrorContainer = OpenNowPalette.OnErrorContainer,
     )
     val colorScheme = if (settings.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         dynamicDarkColorScheme(context).copy(
             primary = accent,
-            onPrimary = Color(0xff08090c),
+            onPrimary = OpenNowPalette.OnAccent,
             secondary = accent,
             tertiary = Green,
+            errorContainer = OpenNowPalette.ErrorContainer,
+            onErrorContainer = OpenNowPalette.OnErrorContainer,
         )
     } else {
         fallbackScheme
     }
-    MaterialTheme(
-        colorScheme = colorScheme,
-        content = content,
-    )
+    // Honour both the system-wide animation switch and the in-app toggle. Infinite transitions
+    // (shimmer, focus pulse, carousel auto-advance) read this and stop entirely.
+    val reduceMotion = remember(settings.controllerBackgroundAnimations, context) {
+        val systemScale = runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            )
+        }.getOrDefault(1f)
+        systemScale == 0f || !settings.controllerBackgroundAnimations
+    }
+    CompositionLocalProvider(LocalReduceMotion provides reduceMotion) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = OpenNowTypography,
+            shapes = OpenNowShapes,
+            content = content,
+        )
+    }
 }
 
 @Composable
@@ -566,11 +626,12 @@ private fun SessionReportDialog(
     onDismiss: () -> Unit,
     onReportBug: () -> Unit,
 ) {
+    // Four tones for a 0-100 score was more colour than information, and AccentLime vs
+    // AccentDefault is indistinguishable at the 0.12 alpha this fills with.
     val scoreColor = when (report.rating) {
-        SessionReportRating.Excellent -> Green
-        SessionReportRating.Good -> Color(0xffc7ef6b)
-        SessionReportRating.Fair -> Color(0xffffc95a)
-        SessionReportRating.Poor -> Color(0xffff8d7a)
+        SessionReportRating.Excellent, SessionReportRating.Good -> OpenNowPalette.StatusGood
+        SessionReportRating.Fair -> OpenNowPalette.StatusFair
+        SessionReportRating.Poor -> OpenNowPalette.StatusPoor
     }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -584,28 +645,31 @@ private fun SessionReportDialog(
             ) {
                 Surface(
                     color = scoreColor.copy(alpha = 0.12f),
-                    shape = RoundedCornerShape(18.dp),
+                    shape = RoundedCornerShape(OpenNowRadius.lg + 2.dp),
                     border = BorderStroke(1.dp, scoreColor.copy(alpha = 0.38f)),
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        modifier = Modifier.fillMaxWidth().padding(OpenNowSpacing.lg),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(report.gameTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(
-                                "${formatSessionTimerDuration(report.durationSeconds)} • ${report.sampleCount} quality samples",
+                                stringResource(
+                                    R.string.session_report_subtitle,
+                                    formatSessionTimerDuration(report.durationSeconds),
+                                    report.sampleCount,
+                                ),
                                 color = TextMuted,
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                "${report.score}/100",
+                                stringResource(R.string.session_report_score, report.score),
                                 color = scoreColor,
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Black,
+                                style = MaterialTheme.typography.headlineMedium.numeric(),
                             )
                             Text(report.rating.label, color = scoreColor, style = MaterialTheme.typography.labelMedium)
                         }
@@ -618,43 +682,53 @@ private fun SessionReportDialog(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                Text("Connection", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    SessionReportMetric(
-                        label = "Latency",
-                        value = report.averagePingMs?.let { "$it ms avg" } ?: "Not measured",
-                        detail = report.peakPingMs?.let { "$it ms peak" },
-                    )
-                    SessionReportMetric(
-                        label = "Stream speed",
-                        value = formatRuntimeBitrate(report.averageBitrateKbps),
-                        detail = report.peakBitrateKbps?.let { "${formatRuntimeBitrate(it)} peak" },
-                    )
-                    SessionReportMetric(
-                        label = "Packet loss",
-                        value = report.packetLossPct?.let { "%.2f%%".format(Locale.US, it) } ?: "Not measured",
-                        detail = report.packetLossPct?.let { if (it <= 0.5) "Stable" else "May affect clarity" },
-                    )
-                    SessionReportMetric(
-                        label = "Jitter",
-                        value = report.averageJitterMs?.let { "%.1f ms".format(Locale.US, it) } ?: "Not measured",
-                        detail = "Timing variation",
-                    )
-                    SessionReportMetric(
-                        label = "Frame rate",
-                        value = report.averageFps?.let { "%.1f / %d".format(Locale.US, it, report.targetFps) } ?: "Not measured",
-                        detail = "Average / target FPS",
-                    )
-                    SessionReportMetric(
-                        label = "Decode",
-                        value = report.averageDecodeMs?.let { "%.1f ms".format(Locale.US, it) } ?: "Not measured",
-                        detail = "Per video frame",
-                    )
-                }
+                Text(stringResource(R.string.session_report_connection), style = MaterialTheme.typography.titleSmall)
+                SessionReportMetricGrid(
+                    listOf(
+                        SessionReportMetricData(
+                            label = stringResource(R.string.session_report_metric_latency),
+                            value = report.averagePingMs?.let { stringResource(R.string.session_report_ms_avg, it) },
+                            detail = report.peakPingMs?.let { stringResource(R.string.session_report_ms_peak, it) },
+                            quality = report.averagePingMs?.let(StreamQuality::latency),
+                        ),
+                        SessionReportMetricData(
+                            label = stringResource(R.string.session_report_metric_speed),
+                            value = formatRuntimeBitrate(report.averageBitrateKbps),
+                            detail = report.peakBitrateKbps?.let {
+                                stringResource(R.string.session_report_peak, formatRuntimeBitrate(it))
+                            },
+                        ),
+                        SessionReportMetricData(
+                            label = stringResource(R.string.session_report_metric_loss),
+                            value = report.packetLossPct?.let { "%.2f%%".format(Locale.US, it) },
+                            detail = report.packetLossPct?.let {
+                                stringResource(
+                                    if (it <= 0.5) R.string.session_report_loss_stable
+                                    else R.string.session_report_loss_affects,
+                                )
+                            },
+                            quality = report.packetLossPct?.let(StreamQuality::packetLoss),
+                        ),
+                        SessionReportMetricData(
+                            label = stringResource(R.string.session_report_metric_jitter),
+                            value = report.averageJitterMs?.let { "%.1f ms".format(Locale.US, it) },
+                            detail = stringResource(R.string.session_report_jitter_detail),
+                            quality = report.averageJitterMs?.let(StreamQuality::jitter),
+                        ),
+                        SessionReportMetricData(
+                            label = stringResource(R.string.session_report_metric_fps),
+                            value = report.averageFps?.let { "%.1f / %d".format(Locale.US, it, report.targetFps) },
+                            detail = stringResource(R.string.session_report_fps_detail),
+                            quality = report.averageFps?.let { StreamQuality.frameRate(it, report.targetFps) },
+                        ),
+                        SessionReportMetricData(
+                            label = stringResource(R.string.session_report_metric_decode),
+                            value = report.averageDecodeMs?.let { "%.1f ms".format(Locale.US, it) },
+                            detail = stringResource(R.string.session_report_decode_detail),
+                            quality = report.averageDecodeMs?.let { StreamQuality.decode(it, report.targetFps) },
+                        ),
+                    ),
+                )
                 val networkLabel = when (report.networkKind) {
                     AndroidNetworkKind.Wifi -> report.wifiBand.label
                     else -> report.networkKind.label
@@ -721,7 +795,7 @@ private fun CompletedSessionBugReportDialog(
         onDismissRequest = {
             if (!submission.uploading) onDismiss()
         },
-        title = { Text("Report a bug") },
+        title = { Text(stringResource(R.string.bug_report_dialog_title)) },
         text = {
             Column(
                 modifier = Modifier
@@ -739,32 +813,83 @@ private fun CompletedSessionBugReportDialog(
                 )
             }
         },
+        // The reporter owns Submit, so confirmButton stays empty — but without an explicit Close
+        // there was no way out at all while uploading, since onDismissRequest is blocked then too.
         confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !submission.uploading) {
+                Text(stringResource(R.string.action_close))
+            }
+        },
     )
 }
 
+private data class SessionReportMetricData(
+    val label: String,
+    /** Null when the metric was never measured. */
+    val value: String?,
+    val detail: String?,
+    val quality: StreamQualityLevel? = null,
+)
+
+/**
+ * Six cards in an even two- or three-column grid.
+ *
+ * They used to be a FlowRow of fixed 136dp cards, which left a ragged right edge at every width
+ * and, because `value` was unbounded while `detail` was capped at one line, let cards in the same
+ * row end up different heights.
+ */
 @Composable
-private fun SessionReportMetric(
-    label: String,
-    value: String,
-    detail: String?,
-) {
+private fun SessionReportMetricGrid(metrics: List<SessionReportMetricData>) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth >= 520.dp) 3 else 2
+        Column(verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+            metrics.chunked(columns).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+                    row.forEach { metric -> SessionReportMetric(metric, Modifier.weight(1f)) }
+                    // Six items divide evenly into 2 and 3, so this is defensive only.
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionReportMetric(metric: SessionReportMetricData, modifier: Modifier = Modifier) {
+    val notMeasured = stringResource(R.string.session_report_not_measured)
     Surface(
-        modifier = Modifier.width(136.dp),
+        modifier = modifier,
         color = PanelAlt,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(OpenNowRadius.md),
     ) {
-        Column(Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
-            Text(label, color = TextMuted, style = MaterialTheme.typography.labelSmall)
-            Text(value, color = TextPrimary, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-            detail?.let { Text(it, color = TextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+        // A fixed three-line structure keeps every card the same height without an intrinsics
+        // pass, which would be a second measure inside an already-scrolling dialog.
+        Column(Modifier.padding(horizontal = OpenNowSpacing.md, vertical = 10.dp)) {
+            Text(metric.label, color = TextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            Text(
+                metric.value ?: notMeasured,
+                color = metric.quality?.tint() ?: TextPrimary,
+                style = MaterialTheme.typography.bodyMedium.numeric(),
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // Rendered even when absent so the line box is still reserved.
+            Text(
+                metric.detail.orEmpty(),
+                color = TextMuted,
+                style = MaterialTheme.typography.labelSmall.numeric(),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
 
 @Composable
 private fun SessionReportFindingRow(finding: SessionReportFinding) {
-    val titleColor = if (finding.kind == SessionReportFindingKind.Warning) Color(0xffffc95a) else Green
+    val titleColor = if (finding.kind == SessionReportFindingKind.Warning) OpenNowPalette.StatusFair else Green
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(finding.title, color = titleColor, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
         Text(finding.detail, color = TextMuted, style = MaterialTheme.typography.bodySmall)
@@ -1655,7 +1780,7 @@ private fun CatalogBuiltInWallpaperBackdrop(
     Image(
         painter = painterResource(preset.drawableRes),
         contentDescription = null,
-        modifier = modifier.background(Color(0xff07100b)),
+        modifier = modifier.background(OpenNowPalette.WallpaperBackdrop),
         contentScale = ContentScale.Crop,
     )
 }
@@ -1784,7 +1909,7 @@ private fun MainShell(
                             tonalElevation = 0.dp,
                         ) {
                             BottomNavItem(
-                                selected = state.page == AppPage.Home && visibleSearchTarget != SearchTarget.Store,
+                                selected = state.page == AppPage.Home,
                                 onClick = {
                                     visibleSearchTarget = null
                                     viewModel.setPage(AppPage.Home)
@@ -1793,13 +1918,14 @@ private fun MainShell(
                                 label = stringResource(R.string.nav_store),
                             )
                             BottomNavItem(
-                                selected = visibleSearchTarget != null,
+                                // Search is a mode, not a destination: it never claims selection.
+                                selected = false,
                                 onClick = { revealSearch() },
                                 iconRes = R.drawable.ic_search,
                                 label = stringResource(R.string.nav_search),
                             )
                             BottomNavItem(
-                                selected = state.page == AppPage.Library && visibleSearchTarget != SearchTarget.Library,
+                                selected = state.page == AppPage.Library,
                                 onClick = {
                                     visibleSearchTarget = null
                                     viewModel.setPage(AppPage.Library)
@@ -1808,7 +1934,7 @@ private fun MainShell(
                                 label = stringResource(R.string.nav_library),
                             )
                             BottomNavItem(
-                                selected = state.page == AppPage.Settings && visibleSearchTarget != SearchTarget.Settings,
+                                selected = state.page == AppPage.Settings,
                                 onClick = {
                                     navigateFromAppChrome(AppPage.Settings)
                                 },
@@ -2071,7 +2197,7 @@ private fun AppNavigationRail(
                         Spacer(Modifier.height(8.dp))
                     }
                     AppNavigationRailItem(
-                        selected = state.page == AppPage.Home && activeSearchTarget != SearchTarget.Store,
+                        selected = state.page == AppPage.Home,
                         onClick = { onNavigate(AppPage.Home) },
                         iconRes = R.drawable.ic_tab_store,
                         label = stringResource(R.string.nav_store),
@@ -2079,7 +2205,8 @@ private fun AppNavigationRail(
                         focusRequester = streamReturnFocusRequester,
                     )
                     AppNavigationRailItem(
-                        selected = activeSearchTarget != null,
+                        // See the bottom bar: search is a mode, not a destination.
+                        selected = false,
                         onClick = {
                             onSearch(
                                 when (state.page) {
@@ -2094,14 +2221,14 @@ private fun AppNavigationRail(
                         iconSize = if (largeIcons) 30.dp else 24.dp,
                     )
                     AppNavigationRailItem(
-                        selected = state.page == AppPage.Library && activeSearchTarget != SearchTarget.Library,
+                        selected = state.page == AppPage.Library,
                         onClick = { onNavigate(AppPage.Library) },
                         iconRes = R.drawable.ic_tab_library,
                         label = stringResource(R.string.nav_library),
                         iconSize = if (largeIcons) 30.dp else 24.dp,
                     )
                     AppNavigationRailItem(
-                        selected = state.page == AppPage.Settings && activeSearchTarget != SearchTarget.Settings,
+                        selected = state.page == AppPage.Settings,
                         onClick = { onNavigate(AppPage.Settings) },
                         iconRes = R.drawable.ic_tab_settings,
                         label = stringResource(R.string.nav_settings),
@@ -2344,7 +2471,7 @@ private fun TopBarMusicButton(control: TopBarMusicControl) {
             .semantics { contentDescription = description }
             .clickable(onClick = control.onToggle),
         shape = RoundedCornerShape(999.dp),
-        color = if (control.muted) Color(0xff33181c).copy(alpha = 0.92f) else PanelAlt.copy(alpha = 0.78f),
+        color = if (control.muted) OpenNowPalette.ErrorContainer.copy(alpha = 0.92f) else PanelAlt.copy(alpha = 0.78f),
         tonalElevation = 0.dp,
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -2352,7 +2479,7 @@ private fun TopBarMusicButton(control: TopBarMusicControl) {
                 Icon(
                     painter = painterResource(R.drawable.ic_volume_off),
                     contentDescription = null,
-                    tint = Color(0xffffb8bf),
+                    tint = OpenNowPalette.OnErrorContainer,
                     modifier = Modifier.size(17.dp),
                 )
             } else {
@@ -2795,13 +2922,13 @@ private fun InlineErrorNotice(error: String?) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = Color(0xff33181c),
+        color = OpenNowPalette.ErrorContainer,
         tonalElevation = 0.dp,
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Text(
                 compactErrorTitle(error),
-                color = Color(0xffffb8bf),
+                color = OpenNowPalette.OnErrorContainer,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -2809,7 +2936,7 @@ private fun InlineErrorNotice(error: String?) {
             )
             Text(
                 compactErrorBody(error),
-                color = Color(0xffffb8bf),
+                color = OpenNowPalette.OnErrorContainer,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -3214,7 +3341,12 @@ private fun GameGridSkeleton(
 
     val shimmerOffset: State<Float>?
     val tvPulse: State<Float>?
-    if (tvProfile) {
+    // Under reduced motion the skeletons still show — they just stop animating. A never-ending
+    // sweep is exactly the kind of movement the setting exists to stop.
+    if (LocalReduceMotion.current) {
+        shimmerOffset = null
+        tvPulse = null
+    } else if (tvProfile) {
         val transition = rememberInfiniteTransition(label = "loading-pulse-global")
         val pulse = transition.animateFloat(
             initialValue = 0f,
@@ -3247,12 +3379,12 @@ private fun GameGridSkeleton(
     ) {
         BoxWithConstraints(modifier.fillMaxSize()) {
             val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
-            val placeholderItems = remember(gridSpec.columns, storeLayout) {
-                List(gridSpec.columns * if (storeLayout) 4 else 3) { it }
+            val placeholderItems = remember(gridSpec.estimatedColumns, storeLayout) {
+                List(gridSpec.estimatedColumns * if (storeLayout) 4 else 3) { it }
             }
             LazyVerticalGrid(
                 modifier = Modifier.fillMaxSize(),
-                columns = GridCells.Fixed(gridSpec.columns),
+                columns = gridSpec.cells,
                 contentPadding = gridSpec.contentPadding,
                 horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
                 verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
@@ -3268,12 +3400,15 @@ private fun GameGridSkeleton(
                 }
                 gridItems(placeholderItems, key = { it }) {
                     GameCardSkeleton(
-                        cardHeight = gridSpec.cardHeight * scale,
                         squareCard = gridSpec.squareCards,
                         thumbnailPlayOverlay = !tvProfile,
                         showStoreLabels = shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
+                        ),
+                        showCardTitles = shouldShowCatalogCardTitles(
+                            tvProfile = tvProfile,
+                            enabled = settings.showCardTitles,
                         ),
                     )
                 }
@@ -3381,66 +3516,57 @@ private fun StoreRailGameCardSkeleton(
     }
 }
 
+/** Mirrors [GameCard]'s layout exactly, so nothing shifts when real content replaces it. */
 @Composable
 private fun GameCardSkeleton(
-    cardHeight: Dp,
     squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
     showStoreLabels: Boolean,
+    showCardTitles: Boolean,
 ) {
-    val cardShape = RoundedCornerShape(12.dp)
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(
-                when {
-                    thumbnailPlayOverlay -> Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO)
-                    squareCard -> Modifier.aspectRatio(1f)
-                    else -> Modifier.height(cardHeight)
-                },
-            ),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
-        shape = cardShape,
-    ) {
-        if (thumbnailPlayOverlay) {
+    val cardShape = RoundedCornerShape(OpenNowRadius.md)
+    Column(Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (squareCard) Modifier.aspectRatio(1f)
+                    else Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO),
+                ),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.58f)),
+            shape = cardShape,
+        ) {
             Box(Modifier.fillMaxSize()) {
                 LoadingShimmer(Modifier.fillMaxSize())
-                SkeletonCircle(
-                    size = 44.dp,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(8.dp),
-                )
-                SkeletonCircle(
-                    size = 44.dp,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp),
-                )
-            }
-        } else {
-            Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    LoadingShimmer(Modifier.fillMaxSize())
+                if (thumbnailPlayOverlay) {
                     SkeletonCircle(
-                        size = 44.dp,
+                        size = 34.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp),
+                    )
+                    SkeletonCircle(
+                        size = 34.dp,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(8.dp),
+                            .padding(6.dp),
                     )
+                }
+            }
+        }
+        if (showCardTitles || showStoreLabels) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = OpenNowSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (showCardTitles) {
+                    SkeletonLine(widthFraction = 0.86f)
+                    SkeletonLine(widthFraction = 0.52f)
                 }
                 if (showStoreLabels) {
-                    Column(Modifier.padding(horizontal = 9.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        SkeletonLine(widthFraction = 0.62f)
-                    }
-                }
-                Box(Modifier.padding(start = 9.dp, end = 9.dp, bottom = 9.dp)) {
-                    LoadingShimmer(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(999.dp)),
-                    )
+                    SkeletonLine(widthFraction = 0.4f)
                 }
             }
         }
@@ -3533,34 +3659,39 @@ private fun GameGrid(
     val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
-        LazyVerticalGrid(
-            modifier = Modifier.fillMaxSize(),
-            state = gridState,
-            columns = GridCells.Fixed(gridSpec.columns),
-            contentPadding = gridSpec.contentPadding,
-            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
-            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
-        ) {
-            gridItems(games, key = { it.id }) { game ->
-                GameCard(
-                    game = game,
-                    favorite = game.id in favoriteIds,
-                    tvProfile = tvProfile,
-                    expressiveUi = settings.expressiveUi,
-                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
-                    showGameStoreLabels = shouldShowGameStoreLabels(
+        CatalogFocusScope {
+            LazyVerticalGrid(
+                modifier = Modifier.fillMaxSize(),
+                state = gridState,
+                columns = gridSpec.cells,
+                contentPadding = gridSpec.contentPadding,
+                horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
+                verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
+            ) {
+                gridItems(games, key = { it.id }) { game ->
+                    GameCard(
+                        game = game,
+                        favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
-                        enabled = settings.showGameStoreLabels,
-                    ),
-                    cardHeight = gridSpec.cardHeight * scale,
-                    squareCard = gridSpec.squareCards,
-                    thumbnailPlayOverlay = !tvProfile,
-                    controllerActionMode = controllerActionMode,
-                    onSelect = onSelect,
-                    onFavorite = onFavorite,
-                    onPlay = onPlay,
-                    onChooseStore = onChooseStore,
-                )
+                        expressiveUi = settings.expressiveUi,
+                        controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                        showGameStoreLabels = shouldShowGameStoreLabels(
+                            tvProfile = tvProfile,
+                            enabled = settings.showGameStoreLabels,
+                        ),
+                        showCardTitles = shouldShowCatalogCardTitles(
+                            tvProfile = tvProfile,
+                            enabled = settings.showCardTitles,
+                        ),
+                        squareCard = gridSpec.squareCards,
+                        thumbnailPlayOverlay = !tvProfile,
+                        controllerActionMode = controllerActionMode,
+                        onSelect = onSelect,
+                        onFavorite = onFavorite,
+                        onPlay = onPlay,
+                        onChooseStore = onChooseStore,
+                    )
+                }
             }
         }
     }
@@ -3617,65 +3748,67 @@ private fun StoreGameGrid(
     val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
-        LazyVerticalGrid(
-            modifier = Modifier.fillMaxSize(),
-            state = gridState,
-            columns = GridCells.Fixed(gridSpec.columns),
-            contentPadding = gridSpec.contentPadding,
-            horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
-            verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
-        ) {
-            if (showControlsHeader) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
+        CatalogFocusScope {
+            LazyVerticalGrid(
+                modifier = Modifier.fillMaxSize(),
+                state = gridState,
+                columns = gridSpec.cells,
+                contentPadding = gridSpec.contentPadding,
+                horizontalArrangement = Arrangement.spacedBy(gridSpec.horizontalSpacing),
+                verticalArrangement = Arrangement.spacedBy(gridSpec.verticalSpacing),
+            ) {
+                if (showControlsHeader) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
+                    }
                 }
-            }
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                StoreStartRails(
-                    games = games,
-                    libraryGames = state.libraryGames,
-                    favoriteIds = favoriteIds,
-                    queuedGameKeys = state.queuedGameKeys,
-                    settings = settings,
-                    tvProfile = tvProfile,
-                    controllerActionMode = controllerActionMode,
-                    onSelect = onSelect,
-                    onFavorite = onFavorite,
-                    onPlay = onPlay,
-                    onChooseStore = onChooseStore,
-                )
-            }
-            if (games.isNotEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    Text(
-                        text = "Recommendations",
-                        color = TextPrimary,
-                        fontWeight = FontWeight.ExtraBold,
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                    StoreStartRails(
+                        games = games,
+                        libraryGames = state.libraryGames,
+                        favoriteIds = favoriteIds,
+                        queuedGameKeys = state.queuedGameKeys,
+                        settings = settings,
+                        tvProfile = tvProfile,
+                        controllerActionMode = controllerActionMode,
+                        onSelect = onSelect,
+                        onFavorite = onFavorite,
+                        onPlay = onPlay,
+                        onChooseStore = onChooseStore,
                     )
                 }
-            }
-            gridItems(games, key = { it.id }) { game ->
-                GameCard(
-                    game = game,
-                    favorite = game.id in favoriteIds,
-                    tvProfile = tvProfile,
-                    expressiveUi = settings.expressiveUi,
-                    controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
-                    showGameStoreLabels = shouldShowGameStoreLabels(
+                if (games.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        SectionHeader(
+                            title = stringResource(R.string.store_recommendations),
+                            modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
+                        )
+                    }
+                }
+                gridItems(games, key = { it.id }) { game ->
+                    GameCard(
+                        game = game,
+                        favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
-                        enabled = settings.showGameStoreLabels,
-                    ),
-                    cardHeight = gridSpec.cardHeight * scale,
-                    squareCard = gridSpec.squareCards,
-                    thumbnailPlayOverlay = !tvProfile,
-                    controllerActionMode = controllerActionMode,
-                    onSelect = onSelect,
-                    onFavorite = onFavorite,
-                    onPlay = onPlay,
-                    onChooseStore = onChooseStore,
-                )
+                        expressiveUi = settings.expressiveUi,
+                        controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                        showGameStoreLabels = shouldShowGameStoreLabels(
+                            tvProfile = tvProfile,
+                            enabled = settings.showGameStoreLabels,
+                        ),
+                        showCardTitles = shouldShowCatalogCardTitles(
+                            tvProfile = tvProfile,
+                            enabled = settings.showCardTitles,
+                        ),
+                        squareCard = gridSpec.squareCards,
+                        thumbnailPlayOverlay = !tvProfile,
+                        controllerActionMode = controllerActionMode,
+                        onSelect = onSelect,
+                        onFavorite = onFavorite,
+                        onPlay = onPlay,
+                        onChooseStore = onChooseStore,
+                    )
+                }
             }
         }
     }
@@ -3695,40 +3828,26 @@ private fun StoreStartRails(
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
 ) {
-    val jumpBackIn = remember(games, libraryGames, favoriteIds, queuedGameKeys) {
-        jumpBackInGames(games, libraryGames, favoriteIds, queuedGameKeys)
+    val startRails = remember(games, libraryGames, favoriteIds, queuedGameKeys) {
+        storeStartRailGroups(games, libraryGames, favoriteIds, queuedGameKeys)
     }
-    val comingNext = remember(games, jumpBackIn) {
-        comingNextStoreGames(
-            games = games,
-            excludedGames = jumpBackIn,
-        )
+    val featured = remember(games, startRails) {
+        comingNextStoreGames(games = games, excludedGames = startRails.allGames)
+            .take(HERO_CAROUSEL_PAGE_LIMIT)
     }
-    if (jumpBackIn.isEmpty() && comingNext.isEmpty()) return
+    if (startRails.isEmpty && featured.isEmpty()) return
     Column(
         Modifier
             .fillMaxWidth()
             .padding(top = 2.dp, bottom = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.lg),
     ) {
-        if (jumpBackIn.isNotEmpty()) {
-            StoreRailSection(
-                title = stringResource(R.string.store_jump_back_in),
-                games = jumpBackIn,
-                favoriteIds = favoriteIds,
-                settings = settings,
-                tvProfile = tvProfile,
-                controllerActionMode = controllerActionMode,
-                onSelect = onSelect,
-                onFavorite = onFavorite,
-                onPlay = onPlay,
-                onChooseStore = onChooseStore,
-            )
-        }
-        if (comingNext.isNotEmpty()) {
-            StoreRailSection(
+        // The hero leads, then the rails — the catalog opens on one thing worth looking at rather
+        // than on three equally-weighted horizontal strips.
+        if (featured.isNotEmpty()) {
+            StoreComingNextCarousel(
                 title = stringResource(R.string.store_coming_next),
-                games = comingNext,
+                games = featured,
                 favoriteIds = favoriteIds,
                 settings = settings,
                 tvProfile = tvProfile,
@@ -3739,6 +3858,76 @@ private fun StoreStartRails(
                 onChooseStore = onChooseStore,
             )
         }
+        StoreStartRail(R.string.store_continue_playing, startRails.continuePlaying, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
+        StoreStartRail(R.string.store_in_queue, startRails.inQueue, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
+        StoreStartRail(R.string.store_favorites, startRails.favorites, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
+    }
+}
+
+/** Small wrapper so the three start rails don't repeat an eleven-argument call three times. */
+@Composable
+private fun StoreStartRail(
+    @StringRes titleRes: Int,
+    games: List<GameInfo>,
+    favoriteIds: List<String>,
+    settings: AppSettings,
+    tvProfile: Boolean,
+    controllerActionMode: Boolean,
+    onSelect: (GameInfo) -> Unit,
+    onFavorite: (String) -> Unit,
+    onPlay: (GameInfo) -> Unit,
+    onChooseStore: (GameInfo) -> Unit,
+) {
+    if (games.isEmpty()) return
+    StoreRailSection(
+        title = stringResource(titleRes),
+        games = games,
+        favoriteIds = favoriteIds,
+        settings = settings,
+        tvProfile = tvProfile,
+        controllerActionMode = controllerActionMode,
+        onSelect = onSelect,
+        onFavorite = onFavorite,
+        onPlay = onPlay,
+        onChooseStore = onChooseStore,
+    )
+}
+
+/**
+ * The one heading treatment used by every catalog section — rails, the hero, and the
+ * recommendations grid — so a section title looks the same wherever it appears. Previously each
+ * of those sites styled its own `Text` and they had drifted apart.
+ */
+@Composable
+private fun SectionHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Row(
+        modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = TextPrimary,
+                style = MaterialTheme.typography.titleLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    subtitle,
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        trailing?.invoke()
     }
 }
 
@@ -3766,9 +3955,12 @@ private fun StoreComingNextCarousel(
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
     )
-    LaunchedEffect(games, page, focused) {
-        if (games.size > 1 && !focused && settings.controllerBackgroundAnimations) {
-            delay(6_000L)
+    val reduceMotion = LocalReduceMotion.current
+    LaunchedEffect(games, page, focused, reduceMotion) {
+        // Never auto-advance under the reader's hands: not while focused, and not at all when the
+        // user has asked for reduced motion.
+        if (games.size > 1 && !focused && !reduceMotion) {
+            delay(HERO_CAROUSEL_ADVANCE_MS)
             page = (page + 1) % games.size
         }
     }
@@ -3776,25 +3968,12 @@ private fun StoreComingNextCarousel(
         Modifier
             .fillMaxWidth()
             .padding(top = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
+        verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
+        SectionHeader(
+            title = title,
+            subtitle = stringResource(R.string.store_coming_next_subtitle),
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    title,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.ExtraBold,
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    "Fresh arrivals from GeForce NOW",
-                    color = TextMuted,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 games.forEachIndexed { index, _ ->
                     Box(
@@ -3809,7 +3988,10 @@ private fun StoreComingNextCarousel(
         }
         AnimatedContent(
             targetState = page,
-            transitionSpec = { fadeIn(tween(240)) togetherWith fadeOut(tween(180)) },
+            transitionSpec = {
+                fadeIn(tween(if (reduceMotion) 0 else OpenNowMotion.DurationStandard)) togetherWith
+                    fadeOut(tween(if (reduceMotion) 0 else OpenNowMotion.DurationFast))
+            },
             label = "coming-next-carousel",
         ) { targetPage ->
             val featured = games[targetPage.coerceIn(games.indices)]
@@ -3817,7 +3999,9 @@ private fun StoreComingNextCarousel(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (landscape) 176.dp else 218.dp)
+                    // Aspect ratio rather than a fixed height, so the hero scales with the screen
+                    // instead of dominating a small phone and looking stunted on a tablet.
+                    .aspectRatio(heroAspectRatio(tvProfile, landscape))
                     .onFocusChanged { focused = it.isFocused || it.hasFocus }
                     .border(
                         width = if (focused) 3.dp else 1.dp,
@@ -3864,12 +4048,24 @@ private fun StoreComingNextCarousel(
             ) {
                 Box(Modifier.fillMaxSize()) {
                     UrlImage(gameHeroImageUrl(context, featured), Modifier.fillMaxSize())
+                    // Horizontal scrim carries the title block; the vertical one settles the art
+                    // into the surface below so the hero reads as part of the page, not a sticker.
                     Box(
                         Modifier
                             .matchParentSize()
                             .background(
                                 Brush.horizontalGradient(
                                     listOf(Color.Black.copy(alpha = 0.88f), Color.Black.copy(alpha = 0.3f), Color.Transparent),
+                                ),
+                            ),
+                    )
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    0.45f to Color.Transparent,
+                                    1f to Background.copy(alpha = 0.85f),
                                 ),
                             ),
                     )
@@ -3883,8 +4079,13 @@ private fun StoreComingNextCarousel(
                         Text(
                             featured.title,
                             color = Color.White,
-                            style = if (landscape) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Black,
+                            style = when {
+                                // Across a room the hero title is the only thing readable at a
+                                // glance, so TV gets the display scale.
+                                tvProfile -> MaterialTheme.typography.displaySmall
+                                landscape -> MaterialTheme.typography.headlineSmall
+                                else -> MaterialTheme.typography.headlineMedium
+                            },
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -3937,45 +4138,46 @@ private fun StoreRailSection(
     onChooseStore: (GameInfo) -> Unit,
 ) {
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            title,
-            color = TextPrimary,
-            fontWeight = FontWeight.ExtraBold,
-            style = MaterialTheme.typography.titleLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val spacing = 10.dp
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+        SectionHeader(title = title)
+        // The row breaks out of the grid's edge padding and re-applies it as content padding, so
+        // cards scroll all the way under the screen edge instead of stopping short of it. The
+        // header stays aligned to the content because the bleed is only on the row.
+        BoxWithConstraints(Modifier.horizontalBleed(OpenNowSpacing.ScreenEdge)) {
+            val spacing = OpenNowSpacing.md
             val baseCardWidth = storeRailCardWidth(tvProfile, landscapeLayout)
+            val contentInset = OpenNowSpacing.ScreenEdge
             val visibleCount = storeRailVisibleCardCount(
-                availableWidthDp = maxWidth.value,
+                availableWidthDp = maxWidth.value - contentInset.value * 2f,
                 baseCardWidthDp = baseCardWidth.value,
                 spacingDp = spacing.value,
                 cardScale = settings.posterSizeScale,
             )
-            val cardWidth = ((maxWidth.value - spacing.value * (visibleCount - 1) - 4.dp.value) / visibleCount)
+            // Leave a sliver of the next card showing — the standard cue that a row keeps going.
+            val cardWidth = ((maxWidth.value - contentInset.value * 2f - spacing.value * visibleCount) /
+                (visibleCount + PEEK_CARD_FRACTION))
                 .coerceAtLeast(1f)
                 .dp
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(spacing),
-                contentPadding = PaddingValues(horizontal = 2.dp),
-            ) {
-                items(games, key = { storeRailGameKey(it) }) { game ->
-                    StoreRailGameCard(
-                        game = game,
-                        favorite = game.id in favoriteIds,
-                        tvProfile = tvProfile,
-                        expressiveUi = settings.expressiveUi,
-                        controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
-                        width = cardWidth,
-                        controllerActionMode = controllerActionMode,
-                        onSelect = onSelect,
-                        onFavorite = onFavorite,
-                        onPlay = onPlay,
-                        onChooseStore = onChooseStore,
-                    )
+            CatalogFocusScope {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(spacing),
+                    contentPadding = PaddingValues(horizontal = contentInset),
+                ) {
+                    items(games, key = { storeRailGameKey(it) }) { game ->
+                        StoreRailGameCard(
+                            game = game,
+                            favorite = game.id in favoriteIds,
+                            tvProfile = tvProfile,
+                            expressiveUi = settings.expressiveUi,
+                            controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
+                            width = cardWidth,
+                            controllerActionMode = controllerActionMode,
+                            onSelect = onSelect,
+                            onFavorite = onFavorite,
+                            onPlay = onPlay,
+                            onChooseStore = onChooseStore,
+                        )
+                    }
                 }
             }
         }
@@ -3999,23 +4201,49 @@ private fun StoreRailGameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
+    val shape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
     val actionButtonSize = 34.dp
     val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
         focused = focused,
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
     )
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val hovered by interaction.collectIsHoveredAsState()
+    val reduceMotion = LocalReduceMotion.current
+    val cardScale by animateFloatAsState(
+        targetValue = when {
+            pressed -> 0.965f
+            focused || hovered -> if (tvProfile) 1.08f else 1.035f
+            else -> 1f
+        },
+        animationSpec = tween(
+            durationMillis = if (reduceMotion) 0 else OpenNowMotion.DurationStandard,
+            easing = OpenNowMotion.EasingStandard,
+        ),
+        label = "rail-card-scale",
+    )
+    val dimAlpha = rememberCatalogCardAlpha(focused = focused, tvProfile = tvProfile)
     Surface(
         modifier = Modifier
             .width(width)
             .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
+            .graphicsLayer {
+                scaleX = cardScale
+                scaleY = cardScale
+                alpha = dimAlpha
+            }
+            .semantics(mergeDescendants = true) {
+                contentDescription = game.title
+                role = Role.Button
+            }
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .border(
                 width = if (focused) 3.dp else 1.dp,
                 color = when {
                     enhancedControllerFocus -> Color.Transparent
-                    focused -> Color.White
+                    focused -> MaterialTheme.colorScheme.primary
                     else -> Color.White.copy(alpha = 0.08f)
                 },
                 shape = shape,
@@ -4034,14 +4262,16 @@ private fun StoreRailGameCard(
                     else -> handleDpadFocusMove(event, focusManager)
                 }
             }
-            .focusable()
+            .focusable(interactionSource = interaction)
             .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
                 onClick = { onSelect(game) },
                 onLongClick = { onChooseStore(game) },
                 onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
             ),
         shape = shape,
-        color = Color.Black,
+        color = OpenNowPalette.ImagePlaceholder,
         tonalElevation = if (focused) 4.dp else 0.dp,
         shadowElevation = if (focused) 8.dp else 1.dp,
     ) {
@@ -4049,7 +4279,8 @@ private fun StoreRailGameCard(
             UrlImage(
                 catalogCardImageUrl(game, tvProfile),
                 Modifier.fillMaxSize(),
-                contentScale = if (tvProfile) ContentScale.Crop else ContentScale.Fit,
+                // Crop everywhere — see the note in GameCard.
+                contentScale = ContentScale.Crop,
             )
             if (shouldOverlayCatalogCardTitle(tvProfile)) {
                 GameCardTitleOverlay(game.title)
@@ -4081,22 +4312,52 @@ private fun StoreRailGameCard(
     }
 }
 
-private fun jumpBackInGames(
+/**
+ * The three rails that open the store, kept distinct.
+ *
+ * These used to be flattened into one "Jump back in" rail of `queued + favorites + recent + owned`
+ * capped at 14 items — which meant genuinely recently-played games sat third in priority and were
+ * routinely pushed off-screen by favourites, and the tail was padded with owned games the user had
+ * never launched. Owned games are the Library tab's job, so they are dropped here entirely.
+ */
+internal data class StoreStartRailGroups(
+    val continuePlaying: List<GameInfo>,
+    val inQueue: List<GameInfo>,
+    val favorites: List<GameInfo>,
+) {
+    val allGames: List<GameInfo> get() = continuePlaying + inQueue + favorites
+    val isEmpty: Boolean get() = continuePlaying.isEmpty() && inQueue.isEmpty() && favorites.isEmpty()
+}
+
+internal fun storeStartRailGroups(
     games: List<GameInfo>,
     libraryGames: List<GameInfo>,
     favoriteIds: List<String>,
     queuedGameKeys: List<String>,
-): List<GameInfo> {
+): StoreStartRailGroups {
     val favoriteSet = favoriteIds.toSet()
     val combined = distinctStoreGames(libraryGames + games)
     val byKey = combined.associateBy(::storeRailGameKey)
-    val queued = queuedGameKeys.mapNotNull(byKey::get)
-    val favorites = combined.filter { it.id in favoriteSet }
-    val recent = combined
+
+    val continuePlaying = combined
         .filter { it.recentPlaySortKey() != null }
         .sortedByDescending { it.recentPlaySortKey() }
-    val owned = combined.filter(::isGameInLibrary)
-    return distinctStoreGames(queued + favorites + recent + owned).take(STORE_RAIL_GAME_LIMIT)
+        .take(CONTINUE_PLAYING_RAIL_LIMIT)
+    val continueKeys = continuePlaying.map(::storeRailGameKey).toSet()
+
+    val inQueue = queuedGameKeys
+        .mapNotNull(byKey::get)
+        .filterNot { storeRailGameKey(it) in continueKeys }
+        .take(STORE_RAIL_GAME_LIMIT)
+    val shownKeys = continueKeys + inQueue.map(::storeRailGameKey)
+
+    // Favourites already visible above would just be a second sighting of the same card.
+    val favorites = combined
+        .filter { it.id in favoriteSet }
+        .filterNot { storeRailGameKey(it) in shownKeys }
+        .take(STORE_RAIL_GAME_LIMIT)
+
+    return StoreStartRailGroups(continuePlaying, inQueue, favorites)
 }
 
 internal fun comingNextStoreGames(
@@ -4136,6 +4397,23 @@ private fun storeRailGameKey(game: GameInfo): String =
     gameTrackingKey(game)
 
 private const val STORE_RAIL_GAME_LIMIT = 14
+
+/** Recently-played is a short list by nature — padding it out defeats the point of the rail. */
+private const val CONTINUE_PLAYING_RAIL_LIMIT = 12
+
+/** Five hero pages, five indicator pills. Fourteen was a rash of dots. */
+private const val HERO_CAROUSEL_PAGE_LIMIT = 5
+
+private const val HERO_CAROUSEL_ADVANCE_MS = 6_000L
+
+/**
+ * Wider on surfaces that are already wide, so the hero stays a banner rather than becoming a wall.
+ */
+private fun heroAspectRatio(tvProfile: Boolean, landscape: Boolean): Float = when {
+    tvProfile -> 16f / 6f
+    landscape -> 16f / 5f
+    else -> 16f / 7f
+}
 private const val GAME_BOX_ART_ASPECT_RATIO = 628f / 888f
 
 internal fun shouldShowEnhancedControllerFocus(
@@ -4155,13 +4433,85 @@ internal fun controllerFocusPulseAlpha(progress: Float): Float {
 }
 
 private data class GameGridSpec(
-    val columns: Int,
-    val cardHeight: Dp,
+    val cells: GridCells,
+    /** Only used to size skeleton placeholder runs; the real column count is the grid's to decide. */
+    val estimatedColumns: Int,
     val horizontalSpacing: Dp,
     val verticalSpacing: Dp,
     val contentPadding: PaddingValues,
     val squareCards: Boolean,
 )
+
+/** How much of the next card stays visible past the last fully-visible one. */
+private const val PEEK_CARD_FRACTION = 0.28f
+
+/**
+ * Number of catalog cards currently holding focus inside the surrounding grid or rail. A count
+ * rather than a flag so that handing focus from one card to its neighbour — where the old card
+ * reports losing focus in the same frame the new one reports gaining it — never dips to "nothing
+ * is focused" and flickers the dim.
+ */
+private val LocalCatalogFocusCount = compositionLocalOf<MutableIntState?> { null }
+
+/**
+ * Scopes the focus count to one grid or one rail, so focusing a card in the grid doesn't dim the
+ * rails above it.
+ */
+@Composable
+private fun CatalogFocusScope(content: @Composable () -> Unit) {
+    val count = remember { mutableIntStateOf(0) }
+    CompositionLocalProvider(LocalCatalogFocusCount provides count, content = content)
+}
+
+/** Alpha applied to unfocused cards while a sibling is focused. TV only. */
+private const val TV_UNFOCUSED_CARD_ALPHA = 0.55f
+
+/**
+ * Registers this card's focus in the surrounding [CatalogFocusScope] and returns the alpha it
+ * should draw at. Dimming the neighbours is what makes the focus cursor readable from across a
+ * room — on TV a border and a scale change alone still leave a wall of equally bright artwork.
+ */
+@Composable
+private fun rememberCatalogCardAlpha(focused: Boolean, tvProfile: Boolean): Float {
+    val count = LocalCatalogFocusCount.current
+    DisposableEffect(focused, count) {
+        if (focused) count?.intValue = (count?.intValue ?: 0) + 1
+        onDispose {
+            if (focused) count?.intValue = ((count?.intValue ?: 1) - 1).coerceAtLeast(0)
+        }
+    }
+    if (!tvProfile) return 1f
+    val anyFocused = (count?.intValue ?: 0) > 0
+    val target = if (anyFocused && !focused) TV_UNFOCUSED_CARD_ALPHA else 1f
+    val reduceMotion = LocalReduceMotion.current
+    val alpha by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(
+            durationMillis = if (reduceMotion) 0 else OpenNowMotion.DurationStandard,
+            easing = OpenNowMotion.EasingStandard,
+        ),
+        label = "catalog-card-dim",
+    )
+    return alpha
+}
+
+/**
+ * Lets a child extend [bleed] past its parent's bounds on both sides without reporting the extra
+ * width upward — the standard way to make a horizontally scrolling row run edge to edge inside a
+ * padded container.
+ */
+private fun Modifier.horizontalBleed(bleed: Dp): Modifier = this.layout { measurable, constraints ->
+    val extra = bleed.roundToPx() * 2
+    val placeable = measurable.measure(
+        constraints.copy(
+            maxWidth = if (constraints.hasBoundedWidth) constraints.maxWidth + extra else constraints.maxWidth,
+        ),
+    )
+    val reportedWidth = (placeable.width - extra).coerceAtLeast(0)
+    layout(reportedWidth, placeable.height) {
+        placeable.place(-bleed.roundToPx(), 0)
+    }
+}
 
 private fun storeRailCardWidth(tvProfile: Boolean, landscapeLayout: Boolean): Dp =
     when {
@@ -4234,6 +4584,23 @@ private fun BoxScope.ControllerFocusFrameCanvas(
     }
 }
 
+/**
+ * Cell widths the grid aims for at `posterSizeScale == 1`. These are minimums fed to
+ * [GridCells.Adaptive], not column counts: the grid fits as many as will hold and shares the
+ * remainder out evenly.
+ *
+ * The previous implementation picked a column count from a table of hardcoded dp breakpoints, so a
+ * 360dp budget phone and a 411dp Pixel both got exactly 3 columns — cards ended up 15% wider on one
+ * than the other, and gutters never adapted at all. Foldables, tablets, DeX and split-screen were
+ * all served by the same four buckets.
+ */
+private val GRID_CELL_WIDTH_PORTRAIT = 96.dp
+private val GRID_CELL_WIDTH_LANDSCAPE = 112.dp
+private val GRID_CELL_WIDTH_TV = 158.dp
+
+/** Compact mode shrinks the target cell rather than switching to a separate size table. */
+private const val COMPACT_CELL_WIDTH_FACTOR = 0.88f
+
 private fun gameGridSpec(
     maxWidth: androidx.compose.ui.unit.Dp,
     compact: Boolean,
@@ -4241,75 +4608,36 @@ private fun gameGridSpec(
     settings: AppSettings,
     handheldLayout: Boolean,
 ): GameGridSpec {
-    val minimumPortraitColumns = if (!landscapeLayout && handheldLayout) 3 else 2
-    val compactHorizontalSpacing = if (compact) 8.dp else 10.dp
-    val compactVerticalSpacing = if (compact) 10.dp else 12.dp
-    val landscapeHorizontalSpacing = if (handheldLayout) 10.dp else compactHorizontalSpacing
-    val landscapeContentHorizontalPadding = 4.dp
-    return when {
-        handheldLayout -> GameGridSpec(
-            columns = scaledGameCardColumnCount(
-                baseColumns = if (landscapeLayout) {
-                    landscapePosterColumnCount(
-                        maxWidth = maxWidth,
-                        horizontalSpacing = landscapeHorizontalSpacing,
-                        horizontalContentPadding = landscapeContentHorizontalPadding,
-                        handheldLayout = true,
-                    )
-                } else {
-                    3
-                },
-                cardScale = settings.posterSizeScale,
-                minimumColumns = if (landscapeLayout) 4 else 2,
-            ),
-            cardHeight = if (compact) 188.dp else 214.dp,
-            horizontalSpacing = landscapeHorizontalSpacing,
-            verticalSpacing = if (landscapeLayout) 16.dp else compactVerticalSpacing,
-            contentPadding = PaddingValues(horizontal = landscapeContentHorizontalPadding, vertical = 4.dp),
-            squareCards = false,
-        )
-        landscapeLayout -> GameGridSpec(
-            columns = scaledGameCardColumnCount(
-                baseColumns = landscapePosterColumnCount(
-                    maxWidth = maxWidth,
-                    horizontalSpacing = landscapeHorizontalSpacing,
-                    horizontalContentPadding = landscapeContentHorizontalPadding,
-                    handheldLayout = handheldLayout,
-                ),
-                cardScale = settings.posterSizeScale,
-                minimumColumns = 3,
-            ),
-            cardHeight = if (compact) 188.dp else 214.dp,
-            horizontalSpacing = landscapeHorizontalSpacing,
-            verticalSpacing = if (handheldLayout) 16.dp else compactVerticalSpacing,
-            contentPadding = PaddingValues(horizontal = landscapeContentHorizontalPadding, vertical = 4.dp),
-            squareCards = false,
-        )
-        compact -> GameGridSpec(
-            columns = scaledGameCardColumnCount(
-                baseColumns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
-                cardScale = settings.posterSizeScale,
-                minimumColumns = minimumPortraitColumns,
-            ),
-            cardHeight = 218.dp,
-            horizontalSpacing = compactHorizontalSpacing,
-            verticalSpacing = compactVerticalSpacing,
-            contentPadding = PaddingValues(4.dp),
-            squareCards = false,
-        )
-        else -> GameGridSpec(
-            columns = scaledGameCardColumnCount(
-                baseColumns = gameGridColumnCount(maxWidth, minimumPortraitColumns),
-                cardScale = settings.posterSizeScale,
-                minimumColumns = minimumPortraitColumns,
-            ),
-            cardHeight = 246.dp,
-            horizontalSpacing = compactHorizontalSpacing,
-            verticalSpacing = compactVerticalSpacing,
-            contentPadding = PaddingValues(4.dp),
-            squareCards = false,
-        )
+    val horizontalSpacing = if (compact) OpenNowSpacing.sm else OpenNowSpacing.GridGutter
+    val verticalSpacing = if (compact) OpenNowSpacing.md else OpenNowSpacing.GridRowGap
+    val horizontalPadding = OpenNowSpacing.ScreenEdge
+
+    val baseCellWidth = when {
+        !handheldLayout -> GRID_CELL_WIDTH_TV
+        landscapeLayout -> GRID_CELL_WIDTH_LANDSCAPE
+        else -> GRID_CELL_WIDTH_PORTRAIT
     }
+    // posterSizeScale is persisted user state and keeps its existing meaning: larger scale means
+    // larger cards, which now falls out of a wider target cell instead of a divided column count.
+    val scale = settings.posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
+    val cellWidth = (baseCellWidth * scale * if (compact) COMPACT_CELL_WIDTH_FACTOR else 1f)
+        .coerceIn(64.dp, 240.dp)
+
+    val available = (maxWidth - horizontalPadding * 2).coerceAtLeast(cellWidth)
+    val estimatedColumns = ((available + horizontalSpacing) / (cellWidth + horizontalSpacing))
+        .toInt()
+        .coerceIn(1, 12)
+
+    return GameGridSpec(
+        cells = GridCells.Adaptive(minSize = cellWidth),
+        estimatedColumns = estimatedColumns,
+        horizontalSpacing = horizontalSpacing,
+        verticalSpacing = verticalSpacing,
+        contentPadding = PaddingValues(horizontal = horizontalPadding, vertical = OpenNowSpacing.md),
+        // TV grid cards match the TV rail cards, which have always been square — this is the shape
+        // NVIDIA's tvCardImageUrl assets are cut for.
+        squareCards = !handheldLayout,
+    )
 }
 
 internal fun appContentEdgePaddingDp(
@@ -4317,14 +4645,6 @@ internal fun appContentEdgePaddingDp(
     inStream: Boolean,
     tvProfile: Boolean,
 ): Float = if (inStream || !tvProfile) 0f else settings.tvSafeAreaPaddingDp.coerceIn(0f, 120f)
-
-internal fun scaledGameCardColumnCount(
-    baseColumns: Int,
-    cardScale: Float,
-    minimumColumns: Int,
-): Int = (baseColumns / cardScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE))
-    .roundToInt()
-    .coerceIn(minimumColumns, 12)
 
 internal fun storeRailVisibleCardCount(
     availableWidthDp: Float,
@@ -4338,51 +4658,6 @@ internal fun storeRailVisibleCardCount(
         .coerceAtLeast(1)
 }
 
-private fun landscapePosterColumnCount(
-    maxWidth: androidx.compose.ui.unit.Dp,
-    horizontalSpacing: Dp,
-    horizontalContentPadding: Dp,
-    handheldLayout: Boolean,
-): Int {
-    val minCardWidth = when {
-        handheldLayout -> 96.dp
-        else -> 150.dp
-    }
-    val preferredColumns = when {
-        handheldLayout && maxWidth >= 520.dp -> 5
-        handheldLayout -> 5
-        maxWidth >= 1440.dp -> 8
-        maxWidth >= 1050.dp -> 7
-        maxWidth >= 520.dp -> 6
-        else -> 5
-    }
-    val minimumColumns = if (handheldLayout) 4 else 3
-    for (columns in preferredColumns downTo minimumColumns) {
-        if (landscapeCardWidth(maxWidth, columns, horizontalSpacing, horizontalContentPadding) >= minCardWidth) {
-            return columns
-        }
-    }
-    return minimumColumns
-}
-
-private fun landscapeCardWidth(
-    maxWidth: androidx.compose.ui.unit.Dp,
-    columns: Int,
-    horizontalSpacing: Dp,
-    horizontalContentPadding: Dp,
-): Dp {
-    val reservedWidth = horizontalContentPadding.value * 2f + horizontalSpacing.value * (columns - 1).coerceAtLeast(0)
-    return ((maxWidth.value - reservedWidth).coerceAtLeast(0f) / columns.coerceAtLeast(1)).dp
-}
-
-private fun gameGridColumnCount(maxWidth: androidx.compose.ui.unit.Dp, minimumColumns: Int = 2): Int =
-    when {
-        maxWidth >= 1100.dp -> 5
-        maxWidth >= 840.dp -> 4
-        maxWidth >= 600.dp -> 3
-        else -> minimumColumns
-    }
-
 @Composable
 private fun GameCard(
     game: GameInfo,
@@ -4391,7 +4666,7 @@ private fun GameCard(
     expressiveUi: Boolean,
     controllerBackgroundAnimations: Boolean,
     showGameStoreLabels: Boolean,
-    cardHeight: androidx.compose.ui.unit.Dp,
+    showCardTitles: Boolean,
     squareCard: Boolean,
     thumbnailPlayOverlay: Boolean,
     controllerActionMode: Boolean,
@@ -4402,7 +4677,7 @@ private fun GameCard(
 ) {
     var focused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
-    val cardShape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
+    val cardShape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
     val handheldPosterCard = !tvProfile
     val launcherTile = handheldPosterCard && thumbnailPlayOverlay
     val overlayActionSize = if (launcherTile) 34.dp else 44.dp
@@ -4412,93 +4687,151 @@ private fun GameCard(
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
     )
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(
-                when {
-                    handheldPosterCard -> Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO)
-                    squareCard -> Modifier.aspectRatio(1f)
-                    else -> Modifier.height(cardHeight)
-                },
-            )
-            .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .border(
-                width = if (focused) 3.dp else 1.dp,
-                color = when {
-                    enhancedControllerFocus -> Color.Transparent
-                    focused -> Color.White
-                    else -> Color.Transparent
-                },
-                shape = cardShape,
-            )
-            .onPreviewKeyEvent { event ->
-                when {
-                    !tvProfile && controllerActionMode && handleCatalogControllerAction(
-                        event = event,
-                        onFavorite = { onFavorite(game.id) },
-                        onPlay = { onPlay(game) },
-                    ) -> true
-                    isTvActivateKey(event) -> {
-                        onSelect(game)
-                        true
-                    }
-                    else -> handleDpadFocusMove(event, focusManager)
-                }
-            }
-            .focusable(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
+    // The caption lives outside the poster, so cards read as artwork on the page rather than as
+    // artwork inside a box. TV keeps its overlay title — a separate caption row would eat the
+    // vertical rhythm of a focus-driven grid.
+    val showCaption = handheldPosterCard && (showCardTitles || showGameStoreLabels)
+
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val hovered by interaction.collectIsHoveredAsState()
+    val reduceMotion = LocalReduceMotion.current
+    val cardScale by animateFloatAsState(
+        targetValue = when {
+            pressed -> 0.965f
+            // A bigger lift on TV: from three metres a border change is nearly invisible, but a
+            // card growing out of the grid is unmistakable.
+            focused || hovered -> if (tvProfile) 1.08f else 1.035f
+            else -> 1f
+        },
+        animationSpec = tween(
+            durationMillis = if (reduceMotion) 0 else OpenNowMotion.DurationStandard,
+            easing = OpenNowMotion.EasingStandard,
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (focused) 8.dp else 0.dp),
-        shape = cardShape,
+        label = "game-card-scale",
+    )
+    val dimAlpha = rememberCatalogCardAlpha(focused = focused, tvProfile = tvProfile)
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = cardScale
+                scaleY = cardScale
+                alpha = dimAlpha
+            }
+            // One merged node per card. Without this TalkBack reads nothing at all here: UrlImage
+            // passes a null contentDescription and phone cards carry no title text of their own.
+            .semantics(mergeDescendants = true) {
+                contentDescription = game.title
+                role = Role.Button
+            },
     ) {
-        Box(
-            Modifier
-                .weight(1f)
-                .clickable { onSelect(game) },
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (squareCard) Modifier.aspectRatio(1f)
+                    else Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO),
+                )
+                .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                .border(
+                    width = if (focused) 3.dp else 1.dp,
+                    color = when {
+                        enhancedControllerFocus -> Color.Transparent
+                        focused -> MaterialTheme.colorScheme.primary
+                        else -> Color.Transparent
+                    },
+                    shape = cardShape,
+                )
+                .onPreviewKeyEvent { event ->
+                    when {
+                        !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                            event = event,
+                            onFavorite = { onFavorite(game.id) },
+                            onPlay = { onPlay(game) },
+                        ) -> true
+                        isTvActivateKey(event) -> {
+                            onSelect(game)
+                            true
+                        }
+                        else -> handleDpadFocusMove(event, focusManager)
+                    }
+                }
+                .focusable(interactionSource = interaction),
+            colors = CardDefaults.cardColors(
+                containerColor = if (expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = if (focused) 8.dp else 0.dp),
+            shape = cardShape,
         ) {
-            UrlImage(
-                catalogCardImageUrl(game, tvProfile),
-                Modifier.fillMaxSize(),
-                contentScale = if (handheldPosterCard) ContentScale.Fit else ContentScale.Crop,
-            )
-            if (shouldOverlayCatalogCardTitle(tvProfile)) {
-                GameCardTitleOverlay(game.title)
-            }
-            if (thumbnailPlayOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
-                FavoriteIconButton(
-                    favorite = favorite,
-                    onClick = { onFavorite(game.id) },
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(overlayActionPadding),
-                    size = overlayActionSize,
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clickable(interactionSource = interaction, indication = null) { onSelect(game) },
+            ) {
+                UrlImage(
+                    catalogCardImageUrl(game, tvProfile),
+                    Modifier.fillMaxSize(),
+                    // Always Crop. The card is already locked to NVIDIA's box-art ratio, so for
+                    // correctly-cut art this is identical to Fit; when the CDN returns something
+                    // off-ratio, Fit pillarboxed it against a flat swatch and Crop simply trims.
+                    contentScale = ContentScale.Crop,
                 )
-                ThumbnailPlayButton(
-                    onClick = { onPlay(game) },
-                    onLongClick = { onChooseStore(game) },
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(overlayActionPadding),
-                    buttonSize = overlayActionSize,
+                if (shouldOverlayCatalogCardTitle(tvProfile)) {
+                    GameCardTitleOverlay(game.title)
+                }
+                if (thumbnailPlayOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                    FavoriteIconButton(
+                        favorite = favorite,
+                        onClick = { onFavorite(game.id) },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(overlayActionPadding),
+                        size = overlayActionSize,
+                    )
+                    ThumbnailPlayButton(
+                        onClick = { onPlay(game) },
+                        onLongClick = { onChooseStore(game) },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(overlayActionPadding),
+                        buttonSize = overlayActionSize,
+                    )
+                }
+                ControllerFocusFrame(
+                    visible = enhancedControllerFocus,
+                    animate = controllerBackgroundAnimations && !reduceMotion,
+                    cornerRadius = if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm,
                 )
             }
-            ControllerFocusFrame(
-                visible = enhancedControllerFocus,
-                animate = controllerBackgroundAnimations,
-                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
-            )
         }
-        if (!thumbnailPlayOverlay && showGameStoreLabels) {
+        if (showCaption) {
             Column(
                 Modifier
-                    .clickable { onSelect(game) }
-                    .padding(9.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
+                    .fillMaxWidth()
+                    .padding(top = OpenNowSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
+                if (showCardTitles) {
+                    Text(
+                        game.title,
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.titleMedium,
+                        // minLines keeps every row in the grid aligned regardless of title length.
+                        maxLines = 2,
+                        minLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 if (showGameStoreLabels) {
-                    Text(displayStoresForGame(game), color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        displayStoresForGame(game),
+                        color = TextMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
             }
         }
@@ -4523,6 +4856,13 @@ internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMo
     !tvProfile && !controllerActionMode
 
 internal fun shouldShowGameStoreLabels(tvProfile: Boolean, enabled: Boolean): Boolean =
+    enabled && !tvProfile
+
+/**
+ * Titles are captioned under the poster on handhelds. TV already overlays the title on the card
+ * itself (see [shouldOverlayCatalogCardTitle]), so a caption row there would say it twice.
+ */
+internal fun shouldShowCatalogCardTitles(tvProfile: Boolean, enabled: Boolean): Boolean =
     enabled && !tvProfile
 
 @Composable
@@ -4656,7 +4996,11 @@ private fun displayStoresForGame(game: GameInfo): String {
 private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier = Modifier, buttonSize: Dp = 44.dp) {
     Surface(
         modifier = modifier
+            // Keeps the drawn size but grows the touch target to the 48dp minimum. The overlay
+            // actions on catalog cards are drawn at 34dp.
+            .minimumInteractiveComponentSize()
             .size(buttonSize)
+            .semantics { role = Role.Button }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
@@ -4736,6 +5080,16 @@ private fun GameDetailsSheet(
         runCatching { initialRequester.requestFocus() }
     }
     BackHandler(onBack = onDismiss)
+    // Drag-to-dismiss for the phone sheet. Everyone reaches for this gesture on a bottom sheet and
+    // previously nothing happened — there was no handle and no drag response at all. Implemented
+    // here rather than by switching to ModalBottomSheet so the sheet keeps its lockedFocusGroup and
+    // focus requesters, which the controller and TV navigation depend on.
+    val density = LocalDensity.current
+    var dragOffset by remember(game.id) { mutableFloatStateOf(0f) }
+    val dismissThresholdPx = with(density) { SHEET_DISMISS_DRAG_THRESHOLD.toPx() }
+    val dragState = rememberDraggableState { delta ->
+        dragOffset = (dragOffset + delta).coerceAtLeast(0f)
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -4753,13 +5107,41 @@ private fun GameDetailsSheet(
                         Modifier
                             .fillMaxWidth()
                             .fillMaxHeight(0.92f)
+                            .offset { IntOffset(0, dragOffset.roundToInt()) }
                     },
                 )
                 .clickable(onClick = {}),
-            shape = if (fullScreen) RoundedCornerShape(0.dp) else RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            shape = if (fullScreen) RoundedCornerShape(0.dp) else RoundedCornerShape(topStart = OpenNowRadius.xl, topEnd = OpenNowRadius.xl),
             color = Panel,
             tonalElevation = 8.dp,
         ) {
+            Column(Modifier.fillMaxSize()) {
+                if (!fullScreen) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .draggable(
+                                state = dragState,
+                                orientation = Orientation.Vertical,
+                                onDragStopped = { velocity ->
+                                    if (dragOffset > dismissThresholdPx || velocity > SHEET_DISMISS_FLING_VELOCITY) {
+                                        onDismiss()
+                                    } else {
+                                        dragOffset = 0f
+                                    }
+                                },
+                            )
+                            .padding(vertical = OpenNowSpacing.md),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(width = 34.dp, height = 4.dp)
+                                .clip(CircleShape)
+                                .background(TextMuted.copy(alpha = 0.45f)),
+                        )
+                    }
+                }
             BoxWithConstraints(
                 Modifier
                     .fillMaxSize()
@@ -4800,9 +5182,16 @@ private fun GameDetailsSheet(
                     )
                 }
             }
+            }
         }
     }
 }
+
+/** How far the sheet must be dragged down before letting go dismisses it. */
+private val SHEET_DISMISS_DRAG_THRESHOLD = 140.dp
+
+/** A fast enough flick dismisses regardless of distance travelled. */
+private const val SHEET_DISMISS_FLING_VELOCITY = 1_200f
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -4951,9 +5340,9 @@ private fun GameDetailsLandscapeContent(
                             .onFocusChanged { dismissFocused = it.isFocused }
                     ) {
                         Text(
-                            "Dismiss", 
+                            "Dismiss",
                             color = if (dismissFocused) accent else TextPrimary,
-                            maxLines = 1, 
+                            maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -5032,7 +5421,9 @@ private fun GameDetailsScrollableContent(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(220.dp)
+                        // Scales with the screen instead of being pinned at 220dp, which was
+                        // cramped on a tablet and oversized on a small phone.
+                        .aspectRatio(16f / 9f)
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                         .focusRequester(gameFocusRequester)
                         .focusProperties { down = playFocusRequester }
@@ -5040,9 +5431,9 @@ private fun GameDetailsScrollableContent(
                         .border(
                             width = if (gameFocused) 3.dp else 1.dp,
                             color = if (gameFocused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f),
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(OpenNowRadius.lg),
                         )
-                        .clip(RoundedCornerShape(18.dp))
+                        .clip(RoundedCornerShape(OpenNowRadius.lg))
                         .clickable {
                             onDismiss()
                             onPlay(game)
@@ -5051,6 +5442,17 @@ private fun GameDetailsScrollableContent(
                     UrlImage(
                         gameHeroImageUrl(context, game),
                         Modifier.fillMaxSize(),
+                    )
+                    // Guarantees the title overlay stays legible over bright key art.
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    0.4f to Color.Transparent,
+                                    1f to Color.Black.copy(alpha = 0.75f),
+                                ),
+                            ),
                     )
                     GameImageTitleOverlay(
                         game = game,
@@ -5077,6 +5479,9 @@ private fun GameDetailsScrollableContent(
             }
         }
         Surface(color = Panel.copy(alpha = 0.98f), tonalElevation = 8.dp) {
+            // Play is the point of the screen, so it takes the width. Dismiss and the secondary
+            // actions become fixed-size icons rather than equal-weight buttons that squeezed Play
+            // down to a third of the bar whenever a TV was connected.
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -5086,21 +5491,25 @@ private fun GameDetailsScrollableContent(
             ) {
                 var dismissFocused by remember { mutableStateOf(false) }
                 val accent = MaterialTheme.colorScheme.primary
-                OutlinedButton(
+                IconButton(
                     onClick = onDismiss,
-                    border = BorderStroke(1.dp, if (dismissFocused) accent else MaterialTheme.colorScheme.outline),
                     modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .onFocusChanged { dismissFocused = it.isFocused }
+                        .size(48.dp)
+                        .onFocusChanged { dismissFocused = it.isFocused },
                 ) {
-                    Text(
-                        "Dismiss", 
-                        color = if (dismissFocused) accent else TextPrimary,
-                        maxLines = 1, 
-                        overflow = TextOverflow.Ellipsis
+                    Icon(
+                        painter = painterResource(R.drawable.ic_clear),
+                        contentDescription = stringResource(R.string.action_dismiss),
+                        tint = if (dismissFocused) accent else TextMuted,
                     )
                 }
+                // favorite/onFavorite were already threaded into this composable but never used —
+                // on phones the only way to favourite a game was from the grid.
+                FavoriteIconButton(
+                    favorite = favorite,
+                    onClick = { onFavorite(game.id) },
+                    size = 48.dp,
+                )
                 LongPressPlayButton(
                     onClick = {
                         onDismiss()
@@ -5114,15 +5523,19 @@ private fun GameDetailsScrollableContent(
                         .weight(1f)
                         .focusRequester(playFocusRequester),
                 )
-                connectedTvName?.let {
-                    OutlinedButton(
+                connectedTvName?.let { tvName ->
+                    IconButton(
                         onClick = {
                             onDismiss()
                             onPlayOnTv(game)
                         },
-                        modifier = Modifier.weight(1f).height(48.dp),
+                        modifier = Modifier.size(48.dp),
                     ) {
-                        Text("Play on TV", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(
+                            imageVector = Icons.Outlined.Cast,
+                            contentDescription = stringResource(R.string.action_play_on_tv, tvName),
+                            tint = TextPrimary,
+                        )
                     }
                 }
             }
@@ -5307,9 +5720,13 @@ private fun FavoriteIconButton(favorite: Boolean, onClick: () -> Unit, modifier:
     val accent = MaterialTheme.colorScheme.primary
     Surface(
         modifier = modifier
+            .minimumInteractiveComponentSize()
             .size(size)
             .onFocusChanged { focused = it.isFocused }
-            .semantics { contentDescription = label }
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+            }
             .clickable(onClick = onClick)
             .focusable()
             .then(
@@ -5453,7 +5870,7 @@ private fun OwnershipStatusRow(game: GameInfo, compact: Boolean) {
         ) {
             Text(
                 "Not owned",
-                color = Color(0xffffb8bf),
+                color = OpenNowPalette.OnErrorContainer,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp),
@@ -6083,12 +6500,15 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         physicalControllerConnected &&
             state.settings.androidTouch.enabled &&
             !showTouchControlsWithPhysicalController
+    // The gamepad overlay and native touch want the same fingers. Native touch wins where it
+    // applies: the game is showing its own touch UI, so a virtual pad on top of it is in the way.
+    val nativeTouchActive = !tvProfile && shouldUseNativeTouch(state.settings.androidTouch.nativeTouchMode, state.streamGame)
     val touchControlsVisible = shouldShowAndroidTouchControls(
         tvProfile = tvProfile,
         touchInputEnabled = touchInputEnabled,
         touchControlsEnabled = state.settings.androidTouch.enabled,
         suppressedByPhysicalController = touchControlsSuppressedByPhysicalController,
-    )
+    ) && !nativeTouchActive
     val fallbackSessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
     val sessionStartedAtMs = session?.timerStartedAtMs ?: fallbackSessionStartedAtMs
     var timerNowMs by remember(session?.sessionId) { mutableStateOf(System.currentTimeMillis()) }
@@ -6134,6 +6554,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         mouseAcceleration = state.settings.stream.mouseAcceleration,
         streamSharpeningEnabled = launchStreamSettings.streamSharpeningEnabled && state.settings.stream.streamSharpeningEnabled,
         streamSharpeningAmount = state.settings.stream.streamSharpeningAmount,
+        mouseScrollSensitivity = state.settings.stream.mouseScrollSensitivity,
     )
     val statsAlignment = when (state.settings.streamStatsPosition) {
         StreamStatsPosition.Left -> Alignment.TopStart
@@ -6323,18 +6744,38 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad) {
-        NativeStreamInputRouter.setTouchMouseEnabled(streamReady && touchInputEnabled && state.settings.androidTouch.mousePad)
+    // Also gated on nativeTouchActive: dispatchTouch would take the native branch first anyway, but
+    // leaving two input modes both flagged "enabled" is how they end up fighting later.
+    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad, nativeTouchActive) {
+        NativeStreamInputRouter.setTouchMouseEnabled(
+            streamReady && touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive,
+        )
     }
-    LaunchedEffect(state.settings.androidTouch.mouseDirectClick) {
-        NativeStreamInputRouter.setMouseDirectClick(state.settings.androidTouch.mouseDirectClick)
+    // Gated on touchInputEnabled as well as the setting: finger touches already stop at
+    // setTouchMouseEnabled during PiP, but external mouse and touchpad events reach direct click
+    // through their own path and would otherwise be mapped against the tiny PiP window.
+    LaunchedEffect(state.settings.androidTouch.mouseDirectClick, touchInputEnabled) {
+        NativeStreamInputRouter.setMouseDirectClick(
+            state.settings.androidTouch.mouseDirectClick && touchInputEnabled,
+        )
+    }
+    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.nativeTouchMode, state.streamGame?.id) {
+        val game = state.streamGame
+        val wanted = !tvProfile && shouldUseNativeTouch(state.settings.androidTouch.nativeTouchMode, game)
+        val enabled = streamReady && touchInputEnabled && wanted
+        NativeStreamInputRouter.setNativeTouchEnabled(enabled)
+        // Records what the catalog says about this game even when we leave touch off, so the fixed
+        // list in NativeTouchGames.kt can be filled in — and eventually retired — from real data.
+        if (game != null && streamReady) {
+            NativeInputDiagnostics.add(nativeTouchDiagnostics(game, enabled))
+        }
     }
 
-    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad, controlsOpen, exitConfirmOpen, keyboardOpen, streamGuideOpen, touchControlsVisible) {
+    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad, nativeTouchActive, controlsOpen, exitConfirmOpen, keyboardOpen, streamGuideOpen, touchControlsVisible) {
         NativeStreamInputRouter.setCaptureAllTouch(
             streamReady &&
                 touchInputEnabled &&
-                state.settings.androidTouch.mousePad &&
+                (state.settings.androidTouch.mousePad || nativeTouchActive) &&
                 !controlsOpen &&
                 !exitConfirmOpen &&
                 !keyboardOpen &&
@@ -6427,6 +6868,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             StreamVideoSurface(
                 client = client,
                 settings = streamSettings,
+                androidTouch = state.settings.androidTouch,
                 decodedResolution = streamStats.resolution,
                 serverNegotiatedResolution = session.negotiatedStreamProfile?.resolution,
                 hideExternalMousePointer = externalMousePassthroughActive,
@@ -6579,6 +7021,26 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                             )
                         }
                     },
+                )
+            }
+            // A wash behind the panel. Backdrop blur is impossible here — the video is a
+            // SurfaceView on its own hardware layer, which neither Modifier.blur nor RenderEffect
+            // can sample across — so separation comes from a gradient plus the panel's own fill.
+            AnimatedVisibility(
+                visible = controlsOpen,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.matchParentSize(),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                1f to OpenNowPalette.StreamScrim,
+                            ),
+                        ),
                 )
             }
             AnimatedVisibility(
@@ -6772,6 +7234,18 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onOpacityChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(opacity = value)))
                     },
+                    onMouseSensitivityChange = { value ->
+                        viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = value) }
+                    },
+                    onMouseScrollSensitivityChange = { value ->
+                        viewModel.updateStreamSettings { s -> s.copy(mouseScrollSensitivity = value) }
+                    },
+                    onNativeTouchScrollScaleChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(nativeTouchScrollScale = value)))
+                    },
+                    onNativeTouchJitterThresholdChange = { value ->
+                        viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(nativeTouchJitterThresholdDp = value)))
+                    },
                     onTouchEdgePaddingChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(edgePaddingDp = value)))
                     },
@@ -6893,7 +7367,7 @@ private fun StreamSessionTimerMenuRow(
 ) {
     val display = sessionTimerDisplay(limit, startedAtMs, nowMs)
     val progressColor = when {
-        display.warning -> Color(0xffffc266)
+        display.warning -> OpenNowPalette.StatusNotice
         else -> MaterialTheme.colorScheme.primary
     }
     Column(
@@ -6911,7 +7385,7 @@ private fun StreamSessionTimerMenuRow(
             }
             Text(
                 display.value,
-                color = if (display.warning) Color(0xffffc266) else TextPrimary,
+                color = if (display.warning) OpenNowPalette.StatusNotice else TextPrimary,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -6957,6 +7431,7 @@ private fun formatSessionWarningThreshold(thresholdSeconds: Int): String {
 private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
+    androidTouch: AndroidTouchSettings,
     decodedResolution: String?,
     serverNegotiatedResolution: String?,
     hideExternalMousePointer: Boolean,
@@ -7029,6 +7504,24 @@ private fun StreamVideoSurface(
     }
     LaunchedEffect(streamAspectRatio) {
         NativeStreamInputRouter.setRenderingAspectRatio(streamAspectRatio)
+    }
+    LaunchedEffect(
+        settings.mouseSensitivity,
+        settings.mouseScrollSensitivity,
+        settings.mouseAcceleration,
+        settings.streamSharpeningEnabled,
+        settings.streamSharpeningAmount,
+    ) {
+        client.updateRendererSettings(settings)
+    }
+    LaunchedEffect(
+        androidTouch.nativeTouchScrollScale,
+        androidTouch.nativeTouchJitterThresholdDp,
+    ) {
+        NativeStreamInputRouter.setNativeTouchSettings(
+            scrollScale = androidTouch.nativeTouchScrollScale,
+            jitterThresholdDp = androidTouch.nativeTouchJitterThresholdDp,
+        )
     }
     DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
         pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
@@ -7787,6 +8280,7 @@ private enum class StreamControlsPage {
     Main,
     StatusBar,
     Joysticks,
+    MouseMode,
 }
 
 @Composable
@@ -7839,6 +8333,10 @@ private fun StreamControlsPanel(
     onButtonScaleChange: (Float) -> Unit,
     onStickScaleChange: (Float) -> Unit,
     onOpacityChange: (Float) -> Unit,
+    onMouseSensitivityChange: (Float) -> Unit,
+    onMouseScrollSensitivityChange: (Int) -> Unit,
+    onNativeTouchScrollScaleChange: (Float) -> Unit,
+    onNativeTouchJitterThresholdChange: (Float) -> Unit,
     onTouchEdgePaddingChange: (Float) -> Unit,
     onTouchBottomPaddingChange: (Float) -> Unit,
     onTouchLeftOffsetChange: (Float) -> Unit,
@@ -7853,9 +8351,7 @@ private fun StreamControlsPanel(
     val doneFocusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     var page by remember { mutableStateOf(StreamControlsPage.Main) }
-    var keyboardFocused by remember { mutableStateOf(false) }
-    var exitFocused by remember { mutableStateOf(false) }
-    var doneFocused by remember { mutableStateOf(false) }
+    val reduceMotion = LocalReduceMotion.current
     BackHandler(enabled = page != StreamControlsPage.Main) {
         page = StreamControlsPage.Main
     }
@@ -7870,128 +8366,76 @@ private fun StreamControlsPanel(
             .padding(14.dp)
             .fillMaxWidth(0.94f)
             .fillMaxHeight(0.72f)
-            .onGloballyPositioned { coordinates ->
-                val bounds = coordinates.boundsInRoot()
-                NativeStreamInputRouter.setStreamPanelTouchPassthroughBounds(
-                    bounds.left.roundToInt(),
-                    bounds.top.roundToInt(),
-                    bounds.right.roundToInt(),
-                    bounds.bottom.roundToInt(),
-                )
-            },
-        shape = RoundedCornerShape(18.dp),
-        color = Panel.copy(alpha = 0.93f),
+            .streamTouchPassthrough(PASSTHROUGH_ID_PANEL),
+        shape = RoundedCornerShape(OpenNowRadius.lg + 2.dp),
+        // Firmer than the old 0.93: at that alpha TextMuted did not reliably clear 4.5:1 over
+        // bright gameplay. The hairline keeps the panel's edge visible against a light frame.
+        color = OpenNowPalette.PanelOverVideo,
         contentColor = TextPrimary,
+        border = BorderStroke(1.dp, OpenNowPalette.PanelHairline),
         tonalElevation = 6.dp,
     ) {
-        LazyColumn(
-            modifier = Modifier.onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
-            contentPadding = PaddingValues(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        // Every control row inside the panel picks up the denser, over-video styling — and, more
+        // importantly, becomes properly focusable. The panel's own row widgets never were.
+        CompositionLocalProvider(
+            LocalControlRowStyle provides ControlRowStyle.stream(),
+            LocalControlSectionStyle provides ControlSectionStyle.stream(),
         ) {
-            if (page == StreamControlsPage.StatusBar) {
-                item {
-                    StatusBarSettingsPage(
-                        settings = settings,
-                        statsVisible = statsVisible,
-                        onStatsToggle = onStatsToggle,
-                        onStatsStyleCycle = onStatsStyleCycle,
-                        onStatsPositionCycle = onStatsPositionCycle,
-                        onStatsMetricsChange = onStatsMetricsChange,
-                        onButtonTone = onButtonTone,
-                        onBack = { page = StreamControlsPage.Main },
-                    )
-                }
-            } else if (page == StreamControlsPage.Joysticks) {
-                item {
-                    JoystickSettingsPage(
-                        settings = settings.androidTouch,
-                        onModeToggle = onJoystickModeToggle,
-                        onDeadZoneChange = onJoystickDeadZoneChange,
-                        onStickScaleChange = onStickScaleChange,
-                        onButtonTone = onButtonTone,
-                        onBack = { page = StreamControlsPage.Main },
-                    )
-                }
-            } else {
-                item {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Stream Controls", fontWeight = FontWeight.Bold)
-                        Text(gameTitle, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    if (status != null) {
-                        Text(status, color = TextMuted, style = MaterialTheme.typography.labelMedium)
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            onButtonTone()
-                            onKeyboardOpen()
-                        },
-                        modifier = Modifier
-                            .onFocusChanged { keyboardFocused = it.isFocused }
-                            .border(
-                                width = 1.dp,
-                                color = if (keyboardFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                shape = ButtonDefaults.outlinedShape
-                            ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_keyboard),
-                            contentDescription = "Open keyboard sender",
-                            tint = TextPrimary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            onButtonTone()
-                            onExit()
-                        },
-                        modifier = Modifier
-                            .onFocusChanged { exitFocused = it.isFocused }
-                            .border(
-                                width = 1.dp,
-                                color = if (exitFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                shape = ButtonDefaults.outlinedShape
-                            ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    ) {
-                        Text("Exit")
-                    }
-                    val doneAction = {
-                        onButtonTone()
-                        onClose()
-                    }
-                    val doneModifier = Modifier
-                        .focusRequester(doneFocusRequester)
-                        .onFocusChanged { doneFocused = it.isFocused }
-                        .border(
-                            width = 1.dp,
-                            color = if (doneFocused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                            shape = ButtonDefaults.outlinedShape
-                        )
-                    if (highlightDone) {
-                        Button(
-                            onClick = doneAction,
-                            modifier = doneModifier,
-                            border = BorderStroke(2.dp, TextPrimary),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        ) {
-                            Text("Done")
-                        }
-                    } else {
-                        OutlinedButton(
-                            onClick = doneAction,
-                            modifier = doneModifier,
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            Text("Done")
-                        }
-                    }
-                }
-            }
+        Column(Modifier.fillMaxSize()) {
+        // The header is outside the scrolling area now. It used to be the first LazyColumn item,
+        // so it scrolled away and each of the three pages hand-rolled its own copy of it.
+        StreamPanelHeader(
+            page = page,
+            gameTitle = gameTitle,
+            status = status,
+            highlightDone = highlightDone,
+            focusRequester = doneFocusRequester,
+            onBack = { page = StreamControlsPage.Main },
+            onKeyboardOpen = onKeyboardOpen,
+            onExit = onExit,
+            onClose = onClose,
+            onButtonTone = onButtonTone,
+        )
+        AnimatedContent(
+            targetState = page,
+            transitionSpec = { streamPanelPageTransition(initialState, targetState, reduceMotion) },
+            label = "stream-controls-page",
+        ) { currentPage ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .onPreviewKeyEvent { handleVerticalDpadFocusMove(it, focusManager) },
+            contentPadding = PaddingValues(OpenNowSpacing.md + 2.dp),
+            verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
+        ) {
+            when (currentPage) {
+                StreamControlsPage.StatusBar -> statusBarPageItems(
+                    settings = settings,
+                    statsVisible = statsVisible,
+                    onStatsToggle = onStatsToggle,
+                    onStatsStyleCycle = onStatsStyleCycle,
+                    onStatsPositionCycle = onStatsPositionCycle,
+                    onStatsMetricsChange = onStatsMetricsChange,
+                    onButtonTone = onButtonTone,
+                )
+                StreamControlsPage.Joysticks -> joystickPageItems(
+                    settings = settings.androidTouch,
+                    onModeToggle = onJoystickModeToggle,
+                    onDeadZoneChange = onJoystickDeadZoneChange,
+                    onStickScaleChange = onStickScaleChange,
+                    onButtonTone = onButtonTone,
+                )
+                StreamControlsPage.MouseMode -> mouseModePageItems(
+                    settings = settings,
+                    controllerMouseEmulationEnabled = controllerMouseEmulationEnabled,
+                    onControllerMouseEmulationToggle = onControllerMouseEmulationToggle,
+                    onMouseSensitivityChange = onMouseSensitivityChange,
+                    onMouseScrollSensitivityChange = onMouseScrollSensitivityChange,
+                    onNativeTouchScrollScaleChange = onNativeTouchScrollScaleChange,
+                    onNativeTouchJitterThresholdChange = onNativeTouchJitterThresholdChange,
+                    onButtonTone = onButtonTone,
+                )
+                StreamControlsPage.Main -> {
             if (showSessionTimer) {
                 item {
                     StreamSessionTimerMenuRow(
@@ -8002,154 +8446,256 @@ private fun StreamControlsPanel(
                 }
             }
             item {
-                StreamPanelSection("Display") {
-                    StreamControlSwitch("Audio", if (audioMuted) "Muted" else "On", !audioMuted) {
-                        onButtonTone()
-                        onAudioToggle()
-                    }
-                    StreamControlNavigation(
-                        "Status bar",
-                        if (!statsVisible) "Off" else "${settings.streamStatsStyle.label} · ${settings.streamStatsMetrics.enabledCount()} items",
-                    ) {
-                        onButtonTone()
-                        page = StreamControlsPage.StatusBar
-                    }
-                    StreamControlSwitch("Stream sharpening", if (settings.stream.streamSharpeningEnabled) "On" else "Off", settings.stream.streamSharpeningEnabled) {
-                        onButtonTone()
-                        onSharpeningToggle()
-                    }
+                ControlSection(stringResource(R.string.stream_panel_section_display)) {
+                    ControlSwitchRow(
+                        label = stringResource(R.string.stream_panel_audio),
+                        checked = !audioMuted,
+                        onCheckedChange = {
+                            onButtonTone()
+                            onAudioToggle()
+                        },
+                        value = if (audioMuted) stringResource(R.string.stream_panel_audio_muted) else onOffLabel(true),
+                    )
+                    ControlNavigationRow(
+                        label = stringResource(R.string.stream_panel_status_bar),
+                        onClick = {
+                            onButtonTone()
+                            page = StreamControlsPage.StatusBar
+                        },
+                        value = if (!statsVisible) {
+                            onOffLabel(false)
+                        } else {
+                            stringResource(
+                                R.string.stream_panel_status_bar_summary,
+                                settings.streamStatsStyle.label,
+                                settings.streamStatsMetrics.enabledCount(),
+                            )
+                        },
+                    )
+                    ControlSwitchRow(
+                        label = stringResource(R.string.stream_panel_sharpening),
+                        checked = settings.stream.streamSharpeningEnabled,
+                        onCheckedChange = {
+                            onButtonTone()
+                            onSharpeningToggle()
+                        },
+                        value = onOffLabel(settings.stream.streamSharpeningEnabled),
+                    )
                     if (settings.stream.streamSharpeningEnabled) {
-                        CompactSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, onSharpeningAmountChange)
+                        ControlSliderRow(
+                            label = stringResource(R.string.stream_panel_sharpening_amount),
+                            value = settings.stream.streamSharpeningAmount,
+                            min = 0f,
+                            max = 1f,
+                            step = SHARPENING_SLIDER_STEP,
+                            onChange = onSharpeningAmountChange,
+                        )
                     }
-                    StreamControlSwitch("Stretch to fit", if (settings.stretchStreamToFit) "On" else "Off", settings.stretchStreamToFit) {
-                        onButtonTone()
-                        onStretchToFitToggle()
-                    }
+                    ControlSwitchRow(
+                        label = stringResource(R.string.stream_panel_stretch_to_fit),
+                        checked = settings.stretchStreamToFit,
+                        onCheckedChange = {
+                            onButtonTone()
+                            onStretchToFitToggle()
+                        },
+                        value = onOffLabel(settings.stretchStreamToFit),
+                    )
                 }
             }
             item {
-                StreamPanelSection("Input") {
+                ControlSection(stringResource(R.string.stream_panel_section_input)) {
                     if (microphoneRequested) {
-                        StreamControlSwitch(
-                            label = "Microphone",
-                            value = when {
-                                !microphonePermissionGranted -> "Permission required"
-                                microphoneEnabled -> "On"
-                                else -> "Muted"
-                            },
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_microphone),
                             checked = microphoneEnabled && microphonePermissionGranted,
-                        ) {
+                            onCheckedChange = {
+                                onButtonTone()
+                                onMicrophoneToggle()
+                            },
+                            value = when {
+                                !microphonePermissionGranted -> stringResource(R.string.stream_panel_microphone_permission)
+                                microphoneEnabled -> onOffLabel(true)
+                                else -> stringResource(R.string.stream_panel_audio_muted)
+                            },
+                        )
+                    }
+                    ControlActionRow(
+                        label = stringResource(R.string.stream_panel_steam_menu),
+                        actionLabel = stringResource(R.string.action_open),
+                        onClick = {
                             onButtonTone()
-                            onMicrophoneToggle()
-                        }
-                    }
-                    StreamControlAction(
-                        label = "Steam Menu",
-                        value = "Send Home to the streamed PC",
-                        action = "Open",
+                            onSteamMenuOpen()
+                        },
+                        value = stringResource(R.string.stream_panel_steam_menu_summary),
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        onButtonTone()
-                        onSteamMenuOpen()
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = {
-                                onButtonTone()
-                                onEsc()
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Esc") }
-                        OutlinedButton(
-                            onClick = {
-                                onButtonTone()
-                                onEnter()
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Enter") }
-                        OutlinedButton(
-                            onClick = {
-                                onButtonTone()
-                                onBackspace()
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("⌫") }
+                        StreamPanelKeyButton(stringResource(R.string.stream_panel_key_esc), Modifier.weight(1f)) {
+                            onButtonTone()
+                            onEsc()
+                        }
+                        StreamPanelKeyButton(stringResource(R.string.stream_panel_key_enter), Modifier.weight(1f)) {
+                            onButtonTone()
+                            onEnter()
+                        }
+                        StreamPanelKeyButton(stringResource(R.string.stream_panel_key_backspace), Modifier.weight(1f)) {
+                            onButtonTone()
+                            onBackspace()
+                        }
                     }
                     if (tvProfile) {
-                        StreamControlSwitch(
-                            "Controller mouse",
-                            if (controllerMouseAssistEnabled) "Right stick · A click · B right-click" else "Off",
-                            controllerMouseAssistEnabled,
-                        ) {
-                            onButtonTone()
-                            onControllerMouseAssistToggle()
-                        }
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_controller_mouse),
+                            checked = controllerMouseAssistEnabled,
+                            onCheckedChange = {
+                                onButtonTone()
+                                onControllerMouseAssistToggle()
+                            },
+                            value = if (controllerMouseAssistEnabled) {
+                                stringResource(R.string.stream_panel_controller_mouse_summary)
+                            } else {
+                                onOffLabel(false)
+                            },
+                        )
                     } else {
-                        StreamControlSwitch("Finger mouse", if (settings.androidTouch.mousePad) "On" else "Off", settings.androidTouch.mousePad) {
-                            onButtonTone()
-                            onMousePadToggle()
-                        }
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_finger_mouse),
+                            checked = settings.androidTouch.mousePad,
+                            onCheckedChange = {
+                                onButtonTone()
+                                onMousePadToggle()
+                            },
+                            value = onOffLabel(settings.androidTouch.mousePad),
+                        )
                         if (settings.androidTouch.mousePad) {
-                            Box(Modifier.padding(start = 24.dp)) {
-                                StreamControlSwitch("Direct click", if (settings.androidTouch.mouseDirectClick) "On" else "Off", settings.androidTouch.mouseDirectClick) {
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_panel_direct_click),
+                                checked = settings.androidTouch.mouseDirectClick,
+                                onCheckedChange = {
                                     onButtonTone()
                                     onMouseDirectClickToggle()
-                                }
+                                },
+                                value = onOffLabel(settings.androidTouch.mouseDirectClick),
+                                // Reads as a child of Finger mouse; replaces a hand-written Box.
+                                indentLevel = 1,
+                            )
+
+                            val scrollHint = when {
+                                settings.stream.mouseScrollSensitivity <= 20 -> "Fast"
+                                settings.stream.mouseScrollSensitivity <= 40 -> "Normal"
+                                settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
+                                else -> "Slow"
                             }
+
+                            ControlActionRow(
+                                label = "Scroll sensitivity",
+                                actionLabel = scrollHint,
+                                onClick = {
+                                    onButtonTone()
+                                    val next = when {
+                                        settings.stream.mouseScrollSensitivity <= 20 -> 40
+                                        settings.stream.mouseScrollSensitivity <= 40 -> 60
+                                        settings.stream.mouseScrollSensitivity <= 60 -> 80
+                                        else -> 20
+                                    }
+                                    onMouseScrollSensitivityChange(next)
+                                },
+                                indentLevel = 1
+                            )
                         }
-                        StreamControlSwitch("Touch controller", if (touchControlsVisible) "Visible" else "Hidden", touchControlsVisible) {
-                            onButtonTone()
-                            onTouchControlsToggle()
-                        }
-                        StreamControlNavigation(
-                            "Joysticks",
-                            when (settings.androidTouch.joystickMode) {
-                                TouchJoystickMode.Fixed -> "Fixed"
-                                TouchJoystickMode.Dynamic -> "Dynamic"
-                            },
-                        ) {
-                            onButtonTone()
-                            page = StreamControlsPage.Joysticks
-                        }
-                        if (touchControlsVisible) {
-                            StreamControlSwitch("Clean style", if (settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2) "On" else "Off", settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2) {
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_touch_controller),
+                            checked = touchControlsVisible,
+                            onCheckedChange = {
                                 onButtonTone()
-                                onToggleTouchControllerStyle()
-                            }
+                                onTouchControlsToggle()
+                            },
+                            value = stringResource(
+                                if (touchControlsVisible) R.string.common_visible else R.string.common_hidden,
+                            ),
+                        )
+                        ControlNavigationRow(
+                            label = stringResource(R.string.stream_panel_joysticks),
+                            onClick = {
+                                onButtonTone()
+                                page = StreamControlsPage.Joysticks
+                            },
+                            value = stringResource(
+                                when (settings.androidTouch.joystickMode) {
+                                    TouchJoystickMode.Fixed -> R.string.stream_panel_joystick_fixed
+                                    TouchJoystickMode.Dynamic -> R.string.stream_panel_joystick_dynamic
+                                },
+                            ),
+                        )
+                        if (touchControlsVisible) {
+                            val cleanStyle = settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_panel_clean_style),
+                                checked = cleanStyle,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onToggleTouchControllerStyle()
+                                },
+                                value = onOffLabel(cleanStyle),
+                            )
                         }
-                        StreamControlSwitch("Phone rumble fallback", if (settings.phoneRumbleFallback) "On" else "Off", settings.phoneRumbleFallback) {
-                            onButtonTone()
-                            onPhoneRumbleFallbackToggle()
-                        }
+                        ControlSwitchRow(
+                            label = stringResource(R.string.stream_panel_phone_rumble),
+                            checked = settings.phoneRumbleFallback,
+                            onCheckedChange = {
+                                onButtonTone()
+                                onPhoneRumbleFallbackToggle()
+                            },
+                            value = onOffLabel(settings.phoneRumbleFallback),
+                        )
                     }
                     // Mouse mode (Left stick): shown for all profiles — works with both physical
                     // gamepad and touch controller.
-                    StreamControlSwitch(
-                        "Mouse mode (Left stick)",
-                        if (controllerMouseEmulationEnabled) "L stick moves · A clicks · B right-clicks" else "Off",
-                        controllerMouseEmulationEnabled,
-                    ) {
-                        onButtonTone()
-                        onControllerMouseEmulationToggle()
-                    }
+                    ControlNavigationRow(
+                        label = stringResource(R.string.stream_panel_mouse_mode),
+                        onClick = {
+                            onButtonTone()
+                            page = StreamControlsPage.MouseMode
+                        },
+                        value = if (controllerMouseEmulationEnabled) {
+                            stringResource(R.string.stream_panel_mouse_mode_summary)
+                        } else {
+                            onOffLabel(false)
+                        },
+                    )
                 }
             }
             if (!tvProfile) item {
-                StreamPanelSection("Touch Layout") {
-                    StreamControlSwitch("Drag edit mode", if (touchLayoutEditing) "On" else "Off", touchLayoutEditing) {
-                        onButtonTone()
-                        onTouchLayoutEditingToggle()
-                    }
-                    StreamControlAction("Reset touch layout", "Reset positions to default", "Reset") {
-                        onButtonTone()
-                        onTouchLayoutReset()
-                    }
-                    CompactSlider("Layout scale", settings.androidTouch.scale, 0.6f, 1.4f, onTouchScaleChange)
-                    CompactSlider("Button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, onButtonScaleChange)
-                    CompactSlider("Opacity", settings.androidTouch.opacity, 0.15f, 1f, onOpacityChange)
-                    CompactDpSlider("Edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, onTouchEdgePaddingChange)
-                    CompactDpSlider("Bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, onTouchBottomPaddingChange)
-                    CompactDpSlider("Left position", settings.androidTouch.leftOffsetYDp, -160f, 160f, onTouchLeftOffsetChange)
-                    CompactDpSlider("Right position", settings.androidTouch.rightOffsetYDp, -160f, 160f, onTouchRightOffsetChange)
+                ControlSection(stringResource(R.string.stream_panel_section_touch_layout)) {
+                    ControlSwitchRow(
+                        label = stringResource(R.string.stream_panel_drag_edit),
+                        checked = touchLayoutEditing,
+                        onCheckedChange = {
+                            onButtonTone()
+                            onTouchLayoutEditingToggle()
+                        },
+                        value = onOffLabel(touchLayoutEditing),
+                    )
+                    ControlActionRow(
+                        label = stringResource(R.string.stream_panel_reset_layout),
+                        actionLabel = stringResource(R.string.action_reset),
+                        onClick = {
+                            onButtonTone()
+                            onTouchLayoutReset()
+                        },
+                        value = stringResource(R.string.stream_panel_reset_layout_summary),
+                    )
+                    // These seven drive the touch overlay live: watching it move while dragging is
+                    // the whole point, so they preview on every frame as well as committing.
+                    TouchLayoutSlider(R.string.stream_panel_layout_scale, settings.androidTouch.scale, 0.6f, 1.4f, TOUCH_SCALE_SLIDER_STEP, onTouchScaleChange)
+                    TouchLayoutSlider(R.string.stream_panel_button_size, settings.androidTouch.buttonScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onButtonScaleChange)
+                    TouchLayoutSlider(R.string.stream_panel_opacity, settings.androidTouch.opacity, 0.15f, 1f, TOUCH_SCALE_SLIDER_STEP, onOpacityChange)
+                    TouchLayoutSlider(R.string.stream_panel_edge_padding, settings.androidTouch.edgePaddingDp, 0f, 72f, TOUCH_DP_SLIDER_STEP, onTouchEdgePaddingChange, unit = DP_UNIT)
+                    TouchLayoutSlider(R.string.stream_panel_bottom_padding, settings.androidTouch.bottomPaddingDp, 0f, 120f, TOUCH_DP_SLIDER_STEP, onTouchBottomPaddingChange, unit = DP_UNIT)
+                    TouchLayoutSlider(R.string.stream_panel_left_position, settings.androidTouch.leftOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchLeftOffsetChange, unit = DP_UNIT)
+                    TouchLayoutSlider(R.string.stream_panel_right_position, settings.androidTouch.rightOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchRightOffsetChange, unit = DP_UNIT)
                 }
             }
             item {
@@ -8161,9 +8707,13 @@ private fun StreamControlsPanel(
                     preflightProvider = bugReportPreflightProvider,
                 )
             }
-            }
-        }
-    }
+                } // StreamControlsPage.Main
+            } // when (currentPage)
+        } // LazyColumn
+        } // AnimatedContent
+        } // Column
+        } // CompositionLocalProvider
+    } // Surface
     DisposableEffect(Unit) {
         onDispose {
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
@@ -8180,9 +8730,9 @@ private fun BugReportDataDisclosure(
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
-        color = Color(0xffffc266).copy(alpha = 0.10f),
+        color = OpenNowPalette.StatusNotice.copy(alpha = 0.10f),
         contentColor = TextPrimary,
-        border = BorderStroke(1.dp, Color(0xffffc266).copy(alpha = 0.38f)),
+        border = BorderStroke(1.dp, OpenNowPalette.StatusNotice.copy(alpha = 0.38f)),
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -8190,7 +8740,7 @@ private fun BugReportDataDisclosure(
         ) {
             Text(
                 title,
-                color = Color(0xffffc266),
+                color = OpenNowPalette.StatusNotice,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.labelLarge,
             )
@@ -8226,6 +8776,208 @@ private fun BugReportDataDisclosure(
             )
         }
     }
+}
+
+/**
+ * The one header for all three panel pages. Replaces three hand-rolled Rows that had drifted apart,
+ * and — because it lives outside the scrolling area now — stays put while the page scrolls.
+ */
+/**
+ * Publishes this composable's screen bounds to the native input router so touches landing on it are
+ * treated as UI rather than forwarded into the game.
+ *
+ * Two guards the hand-written version did not have:
+ *  - a zero-size measurement is ignored, instead of publishing a degenerate rect;
+ *  - the rect is inflated slightly, because boundsInRoot() includes graphicsLayer transforms and
+ *    the panel enters under scaleIn(0.96f) — mid-animation it would otherwise under-report and
+ *    leak touches around its edge.
+ *
+ * The caller must keep this on a node whose size does not depend on its content. A content-driven
+ * height would shrink the rect during a transition and leak touches into the game.
+ */
+@Composable
+private fun Modifier.streamTouchPassthrough(id: String, inflate: Dp = 8.dp): Modifier {
+    val inflatePx = with(LocalDensity.current) { inflate.roundToPx() }
+    DisposableEffect(id) {
+        onDispose { NativeStreamInputRouter.clearOverlayTouchPassthroughBound(id) }
+    }
+    return onGloballyPositioned { coordinates ->
+        val bounds = coordinates.boundsInRoot()
+        if (bounds.width <= 0f || bounds.height <= 0f) return@onGloballyPositioned
+        NativeStreamInputRouter.setOverlayTouchPassthroughBound(
+            id,
+            bounds.left.roundToInt() - inflatePx,
+            bounds.top.roundToInt() - inflatePx,
+            bounds.right.roundToInt() + inflatePx,
+            bounds.bottom.roundToInt() + inflatePx,
+        )
+    }
+}
+
+private const val PASSTHROUGH_ID_PANEL = "controls-panel"
+private const val PASSTHROUGH_ID_KEYBOARD = "keyboard-bar"
+private const val PASSTHROUGH_ID_EXIT = "exit-confirmation"
+
+@Composable
+private fun StreamPanelHeader(
+    page: StreamControlsPage,
+    gameTitle: String,
+    status: String?,
+    highlightDone: Boolean,
+    focusRequester: FocusRequester,
+    onBack: () -> Unit,
+    onKeyboardOpen: () -> Unit,
+    onExit: () -> Unit,
+    onClose: () -> Unit,
+    onButtonTone: () -> Unit,
+) {
+    val onMain = page == StreamControlsPage.Main
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = OpenNowSpacing.md + 2.dp,
+                end = OpenNowSpacing.md + 2.dp,
+                top = OpenNowSpacing.md + 2.dp,
+                bottom = OpenNowSpacing.sm,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm),
+    ) {
+        if (!onMain) {
+            StreamPanelHeaderButton(
+                onClick = {
+                    onButtonTone()
+                    onBack()
+                },
+                modifier = Modifier.focusRequester(focusRequester),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_arrow_back),
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(stringResource(R.string.action_back), maxLines = 1)
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                stringResource(
+                    when (page) {
+                        StreamControlsPage.Main -> R.string.stream_panel_title
+                        StreamControlsPage.StatusBar -> R.string.stream_statusbar_title
+                        StreamControlsPage.Joysticks -> R.string.stream_joysticks_title
+                        StreamControlsPage.MouseMode -> R.string.stream_mouse_mode_title
+                    },
+                ),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                when (page) {
+                    StreamControlsPage.Main -> gameTitle
+                    StreamControlsPage.StatusBar -> stringResource(R.string.stream_statusbar_subtitle)
+                    StreamControlsPage.Joysticks -> stringResource(R.string.stream_joysticks_subtitle)
+                    StreamControlsPage.MouseMode -> stringResource(R.string.stream_mouse_mode_subtitle)
+                },
+                color = TextMuted,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (onMain) {
+            if (status != null) {
+                Text(status, color = TextMuted, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+            StreamPanelHeaderButton(
+                onClick = {
+                    onButtonTone()
+                    onKeyboardOpen()
+                },
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_keyboard),
+                    contentDescription = stringResource(R.string.stream_panel_cd_keyboard),
+                    tint = TextPrimary,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            StreamPanelHeaderButton(
+                onClick = {
+                    onButtonTone()
+                    onExit()
+                },
+            ) {
+                Text(stringResource(R.string.stream_panel_exit), maxLines = 1)
+            }
+            val doneAction = {
+                onButtonTone()
+                onClose()
+            }
+            if (highlightDone) {
+                var doneFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = doneAction,
+                    modifier = Modifier
+                        .focusRequester(focusRequester)
+                        .onFocusChanged { doneFocused = it.isFocused },
+                    border = BorderStroke(2.dp, if (doneFocused) MaterialTheme.colorScheme.primary else TextPrimary),
+                    contentPadding = PaddingValues(horizontal = OpenNowSpacing.md, vertical = 6.dp),
+                ) {
+                    Text(stringResource(R.string.stream_panel_done), maxLines = 1)
+                }
+            } else {
+                StreamPanelHeaderButton(onClick = doneAction, modifier = Modifier.focusRequester(focusRequester)) {
+                    Text(stringResource(R.string.stream_panel_done), maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * An outlined button that actually shows a focus ring. OutlinedButton alone gives no visible focus
+ * state here, so the panel used to repeat this onFocusChanged + border pattern per button.
+ */
+@Composable
+private fun StreamPanelHeaderButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.onFocusChanged { focused = it.isFocused },
+        border = BorderStroke(
+            width = if (focused) 2.dp else 1.dp,
+            color = if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+        ),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        content = content,
+    )
+}
+
+/** Slides forward going into a sub-page and back coming out of one. */
+private fun streamPanelPageTransition(
+    from: StreamControlsPage,
+    to: StreamControlsPage,
+    reduceMotion: Boolean,
+): ContentTransform {
+    if (reduceMotion) {
+        return fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+    }
+    val forward = from == StreamControlsPage.Main && to != StreamControlsPage.Main
+    val duration = OpenNowMotion.DurationStandard
+    val easing = OpenNowMotion.EasingStandard
+    return (
+        slideInHorizontally(tween(duration, easing = easing)) { width -> if (forward) width / 6 else -width / 6 } +
+            fadeIn(tween(duration, easing = easing))
+        ) togetherWith (
+        slideOutHorizontally(tween(duration, easing = easing)) { width -> if (forward) -width / 6 else width / 6 } +
+            fadeOut(tween(OpenNowMotion.DurationFast, easing = easing))
+        )
 }
 
 @Composable
@@ -8444,20 +9196,21 @@ private fun StreamBugReporter(
         }
     }
 
-    StreamPanelSection("Bug reporter") {
+    ControlSection(stringResource(R.string.bug_report_section)) {
         if (!expanded) {
-            StreamControlAction(
-                label = "Report a stream bug",
-                value = "Send an issue and redacted diagnostics",
-                action = "Open",
-            ) {
-                onButtonTone()
-                preflightReviewed = false
-                preflightPage = 0
-                preflightDeck = preflightProvider()
-                expanded = true
-            }
-            return@StreamPanelSection
+            ControlActionRow(
+                label = stringResource(R.string.bug_report_open_label),
+                actionLabel = stringResource(R.string.action_open),
+                onClick = {
+                    onButtonTone()
+                    preflightReviewed = false
+                    preflightPage = 0
+                    preflightDeck = preflightProvider()
+                    expanded = true
+                },
+                value = stringResource(R.string.bug_report_open_summary),
+            )
+            return@ControlSection
         }
 
         if (submission.submitted) {
@@ -8516,7 +9269,7 @@ private fun StreamBugReporter(
                     }
                 }
             }
-            return@StreamPanelSection
+            return@ControlSection
         }
 
         if (!preflightReviewed) {
@@ -8752,75 +9505,129 @@ private fun StreamBugReporter(
     }
 }
 
-@Composable
-private fun JoystickSettingsPage(
+private fun LazyListScope.joystickPageItems(
     settings: AndroidTouchSettings,
     onModeToggle: () -> Unit,
     onDeadZoneChange: (Float) -> Unit,
     onStickScaleChange: (Float) -> Unit,
     onButtonTone: () -> Unit,
-    onBack: () -> Unit,
 ) {
-    val backFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        delay(120)
-        runCatching { backFocusRequester.requestFocus() }
-    }
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedButton(
-                onClick = {
-                    onButtonTone()
-                    onBack()
-                },
-                modifier = Modifier.focusRequester(backFocusRequester),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_arrow_back),
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("Back")
-            }
-            Column(Modifier.weight(1f)) {
-                Text("Joysticks", fontWeight = FontWeight.Bold)
-                Text("Tune the touch analog controls", color = TextMuted, style = MaterialTheme.typography.labelSmall)
-            }
-        }
-        StreamControlSwitch(
-            label = "Dynamic placement",
-            value = if (settings.joystickMode == TouchJoystickMode.Dynamic) {
-                "Starts centered beneath your thumb"
-            } else {
-                "Uses the saved fixed center"
+    item {
+        val dynamic = settings.joystickMode == TouchJoystickMode.Dynamic
+        ControlSwitchRow(
+            label = stringResource(R.string.stream_joysticks_dynamic),
+            checked = dynamic,
+            onCheckedChange = {
+                onButtonTone()
+                onModeToggle()
             },
-            checked = settings.joystickMode == TouchJoystickMode.Dynamic,
-        ) {
-            onButtonTone()
-            onModeToggle()
-        }
-        CompactSlider("Stick size", settings.stickScale, 0.65f, 1.5f, onStickScaleChange)
-        CompactSlider("Dead zone", settings.joystickDeadZone, 0f, 0.3f, onDeadZoneChange)
+            value = stringResource(
+                if (dynamic) R.string.stream_joysticks_dynamic_on else R.string.stream_joysticks_dynamic_off,
+            ),
+        )
+    }
+    item {
+        TouchLayoutSlider(R.string.stream_joysticks_stick_size, settings.stickScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onStickScaleChange)
+    }
+    item {
+        TouchLayoutSlider(R.string.stream_joysticks_dead_zone, settings.joystickDeadZone, 0f, 0.3f, JOYSTICK_DEAD_ZONE_STEP, onDeadZoneChange)
+    }
+    item {
         Text(
-            "Dynamic mode keeps the saved stick area, but treats wherever your thumb first lands as neutral. This avoids sudden movement when you miss the exact center.",
+            stringResource(R.string.stream_joysticks_explainer),
             color = TextMuted,
             style = MaterialTheme.typography.bodySmall,
         )
     }
 }
 
+private fun LazyListScope.mouseModePageItems(
+    settings: AppSettings,
+    controllerMouseEmulationEnabled: Boolean,
+    onControllerMouseEmulationToggle: () -> Unit,
+    onMouseSensitivityChange: (Float) -> Unit,
+    onMouseScrollSensitivityChange: (Int) -> Unit,
+    onNativeTouchScrollScaleChange: (Float) -> Unit,
+    onNativeTouchJitterThresholdChange: (Float) -> Unit,
+    onButtonTone: () -> Unit,
+) {
+    item {
+        ControlSwitchRow(
+            label = "Enable Mouse Mode",
+            checked = controllerMouseEmulationEnabled,
+            onCheckedChange = {
+                onButtonTone()
+                onControllerMouseEmulationToggle()
+            },
+            value = onOffLabel(controllerMouseEmulationEnabled),
+        )
+    }
+    if (controllerMouseEmulationEnabled) {
+        item {
+            ControlSliderRow(
+                label = "Mouse sensitivity",
+                value = settings.stream.mouseSensitivity,
+                min = 0.25f,
+                max = 3f,
+                step = 0.05f,
+                onChange = onMouseSensitivityChange,
+                valueFormatter = { "%.2fx".format(it) }
+            )
+        }
+        item {
+            val scrollHint = when {
+                settings.stream.mouseScrollSensitivity <= 20 -> "Fast"
+                settings.stream.mouseScrollSensitivity <= 40 -> "Normal"
+                settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
+                else -> "Slow"
+            }
+            ControlSliderRow(
+                label = "Scroll sensitivity",
+                value = settings.stream.mouseScrollSensitivity.toFloat(),
+                min = 10f,
+                max = 100f,
+                step = 5f,
+                onChange = { onMouseScrollSensitivityChange(it.toInt()) },
+                descriptionProvider = { "Speed: $scrollHint" }
+            )
+        }
+    }
+    if (settings.androidTouch.nativeTouchMode != NativeTouchMode.Off) {
+        item {
+            val scrollSpeedLabel = when {
+                settings.androidTouch.nativeTouchScrollScale <= 0.5f -> "Very slow"
+                settings.androidTouch.nativeTouchScrollScale <= 0.8f -> "Slow"
+                settings.androidTouch.nativeTouchScrollScale <= 1.2f -> "Normal"
+                settings.androidTouch.nativeTouchScrollScale <= 1.6f -> "Fast"
+                else -> "Very fast"
+            }
+            ControlSliderRow(
+                label = "Touch scroll speed",
+                value = settings.androidTouch.nativeTouchScrollScale,
+                min = 0.25f,
+                max = 2.0f,
+                step = 0.05f,
+                onChange = onNativeTouchScrollScaleChange,
+                descriptionProvider = { scrollSpeedLabel }
+            )
+        }
+        item {
+            ControlSliderRow(
+                label = "Touch tap stability",
+                value = settings.androidTouch.nativeTouchJitterThresholdDp,
+                min = 0f,
+                max = 24f,
+                step = 1f,
+                onChange = onNativeTouchJitterThresholdChange,
+                valueFormatter = { "${it.toInt()}dp" }
+            )
+        }
+    }
+}
+
+
 @OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun StatusBarSettingsPage(
+private fun LazyListScope.statusBarPageItems(
     settings: AppSettings,
     statsVisible: Boolean,
     onStatsToggle: () -> Unit,
@@ -8828,59 +9635,55 @@ private fun StatusBarSettingsPage(
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
     onButtonTone: () -> Unit,
-    onBack: () -> Unit,
 ) {
-    val backFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        delay(120)
-        runCatching { backFocusRequester.requestFocus() }
-    }
     val metrics = settings.streamStatsMetrics
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedButton(
+    item {
+        ControlSwitchRow(
+            label = stringResource(R.string.common_visible),
+            checked = statsVisible,
+            onCheckedChange = {
+                onButtonTone()
+                onStatsToggle()
+            },
+            value = onOffLabel(statsVisible),
+        )
+    }
+    item {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+            ControlActionRow(
+                label = stringResource(R.string.stream_statusbar_appearance),
+                actionLabel = settings.streamStatsStyle.label,
                 onClick = {
                     onButtonTone()
-                    onBack()
+                    onStatsStyleCycle()
                 },
-                modifier = Modifier.focusRequester(backFocusRequester),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_arrow_back),
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("Back")
-            }
-            Column(Modifier.weight(1f)) {
-                Text("Status bar", fontWeight = FontWeight.Bold)
-                Text("Choose its layout and information", color = TextMuted, style = MaterialTheme.typography.labelSmall)
-            }
+                modifier = Modifier.weight(1f),
+            )
+            ControlActionRow(
+                label = stringResource(R.string.stream_statusbar_position),
+                actionLabel = settings.streamStatsPosition.label,
+                onClick = {
+                    onButtonTone()
+                    onStatsPositionCycle()
+                },
+                modifier = Modifier.weight(1f),
+            )
         }
-        StreamControlSwitch("Visible", if (statsVisible) "On" else "Off", statsVisible) {
-            onButtonTone()
-            onStatsToggle()
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatusBarOptionAction("Appearance", settings.streamStatsStyle.label, Modifier.weight(1f)) {
-                onButtonTone()
-                onStatsStyleCycle()
-            }
-            StatusBarOptionAction("Position", settings.streamStatsPosition.label, Modifier.weight(1f)) {
-                onButtonTone()
-                onStatsPositionCycle()
-            }
-        }
-        Text("Items", color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+    }
+    item {
+        Text(
+            stringResource(R.string.stream_statusbar_items),
+            color = TextMuted,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+    item {
+        // Ten small toggles side by side; the standard row height would waste the panel.
+        val statusBarMetricStyle = ControlRowStyle.stream().copy(
+            verticalPadding = 6.dp,
+            labelStyle = MaterialTheme.typography.labelMedium,
+        )
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val columns = when {
                 maxWidth >= 800.dp -> 5
@@ -8896,264 +9699,167 @@ private fun StatusBarSettingsPage(
                 horizontalArrangement = Arrangement.spacedBy(gap),
                 verticalArrangement = Arrangement.spacedBy(gap),
             ) {
-                StatusBarMetricSwitch("FPS", metrics.fps, Modifier.width(itemWidth)) {
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_fps),
+                    checked = metrics.fps,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(fps = !metrics.fps))
-                }
-                StatusBarMetricSwitch("Ping", metrics.ping, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_ping),
+                    checked = metrics.ping,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(ping = !metrics.ping))
-                }
-                StatusBarMetricSwitch("Bitrate", metrics.bitrate, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_bitrate),
+                    checked = metrics.bitrate,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(bitrate = !metrics.bitrate))
-                }
-                StatusBarMetricSwitch("Battery", metrics.battery, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_battery),
+                    checked = metrics.battery,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(battery = !metrics.battery))
-                }
-                StatusBarMetricSwitch("Connection", metrics.connection, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_connection),
+                    checked = metrics.connection,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(connection = !metrics.connection))
-                }
-                StatusBarMetricSwitch("Resolution", metrics.resolution, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_resolution),
+                    checked = metrics.resolution,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(resolution = !metrics.resolution))
-                }
-                StatusBarMetricSwitch("Codec", metrics.codec, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_codec),
+                    checked = metrics.codec,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(codec = !metrics.codec))
-                }
-                StatusBarMetricSwitch("Server", metrics.location, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_server),
+                    checked = metrics.location,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(location = !metrics.location))
-                }
-                StatusBarMetricSwitch("Dec / Jit", metrics.latency, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_latency),
+                    checked = metrics.latency,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(latency = !metrics.latency))
-                }
-                StatusBarMetricSwitch("Loss", metrics.packetLoss, Modifier.width(itemWidth)) {
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_loss),
+                    checked = metrics.packetLoss,
+                    onCheckedChange = {
                     onButtonTone()
                     onStatsMetricsChange(metrics.copy(packetLoss = !metrics.packetLoss))
-                }
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
             }
         }
     }
 }
 
+/**
+ * The three bare key buttons in the Input section. Extracted so the manual focus-ring pattern the
+ * panel needs lives in one place instead of being repeated per button.
+ */
 @Composable
-private fun StatusBarOptionAction(label: String, value: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun StreamPanelKeyButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
-    Column(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 9.dp),
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.onFocusChanged { focused = it.isFocused },
+        border = BorderStroke(
+            width = if (focused) 2.dp else 1.dp,
+            color = if (focused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+        ),
     ) {
-        Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-        Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        Text(label, maxLines = 1)
     }
 }
 
+/**
+ * A touch-layout slider. Unlike the settings sliders these preview on every drag frame, because
+ * the overlay they are adjusting is on screen underneath the panel and watching it move is the
+ * point of the control.
+ */
 @Composable
-private fun StatusBarMetricSwitch(label: String, checked: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    Row(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-        Switch(checked = checked, onCheckedChange = { onClick() })
-    }
+private fun TouchLayoutSlider(
+    @StringRes labelRes: Int,
+    value: Float,
+    min: Float,
+    max: Float,
+    step: Float,
+    onChange: (Float) -> Unit,
+    unit: String? = null,
+) {
+    ControlSliderRow(
+        label = stringResource(labelRes),
+        value = value,
+        min = min,
+        max = max,
+        step = step,
+        onChange = onChange,
+        onChangePreview = onChange,
+        unit = unit,
+    )
 }
 
+/** "On" / "Off", so the same boolean reads the same way everywhere. */
 @Composable
-private fun StreamPanelSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-        content()
-    }
-}
+private fun onOffLabel(enabled: Boolean): String =
+    stringResource(if (enabled) R.string.common_on else R.string.common_off)
 
-@Composable
-private fun StreamControlSwitch(label: String, value: String, checked: Boolean, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, fontWeight = FontWeight.SemiBold)
-            Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall)
-        }
-        Switch(checked = checked, onCheckedChange = { onClick() })
-    }
-}
-
-@Composable
-private fun StreamControlNavigation(label: String, value: String, onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, fontWeight = FontWeight.SemiBold)
-            Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall)
-        }
-        Icon(
-            painter = painterResource(R.drawable.ic_chevron_right),
-            contentDescription = "Open $label options",
-            tint = TextPrimary,
-            modifier = Modifier.size(22.dp),
-        )
-    }
-}
-
-@Composable
-private fun StreamControlAction(label: String, value: String, action: String = "Change", onClick: () -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, fontWeight = FontWeight.SemiBold)
-            Text(value, color = TextMuted, style = MaterialTheme.typography.labelSmall)
-        }
-        Text(action, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
-    }
-}
-
-@Composable
-private fun CompactSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
-    var local by remember(value) { mutableFloatStateOf(value) }
-    val focusManager = LocalFocusManager.current
-    var focused by remember { mutableStateOf(false) }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f))
-            Text("${(local * 100).roundToInt()}%", color = TextMuted)
-        }
-        Slider(
-            modifier = Modifier
-                .onFocusChanged { focused = it.isFocused }
-                .onPreviewKeyEvent {
-                    handleSliderDpadInput(it, local, min, max, 0.05f, focusManager) { newVal ->
-                        local = newVal
-                        onChange(newVal)
-                    }
-                },
-            value = local,
-            onValueChange = {
-                local = it.coerceIn(min, max)
-                onChange(local)
-            },
-            valueRange = min..max,
-        )
-    }
-}
-
-@Composable
-private fun CompactDpSlider(label: String, value: Float, min: Float, max: Float, onChange: (Float) -> Unit) {
-    var local by remember(value) { mutableFloatStateOf(value) }
-    val focusManager = LocalFocusManager.current
-    var focused by remember { mutableStateOf(false) }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (focused) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f))
-            Text("${local.roundToInt()} dp", color = TextMuted)
-        }
-        Slider(
-            modifier = Modifier
-                .onFocusChanged { focused = it.isFocused }
-                .onPreviewKeyEvent {
-                    handleSliderDpadInput(it, local, min, max, 2f, focusManager) { newVal ->
-                        local = newVal
-                        onChange(newVal)
-                    }
-                },
-            value = local,
-            onValueChange = {
-                local = it.coerceIn(min, max)
-                onChange(local)
-            },
-            valueRange = min..max,
-        )
-    }
-}
+private const val SHARPENING_SLIDER_STEP = 0.05f
+private const val TOUCH_SCALE_SLIDER_STEP = 0.05f
+private const val TOUCH_DP_SLIDER_STEP = 2f
+private const val JOYSTICK_DEAD_ZONE_STEP = 0.01f
+private const val DP_UNIT = "dp"
 
 @Composable
 private fun StreamKeyboardBar(
@@ -9179,11 +9885,18 @@ private fun StreamKeyboardBar(
         keyboardController?.show()
     }
     Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = Panel.copy(alpha = 0.95f),
+        modifier = modifier
+            .fillMaxWidth()
+            // The keyboard bar registered no passthrough bounds at all, so on a phone every tap on
+            // it — including on the text field — was also forwarded into the game as touch input.
+            .streamTouchPassthrough(PASSTHROUGH_ID_KEYBOARD),
+        // Bottom-anchored, so only the top corners round. It was the one square-cornered overlay.
+        shape = RoundedCornerShape(topStart = OpenNowRadius.lg, topEnd = OpenNowRadius.lg),
+        color = OpenNowPalette.PanelOverVideo,
+        border = BorderStroke(1.dp, OpenNowPalette.PanelHairline),
         tonalElevation = 8.dp,
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(OpenNowSpacing.md), verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
             OutlinedTextField(
                 value = text,
                 onValueChange = onTextChange,
@@ -9222,29 +9935,45 @@ private fun StreamStatsPill(
     modifier: Modifier = Modifier,
 ) {
     if (metrics.enabledCount() == 0) return
+    val compact = style == StreamStatsStyle.Compact
     val deviceStatus = rememberCompactStreamDeviceStatus()
     Surface(
-        modifier = modifier.padding(8.dp).widthIn(max = if (style == StreamStatsStyle.Compact) 720.dp else 300.dp),
-        shape = RoundedCornerShape(if (style == StreamStatsStyle.Compact) 999.dp else 16.dp),
+        modifier = modifier
+            .padding(OpenNowSpacing.sm)
+            .widthIn(max = if (compact) 720.dp else 300.dp),
+        shape = RoundedCornerShape(if (compact) OpenNowRadius.full else OpenNowRadius.lg),
+        // Stays genuinely see-through — this one sits over gameplay by design. The hairline is
+        // what keeps its edge readable against a bright frame.
         color = Panel.copy(alpha = 0.52f),
+        border = BorderStroke(1.dp, OpenNowPalette.PanelHairline),
         tonalElevation = 0.dp,
     ) {
-        if (style == StreamStatsStyle.Compact) {
+        if (compact) {
             Row(
-                Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                Modifier.padding(horizontal = OpenNowSpacing.md, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, serverLocation)
             }
         } else {
             FlowRow(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = OpenNowSpacing.md, vertical = OpenNowSpacing.sm),
                 maxItemsInEachRow = 2,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, serverLocation)
+                StreamStatsMetricItems(
+                    streamStats,
+                    streamSettings,
+                    metrics,
+                    deviceStatus,
+                    serverLocation,
+                    // Two aligned columns instead of a ragged pair of runs.
+                    itemModifier = Modifier.weight(1f),
+                )
             }
         }
     }
@@ -9328,9 +10057,9 @@ private fun ActiveStreamModePill(
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        color = Color(0xffffc266).copy(alpha = 0.10f),
+                        color = OpenNowPalette.StatusNotice.copy(alpha = 0.10f),
                         contentColor = TextPrimary,
-                        border = BorderStroke(1.dp, Color(0xffffc266).copy(alpha = 0.32f)),
+                        border = BorderStroke(1.dp, OpenNowPalette.StatusNotice.copy(alpha = 0.32f)),
                     ) {
                         Column(
                             modifier = Modifier.padding(12.dp),
@@ -9338,7 +10067,7 @@ private fun ActiveStreamModePill(
                         ) {
                             Text(
                                 text = "Why it happened",
-                                color = Color(0xffffc266),
+                                color = OpenNowPalette.StatusNotice,
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
                             )
@@ -9635,67 +10364,128 @@ private fun StreamStatsMetricItems(
     metrics: StreamStatsMetrics,
     deviceStatus: CompactStreamDeviceStatus,
     serverLocation: String?,
+    /** Applied to every item; the expanded layout passes a weight so its two columns line up. */
+    itemModifier: Modifier = Modifier,
 ) {
+    // The target is what the user asked for; streamStats.fps is what is actually arriving.
+    val targetFps = streamSettings.fps
     if (metrics.fps) {
-        StreamStatsText("FPS ${streamStats.fps?.toString() ?: streamSettings.fps}")
+        val fps = streamStats.fps
+        val gameFps = streamStats.gameFps
+        StreamStatsText(
+            value = "FPS ${fps ?: targetFps}",
+            modifier = itemModifier,
+            quality = fps?.let { StreamQuality.frameRate(it.toDouble(), targetFps) },
+            contentDescription = stringResource(R.string.stream_stats_cd_fps, fps ?: targetFps),
+        )
+        StreamStatsText(
+            value = "Game ${gameFps ?: targetFps}",
+            modifier = itemModifier,
+            quality = gameFps?.let { StreamQuality.frameRate(it.toDouble(), targetFps) },
+            contentDescription = "Game FPS: ${gameFps ?: targetFps}",
+        )
     }
     if (metrics.ping) {
         val ping = streamStats.pingMs
-        val color = when {
-            ping == null -> TextPrimary
-            ping >= 100 -> Color(0xffff4f4f) // Bright red
-            ping >= 50 -> Color(0xffffa500) // Orange
-            else -> TextPrimary
-        }
-        StreamStatsText("Ping ${ping?.let { "${it}ms" } ?: "--"}", color = color)
+        StreamStatsText(
+            value = stringResource(R.string.stream_stats_ping, ping?.let { "${it}ms" } ?: NO_STAT_VALUE),
+            modifier = itemModifier,
+            quality = ping?.let(StreamQuality::latency),
+            contentDescription = ping?.let { stringResource(R.string.stream_stats_cd_ping, it) },
+        )
     }
     if (metrics.latency) {
-        streamStats.decodeMs?.let {
-            StreamStatsText("Dec %.1fms".format(java.util.Locale.US, it))
+        streamStats.decodeMs?.let { decode ->
+            StreamStatsText(
+                value = stringResource(R.string.stream_stats_decode, "%.1f".format(Locale.US, decode)),
+                modifier = itemModifier,
+                quality = StreamQuality.decode(decode, targetFps),
+                contentDescription = stringResource(R.string.stream_stats_cd_decode, "%.1f".format(Locale.US, decode)),
+            )
         }
-        streamStats.jitterMs?.let {
-            StreamStatsText("Jit %.1fms".format(java.util.Locale.US, it))
+        streamStats.jitterMs?.let { jitter ->
+            StreamStatsText(
+                value = stringResource(R.string.stream_stats_jitter, "%.1f".format(Locale.US, jitter)),
+                modifier = itemModifier,
+                quality = StreamQuality.jitter(jitter),
+                contentDescription = stringResource(R.string.stream_stats_cd_jitter, "%.1f".format(Locale.US, jitter)),
+            )
         }
     }
     if (metrics.packetLoss) {
         streamStats.packetLossPct?.let { loss ->
-            val color = if (loss > 1.0) Color(0xffff4f4f) else TextPrimary
-            StreamStatsText("Loss %.1f%%".format(java.util.Locale.US, loss), color = color)
+            // %.2f, matching the session report — %.1f hid the 0.5% boundary the ladder cares about.
+            val formatted = "%.2f".format(Locale.US, loss)
+            StreamStatsText(
+                value = stringResource(R.string.stream_stats_loss, formatted),
+                modifier = itemModifier,
+                quality = StreamQuality.packetLoss(loss),
+                contentDescription = stringResource(R.string.stream_stats_cd_loss, formatted),
+            )
         }
     }
     if (metrics.bitrate) {
-        StreamStatsText(formatRuntimeBitrate(streamStats.bitrateKbps))
+        StreamStatsText(formatRuntimeBitrate(streamStats.bitrateKbps), modifier = itemModifier)
     }
     if (metrics.battery) {
-        StreamBatteryIndicator(deviceStatus)
+        StreamBatteryIndicator(deviceStatus, itemModifier)
     }
     if (metrics.connection) {
-        StreamNetworkIndicator(deviceStatus)
+        StreamNetworkIndicator(deviceStatus, itemModifier)
     }
     if (metrics.resolution) {
         StreamStatsText(
             streamStats.resolution?.let(::formatRuntimeResolution)
                 ?: formatRuntimeResolution(normalizeStreamResolutionForAspect(streamSettings.resolution, streamSettings.aspectRatio)),
+            modifier = itemModifier,
         )
     }
     if (metrics.codec) {
-        StreamStatsText(streamStats.codec?.takeIf { it.isNotBlank() } ?: streamSettings.codec.name)
+        StreamStatsText(streamStats.codec?.takeIf { it.isNotBlank() } ?: streamSettings.codec.name, modifier = itemModifier)
     }
     if (metrics.location && !serverLocation.isNullOrBlank()) {
         val displayName = serverLocation.removePrefix("NPA-").removePrefix("NP-").uppercase()
-        StreamStatsText(displayName)
+        StreamStatsText(displayName, modifier = itemModifier)
     }
 }
 
+/** Shown in place of a metric that has not been measured yet. */
+private const val NO_STAT_VALUE = "--"
+
 @Composable
-private fun StreamStatsText(value: String, color: Color = TextPrimary) {
+private fun StreamStatsText(
+    value: String,
+    modifier: Modifier = Modifier,
+    quality: StreamQualityLevel? = null,
+    contentDescription: String? = null,
+) {
+    // Colour alone used to carry the warning, which says nothing to a colour-blind user or to
+    // TalkBack. The quality level is spelled out in the description instead.
+    val qualityLabel = quality?.let { stringResource(it.labelRes()) }
+    val describedAs = contentDescription?.let { base ->
+        if (qualityLabel != null) "$base, $qualityLabel" else base
+    }
     Text(
         value,
-        color = color,
-        style = MaterialTheme.typography.labelSmall,
+        modifier = if (describedAs != null) {
+            modifier.semantics { this.contentDescription = describedAs }
+        } else {
+            modifier
+        },
+        color = quality?.tint() ?: TextPrimary,
+        // Tabular figures: without these every value is a different width each tick, so the whole
+        // row reflows roughly once a second.
+        style = MaterialTheme.typography.labelSmall.numeric(),
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
     )
+}
+
+@StringRes
+private fun StreamQualityLevel.labelRes(): Int = when (this) {
+    StreamQualityLevel.Good -> R.string.stream_quality_good
+    StreamQualityLevel.Fair -> R.string.stream_quality_fair
+    StreamQualityLevel.Poor -> R.string.stream_quality_poor
 }
 
 private data class CompactStreamDeviceStatus(
@@ -9732,12 +10522,12 @@ private fun readCompactStreamDeviceStatus(context: Context): CompactStreamDevice
 }
 
 @Composable
-private fun StreamBatteryIndicator(status: CompactStreamDeviceStatus) {
+private fun StreamBatteryIndicator(status: CompactStreamDeviceStatus, modifier: Modifier = Modifier) {
     val description = status.batteryPercent?.let { percent ->
         "Battery $percent percent${if (status.batteryCharging) ", charging" else ""}"
     } ?: "Battery unknown"
     Row(
-        modifier = Modifier.semantics { contentDescription = description },
+        modifier = modifier.semantics { contentDescription = description },
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -9757,7 +10547,7 @@ private fun StreamBatteryIndicator(status: CompactStreamDeviceStatus) {
 }
 
 @Composable
-private fun StreamNetworkIndicator(status: CompactStreamDeviceStatus) {
+private fun StreamNetworkIndicator(status: CompactStreamDeviceStatus, modifier: Modifier = Modifier) {
     val bars = status.networkBars?.coerceIn(0, 4)
     val label = when (status.networkKind) {
         AndroidNetworkKind.Cellular -> status.cellularGeneration ?: status.networkKind.label
@@ -9770,7 +10560,7 @@ private fun StreamNetworkIndicator(status: CompactStreamDeviceStatus) {
     }
     val description = "${label ?: status.networkKind.label} signal ${bars?.toString() ?: "unknown"} bars"
     Row(
-        modifier = Modifier.semantics { contentDescription = description },
+        modifier = modifier.semantics { contentDescription = description },
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -9989,35 +10779,66 @@ private fun StreamExitConfirmation(
         delay(80)
         runCatching { keepPlayingFocusRequester.requestFocus() }
     }
+    val scrimInteraction = remember { MutableInteractionSource() }
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.58f))
-            .clickable(onClick = onKeepPlaying),
+            // The scrim covers everything, so it reports the full screen — otherwise a mis-tap on
+            // "Exit Stream" also lands in the game underneath.
+            .streamTouchPassthrough(PASSTHROUGH_ID_EXIT, inflate = 0.dp)
+            .background(OpenNowPalette.StreamScrim)
+            // indication = null: a full-screen ripple is wrong, and without its own interaction
+            // source the scrim competes with the two buttons for D-pad focus.
+            .clickable(
+                interactionSource = scrimInteraction,
+                indication = null,
+                onClick = onKeepPlaying,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
             modifier = modifier
-                .padding(24.dp)
-                .fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            color = Panel.copy(alpha = 0.95f),
+                .padding(OpenNowSpacing.xl)
+                .fillMaxWidth()
+                // Unbounded fillMaxWidth made this enormous on a tablet or TV.
+                .widthIn(max = 440.dp),
+            // Same radius as the controls panel, so the two overlays read as one family.
+            shape = RoundedCornerShape(OpenNowRadius.lg + 2.dp),
+            color = OpenNowPalette.PanelOverVideo,
             contentColor = TextPrimary,
+            border = BorderStroke(1.dp, OpenNowPalette.PanelHairline),
             tonalElevation = 8.dp,
         ) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Session Control", color = TextMuted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                Text("Exit Stream?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("Do you really want to exit $gameTitle?", color = TextMuted)
-                Text("Your current cloud gaming session will be closed.", color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(
+                Modifier.padding(OpenNowSpacing.lg + 2.dp),
+                verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
+            ) {
+                Text(
+                    stringResource(R.string.stream_exit_eyebrow),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(stringResource(R.string.stream_exit_title), style = MaterialTheme.typography.titleLarge)
+                Text(stringResource(R.string.stream_exit_body, gameTitle), color = TextMuted)
+                Text(
+                    stringResource(R.string.stream_exit_caveat),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.md),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     OutlinedButton(
                         onClick = onKeepPlaying,
                         modifier = Modifier
                             .weight(1f)
                             .focusRequester(keepPlayingFocusRequester),
-                    ) { Text("Keep Playing") }
-                    Button(onClick = onExit, modifier = Modifier.weight(1f)) { Text("Exit Stream") }
+                    ) { Text(stringResource(R.string.stream_exit_keep_playing), maxLines = 1) }
+                    Button(onClick = onExit, modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.stream_exit_confirm), maxLines = 1)
+                    }
                 }
             }
         }
@@ -13090,7 +13911,7 @@ internal fun UrlImage(
             }
         }
     }
-    Box(modifier.background(Color(0xff102015)), contentAlignment = Alignment.Center) {
+    Box(modifier.background(OpenNowPalette.ImagePlaceholder), contentAlignment = Alignment.Center) {
         if (imageData != null) {
             key(activeSource) {
                 AsyncImage(
@@ -13126,8 +13947,9 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
     // Use the shared shimmer offset from GameGridSkeleton if available; fall back to a
     // local animation only when LoadingShimmer is used outside a GameGridSkeleton context.
     // Using nullable avoids treating 0f (a valid animation start value) as "not provided".
+    val reduceMotion = LocalReduceMotion.current
     val sharedPulse = LocalTvLoadingPulse.current
-    val localPulse = if (LocalTvLoadingProfile.current && sharedPulse == null) {
+    val localPulse = if (!reduceMotion && LocalTvLoadingProfile.current && sharedPulse == null) {
         val transition = rememberInfiniteTransition(label = "loading-pulse-local")
         val pulse = transition.animateFloat(
             initialValue = 0f,
@@ -13143,7 +13965,8 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
         null
     }
     val pulse = sharedPulse ?: localPulse
-    val shimmer = LocalShimmerOffset.current ?: if (pulse == null) run {
+    // Same rule as the shared driver above: no perpetual sweep under reduced motion.
+    val shimmer = LocalShimmerOffset.current ?: if (pulse == null && !reduceMotion) run {
         val transition = rememberInfiniteTransition(label = "shimmer-local")
         val localOffset = transition.animateFloat(
             initialValue = 0f,
@@ -13155,7 +13978,7 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
         )
         localOffset
     } else null
-    val baseColor = Color(0xff0d1216)
+    val baseColor = OpenNowPalette.ShimmerBase
     val highlightColor1 = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)
     val highlightColor2 = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
 

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Everything except the font comes from OpenNowWindowBase in values/styles.xml. -->
+    <style name="Theme.OpenNOW" parent="OpenNowWindowBase">
+        <item name="android:fontFamily">@font/inter_variable</item>
+    </style>
+</resources>

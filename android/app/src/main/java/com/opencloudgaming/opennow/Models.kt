@@ -182,6 +182,7 @@ data class StreamSettings(
     val streamSharpeningAmount: Float = 0.25f,
     val microphoneMode: MicrophoneMode = MicrophoneMode.Disabled,
     val microphoneDeviceId: String = "",
+    val mouseScrollSensitivity: Int = 30,
 )
 
 internal fun StreamSettings.withMicrophoneSettingsFrom(source: StreamSettings): StreamSettings =
@@ -205,6 +206,19 @@ enum class TouchJoystickMode {
 @Serializable
 data class TouchOffset(val x: Float = 0f, val y: Float = 0f)
 
+/**
+ * Whether fingers are forwarded to the host as real touch rather than turned into a cursor.
+ *
+ * [Auto] limits it to games known to react to a touch device, which is the whole feature for most
+ * people. The other two exist because that list is maintained by hand and will lag reality.
+ */
+@Serializable
+enum class NativeTouchMode {
+    Auto,
+    Off,
+    Always,
+}
+
 @Serializable
 data class AndroidTouchSettings(
     val enabled: Boolean = true,
@@ -222,6 +236,18 @@ data class AndroidTouchSettings(
     val rightOffsetXDp: Float = 0f,
     val rightOffsetYDp: Float = 0f,
     val mouseDirectClick: Boolean = false,
+    val nativeTouchMode: NativeTouchMode = NativeTouchMode.Auto,
+    /**
+     * Scales the velocity of touch movement in native touch mode. Values below 1.0 slow down
+     * scroll/swipe gestures; values above 1.0 speed them up. Default 1.0 = no scaling.
+     */
+    val nativeTouchScrollScale: Float = 1.0f,
+    /**
+     * Minimum movement in dp before a MOVE event is forwarded in native touch mode.
+     * Suppresses small sensor jitter that can look like a micro-swipe instead of a tap.
+     * Default 8dp matches ViewConfiguration.getScaledTouchSlop() on most devices.
+     */
+    val nativeTouchJitterThresholdDp: Float = 8f,
     val offsets: Map<String, TouchOffset> = mapOf(
         "lstick_landscape" to TouchOffset(-67.02336f, 1.4236208f),
         "l3_landscape" to TouchOffset(-159.65048f, 119.79623f),
@@ -277,6 +303,8 @@ data class AppSettings(
     val tvLayoutProfileVersion: Int = 0,
     val localTvRemoteEnabled: Boolean = false,
     val showGameStoreLabels: Boolean = true,
+    /** Game titles under the poster in the catalog grid. Off makes the grid pure box art. */
+    val showCardTitles: Boolean = true,
     val expressiveUi: Boolean = true,
     val dynamicColor: Boolean = false,
     val uiAccent: UiAccent = UiAccent.OpenNow,
@@ -1502,6 +1530,7 @@ data class StreamRuntimeStats(
     val bitrateKbps: Int? = null,
     val pingMs: Int? = null,
     val fps: Int? = null,
+    val gameFps: Int? = null,
     val receivedFps: Int? = null,
     val decodedFps: Int? = null,
     val resolution: String? = null,
@@ -1748,14 +1777,14 @@ private fun StreamSettings.withoutAndroidTvSharpening(report: RuntimeCodecReport
 private fun StreamSettings.cappedResolution(maxWidth: Int, maxHeight: Int, strict: Boolean = false): StreamSettings {
     val normalized = normalizeStreamResolutionForAspect(resolution, aspectRatio)
     val (width, height) = parseResolutionPixels(normalized)
-    
+
     val fits = if (strict) {
         width <= maxWidth && height <= maxHeight
     } else {
         val maxPixelCount = (maxWidth * maxHeight * DECODER_RESOLUTION_HEADROOM).roundToInt()
         width <= maxWidth * 2 && height <= maxHeight * 2 && (width * height) <= maxPixelCount
     }
-    
+
     if (fits) return copy(resolution = normalized)
 
     val sameAspect = STREAM_RESOLUTION_OPTIONS

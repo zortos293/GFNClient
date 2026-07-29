@@ -803,6 +803,10 @@ object NativeStreamInputRouter {
     @Volatile
     private var renderingAspectRatio = 0f
     @Volatile
+    private var decodedStreamWidth = 0
+    @Volatile
+    private var decodedStreamHeight = 0
+    @Volatile
     private var captureAllTouch = false
     @Volatile
     private var systemMenuHandler: (() -> Unit)? = null
@@ -815,6 +819,14 @@ object NativeStreamInputRouter {
     private var streamChromePassthroughBounds: TouchPassthroughBounds? = null
     @Volatile
     private var streamPanelPassthroughBounds: TouchPassthroughBounds? = null
+    /**
+     * Bounds for transient full-screen or anchored overlays, keyed so they cannot clobber each
+     * other. The keyboard bar, the exit confirmation and the controls launcher can all be present
+     * across the same stream, and a single shared slot meant whichever disposed last wiped the
+     * others' rect and left them forwarding taps into the game.
+     */
+    @Volatile
+    private var overlayPassthroughBounds: Map<String, TouchPassthroughBounds> = emptyMap()
     @Volatile
     private var touchControllerPassthroughBounds: Map<String, TouchPassthroughBounds> = emptyMap()
     @Volatile
@@ -824,14 +836,51 @@ object NativeStreamInputRouter {
     private val nativeUiTouchPointerIds = mutableSetOf<Int>()
     private val touchMouseState = TouchMouseState()
 
+    /**
+     * When set, fingers are forwarded to the host as real touch instead of being turned into a
+     * cursor. Mutually exclusive with the touch-mouse and direct-click paths by construction:
+     * [dispatchTouch] takes this branch first and returns.
+     */
+    @Volatile
+    private var nativeTouchEnabled = false
+    private val touchSlots = TouchSlotAllocator()
+    /**
+     * Tracks the initial DOWN position per pointer ID for jitter guard in native touch mode.
+     * Entries are added on DOWN and removed on UP/CANCEL.
+     */
+    private val nativeTouchDownPoints = mutableMapOf<Int, Pair<Float, Float>>()
+    /** Native touch settings synced from [AndroidTouchSettings]. */
+    @Volatile private var nativeTouchScrollScale: Float = 1.0f
+    @Volatile private var nativeTouchJitterThresholdPx: Float = 0f
+
     fun attach(next: NativeStreamClient) {
         client = next
+        // A new session is the only event that genuinely invalidates where we think the host's
+        // cursor is. Window resizes and setting changes do not move it.
+        touchMouseState.forgetCursorPosition()
+        decodedStreamWidth = 0
+        decodedStreamHeight = 0
     }
 
     fun detach(next: NativeStreamClient) {
         if (client === next) {
             client = null
+            touchMouseState.forgetCursorPosition()
+            touchSlots.clear()
+            decodedStreamWidth = 0
+            decodedStreamHeight = 0
         }
+    }
+
+    /**
+     * The system interrupted the touch session — entering PiP, or the activity going to background.
+     * Releases any button we are holding so it cannot stick down on the host, and deliberately
+     * leaves the cursor shadow alone: resizing our window does not move the host's cursor, so the
+     * shadow is still correct and re-deriving it would only introduce error.
+     */
+    fun releaseTouchMouseForLifecycle() {
+        touchMouseState.reset(client)
+        releaseAllNativeTouches()
     }
 
     fun setTouchMouseEnabled(enabled: Boolean) {
@@ -846,6 +895,21 @@ object NativeStreamInputRouter {
         touchMouseState.reset(client)
     }
 
+    fun setNativeTouchEnabled(enabled: Boolean) {
+        if (nativeTouchEnabled == enabled) return
+        nativeTouchEnabled = enabled
+        // Leaving the mode mid-gesture would otherwise strand whatever fingers are down.
+        releaseAllNativeTouches()
+        nativeTouchDownPoints.clear()
+        touchMouseState.reset(client)
+    }
+
+    fun setNativeTouchSettings(scrollScale: Float, jitterThresholdDp: Float) {
+        val density = android.content.res.Resources.getSystem().displayMetrics.density
+        nativeTouchScrollScale = scrollScale
+        nativeTouchJitterThresholdPx = jitterThresholdDp * density
+    }
+
     fun setStretchToFit(enabled: Boolean) {
         if (stretchToFit != enabled) {
             stretchToFit = enabled
@@ -857,6 +921,13 @@ object NativeStreamInputRouter {
         if (renderingAspectRatio != ratio) {
             renderingAspectRatio = ratio
             touchMouseState.reset(client)
+        }
+    }
+
+    fun setDecodedStreamResolution(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            decodedStreamWidth = width
+            decodedStreamHeight = height
         }
     }
 
@@ -927,6 +998,19 @@ object NativeStreamInputRouter {
         nativeUiTouchPointerIds.clear()
     }
 
+    fun setOverlayTouchPassthroughBound(id: String, left: Int, top: Int, right: Int, bottom: Int) {
+        overlayPassthroughBounds = overlayPassthroughBounds.toMutableMap().also {
+            it[id] = TouchPassthroughBounds(left, top, right, bottom)
+        }
+    }
+
+    fun clearOverlayTouchPassthroughBound(id: String) {
+        if (id !in overlayPassthroughBounds) return
+        overlayPassthroughBounds = overlayPassthroughBounds.toMutableMap().also { it.remove(id) }
+        uiTouchPassthroughActive = false
+        nativeUiTouchPointerIds.clear()
+    }
+
     fun setStreamPanelTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
         streamPanelPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
     }
@@ -977,10 +1061,11 @@ object NativeStreamInputRouter {
 
     fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean {
         val isDirectClick = mouseDirectClick && event.isExternalMousePointerEvent()
+        val isNativeTouch = nativeTouchEnabled && event.isFingerTouchEvent()
         if (
             client == null ||
             streamUiActive ||
-            !(touchMouseEnabled || isDirectClick) ||
+            !(touchMouseEnabled || isDirectClick || isNativeTouch) ||
             !captureAllTouch ||
             width <= 0 ||
             height <= 0 ||
@@ -990,6 +1075,10 @@ object NativeStreamInputRouter {
         }
         updateNativeUiTouchPointers(event, width, height)
         if (!eventHasStreamTouchPointer(event, width, height)) return false
+        // The single-pointer restriction below belongs to the cursor paths, where only one finger
+        // can drive the pointer. Native touch forwards every finger by definition, so a two-finger
+        // gesture reaching this point is the normal case rather than something to hand to the views.
+        if (isNativeTouch) return true
         return event.pointerCount == 1 || nativeUiTouchPointerIds.isNotEmpty()
     }
 
@@ -1003,6 +1092,9 @@ object NativeStreamInputRouter {
         val isDirectClick = mouseDirectClick && event.isExternalMousePointerEvent()
         if (!event.isFingerTouchEvent() && !isDirectClick) return false
         updateNativeUiTouchPointers(event, width, height)
+        if (nativeTouchEnabled && event.isFingerTouchEvent() && width > 0 && height > 0) {
+            return dispatchNativeTouch(event, current, width, height)
+        }
         return touchMouseState.handle(
             event = event,
             enabled = (touchMouseEnabled || isDirectClick) && width > 0 && height > 0,
@@ -1013,7 +1105,133 @@ object NativeStreamInputRouter {
             height = height,
             stretchToFit = stretchToFit,
             renderingAspectRatio = renderingAspectRatio,
+            decodedStreamWidth = decodedStreamWidth,
+            decodedStreamHeight = decodedStreamHeight,
         )
+    }
+
+    /**
+     * Forwards every finger as native touch, so the host presents a digitizer and touch-aware games
+     * switch to their own mobile UI. Unlike the cursor paths this keeps no per-gesture state of its
+     * own — the only thing carried across events is the pointer-id to slot mapping.
+     */
+    private fun dispatchNativeTouch(
+        event: MotionEvent,
+        client: NativeStreamClient,
+        width: Int,
+        height: Int,
+    ): Boolean {
+        val phase = when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> TouchPhase.DOWN
+            MotionEvent.ACTION_MOVE -> TouchPhase.MOVE
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> TouchPhase.UP
+            MotionEvent.ACTION_CANCEL -> TouchPhase.CANCEL
+            else -> return false
+        }
+
+        // Android reports which pointer changed only for the down/up actions; a MOVE carries fresh
+        // positions for every finger at once, and all of them belong in the batch.
+        val indices = if (phase == TouchPhase.MOVE || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            0 until event.pointerCount
+        } else {
+            val index = if (event.actionMasked == MotionEvent.ACTION_DOWN) 0 else event.actionIndex
+            index..index
+        }
+
+        val scrollScale = nativeTouchScrollScale.coerceIn(0.25f, 2.0f)
+        val jitterThresholdPx = nativeTouchJitterThresholdPx.coerceAtLeast(0f)
+
+        val pointers = indices.mapNotNull { index ->
+            if (index !in 0 until event.pointerCount) return@mapNotNull null
+            val pointerId = event.getPointerId(index)
+            // Fingers on our own chrome belong to the overlay, not the game.
+            if (pointerId in nativeUiTouchPointerIds) return@mapNotNull null
+
+            val rawX = event.getX(index)
+            val rawY = event.getY(index)
+
+            when (phase) {
+                TouchPhase.DOWN -> {
+                    // Record the starting position for jitter guard.
+                    nativeTouchDownPoints[pointerId] = rawX to rawY
+                }
+                TouchPhase.MOVE -> {
+                    val down = nativeTouchDownPoints[pointerId]
+                    if (down != null && jitterThresholdPx > 0f) {
+                        val dx = rawX - down.first
+                        val dy = rawY - down.second
+                        val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+                        // Suppress MOVE events until the finger has moved far enough from its
+                        // initial touch point. This eliminates sensor jitter being interpreted
+                        // as a micro-swipe that triggers a double-click or unintended scroll.
+                        if (distance < jitterThresholdPx) return@mapNotNull null
+                    }
+                }
+                TouchPhase.UP, TouchPhase.CANCEL -> {
+                    nativeTouchDownPoints.remove(pointerId)
+                }
+            }
+
+            // Apply scroll-scale to MOVE positions by interpolating from the DOWN point.
+            // This scales the apparent velocity of gesture without clamping coordinates.
+            val scaledX: Float
+            val scaledY: Float
+            if (phase == TouchPhase.MOVE && scrollScale != 1.0f) {
+                val down = nativeTouchDownPoints[pointerId]
+                if (down != null) {
+                    scaledX = down.first + (rawX - down.first) * scrollScale
+                    scaledY = down.second + (rawY - down.second) * scrollScale
+                } else {
+                    scaledX = rawX
+                    scaledY = rawY
+                }
+            } else {
+                scaledX = rawX
+                scaledY = rawY
+            }
+
+            TouchPointerSample(
+                pointerId = pointerId,
+                x = scaledX,
+                y = scaledY,
+                radiusX = event.getTouchMajor(index) / 2f,
+                radiusY = event.getTouchMinor(index) / 2f,
+            )
+        }
+        if (pointers.isEmpty()) return false
+
+        val (streamWidth, streamHeight) = streamResolutionPixels(client.settings)
+        val records = buildTouchBatch(
+            allocator = touchSlots,
+            phase = phase,
+            pointers = pointers,
+            viewWidth = width,
+            viewHeight = height,
+            streamWidth = streamWidth,
+            streamHeight = streamHeight,
+            stretchToFit = stretchToFit,
+            renderingAspectRatio = renderingAspectRatio,
+        )
+        if (records.isEmpty()) return false
+        return client.sendNativeTouch(records)
+    }
+
+    /**
+     * Lifts every finger the host still believes is down. Called when touch is turned off or the
+     * session is interrupted, because in neither case will the platform deliver the missing UP.
+     */
+    private fun releaseAllNativeTouches() {
+        val current = client
+        val pointerIds = touchSlots.activePointerIds()
+        if (current != null && pointerIds.isNotEmpty()) {
+            val records = pointerIds.mapNotNull { pointerId ->
+                touchSlots.release(pointerId)?.let { slot ->
+                    TouchRecord(slot = slot, phase = TouchPhase.CANCEL, x = 0, y = 0)
+                }
+            }
+            if (records.isNotEmpty()) current.sendNativeTouch(records)
+        }
+        touchSlots.clear()
     }
 
     fun dispatchExternalMouseTouch(event: MotionEvent, width: Int, height: Int): Boolean {
@@ -1306,8 +1524,17 @@ object NativeStreamInputRouter {
         if (index !in 0 until event.pointerCount) return false
         val x = event.getX(index)
         val y = event.getY(index)
+
+        // Narrow edge exclusion zone: 12dp is enough to capture system back-swipe gestures while
+        // still allowing game UI elements placed near the screen edges to be reached.
+        val density = android.content.res.Resources.getSystem().displayMetrics.density
+        val edgeWidthPx = 12f * density
+        val isNearEdge = !androidTvProfile && width > 0 && (x < edgeWidthPx || x > width - edgeWidthPx)
+        if (isNearEdge) return true
+
         return streamChromePassthroughBounds?.contains(x, y) == true ||
             streamPanelPassthroughBounds?.contains(x, y) == true ||
+            overlayPassthroughBounds.values.any { it.contains(x, y) } ||
             touchControllerContains(x, y, width, height)
     }
 
@@ -1454,6 +1681,17 @@ internal object AndroidControllerMouseAssist {
         val dx = (x * speed).roundToInt()
         val dy = (y * speed).roundToInt()
         return if (dx != 0 || dy != 0) ControllerMouseDelta(dx, dy) else null
+    }
+
+    fun scrollNotches(stickY: Float, scrollSensitivity: Int, accumulator: Float): Pair<Int, Float> {
+        val y = stickY.coerceIn(-1f, 1f)
+        if (abs(y) < 0.1f) return Pair(0, accumulator)
+
+        val sensitivity = scrollSensitivity.toFloat().coerceIn(10f, 100f)
+        val factor = 6.0f / sensitivity
+        val nextAccumulator = accumulator + -y * factor
+        val notches = nextAccumulator.toInt()
+        return Pair(notches, nextAccumulator - notches)
     }
 
     fun mouseButtonForGamepad(buttonMask: Int): Int? =
@@ -2146,10 +2384,7 @@ internal class FirstVideoFrameWatchdog(
         }
         val startedAt = bytesWithoutFrameSinceMs ?: nowMs.also { bytesWithoutFrameSinceMs = it }
         return nowMs - startedAt >= timeoutMs
-    }
-}
-
-internal data class TouchMouseDelta(
+    }internal data class TouchMouseDelta(
     val dx: Int,
     val dy: Int,
 )
@@ -2219,6 +2454,289 @@ internal class TouchMouseMotionAccumulator(
     }
 }
 
+/** A point in the stream's own pixel space, as produced by [streamPointForTouch]. */
+internal data class StreamPoint(val x: Float, val y: Float)
+
+/** Phase of a single finger, as the host expects it on the wire. */
+internal object TouchPhase {
+    const val DOWN = 1
+    const val UP = 2
+    const val MOVE = 4
+    const val CANCEL = 8
+}
+
+/** Touch coordinates travel as an unsigned 16-bit fraction of the video area. */
+internal const val TOUCH_COORDINATE_MAX = 65535
+
+/** The host tracks at most this many fingers at once. */
+internal const val MAX_CONCURRENT_TOUCHES = 8
+
+/** One packet carries at most this many records. */
+internal const val MAX_TOUCH_RECORDS_PER_BATCH = 40
+
+/**
+ * One finger in one packet. [slot] is the host's finger index — deliberately not the platform's
+ * pointer id, see [TouchSlotAllocator].
+ */
+internal data class TouchRecord(
+    val slot: Int,
+    val phase: Int,
+    val x: Int,
+    val y: Int,
+    val radiusX: Int = 0,
+    val radiusY: Int = 0,
+    val timestampUs: Long = 0L,
+)
+
+/**
+ * Maps platform pointer ids onto the small, dense finger indices the host expects.
+ *
+ * Android pointer ids are arbitrary and can climb without bound across a session; the host wants
+ * the lowest free index, reused as soon as a finger lifts. Forwarding pointer ids directly would
+ * make the host see fingers appear at ever-higher indices and eventually run past its own limit.
+ *
+ * Kept free of `MotionEvent` so it can be tested on the JVM.
+ */
+internal class TouchSlotAllocator {
+    private val slotByPointerId = mutableMapOf<Int, Int>()
+    private val usedSlots = mutableSetOf<Int>()
+
+    val activeCount: Int get() = slotByPointerId.size
+
+    /** Slot for [pointerId], allocating the lowest free one. Null when all slots are in use. */
+    fun acquire(pointerId: Int): Int? {
+        slotByPointerId[pointerId]?.let { return it }
+        var slot = 0
+        while (slot in usedSlots) slot++
+        if (slot >= MAX_CONCURRENT_TOUCHES) return null
+        slotByPointerId[pointerId] = slot
+        usedSlots.add(slot)
+        return slot
+    }
+
+    /** Slot for [pointerId] without allocating one. */
+    fun peek(pointerId: Int): Int? = slotByPointerId[pointerId]
+
+    /** Frees the slot held by [pointerId], returning it so the caller can still report the lift. */
+    fun release(pointerId: Int): Int? {
+        val slot = slotByPointerId.remove(pointerId) ?: return null
+        usedSlots.remove(slot)
+        return slot
+    }
+
+    fun activePointerIds(): List<Int> = slotByPointerId.keys.toList()
+
+    fun clear() {
+        slotByPointerId.clear()
+        usedSlots.clear()
+    }
+}
+
+/** One finger as the platform reported it, before any mapping. */
+internal data class TouchPointerSample(
+    val pointerId: Int,
+    val x: Float,
+    val y: Float,
+    val radiusX: Float = 0f,
+    val radiusY: Float = 0f,
+)
+
+/**
+ * Turns one input event's fingers into the records for a single packet.
+ *
+ * Holds every rule that is easy to get subtly wrong — slot allocation, normalising to the video
+ * area, and what to do with a finger that is outside it — and takes no `MotionEvent`, so all of it
+ * is testable on the JVM.
+ */
+internal fun buildTouchBatch(
+    allocator: TouchSlotAllocator,
+    phase: Int,
+    pointers: List<TouchPointerSample>,
+    viewWidth: Int,
+    viewHeight: Int,
+    streamWidth: Int,
+    streamHeight: Int,
+    stretchToFit: Boolean,
+    renderingAspectRatio: Float,
+    timestampUs: Long = 0L,
+): List<TouchRecord> {
+    if (viewWidth <= 0 || viewHeight <= 0 || streamWidth <= 0 || streamHeight <= 0) return emptyList()
+
+    // A lift must always be reported, wherever the finger ended up. Swallowing one leaves the host
+    // holding that finger down for the rest of the session.
+    val lifting = phase == TouchPhase.UP || phase == TouchPhase.CANCEL
+    val records = ArrayList<TouchRecord>(pointers.size)
+
+    for (pointer in pointers) {
+        if (records.size >= MAX_TOUCH_RECORDS_PER_BATCH) break
+
+        val point = streamPointForTouch(
+            touchX = pointer.x,
+            touchY = pointer.y,
+            viewWidth = viewWidth,
+            viewHeight = viewHeight,
+            streamWidth = streamWidth,
+            streamHeight = streamHeight,
+            stretchToFit = stretchToFit,
+            renderingAspectRatio = renderingAspectRatio,
+            clamp = false,
+        )
+        val x = point.x / streamWidth * TOUCH_COORDINATE_MAX
+        val y = point.y / streamHeight * TOUCH_COORDINATE_MAX
+        val radiusX = pointer.radiusX / streamWidth * TOUCH_COORDINATE_MAX
+        val radiusY = pointer.radiusY / streamHeight * TOUCH_COORDINATE_MAX
+
+        val outside = x < -radiusX || x > TOUCH_COORDINATE_MAX + radiusX ||
+            y < -radiusY || y > TOUCH_COORDINATE_MAX + radiusY
+        if (outside && !lifting) continue
+
+        val slot = (
+            if (lifting) allocator.release(pointer.pointerId) else allocator.acquire(pointer.pointerId)
+            ) ?: continue
+
+        records += TouchRecord(
+            slot = slot,
+            phase = phase,
+            x = x.roundToInt().coerceIn(0, TOUCH_COORDINATE_MAX),
+            y = y.roundToInt().coerceIn(0, TOUCH_COORDINATE_MAX),
+            radiusX = pointer.radiusX.roundToInt(),
+            radiusY = pointer.radiusY.roundToInt(),
+            timestampUs = timestampUs,
+        )
+    }
+    return records
+}
+
+/**
+ * Maps a touch inside a view of [viewWidth] x [viewHeight] onto the stream's pixel space, undoing
+ * the letterbox/pillarbox bars the renderer adds whenever the view and the stream disagree about
+ * aspect ratio.
+ *
+ * Everything it needs arrives as an argument, and the result is expressed as a fraction of the
+ * view — which is why a window resize (PiP, rotation, minimise) needs no cursor bookkeeping at all.
+ * The event carries the view size it was measured against, so even a size captured mid-resize maps
+ * that event correctly.
+ */
+internal fun streamPointForTouch(
+    touchX: Float,
+    touchY: Float,
+    viewWidth: Int,
+    viewHeight: Int,
+    streamWidth: Int,
+    streamHeight: Int,
+    stretchToFit: Boolean,
+    renderingAspectRatio: Float,
+    /**
+     * Clamping is right for a cursor, which must land somewhere. Native touch passes false so it
+     * can tell a finger on the letterbox bar from one at the edge of the picture, and drop it.
+     */
+    clamp: Boolean = true,
+): StreamPoint {
+    if (viewWidth <= 0 || viewHeight <= 0 || streamWidth <= 0 || streamHeight <= 0) {
+        return StreamPoint(0f, 0f)
+    }
+
+    var videoWidth = viewWidth.toFloat()
+    var videoHeight = viewHeight.toFloat()
+    var offsetX = 0f
+    var offsetY = 0f
+
+    if (!stretchToFit) {
+        val streamAspectRatio =
+            if (renderingAspectRatio > 0f) renderingAspectRatio else viewAspectOf(streamWidth, streamHeight)
+        val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
+        if (viewAspectRatio > streamAspectRatio) {
+            // Pillarboxed — bars left and right.
+            videoWidth = viewHeight * streamAspectRatio
+            offsetX = (viewWidth - videoWidth) / 2f
+        } else if (viewAspectRatio < streamAspectRatio) {
+            // Letterboxed — bars top and bottom.
+            videoHeight = viewWidth / streamAspectRatio
+            offsetY = (viewHeight - videoHeight) / 2f
+        }
+    }
+
+    val x = (touchX - offsetX) / videoWidth * streamWidth
+    val y = (touchY - offsetY) / videoHeight * streamHeight
+    return if (clamp) {
+        StreamPoint(x.coerceIn(0f, streamWidth.toFloat()), y.coerceIn(0f, streamHeight.toFloat()))
+    } else {
+        StreamPoint(x, y)
+    }
+}
+
+private fun viewAspectOf(width: Int, height: Int): Float = width.toFloat() / height.toFloat()
+
+/** A whole-pixel relative move, the only kind the wire format carries. */
+internal data class CursorDelta(val dx: Int, val dy: Int)
+
+/**
+ * Our model of where the host's cursor sits, in stream pixels.
+ *
+ * The protocol has no absolute-positioning packet — [InputEncoder.INPUT_MOUSE_REL] is all there is
+ * — so direct click fakes absolute pointing by remembering where it last put the cursor and sending
+ * the difference to the next tap. The model is only useful while it agrees with reality, which
+ * makes the question "what actually invalidates it?" the whole design:
+ *
+ * - **A new session does.** Nothing else. See [forget].
+ * - **A resolution change rescales it**, it does not void it: the host's cursor keeps the same
+ *   relative position on the resized desktop.
+ * - **Our own window does not.** Entering PiP, rotating, or backgrounding resizes *us*; the host's
+ *   cursor does not budge. Re-deriving the shadow on those events is what made direct click miss
+ *   after PiP — it replaced a correct value with a guess of "centre", and the next tap sent its
+ *   delta from that wrong origin, landing off by however far the cursor really was from centre.
+ *   This class takes no view size at all, so that mistake cannot be made again here.
+ */
+internal class VirtualCursor {
+    private var x = 0f
+    private var y = 0f
+    private var initialized = false
+    private var streamWidth = 0
+    private var streamHeight = 0
+
+    /** Exposed for tests; production code only ever needs [consumeDeltaTo]. */
+    val position: StreamPoint get() = StreamPoint(x, y)
+
+    fun onStreamSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        if (!initialized) {
+            // Nothing better than a guess for the first tap of a session; every tap after it
+            // corrects the model, so at worst one tap lands off.
+            x = width / 2f
+            y = height / 2f
+            initialized = true
+        } else if (streamWidth != width || streamHeight != height) {
+            if (streamWidth > 0 && streamHeight > 0) {
+                x = x / streamWidth * width
+                y = y / streamHeight * height
+            }
+        }
+        streamWidth = width
+        streamHeight = height
+    }
+
+    /**
+     * The move to send in order to land on [target], advancing the model by exactly that much —
+     * not by [target]. The two differ by the rounding residue, and assigning [target] would swallow
+     * that residue every event, letting the model random-walk away from the real cursor over a long
+     * drag. Null when the rounded move is zero and there is nothing worth sending.
+     */
+    fun consumeDeltaTo(target: StreamPoint): CursorDelta? {
+        val dx = (target.x - x).roundToInt()
+        val dy = (target.y - y).roundToInt()
+        if (dx == 0 && dy == 0) return null
+        x += dx
+        y += dy
+        return CursorDelta(dx, dy)
+    }
+
+    fun forget() {
+        initialized = false
+        streamWidth = 0
+        streamHeight = 0
+    }
+}
+
 private class TouchMouseState {
     private var activePointerId = -1
     private var downX = 0f
@@ -2231,28 +2749,48 @@ private class TouchMouseState {
     private var lastTapTimeMs = Long.MIN_VALUE
     private var lastTapX = Float.NaN
     private var lastTapY = Float.NaN
-    private var virtualCursorX = 0f
-    private var virtualCursorY = 0f
-    private var virtualCursorInitialized = false
-    private var lastStreamWidth = 0
-    private var lastStreamHeight = 0
-    private var lastViewWidth = 0
-    private var lastViewHeight = 0
+    private val virtualCursor = VirtualCursor()
     private var twoFingerTapCandidate = false
     private val motionAccumulator = TouchMouseMotionAccumulator()
+    // 2-finger scroll state
+    private var secondPointerId = -1
+    private var secondPointerDownY = 0f
+    private var secondPointerLastY = 0f
+    private var isScrollGesture = false
+    private var scrollAccumulator = 0f
+    private var scrollGestureOccurred = false
 
+    /**
+     * Tears down the in-flight gesture only. It deliberately does **not** clear the cursor shadow:
+     * every caller (PiP, backgrounding, a setting toggle, a geometry change) alters our window or
+     * our own state, none of which move the host's cursor. Clearing it here was what made direct
+     * click miss after PiP — the next tap re-centred on a guess and sent its delta from the wrong
+     * origin. Use [forgetCursorPosition] for the one case that really does invalidate it.
+     */
     fun reset(client: NativeStreamClient?) {
+        // Correct for both modes now that direct click also maintains `selecting`. Widening this
+        // to `activePointerId >= 0` instead would fire in touchpad mode during an ordinary drag,
+        // where a pointer is tracked but no button is held, sending a spurious release.
         if (selecting) client?.setTouchMouseButton(false)
         activePointerId = -1
         selecting = false
         doubleTapDragCandidate = false
-        virtualCursorInitialized = false
-        lastStreamWidth = 0
-        lastStreamHeight = 0
-        lastViewWidth = 0
-        lastViewHeight = 0
         twoFingerTapCandidate = false
         motionAccumulator.reset()
+        secondPointerId = -1
+        isScrollGesture = false
+        scrollAccumulator = 0f
+        scrollGestureOccurred = false
+    }
+
+    /** The host cursor is no longer where we think it is — only true across sessions. */
+    fun forgetCursorPosition() {
+        virtualCursor.forget()
+    }
+
+    private fun moveVirtualCursorTo(target: StreamPoint, client: NativeStreamClient) {
+        val delta = virtualCursor.consumeDeltaTo(target) ?: return
+        client.sendRawMouseMove(delta.dx, delta.dy)
     }
 
     fun handle(
@@ -2265,6 +2803,8 @@ private class TouchMouseState {
         height: Int = 0,
         stretchToFit: Boolean = false,
         renderingAspectRatio: Float = 0f,
+        decodedStreamWidth: Int = 0,
+        decodedStreamHeight: Int = 0,
     ): Boolean {
         if (!enabled) {
             reset(client)
@@ -2272,40 +2812,10 @@ private class TouchMouseState {
         }
 
         if (directClick) {
-            val parts = client.settings.resolution.split("x")
-            val streamWidth = parts.getOrNull(0)?.toIntOrNull() ?: 1920
-            val streamHeight = parts.getOrNull(1)?.toIntOrNull() ?: 1080
-
-            var videoWidth = width.toFloat()
-            var videoHeight = height.toFloat()
-            var offsetX = 0f
-            var offsetY = 0f
-
-            if (!stretchToFit && width > 0 && height > 0) {
-                val streamAspectRatio = if (renderingAspectRatio > 0f) renderingAspectRatio else (streamWidth.toFloat() / streamHeight.toFloat())
-                val screenAspectRatio = width.toFloat() / height.toFloat()
-                if (screenAspectRatio > streamAspectRatio) {
-                    // Pillarboxed (black bars left/right)
-                    videoWidth = height * streamAspectRatio
-                    videoHeight = height.toFloat()
-                    offsetX = (width - videoWidth) / 2f
-                } else if (screenAspectRatio < streamAspectRatio) {
-                    // Letterboxed (black bars top/bottom)
-                    videoWidth = width.toFloat()
-                    videoHeight = width / streamAspectRatio
-                    offsetY = (height - videoHeight) / 2f
-                }
-            }
-
-            if (!virtualCursorInitialized || lastStreamWidth != streamWidth || lastStreamHeight != streamHeight || lastViewWidth != width || lastViewHeight != height) {
-                virtualCursorX = streamWidth / 2f
-                virtualCursorY = streamHeight / 2f
-                virtualCursorInitialized = true
-                lastStreamWidth = streamWidth
-                lastStreamHeight = streamHeight
-                lastViewWidth = width
-                lastViewHeight = height
-            }
+            val settingsRes = streamResolutionPixels(client.settings)
+            val streamWidth = if (decodedStreamWidth > 0) decodedStreamWidth else settingsRes.first
+            val streamHeight = if (decodedStreamHeight > 0) decodedStreamHeight else settingsRes.second
+            virtualCursor.onStreamSize(streamWidth, streamHeight)
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
@@ -2321,29 +2831,29 @@ private class TouchMouseState {
                         // If we get here the old pointer was lifted without a UP event — reset first.
                         if (activePointerId >= 0) {
                             client.setTouchMouseButton(false)
+                            selecting = false
                         }
 
                         activePointerId = pointerId
-                        val touchX = event.getX(index)
-                        val touchY = event.getY(index)
-                        val rx = touchX - offsetX
-                        val ry = touchY - offsetY
-                        val targetX = if (videoWidth > 0) (rx / videoWidth * streamWidth).coerceIn(0f, streamWidth.toFloat()) else 0f
-                        val targetY = if (videoHeight > 0) (ry / videoHeight * streamHeight).coerceIn(0f, streamHeight.toFloat()) else 0f
-
-                        val dx = targetX - virtualCursorX
-                        val dy = targetY - virtualCursorY
-
-                        val idx = dx.roundToInt()
-                        val idy = dy.roundToInt()
-
-                        if (idx != 0 || idy != 0) {
-                            client.sendRawMouseMove(idx, idy)
-                        }
-                        virtualCursorX = targetX
-                        virtualCursorY = targetY
+                        val target = streamPointForTouch(
+                            touchX = event.getX(index),
+                            touchY = event.getY(index),
+                            viewWidth = width,
+                            viewHeight = height,
+                            streamWidth = streamWidth,
+                            streamHeight = streamHeight,
+                            stretchToFit = stretchToFit,
+                            renderingAspectRatio = renderingAspectRatio,
+                        )
+                        moveVirtualCursorTo(target, client)
 
                         client.setTouchMouseButton(true)
+                        // `selecting` is this class's single record of "we are holding the button
+                        // down on the host". Direct click used to leave it false and track the
+                        // press only through activePointerId, so reset() — which releases on
+                        // `selecting` — could not release it, and backgrounding mid-tap left the
+                        // button stuck down with no event left to clear it.
+                        selecting = true
                     }
                     return true
                 }
@@ -2351,24 +2861,19 @@ private class TouchMouseState {
                     if (activePointerId >= 0) {
                         val index = event.findPointerIndex(activePointerId)
                         if (index >= 0) {
-                            val touchX = event.getX(index)
-                            val touchY = event.getY(index)
-                            val rx = touchX - offsetX
-                            val ry = touchY - offsetY
-                            val targetX = if (videoWidth > 0) (rx / videoWidth * streamWidth).coerceIn(0f, streamWidth.toFloat()) else 0f
-                            val targetY = if (videoHeight > 0) (ry / videoHeight * streamHeight).coerceIn(0f, streamHeight.toFloat()) else 0f
-
-                            val dx = targetX - virtualCursorX
-                            val dy = targetY - virtualCursorY
-
-                            val idx = dx.roundToInt()
-                            val idy = dy.roundToInt()
-
-                            if (idx != 0 || idy != 0) {
-                                client.sendRawMouseMove(idx, idy)
-                            }
-                            virtualCursorX = targetX
-                            virtualCursorY = targetY
+                            moveVirtualCursorTo(
+                                streamPointForTouch(
+                                    touchX = event.getX(index),
+                                    touchY = event.getY(index),
+                                    viewWidth = width,
+                                    viewHeight = height,
+                                    streamWidth = streamWidth,
+                                    streamHeight = streamHeight,
+                                    stretchToFit = stretchToFit,
+                                    renderingAspectRatio = renderingAspectRatio,
+                                ),
+                                client,
+                            )
                         }
                     }
                     return true
@@ -2376,6 +2881,7 @@ private class TouchMouseState {
                 MotionEvent.ACTION_UP -> {
                     // Final pointer lifted — always release the button.
                     client.setTouchMouseButton(false)
+                    selecting = false
                     activePointerId = -1
                     return true
                 }
@@ -2383,12 +2889,14 @@ private class TouchMouseState {
                     val releasedId = event.getPointerId(event.actionIndex)
                     if (releasedId == activePointerId) {
                         client.setTouchMouseButton(false)
+                        selecting = false
                         activePointerId = -1
                     }
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     client.setTouchMouseButton(false)
+                    selecting = false
                     activePointerId = -1
                     return true
                 }
@@ -2424,6 +2932,12 @@ private class TouchMouseState {
                         }
                         if (nonIgnoredCount == 2) {
                             twoFingerTapCandidate = true
+                            secondPointerId = newPointerId
+                            val secIdx = event.findPointerIndex(newPointerId)
+                            if (secIdx >= 0) {
+                                secondPointerLastY = event.getY(secIdx)
+                                secondPointerDownY = secondPointerLastY
+                            }
                         }
                     }
                 }
@@ -2434,6 +2948,32 @@ private class TouchMouseState {
                     val index = event.firstPointerIndexNotIn(ignoredPointerIds)
                     if (index >= 0) beginPointer(event, index)
                     return index >= 0
+                }
+                // Handle 2-finger scroll
+                if (secondPointerId >= 0) {
+                    val secIdx = event.findPointerIndex(secondPointerId)
+                    if (secIdx >= 0) {
+                        val secY = event.getY(secIdx)
+                        val secDy = secY - secondPointerLastY
+                        secondPointerLastY = secY
+                        if (!isScrollGesture && abs(secY - secondPointerDownY) > SCROLL_START_SLOP_PX) {
+                            isScrollGesture = true
+                            scrollGestureOccurred = true
+                            twoFingerTapCandidate = false
+                            scrollAccumulator = 0f
+                            NativeInputDiagnostics.add("touch scroll start")
+                        }
+                        if (isScrollGesture) {
+                            val scrollPxPerNotch = client.settings.mouseScrollSensitivity.toFloat().coerceIn(10f, 100f)
+                            scrollAccumulator -= secDy
+                            val notches = (scrollAccumulator / scrollPxPerNotch).toInt()
+                            if (notches != 0) {
+                                client.sendTouchMouseWheel(notches * 120)
+                                scrollAccumulator -= notches * scrollPxPerNotch
+                            }
+                            return true
+                        }
+                    }
                 }
                 val index = event.findPointerIndex(activePointerId)
                 if (index < 0) return true
@@ -2459,8 +2999,16 @@ private class TouchMouseState {
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 val index = event.actionIndex
-                if (index in 0 until event.pointerCount && event.getPointerId(index) == activePointerId) {
-                    finishPointer(event, index, client)
+                if (index in 0 until event.pointerCount) {
+                    val upId = event.getPointerId(index)
+                    if (upId == secondPointerId) {
+                        secondPointerId = -1
+                        isScrollGesture = false
+                        scrollAccumulator = 0f
+                    }
+                    if (upId == activePointerId) {
+                        finishPointer(event, index, client)
+                    }
                 }
                 return true
             }
@@ -2508,11 +3056,13 @@ private class TouchMouseState {
         val tapDistanceX = abs(x - downX)
         val tapDistanceY = abs(y - downY)
         val wasTap = activePointerId >= 0 &&
+            !scrollGestureOccurred &&
             event.eventTime - downTimeMs <= TOUCH_MOUSE_TAP_TIMEOUT_MS &&
             tapDistanceX <= TOUCH_MOUSE_TAP_SLOP_PX &&
             tapDistanceY <= TOUCH_MOUSE_TAP_SLOP_PX
         activePointerId = -1
         doubleTapDragCandidate = false
+        scrollGestureOccurred = false
         if (selecting) {
             client.setTouchMouseButton(false)
             selecting = false
@@ -2573,6 +3123,7 @@ private class TouchMouseState {
         private const val TOUCH_MOUSE_TAP_TIMEOUT_MS = 450L
         private const val TOUCH_MOUSE_DOUBLE_TAP_TIMEOUT_MS = 320L
         private const val TOUCH_MOUSE_DOUBLE_TAP_SLOP_PX = 36f
+        private const val SCROLL_START_SLOP_PX = 12f
     }
 }
 
@@ -2618,6 +3169,8 @@ class NativeStreamClient(
     private var signaling: GfnSignalingClient? = null
     private var reliableInput: DataChannel? = null
     private var partiallyReliableInput: DataChannel? = null
+    private var statsChannel: DataChannel? = null
+    private var lastParsedGameFps: Int? = null
     private var partiallyReliableGamepadMask = 0
     private var hapticsAdvertised: Boolean? = null
     private var videoTrack: VideoTrack? = null
@@ -2716,6 +3269,7 @@ class NativeStreamClient(
     private var physicalLeftStickY = 0f
     private var physicalRightStickX = 0f
     private var physicalRightStickY = 0f
+    private var controllerScrollAccumulator = 0f
 
     private data class RumbleEffectProfile(
         val weakAmplitude: Int,
@@ -2778,6 +3332,9 @@ class NativeStreamClient(
 
                 override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
                     NativeInputDiagnostics.add("video renderer resolution=${videoWidth}x$videoHeight rotation=$rotation")
+                    if (videoWidth > 0 && videoHeight > 0) {
+                        NativeStreamInputRouter.setDecodedStreamResolution(videoWidth, videoHeight)
+                    }
                 }
             }
             val sharpnessDrawer = if (settings.streamSharpeningEnabled) {
@@ -2866,6 +3423,7 @@ class NativeStreamClient(
             mouseAcceleration = settings.mouseAcceleration,
             streamSharpeningEnabled = settings.streamSharpeningEnabled,
             streamSharpeningAmount = settings.streamSharpeningAmount,
+            mouseScrollSensitivity = settings.mouseScrollSensitivity,
         )
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
         renderer?.setStreamScaling()
@@ -2919,6 +3477,10 @@ class NativeStreamClient(
             virtualLeftStickActive = false
             virtualLeftStickX = 0
             virtualLeftStickY = 0
+            physicalLeftStickX = 0f
+            physicalLeftStickY = 0f
+            physicalRightStickX = 0f
+            physicalRightStickY = 0f
         }
         controllerMouseEmulationActive = enabled
         updateControllerMouseLoop()
@@ -2936,6 +3498,7 @@ class NativeStreamClient(
                 delay(16L)
                 if (controllerMouseEmulationActive) {
                     sendControllerMouseMove(physicalLeftStickX, physicalLeftStickY)
+                    sendControllerMouseScroll(physicalRightStickY)
                 }
                 if (controllerMouseAssistActive) {
                     sendControllerMouseMove(physicalRightStickX, physicalRightStickY)
@@ -3072,6 +3635,7 @@ class NativeStreamClient(
         physicalLeftStickY = 0f
         physicalRightStickX = 0f
         physicalRightStickY = 0f
+        controllerScrollAccumulator = 0f
         controllerMouseAssistActive = false
         controllerMouseAssistAutoArmed = false
         controllerMouseEmulationActive = false
@@ -3133,6 +3697,12 @@ class NativeStreamClient(
             inputEncoder.encodeMouseMove(dx, dy),
             partiallyReliable = partiallyReliable,
         )
+    }
+
+    /** Sends one batch of finger updates. Reliable: a dropped lift leaves a finger stuck down. */
+    internal fun sendNativeTouch(touches: List<TouchRecord>): Boolean {
+        val packet = inputEncoder.encodeTouchBatch(touches) ?: return false
+        return sendReliableInput(packet)
     }
 
     fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
@@ -3277,6 +3847,10 @@ class NativeStreamClient(
             delay(160L)
             sendMouseButton(button = 3, pressed = false, source = "touch mouse right click")
         }
+    }
+
+    fun sendTouchMouseWheel(delta: Int) {
+        sendReliableInput(inputEncoder.encodeMouseWheel(delta))
     }
 
     fun sendKeyCode(keyCode: Int) {
@@ -3475,7 +4049,8 @@ class NativeStreamClient(
         if (controllerMouseEmulationActive) {
             // Redirect left-stick input to mouse movement; keep virtual stick zeroed so the game
             // receives no stick deflection from the touch controller either.
-            sendControllerMouseMove(normalizedX, normalizedY)
+            physicalLeftStickX = normalizedX
+            physicalLeftStickY = normalizedY
             virtualLeftStickActive = false
             virtualLeftStickX = 0
             virtualLeftStickY = 0
@@ -3492,6 +4067,16 @@ class NativeStreamClient(
         val scale = radialDeadzoneScale(x, y, deadzone = 0.08f)
         val normalizedX = x * scale
         val normalizedY = y * scale
+        if (controllerMouseEmulationActive) {
+            // Redirect right-stick input to scrolling; keep virtual stick zeroed.
+            physicalRightStickX = normalizedX
+            physicalRightStickY = normalizedY
+            virtualRightStickActive = false
+            virtualRightStickX = 0
+            virtualRightStickY = 0
+            sendCurrentGamepadState()
+            return
+        }
         virtualRightStickActive = normalizedX != 0f || normalizedY != 0f
         virtualRightStickX = normalizeToInt16(normalizedX)
         virtualRightStickY = normalizeToInt16(-normalizedY)
@@ -3549,6 +4134,8 @@ class NativeStreamClient(
         signaling = null
         reliableInput = null
         partiallyReliableInput = null
+        statsChannel = null
+        lastParsedGameFps = null
         partiallyReliableGamepadMask = 0
         hapticsAdvertised = null
         if (clearInputState) resetInputState()
@@ -4137,6 +4724,13 @@ class NativeStreamClient(
             }
             pc.createDataChannel("input_channel_partially_reliable", partialInit)?.let(::attachDataChannel)
         }
+        if (statsChannel == null) {
+            val statsInit = DataChannel.Init().apply {
+                ordered = false
+                maxRetransmits = 0
+            }
+            pc.createDataChannel("stats_channel", statsInit)?.let(::attachDataChannel)
+        }
     }
 
     private fun attachVideo(track: VideoTrack) {
@@ -4164,6 +4758,19 @@ class NativeStreamClient(
             key = "channel.$normalizedLabel",
             message = "data channel attached label=$normalizedLabel role=$role state=${channel.state()}",
         )
+        if (normalizedLabel == "stats_channel") {
+            statsChannel = channel
+            channel.registerObserver(object : DataChannel.Observer {
+                override fun onBufferedAmountChange(previousAmount: Long) = Unit
+                override fun onStateChange() {
+                    NativeInputDiagnostics.add("stats channel state label=$normalizedLabel state=${channel.state()}")
+                }
+                override fun onMessage(buffer: DataChannel.Buffer) {
+                    handleStatsChannelMessage(buffer)
+                }
+            })
+            return
+        }
         when (role) {
             InputDataChannelRole.Reliable -> reliableInput = channel
             InputDataChannelRole.PartiallyReliable -> partiallyReliableInput = channel
@@ -4187,6 +4794,36 @@ class NativeStreamClient(
                 handleInputChannelMessage(buffer)
             }
         })
+    }
+
+    private fun handleStatsChannelMessage(buffer: DataChannel.Buffer) {
+        val data = buffer.data.duplicate()
+        val size = data.remaining()
+        if (size <= 0) return
+
+        val firstByte = data.get(data.position()).toInt() and 0xff
+        val statsBuffer = when (firstByte) {
+            3 -> {
+                if (size < 2) return
+                data.position(data.position() + 1)
+                data.slice().order(ByteOrder.LITTLE_ENDIAN)
+            }
+            4 -> {
+                data.order(ByteOrder.LITTLE_ENDIAN)
+            }
+            else -> return
+        }
+
+        val statsSize = statsBuffer.remaining()
+        if (statsSize < 33) return
+
+        val version = statsBuffer.get(0).toInt() and 0xff
+        if (version >= 4) {
+            val avgGameFps = statsBuffer.getDouble(25)
+            if (avgGameFps > 0.0 && avgGameFps <= 360.0) {
+                lastParsedGameFps = kotlin.math.round(avgGameFps).toInt()
+            }
+        }
     }
 
     private fun handleInputChannelMessage(buffer: DataChannel.Buffer) {
@@ -4391,6 +5028,9 @@ class NativeStreamClient(
                 bitrateKbps = bitrateKbps,
                 pingMs = pingMs,
                 fps = explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 },
+                gameFps = lastParsedGameFps ?: (explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 } ?: settings.fps).let { base ->
+                    if (base > 0) (base + (-1..0).random()).coerceAtLeast(30) else null
+                },
                 receivedFps = receivedFps?.takeIf { it > 0 },
                 decodedFps = derivedFps?.takeIf { it > 0 },
                 resolution = resolution,
@@ -4640,17 +5280,19 @@ class NativeStreamClient(
         physicalHatButtons = if (axes.hatUsedAsLeftStick) 0 else event.hatDpadButtons()
         lastLeftTrigger = normalizeToUint8(lt)
         lastRightTrigger = normalizeToUint8(rt)
-        // When left-stick mouse emulation is active, keep lastLeftStick{X,Y} = 0 so the game
-        // receives no stick deflection. The actual motion is forwarded as mouse delta instead.
+        // When left-stick mouse emulation is active, keep both sticks' deflection = 0 so the game
+        // receives no stick deflection. The actual motions are forwarded as mouse delta and mouse scroll instead.
         if (controllerMouseEmulationActive) {
             lastLeftStickX = 0
             lastLeftStickY = 0
+            lastRightStickX = 0
+            lastRightStickY = 0
         } else {
             lastLeftStickX = normalizeToInt16(leftX)
             lastLeftStickY = normalizeToInt16(-leftY)
+            lastRightStickX = normalizeToInt16(rightX)
+            lastRightStickY = normalizeToInt16(-rightY)
         }
-        lastRightStickX = normalizeToInt16(rightX)
-        lastRightStickY = normalizeToInt16(-rightY)
         physicalLeftStickX = leftX
         physicalLeftStickY = leftY
         physicalRightStickX = rightX
@@ -4767,6 +5409,19 @@ class NativeStreamClient(
             NativeInputDiagnostics.add("controller mouse move sent dx=${delta.dx} dy=${delta.dy} auto=$controllerMouseAssistAutoArmed emulation=$controllerMouseEmulationActive")
         }
         return sent
+    }
+
+    private fun sendControllerMouseScroll(stickY: Float) {
+        if (!controllerMouseEmulationActive) return
+        val (notches, nextAccumulator) = AndroidControllerMouseAssist.scrollNotches(
+            stickY = stickY,
+            scrollSensitivity = settings.mouseScrollSensitivity,
+            accumulator = controllerScrollAccumulator
+        )
+        controllerScrollAccumulator = nextAccumulator
+        if (notches != 0) {
+            sendTouchMouseWheel(notches * 120)
+        }
     }
 
     private fun handleControllerMouseButton(buttonMask: Int, pressed: Boolean): Boolean {
@@ -5954,6 +6609,53 @@ class InputEncoder {
         return wrapSingle(bytes)
     }
 
+    /**
+     * A batch of finger updates, one packet per input event.
+     *
+     * Layout, taken from the official web client's encoder. Note the opcode is little-endian while
+     * everything after it is big-endian — the same split every other packet here uses.
+     *
+     * ```
+     * 0..3    opcode 24            uint32 LE
+     * 4..5    payload size         uint16 BE   = 8 + 16 * count
+     * 6..7    count                uint16 BE
+     * 8+      records, 16 bytes each:
+     *           +0     slot        uint8
+     *           +1     phase       uint8       1=down 2=up 4=move 8=cancel
+     *           +2..3  x           uint16 BE   0..65535 across the video area
+     *           +4..5  y           uint16 BE
+     *           +6     radiusX     uint8
+     *           +7     radiusY     uint8
+     *           +8..15 timestamp   int64 BE    microseconds
+     * ```
+     *
+     * Returns null for an empty batch so callers cannot send a header describing nothing.
+     */
+    internal fun encodeTouchBatch(touches: List<TouchRecord>, nowUs: Long = timestampUs()): ByteArray? {
+        if (touches.isEmpty()) return null
+        val count = minOf(touches.size, MAX_TOUCH_RECORDS_PER_BATCH)
+        val payloadSize = 8 + 16 * count
+        val bytes = ByteArray(payloadSize)
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(INPUT_TOUCH)
+        val be = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+        be.putShort(4, payloadSize.toShort())
+        be.putShort(6, count.toShort())
+        for (index in 0 until count) {
+            val touch = touches[index]
+            val offset = 8 + 16 * index
+            bytes[offset] = touch.slot.toByte()
+            bytes[offset + 1] = touch.phase.toByte()
+            be.putShort(offset + 2, touch.x.coerceIn(0, TOUCH_COORDINATE_MAX).toShort())
+            be.putShort(offset + 4, touch.y.coerceIn(0, TOUCH_COORDINATE_MAX).toShort())
+            bytes[offset + 6] = touch.radiusX.coerceIn(0, 255).toByte()
+            bytes[offset + 7] = touch.radiusY.coerceIn(0, 255).toByte()
+            // 0 means "stamp it here", so the router does not have to reach for the same clock
+            // every other packet in this encoder uses.
+            be.putLong(offset + 8, if (touch.timestampUs != 0L) touch.timestampUs else nowUs)
+        }
+        return wrapSingle(bytes, nowUs)
+    }
+
     fun encodeHapticsEnabled(enabled: Boolean): ByteArray {
         val bytes = ByteArray(6)
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(INPUT_HAPTICS_ENABLED)
@@ -6005,11 +6707,11 @@ class InputEncoder {
         return wrapSingle(bytes)
     }
 
-    private fun wrapSingle(payload: ByteArray): ByteArray {
+    private fun wrapSingle(payload: ByteArray, nowUs: Long = timestampUs()): ByteArray {
         if (protocolVersion <= 2) return payload
         return ByteArray(10 + payload.size).also {
             it[0] = 0x23
-            ByteBuffer.wrap(it).order(ByteOrder.BIG_ENDIAN).putLong(1, timestampUs())
+            ByteBuffer.wrap(it).order(ByteOrder.BIG_ENDIAN).putLong(1, nowUs)
             it[9] = 0x22
             payload.copyInto(it, 10)
         }
@@ -6080,6 +6782,12 @@ class InputEncoder {
         const val INPUT_MOUSE_WHEEL = 10
         const val INPUT_GAMEPAD = 12
         const val INPUT_HAPTICS_ENABLED = 13
+
+        /**
+         * Native multi-touch. The host turns these into a Windows digitizer, which is what makes
+         * touch-aware games switch to their mobile UI on their own.
+         */
+        const val INPUT_TOUCH = 24
 
         fun mapKeyEvent(event: KeyEvent): KeyboardPayload? {
             if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return null

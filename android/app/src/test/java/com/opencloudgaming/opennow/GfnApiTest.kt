@@ -195,8 +195,9 @@ class GfnApiTest {
         assertEquals(0, monitor.getValue("positionY").jsonPrimitive.int)
         assertEquals(JsonNull, monitor.getValue("displayData"))
         assertEquals(JsonNull, monitor.getValue("hdr10PlusGamingData"))
-        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(1, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        // GAMEPAD_FRIENDLY: the default for a session that is not asking for a touchscreen.
+        assertEquals(2, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
         assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(1920, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
         assertEquals(1080, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
@@ -295,9 +296,48 @@ class GfnApiTest {
 
         assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
         assertEquals("NATIVE", headers["nv-client-type"])
-        assertEquals("WINDOWS", headers["nv-device-os"])
+        assertEquals("ANDROID", headers["nv-device-os"])
+        assertEquals("PHONE", headers["nv-device-type"])
+        assertTrue(headers["User-Agent"].orEmpty().contains("GFN-PC/22.0"))
+        assertTrue(headers["User-Agent"].orEmpty().contains("Android"))
+        assertEquals("https://play.geforcenow.com", headers["Origin"])
+    }
+
+    @Test
+    fun cloudMatchUsesAndroidTouchIdentityForTouchFriendly() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+            appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
+        )
+
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
+        assertEquals("ANDROID", headers["nv-device-os"])
+        assertEquals("TABLET", headers["nv-device-type"])
+        val userAgent = headers["User-Agent"].orEmpty()
+        assertTrue(userAgent.contains("Android-Generic-Touch"))
+        assertEquals("https://play.geforcenow.com", headers["Origin"])
+    }
+
+    @Test
+    fun cloudMatchUsesAndroidTvIdentityForTvProfile() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+            isAndroidTv = true,
+        )
+
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
+        assertEquals("ANDROID", headers["nv-device-os"])
         assertEquals("DESKTOP", headers["nv-device-type"])
-        assertTrue(headers["User-Agent"].orEmpty().contains("NVIDIACEFClient"))
+        val userAgent = headers["User-Agent"].orEmpty()
+        assertTrue(userAgent.contains("Android-Generic-TV"))
         assertEquals("https://play.geforcenow.com", headers["Origin"])
     }
 
@@ -663,6 +703,33 @@ class GfnApiTest {
         assertTrue(exported.contains("client_token=[redacted]"))
         assertTrue(exported.contains("sub=[redacted]"))
         assertTrue(exported.contains("client_id=public-client"))
+    }
+
+    @Test
+    fun touchFriendlyClaimRequestAdvertisesBrowserPlatform() {
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+
+        // TOUCH_FRIENDLY sessions declare themselves as "android" to trigger in-game mobile UI
+        // layouts (e.g. NTE: Neverness to Everness) and bypass browser resolution caps.
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(GfnAppLaunchMode.TOUCH_FRIENDLY, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
+    }
+
+    @Test
+    fun gamepadFriendlyClaimRequestRetainsWindowsPlatform() {
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(GfnAppLaunchMode.GAMEPAD_FRIENDLY, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
     }
 
 }

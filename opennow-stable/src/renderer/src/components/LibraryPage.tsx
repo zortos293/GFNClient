@@ -9,6 +9,8 @@ import { getControllerFeaturedGames, getControllerHeroBackgroundCandidates } fro
 import { buildConsoleLibraryRows } from "../lib/consoleLibraryRows";
 import { clampRowFocus, moveRowFocus, type RowFocusDirection } from "../lib/consoleRowFocus";
 import { getConsoleStoreChoices } from "../lib/consoleStoreChoices";
+import { withImageWidth } from "../lib/consoleImageSizing";
+import { useConsoleImageWidths } from "../hooks/useConsoleImageWidths";
 import {
   gameMatchesLibraryFilters,
   gameMatchesStoreFilter,
@@ -103,6 +105,7 @@ export const LibraryPage = memo(function LibraryPage({
   const controllerRowRefs = useRef<Array<HTMLDivElement | null>>([]);
   const controllerSurfaceActive = controllerMode && surfaceActive;
   const scrollFocusIntoView = useControllerFocusScroll(controllerSurfaceActive);
+  const imageWidths = useConsoleImageWidths();
 
   useEffect(() => {
     if (!controllerMode || !surfaceActive || !controllerSearchOpen) return;
@@ -182,7 +185,11 @@ export const LibraryPage = memo(function LibraryPage({
       advancing = true;
       const nextIndex = (controllerHeroIndex + 1) % controllerFeaturedGames.length;
       const nextGame = controllerFeaturedGames[nextIndex];
-      const nextImageUrl = nextGame ? getControllerHeroBackgroundCandidates(nextGame)[0] : undefined;
+      // Must match the width the billboard requests, or the preload warms a
+      // different cache entry and the image downloads twice.
+      const nextImageUrl = nextGame
+        ? withImageWidth(getControllerHeroBackgroundCandidates(nextGame)[0], imageWidths.billboard)
+        : undefined;
       if (!nextImageUrl) {
         if (!cancelled) setControllerHeroIndex(nextIndex);
         advancing = false;

@@ -8,6 +8,8 @@ import {
   getPrimaryStoreName,
   getSelectedVariant,
 } from "../../lib/controllerCatalogUi";
+import { withImageWidth } from "../../lib/consoleImageSizing";
+import { useConsoleImageWidths } from "../../hooks/useConsoleImageWidths";
 import { getStoreIconComponent } from "../GameCard";
 
 export interface ConsolePosterCardProps {
@@ -37,6 +39,7 @@ export function ConsolePosterCard({
   onSelect,
   onActivate,
 }: ConsolePosterCardProps): JSX.Element {
+  const imageWidths = useConsoleImageWidths();
   const candidates = useMemo(() => getConsolePosterCandidates(game), [game]);
   const portraitCount = useMemo(() => countConsolePortraitPosterCandidates(game), [game]);
   const [candidateIndex, setCandidateIndex] = useState(0);
@@ -44,9 +47,10 @@ export function ConsolePosterCard({
   // A new game in the same slot must restart the candidate walk.
   useEffect(() => setCandidateIndex(0), [game.id]);
 
-  const artUrl = candidates[candidateIndex];
+  // Ask the CDN for a card-sized image instead of the catalog's 1200px default.
+  const artUrl = withImageWidth(candidates[candidateIndex], imageWidths.card);
   const isLandscapeFallback = artUrl !== undefined && candidateIndex >= portraitCount;
-  const logoUrl = getGameLogoUrl(game);
+  const logoUrl = withImageWidth(getGameLogoUrl(game), imageWidths.card);
   const storeName = getPrimaryStoreName(game, selectedVariantId);
   const StoreIcon = getStoreIconComponent(getSelectedVariant(game, selectedVariantId)?.store ?? storeName);
 

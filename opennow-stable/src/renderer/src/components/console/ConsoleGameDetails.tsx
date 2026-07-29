@@ -9,6 +9,8 @@ import {
   getPrimaryGenre,
 } from "../../lib/controllerCatalogUi";
 import { getGameScreenshots } from "../../lib/consoleGameMedia";
+import { withImageWidth } from "../../lib/consoleImageSizing";
+import { useConsoleImageWidths } from "../../hooks/useConsoleImageWidths";
 import { useTranslation } from "../../i18n";
 
 export interface ConsoleGameDetailsAction {
@@ -42,8 +44,9 @@ export function ConsoleGameDetails({
   onClose,
 }: ConsoleGameDetailsProps): JSX.Element {
   const { t } = useTranslation();
-  const heroUrl = getControllerHeroBackgroundCandidates(game)[0];
-  const logoUrl = getGameLogoUrl(game);
+  const imageWidths = useConsoleImageWidths();
+  const heroUrl = withImageWidth(getControllerHeroBackgroundCandidates(game)[0], imageWidths.billboard);
+  const logoUrl = withImageWidth(getGameLogoUrl(game), imageWidths.screenshot);
   const screenshots = getGameScreenshots(game);
   const players = getPlayerSummary(game);
   const genre = getPrimaryGenre(game);
@@ -124,7 +127,7 @@ export function ConsoleGameDetails({
           <div className="console-details-media">
             <img
               className="console-details-shot"
-              src={screenshots[Math.min(activeShot, screenshots.length - 1)]}
+              src={withImageWidth(screenshots[Math.min(activeShot, screenshots.length - 1)], imageWidths.screenshot)}
               alt=""
               decoding="async"
             />
@@ -138,7 +141,7 @@ export function ConsoleGameDetails({
                     aria-label={t("library.screenshotNumber", { index: index + 1 })}
                     onClick={() => setActiveShot(index)}
                   >
-                    <img src={shot} alt="" loading="lazy" decoding="async" />
+                    <img src={withImageWidth(shot, imageWidths.thumb)} alt="" loading="lazy" decoding="async" />
                   </button>
                 ))}
               </div>

@@ -7,6 +7,8 @@ import {
   getPrimaryGenre,
   getPrimaryStoreName,
 } from "../../lib/controllerCatalogUi";
+import { withImageWidth } from "../../lib/consoleImageSizing";
+import { useConsoleImageWidths } from "../../hooks/useConsoleImageWidths";
 
 export interface ConsoleBillboardProps {
   game: GameInfo;
@@ -37,8 +39,9 @@ export function ConsoleBillboard({
   activeDotIndex = 0,
   fallbackGenreLabel,
 }: ConsoleBillboardProps): JSX.Element {
-  const artUrl = getControllerHeroBackgroundCandidates(game)[0];
-  const logoUrl = getControllerHeroLogoUrl(game);
+  const imageWidths = useConsoleImageWidths();
+  const artUrl = withImageWidth(getControllerHeroBackgroundCandidates(game)[0], imageWidths.billboard);
+  const logoUrl = withImageWidth(getControllerHeroLogoUrl(game), imageWidths.screenshot);
 
   /*
    * Both layers must commit in the SAME render. Deriving the outgoing layer in

@@ -1390,12 +1390,13 @@ body,
   display: none;
 }
 
+/* The console shell owns the entire window: no padding at all, so the billboard
+   runs full-bleed behind the translucent navbar and the hint bar sits flush
+   against the bottom edge instead of floating above a black bar. */
 .app-container--controller .main-content {
   height: 100%;
   margin-top: 0;
-  /* No bottom padding: the console shell owns the full height so its hint bar
-     sits flush against the window edge instead of floating above a black bar. */
-  padding: calc(var(--navbar-h) + 24px) 0 0;
+  padding: 0;
   overflow: hidden;
 }
 
@@ -9581,9 +9582,13 @@ button.game-card-store-chip.owned.active:hover {
   z-index: 1000;
 }
 
+/* Sits over the billboard. A plain gradient, no backdrop blur — the blur made
+   the artwork behind it look smeared. */
 .app-container--controller .navbar--controller {
-  background: linear-gradient(180deg, rgba(2, 5, 4, 0.88), rgba(2, 5, 4, 0.42) 72%, transparent);
-  backdrop-filter: blur(18px) saturate(1.1);
+  background: linear-gradient(180deg, rgba(2, 5, 4, 0.85) 0%, rgba(2, 5, 4, 0.45) 64%, transparent 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: none;
 }
 
 .stream-loading-transition {

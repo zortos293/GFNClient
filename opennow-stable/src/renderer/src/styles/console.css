@@ -229,6 +229,7 @@
 /* The billboard competes with the shelves for a scroll area that is already
    shorter than the viewport (navbar + hint bar). At 52vh it took two thirds of
    that area and only one shelf survived, so it is capped well below half. */
+/* Runs full-bleed to the top of the window, behind the translucent navbar. */
 .console-billboard {
   position: relative;
   width: 100%;
@@ -695,7 +696,9 @@
   align-items: center;
   gap: calc(var(--console-u) * 1.6);
   padding: calc(var(--console-u) * 0.619) var(--console-gutter);
-  background: linear-gradient(to top, var(--bg-a) 42%, transparent);
+  /* Gradient only, matching the navbar — no backdrop blur; it smeared the
+     shelves scrolling underneath. */
+  background: linear-gradient(to top, rgba(2, 5, 4, 0.94) 45%, rgba(2, 5, 4, 0.55) 80%, transparent);
   pointer-events: auto;
 }
 

@@ -460,8 +460,7 @@ export function App(): JSX.Element {
     : (selectedProvider?.streamingServiceUrl ?? "");
 
   const {
-    games,
-    featuredGames,
+    games,
     storePanels,
     libraryGames,
     searchQuery,
@@ -2656,8 +2655,7 @@ export function App(): JSX.Element {
                 supportedCount={catalogSupportedCount}
                 controllerMode={effectiveControllerMode}
                 surfaceActive={catalogSurfaceActive}
-                storePanels={storePanels}
-                storeHeroGames={featuredGames}
+                storePanels={storePanels}
                 activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}
                 onMarkGameOwned={handleMarkGameOwned}
@@ -2686,8 +2684,7 @@ export function App(): JSX.Element {
                   selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
                   onSortChange={setCatalogSelectedSortId}
                   controllerMode={effectiveControllerMode}
-                  surfaceActive={catalogSurfaceActive}
-                  featuredGames={featuredGames.length > 0 ? featuredGames : games}
+                  surfaceActive={catalogSurfaceActive}
                   activeSessionAppIds={activeSessionAppIds}
                   onBuyGame={handleBuyGame}
                   onPreviousControllerPage={() => navigateControllerPage(-1)}

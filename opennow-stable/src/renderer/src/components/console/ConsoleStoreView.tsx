@@ -26,8 +26,6 @@ export interface ConsoleStoreViewProps {
   onFocusCard: (rowIndex: number, columnIndex: number) => void;
   onActivateCard: (game: GameInfo) => void;
   heroGame: GameInfo | undefined;
-  heroDotCount: number;
-  activeHeroDotIndex: number;
   selectedVariantByGameId: Record<string, string>;
   markOwnedInFlightByVariantId: Record<string, boolean>;
   onHeroPrimaryAction: (game: GameInfo) => void;
@@ -65,8 +63,6 @@ export function ConsoleStoreView({
   onFocusCard,
   onActivateCard,
   heroGame,
-  heroDotCount,
-  activeHeroDotIndex,
   selectedVariantByGameId,
   markOwnedInFlightByVariantId,
   onHeroPrimaryAction,
@@ -149,8 +145,6 @@ export function ConsoleStoreView({
             game={heroGame}
             selectedVariantId={heroVariantId}
             fallbackGenreLabel={t("home.controller.cloudGame")}
-            dotCount={heroDotCount}
-            activeDotIndex={activeHeroDotIndex}
             extraChips={[{
               label: heroNeedsOwnership ? t("home.controller.notOwned") : t("home.controller.owned"),
               accent: !heroNeedsOwnership,

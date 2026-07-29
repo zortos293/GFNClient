@@ -5,15 +5,11 @@ import { AnimatePresence, m } from "motion/react";
 import type { CatalogSortOption, GameInfo } from "@shared/gfn";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import type { PlaytimeData } from "../lib/gameCatalog";
-import { getControllerFeaturedGames, getControllerHeroBackgroundCandidates } from "../lib/controllerCatalogUi";
 import { buildConsoleLibraryRows } from "../lib/consoleLibraryRows";
 import { clampRowFocus, moveRowFocus, type RowFocusDirection } from "../lib/consoleRowFocus";
 import { getConsoleStoreChoices } from "../lib/consoleStoreChoices";
-import { withImageWidth } from "../lib/consoleImageSizing";
-import { useConsoleImageWidths } from "../hooks/useConsoleImageWidths";
 import {
   gameMatchesLibraryFilters,
-  gameMatchesStoreFilter,
   getControllerStoreFilterItems,
   getLibraryFilterGroups,
   getLibraryFilterOptionById,
@@ -30,7 +26,6 @@ import { SelectDropdown } from "./ui/SelectDropdown";
 import { LibraryControllerView } from "./library/LibraryControllerView";
 import { MotionSpinner } from "./MotionSpinner";
 
-const CONTROLLER_HERO_ROTATION_MS = 8000;
 
 export interface LibraryPageProps {
   games: GameInfo[];
@@ -51,7 +46,6 @@ export interface LibraryPageProps {
   onSortChange: (sortId: string) => void;
   controllerMode?: boolean;
   surfaceActive?: boolean;
-  featuredGames?: GameInfo[];
   activeSessionAppIds?: number[];
   onPreviousControllerPage?: () => void;
   onNextControllerPage?: () => void;
@@ -76,7 +70,6 @@ export const LibraryPage = memo(function LibraryPage({
   onSortChange,
   controllerMode = false,
   surfaceActive = true,
-  featuredGames = [],
   activeSessionAppIds = [],
   onPreviousControllerPage,
   onNextControllerPage,
@@ -87,7 +80,6 @@ export const LibraryPage = memo(function LibraryPage({
     onSelectGame,
     onSelectGameVariant,
   });
-  const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
   const [detailsActionIndex, setDetailsActionIndex] = useState(0);
   const [storePickerOpen, setStorePickerOpen] = useState(false);
@@ -99,13 +91,10 @@ export const LibraryPage = memo(function LibraryPage({
   const [selectedLibraryFilterIds, setSelectedLibraryFilterIds] = useState<string[]>([]);
   const [focusedRowIndex, setFocusedRowIndex] = useState(0);
   const [focusedColumnIndex, setFocusedColumnIndex] = useState(0);
-  /** Set once the user moves focus themselves — stops the billboard rotating. */
-  const [hasBrowsed, setHasBrowsed] = useState(false);
   const controllerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const controllerRowRefs = useRef<Array<HTMLDivElement | null>>([]);
   const controllerSurfaceActive = controllerMode && surfaceActive;
   const scrollFocusIntoView = useControllerFocusScroll(controllerSurfaceActive);
-  const imageWidths = useConsoleImageWidths();
 
   useEffect(() => {
     if (!controllerMode || !surfaceActive || !controllerSearchOpen) return;
@@ -162,64 +151,6 @@ export const LibraryPage = memo(function LibraryPage({
     () => getControllerStoreFilterItems(games, t("library.allStores")),
     [games, t],
   );
-  const controllerGames = useMemo(
-    () => controllerStoreFilterId === "library" ? games : games.filter((game) => gameMatchesStoreFilter(game, controllerStoreFilterId)),
-    [controllerStoreFilterId, games],
-  );
-  const controllerFeaturedGames = useMemo(
-    () => getControllerFeaturedGames(featuredGames, controllerGames),
-    [featuredGames, controllerGames],
-  );
-
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive) return;
-    setControllerHeroIndex(0);
-  }, [controllerMode, controllerStoreFilterId, controllerFeaturedGames.length, controllerFeaturedGames[0]?.id, surfaceActive]);
-
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive || controllerFeaturedGames.length <= 1) return;
-    let cancelled = false;
-    let advancing = false;
-    const interval = window.setInterval(() => {
-      if (advancing) return;
-      advancing = true;
-      const nextIndex = (controllerHeroIndex + 1) % controllerFeaturedGames.length;
-      const nextGame = controllerFeaturedGames[nextIndex];
-      // Must match the width the billboard requests, or the preload warms a
-      // different cache entry and the image downloads twice.
-      const nextImageUrl = nextGame
-        ? withImageWidth(getControllerHeroBackgroundCandidates(nextGame)[0], imageWidths.billboard)
-        : undefined;
-      if (!nextImageUrl) {
-        if (!cancelled) setControllerHeroIndex(nextIndex);
-        advancing = false;
-        return;
-      }
-
-      const image = new Image();
-      image.src = nextImageUrl;
-      void image.decode()
-        .catch(() => undefined)
-        .then(() => {
-          if (!cancelled) setControllerHeroIndex(nextIndex);
-        })
-        .finally(() => {
-          advancing = false;
-        });
-    }, CONTROLLER_HERO_ROTATION_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [controllerHeroIndex, controllerMode, controllerFeaturedGames, surfaceActive]);
-
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive || games.length === 0) return;
-    if (controllerGames.some((game) => game.id === selectedGameId)) return;
-    onSelectGame(controllerGames[0]?.id ?? games[0].id);
-    setFocusedRowIndex(0);
-    setFocusedColumnIndex(0);
-  }, [controllerGames, controllerMode, games, onSelectGame, selectedGameId, surfaceActive]);
 
   useEffect(() => {
     if (controllerStoreFilterItems.some((item) => item.id === controllerStoreFilterId)) return;
@@ -232,17 +163,33 @@ export const LibraryPage = memo(function LibraryPage({
     [controllerStoreFilterId, games, playtimeData, t],
   );
   const controllerRowLengths = useMemo(() => controllerRows.map((row) => row.games.length), [controllerRows]);
+
+  /**
+   * Keeps the shared selection pinned to whatever card is focused on THIS
+   * page. selectedGameId is app-level state shared with the store, so on
+   * arriving here it still points at the other page's game; syncing focus ->
+   * selection (rather than the reverse) is what makes the billboard, the
+   * focus ring and the selection agree.
+   */
+  useEffect(() => {
+    if (!controllerMode || !surfaceActive || controllerRowLengths.length === 0) return;
+    const next = clampRowFocus(controllerRowLengths, { rowIndex: focusedRowIndex, columnIndex: focusedColumnIndex });
+    const focusedGame = controllerRows[next.rowIndex]?.games[next.columnIndex];
+    if (!focusedGame) return;
+    if (next.rowIndex !== focusedRowIndex) setFocusedRowIndex(next.rowIndex);
+    if (next.columnIndex !== focusedColumnIndex) setFocusedColumnIndex(next.columnIndex);
+    if (focusedGame.id !== selectedGameId) onSelectGame(focusedGame.id);
+  }, [controllerMode, controllerRowLengths, controllerRows, focusedColumnIndex, focusedRowIndex, onSelectGame, selectedGameId, surfaceActive]);
   const selectedControllerGame = controllerRows[focusedRowIndex]?.games[focusedColumnIndex]
     ?? controllerRows[0]?.games[0];
 
-  const focusControllerCard = (rowIndex: number, columnIndex: number, options: { userInitiated?: boolean } = {}): void => {
+  const focusControllerCard = (rowIndex: number, columnIndex: number): void => {
     if (!surfaceActive || controllerRowLengths.length === 0) return;
     const next = clampRowFocus(controllerRowLengths, { rowIndex, columnIndex });
     const nextGame = controllerRows[next.rowIndex]?.games[next.columnIndex];
     if (!nextGame) return;
     setFocusedRowIndex(next.rowIndex);
     setFocusedColumnIndex(next.columnIndex);
-    if (options.userInitiated !== false) setHasBrowsed(true);
     onSelectGame(nextGame.id);
     // Scroll the card horizontally into its track first, then let the hook bring
     // the whole row into view — the row must win the vertical scroll.
@@ -278,7 +225,6 @@ export const LibraryPage = memo(function LibraryPage({
     const nextItem = controllerStoreFilterItems[(activeIndex + 1) % controllerStoreFilterItems.length];
     setControllerStoreFilterId(nextItem.id);
     setFocusedControllerStoreFilterIndex((activeIndex + 1) % controllerStoreFilterItems.length);
-    setControllerHeroIndex(0);
   };
 
   const showControllerStoreFilterOverlay = (): void => {
@@ -297,8 +243,7 @@ export const LibraryPage = memo(function LibraryPage({
       const item = controllerStoreFilterItems[focusedControllerStoreFilterIndex] ?? controllerStoreFilterItems[0];
       if (item) {
         setControllerStoreFilterId(item.id);
-        setControllerHeroIndex(0);
-      }
+          }
     }
     setControllerStoreFilterOpen(false);
   };
@@ -505,11 +450,10 @@ export const LibraryPage = memo(function LibraryPage({
   );
 
   if (controllerMode) {
-    // Featured carousel until the user starts browsing, then the billboard
-    // tracks whatever card they have focused.
-    const heroGame = hasBrowsed
-      ? selectedControllerGame ?? controllerFeaturedGames[controllerHeroIndex]
-      : controllerFeaturedGames[controllerHeroIndex] ?? selectedControllerGame;
+    // Always the focused card. A separate featured carousel meant the billboard
+    // and the focus ring disagreed, and it headlined a store game that was not
+    // even in this library.
+    const heroGame = selectedControllerGame;
     return (
       <LibraryControllerView
         isLoading={isLoading}

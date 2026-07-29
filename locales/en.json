@@ -189,6 +189,10 @@
     }
   },
   "console": {
+    "splash": {
+      "title": "OpenNOW",
+      "subtitle": "Console mode"
+    },
     "profiles": {
       "whosPlaying": "Who's playing?",
       "signedIn": "Signed in",

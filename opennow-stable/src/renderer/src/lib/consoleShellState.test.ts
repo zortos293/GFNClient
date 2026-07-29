@@ -11,12 +11,12 @@ const BASE = {
   savedAccountCount: 2,
 };
 
-test("boots into the picker in console mode", () => {
-  assert.equal(resolveInitialConsoleStage(BASE), "picker");
+test("boots into the splash, which hands over to the picker", () => {
+  assert.equal(resolveInitialConsoleStage(BASE), "splash");
 });
 
 test("shows the picker even with a single account, so Manage profiles stays reachable", () => {
-  assert.equal(resolveInitialConsoleStage({ ...BASE, savedAccountCount: 1 }), "picker");
+  assert.equal(resolveInitialConsoleStage({ ...BASE, savedAccountCount: 1 }), "splash");
 });
 
 test("never gates a direct launch, even when profiles are locked", () => {

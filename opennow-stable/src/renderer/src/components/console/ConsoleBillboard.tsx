@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { JSX, ReactNode } from "react";
 import type { GameInfo } from "@shared/gfn";
 import {
@@ -40,28 +40,38 @@ export function ConsoleBillboard({
   const artUrl = getControllerHeroBackgroundCandidates(game)[0];
   const logoUrl = getControllerHeroLogoUrl(game);
 
-  const [previousArtUrl, setPreviousArtUrl] = useState<string | undefined>(undefined);
-  const renderedArtUrlRef = useRef(artUrl);
-
-  useEffect(() => {
-    if (renderedArtUrlRef.current === artUrl) return;
-    setPreviousArtUrl(renderedArtUrlRef.current);
-    renderedArtUrlRef.current = artUrl;
-  }, [artUrl]);
+  /*
+   * Both layers must commit in the SAME render. Deriving the outgoing layer in
+   * an effect painted the incoming image (which starts at opacity 0) for one
+   * frame with nothing behind it, so the hero flashed to background on every
+   * change — very visible on the store, where focus and the featured carousel
+   * both drive it. This is React's documented "adjust state during render"
+   * pattern: the re-render happens before the browser paints.
+   */
+  const [fade, setFade] = useState<{ current: string | undefined; previous: string | undefined }>({
+    current: artUrl,
+    previous: undefined,
+  });
+  if (fade.current !== artUrl) {
+    setFade({ current: artUrl, previous: fade.current });
+  }
+  const previousArtUrl = fade.previous;
 
   const storeName = getPrimaryStoreName(game, selectedVariantId);
   const genre = getPrimaryGenre(game) ?? fallbackGenreLabel;
 
   return (
     <section className="console-billboard" aria-label={game.title}>
-      {previousArtUrl && (
+      {previousArtUrl && previousArtUrl !== artUrl && (
         <img
           key={previousArtUrl}
           className="console-billboard-art console-billboard-art--leaving"
           src={previousArtUrl}
           alt=""
           aria-hidden="true"
-          onAnimationEnd={() => setPreviousArtUrl(undefined)}
+          onAnimationEnd={() => setFade((state) => (
+            state.previous === previousArtUrl ? { ...state, previous: undefined } : state
+          ))}
         />
       )}
       {artUrl ? (

@@ -1266,17 +1266,19 @@ body,
   left: clamp(26px, 2.4vw, 92px);
 }
 
+/* No plate behind the mark — at TV size the rounded green tile read as a border
+   around the logo rather than as part of it. */
 .navbar--controller .navbar-brand {
-  width: 46px;
-  height: 46px;
-  padding: 10px;
-  border-radius: 13px;
-  background: #98e7b0;
+  width: auto;
+  height: auto;
+  padding: 0;
+  border-radius: 0;
+  background: none;
 }
 
 .navbar--controller .navbar-brand .opennow-logo-mark {
-  width: 26px;
-  filter: none;
+  width: calc(var(--console-u) * 2.6);
+  filter: drop-shadow(0 calc(var(--console-u) * 0.1) calc(var(--console-u) * 0.5) rgba(0, 0, 0, 0.55));
 }
 
 .navbar--controller .navbar-logo-text {
@@ -1419,8 +1421,8 @@ body,
   }
 
   .navbar--controller .navbar-brand {
-    width: 42px;
-    height: 42px;
+    width: auto;
+    height: auto;
   }
 
   .navbar--controller .navbar-nav {

@@ -1,6 +1,9 @@
 import type { SavedAccount } from "@shared/gfn";
 
-export type ConsoleShellStage = "shell" | "picker" | "pin" | "manage";
+export type ConsoleShellStage = "shell" | "splash" | "picker" | "pin" | "manage";
+
+/** How long the console splash holds before handing over to the picker. */
+export const CONSOLE_SPLASH_MS = 1600;
 
 export interface ResolveInitialConsoleStageInput {
   controllerMode: boolean;
@@ -36,7 +39,9 @@ export function resolveInitialConsoleStage({
   if (!hasAuthSession) return "shell";
   // Nothing to pick between, and no profile management to reach.
   if (savedAccountCount === 0) return "shell";
-  return "picker";
+  // Branded splash first, then the picker — dropping straight into a profile
+  // grid gives console mode no sense of having started.
+  return "splash";
 }
 
 /**

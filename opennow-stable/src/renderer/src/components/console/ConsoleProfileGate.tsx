@@ -17,6 +17,7 @@ import { useTranslation } from "../../i18n";
 import { ConsoleManageProfiles } from "./ConsoleManageProfiles";
 import { ConsolePinPad, PIN_KEYPAD_ROWS } from "./ConsolePinPad";
 import { ConsoleProfilePicker } from "./ConsoleProfilePicker";
+import { ConsoleSplash } from "./ConsoleSplash";
 
 /** Picker tiles wrap at this many per row, matching the CSS grid. */
 const PICKER_COLUMNS = 5;
@@ -155,6 +156,12 @@ export function ConsoleProfileGate({
   }, []);
 
   useControllerKeyDown(stage !== "shell", (event) => {
+    if (stage === "splash") {
+      event.preventDefault();
+      shell.skipSplash();
+      return;
+    }
+
     if (stage === "picker") {
       if (event.key === "ArrowLeft") { event.preventDefault(); movePickerFocus("left"); }
       else if (event.key === "ArrowRight") { event.preventDefault(); movePickerFocus("right"); }
@@ -188,6 +195,11 @@ export function ConsoleProfileGate({
   useControllerNavigation({
     enabled: stage !== "shell",
     onFrame: ({ buttons, pressed }) => {
+      if (stage === "splash") {
+        if (pressed) shell.skipSplash();
+        return;
+      }
+
       if (stage === "picker") {
         if (pressed & controllerButton.left) movePickerFocus("left");
         if (pressed & controllerButton.right) movePickerFocus("right");
@@ -230,6 +242,8 @@ export function ConsoleProfileGate({
 
   return (
     <div className="console-gate" role="dialog" aria-modal="true" aria-label={t("console.profiles.whosPlaying")}>
+      {stage === "splash" && <ConsoleSplash />}
+
       {stage === "picker" && (
         <ConsoleProfilePicker
           entries={pickerEntries}

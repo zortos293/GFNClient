@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsolePinVerifyResult, SavedAccount } from "@shared/gfn";
 
 import {
+  CONSOLE_SPLASH_MS,
   resolveInitialConsoleStage,
   resolveProfileSelection,
   type ConsoleShellStage,
@@ -29,6 +30,7 @@ export interface ConsoleShell {
   verifyResult: ConsolePinVerifyResult | null;
   errorMessage: string | null;
   openPicker: () => void;
+  skipSplash: () => void;
   closeToShell: () => void;
   openManage: () => void;
   selectPickerEntry: (index: number) => Promise<void>;
@@ -109,6 +111,18 @@ export function useConsoleShell({
     setErrorMessage(null);
     setPendingUserId(null);
     setStage("picker");
+  }, []);
+
+  // The splash is a timed hand-off, never a place the user can get stuck.
+  useEffect(() => {
+    if (stage !== "splash") return undefined;
+    const timer = window.setTimeout(() => setStage("picker"), CONSOLE_SPLASH_MS);
+    return () => window.clearTimeout(timer);
+  }, [stage]);
+
+  /** Lets any button press skip the splash rather than waiting it out. */
+  const skipSplash = useCallback(() => {
+    setStage((current) => (current === "splash" ? "picker" : current));
   }, []);
 
   const closeToShell = useCallback(() => {
@@ -210,6 +224,7 @@ export function useConsoleShell({
     verifyResult,
     errorMessage,
     openPicker,
+    skipSplash,
     closeToShell,
     openManage,
     selectPickerEntry,

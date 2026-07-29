@@ -2384,7 +2384,10 @@ internal class FirstVideoFrameWatchdog(
         }
         val startedAt = bytesWithoutFrameSinceMs ?: nowMs.also { bytesWithoutFrameSinceMs = it }
         return nowMs - startedAt >= timeoutMs
-    }internal data class TouchMouseDelta(
+    }
+}
+
+internal data class TouchMouseDelta(
     val dx: Int,
     val dy: Int,
 )

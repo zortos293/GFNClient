@@ -58,6 +58,8 @@ import {
   type AppUpdaterController,
 } from "./updater";
 import { registerAccountCatalogIpcHandlers } from "./ipc/accountCatalogHandlers";
+import { registerConsolePinIpcHandlers } from "./ipc/consolePinHandlers";
+import { createSafeStorageAdapter } from "./security/safeStorageAdapter";
 import { registerCoreIpcHandlers } from "./ipc/coreHandlers";
 import { registerSessionIpcHandlers } from "./ipc/sessionHandlers";
 import {
@@ -449,6 +451,10 @@ function registerIpcHandlers(): void {
     refreshScheduler,
   });
 
+  registerConsolePinIpcHandlers({
+    getConsoleProfiles: () => authService.getConsoleProfiles(),
+  });
+
   registerSessionIpcHandlers({
     ipcMain,
     dialog,
@@ -516,6 +522,8 @@ app.whenReady().then(async () => {
 
   authService = new AuthService(
     join(app.getPath("userData"), "auth-state.json"),
+    join(app.getPath("userData"), "console-profiles.json"),
+    createSafeStorageAdapter(),
   );
   await authService.initialize();
 

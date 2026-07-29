@@ -1,39 +1,27 @@
-import { Search, LayoutGrid, ArrowUpDown, Filter, ChevronDown, Gamepad2, Menu } from "lucide-react";
+import { Search, LayoutGrid, ArrowUpDown, Filter, ChevronDown } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
-import { AnimatePresence, m } from "motion/react";
-import { isOwnedLibraryStatus } from "@shared/gfn";
-import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult, GameVariant } from "@shared/gfn";
-import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
+import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult } from "@shared/gfn";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
-import { appendImageType, appendUnique } from "../lib/controllerCatalogUi";
+import {
+  gameNeedsPurchase,
+  getControllerHeroBackgroundCandidates,
+  getNextVariantId,
+  preloadControllerHeroImage,
+} from "../lib/controllerCatalogUi";
+import { clampRowFocus, moveRowFocus, type RowFocusDirection } from "../lib/consoleRowFocus";
+import { getConsoleStoreChoices } from "../lib/consoleStoreChoices";
 import { useTranslation } from "../i18n";
-import { controllerButton, readControllerGamepadButtons } from "../utils/controllerGamepad";
-import { pageTransition, panelSpring } from "./MotionProvider";
+import { controllerButton } from "../utils/controllerGamepad";
+import { useControllerFocusScroll } from "../hooks/useControllerFocusScroll";
+import { useControllerKeyDown, useControllerNavigation } from "../hooks/useControllerNavigation";
+import { ConsoleStoreView } from "./console/ConsoleStoreView";
 import { SelectDropdown } from "./ui/SelectDropdown";
 import { MotionSpinner } from "./MotionSpinner";
 
 const CONTROLLER_STORE_HERO_ROTATION_MS = 7000;
-const CONTROLLER_MOVE_REPEAT_MS = 140;
-
-const CONTROLLER_STORE_PROMINENT_IMAGE_KEYS = [
-  "MARQUEE_HERO_IMAGE",
-  "HERO_IMAGE",
-  "TV_BANNER",
-  "FEATURE_IMAGE",
-  "KEY_ART",
-  "KEY_IMAGE",
-  "GAME_BOX_ART",
-] as const;
-
-const CONTROLLER_STORE_TILE_IMAGE_KEYS = [
-  "TV_BANNER",
-  "HERO_IMAGE",
-  "KEY_IMAGE",
-  "KEY_ART",
-  "GAME_BOX_ART",
-  "FEATURE_IMAGE",
-] as const;
+/** Cap per shelf so a curated panel cannot produce an unbounded row. */
+const CONTROLLER_STORE_ROW_LIMIT = 18;
 
 export interface HomePageProps {
   games: GameInfo[];
@@ -65,167 +53,6 @@ export interface HomePageProps {
   onNextControllerPage?: () => void;
 }
 
-function getSteamHeaderUrl(game: GameInfo): string | undefined {
-  const steamVariant = game.variants.find((variant) => /^\d+$/.test(variant.id) && variant.store.toUpperCase().includes("STEAM"));
-  const appId = steamVariant?.id ?? (/^\d+$/.test(game.launchAppId ?? "") ? game.launchAppId : undefined);
-  return appId ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg` : undefined;
-}
-
-function getControllerStoreImageCandidates(game: GameInfo, prominent: boolean): string[] {
-  const candidates: string[] = [];
-  const keys = prominent ? CONTROLLER_STORE_PROMINENT_IMAGE_KEYS : CONTROLLER_STORE_TILE_IMAGE_KEYS;
-  for (const type of keys) appendImageType(candidates, game, type);
-  appendUnique(candidates, game.heroImageUrl);
-  appendUnique(candidates, game.imageUrl);
-  for (const screenshot of game.screenshotUrls ?? []) {
-    appendUnique(candidates, screenshot);
-    if (!prominent) break;
-  }
-  appendUnique(candidates, game.screenshotUrl);
-  appendUnique(candidates, getSteamHeaderUrl(game));
-  return candidates;
-}
-
-function getControllerStoreLogoUrl(game: GameInfo): string | undefined {
-  return game.imageUrlsByType?.GAME_LOGO?.[0]
-    ?? game.imageUrlsByType?.LOGO?.[0]
-    ?? game.imageUrlsByType?.TITLE_LOGO?.[0];
-}
-
-function preloadControllerHeroImage(imageUrl: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.onload = () => {
-      void image.decode()
-        .catch(() => undefined)
-        .then(() => resolve(image.naturalWidth > 0));
-    };
-    image.onerror = () => resolve(false);
-    image.src = imageUrl;
-  });
-}
-
-function getSelectedVariant(game: GameInfo, selectedVariantId?: string): GameVariant | undefined {
-  return game.variants.find((variant) => variant.id === selectedVariantId)
-    ?? game.variants[game.selectedVariantIndex]
-    ?? game.variants[0];
-}
-
-function storeVariantIsOwned(variant: GameVariant | undefined): boolean {
-  return Boolean(variant?.inLibrary || variant?.librarySelected || isOwnedLibraryStatus(variant?.libraryStatus));
-}
-
-function getVariantDisplayName(variant: GameVariant | undefined, fallback: string): string {
-  return variant?.store ? getStoreDisplayName(variant.store) : fallback;
-}
-
-function gameNeedsPurchase(game: GameInfo, selectedVariantId?: string): boolean {
-  const selectedVariant = getSelectedVariant(game, selectedVariantId);
-  return !storeVariantIsOwned(selectedVariant);
-}
-
-function getNextVariantId(game: GameInfo, selectedVariantId?: string): string | undefined {
-  if (game.variants.length === 0) return undefined;
-  const activeIndex = Math.max(0, game.variants.findIndex((variant) => variant.id === selectedVariantId));
-  return game.variants[(activeIndex + 1) % game.variants.length]?.id;
-}
-
-function getPrimaryGenre(game: GameInfo): string {
-  return game.genres?.[0] ?? game.playType ?? "Cloud Game";
-}
-
-function getPrimaryStoreName(game: GameInfo, selectedVariantId?: string): string {
-  const store = getSelectedVariant(game, selectedVariantId)?.store ?? game.availableStores?.[0] ?? "Cloud";
-  const upper = store.toUpperCase();
-  if (upper.includes("STEAM")) return "Steam";
-  if (upper.includes("BATTLE")) return "Battle.net";
-  if (upper.includes("UBISOFT") || upper.includes("UPLAY")) return "Ubisoft";
-  if (upper.includes("XBOX")) return "Xbox";
-  if (upper.includes("EPIC")) return "Epic";
-  if (upper.includes("EA")) return "EA";
-  return getStoreDisplayName(store);
-}
-
-function ControllerStoreTile({
-  game,
-  selectedVariantId,
-  focused,
-  onFocus,
-  onMarkOwned,
-  onPlay,
-  isMarkingOwned,
-}: {
-  game: GameInfo;
-  selectedVariantId?: string;
-  focused: boolean;
-  onFocus: () => void;
-  onMarkOwned: () => void;
-  onPlay: () => void;
-  isMarkingOwned: boolean;
-}): JSX.Element {
-  const { t } = useTranslation();
-  const imageUrl = getControllerStoreImageCandidates(game, false)[0];
-  const selectedVariant = getSelectedVariant(game, selectedVariantId);
-  const storeName = getPrimaryStoreName(game, selectedVariantId);
-  const StoreIcon = getStoreIconComponent(selectedVariant?.store ?? storeName);
-  const needsPurchase = gameNeedsPurchase(game, selectedVariantId);
-
-  return (
-    <m.div
-      role="button"
-      tabIndex={0}
-      className={`controller-store-tile${focused ? " focused" : ""}`}
-      onClick={onFocus}
-      onDoubleClick={() => {
-        if (needsPurchase) {
-          onMarkOwned();
-          return;
-        }
-        onPlay();
-      }}
-      aria-label={game.title}
-      animate={{ y: focused ? -7 : 0, scale: focused ? 1.035 : 1 }}
-      whileTap={{ y: focused ? -5 : 0, scale: 0.98 }}
-      transition={panelSpring}
-    >
-      <span className="controller-store-tile-art">
-        {imageUrl ? <img src={imageUrl} alt="" loading="lazy" /> : <span className="controller-store-tile-placeholder">{game.title.slice(0, 1)}</span>}
-      </span>
-      <span className="controller-store-tile-gradient" />
-      <span className="controller-store-tile-shine" />
-      <span className="controller-store-tile-accent" />
-      <span className="controller-store-tile-badge">
-        <StoreIcon />
-        <span>{storeName}</span>
-      </span>
-      <span className={`controller-store-tile-ownership${needsPurchase ? " is-not-owned" : " is-owned"}`}>
-        {needsPurchase ? t("home.controller.notOwned") : t("home.controller.owned")}
-      </span>
-      {!needsPurchase && (
-        <span className="controller-store-tile-variant">
-          {t("home.controller.variant", { variant: getVariantDisplayName(selectedVariant, storeName) })}
-        </span>
-      )}
-      <button
-        type="button"
-        className="controller-store-tile-action"
-        onClick={(event) => {
-          event.stopPropagation();
-          onFocus();
-          if (needsPurchase) {
-            onMarkOwned();
-            return;
-          }
-          onPlay();
-        }}
-        disabled={isMarkingOwned}
-      >
-        {needsPurchase ? (isMarkingOwned ? t("app.status.markingOwned") : t("app.actions.markAsOwned")) : t("app.actions.play")}
-      </button>
-    </m.div>
-  );
-}
 
 export const HomePage = memo(function HomePage({
   games,
@@ -266,36 +93,16 @@ export const HomePage = memo(function HomePage({
   const [focusedRowIndex, setFocusedRowIndex] = useState(0);
   const [focusedColumnIndex, setFocusedColumnIndex] = useState(0);
   const [controllerSearchOpen, setControllerSearchOpen] = useState(false);
+  /** Set once the user moves focus themselves — stops the billboard rotating. */
+  const [hasBrowsed, setHasBrowsed] = useState(false);
+  const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
+  const [detailsActionIndex, setDetailsActionIndex] = useState(0);
+  const [storePickerOpen, setStorePickerOpen] = useState(false);
+  const [storePickerIndex, setStorePickerIndex] = useState(0);
   const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
   const controllerSearchInputRef = useRef<HTMLInputElement | null>(null);
-  const gamepadPreviousButtonsRef = useRef(0);
-  const gamepadLastMoveAtRef = useRef(0);
-  const gamepadFrameRef = useRef<number | null>(null);
-  const pendingScrollFrameRef = useRef<number | null>(null);
-  const controllerInputStateRef = useRef({
-    focusTile: (_row: number, _column: number): void => {},
-    launchFocusedTile: (): void => {},
-    cycleFocusedVariant: (): boolean => false,
-    focusedRowIndex: 0,
-    focusedColumnIndex: 0,
-  });
-
-  useEffect(() => {
-    if (surfaceActive) return undefined;
-    if (pendingScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(pendingScrollFrameRef.current);
-      pendingScrollFrameRef.current = null;
-    }
-    gamepadPreviousButtonsRef.current = 0;
-    gamepadLastMoveAtRef.current = 0;
-    return undefined;
-  }, [surfaceActive]);
-
-  useEffect(() => () => {
-    if (pendingScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(pendingScrollFrameRef.current);
-    }
-  }, []);
+  const controllerSurfaceActive = controllerMode && surfaceActive;
+  const scrollFocusIntoView = useControllerFocusScroll(controllerSurfaceActive);
 
   const controllerSections = useMemo(
     () => storePanels.flatMap((panel) => panel.sections).filter((section) => section.games.length > 0),
@@ -305,27 +112,32 @@ export const HomePage = memo(function HomePage({
     () => storeHeroGames.slice(0, 6),
     [storeHeroGames],
   );
+  const controllerRowLengths = useMemo(
+    () => controllerSections.map((section) => Math.min(section.games.length, CONTROLLER_STORE_ROW_LIMIT)),
+    [controllerSections],
+  );
 
-  const focusTile = (rowIndex: number, columnIndex: number): void => {
-    if (!surfaceActive || controllerSections.length === 0) return;
-    const nextRowIndex = Math.max(0, Math.min(rowIndex, controllerSections.length - 1));
-    const row = controllerSections[nextRowIndex];
-    if (!row || row.games.length === 0) return;
-    const nextColumnIndex = Math.max(0, Math.min(columnIndex, row.games.length - 1));
-    const nextGame = row.games[nextColumnIndex];
-    setFocusedRowIndex(nextRowIndex);
-    setFocusedColumnIndex(nextColumnIndex);
+  const focusTile = (rowIndex: number, columnIndex: number, options: { userInitiated?: boolean } = {}): void => {
+    if (!surfaceActive || controllerRowLengths.length === 0) return;
+    const next = clampRowFocus(controllerRowLengths, { rowIndex, columnIndex });
+    const nextGame = controllerSections[next.rowIndex]?.games[next.columnIndex];
+    if (!nextGame) return;
+    setFocusedRowIndex(next.rowIndex);
+    setFocusedColumnIndex(next.columnIndex);
+    if (options.userInitiated !== false) setHasBrowsed(true);
     onSelectGame(nextGame.id);
-    if (pendingScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(pendingScrollFrameRef.current);
-    }
-    pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
-      pendingScrollFrameRef.current = null;
-      if (!surfaceActive) return;
-      const tile = rowRefs.current[nextRowIndex]?.querySelector<HTMLElement>(`[data-controller-store-column="${nextColumnIndex}"]`);
-      tile?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "auto" });
-      tile?.closest(".controller-store-section")?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+    // Scroll the card horizontally into its track first, then let the hook bring
+    // the whole row into view — the row must win the vertical scroll.
+    scrollFocusIntoView(() => {
+      const card = rowRefs.current[next.rowIndex]?.querySelector<HTMLElement>(`[data-console-column="${next.columnIndex}"]`);
+      card?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "auto" });
+      return card?.closest<HTMLElement>(".console-row");
     });
+  };
+
+  const moveFocus = (direction: RowFocusDirection): void => {
+    const next = moveRowFocus(controllerRowLengths, { rowIndex: focusedRowIndex, columnIndex: focusedColumnIndex }, direction);
+    focusTile(next.rowIndex, next.columnIndex);
   };
 
   const launchGame = (game: GameInfo): void => {
@@ -337,9 +149,48 @@ export const HomePage = memo(function HomePage({
     onPlayGame(game);
   };
 
-  const launchFocusedTile = (): void => {
-    const game = controllerSections[focusedRowIndex]?.games[focusedColumnIndex];
-    if (game) launchGame(game);
+  const focusedStoreGame = (): GameInfo | undefined =>
+    controllerSections[focusedRowIndex]?.games[focusedColumnIndex];
+
+  const openDetails = (game: GameInfo): void => {
+    setDetailsGame(game);
+    setDetailsActionIndex(0);
+    setStorePickerOpen(false);
+  };
+
+  const closeDetails = (): void => {
+    setDetailsGame(null);
+    setStorePickerOpen(false);
+  };
+
+  const storeChoicesFor = (game: GameInfo) => getConsoleStoreChoices(game, selectedVariantByGameId[game.id]);
+
+  /** Number of buttons the detail sheet renders, mirrored from ConsoleStoreView. */
+  const detailsActionCount = (game: GameInfo): number => (storeChoicesFor(game).length > 1 ? 3 : 2);
+
+  const openStorePicker = (): void => {
+    if (!detailsGame) return;
+    const choices = storeChoicesFor(detailsGame);
+    setStorePickerIndex(Math.max(0, choices.findIndex((choice) => choice.isActive)));
+    setStorePickerOpen(true);
+  };
+
+  const selectStoreChoice = (variantId: string): void => {
+    if (detailsGame) onSelectGameVariant(detailsGame.id, variantId);
+    setStorePickerOpen(false);
+  };
+
+  const activateDetailsAction = (): void => {
+    if (!detailsGame) return;
+    if (detailsActionIndex === 0) {
+      launchGame(detailsGame);
+      return;
+    }
+    if (storeChoicesFor(detailsGame).length > 1 && detailsActionIndex === 1) {
+      openStorePicker();
+      return;
+    }
+    closeDetails();
   };
 
   const cycleFocusedVariant = (): boolean => {
@@ -352,16 +203,6 @@ export const HomePage = memo(function HomePage({
   };
 
   useEffect(() => {
-    controllerInputStateRef.current = {
-      focusTile,
-      launchFocusedTile,
-      cycleFocusedVariant,
-      focusedRowIndex,
-      focusedColumnIndex,
-    };
-  }, [cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile]);
-
-  useEffect(() => {
     if (!controllerMode || !surfaceActive || !controllerSearchOpen) return;
     controllerSearchInputRef.current?.focus();
   }, [controllerMode, controllerSearchOpen, surfaceActive]);
@@ -371,8 +212,10 @@ export const HomePage = memo(function HomePage({
     setControllerHeroIndex(0);
   }, [controllerHeroGames, controllerMode, surfaceActive]);
 
+  // The billboard auto-rotates through featured games only until the user
+  // starts browsing; art moving underneath an active d-pad is disorienting.
   useEffect(() => {
-    if (!controllerMode || !surfaceActive || controllerHeroGames.length <= 1) return;
+    if (!controllerMode || !surfaceActive || hasBrowsed || controllerHeroGames.length <= 1) return;
     let cancelled = false;
     let advancing = false;
 
@@ -383,7 +226,7 @@ export const HomePage = memo(function HomePage({
         for (let offset = 1; offset < controllerHeroGames.length; offset += 1) {
           const nextIndex = (controllerHeroIndex + offset) % controllerHeroGames.length;
           const nextGame = controllerHeroGames[nextIndex];
-          const nextImageUrl = nextGame ? getControllerStoreImageCandidates(nextGame, true)[0] : undefined;
+          const nextImageUrl = nextGame ? getControllerHeroBackgroundCandidates(nextGame)[0] : undefined;
           if (!nextImageUrl || await preloadControllerHeroImage(nextImageUrl)) {
             if (!cancelled) setControllerHeroIndex(nextIndex);
             return;
@@ -402,145 +245,142 @@ export const HomePage = memo(function HomePage({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [controllerHeroIndex, controllerHeroGames, controllerMode, surfaceActive]);
+  }, [controllerHeroIndex, controllerHeroGames, controllerMode, hasBrowsed, surfaceActive]);
 
   useEffect(() => {
     if (!controllerMode || !surfaceActive || controllerSections.length === 0) return;
     const currentRow = controllerSections[focusedRowIndex];
     if (currentRow?.games.some((game) => game.id === selectedGameId)) return;
-    focusTile(0, 0);
+    // Seeding the initial selection is not browsing — leave the billboard rotating.
+    focusTile(0, 0, { userInitiated: false });
   }, [controllerMode, controllerSections, focusedRowIndex, selectedGameId, surfaceActive]);
 
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (controllerSearchOpen) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setControllerSearchOpen(false);
+  useControllerKeyDown(controllerSurfaceActive, (event) => {
+    if (detailsGame && storePickerOpen) {
+      const choices = storeChoicesFor(detailsGame);
+      if (event.key === "Escape" || event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setStorePickerOpen(false);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setStorePickerIndex((index) => Math.max(0, index - 1));
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setStorePickerIndex((index) => Math.min(choices.length - 1, index + 1));
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        const choice = choices[storePickerIndex];
+        if (choice) selectStoreChoice(choice.variantId);
+      }
+      return;
+    }
+    if (detailsGame) {
+      if (event.key === "Escape" || event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        closeDetails();
+      } else if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setDetailsActionIndex((index) => Math.max(0, index - 1));
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setDetailsActionIndex((index) => Math.min(detailsActionCount(detailsGame) - 1, index + 1));
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activateDetailsAction();
+      }
+      return;
+    }
+    if (controllerSearchOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setControllerSearchOpen(false);
+      }
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveFocus("left");
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveFocus("right");
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveFocus("up");
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveFocus("down");
+    } else if (event.key.toLowerCase() === "x") {
+      event.preventDefault();
+      setControllerSearchOpen(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onPreviousControllerPage?.();
+    } else if (event.key.toLowerCase() === "b") {
+      event.preventDefault();
+      onPreviousControllerPage?.();
+    } else if (event.key === "[") {
+      event.preventDefault();
+      onPreviousControllerPage?.();
+    } else if (event.key === "]") {
+      event.preventDefault();
+      onNextControllerPage?.();
+    } else if (event.key.toLowerCase() === "m" || event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      cycleFocusedVariant();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const game = focusedStoreGame();
+      if (game) openDetails(game);
+    }
+  });
+
+  useControllerNavigation({
+    enabled: controllerSurfaceActive,
+    onFrame: ({ pressed }) => {
+      if (detailsGame && storePickerOpen) {
+        const choices = storeChoicesFor(detailsGame);
+        if (pressed & controllerButton.east) setStorePickerOpen(false);
+        if (pressed & controllerButton.up) setStorePickerIndex((index) => Math.max(0, index - 1));
+        if (pressed & controllerButton.down) setStorePickerIndex((index) => Math.min(choices.length - 1, index + 1));
+        if (pressed & controllerButton.south) {
+          const choice = choices[storePickerIndex];
+          if (choice) selectStoreChoice(choice.variantId);
         }
         return;
       }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        focusTile(focusedRowIndex, focusedColumnIndex - 1);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        focusTile(focusedRowIndex, focusedColumnIndex + 1);
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        focusTile(focusedRowIndex - 1, focusedColumnIndex);
-      } else if (event.key === "ArrowDown") {
-        event.preventDefault();
-        focusTile(focusedRowIndex + 1, focusedColumnIndex);
-      } else if (event.key.toLowerCase() === "x") {
-        event.preventDefault();
-        setControllerSearchOpen(true);
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        onPreviousControllerPage?.();
-      } else if (event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        onPreviousControllerPage?.();
-      } else if (event.key === "[") {
-        event.preventDefault();
-        onPreviousControllerPage?.();
-      } else if (event.key === "]") {
-        event.preventDefault();
-        onNextControllerPage?.();
-      } else if (event.key.toLowerCase() === "m" || event.key.toLowerCase() === "y") {
-        event.preventDefault();
-        cycleFocusedVariant();
-      } else if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        launchFocusedTile();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [controllerMode, controllerSearchOpen, cycleFocusedVariant, focusedColumnIndex, focusedRowIndex, focusTile, launchFocusedTile, onNextControllerPage, onPreviousControllerPage, surfaceActive]);
 
-  useEffect(() => {
-    if (!controllerMode || !surfaceActive) return;
-    const readButtons = (): number => {
-      const pad = navigator.getGamepads?.().find((gamepad): gamepad is Gamepad => Boolean(gamepad));
-      return readControllerGamepadButtons(pad);
-    };
-
-    const handleGamepadFrame = () => {
-      const buttons = readButtons();
-      let pressed = buttons & ~gamepadPreviousButtonsRef.current;
-      const moveMask = controllerButton.up | controllerButton.down | controllerButton.left | controllerButton.right;
-      const now = performance.now();
-      const activeMoves = buttons & moveMask;
-      const pressedMoves = pressed & moveMask;
-      if (pressedMoves) {
-        gamepadLastMoveAtRef.current = now;
-      } else if (activeMoves && now - gamepadLastMoveAtRef.current > CONTROLLER_MOVE_REPEAT_MS) {
-        pressed |= activeMoves;
-        gamepadLastMoveAtRef.current = now;
-      }
-
-      const {
-        focusTile: focusControllerTile,
-        launchFocusedTile: launchControllerTile,
-        cycleFocusedVariant: cycleControllerVariant,
-        focusedRowIndex: rowIndex,
-        focusedColumnIndex: columnIndex,
-      } = controllerInputStateRef.current;
-
-      if (controllerSearchOpen) {
-        if (pressed & controllerButton.east) setControllerSearchOpen(false);
-        gamepadPreviousButtonsRef.current = buttons;
-        gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
+      if (detailsGame) {
+        if (pressed & controllerButton.east) closeDetails();
+        if (pressed & controllerButton.left) setDetailsActionIndex((index) => Math.max(0, index - 1));
+        if (pressed & controllerButton.right) {
+          setDetailsActionIndex((index) => Math.min(detailsActionCount(detailsGame) - 1, index + 1));
+        }
+        if (pressed & controllerButton.south) activateDetailsAction();
         return;
       }
 
-      if (pressed & controllerButton.south) launchControllerTile();
+      if (controllerSearchOpen) {
+        if (pressed & controllerButton.east) setControllerSearchOpen(false);
+        return;
+      }
+
+      // A opens the detail sheet; launching happens from there, so a stray
+      // press can never start a session or mark a game owned by accident.
+      if (pressed & controllerButton.south) {
+        const game = focusedStoreGame();
+        if (game) openDetails(game);
+      }
       if (pressed & controllerButton.east) onPreviousControllerPage?.();
       if (pressed & controllerButton.west) setControllerSearchOpen(true);
       if (pressed & controllerButton.leftShoulder) onPreviousControllerPage?.();
       if (pressed & controllerButton.rightShoulder) onNextControllerPage?.();
-      if (pressed & controllerButton.menu) cycleControllerVariant();
-      if (pressed & controllerButton.up) focusControllerTile(rowIndex - 1, columnIndex);
-      if (pressed & controllerButton.down) focusControllerTile(rowIndex + 1, columnIndex);
-      if (pressed & controllerButton.left) focusControllerTile(rowIndex, columnIndex - 1);
-      if (pressed & controllerButton.right) focusControllerTile(rowIndex, columnIndex + 1);
-      gamepadPreviousButtonsRef.current = buttons;
-      gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-    };
-
-    const startGamepadNavigation = () => {
-      if (gamepadFrameRef.current !== null) return;
-      gamepadPreviousButtonsRef.current = readButtons();
-      gamepadLastMoveAtRef.current = performance.now();
-      gamepadFrameRef.current = window.requestAnimationFrame(handleGamepadFrame);
-    };
-
-    const stopGamepadNavigation = () => {
-      if (gamepadFrameRef.current !== null) {
-        window.cancelAnimationFrame(gamepadFrameRef.current);
-        gamepadFrameRef.current = null;
-      }
-      gamepadPreviousButtonsRef.current = 0;
-      gamepadLastMoveAtRef.current = 0;
-    };
-
-    const handleDisconnect = () => {
-      const hasConnectedPad = navigator.getGamepads?.().some(Boolean) ?? false;
-      if (!hasConnectedPad) stopGamepadNavigation();
-    };
-
-    window.addEventListener("gamepadconnected", startGamepadNavigation);
-    window.addEventListener("gamepaddisconnected", handleDisconnect);
-    startGamepadNavigation();
-
-    return () => {
-      window.removeEventListener("gamepadconnected", startGamepadNavigation);
-      window.removeEventListener("gamepaddisconnected", handleDisconnect);
-      stopGamepadNavigation();
-    };
-  }, [controllerMode, controllerSearchOpen, onNextControllerPage, onPreviousControllerPage, surfaceActive]);
+      if (pressed & controllerButton.menu) cycleFocusedVariant();
+      if (pressed & controllerButton.up) moveFocus("up");
+      if (pressed & controllerButton.down) moveFocus("down");
+      if (pressed & controllerButton.left) moveFocus("left");
+      if (pressed & controllerButton.right) moveFocus("right");
+    },
+  });
 
   const gameGridItems = useMemo(
     () => games.map((game) => (
@@ -557,203 +397,49 @@ export const HomePage = memo(function HomePage({
   );
 
   if (controllerMode) {
-    const showInitialLoading = isLoading && controllerSections.length === 0;
-    const heroGame = controllerHeroGames[controllerHeroIndex];
-    const heroImageUrl = heroGame ? getControllerStoreImageCandidates(heroGame, true)[0] : undefined;
-    const heroLogoUrl = heroGame ? getControllerStoreLogoUrl(heroGame) : undefined;
-    const heroSelectedVariantId = heroGame ? selectedVariantByGameId[heroGame.id] : undefined;
-    const heroSelectedVariant = heroGame ? getSelectedVariant(heroGame, heroSelectedVariantId) : undefined;
-    const heroNeedsOwnership = heroGame ? gameNeedsPurchase(heroGame, heroSelectedVariantId) : false;
-    const heroMarkingOwned = Boolean(heroNeedsOwnership && heroSelectedVariant?.id && markOwnedInFlightByVariantId[heroSelectedVariant.id]);
-    const heroDotCount = Math.min(Math.max(controllerHeroGames.length, 1), 6);
-    const activeHeroDotIndex = controllerHeroGames.length > 0 ? Math.min(controllerHeroIndex % heroDotCount, heroDotCount - 1) : 0;
-
     return (
-      <div className="home-page controller-store-page">
-        {showInitialLoading ? (
-          <div className="home-empty-state controller-store-empty">
-            <MotionSpinner className="home-spinner" size={54} label={t("common.loading")} />
-            <p>{t("home.empty.loadingGames")}</p>
-          </div>
-        ) : controllerSections.length === 0 ? (
-          <div className="home-empty-state controller-store-empty">
-            <Gamepad2 className="home-empty-icon" size={64} />
-            <h3>{t("home.controller.emptyTitle")}</h3>
-            <p>{t("home.controller.emptyBody")}</p>
-          </div>
-        ) : (
-          <>
-            {heroGame && (
-              <section className="controller-hero controller-store-hero" aria-label={heroGame.title}>
-                <AnimatePresence initial={false} mode="popLayout">
-                  {heroImageUrl ? (
-                    <m.img
-                      key={heroImageUrl}
-                      src={heroImageUrl}
-                      alt=""
-                      className="controller-hero-image"
-                      initial={{ opacity: 0, scale: 1.035 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 1.015 }}
-                      transition={pageTransition}
-                    />
-                  ) : (
-                    <m.div
-                      key="controller-store-hero-placeholder"
-                      className="controller-hero-placeholder"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={pageTransition}
-                    />
-                  )}
-                </AnimatePresence>
-                <div className="controller-hero-scrim" />
-                <AnimatePresence initial={false} mode="wait">
-                  <m.div
-                    key={heroGame.id}
-                    className="controller-hero-content"
-                    initial={{ opacity: 0, y: 16 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    transition={pageTransition}
-                  >
-                    {heroLogoUrl ? <img src={heroLogoUrl} alt={heroGame.title} className="controller-hero-logo" /> : <h1>{heroGame.title}</h1>}
-                    <p className="controller-store-hero-meta">{getPrimaryStoreName(heroGame, heroSelectedVariantId)} / {getPrimaryGenre(heroGame)}</p>
-                    <div className="controller-hero-actions">
-                      <button
-                        type="button"
-                        className="controller-primary-action"
-                        onClick={() => {
-                          if (heroNeedsOwnership) {
-                            (onMarkGameOwned ?? onBuyGame)?.(heroGame, heroSelectedVariantId);
-                            return;
-                          }
-                          onPlayGame(heroGame);
-                        }}
-                        disabled={heroMarkingOwned}
-                      >
-                        {heroNeedsOwnership
-                          ? (heroMarkingOwned ? t("app.status.markingOwned") : t("app.actions.markAsOwned"))
-                          : t("app.actions.play")}
-                      </button>
-                      <span className="controller-store-hero-pill">{getPrimaryStoreName(heroGame, heroSelectedVariantId)}</span>
-                    </div>
-                  </m.div>
-                </AnimatePresence>
-              </section>
-            )}
-
-            {heroGame && (
-              <div className="controller-hero-dots" aria-hidden="true">
-                {Array.from({ length: heroDotCount }).map((_, index) => (
-                  <span key={index} className={index === activeHeroDotIndex ? "active" : ""} />
-                ))}
-              </div>
-            )}
-
-            <div className="controller-store-sections">
-              {controllerSections.map((section, rowIndex) => (
-                <section key={`${section.id}-${rowIndex}`} className="controller-store-section">
-                  <div className="controller-store-section-heading">
-                    <span>{String(rowIndex + 1).padStart(2, "0")}</span>
-                    <h2>{section.title || t("home.controller.featured")}</h2>
-                    <p>{t("library.gameCount", { count: section.games.length })}</p>
-                  </div>
-                  <div
-                    className="controller-store-row"
-                    ref={(element) => { rowRefs.current[rowIndex] = element; }}
-                    data-controller-store-row={rowIndex}
-                  >
-                    {section.games.slice(0, 18).map((game, columnIndex) => {
-                      const focused = rowIndex === focusedRowIndex && columnIndex === focusedColumnIndex;
-                      const selectedVariantId = selectedVariantByGameId[game.id];
-                      const selectedVariant = getSelectedVariant(game, selectedVariantId);
-                      return (
-                        <div key={game.id} className="controller-store-card" data-controller-store-column={columnIndex}>
-                          <ControllerStoreTile
-                            game={game}
-                            selectedVariantId={selectedVariantId}
-                            isMarkingOwned={Boolean(selectedVariant?.id && markOwnedInFlightByVariantId[selectedVariant.id])}
-                            focused={focused}
-                            onFocus={() => {
-                              focusTile(rowIndex, columnIndex);
-                              if (game.variants.length > 0) onSelectGameVariant(game.id, selectedVariantId ?? game.variants[game.selectedVariantIndex]?.id ?? game.variants[0].id);
-                            }}
-                            onMarkOwned={() => (onMarkGameOwned ?? onBuyGame)?.(game, selectedVariantId)}
-                            onPlay={() => onPlayGame(game)}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-            </div>
-
-            <div className="controller-bottom-hints" role="toolbar">
-              <button type="button" className="controller-hint" onClick={launchFocusedTile}>
-                <span className="controller-button controller-button--a" aria-hidden="true">A</span>
-                <span>{t("app.actions.select")}</span>
-              </button>
-              <button type="button" className="controller-hint" onClick={() => onPreviousControllerPage?.()}>
-                <span className="controller-button controller-button--b" aria-hidden="true">B</span>
-                <span>{t("app.actions.back")}</span>
-              </button>
-              <button type="button" className="controller-hint" onClick={() => setControllerSearchOpen(true)}>
-                <span className="controller-button controller-button--x" aria-hidden="true">X</span>
-                <span>{t("app.actions.search")}</span>
-              </button>
-              <button type="button" className="controller-hint controller-hint--more" onClick={() => { cycleFocusedVariant(); }}>
-                <span className="controller-menu-button" aria-hidden="true"><Menu size={22} /></span>
-                <span>{t("library.moreOptions")}</span>
-              </button>
-            </div>
-
-            <AnimatePresence initial={false}>
-              {controllerSearchOpen && (
-                <m.div
-                  className="controller-search-overlay"
-                  role="dialog"
-                  aria-modal="true"
-                  aria-label={t("app.actions.search")}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={pageTransition}
-                >
-                  <m.div
-                    className="controller-search-panel"
-                    initial={{ opacity: 0, y: 16, scale: 0.985 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.99 }}
-                    transition={panelSpring}
-                  >
-                  <span className="controller-search-eyebrow">{t("app.actions.search")}</span>
-                  <input
-                    ref={controllerSearchInputRef}
-                    type="text"
-                    value={searchQuery}
-                    onChange={(event) => onSearchChange(event.target.value)}
-                    placeholder={t("home.searchPlaceholder")}
-                    className="controller-search-input"
-                  />
-                  <div className="controller-search-actions">
-                    <button
-                      type="button"
-                      className="controller-secondary-action"
-                      onClick={() => setControllerSearchOpen(false)}
-                    >
-                      {t("app.actions.back")}
-                    </button>
-                  </div>
-                  </m.div>
-                </m.div>
-              )}
-            </AnimatePresence>
-          </>
-        )}
-      </div>
+      <ConsoleStoreView
+        isLoading={isLoading}
+        sections={controllerSections.map((section, rowIndex) => ({
+          id: `${section.id}-${rowIndex}`,
+          title: section.title,
+          games: section.games.slice(0, CONTROLLER_STORE_ROW_LIMIT),
+        }))}
+        rowRefs={rowRefs}
+        focusedRowIndex={focusedRowIndex}
+        focusedColumnIndex={focusedColumnIndex}
+        onFocusCard={focusTile}
+        onActivateCard={launchGame}
+        detailsGame={detailsGame}
+        detailsActionIndex={detailsActionIndex}
+        onFocusDetailsAction={setDetailsActionIndex}
+        onOpenDetails={openDetails}
+        onCloseDetails={closeDetails}
+        storePickerOpen={storePickerOpen}
+        storePickerIndex={storePickerIndex}
+        onFocusStoreChoice={setStorePickerIndex}
+        onSelectStoreChoice={selectStoreChoice}
+        onOpenStorePicker={openStorePicker}
+        onCloseStorePicker={() => setStorePickerOpen(false)}
+        // Featured carousel until the user starts browsing, then the billboard
+        // tracks whatever card they have focused.
+        heroGame={hasBrowsed
+          ? controllerSections[focusedRowIndex]?.games[focusedColumnIndex] ?? controllerHeroGames[controllerHeroIndex]
+          : controllerHeroGames[controllerHeroIndex] ?? controllerSections[0]?.games[0]}
+        heroDotCount={hasBrowsed ? 0 : controllerHeroGames.length}
+        activeHeroDotIndex={controllerHeroIndex}
+        selectedVariantByGameId={selectedVariantByGameId}
+        markOwnedInFlightByVariantId={markOwnedInFlightByVariantId}
+        onHeroPrimaryAction={launchGame}
+        onCycleVariant={() => { cycleFocusedVariant(); }}
+        onBack={() => onPreviousControllerPage?.()}
+        searchQuery={searchQuery}
+        onSearchChange={onSearchChange}
+        searchOpen={controllerSearchOpen}
+        searchInputRef={controllerSearchInputRef}
+        onOpenSearch={() => setControllerSearchOpen(true)}
+        onCloseSearch={() => setControllerSearchOpen(false)}
+      />
     );
   }
 

@@ -2781,8 +2781,15 @@ class GfnSessionRepository(
         )
 
     private suspend fun toSessionInfo(zone: String, base: String, payload: JsonObject, clientId: String, deviceId: String): SessionInfo {
-        val status = payload.obj("requestStatus")?.int("statusCode")
-        check(status == 1) { "CloudMatch returned status $status: ${payload.obj("requestStatus")?.string("statusDescription")}" }
+        val requestStatus = payload.obj("requestStatus")
+        val status = requestStatus?.int("statusCode")
+        if (status != 1) {
+            throw CloudMatchRequestStatusException(
+                statusCode = status,
+                statusDescription = requestStatus?.string("statusDescription"),
+                unifiedErrorCode = requestStatus?.string("unifiedErrorCode"),
+            )
+        }
         val session = payload.obj("session") ?: error("CloudMatch response missing session")
         val sessionStatus = session.int("status") ?: 0
         val signaling = runCatching { resolveSignaling(payload) }.getOrElse { error ->

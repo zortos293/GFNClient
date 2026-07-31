@@ -14,6 +14,7 @@ import android.util.Log
 import android.util.Rational
 import android.view.Display
 import android.view.InputDevice
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
@@ -112,10 +113,18 @@ class MainActivity : ComponentActivity() {
             return dispatchSyntheticStreamUiKey(normalizedStreamUiKeyCode, event)
         }
         if (NativeStreamInputRouter.isControllerAppBackKey(event)) {
+            // Invoke ComponentActivity's Back dispatcher so Compose's nearest BackHandler gets
+            // first refusal. Synthesizing KEYCODE_BACK through the Window can finish the Activity
+            // without visiting the nested settings handler on some Android builds.
             if (event.action == KeyEvent.ACTION_UP) {
-                viewModel.handleControllerBackNavigation()
+                onBackPressedDispatcher.onBackPressed()
             }
             return true
+        }
+        if (event.shouldVirtualizeControllerUiNavigation()) {
+            // Android TV keyboards reliably accept virtual D-pad events (the same shape remotes
+            // emit), while several IMEs ignore navigation events from a physical gamepad device.
+            return dispatchSyntheticStreamUiKey(event.keyCode, event)
         }
         val normalizedAppUiKeyCode = NativeStreamInputRouter.normalizedAppUiKeyCode(event)
         if (normalizedAppUiKeyCode != null && normalizedAppUiKeyCode != event.keyCode) {
@@ -146,6 +155,21 @@ class MainActivity : ComponentActivity() {
         keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
             keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
             keyCode == KeyEvent.KEYCODE_VOLUME_MUTE
+
+    private fun KeyEvent.shouldVirtualizeControllerUiNavigation(): Boolean {
+        if (!AndroidControllerInput.isControllerEvent(source, deviceId)) return false
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
+            -> true
+            else -> false
+        }
+    }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (streamSystemUiActive && (event.isMouseLikePointerEvent() || event.isControllerMotionEvent())) {
@@ -499,7 +523,7 @@ class MainActivity : ComponentActivity() {
             keyCode,
             0,
             sourceEvent.metaState,
-            sourceEvent.deviceId,
+            KeyCharacterMap.VIRTUAL_KEYBOARD,
             0,
             0,
             InputDevice.SOURCE_DPAD,
@@ -515,7 +539,7 @@ class MainActivity : ComponentActivity() {
             keyCode,
             sourceEvent.repeatCount,
             sourceEvent.metaState,
-            sourceEvent.deviceId,
+            KeyCharacterMap.VIRTUAL_KEYBOARD,
             sourceEvent.scanCode,
             sourceEvent.flags,
             InputDevice.SOURCE_DPAD,

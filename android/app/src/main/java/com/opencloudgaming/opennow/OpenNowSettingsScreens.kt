@@ -212,8 +212,8 @@ internal fun SettingsScreen(
     val detailFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !tvProfile)
-    val controllerNavigationEnabled = tvProfile || physicalControllerConnected
+    val controllerFamily = rememberPhysicalControllerFamily(enabled = true)
+    val controllerNavigationEnabled = tvProfile || controllerFamily != null
     val showSearch = searchRequested || searchQuery.isNotBlank()
     val categories = remember { settingsCategories() }
     LaunchedEffect(searchRequested) {
@@ -306,7 +306,7 @@ internal fun SettingsScreen(
                             state = state,
                             viewModel = viewModel,
                             tvProfile = tvProfile,
-                            physicalControllerConnected = physicalControllerConnected,
+                            controllerFamily = controllerFamily,
                             searchQuery = searchQuery,
                             selectedCategory = category,
                             categories = categories,
@@ -348,7 +348,7 @@ internal fun SettingsScreen(
                                 state = state,
                                 viewModel = viewModel,
                                 tvProfile = tvProfile,
-                                physicalControllerConnected = physicalControllerConnected,
+                                controllerFamily = controllerFamily,
                                 searchQuery = searchQuery,
                                 selectedCategory = category,
                                 categories = categories,
@@ -370,7 +370,7 @@ private fun SettingsBody(
     state: OpenNowUiState,
     viewModel: OpenNowViewModel,
     tvProfile: Boolean,
-    physicalControllerConnected: Boolean,
+    controllerFamily: AndroidControllerFamily?,
     searchQuery: String,
     selectedCategory: SettingsCategory?,
     categories: List<SettingsCategory>,
@@ -407,7 +407,7 @@ private fun SettingsBody(
                 SettingsDetailHeader(
                     category = selectedCategory,
                     tvProfile = tvProfile,
-                    physicalControllerConnected = physicalControllerConnected,
+                    controllerFamily = controllerFamily,
                     onBack = onBack,
                 )
                 Box(
@@ -1462,7 +1462,7 @@ private fun SettingsCategoryRow(category: SettingsCategory, onClick: () -> Unit)
 private fun SettingsDetailHeader(
     category: SettingsCategory,
     tvProfile: Boolean,
-    physicalControllerConnected: Boolean,
+    controllerFamily: AndroidControllerFamily?,
     onBack: () -> Unit,
 ) {
     val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
@@ -1486,31 +1486,46 @@ private fun SettingsDetailHeader(
                 color = if (backFocused) MaterialTheme.colorScheme.primary.copy(alpha = 0.24f) else Color.Transparent,
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 4.dp),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
+                    val backBadgeColor = when (controllerFamily) {
+                        null, AndroidControllerFamily.Google -> Color.White
+                        AndroidControllerFamily.Xbox -> Color(0xFFFFC107)
+                        AndroidControllerFamily.PlayStation -> Color(0xFFE94B5F)
+                        AndroidControllerFamily.Nintendo -> Color(0xFFE60012)
+                        AndroidControllerFamily.Generic -> MaterialTheme.colorScheme.primary
+                    }
                     Surface(
                         modifier = Modifier
-                            .size(42.dp)
+                            .size(32.dp)
                             .border(2.dp, Color.White.copy(alpha = 0.9f), CircleShape),
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = backBadgeColor,
                     ) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            if (tvProfile || !physicalControllerConnected) {
-                                Icon(
+                            when (controllerFamily) {
+                                null, AndroidControllerFamily.Google -> Icon(
                                     painter = painterResource(R.drawable.ic_arrow_back),
                                     contentDescription = "Remote Back button",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(21.dp),
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(17.dp),
                                 )
-                            } else {
-                                Text(
-                                    "B",
-                                    color = MaterialTheme.colorScheme.onPrimary,
+                                AndroidControllerFamily.PlayStation -> Text(
+                                    "○",
+                                    color = Color.White,
                                     fontWeight = FontWeight.Black,
                                     style = MaterialTheme.typography.titleMedium,
+                                )
+                                AndroidControllerFamily.Xbox,
+                                AndroidControllerFamily.Nintendo,
+                                AndroidControllerFamily.Generic,
+                                -> Text(
+                                    "B",
+                                    color = if (controllerFamily == AndroidControllerFamily.Xbox) Color.Black else Color.White,
+                                    fontWeight = FontWeight.Black,
+                                    style = MaterialTheme.typography.labelLarge,
                                 )
                             }
                         }

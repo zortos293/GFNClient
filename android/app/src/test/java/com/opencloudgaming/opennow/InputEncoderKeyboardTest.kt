@@ -52,6 +52,7 @@ class InputEncoderKeyboardTest {
         val lowerA = InputEncoder.mapTextCharToKeySpec('a')
         val space = InputEncoder.mapTextCharToKeySpec(' ')
         val colon = InputEncoder.mapTextCharToKeySpec(':')
+        val atSign = InputEncoder.mapTextCharToKeySpec('@')
 
         assertNotNull(upperD)
         assertEquals(0x44, upperD?.keycode)
@@ -68,6 +69,10 @@ class InputEncoderKeyboardTest {
         assertEquals(0xba, colon?.keycode)
         assertEquals(0x0027, colon?.scancode)
         assertEquals(true, colon?.shift)
+        assertNotNull(atSign)
+        assertEquals(0x32, atSign?.keycode)
+        assertEquals(0x0003, atSign?.scancode)
+        assertEquals(true, atSign?.shift)
     }
 
 }

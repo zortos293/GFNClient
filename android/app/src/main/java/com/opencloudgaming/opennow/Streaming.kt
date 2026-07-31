@@ -1586,6 +1586,14 @@ object InputDataChannelLabels {
         }
 }
 
+internal enum class AndroidControllerFamily {
+    Google,
+    Xbox,
+    PlayStation,
+    Nintendo,
+    Generic,
+}
+
 internal object AndroidControllerInput {
     fun hasControllerSource(source: Int): Boolean =
         source.hasSource(InputDevice.SOURCE_GAMEPAD) ||
@@ -1619,6 +1627,29 @@ internal object AndroidControllerInput {
             normalized.contains("razer kishi") ||
             normalized.contains("switch pro") ||
             normalized.contains("gamepad")
+    }
+
+    fun controllerFamily(device: InputDevice?): AndroidControllerFamily? =
+        device
+            ?.takeIf(::isControllerDevice)
+            ?.let { controllerFamily(it.name) }
+
+    internal fun controllerFamily(name: String?): AndroidControllerFamily {
+        val normalized = name.orEmpty().lowercase(Locale.US)
+        return when {
+            normalized.contains("stadia") ||
+                normalized.contains("google") ||
+                normalized.contains("chromecast") -> AndroidControllerFamily.Google
+            normalized.contains("xbox") ||
+                normalized.contains("x-input") ||
+                normalized.contains("xinput") -> AndroidControllerFamily.Xbox
+            normalized.contains("dualsense") ||
+                normalized.contains("dualshock") ||
+                normalized.contains("playstation") ||
+                normalized == "wireless controller" -> AndroidControllerFamily.PlayStation
+            normalized.contains("switch") || normalized.contains("nintendo") -> AndroidControllerFamily.Nintendo
+            else -> AndroidControllerFamily.Generic
+        }
     }
 
     fun isPrimaryActivationKey(keyCode: Int): Boolean =

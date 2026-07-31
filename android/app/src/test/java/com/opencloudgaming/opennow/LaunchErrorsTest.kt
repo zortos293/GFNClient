@@ -6,8 +6,10 @@ import org.junit.Test
 class LaunchErrorsTest {
     @Test
     fun freeTierEntitlementFailureExplainsMembershipRequirement() {
-        val error = IllegalStateException(
-            "CloudMatch returned status 18: ENTITLEMENT_FAILURE_STATUS 8A910006",
+        val error = CloudMatchRequestStatusException(
+            statusCode = 18,
+            statusDescription = "ENTITLEMENT_FAILURE_STATUS 8A910006",
+            unifiedErrorCode = "-1970208762",
         )
 
         assertEquals(
@@ -18,8 +20,10 @@ class LaunchErrorsTest {
 
     @Test
     fun limitedModeCloudMatchStatusUsesGameTitle() {
-        val error = IllegalStateException(
-            "CloudMatch returned status 81: STREAMING_NOT_ALLOWED_IN_LIMITED_MODE 8A91000D",
+        val error = CloudMatchRequestStatusException(
+            statusCode = 81,
+            statusDescription = "STREAMING_NOT_ALLOWED_IN_LIMITED_MODE 8A91000D",
+            unifiedErrorCode = "-1970208755",
         )
 
         assertEquals(
@@ -30,11 +34,41 @@ class LaunchErrorsTest {
 
     @Test
     fun limitedModeCloudMatchStatusFallsBackWithoutGameTitle() {
-        val error = IllegalStateException("CloudMatch returned status 81: STREAMING_NOT_ALLOWED_IN_LIMITED_MODE")
+        val error = CloudMatchRequestStatusException(
+            statusCode = 81,
+            statusDescription = "STREAMING_NOT_ALLOWED_IN_LIMITED_MODE",
+            unifiedErrorCode = null,
+        )
 
         assertEquals(
             "This game is only available for Priority or Ultimate members",
             normalizeLaunchErrorMessage(error),
+        )
+    }
+
+    @Test
+    fun unrelatedCloudMatchFailureKeepsItsOwnMessage() {
+        val error = CloudMatchRequestStatusException(
+            statusCode = 42,
+            statusDescription = "CAPACITY_FAILURE_STATUS",
+            unifiedErrorCode = "DEADBEEF",
+        )
+
+        assertEquals(
+            "CloudMatch returned status 42: CAPACITY_FAILURE_STATUS (unified error DEADBEEF)",
+            normalizeLaunchErrorMessage(error, "Subnautica 2"),
+        )
+    }
+
+    @Test
+    fun entitlementWordsInsideAnUnstructuredErrorAreNotMisclassified() {
+        val error = IllegalStateException(
+            "Diagnostics mentioned ENTITLEMENT_FAILURE_STATUS, but DNS lookup failed",
+        )
+
+        assertEquals(
+            "Diagnostics mentioned ENTITLEMENT_FAILURE_STATUS, but DNS lookup failed",
+            normalizeLaunchErrorMessage(error, "Subnautica 2"),
         )
     }
 

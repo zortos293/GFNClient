@@ -24,6 +24,9 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -130,8 +133,6 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -367,6 +368,7 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
 fun OpenNowApp(viewModel: OpenNowViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !state.androidTvProfile)
     val controllerFocusEnabled = shouldShowControllerFocus(
         focused = true,
@@ -409,6 +411,19 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
     DisposableEffect(launchAudioController) {
         onDispose {
             launchAudioController.release()
+        }
+    }
+    DisposableEffect(lifecycleOwner, launchAudioController) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> launchAudioController.pauseAll { launchMusicPlaying = it }
+                Lifecycle.Event.ON_RESUME -> launchAudioController.resumeAll { launchMusicPlaying = it }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
     LaunchedEffect(
@@ -549,8 +564,12 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                 if (showCompletedSessionBugReport) {
                     CompletedSessionBugReportDialog(
                         submission = state.bugReportSubmission,
+                        versionCheck = state.bugReportVersionCheck,
+                        update = state.androidUpdate,
                         onSubmit = viewModel::submitBugReport,
                         onReset = viewModel::resetBugReportSubmission,
+                        onVersionCheck = viewModel::verifyBugReportVersion,
+                        onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
                         preflightProvider = {
                             buildBugReportPreflightDeck(
                                 BugReportPreflightEvidence(
@@ -786,8 +805,12 @@ private fun SessionReportDialog(
 @Composable
 private fun CompletedSessionBugReportDialog(
     submission: BugReportSubmissionState,
+    versionCheck: AndroidBugReportVersionCheckState,
+    update: AndroidUpdateState,
     onSubmit: (String, String) -> Unit,
     onReset: () -> Unit,
+    onVersionCheck: () -> Unit,
+    onOpenUpdate: () -> Unit,
     preflightProvider: () -> BugReportPreflightDeck,
     onDismiss: () -> Unit,
 ) {
@@ -804,8 +827,12 @@ private fun CompletedSessionBugReportDialog(
             ) {
                 StreamBugReporter(
                     submission = submission,
+                    versionCheck = versionCheck,
+                    update = update,
                     onSubmit = onSubmit,
                     onReset = onReset,
+                    onVersionCheck = onVersionCheck,
+                    onOpenUpdate = onOpenUpdate,
                     onButtonTone = {},
                     preflightProvider = preflightProvider,
                     initiallyExpanded = true,
@@ -1672,11 +1699,16 @@ private fun isPhonePortrait(width: androidx.compose.ui.unit.Dp, height: androidx
 
 @Composable
 internal fun rememberPhysicalControllerConnected(enabled: Boolean): Boolean {
+    return rememberPhysicalControllerFamily(enabled) != null
+}
+
+@Composable
+internal fun rememberPhysicalControllerFamily(enabled: Boolean): AndroidControllerFamily? {
     val context = LocalContext.current.applicationContext
-    var connected by remember { mutableStateOf(enabled && hasConnectedPhysicalController()) }
+    var family by remember { mutableStateOf(connectedPhysicalControllerFamily().takeIf { enabled }) }
     DisposableEffect(context, enabled) {
         fun refresh() {
-            connected = enabled && hasConnectedPhysicalController()
+            family = connectedPhysicalControllerFamily().takeIf { enabled }
         }
         refresh()
         if (!enabled) {
@@ -1694,13 +1726,16 @@ internal fun rememberPhysicalControllerConnected(enabled: Boolean): Boolean {
             }
         }
     }
-    return connected
+    return family
 }
 
-private fun hasConnectedPhysicalController(): Boolean =
-    InputDevice.getDeviceIds().any { deviceId ->
-        AndroidControllerInput.isControllerDevice(InputDevice.getDevice(deviceId))
-    }
+private fun connectedPhysicalControllerFamily(): AndroidControllerFamily? {
+    val families = InputDevice.getDeviceIds()
+        .asSequence()
+        .mapNotNull { deviceId -> AndroidControllerInput.controllerFamily(InputDevice.getDevice(deviceId)) }
+        .toList()
+    return families.firstOrNull { it != AndroidControllerFamily.Generic } ?: families.firstOrNull()
+}
 
 internal sealed interface CatalogWallpaperSelection {
     data class BuiltIn(val preset: CatalogBackgroundPreset) : CatalogWallpaperSelection
@@ -1796,6 +1831,7 @@ private fun MainShell(
     val streamingActive = inStream && state.streamStatus != "idle"
     val modalPickerOpen = state.pendingPrintedWasteGame != null || state.pendingStoreChoiceGame != null
     val tvProfile = state.androidTvProfile
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = !tvProfile)
     val navAudioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     var visibleSearchTarget by remember { mutableStateOf<SearchTarget?>(null) }
     var settingsSearchQuery by remember { mutableStateOf("") }
@@ -1858,7 +1894,12 @@ private fun MainShell(
     BackHandler(enabled = state.selectedGame != null && !inStream) {
         viewModel.clearSelectedGame()
     }
-    BackHandler(enabled = tvProfile && !inStream && state.selectedGame == null && state.page != AppPage.Home) {
+    BackHandler(
+        enabled = (tvProfile || physicalControllerConnected) &&
+            !inStream &&
+            state.selectedGame == null &&
+            state.page != AppPage.Home,
+    ) {
         viewModel.setPage(AppPage.Home)
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -2285,42 +2326,57 @@ private fun AppNavigationRailItem(
 ) {
     var focused by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
-    NavigationRailItem(
-        selected = selected,
+    val contentColor = when {
+        focused -> Color.White
+        selected -> accent
+        else -> TextMuted
+    }
+    Surface(
         onClick = onClick,
         modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 5.dp, vertical = 2.dp)
             .onFocusChanged { focused = it.isFocused }
-            .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier)
-            .then(
-                if (focused) Modifier.border(2.dp, accent, RoundedCornerShape(12.dp)) else Modifier
-            ),
-        colors = NavigationRailItemDefaults.colors(
-            selectedIconColor = accent,
-            selectedTextColor = accent,
-            indicatorColor = if (focused) accent.copy(alpha = 0.35f) else accent.copy(alpha = 0.18f),
-            unselectedIconColor = if (focused) Color.White else TextMuted,
-            unselectedTextColor = if (focused) Color.White else TextMuted,
-        ),
-        icon = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    painter = painterResource(iconRes),
-                    contentDescription = label,
-                    modifier = Modifier.size(iconSize),
+            .then(focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
+        shape = RoundedCornerShape(18.dp),
+        color = if (selected && !focused) accent.copy(alpha = 0.10f) else Color.Transparent,
+        border = if (focused) BorderStroke(2.dp, Color.White.copy(alpha = 0.96f)) else null,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 58.dp)
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = label,
+                tint = contentColor,
+                modifier = Modifier.size(iconSize),
+            )
+            if (showConnectionDot) {
+                Spacer(Modifier.height(2.dp))
+                Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xffb56cff)),
                 )
-                if (showConnectionDot) {
-                    Spacer(Modifier.height(2.dp))
-                    Box(
-                        Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xffb56cff)),
-                    )
-                }
             }
-        },
-        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-    )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                label,
+                color = contentColor,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
 }
 
 private data class TopBarMusicControl(
@@ -3338,6 +3394,11 @@ private fun GameGridSkeleton(
     val scale = settings.posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE)
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
+    val artworkOnly = shouldUseArtworkOnlyCatalogCards(
+        tvProfile = tvProfile,
+        controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected,
+    )
 
     val shimmerOffset: State<Float>?
     val tvPulse: State<Float>?
@@ -3401,12 +3462,12 @@ private fun GameGridSkeleton(
                 gridItems(placeholderItems, key = { it }) {
                     GameCardSkeleton(
                         squareCard = gridSpec.squareCards,
-                        thumbnailPlayOverlay = !tvProfile,
-                        showStoreLabels = shouldShowGameStoreLabels(
+                        thumbnailPlayOverlay = !artworkOnly && !tvProfile,
+                        showStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
                         ),
-                        showCardTitles = shouldShowCatalogCardTitles(
+                        showCardTitles = !artworkOnly && shouldShowCatalogCardTitles(
                             tvProfile = tvProfile,
                             enabled = settings.showCardTitles,
                         ),
@@ -3500,18 +3561,20 @@ private fun StoreRailGameCardSkeleton(
     ) {
         Box(Modifier.fillMaxSize().clip(shape)) {
             LoadingShimmer(Modifier.fillMaxSize())
-            SkeletonCircle(
-                size = 44.dp,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(6.dp),
-            )
-            SkeletonCircle(
-                size = 44.dp,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(6.dp),
-            )
+            if (portraitCard) {
+                SkeletonCircle(
+                    size = 44.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp),
+                )
+                SkeletonCircle(
+                    size = 44.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp),
+                )
+            }
         }
     }
 }
@@ -3657,6 +3720,7 @@ private fun GameGrid(
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
     val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
+    val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         CatalogFocusScope {
@@ -3675,11 +3739,11 @@ private fun GameGrid(
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
                         controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
-                        showGameStoreLabels = shouldShowGameStoreLabels(
+                        showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
                         ),
-                        showCardTitles = shouldShowCatalogCardTitles(
+                        showCardTitles = !artworkOnly && shouldShowCatalogCardTitles(
                             tvProfile = tvProfile,
                             enabled = settings.showCardTitles,
                         ),
@@ -3745,6 +3809,7 @@ private fun StoreGameGrid(
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
     val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
+    val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
     val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
@@ -3792,11 +3857,11 @@ private fun StoreGameGrid(
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
                         controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
-                        showGameStoreLabels = shouldShowGameStoreLabels(
+                        showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
                         ),
-                        showCardTitles = shouldShowCatalogCardTitles(
+                        showCardTitles = !artworkOnly && shouldShowCatalogCardTitles(
                             tvProfile = tvProfile,
                             enabled = settings.showCardTitles,
                         ),
@@ -4215,7 +4280,11 @@ private fun StoreRailGameCard(
     val cardScale by animateFloatAsState(
         targetValue = when {
             pressed -> 0.965f
-            focused || hovered -> if (tvProfile) 1.08f else 1.035f
+            focused || hovered -> when {
+                tvProfile -> 1.08f
+                controllerActionMode -> 1f
+                else -> 1.035f
+            }
             else -> 1f
         },
         animationSpec = tween(
@@ -4228,6 +4297,7 @@ private fun StoreRailGameCard(
     Surface(
         modifier = Modifier
             .width(width)
+            .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
             .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
             .graphicsLayer {
                 scaleX = cardScale
@@ -4600,6 +4670,7 @@ private val GRID_CELL_WIDTH_TV = 158.dp
 
 /** Compact mode shrinks the target cell rather than switching to a separate size table. */
 private const val COMPACT_CELL_WIDTH_FACTOR = 0.88f
+private val CATALOG_CONTROLLER_FOCUS_INSET = 8.dp
 
 private fun gameGridSpec(
     maxWidth: androidx.compose.ui.unit.Dp,
@@ -4687,9 +4758,7 @@ private fun GameCard(
         tvProfile = tvProfile,
         controllerActionMode = controllerActionMode,
     )
-    // The caption lives outside the poster, so cards read as artwork on the page rather than as
-    // artwork inside a box. TV keeps its overlay title — a separate caption row would eat the
-    // vertical rhythm of a focus-driven grid.
+    // Touch-handheld captions live outside the poster, so the artwork stays visually clean.
     val showCaption = handheldPosterCard && (showCardTitles || showGameStoreLabels)
 
     val interaction = remember { MutableInteractionSource() }
@@ -4701,7 +4770,11 @@ private fun GameCard(
             pressed -> 0.965f
             // A bigger lift on TV: from three metres a border change is nearly invisible, but a
             // card growing out of the grid is unmistakable.
-            focused || hovered -> if (tvProfile) 1.08f else 1.035f
+            focused || hovered -> when {
+                tvProfile -> 1.08f
+                controllerActionMode -> 1f
+                else -> 1.035f
+            }
             else -> 1f
         },
         animationSpec = tween(
@@ -4715,6 +4788,7 @@ private fun GameCard(
     Column(
         Modifier
             .fillMaxWidth()
+            .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
             .graphicsLayer {
                 scaleX = cardScale
                 scaleY = cardScale
@@ -4850,7 +4924,11 @@ internal fun catalogCardImageUrl(game: GameInfo, tvProfile: Boolean): String? {
     return if (tvProfile) optimizedNvidiaImageUrl(source, 272) else source
 }
 
-internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = tvProfile
+@Suppress("UNUSED_PARAMETER")
+internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = false
+
+internal fun shouldUseArtworkOnlyCatalogCards(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
+    tvProfile || controllerActionMode
 
 internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
     !tvProfile && !controllerActionMode
@@ -4858,10 +4936,7 @@ internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMo
 internal fun shouldShowGameStoreLabels(tvProfile: Boolean, enabled: Boolean): Boolean =
     enabled && !tvProfile
 
-/**
- * Titles are captioned under the poster on handhelds. TV already overlays the title on the card
- * itself (see [shouldOverlayCatalogCardTitle]), so a caption row there would say it twice.
- */
+/** Titles may be captioned on touch handhelds; controller-first layouts suppress them upstream. */
 internal fun shouldShowCatalogCardTitles(tvProfile: Boolean, enabled: Boolean): Boolean =
     enabled && !tvProfile
 
@@ -6896,8 +6971,12 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     status = activeStreamMode,
                     recoveryReason = videoTransportFallbackReason,
                     bugReportSubmission = state.bugReportSubmission,
+                    bugReportVersionCheck = state.bugReportVersionCheck,
+                    update = state.androidUpdate,
                     onBugReportSubmit = viewModel::submitBugReport,
                     onBugReportReset = viewModel::resetBugReportSubmission,
+                    onBugReportVersionCheck = viewModel::verifyBugReportVersion,
+                    onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = if (statsVisible && statsAlignment == Alignment.TopCenter) 48.dp else 8.dp),
@@ -7068,6 +7147,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     statsVisible = statsVisible,
                     touchLayoutEditing = touchLayoutEditing,
                     bugReportSubmission = state.bugReportSubmission,
+                    bugReportVersionCheck = state.bugReportVersionCheck,
+                    update = state.androidUpdate,
                     bugReportPreflightProvider = {
                         buildBugReportPreflightDeck(
                             BugReportPreflightEvidence(
@@ -7267,6 +7348,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                     onBugReportSubmit = viewModel::submitBugReport,
                     onBugReportReset = viewModel::resetBugReportSubmission,
+                    onBugReportVersionCheck = viewModel::verifyBugReportVersion,
+                    onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
                     onButtonTone = playButtonTone,
                     highlightDone = streamGuideOpen && streamGuideStep == StreamGuideStep.PressDone,
                     onClose = {
@@ -8303,6 +8386,8 @@ private fun StreamControlsPanel(
     statsVisible: Boolean,
     touchLayoutEditing: Boolean,
     bugReportSubmission: BugReportSubmissionState,
+    bugReportVersionCheck: AndroidBugReportVersionCheckState,
+    update: AndroidUpdateState,
     bugReportPreflightProvider: () -> BugReportPreflightDeck,
     onAudioToggle: () -> Unit,
     onMicrophoneToggle: () -> Unit,
@@ -8344,6 +8429,8 @@ private fun StreamControlsPanel(
     onTouchLayoutReset: () -> Unit,
     onBugReportSubmit: (String, String) -> Unit,
     onBugReportReset: () -> Unit,
+    onBugReportVersionCheck: () -> Unit,
+    onOpenUpdate: () -> Unit,
     onButtonTone: () -> Unit,
     highlightDone: Boolean = false,
     onClose: () -> Unit,
@@ -8701,8 +8788,12 @@ private fun StreamControlsPanel(
             item {
                 StreamBugReporter(
                     submission = bugReportSubmission,
+                    versionCheck = bugReportVersionCheck,
+                    update = update,
                     onSubmit = onBugReportSubmit,
                     onReset = onBugReportReset,
+                    onVersionCheck = onBugReportVersionCheck,
+                    onOpenUpdate = onOpenUpdate,
                     onButtonTone = onButtonTone,
                     preflightProvider = bugReportPreflightProvider,
                 )
@@ -8983,12 +9074,69 @@ private fun streamPanelPageTransition(
 @Composable
 private fun BugReportSubmissionRequirements(modifier: Modifier = Modifier) {
     Text(
-        "Bug reports are currently supported only in English. Be as detailed and descriptive as possible. Non-English or non-descriptive reports will be ignored.",
+        "Bug reports are currently supported only in English. Descriptions must be at least $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS characters and explain what happened. Non-English or non-descriptive reports will be ignored.",
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.error,
         fontWeight = FontWeight.Bold,
         style = MaterialTheme.typography.bodyMedium,
     )
+}
+
+@Composable
+private fun BugReportVersionGateCard(
+    update: AndroidUpdateState,
+    versionCheck: AndroidBugReportVersionCheckState,
+    onRetry: () -> Unit,
+    onOpenUpdate: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val updateRequired = update.status == AndroidUpdateStatus.Available ||
+        versionCheck.status == AndroidBugReportVersionCheckStatus.UpdateRequired
+    val checking = versionCheck.status == AndroidBugReportVersionCheckStatus.Checking
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.error.copy(alpha = 0.10f),
+        contentColor = TextPrimary,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.38f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                when {
+                    updateRequired -> "Update required before reporting"
+                    checking -> "Checking Google Play"
+                    else -> "Google Play version check required"
+                },
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                androidBugReportBlockMessage(update, versionCheck)
+                    ?: "OpenNOW must verify the installed Play Store build before sending a report.",
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            when {
+                updateRequired -> Button(onClick = onOpenUpdate) {
+                    Text("Update in Google Play")
+                }
+                checking -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text("Checking latest build…", style = MaterialTheme.typography.bodySmall)
+                }
+                else -> OutlinedButton(onClick = onRetry) {
+                    Text("Retry version check")
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -9174,8 +9322,12 @@ private fun BugReportPreflightDeckView(
 @Composable
 private fun StreamBugReporter(
     submission: BugReportSubmissionState,
+    versionCheck: AndroidBugReportVersionCheckState,
+    update: AndroidUpdateState,
     onSubmit: (String, String) -> Unit,
     onReset: () -> Unit,
+    onVersionCheck: () -> Unit,
+    onOpenUpdate: () -> Unit,
     onButtonTone: () -> Unit,
     preflightProvider: () -> BugReportPreflightDeck,
     initiallyExpanded: Boolean = false,
@@ -9190,7 +9342,10 @@ private fun StreamBugReporter(
     var preflightPage by rememberSaveable { mutableStateOf(0) }
     var preflightDeck by remember { mutableStateOf<BugReportPreflightDeck?>(null) }
 
-    LaunchedEffect(expanded) {
+    LaunchedEffect(expanded, update.installSource.isGooglePlay) {
+        if (expanded && update.installSource.isGooglePlay) {
+            onVersionCheck()
+        }
         if (expanded && !preflightReviewed && preflightDeck == null) {
             preflightDeck = preflightProvider()
         }
@@ -9269,6 +9424,16 @@ private fun StreamBugReporter(
                     }
                 }
             }
+            return@ControlSection
+        }
+
+        if (!androidBugReportsAllowed(update, versionCheck)) {
+            BugReportVersionGateCard(
+                update = update,
+                versionCheck = versionCheck,
+                onRetry = onVersionCheck,
+                onOpenUpdate = onOpenUpdate,
+            )
             return@ControlSection
         }
 
@@ -9392,6 +9557,11 @@ private fun StreamBugReporter(
                 maxLines = 7,
                 label = { Text("What happened?") },
                 placeholder = { Text("What were you doing, what went wrong, and can you reproduce it?") },
+                supportingText = {
+                    Text("${description.trim().length} / $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS minimum characters")
+                },
+                isError = description.isNotEmpty() &&
+                    description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
             )
 
@@ -9439,7 +9609,7 @@ private fun StreamBugReporter(
                     confirmationOpen = true
                 },
                 enabled = title.isNotBlank() &&
-                    description.isNotBlank() &&
+                    description.trim().length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS &&
                     consentChecked &&
                     !submission.uploading,
                 modifier = Modifier.fillMaxWidth(),
@@ -9905,8 +10075,19 @@ private fun StreamKeyboardBar(
                     .focusRequester(inputFocusRequester),
                 singleLine = true,
                 placeholder = { Text("Type into stream", color = TextMuted) },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { sendIfReady() }),
+                trailingIcon = {
+                    TextButton(
+                        onClick = {
+                            if (text.length < MAX_STREAM_KEYBOARD_TEXT_LENGTH) {
+                                onTextChange("$text@")
+                            }
+                        },
+                    ) {
+                        Text("@")
+                    }
+                },
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(onClick = sendIfReady, enabled = text.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Send") }
@@ -9923,6 +10104,8 @@ private fun StreamKeyboardBar(
         }
     }
 }
+
+private const val MAX_STREAM_KEYBOARD_TEXT_LENGTH = 4096
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -9984,8 +10167,12 @@ private fun ActiveStreamModePill(
     status: ActiveStreamModeStatus,
     recoveryReason: String?,
     bugReportSubmission: BugReportSubmissionState,
+    bugReportVersionCheck: AndroidBugReportVersionCheckState,
+    update: AndroidUpdateState,
     onBugReportSubmit: (String, String) -> Unit,
     onBugReportReset: () -> Unit,
+    onBugReportVersionCheck: () -> Unit,
+    onOpenUpdate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val changes = remember(status) { activeStreamModeDisplayChanges(status) }
@@ -10004,6 +10191,12 @@ private fun ActiveStreamModePill(
     var noticeVisible by remember(noticeKey) { mutableStateOf(true) }
     var detailsOpen by remember(noticeKey) { mutableStateOf(false) }
     var reportConfirmationOpen by remember(noticeKey) { mutableStateOf(false) }
+
+    LaunchedEffect(detailsOpen, update.installSource.isGooglePlay) {
+        if (detailsOpen && update.installSource.isGooglePlay) {
+            onBugReportVersionCheck()
+        }
+    }
 
     LaunchedEffect(noticeKey) {
         noticeVisible = true
@@ -10132,6 +10325,14 @@ private fun ActiveStreamModePill(
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (!androidBugReportsAllowed(update, bugReportVersionCheck)) {
+                        BugReportVersionGateCard(
+                            update = update,
+                            versionCheck = bugReportVersionCheck,
+                            onRetry = onBugReportVersionCheck,
+                            onOpenUpdate = onOpenUpdate,
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -10150,6 +10351,28 @@ private fun ActiveStreamModePill(
                     }
                     bugReportSubmission.submitted -> TextButton(onClick = { detailsOpen = false }) {
                         Text("Done")
+                    }
+                    !androidBugReportsAllowed(update, bugReportVersionCheck) -> when {
+                        update.status == AndroidUpdateStatus.Available ||
+                            bugReportVersionCheck.status == AndroidBugReportVersionCheckStatus.UpdateRequired ->
+                            Button(onClick = onOpenUpdate) {
+                                Text("Update in Google Play")
+                            }
+                        bugReportVersionCheck.status == AndroidBugReportVersionCheckStatus.Checking -> Button(
+                            enabled = false,
+                            onClick = {},
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Checking Google Play…")
+                        }
+                        else -> Button(onClick = onBugReportVersionCheck) {
+                            Text("Retry version check")
+                        }
                     }
                     else -> Button(
                         onClick = {

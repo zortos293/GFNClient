@@ -15,6 +15,9 @@ internal class AndroidNerdAudioController(context: Context) {
     private var cuePlayer: MediaPlayer? = null
     private var cuePurpose: MusicCuePurpose? = null
     private var cuePlayingChanged: ((Boolean) -> Unit)? = null
+    private var cuePaused = false
+    private var cueRemainingDurationMs = 0L
+    private var cueStopsAtUptimeMs = 0L
     private var toneGenerator: ToneGenerator? = null
     private var lastToneAtMs = 0L
     private val stopCueRunnable = Runnable {
@@ -60,6 +63,9 @@ internal class AndroidNerdAudioController(context: Context) {
                     cuePlayer = null
                     cuePurpose = null
                     cuePlayingChanged = null
+                    cuePaused = false
+                    cueRemainingDurationMs = 0L
+                    cueStopsAtUptimeMs = 0L
                     mainHandler.removeCallbacks(stopCueRunnable)
                 }
                 completed.release()
@@ -70,6 +76,9 @@ internal class AndroidNerdAudioController(context: Context) {
                     cuePlayer = null
                     cuePurpose = null
                     cuePlayingChanged = null
+                    cuePaused = false
+                    cueRemainingDurationMs = 0L
+                    cueStopsAtUptimeMs = 0L
                     mainHandler.removeCallbacks(stopCueRunnable)
                 }
                 failed.release()
@@ -80,8 +89,10 @@ internal class AndroidNerdAudioController(context: Context) {
             cuePlayer = player
             cuePurpose = purpose
             cuePlayingChanged = onPlayingChanged
+            cuePaused = false
+            cueRemainingDurationMs = maxDurationMs
             player.start()
-            mainHandler.postDelayed(stopCueRunnable, maxDurationMs)
+            scheduleCueStop(maxDurationMs)
             onPlayingChanged(true)
         }.onFailure {
             player.release()
@@ -89,6 +100,9 @@ internal class AndroidNerdAudioController(context: Context) {
                 cuePlayer = null
                 cuePurpose = null
                 cuePlayingChanged = null
+                cuePaused = false
+                cueRemainingDurationMs = 0L
+                cueStopsAtUptimeMs = 0L
                 mainHandler.removeCallbacks(stopCueRunnable)
             }
             onPlayingChanged(false)
@@ -111,11 +125,56 @@ internal class AndroidNerdAudioController(context: Context) {
         stopMusicCue(onPlayingChanged)
     }
 
+    fun pauseAll(onPlayingChanged: (Boolean) -> Unit = {}) {
+        val player = cuePlayer ?: return
+        if (cuePaused) return
+        val playing = runCatching { player.isPlaying }
+            .getOrElse {
+                stopMusicCue(onPlayingChanged)
+                return
+            }
+        if (!playing) return
+        cueRemainingDurationMs = (cueStopsAtUptimeMs - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+        mainHandler.removeCallbacks(stopCueRunnable)
+        runCatching { player.pause() }
+            .onSuccess {
+                cuePaused = true
+                onPlayingChanged(false)
+            }
+            .onFailure { stopMusicCue(onPlayingChanged) }
+    }
+
+    fun resumeAll(onPlayingChanged: (Boolean) -> Unit = {}) {
+        val player = cuePlayer ?: return
+        if (!cuePaused) return
+        if (cueRemainingDurationMs <= 0L) {
+            stopMusicCue(onPlayingChanged)
+            return
+        }
+        runCatching { player.start() }
+            .onSuccess {
+                cuePaused = false
+                scheduleCueStop(cueRemainingDurationMs)
+                onPlayingChanged(true)
+            }
+            .onFailure { stopMusicCue(onPlayingChanged) }
+    }
+
+    private fun scheduleCueStop(delayMs: Long) {
+        cueRemainingDurationMs = delayMs.coerceAtLeast(0L)
+        cueStopsAtUptimeMs = SystemClock.uptimeMillis() + cueRemainingDurationMs
+        mainHandler.removeCallbacks(stopCueRunnable)
+        mainHandler.postDelayed(stopCueRunnable, cueRemainingDurationMs)
+    }
+
     private fun stopMusicCue(onPlayingChanged: (Boolean) -> Unit = {}) {
         val player = cuePlayer ?: return
         cuePlayer = null
         cuePurpose = null
         cuePlayingChanged = null
+        cuePaused = false
+        cueRemainingDurationMs = 0L
+        cueStopsAtUptimeMs = 0L
         mainHandler.removeCallbacks(stopCueRunnable)
         runCatching { player.stop() }
         player.release()

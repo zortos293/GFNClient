@@ -959,6 +959,7 @@ private fun AccountConnectorsPanel(
     openExternal: (String) -> Unit,
 ) {
     var disconnecting by remember { mutableStateOf<AccountConnector?>(null) }
+    val controllerNavigationEnabled = LocalSettingsControllerNavigationEnabled.current
     disconnecting?.let { connector ->
         AlertDialog(
             onDismissRequest = { disconnecting = null },
@@ -989,7 +990,14 @@ private fun AccountConnectorsPanel(
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Game store connections", color = SettingsText, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                TextButton(onClick = onRefresh, enabled = !loading) {
+                if (!controllerNavigationEnabled) {
+                    TextButton(onClick = onRefresh, enabled = !loading) {
+                        Text(if (loading) "Refreshing..." else "Refresh")
+                    }
+                }
+            }
+            if (controllerNavigationEnabled) {
+                OutlinedButton(onClick = onRefresh, enabled = !loading, modifier = Modifier.fillMaxWidth()) {
                     Text(if (loading) "Refreshing..." else "Refresh")
                 }
             }

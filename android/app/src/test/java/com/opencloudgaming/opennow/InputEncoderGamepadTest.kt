@@ -165,6 +165,15 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun classifiesControllerFamiliesForBackButtonHints() {
+        assertEquals(AndroidControllerFamily.Google, AndroidControllerInput.controllerFamily("Chromecast Remote"))
+        assertEquals(AndroidControllerFamily.Xbox, AndroidControllerInput.controllerFamily("Xbox Wireless Controller"))
+        assertEquals(AndroidControllerFamily.PlayStation, AndroidControllerInput.controllerFamily("DualSense Wireless Controller"))
+        assertEquals(AndroidControllerFamily.Nintendo, AndroidControllerInput.controllerFamily("Nintendo Switch Pro Controller"))
+        assertEquals(AndroidControllerFamily.Generic, AndroidControllerInput.controllerFamily("8BitDo Gamepad"))
+    }
+
+    @Test
     fun resolvesHatOnlyControllerMotionAsLeftStick() {
         val axes = AndroidGamepadAxisMapping.resolve(
             raw = AndroidGamepadRawAxes(hatX = -1f, hatY = 0.75f),

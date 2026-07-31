@@ -164,6 +164,7 @@ data class OpenNowUiState(
     val androidPictureInPictureActive: Boolean = false,
     val diagnosticShare: DiagnosticShareState = DiagnosticShareState(),
     val bugReportSubmission: BugReportSubmissionState = BugReportSubmissionState(),
+    val bugReportVersionCheck: AndroidBugReportVersionCheckState = AndroidBugReportVersionCheckState(),
     val loginToolsVisible: Boolean = false,
     val localTvConnector: LocalTvConnectorState = LocalTvConnectorState(),
     val remoteStreamMenuRequestToken: Int = 0,
@@ -261,6 +262,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var loginJob: Job? = null
     private var androidUpdateJob: Job? = null
     private var androidUpdateAutoJob: Job? = null
+    private var bugReportUpdateVerificationJob: Job? = null
+    private var bugReportUpdateCheckActive: Boolean = false
     private var settingsRefreshJob: Job? = null
     private var authRefreshJob: Job? = null
 
@@ -328,7 +331,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 .map { it.isAndroidUpdateCheckBlockedByStream() to it.androidUpdate.status }
                 .distinctUntilChanged()
                 .collect { (blocked, updateStatus) ->
-                    if (blocked && updateStatus == AndroidUpdateStatus.Checking) {
+                    if (blocked && updateStatus == AndroidUpdateStatus.Checking && !bugReportUpdateCheckActive) {
                         cancelAndroidUpdateCheckForStreaming()
                     }
                 }
@@ -536,6 +539,26 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun submitBugReport(title: String, description: String) {
         if (state.value.bugReportSubmission.uploading) return
+        val snapshot = state.value
+        val versionBlock = androidBugReportBlockMessage(
+            update = snapshot.androidUpdate,
+            versionCheck = snapshot.bugReportVersionCheck,
+        )
+        val validationError = when {
+            versionBlock != null -> versionBlock
+            title.isBlank() -> "Enter a short issue title"
+            description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS ->
+                "Describe what happened in at least $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS characters"
+            else -> null
+        }
+        if (validationError != null) {
+            _state.update {
+                it.copy(
+                    bugReportSubmission = BugReportSubmissionState(error = validationError),
+                )
+            }
+            return
+        }
         _state.update {
             it.copy(bugReportSubmission = BugReportSubmissionState(uploading = true))
         }
@@ -586,6 +609,73 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         ),
                     )
                 }
+            }
+        }
+    }
+
+    fun verifyBugReportVersion() {
+        val snapshot = state.value
+        if (!snapshot.androidUpdate.installSource.isGooglePlay) return
+        if (bugReportUpdateVerificationJob?.isActive == true) return
+
+        _state.update {
+            it.copy(
+                bugReportVersionCheck = AndroidBugReportVersionCheckState(
+                    status = AndroidBugReportVersionCheckStatus.Checking,
+                    message = "Checking Google Play...",
+                ),
+            )
+        }
+        bugReportUpdateCheckActive = true
+        bugReportUpdateVerificationJob = viewModelScope.launch {
+            try {
+                val existingUpdateCheck = androidUpdateJob?.takeIf { it.isActive }
+                if (existingUpdateCheck != null) {
+                    existingUpdateCheck.join()
+                } else {
+                    appUpdater.checkForUpdate()
+                }
+                val update = appUpdater.state.value
+                val versionCheck = when (update.status) {
+                    AndroidUpdateStatus.Available,
+                    AndroidUpdateStatus.Downloading,
+                    AndroidUpdateStatus.Downloaded,
+                    -> AndroidBugReportVersionCheckState(
+                        status = AndroidBugReportVersionCheckStatus.UpdateRequired,
+                        message = update.message,
+                    )
+                    AndroidUpdateStatus.NotAvailable -> AndroidBugReportVersionCheckState(
+                        status = AndroidBugReportVersionCheckStatus.Current,
+                        message = update.message,
+                    )
+                    else -> AndroidBugReportVersionCheckState(
+                        status = AndroidBugReportVersionCheckStatus.CheckFailed,
+                        message = update.message.takeIf { it.isNotBlank() },
+                    )
+                }
+                recordDebugEvent(
+                    "bug-report",
+                    "Google Play version preflight result=${versionCheck.status} currentBuild=${update.currentVersionCode} availableBuild=${update.availableVersionCode ?: -1}",
+                )
+                _state.update { it.copy(bugReportVersionCheck = versionCheck) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                recordDebugEvent(
+                    "bug-report",
+                    "Google Play version preflight failed error=${error.debugMessage()}",
+                )
+                _state.update {
+                    it.copy(
+                        bugReportVersionCheck = AndroidBugReportVersionCheckState(
+                            status = AndroidBugReportVersionCheckStatus.CheckFailed,
+                            message = error.message ?: "Google Play update check failed.",
+                        ),
+                    )
+                }
+            } finally {
+                bugReportUpdateCheckActive = false
+                bugReportUpdateVerificationJob = null
             }
         }
     }
@@ -808,22 +898,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 current.copy(settingsRouteTarget = null)
             } else {
                 current
-            }
-        }
-    }
-
-    fun handleControllerBackNavigation() {
-        _state.update { current ->
-            when {
-                current.pendingStoreChoiceGame != null -> current.copy(pendingStoreChoiceGame = null)
-                current.pendingPrintedWasteGame != null -> current.copy(
-                    pendingPrintedWasteGame = null,
-                    printedWasteLoading = false,
-                    printedWasteError = null,
-                )
-                current.selectedGame != null -> current.copy(selectedGame = null)
-                current.page != AppPage.Home -> current.copy(page = AppPage.Home, selectedGame = null)
-                else -> current
             }
         }
     }
@@ -1373,7 +1447,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         accountConnectorRefreshMutex.withLock {
             val token = accountConnectorAuthToken(session)
             _state.update { it.copy(loadingAccountConnectors = true) }
-            runCatching { accountConnectorRepository.fetchConnectors(token) }
+            runCatching { withTimeout(15_000L) { accountConnectorRepository.fetchConnectors(token) } }
                 .onSuccess { connectors ->
                     _state.update { it.copy(accountConnectors = connectors, loadingAccountConnectors = false) }
                 }

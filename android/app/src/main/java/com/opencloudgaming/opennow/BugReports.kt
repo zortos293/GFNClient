@@ -17,6 +17,50 @@ internal const val ANDROID_BUG_REPORT_ENDPOINT =
     "https://api.printedwaste.com/releases/opennow/bug-reports"
 internal const val ANDROID_BUG_REPORT_MAX_FILES = 5
 internal const val ANDROID_BUG_REPORT_MAX_FILE_BYTES = 10L * 1024L * 1024L
+internal const val ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS = 50
+
+enum class AndroidBugReportVersionCheckStatus {
+    NotChecked,
+    Checking,
+    Current,
+    UpdateRequired,
+    CheckFailed,
+}
+
+data class AndroidBugReportVersionCheckState(
+    val status: AndroidBugReportVersionCheckStatus = AndroidBugReportVersionCheckStatus.NotChecked,
+    val message: String? = null,
+)
+
+internal fun androidBugReportsAllowed(
+    update: AndroidUpdateState,
+    versionCheck: AndroidBugReportVersionCheckState,
+): Boolean {
+    if (!update.installSource.isGooglePlay) return true
+    return versionCheck.status == AndroidBugReportVersionCheckStatus.Current &&
+        update.status == AndroidUpdateStatus.NotAvailable
+}
+
+internal fun androidBugReportBlockMessage(
+    update: AndroidUpdateState,
+    versionCheck: AndroidBugReportVersionCheckState,
+): String? {
+    if (!update.installSource.isGooglePlay) return null
+    return when {
+        update.status == AndroidUpdateStatus.Available ||
+            versionCheck.status == AndroidBugReportVersionCheckStatus.UpdateRequired ->
+            "Update OpenNOW from Google Play before sending a bug report. This keeps reports tied to the latest supported build."
+        versionCheck.status == AndroidBugReportVersionCheckStatus.CheckFailed ->
+            versionCheck.message ?: "OpenNOW could not verify the latest Google Play version. Retry the check before reporting."
+        versionCheck.status == AndroidBugReportVersionCheckStatus.Checking ->
+            "Checking Google Play for a newer OpenNOW build before bug reporting is enabled."
+        versionCheck.status == AndroidBugReportVersionCheckStatus.Current &&
+            update.status == AndroidUpdateStatus.NotAvailable -> null
+        versionCheck.status == AndroidBugReportVersionCheckStatus.Current ->
+            "OpenNOW could not confirm that this is still the latest Google Play build. Retry the check before reporting."
+        else -> "Check Google Play for updates before sending a bug report."
+    }
+}
 
 internal data class AndroidBugReportAttachment(
     val fileName: String,
@@ -51,7 +95,9 @@ internal fun buildAndroidBugReportRequest(
     val title = report.title.trim()
     val description = report.description.trim()
     require(title.isNotEmpty()) { "Enter a short issue title" }
-    require(description.isNotEmpty()) { "Describe what happened" }
+    require(description.length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS) {
+        "Describe what happened in at least $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS characters"
+    }
     require(report.versionName.isNotBlank()) { "App version is unavailable" }
     require(report.versionCode.isNotBlank()) { "App build is unavailable" }
     require(report.files.size <= ANDROID_BUG_REPORT_MAX_FILES) {

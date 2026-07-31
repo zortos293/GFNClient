@@ -79,7 +79,7 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun tvCatalogCardsKeepLowBandwidthArtworkAndTitleOverlay() {
+    fun tvCatalogCardsKeepLowBandwidthArtworkWithoutTextOverlay() {
         val game = GameInfo(
             id = "game",
             title = "Game",
@@ -91,7 +91,7 @@ class AndroidTvUiBehaviorTest {
             "https://img.nvidiagrid.net/apps/box-art.jpg;f=webp;w=272",
             catalogCardImageUrl(game, tvProfile = true),
         )
-        assertTrue(shouldOverlayCatalogCardTitle(tvProfile = true))
+        assertFalse(shouldOverlayCatalogCardTitle(tvProfile = true))
         assertFalse(shouldShowCatalogCardActions(tvProfile = true, controllerActionMode = false))
     }
 
@@ -189,6 +189,13 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun controllerCatalogCardsAreArtworkOnly() {
+        assertTrue(shouldUseArtworkOnlyCatalogCards(tvProfile = true, controllerActionMode = false))
+        assertTrue(shouldUseArtworkOnlyCatalogCards(tvProfile = false, controllerActionMode = true))
+        assertFalse(shouldUseArtworkOnlyCatalogCards(tvProfile = false, controllerActionMode = false))
+    }
+
+    @Test
     fun tvNeverShowsTouchControlsWhileMobileBehaviorIsPreserved() {
         assertFalse(
             shouldShowAndroidTouchControls(
@@ -246,12 +253,11 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun catalogCardTitlesAreCaptionedOnHandheldsOnly() {
-        // TV overlays the title on the artwork, so a caption row there would repeat it.
+    fun catalogCardTitlesAreCaptionedOnTouchHandheldsOnly() {
         assertTrue(shouldShowCatalogCardTitles(tvProfile = false, enabled = true))
         assertFalse(shouldShowCatalogCardTitles(tvProfile = true, enabled = true))
         assertFalse(shouldShowCatalogCardTitles(tvProfile = false, enabled = false))
-        assertTrue(shouldOverlayCatalogCardTitle(tvProfile = true))
+        assertFalse(shouldOverlayCatalogCardTitle(tvProfile = true))
     }
 
     @Test

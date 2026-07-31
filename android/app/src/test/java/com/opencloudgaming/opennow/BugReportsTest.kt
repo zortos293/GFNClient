@@ -12,7 +12,7 @@ class BugReportsTest {
         val request = buildAndroidBugReportRequest(
             AndroidBugReport(
                 title = " Stream froze ",
-                description = " Video stopped after reconnecting. ",
+                description = " Video stopped after reconnecting and remained frozen until I restarted the session. ",
                 versionName = "0.9.0",
                 versionCode = "45",
                 metadata = """{"device":"Pixel 9","sessionId":"[redacted]"}""",
@@ -33,7 +33,11 @@ class BugReportsTest {
         assertEquals(ANDROID_BUG_REPORT_ENDPOINT, request.url.toString())
         assertEquals("POST", request.method)
         assertTrue(multipart.contains("name=\"title\"\r\n\r\nStream froze"))
-        assertTrue(multipart.contains("name=\"description\"\r\n\r\nVideo stopped after reconnecting."))
+        assertTrue(
+            multipart.contains(
+                "name=\"description\"\r\n\r\nVideo stopped after reconnecting and remained frozen until I restarted the session.",
+            ),
+        )
         assertTrue(multipart.contains("name=\"versionName\"\r\n\r\n0.9.0"))
         assertTrue(multipart.contains("name=\"versionCode\"\r\n\r\n45"))
         assertTrue(multipart.contains("name=\"platform\"\r\n\r\nandroid"))
@@ -58,7 +62,14 @@ class BugReportsTest {
             AndroidBugReportAttachment("$index.log", "text/plain", byteArrayOf())
         }
         buildAndroidBugReportRequest(
-            AndroidBugReport("Title", "Description", "0.9.0", "45", "{}", files),
+            AndroidBugReport(
+                "Title",
+                "The stream stopped decoding video after a reconnect and did not recover.",
+                "0.9.0",
+                "45",
+                "{}",
+                files,
+            ),
         )
     }
 
@@ -67,7 +78,7 @@ class BugReportsTest {
         buildAndroidBugReportRequest(
             AndroidBugReport(
                 "Title",
-                "Description",
+                "The stream stopped decoding video after a reconnect and did not recover.",
                 "0.9.0",
                 "45",
                 "{}",
@@ -86,5 +97,61 @@ class BugReportsTest {
     fun parsesServerReferenceWhenPresent() {
         assertEquals("report-123", parseAndroidBugReportReference("""{"id":"report-123"}"""))
         assertEquals(null, parseAndroidBugReportReference("""{"ok":true}"""))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsDescriptionsShorterThanFiftyCharacters() {
+        buildAndroidBugReportRequest(
+            AndroidBugReport(
+                title = "Lag",
+                description = "It lagged.",
+                versionName = "1.0.5",
+                versionCode = "60",
+                metadata = "{}",
+                files = emptyList(),
+            ),
+        )
+    }
+
+    @Test
+    fun playStoreReportsRequireAFreshCurrentVersionCheck() {
+        val playUpdate = AndroidUpdateState(
+            installSource = AndroidAppInstallSource(setOf(GOOGLE_PLAY_STORE_PACKAGE)),
+            status = AndroidUpdateStatus.NotAvailable,
+        )
+
+        assertFalse(
+            androidBugReportsAllowed(
+                playUpdate,
+                AndroidBugReportVersionCheckState(AndroidBugReportVersionCheckStatus.NotChecked),
+            ),
+        )
+        assertTrue(
+            androidBugReportsAllowed(
+                playUpdate,
+                AndroidBugReportVersionCheckState(AndroidBugReportVersionCheckStatus.Current),
+            ),
+        )
+        assertFalse(
+            androidBugReportsAllowed(
+                playUpdate.copy(status = AndroidUpdateStatus.Available),
+                AndroidBugReportVersionCheckState(AndroidBugReportVersionCheckStatus.Current),
+            ),
+        )
+    }
+
+    @Test
+    fun sideloadReportsDoNotDependOnGooglePlayVerification() {
+        val sideloadUpdate = AndroidUpdateState(
+            installSource = AndroidAppInstallSource(emptySet()),
+            status = AndroidUpdateStatus.Idle,
+        )
+
+        assertTrue(
+            androidBugReportsAllowed(
+                sideloadUpdate,
+                AndroidBugReportVersionCheckState(AndroidBugReportVersionCheckStatus.NotChecked),
+            ),
+        )
     }
 }

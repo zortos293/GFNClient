@@ -14,6 +14,21 @@
     <string name="nav_settings">Settings</string>
     <string name="search_games">Search games</string>
     <string name="search_settings">Search settings</string>
+    <string name="settings_category_general">General</string>
+    <string name="settings_category_general_summary">Updates, privacy, advanced options, reset</string>
+    <string name="settings_category_stream">Stream</string>
+    <string name="settings_category_stream_summary">Resolution, FPS, codec, HDR, proxy</string>
+    <string name="settings_category_input">Input</string>
+    <string name="settings_category_input_summary">Microphone, mouse, keyboard, touch controls, rumble</string>
+    <string name="settings_category_interface">Interface</string>
+    <string name="settings_category_interface_summary">Color, cards, stats, controller UI</string>
+    <string name="settings_category_account">Account</string>
+    <string name="settings_category_account_summary">Sign-in, storage, connected stores</string>
+    <string name="settings_category_advanced">Advanced</string>
+    <string name="settings_category_advanced_summary">Experimental streaming, diagnostics, debug logs</string>
+    <string name="settings_category_about">About</string>
+    <string name="settings_category_about_summary">Version, credits, and support</string>
+    <string name="settings_show_card_titles">Show game titles</string>
     <string name="search_clear">Clear search</string>
     <string name="search_voice">Voice search</string>
     <string name="library_count">%1$d games</string>
@@ -28,6 +43,12 @@
     <string name="store_empty_search_filters_body">Clear search or filters to show more games.</string>
     <string name="store_jump_back_in">Jump back in</string>
     <string name="store_coming_next">Coming next</string>
+    <string name="store_coming_next_subtitle">Fresh arrivals from GeForce NOW</string>
+    <string name="store_continue_playing">Continue playing</string>
+    <string name="store_in_queue">In queue</string>
+    <string name="store_favorites">Favorites</string>
+    <string name="store_recommendations">Recommendations</string>
+    <string name="section_see_all">See all</string>
     <string name="action_play">Play</string>
     <string name="action_continue">Continue</string>
     <string name="action_resume">Resume</string>
@@ -36,6 +57,146 @@
     <string name="controller_action_favorite">Favorite</string>
     <string name="controller_action_unfavorite">Unfavorite</string>
     <string name="action_cancel">Cancel</string>
+
+    <!-- Reusable state words. One pair each, so the same boolean stops reading "On/Off" in one
+         row and "Visible/Hidden" in the next for no reason. -->
+    <string name="common_on">On</string>
+    <string name="common_off">Off</string>
+    <string name="common_visible">Visible</string>
+    <string name="common_hidden">Hidden</string>
+    <string name="action_back">Back</string>
+    <string name="action_open">Open</string>
+    <string name="action_reset">Reset</string>
+    <string name="action_close">Close</string>
+
+    <!-- In-stream controls panel -->
+    <string name="stream_panel_title">Stream Controls</string>
+    <string name="stream_panel_exit">Exit</string>
+    <string name="stream_panel_done">Done</string>
+    <string name="stream_panel_cd_keyboard">Open keyboard sender</string>
+    <string name="stream_panel_section_display">Display</string>
+    <string name="stream_panel_section_input">Input</string>
+    <string name="stream_panel_section_touch_layout">Touch Layout</string>
+    <string name="stream_panel_audio">Audio</string>
+    <string name="stream_panel_audio_muted">Muted</string>
+    <string name="stream_panel_status_bar">Status bar</string>
+    <string name="stream_panel_status_bar_summary">%1$s · %2$d items</string>
+    <string name="stream_panel_sharpening">Stream sharpening</string>
+    <string name="stream_panel_sharpening_amount">Sharpness amount</string>
+    <string name="stream_panel_stretch_to_fit">Stretch to fit</string>
+    <string name="stream_panel_microphone">Microphone</string>
+    <string name="stream_panel_microphone_permission">Permission required</string>
+    <string name="stream_panel_steam_menu">Steam Menu</string>
+    <string name="stream_panel_steam_menu_summary">Send Home to the streamed PC</string>
+    <string name="stream_panel_key_esc">Esc</string>
+    <string name="stream_panel_key_enter">Enter</string>
+    <string name="stream_panel_key_backspace">⌫</string>
+    <string name="stream_panel_controller_mouse">Controller mouse</string>
+    <string name="stream_panel_controller_mouse_summary">Right stick · A click · B right-click</string>
+    <string name="stream_panel_finger_mouse">Finger mouse</string>
+    <string name="stream_panel_direct_click">Direct click</string>
+    <string name="stream_panel_touch_controller">Touch controller</string>
+    <string name="stream_panel_joysticks">Joysticks</string>
+    <string name="stream_panel_joystick_fixed">Fixed</string>
+    <string name="stream_panel_joystick_dynamic">Dynamic</string>
+    <string name="stream_panel_clean_style">Clean style</string>
+    <string name="stream_panel_phone_rumble">Phone rumble fallback</string>
+    <string name="stream_panel_mouse_mode">Mouse mode (Using Gamepad)</string>
+    <string name="stream_panel_mouse_mode_summary">L stick moves mouse ·R stick scroll · R stick scrolls · A clicks · B right-clicks</string>
+    <string name="stream_mouse_mode_title">Mouse mode</string>
+    <string name="stream_mouse_mode_subtitle">Configure mouse emulation</string>
+    <string name="stream_panel_drag_edit">Drag edit mode</string>
+    <string name="stream_panel_reset_layout">Reset touch layout</string>
+    <string name="stream_panel_reset_layout_summary">Reset positions to default</string>
+    <string name="stream_panel_layout_scale">Layout scale</string>
+    <string name="stream_panel_button_size">Button size</string>
+    <string name="stream_panel_opacity">Opacity</string>
+    <string name="stream_panel_edge_padding">Edge padding</string>
+    <string name="stream_panel_bottom_padding">Bottom padding</string>
+    <string name="stream_panel_left_position">Left position</string>
+    <string name="stream_panel_right_position">Right position</string>
+
+    <!-- Joysticks sub-page -->
+    <string name="stream_joysticks_title">Joysticks</string>
+    <string name="stream_joysticks_subtitle">Tune the touch analog controls</string>
+    <string name="stream_joysticks_dynamic">Dynamic placement</string>
+    <string name="stream_joysticks_dynamic_on">Starts centered beneath your thumb</string>
+    <string name="stream_joysticks_dynamic_off">Uses the saved fixed center</string>
+    <string name="stream_joysticks_stick_size">Stick size</string>
+    <string name="stream_joysticks_dead_zone">Dead zone</string>
+    <string name="stream_joysticks_explainer">Dynamic mode keeps the saved stick area, but treats wherever your thumb first lands as neutral. This avoids sudden movement when you miss the exact center.</string>
+
+    <!-- Status bar sub-page -->
+    <string name="stream_statusbar_title">Status bar</string>
+    <string name="stream_statusbar_subtitle">Choose its layout and information</string>
+    <string name="stream_statusbar_appearance">Appearance</string>
+    <string name="stream_statusbar_position">Position</string>
+    <string name="stream_statusbar_items">Items</string>
+    <string name="stream_statusbar_metric_fps">FPS</string>
+    <string name="stream_statusbar_metric_ping">Ping</string>
+    <string name="stream_statusbar_metric_bitrate">Bitrate</string>
+    <string name="stream_statusbar_metric_battery">Battery</string>
+    <string name="stream_statusbar_metric_connection">Connection</string>
+    <string name="stream_statusbar_metric_resolution">Resolution</string>
+    <string name="stream_statusbar_metric_codec">Codec</string>
+    <string name="stream_statusbar_metric_server">Server</string>
+    <string name="stream_statusbar_metric_latency">Dec / Jit</string>
+    <string name="stream_statusbar_metric_loss">Loss</string>
+
+    <!-- Session report -->
+    <string name="session_report_score">%1$d/100</string>
+    <string name="session_report_subtitle">%1$s • %2$d quality samples</string>
+    <string name="session_report_connection">Connection</string>
+    <string name="session_report_not_measured">Not measured</string>
+    <string name="session_report_metric_latency">Latency</string>
+    <string name="session_report_metric_speed">Stream speed</string>
+    <string name="session_report_metric_loss">Packet loss</string>
+    <string name="session_report_metric_jitter">Jitter</string>
+    <string name="session_report_metric_fps">Frame rate</string>
+    <string name="session_report_metric_decode">Decode</string>
+    <string name="session_report_ms_avg">%1$d ms avg</string>
+    <string name="session_report_ms_peak">%1$d ms peak</string>
+    <string name="session_report_peak">%1$s peak</string>
+    <string name="session_report_loss_stable">Stable</string>
+    <string name="session_report_loss_affects">May affect clarity</string>
+    <string name="session_report_jitter_detail">Timing variation</string>
+    <string name="session_report_fps_detail">Average / target FPS</string>
+    <string name="session_report_decode_detail">Per video frame</string>
+
+    <!-- Exit confirmation -->
+    <string name="stream_exit_eyebrow">Session Control</string>
+    <string name="stream_exit_title">Exit Stream?</string>
+    <string name="stream_exit_body">Do you really want to exit %1$s?</string>
+    <string name="stream_exit_caveat">Your current cloud gaming session will be closed.</string>
+    <string name="stream_exit_keep_playing">Keep Playing</string>
+    <string name="stream_exit_confirm">Exit Stream</string>
+
+    <!-- Bug reporter -->
+    <string name="bug_report_section">Bug reporter</string>
+    <string name="bug_report_dialog_title">Report a bug</string>
+    <string name="bug_report_open_label">Report a stream bug</string>
+    <string name="bug_report_open_summary">Send an issue and redacted diagnostics</string>
+
+    <!-- Shared settings/stream control rows -->
+    <string name="control_show_description">Show description</string>
+    <string name="control_hide_description">Hide description</string>
+
+    <!-- In-stream status bar overlay -->
+    <string name="stream_stats_ping">Ping %1$s</string>
+    <string name="stream_stats_decode">Dec %1$sms</string>
+    <string name="stream_stats_jitter">Jit %1$sms</string>
+    <string name="stream_stats_loss">Loss %1$s%%</string>
+    <string name="stream_stats_cd_fps">%1$d frames per second</string>
+    <string name="stream_stats_cd_ping">Ping %1$d milliseconds</string>
+    <string name="stream_stats_cd_decode">Decode time %1$s milliseconds per frame</string>
+    <string name="stream_stats_cd_jitter">Jitter %1$s milliseconds</string>
+    <string name="stream_stats_cd_loss">Packet loss %1$s percent</string>
+    <string name="stream_quality_good">good</string>
+    <string name="stream_quality_fair">fair</string>
+    <string name="stream_quality_poor">poor</string>
+
+    <string name="action_dismiss">Dismiss</string>
+    <string name="action_play_on_tv">Play on %1$s</string>
     <string name="action_clear_filters">Clear filters</string>
     <string name="action_scroll_top">Back to top</string>
     <string name="option_auto">Auto</string>

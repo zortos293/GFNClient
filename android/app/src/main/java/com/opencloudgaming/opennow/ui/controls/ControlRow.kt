@@ -1,0 +1,321 @@
+package com.opencloudgaming.opennow.ui.controls
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import com.opencloudgaming.opennow.LocalSettingsControllerNavigationEnabled
+import com.opencloudgaming.opennow.handleVerticalDpadFocusMove
+import com.opencloudgaming.opennow.isTvActivateKey
+import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
+import com.opencloudgaming.opennow.ui.theme.OpenNowRadius
+import com.opencloudgaming.opennow.ui.theme.OpenNowSpacing
+
+/**
+ * How a settings-style row is painted.
+ *
+ * The settings screen and the in-stream controls panel used to own two entirely separate sets of
+ * row widgets — five verbatim copies of the same clip/focus/background/border/clickable chain. The
+ * difference between them was always purely presentational plus one focus policy, so it lives here
+ * and is pushed down through [LocalControlRowStyle]; no call site passes it.
+ *
+ * Content differences are *not* modelled here. A row's always-visible `value` subtitle and its
+ * collapsible `description` are independent optional parameters, so a row can carry neither,
+ * either, or both regardless of which surface it is on.
+ */
+@Immutable
+data class ControlRowStyle(
+    val shape: Shape,
+    val containerRest: Color,
+    val containerFocused: Color,
+    val borderRestWidth: Dp,
+    val borderFocusWidth: Dp,
+    val horizontalPadding: Dp,
+    val verticalPadding: Dp,
+    val contentGap: Dp,
+    val labelStyle: TextStyle,
+    val labelWeight: FontWeight?,
+    val supportingStyle: TextStyle,
+    val supportingColor: Color,
+    val indentStep: Dp,
+    /** Whether rows take D-pad focus at all. */
+    val focusable: Boolean,
+    /** Whether the focus ring is drawn. Same value as [focusable] today, kept separate so it can diverge. */
+    val showFocusRing: Boolean,
+) {
+    companion object {
+        /** Settings screen: opaque card-like rows, focus signalled by the ring alone. */
+        @Composable
+        fun settings(): ControlRowStyle {
+            val controllerNavigation = LocalSettingsControllerNavigationEnabled.current
+            val container = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f)
+            return ControlRowStyle(
+                shape = RoundedCornerShape(SETTINGS_ROW_RADIUS),
+                containerRest = container,
+                containerFocused = container,
+                borderRestWidth = 1.dp,
+                borderFocusWidth = 2.dp,
+                horizontalPadding = OpenNowSpacing.md,
+                verticalPadding = OpenNowSpacing.sm,
+                contentGap = 3.dp,
+                labelStyle = MaterialTheme.typography.bodyLarge,
+                labelWeight = null,
+                supportingStyle = MaterialTheme.typography.bodySmall,
+                supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                indentStep = OpenNowSpacing.xl,
+                focusable = controllerNavigation,
+                showFocusRing = controllerNavigation,
+            )
+        }
+
+        /**
+         * In-stream controls panel: denser, and focusable unconditionally.
+         *
+         * The panel's own rows used to rely on `clickable`'s implicit focusability with no
+         * `isTvActivateKey` handling at all, which made controller navigation inside a stream
+         * noticeably more fragile than in settings. Going through the shared row fixes that.
+         */
+        @Composable
+        fun stream(): ControlRowStyle = ControlRowStyle(
+            shape = RoundedCornerShape(OpenNowRadius.md),
+            containerRest = OpenNowPalette.PanelRowRest,
+            containerFocused = OpenNowPalette.PanelRowFocused,
+            borderRestWidth = 1.dp,
+            borderFocusWidth = 2.dp,
+            horizontalPadding = OpenNowSpacing.md,
+            verticalPadding = 10.dp,
+            contentGap = 2.dp,
+            labelStyle = MaterialTheme.typography.titleSmall,
+            labelWeight = FontWeight.SemiBold,
+            supportingStyle = MaterialTheme.typography.labelSmall,
+            supportingColor = OpenNowPalette.TextMuted,
+            indentStep = OpenNowSpacing.xl,
+            focusable = true,
+            showFocusRing = true,
+        )
+    }
+}
+
+/** Settings rows have always been 14dp — between [OpenNowRadius.md] and [OpenNowRadius.lg]. */
+private val SETTINGS_ROW_RADIUS = 14.dp
+
+internal val LocalControlRowStyle = compositionLocalOf<ControlRowStyle?> { null }
+
+@Composable
+internal fun controlRowStyle(): ControlRowStyle =
+    LocalControlRowStyle.current ?: ControlRowStyle.settings()
+
+/**
+ * The container every control row is built on.
+ *
+ * The modifier order matters and is copied from the original settings row: `border` comes *before*
+ * `clip`, which is why the focus ring sits outside the fill rather than being clipped by it.
+ */
+@Composable
+internal fun ControlRow(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    indentLevel: Int = 0,
+    style: ControlRowStyle = controlRowStyle(),
+    verticalAlignment: Alignment.Vertical = Alignment.CenterVertically,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val focusManager = LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    val showFocus = style.showFocusRing && focused
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(start = style.indentStep * indentLevel)
+            .onFocusChanged { focused = style.focusable && (it.isFocused || it.hasFocus) }
+            .border(
+                width = if (showFocus) style.borderFocusWidth else style.borderRestWidth,
+                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = style.shape,
+            )
+            .clip(style.shape)
+            .background(if (showFocus) style.containerFocused else style.containerRest)
+            .then(
+                if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick)
+                else Modifier,
+            )
+            .onPreviewKeyEvent { event ->
+                when {
+                    style.focusable && enabled && onClick != null && isTvActivateKey(event) -> {
+                        onClick()
+                        true
+                    }
+                    style.focusable -> handleVerticalDpadFocusMove(event, focusManager)
+                    else -> false
+                }
+            }
+            .focusable(enabled = style.focusable)
+            .padding(horizontal = style.horizontalPadding, vertical = style.verticalPadding),
+        verticalAlignment = verticalAlignment,
+        content = content,
+    )
+}
+
+/**
+ * The border/clip/background/padding chain on its own, for controls that need the row's look but
+ * not its `Row` layout or click behaviour — the slider, which is a `Column` and whose focus lives
+ * on the `Slider` itself.
+ */
+@Composable
+internal fun Modifier.controlRowContainer(style: ControlRowStyle, showFocus: Boolean): Modifier = this
+    .border(
+        // colorScheme.primary, not a fixed accent — the user can pick their own.
+        width = if (showFocus) style.borderFocusWidth else style.borderRestWidth,
+        color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
+        shape = style.shape,
+    )
+    .clip(style.shape)
+    .background(if (showFocus) style.containerFocused else style.containerRest)
+    .padding(horizontal = style.horizontalPadding, vertical = style.verticalPadding)
+
+/**
+ * The leading label block shared by every row: a label, an optional always-visible value line, and
+ * an optional expanded description.
+ */
+@Composable
+internal fun RowScope.ControlRowLabels(
+    label: String,
+    value: String?,
+    expandedDescription: String?,
+    enabled: Boolean,
+    style: ControlRowStyle,
+) {
+    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(style.contentGap)) {
+        Text(
+            label,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else DISABLED_ALPHA),
+            style = style.labelStyle,
+            fontWeight = style.labelWeight,
+            maxLines = 2,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+        if (!value.isNullOrBlank()) {
+            Text(
+                value,
+                color = style.supportingColor.copy(alpha = if (enabled) 1f else DISABLED_ALPHA),
+                style = style.supportingStyle,
+                maxLines = 2,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+        if (!expandedDescription.isNullOrBlank()) {
+            Text(
+                expandedDescription,
+                color = style.supportingColor.copy(alpha = if (enabled) 0.86f else DISABLED_ALPHA),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 3,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+internal const val DISABLED_ALPHA = 0.45f
+
+/**
+ * Section wrapper. Settings groups rows inside a card; the stream panel, floating over video, uses
+ * a bare caption so it does not stack a second surface on top of the panel itself.
+ */
+@Immutable
+data class ControlSectionStyle(
+    val usesCard: Boolean,
+    val titleStyle: TextStyle,
+    val titleWeight: FontWeight,
+    val titleColor: Color,
+    val itemSpacing: Dp,
+) {
+    companion object {
+        @Composable
+        fun settings(): ControlSectionStyle = ControlSectionStyle(
+            usesCard = true,
+            titleStyle = MaterialTheme.typography.titleMedium,
+            titleWeight = FontWeight.Bold,
+            titleColor = MaterialTheme.colorScheme.onSurface,
+            itemSpacing = 10.dp,
+        )
+
+        @Composable
+        fun stream(): ControlSectionStyle = ControlSectionStyle(
+            usesCard = false,
+            titleStyle = MaterialTheme.typography.labelMedium,
+            titleWeight = FontWeight.Bold,
+            titleColor = OpenNowPalette.TextMuted,
+            itemSpacing = OpenNowSpacing.sm,
+        )
+    }
+}
+
+internal val LocalControlSectionStyle = compositionLocalOf<ControlSectionStyle?> { null }
+
+@Composable
+internal fun controlSectionStyle(): ControlSectionStyle =
+    LocalControlSectionStyle.current ?: ControlSectionStyle.settings()
+
+@Composable
+internal fun ControlSection(
+    title: String,
+    modifier: Modifier = Modifier,
+    style: ControlSectionStyle = controlSectionStyle(),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val body: @Composable ColumnScope.() -> Unit = {
+        Text(title, color = style.titleColor, style = style.titleStyle, fontWeight = style.titleWeight)
+        content()
+    }
+    if (style.usesCard) {
+        Card(
+            modifier = modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(SETTINGS_ROW_RADIUS),
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(style.itemSpacing),
+                content = body,
+            )
+        }
+    } else {
+        Column(
+            modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(style.itemSpacing),
+            content = body,
+        )
+    }
+}

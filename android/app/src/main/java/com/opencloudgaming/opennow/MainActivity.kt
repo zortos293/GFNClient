@@ -132,6 +132,14 @@ class MainActivity : ComponentActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
+        NativeStreamInputRouter.releaseTouchMouseForLifecycle()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Backgrounding mid-tap gives us no UP or CANCEL, so without this the host keeps the mouse
+        // button held down. PiP does not stop the activity, hence the separate call above.
+        NativeStreamInputRouter.releaseTouchMouseForLifecycle()
     }
 
     private fun KeyEvent.isAndroidVolumeKey(): Boolean =

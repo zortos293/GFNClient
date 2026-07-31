@@ -237,14 +237,21 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun gameCardScaleChangesGridAndStoreRailDensity() {
-        assertEquals(7, scaledGameCardColumnCount(baseColumns = 5, cardScale = 0.75f, minimumColumns = 3))
-        assertEquals(5, scaledGameCardColumnCount(baseColumns = 5, cardScale = 1f, minimumColumns = 3))
-        assertEquals(4, scaledGameCardColumnCount(baseColumns = 5, cardScale = 1.4f, minimumColumns = 3))
-
+    fun gameCardScaleChangesStoreRailDensity() {
+        // The catalog grid now derives its columns from GridCells.Adaptive rather than from a
+        // scaled column count, but posterSizeScale keeps its meaning: larger scale, fewer cards.
         val smallCards = storeRailVisibleCardCount(900f, 146f, 10f, 0.75f)
         val largeCards = storeRailVisibleCardCount(900f, 146f, 10f, 1.4f)
         assertTrue(smallCards > largeCards)
+    }
+
+    @Test
+    fun catalogCardTitlesAreCaptionedOnHandheldsOnly() {
+        // TV overlays the title on the artwork, so a caption row there would repeat it.
+        assertTrue(shouldShowCatalogCardTitles(tvProfile = false, enabled = true))
+        assertFalse(shouldShowCatalogCardTitles(tvProfile = true, enabled = true))
+        assertFalse(shouldShowCatalogCardTitles(tvProfile = false, enabled = false))
+        assertTrue(shouldOverlayCatalogCardTitle(tvProfile = true))
     }
 
     @Test

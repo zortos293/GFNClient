@@ -332,7 +332,7 @@ internal fun AppSettings.withCurrentStreamPresentationDefaults(androidTvProfile:
     if (streamPresentationProfileVersion >= STREAM_PRESENTATION_PROFILE_VERSION) return this
     return copy(
         legacyCropStreamToFill = false,
-        stretchStreamToFit = !androidTvProfile,
+        stretchStreamToFit = false,
         streamPresentationProfileVersion = STREAM_PRESENTATION_PROFILE_VERSION,
     )
 }

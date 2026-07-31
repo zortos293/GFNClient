@@ -55,15 +55,15 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun phonePresentationDefaultsToNoCropStretchAndPreservesLaterOptOut() {
+    fun phonePresentationKeepsAspectFitByDefaultAndPreservesLaterOptIn() {
         val migrated = AppSettings().withCurrentStreamPresentationDefaults(androidTvProfile = false)
 
         assertFalse(migrated.legacyCropStreamToFill)
-        assertTrue(migrated.stretchStreamToFit)
+        assertFalse(migrated.stretchStreamToFit)
         assertEquals(STREAM_PRESENTATION_PROFILE_VERSION, migrated.streamPresentationProfileVersion)
 
-        val optedOut = migrated.copy(stretchStreamToFit = false)
-        assertEquals(optedOut, optedOut.withCurrentStreamPresentationDefaults(androidTvProfile = false))
+        val optedIn = migrated.copy(stretchStreamToFit = true)
+        assertEquals(optedIn, optedIn.withCurrentStreamPresentationDefaults(androidTvProfile = false))
     }
 
     @Test

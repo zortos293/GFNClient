@@ -148,10 +148,10 @@ class GfnApiTest {
                 assertEquals("$resolution $codec fps", 60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
                 assertEquals("$resolution $codec bit depth", if (codec == VideoCodec.H265) 10 else 0, features.getValue("bitDepth").jsonPrimitive.int)
                 assertEquals(false, features.getValue("reflex").jsonPrimitive.boolean)
-                assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
-                assertEquals(0, monitor.getValue("positionX").jsonPrimitive.int)
-                assertEquals(0, monitor.getValue("positionY").jsonPrimitive.int)
-                assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
+                assertFalse(monitor.containsKey("monitorId"))
+                assertFalse(monitor.containsKey("positionX"))
+                assertFalse(monitor.containsKey("positionY"))
+                assertEquals(0, monitor.getValue("dpi").jsonPrimitive.int)
                 assertEquals(pixels.first, physicalResolution?.getValue("horizontalPixels")?.jsonPrimitive?.int)
                 assertEquals(pixels.second, physicalResolution?.getValue("verticalPixels")?.jsonPrimitive?.int)
             }
@@ -173,6 +173,7 @@ class GfnApiTest {
             deviceId = "device",
             settings = settings,
             physicalDisplayResolution = 1920 to 1080,
+            streamingBaseUrl = "https://np-bom-01.cloudmatchbeta.nvidiagrid.net",
         )
         val sessionRequestData = body.getValue("sessionRequestData").jsonObject
         val monitor = sessionRequestData
@@ -189,15 +190,15 @@ class GfnApiTest {
 
         assertEquals(1680, monitor.getValue("widthInPixels").jsonPrimitive.int)
         assertEquals(720, monitor.getValue("heightInPixels").jsonPrimitive.int)
-        assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
-        assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
-        assertEquals(0, monitor.getValue("positionX").jsonPrimitive.int)
-        assertEquals(0, monitor.getValue("positionY").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("dpi").jsonPrimitive.int)
+        assertFalse(monitor.containsKey("monitorId"))
+        assertFalse(monitor.containsKey("positionX"))
+        assertFalse(monitor.containsKey("positionY"))
         assertEquals(JsonNull, monitor.getValue("displayData"))
         assertEquals(JsonNull, monitor.getValue("hdr10PlusGamingData"))
-        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(1, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
-        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(2, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(1920, physicalResolution.getValue("horizontalPixels").jsonPrimitive.int)
         assertEquals(1080, physicalResolution.getValue("verticalPixels").jsonPrimitive.int)
     }
@@ -285,12 +286,32 @@ class GfnApiTest {
     }
 
     @Test
-    fun cloudMatchUsesDesktopNativeClientIdentity() {
+    fun nvidiaCloudMatchUsesBrowserAndroidClientIdentity() {
         val headers = cloudMatchHeaders(
             token = "token",
             clientId = "client",
             deviceId = "device",
             includeOrigin = true,
+            streamingBaseUrl = "https://np-bom-01.cloudmatchbeta.nvidiagrid.net",
+        )
+
+        assertEquals("WEBRTC", headers["nv-client-streamer"])
+        assertEquals("BROWSER", headers["nv-client-type"])
+        assertEquals("2.0.86.124", headers["nv-client-version"])
+        assertEquals("ANDROID", headers["nv-device-os"])
+        assertEquals("PHONE", headers["nv-device-type"])
+        assertTrue(headers["User-Agent"].orEmpty().contains("Android"))
+        assertEquals("https://play.geforcenow.com", headers["Origin"])
+    }
+
+    @Test
+    fun allianceCloudMatchKeepsDesktopNativeClientIdentity() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+            streamingBaseUrl = "https://my-yes.yes.geforcenow.nvidiagrid.net",
         )
 
         assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
@@ -299,6 +320,35 @@ class GfnApiTest {
         assertEquals("DESKTOP", headers["nv-device-type"])
         assertTrue(headers["User-Agent"].orEmpty().contains("NVIDIACEFClient"))
         assertEquals("https://play.geforcenow.com", headers["Origin"])
+    }
+
+    @Test
+    fun allianceClaimKeepsDesktopMonitorDescriptor() {
+        val settings = StreamSettings(
+            resolution = "1680x720",
+            aspectRatio = "21:9",
+            fps = 60,
+            codec = VideoCodec.H264,
+            colorQuality = ColorQuality.EightBit420,
+        )
+
+        val sessionRequestData = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = settings,
+            streamingBaseUrl = "https://my-yes.yes.geforcenow.nvidiagrid.net",
+        ).getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData
+            .getValue("clientRequestMonitorSettings").jsonArray
+            .single().jsonObject
+
+        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(1, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
+        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("positionX").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("positionY").jsonPrimitive.int)
+        assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
     }
 
     @Test

@@ -657,7 +657,7 @@ private fun SettingsContent(
                     )
                 }
                 val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier) &&
-                    settingsAvailableStream.codec != VideoCodec.AV1
+                    settingsAvailableStream.hdrAvailableForAndroid(state.androidTvProfile)
                 SettingSwitch(
                     stringResource(R.string.settings_hdr),
                     settings.stream.hdrEnabled && hdrAvailable,
@@ -669,6 +669,17 @@ private fun SettingsContent(
                             colorQuality = if (enabled && !s.colorQuality.name.startsWith("TenBit")) ColorQuality.TenBit420 else s.colorQuality,
                         ).withCodecColorCompatibility()
                     }
+                }
+                if (!settingsAvailableStream.hdrAvailableForAndroid(state.androidTvProfile)) {
+                    Text(
+                        if (state.androidTvProfile) {
+                            stringResource(R.string.settings_hdr_android_tv_compatibility_hint)
+                        } else {
+                            stringResource(R.string.settings_hdr_android_handheld_hint)
+                        },
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 SettingSwitch("Stream sharpening", settings.stream.streamSharpeningEnabled) {
                     viewModel.updateStreamSettings { s -> s.copy(streamSharpeningEnabled = it) }
@@ -791,6 +802,16 @@ private fun SettingsContent(
                     ) { value ->
                         val mode = NativeTouchMode.entries.firstOrNull { it.name == value } ?: NativeTouchMode.Auto
                         viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(nativeTouchMode = mode)))
+                    }
+                    if (
+                        settings.androidTouch.nativeTouchMode == NativeTouchMode.Auto &&
+                        settings.stream.requiresNativeDesktopCloudMatchMode()
+                    ) {
+                        Text(
+                            text = stringResource(R.string.settings_native_touch_high_performance_hint),
+                            color = SettingsTextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     if (settings.androidTouch.nativeTouchMode != NativeTouchMode.Off) {
                         Box(Modifier.padding(start = 24.dp)) {
@@ -918,7 +939,7 @@ private fun SettingsContent(
                     }
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_sounds_sessions), "interface", "controller", "sounds", "button", "tone", "session counter", "intro", "music", "queue") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_sounds_sessions), "interface", "controller", "sounds", "button", "tone", "session counter", "session report", "quality summary", "intro", "music", "queue") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_button_press_tones),
                     checked = settings.controllerUiSounds,
@@ -927,6 +948,13 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(controllerUiSounds = enabled))
                 }
                 SettingSwitch(stringResource(R.string.settings_session_counter), settings.sessionCounterEnabled) { viewModel.updateSettings(settings.copy(sessionCounterEnabled = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_show_session_report),
+                    checked = settings.showSessionReportAfterStream,
+                    description = stringResource(R.string.settings_show_session_report_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(showSessionReportAfterStream = enabled))
+                }
                 SettingSwitch(stringResource(R.string.settings_stream_intro_music), settings.streamIntroMusic) { enabled ->
                     viewModel.updateSettings(settings.copy(streamIntroMusic = enabled))
                 }

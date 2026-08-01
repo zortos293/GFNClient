@@ -45,6 +45,37 @@ class NativeTouchGamesTest {
     }
 
     @Test
+    fun autoYieldsToHighPerformanceStreamAllocation() {
+        val touchGame = game(supportedControls = listOf("TOUCHSCREEN"))
+
+        assertFalse(
+            shouldUseNativeTouch(
+                NativeTouchMode.Auto,
+                touchGame,
+                StreamSettings(resolution = "2560x1440", fps = 120),
+            ),
+        )
+        assertTrue(
+            shouldUseNativeTouch(
+                NativeTouchMode.Auto,
+                touchGame,
+                StreamSettings(resolution = "1920x1080", fps = 60),
+            ),
+        )
+    }
+
+    @Test
+    fun alwaysTouchStillOverridesHighPerformanceAllocation() {
+        assertTrue(
+            shouldUseNativeTouch(
+                NativeTouchMode.Always,
+                game(supportedControls = listOf("TOUCHSCREEN")),
+                StreamSettings(resolution = "2560x1440", fps = 120),
+            ),
+        )
+    }
+
+    @Test
     fun offWinsOverEverything() {
         assertFalse(shouldUseNativeTouch(NativeTouchMode.Off, game(supportedControls = listOf("TOUCHSCREEN"))))
     }

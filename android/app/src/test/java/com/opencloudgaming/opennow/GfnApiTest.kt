@@ -127,6 +127,7 @@ class GfnApiTest {
                     colorQuality = if (codec == VideoCodec.H264) ColorQuality.EightBit420 else ColorQuality.TenBit420,
                 )
                 val body = buildMinimalClaimRequestBody(appId = "123", deviceId = "device", settings = settings)
+                val nativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode()
                 val sessionRequestData = body.getValue("sessionRequestData").jsonObject
                 val metadata = sessionRequestData.getValue("metaData").jsonArray
                 val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
@@ -148,10 +149,10 @@ class GfnApiTest {
                 assertEquals("$resolution $codec fps", 60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
                 assertEquals("$resolution $codec bit depth", if (codec == VideoCodec.H265) 10 else 0, features.getValue("bitDepth").jsonPrimitive.int)
                 assertEquals(false, features.getValue("reflex").jsonPrimitive.boolean)
-                assertFalse(monitor.containsKey("monitorId"))
-                assertFalse(monitor.containsKey("positionX"))
-                assertFalse(monitor.containsKey("positionY"))
-                assertEquals(0, monitor.getValue("dpi").jsonPrimitive.int)
+                assertEquals(nativeDesktopMode, monitor.containsKey("monitorId"))
+                assertEquals(nativeDesktopMode, monitor.containsKey("positionX"))
+                assertEquals(nativeDesktopMode, monitor.containsKey("positionY"))
+                assertEquals(if (nativeDesktopMode) 100 else 0, monitor.getValue("dpi").jsonPrimitive.int)
                 assertEquals(pixels.first, physicalResolution?.getValue("horizontalPixels")?.jsonPrimitive?.int)
                 assertEquals(pixels.second, physicalResolution?.getValue("verticalPixels")?.jsonPrimitive?.int)
             }
@@ -302,6 +303,25 @@ class GfnApiTest {
         assertEquals("PHONE", headers["nv-device-type"])
         assertTrue(headers["User-Agent"].orEmpty().contains("Android"))
         assertEquals("https://play.geforcenow.com", headers["Origin"])
+    }
+
+    @Test
+    fun nvidiaHighPerformanceGamepadLaunchUsesNativeDesktopIdentity() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+            streamingBaseUrl = "https://np-pdx-01.cloudmatchbeta.nvidiagrid.net",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            preferNativeDesktopMode = true,
+        )
+
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
+        assertEquals("WINDOWS", headers["nv-device-os"])
+        assertEquals("DESKTOP", headers["nv-device-type"])
+        assertTrue(headers["User-Agent"].orEmpty().contains("Linux; Android"))
     }
 
     @Test
@@ -777,6 +797,36 @@ class GfnApiTest {
         val sessionRequestData = body.getValue("sessionRequestData").jsonObject
         assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(GfnAppLaunchMode.GAMEPAD_FRIENDLY, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
+    }
+
+    @Test
+    fun highPerformanceGamepadClaimUsesNativeDesktopPlatformIdentity() {
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = StreamSettings(resolution = "2560x1440", fps = 120),
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+
+        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals(100, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
+    }
+
+    @Test
+    fun highPerformanceTouchClaimKeepsBrowserPlatformIdentity() {
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = StreamSettings(resolution = "2560x1440", fps = 120),
+            appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+
+        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals(0, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
     }
 
 }

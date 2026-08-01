@@ -11,17 +11,17 @@ class AppSettingsDefaultsTest {
     fun streamStatusBarDefaultsToConnectionEssentials() {
         val metrics = AppSettings().streamStatsMetrics
 
-        assertFalse(metrics.fps)
+        assertTrue(metrics.fps)
         assertTrue(metrics.ping)
         assertFalse(metrics.bitrate)
         assertTrue(metrics.battery)
         assertTrue(metrics.connection)
         assertFalse(metrics.resolution)
         assertFalse(metrics.codec)
-        assertTrue(metrics.location)
-        assertTrue(metrics.latency)
-        assertTrue(metrics.packetLoss)
-        assertEquals(6, metrics.enabledCount())
+        assertFalse(metrics.location)
+        assertFalse(metrics.latency)
+        assertFalse(metrics.packetLoss)
+        assertEquals(4, metrics.enabledCount())
     }
 
     @Test
@@ -33,6 +33,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
+        assertTrue(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
     }
@@ -49,6 +50,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.streamIntroMusic)
         assertEquals(IntroMusicStartMode.Muted, settings.streamIntroStartMode)
         assertFalse(settings.queueReadyMusic)
+        assertTrue(settings.showSessionReportAfterStream)
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
@@ -80,5 +82,14 @@ class AppSettingsDefaultsTest {
 
         assertFalse(settings.analyticsConsentAsked)
         assertFalse(settings.analyticsSharingEnabled)
+    }
+
+    @Test
+    fun sessionReportOptOutSurvivesSettingsSerialization() {
+        val settings = OpenNowJson.decodeFromString<AppSettings>(
+            """{"showSessionReportAfterStream":false}""",
+        )
+
+        assertFalse(settings.showSessionReportAfterStream)
     }
 }

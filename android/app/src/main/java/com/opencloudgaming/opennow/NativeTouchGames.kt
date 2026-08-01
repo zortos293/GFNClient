@@ -33,6 +33,18 @@ internal fun shouldUseNativeTouch(mode: NativeTouchMode, game: GameInfo?): Boole
     NativeTouchMode.Auto -> game != null && catalogClaimsTouchSupport(game)
 }
 
+/**
+ * Auto mode yields to the native desktop allocation required by high-resolution or high-FPS
+ * streams. An explicit Always selection still wins when the user values native touch over that
+ * stream mode.
+ */
+internal fun shouldUseNativeTouch(
+    mode: NativeTouchMode,
+    game: GameInfo?,
+    streamSettings: StreamSettings,
+): Boolean = shouldUseNativeTouch(mode, game) &&
+    (mode == NativeTouchMode.Always || !streamSettings.requiresNativeDesktopCloudMatchMode())
+
 /** One line per session showing the catalog signal and the resulting native-touch decision. */
 internal fun nativeTouchDiagnostics(game: GameInfo, enabled: Boolean): String {
     val controls = game.variants

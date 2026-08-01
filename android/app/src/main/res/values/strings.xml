@@ -151,7 +151,8 @@
 
     <!-- Session report -->
     <string name="session_report_score">%1$d/100</string>
-    <string name="session_report_subtitle">%1$s • %2$d quality samples</string>
+    <string name="session_report_subtitle">%1$s</string>
+    <string name="session_report_dont_show_again">Don\'t show session reports again</string>
     <string name="session_report_connection">Connection</string>
     <string name="session_report_not_measured">Not measured</string>
     <string name="session_report_metric_latency">Latency</string>
@@ -228,6 +229,8 @@
     <string name="settings_section_library_navigation">Library and navigation</string>
     <string name="settings_section_status_bar">Status bar</string>
     <string name="settings_section_sounds_sessions">Sounds and sessions</string>
+    <string name="settings_show_session_report">Show session report</string>
+    <string name="settings_show_session_report_desc">Show a quality summary after each stream.</string>
     <string name="settings_section_nerd_tools">Advanced tools</string>
     <string name="settings_section_thanks">Thanks</string>
     <string name="settings_resolution">Resolution</string>
@@ -243,9 +246,11 @@
     <string name="settings_codec">Codec</string>
     <string name="settings_color">Color</string>
     <string name="settings_av1_ten_bit_badge">H.264/H.265 only</string>
-    <string name="settings_av1_ten_bit_hint">AV1 uses 8-bit color. Choose H.265 or H.264 for 10-bit and HDR.</string>
+    <string name="settings_av1_ten_bit_hint">AV1 uses 8-bit color. Choose H.265 for 10-bit; HDR is limited to compatible Android TV modes.</string>
     <string name="settings_av1_ten_bit_downgraded">AV1 uses 8-bit color in OpenNOW. Switched to 8-bit and disabled HDR. Choose H.265 or H.264 to use 10-bit.</string>
     <string name="settings_hdr">HDR (Performance &amp; Ultimate)</string>
+    <string name="settings_hdr_android_handheld_hint">HDR streaming is not available on Android handhelds. 10-bit SDR remains available with H.265.</string>
+    <string name="settings_hdr_android_tv_compatibility_hint">HDR on Android TV requires H.265 at 60 FPS or lower and a resolution up to 3840 x 2160.</string>
     <string name="settings_region">Region</string>
     <string name="settings_session_proxy">Session proxy</string>
     <string name="settings_session_proxy_hint">Routes GFN session creation and queue polling through this proxy. Leave off for direct requests.</string>
@@ -317,4 +322,5 @@
     <string name="accent_violet">Violet</string>
     <string name="settings_native_streamer">Native streamer (Experimental)</string>
     <string name="settings_native_streamer_desc">Intercepts the hardware decoder to inject low-latency vendor properties. May be unstable.</string>
+    <string name="settings_native_touch_high_performance_hint">Native touch Auto uses gamepad mode for high-resolution or high-FPS streams so the selected stream mode is preserved. Choose Every game to prioritize native touch instead.</string>
 </resources>

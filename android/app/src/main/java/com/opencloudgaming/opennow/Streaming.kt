@@ -6471,13 +6471,13 @@ object SdpTools {
                     add("a=video.fbcDynamicFpsGrabTimeoutMs:$grabTimeoutMs")
                     add("a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:$decodeThresholdMs")
                 }
+                add("a=vqos.maxStreamFpsEstimate:${settings.fps}")
             } else {
                 add("a=vqos.dfc.enable:0")
                 add("a=vqos.dfc.adjustResAndFps:0")
             }
             if (isAtLeast240Fps) {
                 add("a=video.enableNextCaptureMode:1")
-                add("a=vqos.maxStreamFpsEstimate:${settings.fps}")
                 val splitEncodeStrips = if (isAv1 && width * height >= HIGH_RESOLUTION_AV1_SPLIT_ENCODE_PIXELS) 63 else 3
                 add("a=video.videoSplitEncodeStripsPerFrame:$splitEncodeStrips")
                 add("a=video.updateSplitEncodeStateDynamically:1")

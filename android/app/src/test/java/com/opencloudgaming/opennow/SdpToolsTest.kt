@@ -220,6 +220,9 @@ class SdpToolsTest {
                     assertTrue("$case width missing", nvst.contains("a=video.clientViewportWd:${pixels.first}"))
                     assertTrue("$case height missing", nvst.contains("a=video.clientViewportHt:${pixels.second}"))
                     assertTrue("$case fps missing", nvst.contains("a=video.maxFPS:$fps"))
+                    if (fps > 60) {
+                        assertTrue("$case FPS estimate missing", nvst.contains("a=vqos.maxStreamFpsEstimate:$fps"))
+                    }
                     assertTrue("$case scaling must remain disabled", nvst.contains("a=video.scalingFeature1:0"))
                     assertFalse("$case must not enable scaling", nvst.contains("a=video.scalingFeature1:1"))
                 }
@@ -262,6 +265,14 @@ class SdpToolsTest {
         assertTrue(nvst.contains("a=packetPacing.version:3"))
         assertTrue(nvst.contains("a=packetPacing.enableAccurateSleep:1"))
         assertTrue(nvst.contains("a=video.videoSplitEncodeStripsPerFrame:3"))
+    }
+
+    @Test
+    fun nvstSdpCarriesRequested120FpsEstimate() {
+        val nvst = buildNvstSdp(StreamSettings(fps = 120, codec = VideoCodec.H265))
+
+        assertTrue(nvst.contains("a=video.maxFPS:120"))
+        assertTrue(nvst.contains("a=vqos.maxStreamFpsEstimate:120"))
     }
 
     @Test

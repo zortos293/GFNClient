@@ -126,6 +126,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -243,6 +245,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
@@ -293,7 +296,7 @@ private val TopBarCompactControlHeight = 30.dp
 private const val DEVICE_LOGIN_SIDE_BY_SIDE_MIN_WIDTH_DP = 520
 private const val COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS = 5_000L
 private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
-private const val ACTIVE_STREAM_MODE_NOTICE_DURATION_MS = 3_000L
+private const val ACTIVE_STREAM_MODE_NOTICE_DURATION_MS = 8_000L
 private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> OpenNowPalette.AccentDefault
@@ -397,6 +400,7 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
         state.diagnosticShare.pasteUrl != null
     val showCompletedSessionBugReport = completedSessionBugReportOpen && !showAnalyticsConsent && !diagnosticDialogVisible
     val showSessionReport = state.sessionReport != null &&
+        state.settings.showSessionReportAfterStream &&
         !showAnalyticsConsent &&
         !diagnosticDialogVisible &&
         !showCompletedSessionBugReport
@@ -554,8 +558,20 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                 state.sessionReport?.takeIf { showSessionReport }?.let { report ->
                     SessionReportDialog(
                         report = report,
-                        onDismiss = viewModel::dismissSessionReport,
-                        onReportBug = {
+                        onDismiss = { dontShowAgain ->
+                            if (dontShowAgain) {
+                                viewModel.updateSettings(
+                                    state.settings.copy(showSessionReportAfterStream = false),
+                                )
+                            }
+                            viewModel.dismissSessionReport()
+                        },
+                        onReportBug = { dontShowAgain ->
+                            if (dontShowAgain) {
+                                viewModel.updateSettings(
+                                    state.settings.copy(showSessionReportAfterStream = false),
+                                )
+                            }
                             viewModel.resetBugReportSubmission()
                             completedSessionBugReportOpen = true
                         },
@@ -570,18 +586,6 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
                         onReset = viewModel::resetBugReportSubmission,
                         onVersionCheck = viewModel::verifyBugReportVersion,
                         onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
-                        preflightProvider = {
-                            buildBugReportPreflightDeck(
-                                BugReportPreflightEvidence(
-                                    requestedSettings = state.activeStreamSettings ?: state.settings.stream,
-                                    runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
-                                    sessionReport = state.sessionReport,
-                                    codecReport = state.codecReport,
-                                    androidTvProfile = state.androidTvProfile,
-                                    inputDiagnostics = NativeInputDiagnostics.snapshot(),
-                                ),
-                            )
-                        },
                         onDismiss = {
                             if (!state.bugReportSubmission.uploading) {
                                 completedSessionBugReportOpen = false
@@ -642,8 +646,8 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
 @Composable
 private fun SessionReportDialog(
     report: SessionReport,
-    onDismiss: () -> Unit,
-    onReportBug: () -> Unit,
+    onDismiss: (dontShowAgain: Boolean) -> Unit,
+    onReportBug: (dontShowAgain: Boolean) -> Unit,
 ) {
     // Four tones for a 0-100 score was more colour than information, and AccentLime vs
     // AccentDefault is indistinguishable at the 0.12 alpha this fills with.
@@ -652,154 +656,225 @@ private fun SessionReportDialog(
         SessionReportRating.Fair -> OpenNowPalette.StatusFair
         SessionReportRating.Poor -> OpenNowPalette.StatusPoor
     }
+    val configuration = LocalConfiguration.current
+    val landscapeLayout = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var dontShowAgain by rememberSaveable(report.gameTitle, report.durationSeconds) { mutableStateOf(false) }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { onDismiss(dontShowAgain) },
+        modifier = if (landscapeLayout) {
+            Modifier.widthIn(max = 960.dp).fillMaxWidth(0.94f)
+        } else {
+            Modifier
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout),
         title = { Text("Session report") },
         text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 560.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Surface(
-                    color = scoreColor.copy(alpha = 0.12f),
-                    shape = RoundedCornerShape(OpenNowRadius.lg + 2.dp),
-                    border = BorderStroke(1.dp, scoreColor.copy(alpha = 0.38f)),
+            if (landscapeLayout) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = (configuration.screenHeightDp * 0.66f).dp),
+                    horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.lg),
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(OpenNowSpacing.lg),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(report.gameTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text(
-                                stringResource(
-                                    R.string.session_report_subtitle,
-                                    formatSessionTimerDuration(report.durationSeconds),
-                                    report.sampleCount,
-                                ),
-                                color = TextMuted,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                stringResource(R.string.session_report_score, report.score),
-                                color = scoreColor,
-                                style = MaterialTheme.typography.headlineMedium.numeric(),
-                            )
-                            Text(report.rating.label, color = scoreColor, style = MaterialTheme.typography.labelMedium)
-                        }
+                        SessionReportSummary(report, scoreColor)
+                        SessionReportConnection(report)
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        SessionReportOutcome(report) { onReportBug(dontShowAgain) }
                     }
                 }
-                if (report.limitedData) {
+            } else {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 510.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    SessionReportSummary(report, scoreColor)
+                    SessionReportConnection(report)
+                    SessionReportOutcome(report) { onReportBug(dontShowAgain) }
+                }
+            }
+        },
+        dismissButton = {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(OpenNowRadius.sm))
+                    .clickable { dontShowAgain = !dontShowAgain },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = dontShowAgain,
+                    onCheckedChange = { dontShowAgain = it },
+                )
+                Text(
+                    stringResource(R.string.session_report_dont_show_again),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = { Button(onClick = { onDismiss(dontShowAgain) }) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun SessionReportSummary(report: SessionReport, scoreColor: Color) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(
+            color = scoreColor.copy(alpha = 0.12f),
+            shape = RoundedCornerShape(OpenNowRadius.lg + 2.dp),
+            border = BorderStroke(1.dp, scoreColor.copy(alpha = 0.38f)),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(OpenNowSpacing.lg),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(report.gameTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        "This was a short session, so the score is based on limited samples and may vary more than usual.",
+                        stringResource(
+                            R.string.session_report_subtitle,
+                            formatSessionTimerDuration(report.durationSeconds),
+                        ),
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                Text(stringResource(R.string.session_report_connection), style = MaterialTheme.typography.titleSmall)
-                SessionReportMetricGrid(
-                    listOf(
-                        SessionReportMetricData(
-                            label = stringResource(R.string.session_report_metric_latency),
-                            value = report.averagePingMs?.let { stringResource(R.string.session_report_ms_avg, it) },
-                            detail = report.peakPingMs?.let { stringResource(R.string.session_report_ms_peak, it) },
-                            quality = report.averagePingMs?.let(StreamQuality::latency),
-                        ),
-                        SessionReportMetricData(
-                            label = stringResource(R.string.session_report_metric_speed),
-                            value = formatRuntimeBitrate(report.averageBitrateKbps),
-                            detail = report.peakBitrateKbps?.let {
-                                stringResource(R.string.session_report_peak, formatRuntimeBitrate(it))
-                            },
-                        ),
-                        SessionReportMetricData(
-                            label = stringResource(R.string.session_report_metric_loss),
-                            value = report.packetLossPct?.let { "%.2f%%".format(Locale.US, it) },
-                            detail = report.packetLossPct?.let {
-                                stringResource(
-                                    if (it <= 0.5) R.string.session_report_loss_stable
-                                    else R.string.session_report_loss_affects,
-                                )
-                            },
-                            quality = report.packetLossPct?.let(StreamQuality::packetLoss),
-                        ),
-                        SessionReportMetricData(
-                            label = stringResource(R.string.session_report_metric_jitter),
-                            value = report.averageJitterMs?.let { "%.1f ms".format(Locale.US, it) },
-                            detail = stringResource(R.string.session_report_jitter_detail),
-                            quality = report.averageJitterMs?.let(StreamQuality::jitter),
-                        ),
-                        SessionReportMetricData(
-                            label = stringResource(R.string.session_report_metric_fps),
-                            value = report.averageFps?.let { "%.1f / %d".format(Locale.US, it, report.targetFps) },
-                            detail = stringResource(R.string.session_report_fps_detail),
-                            quality = report.averageFps?.let { StreamQuality.frameRate(it, report.targetFps) },
-                        ),
-                        SessionReportMetricData(
-                            label = stringResource(R.string.session_report_metric_decode),
-                            value = report.averageDecodeMs?.let { "%.1f ms".format(Locale.US, it) },
-                            detail = stringResource(R.string.session_report_decode_detail),
-                            quality = report.averageDecodeMs?.let { StreamQuality.decode(it, report.targetFps) },
-                        ),
-                    ),
-                )
-                val networkLabel = when (report.networkKind) {
-                    AndroidNetworkKind.Wifi -> report.wifiBand.label
-                    else -> report.networkKind.label
-                }
-                Text(
-                    buildString {
-                        append("Network: $networkLabel")
-                        report.estimatedLinkDownstreamKbps?.let {
-                            append(" • Android link estimate ${formatRuntimeBitrate(it)}")
-                        }
-                    },
-                    color = TextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text("Delivered profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text(
-                    buildString {
-                        append(formatRuntimeResolution(report.deliveredResolution ?: report.requestedResolution))
-                        append(" • ")
-                        append(report.deliveredCodec ?: report.requestedCodec.name)
-                        if (
-                            normalizeSessionReportResolution(report.deliveredResolution) !=
-                            normalizeSessionReportResolution(report.requestedResolution) ||
-                            report.deliveredCodec?.contains(report.requestedCodec.name, ignoreCase = true) == false
-                        ) {
-                            append(" (requested ${formatRuntimeResolution(report.requestedResolution)} • ${report.requestedCodec.name})")
-                        }
-                    },
-                    color = TextPrimary,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (report.downgrades.isNotEmpty()) {
-                    Text("Why the profile changed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    report.downgrades.forEach { finding -> SessionReportFindingRow(finding) }
-                }
-                Text("What to do next", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                report.recommendations.forEach { finding -> SessionReportFindingRow(finding) }
-                TextButton(
-                    onClick = onReportBug,
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
-                ) {
-                    Text("Experienced a bug? ", color = TextMuted)
+                Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        "Report it",
-                        color = MaterialTheme.colorScheme.primary,
-                        textDecoration = TextDecoration.Underline,
+                        stringResource(R.string.session_report_score, report.score),
+                        color = scoreColor,
+                        style = MaterialTheme.typography.headlineMedium.numeric(),
                     )
+                    Text(report.rating.label, color = scoreColor, style = MaterialTheme.typography.labelMedium)
                 }
             }
-        },
-        confirmButton = { Button(onClick = onDismiss) { Text("Done") } },
+        }
+        if (report.limitedData) {
+            Text(
+                "This was a short session, so the score may vary more than usual.",
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionReportConnection(report: SessionReport) {
+    Text(stringResource(R.string.session_report_connection), style = MaterialTheme.typography.titleSmall)
+    SessionReportMetricGrid(
+        listOf(
+            SessionReportMetricData(
+                label = stringResource(R.string.session_report_metric_latency),
+                value = report.averagePingMs?.let { stringResource(R.string.session_report_ms_avg, it) },
+                detail = report.peakPingMs?.let { stringResource(R.string.session_report_ms_peak, it) },
+                quality = report.averagePingMs?.let(StreamQuality::latency),
+            ),
+            SessionReportMetricData(
+                label = stringResource(R.string.session_report_metric_speed),
+                value = formatRuntimeBitrate(report.averageBitrateKbps),
+                detail = report.peakBitrateKbps?.let {
+                    stringResource(R.string.session_report_peak, formatRuntimeBitrate(it))
+                },
+            ),
+            SessionReportMetricData(
+                label = stringResource(R.string.session_report_metric_loss),
+                value = report.packetLossPct?.let { "%.2f%%".format(Locale.US, it) },
+                detail = report.packetLossPct?.let {
+                    stringResource(
+                        if (it <= 0.5) R.string.session_report_loss_stable
+                        else R.string.session_report_loss_affects,
+                    )
+                },
+                quality = report.packetLossPct?.let(StreamQuality::packetLoss),
+            ),
+            SessionReportMetricData(
+                label = stringResource(R.string.session_report_metric_jitter),
+                value = report.averageJitterMs?.let { "%.1f ms".format(Locale.US, it) },
+                detail = stringResource(R.string.session_report_jitter_detail),
+                quality = report.averageJitterMs?.let(StreamQuality::jitter),
+            ),
+            SessionReportMetricData(
+                label = stringResource(R.string.session_report_metric_fps),
+                value = report.averageFps?.let { "%.1f / %d".format(Locale.US, it, report.targetFps) },
+                detail = stringResource(R.string.session_report_fps_detail),
+                quality = report.averageFps?.let { StreamQuality.frameRate(it, report.targetFps) },
+            ),
+            SessionReportMetricData(
+                label = stringResource(R.string.session_report_metric_decode),
+                value = report.averageDecodeMs?.let { "%.1f ms".format(Locale.US, it) },
+                detail = stringResource(R.string.session_report_decode_detail),
+                quality = report.averageDecodeMs?.let { StreamQuality.decode(it, report.targetFps) },
+            ),
+        ),
     )
+    val networkLabel = when (report.networkKind) {
+        AndroidNetworkKind.Wifi -> report.wifiBand.label
+        else -> report.networkKind.label
+    }
+    Text(
+        buildString {
+            append("Network: $networkLabel")
+            report.estimatedLinkDownstreamKbps?.let {
+                append(" • Android link estimate ${formatRuntimeBitrate(it)}")
+            }
+        },
+        color = TextMuted,
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
+@Composable
+private fun SessionReportOutcome(report: SessionReport, onReportBug: () -> Unit) {
+    Text("Delivered profile", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(
+        buildString {
+            append(formatRuntimeResolution(report.deliveredResolution ?: report.requestedResolution))
+            append(" • ")
+            append(report.deliveredCodec ?: report.requestedCodec.name)
+            if (
+                normalizeSessionReportResolution(report.deliveredResolution) !=
+                normalizeSessionReportResolution(report.requestedResolution) ||
+                report.deliveredCodec?.contains(report.requestedCodec.name, ignoreCase = true) == false
+            ) {
+                append(" (requested ${formatRuntimeResolution(report.requestedResolution)} • ${report.requestedCodec.name})")
+            }
+        },
+        color = TextPrimary,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    if (report.downgrades.isNotEmpty()) {
+        Text("Why the profile changed", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        report.downgrades.forEach { finding -> SessionReportFindingRow(finding) }
+    }
+    Text("What to do next", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    report.recommendations.forEach { finding -> SessionReportFindingRow(finding) }
+    TextButton(
+        onClick = onReportBug,
+        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+    ) {
+        Text("Experienced a bug? ", color = TextMuted)
+        Text(
+            "Report it",
+            color = MaterialTheme.colorScheme.primary,
+            textDecoration = TextDecoration.Underline,
+        )
+    }
 }
 
 @Composable
@@ -811,44 +886,173 @@ private fun CompletedSessionBugReportDialog(
     onReset: () -> Unit,
     onVersionCheck: () -> Unit,
     onOpenUpdate: () -> Unit,
-    preflightProvider: () -> BugReportPreflightDeck,
     onDismiss: () -> Unit,
 ) {
+    val configuration = LocalConfiguration.current
+    val landscapeLayout = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var title by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var consentChecked by rememberSaveable { mutableStateOf(false) }
+    var confirmationOpen by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(update.installSource.isGooglePlay) {
+        if (update.installSource.isGooglePlay) onVersionCheck()
+    }
+
     AlertDialog(
         onDismissRequest = {
             if (!submission.uploading) onDismiss()
         },
+        modifier = if (landscapeLayout) {
+            Modifier.widthIn(max = 960.dp).fillMaxWidth(0.94f)
+        } else {
+            Modifier
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout),
         title = { Text(stringResource(R.string.bug_report_dialog_title)) },
         text = {
             Column(
                 modifier = Modifier
-                    .heightIn(max = 620.dp)
+                    .heightIn(
+                        max = if (landscapeLayout) {
+                            (configuration.screenHeightDp * 0.68f).dp
+                        } else {
+                            620.dp
+                        },
+                    )
                     .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                StreamBugReporter(
-                    submission = submission,
-                    versionCheck = versionCheck,
-                    update = update,
-                    onSubmit = onSubmit,
-                    onReset = onReset,
-                    onVersionCheck = onVersionCheck,
-                    onOpenUpdate = onOpenUpdate,
-                    onButtonTone = {},
-                    preflightProvider = preflightProvider,
-                    initiallyExpanded = true,
-                    onExpandedClose = onDismiss,
-                )
+                when {
+                    submission.submitted -> {
+                        Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
+                        Text("Bug report sent", color = Green, fontWeight = FontWeight.Bold)
+                        submission.reference?.let { reference ->
+                            Text("Reference: $reference", color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    !androidBugReportsAllowed(update, versionCheck) -> BugReportVersionGateCard(
+                        update = update,
+                        versionCheck = versionCheck,
+                        onRetry = onVersionCheck,
+                        onOpenUpdate = onOpenUpdate,
+                    )
+                    else -> {
+                        Text(
+                            "Describe the bug in English. Session diagnostics are attached.",
+                            color = TextMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        OutlinedTextField(
+                            value = title,
+                            onValueChange = { value ->
+                                title = value
+                                if (submission.error != null) onReset()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !submission.uploading,
+                            singleLine = true,
+                            label = { Text("Issue title") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        )
+                        OutlinedTextField(
+                            value = description,
+                            onValueChange = { value ->
+                                description = value
+                                if (submission.error != null) onReset()
+                            },
+                            modifier = Modifier.fillMaxWidth().height(128.dp),
+                            enabled = !submission.uploading,
+                            minLines = 4,
+                            maxLines = 7,
+                            label = { Text("What happened?") },
+                            supportingText = {
+                                Text("${description.trim().length} / $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS")
+                            },
+                            isError = description.isNotEmpty() &&
+                                description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS,
+                        )
+                        BugReportDataDisclosure(includeTypedTextWarning = true)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(enabled = !submission.uploading) {
+                                    consentChecked = !consentChecked
+                                },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = consentChecked,
+                                onCheckedChange = { consentChecked = it },
+                                enabled = !submission.uploading,
+                            )
+                            Text(
+                                "I consent to send this report.",
+                                color = TextMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        submission.error?.let { error ->
+                            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
         },
-        // The reporter owns Submit, so confirmButton stays empty — but without an explicit Close
-        // there was no way out at all while uploading, since onDismissRequest is blocked then too.
-        confirmButton = {},
+        confirmButton = {
+            when {
+                submission.submitted -> Button(onClick = onDismiss) { Text("Done") }
+                submission.uploading -> Button(enabled = false, onClick = {}) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Sending…")
+                }
+                androidBugReportsAllowed(update, versionCheck) -> Button(
+                    onClick = { confirmationOpen = true },
+                    enabled = title.isNotBlank() &&
+                        description.trim().length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS &&
+                        consentChecked,
+                ) {
+                    Text("Review & send")
+                }
+            }
+        },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !submission.uploading) {
-                Text(stringResource(R.string.action_close))
+            if (!submission.submitted) {
+                TextButton(onClick = onDismiss, enabled = !submission.uploading) {
+                    Text(stringResource(R.string.action_close))
+                }
             }
         },
     )
+
+    if (confirmationOpen) {
+        AlertDialog(
+            onDismissRequest = { confirmationOpen = false },
+            title = { Text("Send bug report?") },
+            text = { Text("Send this report and the attached redacted diagnostics to PrintedWaste API?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmationOpen = false
+                        onSubmit(title, description)
+                    },
+                ) {
+                    Text("Send")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmationOpen = false }) {
+                    Text("Back")
+                }
+            },
+        )
+    }
 }
 
 private data class SessionReportMetricData(
@@ -6522,7 +6726,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             !showTouchControlsWithPhysicalController
     // The gamepad overlay and native touch want the same fingers. Native touch wins where it
     // applies: the game is showing its own touch UI, so a virtual pad on top of it is in the way.
-    val nativeTouchActive = !tvProfile && shouldUseNativeTouch(state.settings.androidTouch.nativeTouchMode, state.streamGame)
+    val nativeTouchActive = !tvProfile && shouldUseNativeTouch(
+        state.settings.androidTouch.nativeTouchMode,
+        state.streamGame,
+        state.activeStreamSettings ?: state.settings.stream,
+    )
     val touchControlsVisible = shouldShowAndroidTouchControls(
         tvProfile = tvProfile,
         touchInputEnabled = touchInputEnabled,
@@ -6779,9 +6987,20 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             state.settings.androidTouch.mouseDirectClick && touchInputEnabled,
         )
     }
-    LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.nativeTouchMode, state.streamGame?.id) {
+    LaunchedEffect(
+        streamReady,
+        touchInputEnabled,
+        state.settings.androidTouch.nativeTouchMode,
+        state.streamGame?.id,
+        state.activeStreamSettings?.resolution,
+        state.activeStreamSettings?.fps,
+    ) {
         val game = state.streamGame
-        val wanted = !tvProfile && shouldUseNativeTouch(state.settings.androidTouch.nativeTouchMode, game)
+        val wanted = !tvProfile && shouldUseNativeTouch(
+            state.settings.androidTouch.nativeTouchMode,
+            game,
+            state.activeStreamSettings ?: state.settings.stream,
+        )
         val enabled = streamReady && touchInputEnabled && wanted
         NativeStreamInputRouter.setNativeTouchEnabled(enabled)
         // Records what the catalog says about this game even when we leave touch off, so the fixed
@@ -8807,10 +9026,10 @@ private fun StreamControlsPanel(
 
 @Composable
 private fun BugReportDataDisclosure(
-    title: String,
     includeTypedTextWarning: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
@@ -8819,45 +9038,74 @@ private fun BugReportDataDisclosure(
         border = BorderStroke(1.dp, OpenNowPalette.StatusNotice.copy(alpha = 0.38f)),
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(7.dp),
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(
-                title,
-                color = OpenNowPalette.StatusNotice,
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.labelLarge,
-            )
-            Text(
-                "This uploads to $ANDROID_BUG_REPORT_ENDPOINT. PrintedWaste and OpenNOW maintainers may view the report text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, and a redacted diagnostic log.",
-                color = TextMuted,
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "The automatic log removes account names, credentials, session IDs, and network addresses before upload.",
-                color = TextPrimary,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            if (includeTypedTextWarning) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(
-                    "Your typed title and description are sent exactly as written, so do not include personal or sensitive information.",
+                    "PrintedWaste API",
+                    modifier = Modifier.weight(1f),
+                    color = OpenNowPalette.StatusNotice,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    "What is collected?",
                     color = TextPrimary,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Collapse collection details" else "Expand collection details",
+                    tint = TextMuted,
+                )
             }
-            Text(
-                "Your data is not sold and is used only to investigate and fix bugs.",
-                color = TextPrimary,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "The same timestamped log available from Settings > Advanced > Debug Logs is attached automatically. No other files are added.",
-                color = TextMuted,
-                style = MaterialTheme.typography.labelSmall,
-            )
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    Text(
+                        "PrintedWaste and OpenNOW maintainers may view the report text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, and a redacted diagnostic log.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "The automatic log removes account names, credentials, session IDs, and network addresses before upload.",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (includeTypedTextWarning) {
+                        Text(
+                            "Your typed title and description are sent exactly as written, so do not include personal or sensitive information.",
+                            color = TextPrimary,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Text(
+                        "Your data is not sold and is used only to investigate and fix bugs.",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "The same timestamped log available from Settings > Advanced > Debug Logs is attached automatically. No other files are added.",
+                        color = TextMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
         }
     }
 }
@@ -9315,6 +9563,109 @@ private fun BugReportPreflightDeckView(
 }
 
 @Composable
+private fun BugReportFormInputs(
+    title: String,
+    description: String,
+    consentChecked: Boolean,
+    submission: BugReportSubmissionState,
+    onTitleChange: (String) -> Unit,
+    onDescriptionChange: (String) -> Unit,
+    onConsentChange: (Boolean) -> Unit,
+    onConfirm: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        OutlinedTextField(
+            value = title,
+            onValueChange = onTitleChange,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !submission.uploading,
+            singleLine = true,
+            label = { Text("Issue title") },
+            placeholder = { Text("Stream froze after reconnecting") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+        )
+        OutlinedTextField(
+            value = description,
+            onValueChange = onDescriptionChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(128.dp),
+            enabled = !submission.uploading,
+            minLines = 4,
+            maxLines = 7,
+            label = { Text("What happened?") },
+            placeholder = { Text("What were you doing, what went wrong, and can you reproduce it?") },
+            supportingText = {
+                Text("${description.trim().length} / $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS minimum characters")
+            },
+            isError = description.isNotEmpty() &&
+                description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(enabled = !submission.uploading) {
+                    onConsentChange(!consentChecked)
+                }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(
+                checked = consentChecked,
+                onCheckedChange = onConsentChange,
+                enabled = !submission.uploading,
+            )
+            Text(
+                "I understand what will be uploaded and consent to send it to the PrintedWaste API.",
+                modifier = Modifier.weight(1f),
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        submission.error?.let { error ->
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                contentColor = MaterialTheme.colorScheme.error,
+            ) {
+                Text(
+                    error,
+                    modifier = Modifier.padding(10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        Button(
+            onClick = onConfirm,
+            enabled = title.isNotBlank() &&
+                description.trim().length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS &&
+                consentChecked &&
+                !submission.uploading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (submission.uploading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Uploading report…")
+            } else {
+                Text("Send bug report")
+            }
+        }
+    }
+}
+
+@Composable
 private fun StreamBugReporter(
     submission: BugReportSubmissionState,
     versionCheck: AndroidBugReportVersionCheckState,
@@ -9327,6 +9678,7 @@ private fun StreamBugReporter(
     preflightProvider: () -> BugReportPreflightDeck,
     initiallyExpanded: Boolean = false,
     onExpandedClose: () -> Unit = {},
+    landscapeLayout: Boolean = false,
 ) {
     var expanded by rememberSaveable(initiallyExpanded) { mutableStateOf(initiallyExpanded) }
     var title by rememberSaveable { mutableStateOf("") }
@@ -9518,108 +9870,62 @@ private fun StreamBugReporter(
                 }
             }
 
-            BugReportSubmissionRequirements()
-
-            BugReportDataDisclosure(
-                title = "Before you send",
-                includeTypedTextWarning = true,
-            )
-
-            OutlinedTextField(
-                value = title,
-                onValueChange = { value ->
-                    title = value
-                    if (submission.error != null) onReset()
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !submission.uploading,
-                singleLine = true,
-                label = { Text("Issue title") },
-                placeholder = { Text("Stream froze after reconnecting") },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-            )
-            OutlinedTextField(
-                value = description,
-                onValueChange = { value ->
-                    description = value
-                    if (submission.error != null) onReset()
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(128.dp),
-                enabled = !submission.uploading,
-                minLines = 4,
-                maxLines = 7,
-                label = { Text("What happened?") },
-                placeholder = { Text("What were you doing, what went wrong, and can you reproduce it?") },
-                supportingText = {
-                    Text("${description.trim().length} / $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS minimum characters")
-                },
-                isError = description.isNotEmpty() &&
-                    description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-            )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable(enabled = !submission.uploading) {
-                        consentChecked = !consentChecked
-                    }
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Checkbox(
-                    checked = consentChecked,
-                    onCheckedChange = { consentChecked = it },
-                    enabled = !submission.uploading,
-                )
-                Text(
-                    "I understand what will be uploaded and consent to send it to PrintedWaste.",
-                    modifier = Modifier.weight(1f),
-                    color = TextMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            submission.error?.let { error ->
-                Surface(
+            if (landscapeLayout) {
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
-                    contentColor = MaterialTheme.colorScheme.error,
+                    horizontalArrangement = Arrangement.spacedBy(OpenNowSpacing.lg),
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Text(
-                        error,
-                        modifier = Modifier.padding(10.dp),
-                        style = MaterialTheme.typography.bodySmall,
+                    Column(
+                        modifier = Modifier.weight(0.9f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        BugReportSubmissionRequirements()
+                        BugReportDataDisclosure(includeTypedTextWarning = true)
+                    }
+                    BugReportFormInputs(
+                        title = title,
+                        description = description,
+                        consentChecked = consentChecked,
+                        submission = submission,
+                        onTitleChange = { value ->
+                            title = value
+                            if (submission.error != null) onReset()
+                        },
+                        onDescriptionChange = { value ->
+                            description = value
+                            if (submission.error != null) onReset()
+                        },
+                        onConsentChange = { consentChecked = it },
+                        onConfirm = {
+                            onButtonTone()
+                            confirmationOpen = true
+                        },
+                        modifier = Modifier.weight(1.1f),
                     )
                 }
-            }
-
-            Button(
-                onClick = {
-                    onButtonTone()
-                    confirmationOpen = true
-                },
-                enabled = title.isNotBlank() &&
-                    description.trim().length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS &&
-                    consentChecked &&
-                    !submission.uploading,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                if (submission.uploading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Uploading report…")
-                } else {
-                    Text("Send bug report")
-                }
+            } else {
+                BugReportSubmissionRequirements()
+                BugReportDataDisclosure(includeTypedTextWarning = true)
+                BugReportFormInputs(
+                    title = title,
+                    description = description,
+                    consentChecked = consentChecked,
+                    submission = submission,
+                    onTitleChange = { value ->
+                        title = value
+                        if (submission.error != null) onReset()
+                    },
+                    onDescriptionChange = { value ->
+                        description = value
+                        if (submission.error != null) onReset()
+                    },
+                    onConsentChange = { consentChecked = it },
+                    onConfirm = {
+                        onButtonTone()
+                        confirmationOpen = true
+                    },
+                )
             }
         }
     }
@@ -9627,22 +9933,17 @@ private fun StreamBugReporter(
     if (confirmationOpen) {
         AlertDialog(
             onDismissRequest = { confirmationOpen = false },
+            modifier = if (landscapeLayout) {
+                Modifier.widthIn(max = 760.dp).fillMaxWidth(0.82f)
+            } else {
+                Modifier
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = !landscapeLayout),
             title = { Text("Upload bug report?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     BugReportSubmissionRequirements()
-                    Text(
-                        "Your report will be uploaded to the PrintedWaste API and may be viewed by PrintedWaste and OpenNOW maintainers.",
-                    )
-                    Text(
-                        "It includes your title and description exactly as written, the API's app/build fields, and the same redacted log file available from Settings > Advanced > Debug Logs. No other files are uploaded.",
-                        color = TextMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        "This data is not sold. It is used only to investigate and fix bugs.",
-                        fontWeight = FontWeight.Bold,
-                    )
+                    BugReportDataDisclosure(includeTypedTextWarning = true)
                 }
             },
             confirmButton = {
@@ -9653,7 +9954,7 @@ private fun StreamBugReporter(
                         onSubmit(title, description)
                     },
                 ) {
-                    Text("Upload to PrintedWaste")
+                    Text("Upload report")
                 }
             },
             dismissButton = {
@@ -10367,7 +10668,6 @@ private fun ActiveStreamModePill(
                         "This sends the profile-change summary and likely cause to PrintedWaste and OpenNOW maintainers so they can investigate it.",
                     )
                     BugReportDataDisclosure(
-                        title = "Your device information will also be sent",
                         includeTypedTextWarning = false,
                     )
                 }
@@ -10553,18 +10853,11 @@ private fun StreamStatsMetricItems(
     val targetFps = streamSettings.fps
     if (metrics.fps) {
         val fps = streamStats.fps
-        val gameFps = streamStats.gameFps
         StreamStatsText(
             value = "FPS ${fps ?: targetFps}",
             modifier = itemModifier,
             quality = fps?.let { StreamQuality.frameRate(it.toDouble(), targetFps) },
             contentDescription = stringResource(R.string.stream_stats_cd_fps, fps ?: targetFps),
-        )
-        StreamStatsText(
-            value = "Game ${gameFps ?: targetFps}",
-            modifier = itemModifier,
-            quality = gameFps?.let { StreamQuality.frameRate(it.toDouble(), targetFps) },
-            contentDescription = "Game FPS: ${gameFps ?: targetFps}",
         )
     }
     if (metrics.ping) {

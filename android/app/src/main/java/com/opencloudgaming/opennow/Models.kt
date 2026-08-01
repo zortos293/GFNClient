@@ -94,16 +94,16 @@ enum class CatalogBackgroundPreset {
 
 @Serializable
 data class StreamStatsMetrics(
-    val fps: Boolean = false,
+    val fps: Boolean = true,
     val ping: Boolean = true,
     val bitrate: Boolean = false,
     val battery: Boolean = true,
     val connection: Boolean = true,
     val resolution: Boolean = false,
     val codec: Boolean = false,
-    val location: Boolean = true,
-    val latency: Boolean = true,
-    val packetLoss: Boolean = true,
+    val location: Boolean = false,
+    val latency: Boolean = false,
+    val packetLoss: Boolean = false,
 ) {
     fun enabledCount(): Int = listOf(fps, ping, bitrate, battery, connection, resolution, codec, location, latency, packetLoss).count { it }
 }
@@ -338,6 +338,7 @@ data class AppSettings(
     val favoriteGameIds: List<String> = emptyList(),
     val defaultGameVariantIds: Map<String, String> = emptyMap(),
     val sessionCounterEnabled: Boolean = true,
+    val showSessionReportAfterStream: Boolean = true,
     val sessionClockShowEveryMinutes: Int = 60,
     val sessionClockShowDurationSeconds: Int = 30,
     val clipboardPaste: Boolean = true,
@@ -373,6 +374,11 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
         parseResolutionPixelsOrNull(settings.resolution)?.let { return it }
     }
     return parseResolutionPixels(normalizeStreamResolutionForAspect(settings.resolution, settings.aspectRatio))
+}
+
+internal fun StreamSettings.requiresNativeDesktopCloudMatchMode(): Boolean {
+    val (width, height) = streamResolutionPixels(this)
+    return fps > 60 || width > 1920 || height > 1200
 }
 
 internal data class StreamResolutionMismatch(
@@ -673,6 +679,28 @@ internal fun monthlyHoursRemainingFor(subscriptionInfo: SubscriptionInfo?, fallb
 
 internal fun StreamSettings.withHdrAllowed(subscriptionInfo: SubscriptionInfo?, fallbackMembershipTier: String?): StreamSettings =
     if (hdrEnabled && !hasHdrStreamingPlan(subscriptionInfo, fallbackMembershipTier)) copy(hdrEnabled = false).withCodecColorCompatibility() else withCodecColorCompatibility()
+
+/**
+ * NVIDIA exposes HDR on Android only through the SHIELD TV profile. Keep the known SHIELD
+ * transport envelope explicit so unsupported handset, codec, high-FPS, and above-4K requests do
+ * not reach CloudMatch as invalid session profiles. Disabling HDR intentionally preserves the
+ * selected 10-bit color quality because 10-bit SDR is a separate stream mode.
+ */
+internal fun StreamSettings.hdrAvailableForAndroid(androidTvProfile: Boolean): Boolean {
+    val (width, height) = streamResolutionPixels(this)
+    return androidTvProfile &&
+        codec == VideoCodec.H265 &&
+        fps <= 60 &&
+        width <= 3840 &&
+        height <= 2160
+}
+
+internal fun StreamSettings.withAndroidHdrCompatibility(androidTvProfile: Boolean): StreamSettings =
+    if (hdrEnabled && !hdrAvailableForAndroid(androidTvProfile)) {
+        copy(hdrEnabled = false).withCodecColorCompatibility()
+    } else {
+        withCodecColorCompatibility()
+    }
 
 internal fun VideoCodec.availableForAndroidSettings(): Boolean =
     true

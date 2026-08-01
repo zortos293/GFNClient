@@ -1548,7 +1548,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 stream = transform(it.stream)
                     .withAndroidSettingsAvailability()
-                    .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier),
+                    .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
+                    .withAndroidHdrCompatibility(androidTvProfile),
                 streamPreset = StreamPreset.Custom,
             )
         }
@@ -1568,7 +1569,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 stream = presetStream
                     .withAndroidSettingsAvailability()
                     .withResolutionAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
-                    .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier),
+                    .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
+                    .withAndroidHdrCompatibility(androidTvProfile),
             )
         }
     }
@@ -1761,7 +1763,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     zone = "prod",
                     settings = settings,
                     accountLinked = shouldSendAccountLinked(game, selectedVariant),
-                    appLaunchMode = appLaunchModeFor(game),
+                    appLaunchMode = appLaunchModeFor(game, settings),
                 )
                 recordDebugEvent("queue", "Created session ${created.debugSummary()}")
                 pollUntilReady(token, created, settings)
@@ -1875,6 +1877,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun stopStream() {
         val beforeStop = state.value
         val completedSessionReport = finishSessionReport()
+        val shouldShowCompletedSessionReport = beforeStop.settings.showSessionReportAfterStream
         recordDebugEvent(
             "stream",
             "Stop requested status=${beforeStop.streamStatus} session=${beforeStop.streamSession?.shortDebugId().orEmpty()} game=${beforeStop.streamGame?.title.orEmpty()}",
@@ -1934,7 +1937,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     pendingStoreChoiceGame = null,
                     activeSessionDecision = null,
                     page = returnPage,
-                    sessionReport = completedSessionReport ?: it.sessionReport,
+                    sessionReport = if (shouldShowCompletedSessionReport) {
+                        completedSessionReport ?: it.sessionReport
+                    } else {
+                        null
+                    },
                 )
             }
             refreshActiveSession()
@@ -2041,7 +2048,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     zone = "prod",
                     settings = pending.settings,
                     accountLinked = pending.accountLinked,
-                    appLaunchMode = appLaunchModeFor(pending.game),
+                    appLaunchMode = appLaunchModeFor(pending.game, pending.settings),
                 )
                 recordDebugEvent("queue", "Created replacement session ${created.debugSummary()}")
                 pollUntilReady(token, created, pending.settings)
@@ -2271,6 +2278,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
             .withHdrAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
             .withAndroidSettingsAvailability()
+            .withAndroidHdrCompatibility(androidTvProfile)
             .withCodecColorCompatibility()
     }
 
@@ -3240,8 +3248,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
      * a session created as GAMEPAD_FRIENDLY has no touchscreen, and will silently drop perfectly
      * well-formed touch packets.
      */
-    private fun appLaunchModeFor(game: GameInfo?): Int =
-        if (!androidTvProfile && shouldUseNativeTouch(_state.value.settings.androidTouch.nativeTouchMode, game)) {
+    private fun appLaunchModeFor(game: GameInfo?, settings: StreamSettings): Int =
+        if (
+            !androidTvProfile &&
+            shouldUseNativeTouch(_state.value.settings.androidTouch.nativeTouchMode, game, settings)
+        ) {
             GfnAppLaunchMode.TOUCH_FRIENDLY
         } else {
             GfnAppLaunchMode.GAMEPAD_FRIENDLY
@@ -3255,7 +3266,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         return try {
             // Claiming re-sends the session request body, so repeating the mode the session was
             // created with keeps it from being downgraded mid-flight.
-            sessionRepository.claimSession(token, active, settings, appLaunchModeFor(_state.value.streamGame))
+            sessionRepository.claimSession(token, active, settings, appLaunchModeFor(_state.value.streamGame, settings))
         } catch (error: SessionClaimNotReadyException) {
             val fallback = active.toPendingSession(zone = "prod")
             val latest = error.latestSession?.let { mergeQueueSessionState(fallback, it) } ?: fallback

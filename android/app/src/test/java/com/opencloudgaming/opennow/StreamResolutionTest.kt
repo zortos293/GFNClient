@@ -502,6 +502,36 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun androidHandheldDisablesHdrButPreservesTenBitSdr() {
+        val adjusted = StreamSettings(
+            resolution = "1920x1080",
+            fps = 60,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+        ).withAndroidHdrCompatibility(androidTvProfile = false)
+
+        assertEquals(false, adjusted.hdrEnabled)
+        assertEquals(ColorQuality.TenBit420, adjusted.colorQuality)
+    }
+
+    @Test
+    fun androidTvHdrRequiresShieldClassH265Mode() {
+        val supported = StreamSettings(
+            resolution = "3840x2160",
+            fps = 60,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+        )
+
+        assertEquals(true, supported.hdrAvailableForAndroid(androidTvProfile = true))
+        assertEquals(false, supported.copy(fps = 120).hdrAvailableForAndroid(androidTvProfile = true))
+        assertEquals(false, supported.copy(resolution = "5120x2880").hdrAvailableForAndroid(androidTvProfile = true))
+        assertEquals(false, supported.copy(codec = VideoCodec.H264).hdrAvailableForAndroid(androidTvProfile = true))
+    }
+
+    @Test
     fun authenticatedUltimateTierWinsWhenSubscriptionPayloadDefaultsToFree() {
         val incompleteSubscription = SubscriptionInfo(membershipTier = "FREE")
         val fiveK = streamResolutionChoicesForAspect("16:9").first { it.value == "5120x2880" }

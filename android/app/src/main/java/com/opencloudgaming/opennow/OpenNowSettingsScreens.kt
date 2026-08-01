@@ -440,6 +440,7 @@ private fun SettingsContent(
     val settings = state.settings
     val context = LocalContext.current
     val deviceHasBattery = rememberDeviceHasBattery()
+    val fallbackMembershipTier = state.authSession?.user?.membershipTier
     var pendingMicrophoneMode by remember { mutableStateOf<MicrophoneMode?>(null) }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -469,7 +470,7 @@ private fun SettingsContent(
                 }
                 AndroidUpdatePanel(state = state, viewModel = viewModel)
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, stringResource(R.string.settings_nerd_mode), "advanced", "advanced options", "nerd", "experimental", "diagnostics", "catalog", "cave", "background", "wallpaper", "image", "custom") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_nerd_mode), "advanced", "advanced options", "nerd", "experimental", "diagnostics", "catalog", "cave", "background", "wallpaper", "image", "custom") {
                 AdvancedOptionsSettings(settings = settings, viewModel = viewModel)
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "Privacy", "privacy", "analytics", "telemetry", "posthog", "usage", "tracking", "opt out") {
@@ -482,8 +483,7 @@ private fun SettingsContent(
                     )
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream), "stream", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "region", "session proxy", "proxy", "native streamer", "low latency", "native decoder", "decoder") {
-                val fallbackMembershipTier = state.authSession?.user?.membershipTier
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_quality), "stream", "quality", "preset", "data saver", "low", "medium", "high", "custom", "resolution", "aspect ratio", "fps", "bitrate") {
                 ChoiceMenuRow(
                     label = stringResource(R.string.settings_stream_preset),
                     options = StreamPreset.entries.map { preset ->
@@ -575,6 +575,8 @@ private fun SettingsContent(
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
                 }
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_video), "stream", "video", "codec", "color", "hdr", "sharpening", "native streamer", "low latency", "native decoder", "decoder") {
                 val comingSoonLabel = stringResource(R.string.option_coming_soon)
                 val unavailableLabel = "Unavailable"
                 val h264H265OnlyLabel = stringResource(R.string.settings_av1_ten_bit_badge)
@@ -676,6 +678,15 @@ private fun SettingsContent(
                         viewModel.updateStreamSettings { s -> s.copy(streamSharpeningAmount = it) }
                     }
                 }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_native_streamer),
+                    checked = settings.nativeLowLatencyDecoder,
+                    description = stringResource(R.string.settings_native_streamer_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(nativeLowLatencyDecoder = enabled))
+                }
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Stream, searchQuery, stringResource(R.string.settings_section_stream_connection), "stream", "connection", "network", "region", "session proxy", "proxy") {
                 ChoiceRow(stringResource(R.string.settings_region), listOf(stringResource(R.string.option_auto)) + state.regions.map { it.name }, state.regions.firstOrNull { it.url == settings.stream.region }?.name ?: stringResource(R.string.option_auto)) { label ->
                     val url = state.regions.firstOrNull { it.name == label }?.url.orEmpty()
                     viewModel.updateStreamSettings { s -> s.copy(region = url) }
@@ -702,15 +713,8 @@ private fun SettingsContent(
                         placeholder = { Text("http://127.0.0.1:8080") },
                     )
                 }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_native_streamer),
-                    checked = settings.nativeLowLatencyDecoder,
-                    description = stringResource(R.string.settings_native_streamer_desc),
-                ) { enabled ->
-                    viewModel.updateSettings(settings.copy(nativeLowLatencyDecoder = enabled))
-                }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, "Input", "input", "microphone", "mic", "voice", "audio", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "clipboard", "paste", "rumble", "touch", "finger", "opacity", "edge", "padding", "offset", "controls", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "layout", "language", "clipboard", "paste") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_microphone),
                     checked = settings.stream.microphoneMode != MicrophoneMode.Disabled,
@@ -736,12 +740,6 @@ private fun SettingsContent(
                         microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 }
-                NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f, valueFormatter = { "%.2fx".format(it) }) {
-                    viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
-                }
-                NumberSlider("Mouse acceleration", settings.stream.mouseAcceleration.toFloat(), 1f, 150f, 1f) {
-                    viewModel.updateStreamSettings { s -> s.copy(mouseAcceleration = it.roundToInt()) }
-                }
                 ChoiceOptionRow("Keyboard layout", keyboardLayoutOptions, settings.stream.keyboardLayout) {
                     viewModel.updateStreamSettings { s -> s.copy(keyboardLayout = it) }
                 }
@@ -749,67 +747,36 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
-                SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
+                NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f, valueFormatter = { "%.2fx".format(it) }) {
+                    viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
+                }
+                NumberSlider("Mouse acceleration", settings.stream.mouseAcceleration.toFloat(), 1f, 150f, 1f) {
+                    viewModel.updateStreamSettings { s -> s.copy(mouseAcceleration = it.roundToInt()) }
+                }
+                val scrollHint = when {
+                    settings.stream.mouseScrollSensitivity <= 20 -> "Very fast"
+                    settings.stream.mouseScrollSensitivity <= 40 -> "Standard"
+                    settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
+                    else -> "Slow"
+                }
+                NumberSlider(
+                    label = "Mouse scroll sensitivity",
+                    value = settings.stream.mouseScrollSensitivity.toFloat(),
+                    min = 10f,
+                    max = 100f,
+                    step = 5f,
+                    unit = " ($scrollHint)",
+                ) { value ->
+                    viewModel.updateStreamSettings { s -> s.copy(mouseScrollSensitivity = value.toInt()) }
+                }
                 SettingSwitch(
                     label = stringResource(R.string.stream_panel_mouse_mode),
                     checked = settings.controllerMouseEmulation,
                     description = "Toggle in Stream Controls per session. Left stick moves the cursor, right stick scrolls, A button clicks, B button right-clicks.",
                 ) { enabled ->
                     viewModel.updateSettings(settings.copy(controllerMouseEmulation = enabled))
-                }
-                if (settings.controllerMouseEmulation) {
-                    Box(Modifier.padding(start = 24.dp)) {
-                        Column {
-                            NumberSlider(
-                                label = "Mouse sensitivity",
-                                value = settings.stream.mouseSensitivity,
-                                min = 0.25f,
-                                max = 3f,
-                                step = 0.05f,
-                                valueFormatter = { "%.2fx".format(it) }
-                            ) { value ->
-                                viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = value) }
-                            }
-
-                            val scrollHint = when {
-                                settings.stream.mouseScrollSensitivity <= 20 -> "Very fast"
-                                settings.stream.mouseScrollSensitivity <= 40 -> "Standard"
-                                settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
-                                else -> "Slow"
-                            }
-
-                            NumberSlider(
-                                label = "Mouse scroll sensitivity",
-                                value = settings.stream.mouseScrollSensitivity.toFloat(),
-                                min = 10f,
-                                max = 100f,
-                                step = 5f,
-                                unit = " ($scrollHint)"
-                            ) { value ->
-                                viewModel.updateStreamSettings { s -> s.copy(mouseScrollSensitivity = value.toInt()) }
-                            }
-                        }
-                    }
-                }
-                SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
-                val touchStyleOptions = listOf(
-                    SettingsChoiceOption(TouchControllerStyle.V1.name, "V1 (Solid)"),
-                    SettingsChoiceOption(TouchControllerStyle.V2.name, "V2 (Clean Outline)")
-                )
-                ChoiceOptionRow("Touch controller style", touchStyleOptions, settings.androidTouch.touchControllerStyle.name) { styleName ->
-                    val style = TouchControllerStyle.valueOf(styleName)
-                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(touchControllerStyle = style)))
-                }
-                val joystickModeOptions = listOf(
-                    SettingsChoiceOption(TouchJoystickMode.Fixed.name, "Fixed"),
-                    SettingsChoiceOption(TouchJoystickMode.Dynamic.name, "Dynamic"),
-                )
-                ChoiceOptionRow("Touch joystick", joystickModeOptions, settings.androidTouch.joystickMode.name) { modeName ->
-                    val mode = TouchJoystickMode.valueOf(modeName)
-                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(joystickMode = mode)))
-                }
-                NumberSlider("Joystick dead zone", settings.androidTouch.joystickDeadZone, 0f, 0.3f, 0.01f) { value ->
-                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(joystickDeadZone = value)))
                 }
                 if (!state.androidTvProfile) {
                     // Sends fingers to the PC as a real touchscreen, so games with a touch mode switch
@@ -862,28 +829,31 @@ private fun SettingsContent(
                 SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 if (settings.androidTouch.mousePad) {
                     Box(Modifier.padding(start = 24.dp)) {
-                        Column {
-                            SettingSwitch("Direct click", settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
-
-                            val scrollHint = when {
-                                settings.stream.mouseScrollSensitivity <= 20 -> "Very fast"
-                                settings.stream.mouseScrollSensitivity <= 40 -> "Standard"
-                                settings.stream.mouseScrollSensitivity <= 60 -> "Precise"
-                                else -> "Slow"
-                            }
-
-                            NumberSlider(
-                                label = "Mouse scroll sensitivity",
-                                value = settings.stream.mouseScrollSensitivity.toFloat(),
-                                min = 10f,
-                                max = 100f,
-                                step = 5f,
-                                unit = " ($scrollHint)"
-                            ) { value ->
-                                viewModel.updateStreamSettings { s -> s.copy(mouseScrollSensitivity = value.toInt()) }
-                            }
-                        }
+                        SettingSwitch("Direct click", settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
                     }
+                }
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_controller_touch), "input", "rumble", "touch", "controller", "style", "layout", "scale", "size", "opacity", "edge", "padding", "offset", "horizontal", "vertical", "controls", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {
+                SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
+                SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
+                val touchStyleOptions = listOf(
+                    SettingsChoiceOption(TouchControllerStyle.V1.name, "V1 (Solid)"),
+                    SettingsChoiceOption(TouchControllerStyle.V2.name, "V2 (Clean Outline)"),
+                )
+                ChoiceOptionRow("Touch controller style", touchStyleOptions, settings.androidTouch.touchControllerStyle.name) { styleName ->
+                    val style = TouchControllerStyle.valueOf(styleName)
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(touchControllerStyle = style)))
+                }
+                val joystickModeOptions = listOf(
+                    SettingsChoiceOption(TouchJoystickMode.Fixed.name, "Fixed"),
+                    SettingsChoiceOption(TouchJoystickMode.Dynamic.name, "Dynamic"),
+                )
+                ChoiceOptionRow("Touch joystick", joystickModeOptions, settings.androidTouch.joystickMode.name) { modeName ->
+                    val mode = TouchJoystickMode.valueOf(modeName)
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(joystickMode = mode)))
+                }
+                NumberSlider("Joystick dead zone", settings.androidTouch.joystickDeadZone, 0f, 0.3f, 0.01f) { value ->
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(joystickDeadZone = value)))
                 }
                 NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
                 NumberSlider("Touch button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(buttonScale = value))) }
@@ -896,7 +866,7 @@ private fun SettingsContent(
                 NumberSlider("Right controls horizontal offset", settings.androidTouch.rightOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetXDp = value))) }
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_interface), "interface", "ui", "system colors", "accent", "launch page", "default page", "store", "library", "nerd", "expressive", "compact", "cards", "store labels", "game card size", "stats", "position", "server selector", "controller", "sounds", "button", "tone", "tv", "safe area", "screen padding", "overscan", "session counter", "intro", "music", "queue", "stretch", "fill") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "tv", "safe area", "screen padding", "overscan") {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
@@ -904,6 +874,18 @@ private fun SettingsContent(
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
                     }
                 }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_expressive_ui),
+                    checked = settings.expressiveUi,
+                    description = stringResource(R.string.settings_expressive_ui_desc),
+                ) {
+                    viewModel.updateSettings(settings.copy(expressiveUi = it))
+                }
+                NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f, unit = "dp") { value ->
+                    viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
+                }
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "store labels", "game card size", "server selector") {
                 val launchPageOptions = AppLaunchPage.entries.map { page -> page to appLaunchPageLabel(page) }
                 ChoiceRow(
                     stringResource(R.string.settings_launch_page),
@@ -915,22 +897,15 @@ private fun SettingsContent(
                         viewModel.updateSettings(settings.copy(launchPage = page))
                     }
                 }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_expressive_ui),
-                    checked = settings.expressiveUi,
-                    description = stringResource(R.string.settings_expressive_ui_desc),
-                ) {
-                    viewModel.updateSettings(settings.copy(expressiveUi = it))
-                }
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_card_titles), settings.showCardTitles) { viewModel.updateSettings(settings.copy(showCardTitles = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
                 NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 0.05f) { value ->
                     viewModel.updateSettings(settings.copy(posterSizeScale = value))
                 }
-                NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f, unit = "dp") { value ->
-                    viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
-                }
+                SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_status_bar), "interface", "stats", "status bar", "position", "fps", "ping", "bitrate") {
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
                 ChoiceRow("Status bar appearance", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
                     StreamStatsStyle.entries.firstOrNull { it.label == label }?.let { style ->
@@ -942,7 +917,8 @@ private fun SettingsContent(
                         viewModel.updateSettings(settings.copy(streamStatsPosition = position))
                     }
                 }
-                SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
+            }
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_sounds_sessions), "interface", "controller", "sounds", "button", "tone", "session counter", "intro", "music", "queue") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_button_press_tones),
                     checked = settings.controllerUiSounds,

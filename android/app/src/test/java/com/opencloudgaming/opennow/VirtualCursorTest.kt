@@ -6,14 +6,10 @@ import org.junit.Test
 import kotlin.math.abs
 
 /**
- * Direct click has no absolute-positioning packet to lean on, so it tracks where it believes the
- * host's cursor is and sends the difference to each tap. This test exists because that model was
- * once re-derived whenever *our* window changed size, which is exactly wrong — resizing our window
- * does not move the host's cursor — and it made every tap after entering or leaving PiP land off by
- * however far the cursor really was from the centre of the screen.
- *
- * The class under test takes no view size at all, so the tests below are phrased as the properties
- * that made that regression possible.
+ * Direct click has no absolute-positioning packet to lean on. Every new tap therefore reanchors the
+ * host cursor at its top-left boundary before moving to the mapped target; the retained cursor model
+ * is used only for relative movement during that press. These tests cover both the boundary anchor
+ * and the resize/rounding properties needed while a drag is active.
  */
 class VirtualCursorTest {
 
@@ -23,6 +19,11 @@ class VirtualCursorTest {
             if (delta == null) return
             x += delta.dx
             y += delta.dy
+        }
+
+        fun applyClamped(delta: CursorDelta, width: Int, height: Int) {
+            x = (x + delta.dx).coerceIn(0f, (width - 1).toFloat())
+            y = (y + delta.dy).coerceIn(0f, (height - 1).toFloat())
         }
     }
 
@@ -43,6 +44,33 @@ class VirtualCursorTest {
 
         assertEquals(100f, host.x, 0.5f)
         assertEquals(200f, host.y, 0.5f)
+    }
+
+    @Test
+    fun directClickReanchorsAnUnknownHostCursorBeforeMovingToTarget() {
+        val width = 1920
+        val height = 1080
+        val cursor = VirtualCursor()
+        cursor.onStreamSize(width, height)
+        val host = FakeHost(1733f, 941f)
+
+        cursor.reanchorDeltasTo(StreamPoint(100f, 200f)).forEach { delta ->
+            host.applyClamped(delta, width, height)
+        }
+
+        assertEquals(100f, host.x, 0.5f)
+        assertEquals(200f, host.y, 0.5f)
+        assertEquals(StreamPoint(100f, 200f), cursor.position)
+    }
+
+    @Test
+    fun directClickClampsTheMappedBottomRightEdgeToARealDesktopPixel() {
+        val cursor = VirtualCursor()
+        cursor.onStreamSize(1920, 1080)
+
+        cursor.reanchorDeltasTo(StreamPoint(1920f, 1080f))
+
+        assertEquals(StreamPoint(1919f, 1079f), cursor.position)
     }
 
     /**

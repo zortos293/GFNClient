@@ -3462,7 +3462,7 @@ private fun GameGridSkeleton(
                 gridItems(placeholderItems, key = { it }) {
                     GameCardSkeleton(
                         squareCard = gridSpec.squareCards,
-                        thumbnailPlayOverlay = !artworkOnly && !tvProfile,
+                        thumbnailFavoriteOverlay = !artworkOnly && !tvProfile,
                         showStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -3568,12 +3568,6 @@ private fun StoreRailGameCardSkeleton(
                         .align(Alignment.BottomStart)
                         .padding(6.dp),
                 )
-                SkeletonCircle(
-                    size = 44.dp,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp),
-                )
             }
         }
     }
@@ -3583,7 +3577,7 @@ private fun StoreRailGameCardSkeleton(
 @Composable
 private fun GameCardSkeleton(
     squareCard: Boolean,
-    thumbnailPlayOverlay: Boolean,
+    thumbnailFavoriteOverlay: Boolean,
     showStoreLabels: Boolean,
     showCardTitles: Boolean,
 ) {
@@ -3601,17 +3595,11 @@ private fun GameCardSkeleton(
         ) {
             Box(Modifier.fillMaxSize()) {
                 LoadingShimmer(Modifier.fillMaxSize())
-                if (thumbnailPlayOverlay) {
+                if (thumbnailFavoriteOverlay) {
                     SkeletonCircle(
                         size = 34.dp,
                         modifier = Modifier
                             .align(Alignment.TopStart)
-                            .padding(6.dp),
-                    )
-                    SkeletonCircle(
-                        size = 34.dp,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
                             .padding(6.dp),
                     )
                 }
@@ -3748,7 +3736,7 @@ private fun GameGrid(
                             enabled = settings.showCardTitles,
                         ),
                         squareCard = gridSpec.squareCards,
-                        thumbnailPlayOverlay = !tvProfile,
+                        thumbnailFavoriteOverlay = !tvProfile,
                         controllerActionMode = controllerActionMode,
                         onSelect = onSelect,
                         onFavorite = onFavorite,
@@ -3866,7 +3854,7 @@ private fun StoreGameGrid(
                             enabled = settings.showCardTitles,
                         ),
                         squareCard = gridSpec.squareCards,
-                        thumbnailPlayOverlay = !tvProfile,
+                        thumbnailFavoriteOverlay = !tvProfile,
                         controllerActionMode = controllerActionMode,
                         onSelect = onSelect,
                         onFavorite = onFavorite,
@@ -4165,12 +4153,6 @@ private fun StoreComingNextCarousel(
                         )
                     }
                     if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
-                        ThumbnailPlayButton(
-                            onClick = { onPlay(featured) },
-                            onLongClick = { onChooseStore(featured) },
-                            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-                            buttonSize = 50.dp,
-                        )
                         FavoriteIconButton(
                             favorite = featured.id in favoriteIds,
                             onClick = { onFavorite(featured.id) },
@@ -4356,14 +4338,6 @@ private fun StoreRailGameCard(
                 GameCardTitleOverlay(game.title)
             }
             if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
-                ThumbnailPlayButton(
-                    onClick = { onPlay(game) },
-                    onLongClick = { onChooseStore(game) },
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp),
-                    buttonSize = actionButtonSize,
-                )
                 FavoriteIconButton(
                     favorite = favorite,
                     onClick = { onFavorite(game.id) },
@@ -4729,6 +4703,7 @@ internal fun storeRailVisibleCardCount(
         .coerceAtLeast(1)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GameCard(
     game: GameInfo,
@@ -4739,7 +4714,7 @@ private fun GameCard(
     showGameStoreLabels: Boolean,
     showCardTitles: Boolean,
     squareCard: Boolean,
-    thumbnailPlayOverlay: Boolean,
+    thumbnailFavoriteOverlay: Boolean,
     controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
@@ -4750,7 +4725,7 @@ private fun GameCard(
     val focusManager = LocalFocusManager.current
     val cardShape = RoundedCornerShape(if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm)
     val handheldPosterCard = !tvProfile
-    val launcherTile = handheldPosterCard && thumbnailPlayOverlay
+    val launcherTile = handheldPosterCard && thumbnailFavoriteOverlay
     val overlayActionSize = if (launcherTile) 34.dp else 44.dp
     val overlayActionPadding = if (launcherTile) 6.dp else 8.dp
     val enhancedControllerFocus = shouldShowEnhancedControllerFocus(
@@ -4842,7 +4817,13 @@ private fun GameCard(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .clickable(interactionSource = interaction, indication = null) { onSelect(game) },
+                    .combinedClickable(
+                        interactionSource = interaction,
+                        indication = null,
+                        onClick = { onSelect(game) },
+                        onLongClick = { onChooseStore(game) },
+                        onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                    ),
             ) {
                 UrlImage(
                     catalogCardImageUrl(game, tvProfile),
@@ -4855,7 +4836,7 @@ private fun GameCard(
                 if (shouldOverlayCatalogCardTitle(tvProfile)) {
                     GameCardTitleOverlay(game.title)
                 }
-                if (thumbnailPlayOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                if (thumbnailFavoriteOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
                     FavoriteIconButton(
                         favorite = favorite,
                         onClick = { onFavorite(game.id) },
@@ -4863,14 +4844,6 @@ private fun GameCard(
                             .align(Alignment.TopStart)
                             .padding(overlayActionPadding),
                         size = overlayActionSize,
-                    )
-                    ThumbnailPlayButton(
-                        onClick = { onPlay(game) },
-                        onLongClick = { onChooseStore(game) },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(overlayActionPadding),
-                        buttonSize = overlayActionSize,
                     )
                 }
                 ControllerFocusFrame(
@@ -5064,34 +5037,6 @@ private fun displayStoresForGame(game: GameInfo): String {
         game.availableStores.map(::gameStoreDisplayName)
     }.distinctBy { normalizeGameStore(it) }
     return stores.joinToString(", ").ifBlank { "GeForce NOW" }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ThumbnailPlayButton(onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier = Modifier, buttonSize: Dp = 44.dp) {
-    Surface(
-        modifier = modifier
-            // Keeps the drawn size but grows the touch target to the 48dp minimum. The overlay
-            // actions on catalog cards are drawn at 34dp.
-            .minimumInteractiveComponentSize()
-            .size(buttonSize)
-            .semantics { role = Role.Button }
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick,
-                onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
-            ),
-        shape = CircleShape,
-        color = Color.Black.copy(alpha = 0.35f),
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-    ) {
-        ZortosPlayMark(
-            modifier = Modifier.fillMaxSize().padding(buttonSize * 0.13f),
-            ringColor = Color.White,
-        )
-    }
 }
 
 @Composable
@@ -8362,8 +8307,9 @@ private fun StreamGuidePoint(number: Int, body: String) {
 private enum class StreamControlsPage {
     Main,
     StatusBar,
-    Joysticks,
+    TouchControls,
     MouseMode,
+    ReportProblem,
 }
 
 @Composable
@@ -8443,10 +8389,8 @@ private fun StreamControlsPanel(
         page = StreamControlsPage.Main
     }
     LaunchedEffect(page) {
-        if (page == StreamControlsPage.Main) {
-            delay(120)
-            runCatching { doneFocusRequester.requestFocus() }
-        }
+        delay(120)
+        runCatching { doneFocusRequester.requestFocus() }
     }
     Surface(
         modifier = Modifier
@@ -8469,8 +8413,8 @@ private fun StreamControlsPanel(
             LocalControlSectionStyle provides ControlSectionStyle.stream(),
         ) {
         Column(Modifier.fillMaxSize()) {
-        // The header is outside the scrolling area now. It used to be the first LazyColumn item,
-        // so it scrolled away and each of the three pages hand-rolled its own copy of it.
+        // The header stays outside the scrolling area so every focused sub-page keeps navigation
+        // and session actions visible while its settings scroll independently.
         StreamPanelHeader(
             page = page,
             gameTitle = gameTitle,
@@ -8505,13 +8449,112 @@ private fun StreamControlsPanel(
                     onStatsMetricsChange = onStatsMetricsChange,
                     onButtonTone = onButtonTone,
                 )
-                StreamControlsPage.Joysticks -> joystickPageItems(
-                    settings = settings.androidTouch,
-                    onModeToggle = onJoystickModeToggle,
-                    onDeadZoneChange = onJoystickDeadZoneChange,
-                    onStickScaleChange = onStickScaleChange,
-                    onButtonTone = onButtonTone,
-                )
+                StreamControlsPage.TouchControls -> {
+                    item {
+                        ControlSection(stringResource(R.string.stream_panel_section_touch_controller)) {
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_panel_touch_controller),
+                                checked = touchControlsVisible,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onTouchControlsToggle()
+                                },
+                                value = stringResource(
+                                    if (touchControlsVisible) R.string.common_visible else R.string.common_hidden,
+                                ),
+                            )
+                            if (touchControlsVisible) {
+                                val cleanStyle = settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2
+                                ControlSwitchRow(
+                                    label = stringResource(R.string.stream_panel_clean_style),
+                                    checked = cleanStyle,
+                                    onCheckedChange = {
+                                        onButtonTone()
+                                        onToggleTouchControllerStyle()
+                                    },
+                                    value = onOffLabel(cleanStyle),
+                                )
+                            }
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_panel_phone_rumble),
+                                checked = settings.phoneRumbleFallback,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onPhoneRumbleFallbackToggle()
+                                },
+                                value = onOffLabel(settings.phoneRumbleFallback),
+                            )
+                        }
+                    }
+                    item {
+                        ControlSection(stringResource(R.string.stream_joysticks_title)) {
+                            val dynamic = settings.androidTouch.joystickMode == TouchJoystickMode.Dynamic
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_joysticks_dynamic),
+                                checked = dynamic,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onJoystickModeToggle()
+                                },
+                                value = stringResource(
+                                    if (dynamic) R.string.stream_joysticks_dynamic_on else R.string.stream_joysticks_dynamic_off,
+                                ),
+                            )
+                            TouchLayoutSlider(
+                                R.string.stream_joysticks_stick_size,
+                                settings.androidTouch.stickScale,
+                                0.65f,
+                                1.5f,
+                                TOUCH_SCALE_SLIDER_STEP,
+                                onStickScaleChange,
+                            )
+                            TouchLayoutSlider(
+                                R.string.stream_joysticks_dead_zone,
+                                settings.androidTouch.joystickDeadZone,
+                                0f,
+                                0.3f,
+                                JOYSTICK_DEAD_ZONE_STEP,
+                                onJoystickDeadZoneChange,
+                            )
+                            Text(
+                                stringResource(R.string.stream_joysticks_explainer),
+                                color = TextMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    item {
+                        ControlSection(stringResource(R.string.stream_panel_section_touch_layout)) {
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_panel_drag_edit),
+                                checked = touchLayoutEditing,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onTouchLayoutEditingToggle()
+                                },
+                                value = onOffLabel(touchLayoutEditing),
+                            )
+                            ControlActionRow(
+                                label = stringResource(R.string.stream_panel_reset_layout),
+                                actionLabel = stringResource(R.string.action_reset),
+                                onClick = {
+                                    onButtonTone()
+                                    onTouchLayoutReset()
+                                },
+                                value = stringResource(R.string.stream_panel_reset_layout_summary),
+                            )
+                            // These controls preview live so the player can position the overlay
+                            // against the game without leaving the stream.
+                            TouchLayoutSlider(R.string.stream_panel_layout_scale, settings.androidTouch.scale, 0.6f, 1.4f, TOUCH_SCALE_SLIDER_STEP, onTouchScaleChange)
+                            TouchLayoutSlider(R.string.stream_panel_button_size, settings.androidTouch.buttonScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onButtonScaleChange)
+                            TouchLayoutSlider(R.string.stream_panel_opacity, settings.androidTouch.opacity, 0.15f, 1f, TOUCH_SCALE_SLIDER_STEP, onOpacityChange)
+                            TouchLayoutSlider(R.string.stream_panel_edge_padding, settings.androidTouch.edgePaddingDp, 0f, 72f, TOUCH_DP_SLIDER_STEP, onTouchEdgePaddingChange, unit = DP_UNIT)
+                            TouchLayoutSlider(R.string.stream_panel_bottom_padding, settings.androidTouch.bottomPaddingDp, 0f, 120f, TOUCH_DP_SLIDER_STEP, onTouchBottomPaddingChange, unit = DP_UNIT)
+                            TouchLayoutSlider(R.string.stream_panel_left_position, settings.androidTouch.leftOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchLeftOffsetChange, unit = DP_UNIT)
+                            TouchLayoutSlider(R.string.stream_panel_right_position, settings.androidTouch.rightOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchRightOffsetChange, unit = DP_UNIT)
+                        }
+                    }
+                }
                 StreamControlsPage.MouseMode -> mouseModePageItems(
                     settings = settings,
                     controllerMouseEmulationEnabled = controllerMouseEmulationEnabled,
@@ -8522,6 +8565,23 @@ private fun StreamControlsPanel(
                     onNativeTouchJitterThresholdChange = onNativeTouchJitterThresholdChange,
                     onButtonTone = onButtonTone,
                 )
+                StreamControlsPage.ReportProblem -> {
+                    item {
+                        StreamBugReporter(
+                            submission = bugReportSubmission,
+                            versionCheck = bugReportVersionCheck,
+                            update = update,
+                            onSubmit = onBugReportSubmit,
+                            onReset = onBugReportReset,
+                            onVersionCheck = onBugReportVersionCheck,
+                            onOpenUpdate = onOpenUpdate,
+                            onButtonTone = onButtonTone,
+                            preflightProvider = bugReportPreflightProvider,
+                            initiallyExpanded = true,
+                            onExpandedClose = { page = StreamControlsPage.Main },
+                        )
+                    }
+                }
                 StreamControlsPage.Main -> {
             if (showSessionTimer) {
                 item {
@@ -8692,50 +8752,15 @@ private fun StreamControlsPanel(
                                 indentLevel = 1
                             )
                         }
-                        ControlSwitchRow(
+                        ControlNavigationRow(
                             label = stringResource(R.string.stream_panel_touch_controller),
-                            checked = touchControlsVisible,
-                            onCheckedChange = {
+                            onClick = {
                                 onButtonTone()
-                                onTouchControlsToggle()
+                                page = StreamControlsPage.TouchControls
                             },
                             value = stringResource(
                                 if (touchControlsVisible) R.string.common_visible else R.string.common_hidden,
                             ),
-                        )
-                        ControlNavigationRow(
-                            label = stringResource(R.string.stream_panel_joysticks),
-                            onClick = {
-                                onButtonTone()
-                                page = StreamControlsPage.Joysticks
-                            },
-                            value = stringResource(
-                                when (settings.androidTouch.joystickMode) {
-                                    TouchJoystickMode.Fixed -> R.string.stream_panel_joystick_fixed
-                                    TouchJoystickMode.Dynamic -> R.string.stream_panel_joystick_dynamic
-                                },
-                            ),
-                        )
-                        if (touchControlsVisible) {
-                            val cleanStyle = settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2
-                            ControlSwitchRow(
-                                label = stringResource(R.string.stream_panel_clean_style),
-                                checked = cleanStyle,
-                                onCheckedChange = {
-                                    onButtonTone()
-                                    onToggleTouchControllerStyle()
-                                },
-                                value = onOffLabel(cleanStyle),
-                            )
-                        }
-                        ControlSwitchRow(
-                            label = stringResource(R.string.stream_panel_phone_rumble),
-                            checked = settings.phoneRumbleFallback,
-                            onCheckedChange = {
-                                onButtonTone()
-                                onPhoneRumbleFallbackToggle()
-                            },
-                            value = onOffLabel(settings.phoneRumbleFallback),
                         )
                     }
                     // Mouse mode (Left stick): shown for all profiles — works with both physical
@@ -8754,49 +8779,17 @@ private fun StreamControlsPanel(
                     )
                 }
             }
-            if (!tvProfile) item {
-                ControlSection(stringResource(R.string.stream_panel_section_touch_layout)) {
-                    ControlSwitchRow(
-                        label = stringResource(R.string.stream_panel_drag_edit),
-                        checked = touchLayoutEditing,
-                        onCheckedChange = {
-                            onButtonTone()
-                            onTouchLayoutEditingToggle()
-                        },
-                        value = onOffLabel(touchLayoutEditing),
-                    )
-                    ControlActionRow(
-                        label = stringResource(R.string.stream_panel_reset_layout),
-                        actionLabel = stringResource(R.string.action_reset),
+            item {
+                ControlSection(stringResource(R.string.stream_panel_section_support)) {
+                    ControlNavigationRow(
+                        label = stringResource(R.string.bug_report_open_label),
                         onClick = {
                             onButtonTone()
-                            onTouchLayoutReset()
+                            page = StreamControlsPage.ReportProblem
                         },
-                        value = stringResource(R.string.stream_panel_reset_layout_summary),
+                        value = stringResource(R.string.bug_report_open_summary),
                     )
-                    // These seven drive the touch overlay live: watching it move while dragging is
-                    // the whole point, so they preview on every frame as well as committing.
-                    TouchLayoutSlider(R.string.stream_panel_layout_scale, settings.androidTouch.scale, 0.6f, 1.4f, TOUCH_SCALE_SLIDER_STEP, onTouchScaleChange)
-                    TouchLayoutSlider(R.string.stream_panel_button_size, settings.androidTouch.buttonScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onButtonScaleChange)
-                    TouchLayoutSlider(R.string.stream_panel_opacity, settings.androidTouch.opacity, 0.15f, 1f, TOUCH_SCALE_SLIDER_STEP, onOpacityChange)
-                    TouchLayoutSlider(R.string.stream_panel_edge_padding, settings.androidTouch.edgePaddingDp, 0f, 72f, TOUCH_DP_SLIDER_STEP, onTouchEdgePaddingChange, unit = DP_UNIT)
-                    TouchLayoutSlider(R.string.stream_panel_bottom_padding, settings.androidTouch.bottomPaddingDp, 0f, 120f, TOUCH_DP_SLIDER_STEP, onTouchBottomPaddingChange, unit = DP_UNIT)
-                    TouchLayoutSlider(R.string.stream_panel_left_position, settings.androidTouch.leftOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchLeftOffsetChange, unit = DP_UNIT)
-                    TouchLayoutSlider(R.string.stream_panel_right_position, settings.androidTouch.rightOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchRightOffsetChange, unit = DP_UNIT)
                 }
-            }
-            item {
-                StreamBugReporter(
-                    submission = bugReportSubmission,
-                    versionCheck = bugReportVersionCheck,
-                    update = update,
-                    onSubmit = onBugReportSubmit,
-                    onReset = onBugReportReset,
-                    onVersionCheck = onBugReportVersionCheck,
-                    onOpenUpdate = onOpenUpdate,
-                    onButtonTone = onButtonTone,
-                    preflightProvider = bugReportPreflightProvider,
-                )
             }
                 } // StreamControlsPage.Main
             } // when (currentPage)
@@ -8870,8 +8863,8 @@ private fun BugReportDataDisclosure(
 }
 
 /**
- * The one header for all three panel pages. Replaces three hand-rolled Rows that had drifted apart,
- * and — because it lives outside the scrolling area now — stays put while the page scrolls.
+ * Shared header for the main panel and every focused settings/support page. It stays put while the
+ * selected page scrolls.
  */
 /**
  * Publishes this composable's screen bounds to the native input router so touches landing on it are
@@ -8958,8 +8951,9 @@ private fun StreamPanelHeader(
                     when (page) {
                         StreamControlsPage.Main -> R.string.stream_panel_title
                         StreamControlsPage.StatusBar -> R.string.stream_statusbar_title
-                        StreamControlsPage.Joysticks -> R.string.stream_joysticks_title
+                        StreamControlsPage.TouchControls -> R.string.stream_touch_controls_title
                         StreamControlsPage.MouseMode -> R.string.stream_mouse_mode_title
+                        StreamControlsPage.ReportProblem -> R.string.stream_report_problem_title
                     },
                 ),
                 style = MaterialTheme.typography.titleMedium,
@@ -8968,8 +8962,9 @@ private fun StreamPanelHeader(
                 when (page) {
                     StreamControlsPage.Main -> gameTitle
                     StreamControlsPage.StatusBar -> stringResource(R.string.stream_statusbar_subtitle)
-                    StreamControlsPage.Joysticks -> stringResource(R.string.stream_joysticks_subtitle)
+                    StreamControlsPage.TouchControls -> stringResource(R.string.stream_touch_controls_subtitle)
                     StreamControlsPage.MouseMode -> stringResource(R.string.stream_mouse_mode_subtitle)
+                    StreamControlsPage.ReportProblem -> stringResource(R.string.stream_report_problem_subtitle)
                 },
                 color = TextMuted,
                 style = MaterialTheme.typography.labelSmall,
@@ -9671,42 +9666,6 @@ private fun StreamBugReporter(
                     Text("Go back")
                 }
             },
-        )
-    }
-}
-
-private fun LazyListScope.joystickPageItems(
-    settings: AndroidTouchSettings,
-    onModeToggle: () -> Unit,
-    onDeadZoneChange: (Float) -> Unit,
-    onStickScaleChange: (Float) -> Unit,
-    onButtonTone: () -> Unit,
-) {
-    item {
-        val dynamic = settings.joystickMode == TouchJoystickMode.Dynamic
-        ControlSwitchRow(
-            label = stringResource(R.string.stream_joysticks_dynamic),
-            checked = dynamic,
-            onCheckedChange = {
-                onButtonTone()
-                onModeToggle()
-            },
-            value = stringResource(
-                if (dynamic) R.string.stream_joysticks_dynamic_on else R.string.stream_joysticks_dynamic_off,
-            ),
-        )
-    }
-    item {
-        TouchLayoutSlider(R.string.stream_joysticks_stick_size, settings.stickScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onStickScaleChange)
-    }
-    item {
-        TouchLayoutSlider(R.string.stream_joysticks_dead_zone, settings.joystickDeadZone, 0f, 0.3f, JOYSTICK_DEAD_ZONE_STEP, onDeadZoneChange)
-    }
-    item {
-        Text(
-            stringResource(R.string.stream_joysticks_explainer),
-            color = TextMuted,
-            style = MaterialTheme.typography.bodySmall,
         )
     }
 }

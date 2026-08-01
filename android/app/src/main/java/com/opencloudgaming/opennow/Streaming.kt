@@ -855,8 +855,7 @@ object NativeStreamInputRouter {
 
     fun attach(next: NativeStreamClient) {
         client = next
-        // A new session is the only event that genuinely invalidates where we think the host's
-        // cursor is. Window resizes and setting changes do not move it.
+        // Never carry an in-progress drag position into a different host session.
         touchMouseState.forgetCursorPosition()
         decodedStreamWidth = 0
         decodedStreamHeight = 0
@@ -874,9 +873,8 @@ object NativeStreamInputRouter {
 
     /**
      * The system interrupted the touch session — entering PiP, or the activity going to background.
-     * Releases any button we are holding so it cannot stick down on the host, and deliberately
-     * leaves the cursor shadow alone: resizing our window does not move the host's cursor, so the
-     * shadow is still correct and re-deriving it would only introduce error.
+     * Releases any button we are holding so it cannot stick down on the host. The next direct tap
+     * establishes its own origin, so lifecycle changes cannot leave a stale click offset behind.
      */
     fun releaseTouchMouseForLifecycle() {
         touchMouseState.reset(client)
@@ -2705,21 +2703,13 @@ private fun viewAspectOf(width: Int, height: Int): Float = width.toFloat() / hei
 internal data class CursorDelta(val dx: Int, val dy: Int)
 
 /**
- * Our model of where the host's cursor sits, in stream pixels.
+ * Our model of where the host's cursor sits while a direct-click drag is active.
  *
- * The protocol has no absolute-positioning packet — [InputEncoder.INPUT_MOUSE_REL] is all there is
- * — so direct click fakes absolute pointing by remembering where it last put the cursor and sending
- * the difference to the next tap. The model is only useful while it agrees with reality, which
- * makes the question "what actually invalidates it?" the whole design:
- *
- * - **A new session does.** Nothing else. See [forget].
- * - **A resolution change rescales it**, it does not void it: the host's cursor keeps the same
- *   relative position on the resized desktop.
- * - **Our own window does not.** Entering PiP, rotating, or backgrounding resizes *us*; the host's
- *   cursor does not budge. Re-deriving the shadow on those events is what made direct click miss
- *   after PiP — it replaced a correct value with a guess of "centre", and the next tap sent its
- *   delta from that wrong origin, landing off by however far the cursor really was from centre.
- *   This class takes no view size at all, so that mistake cannot be made again here.
+ * The protocol has no absolute-positioning packet — [InputEncoder.INPUT_MOUSE_REL] is all there is.
+ * At the start of every tap, [reanchorDeltasTo] first sends the largest supported negative movement
+ * so the desktop clamps the cursor to its top-left boundary, then sends the target coordinates from
+ * that known origin. That removes the old assumption that the host cursor started in the centre,
+ * which left every direct click offset whenever a game had moved it elsewhere.
  */
 internal class VirtualCursor {
     private var x = 0f
@@ -2734,8 +2724,8 @@ internal class VirtualCursor {
     fun onStreamSize(width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
         if (!initialized) {
-            // Nothing better than a guess for the first tap of a session; every tap after it
-            // corrects the model, so at worst one tap lands off.
+            // Direct click reanchors before pressing; this temporary value only keeps the generic
+            // relative cursor model well-defined until that first DOWN arrives.
             x = width / 2f
             y = height / 2f
             initialized = true
@@ -2762,6 +2752,25 @@ internal class VirtualCursor {
         x += dx
         y += dy
         return CursorDelta(dx, dy)
+    }
+
+    /**
+     * Reliable relative moves that place the host cursor at [target] without knowing its current
+     * position. The first move is already the protocol's signed-16-bit minimum, so the encoder will
+     * transmit it unchanged and any supported single-display stream is guaranteed to hit (0, 0).
+     */
+    fun reanchorDeltasTo(target: StreamPoint): List<CursorDelta> {
+        if (!initialized || streamWidth <= 0 || streamHeight <= 0) return emptyList()
+        val targetX = target.x.roundToInt().coerceIn(0, streamWidth - 1)
+        val targetY = target.y.roundToInt().coerceIn(0, streamHeight - 1)
+        x = targetX.toFloat()
+        y = targetY.toFloat()
+        return buildList {
+            add(CursorDelta(Short.MIN_VALUE.toInt(), Short.MIN_VALUE.toInt()))
+            if (targetX != 0 || targetY != 0) {
+                add(CursorDelta(targetX, targetY))
+            }
+        }
     }
 
     fun forget() {
@@ -2795,11 +2804,8 @@ private class TouchMouseState {
     private var scrollGestureOccurred = false
 
     /**
-     * Tears down the in-flight gesture only. It deliberately does **not** clear the cursor shadow:
-     * every caller (PiP, backgrounding, a setting toggle, a geometry change) alters our window or
-     * our own state, none of which move the host's cursor. Clearing it here was what made direct
-     * click miss after PiP — the next tap re-centred on a guess and sent its delta from the wrong
-     * origin. Use [forgetCursorPosition] for the one case that really does invalidate it.
+     * Tears down the in-flight gesture. The cursor model is retained only for an active drag; every
+     * new direct-click DOWN independently reanchors at the host boundary before moving to its target.
      */
     fun reset(client: NativeStreamClient?) {
         // Correct for both modes now that direct click also maintains `selecting`. Widening this
@@ -2817,7 +2823,7 @@ private class TouchMouseState {
         scrollGestureOccurred = false
     }
 
-    /** The host cursor is no longer where we think it is — only true across sessions. */
+    /** Clears any position retained from the previous stream client. */
     fun forgetCursorPosition() {
         virtualCursor.forget()
     }
@@ -2825,6 +2831,18 @@ private class TouchMouseState {
     private fun moveVirtualCursorTo(target: StreamPoint, client: NativeStreamClient) {
         val delta = virtualCursor.consumeDeltaTo(target) ?: return
         client.sendRawMouseMove(delta.dx, delta.dy)
+    }
+
+    private fun reanchorVirtualCursorTo(target: StreamPoint, client: NativeStreamClient): Boolean {
+        val deltas = virtualCursor.reanchorDeltasTo(target)
+        if (deltas.isEmpty()) return false
+        for (delta in deltas) {
+            if (!client.sendRawMouseMove(delta.dx, delta.dy)) {
+                virtualCursor.forget()
+                return false
+            }
+        }
+        return true
     }
 
     fun handle(
@@ -2879,15 +2897,21 @@ private class TouchMouseState {
                             stretchToFit = stretchToFit,
                             renderingAspectRatio = renderingAspectRatio,
                         )
-                        moveVirtualCursorTo(target, client)
+                        if (!reanchorVirtualCursorTo(target, client)) {
+                            activePointerId = -1
+                            return true
+                        }
 
-                        client.setTouchMouseButton(true)
+                        selecting = client.setTouchMouseButton(true)
+                        if (!selecting) {
+                            activePointerId = -1
+                            return true
+                        }
                         // `selecting` is this class's single record of "we are holding the button
                         // down on the host". Direct click used to leave it false and track the
                         // press only through activePointerId, so reset() — which releases on
                         // `selecting` — could not release it, and backgrounding mid-tap left the
                         // button stuck down with no event left to clear it.
-                        selecting = true
                     }
                     return true
                 }

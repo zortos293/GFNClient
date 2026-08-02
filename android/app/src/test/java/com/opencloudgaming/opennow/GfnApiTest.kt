@@ -20,6 +20,47 @@ import org.junit.Test
 
 class GfnApiTest {
     @Test
+    fun libraryBrowseSpecUsesPanelSeeMorePaginationMetadata() {
+        val payload = buildJsonObject {
+            putJsonObject("data") {
+                putJsonArray("panels") {
+                    add(buildJsonObject {
+                        putJsonArray("sections") {
+                            add(buildJsonObject {
+                                putJsonObject("seeMoreInfo") {
+                                    put("sortOrderId", JsonPrimitive("last_played"))
+                                    putJsonArray("filterIds") {
+                                        add(JsonPrimitive("library"))
+                                        add(JsonPrimitive("owned"))
+                                    }
+                                }
+                            })
+                        }
+                    })
+                }
+            }
+        }
+
+        assertEquals(
+            LibraryBrowseSpec(listOf("library", "owned"), "last_played"),
+            libraryBrowseSpec(payload),
+        )
+    }
+
+    @Test
+    fun freeToPlayPaymentModelUsesGraphQlTypeName() {
+        val models = buildJsonObject {
+            putJsonArray("models") {
+                add(buildJsonObject { put("__typename", JsonPrimitive("PurchasePaymentModel")) })
+                add(buildJsonObject { put("__typename", JsonPrimitive("FreeToPlayPaymentModel")) })
+            }
+        }["models"]!!.jsonArray
+
+        assertTrue(hasFreeToPlayPaymentModel(models))
+        assertFalse(hasFreeToPlayPaymentModel(null))
+    }
+
+    @Test
     fun catalogArtworkUsesGameBoxArtForMobileAndTvCards() {
         val artwork = catalogCardArtwork(
             keyArt = "key-art",
@@ -344,7 +385,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun cloudMatchUsesAndroidTouchIdentityForTouchFriendly() {
+    fun cloudMatchUsesNativeAndroidTouchIdentityForTouchFriendly() {
         val headers = cloudMatchHeaders(
             token = "token",
             clientId = "client",
@@ -353,8 +394,8 @@ class GfnApiTest {
             appLaunchMode = GfnAppLaunchMode.TOUCH_FRIENDLY,
         )
 
-        assertEquals("WEBRTC", headers["nv-client-streamer"])
-        assertEquals("BROWSER", headers["nv-client-type"])
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
         assertEquals("ANDROID", headers["nv-device-os"])
         assertEquals("TABLET", headers["nv-device-type"])
         val userAgent = headers["User-Agent"].orEmpty()
@@ -775,7 +816,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun touchFriendlyClaimRequestKeepsBrowserPlatformIdentity() {
+    fun touchFriendlyClaimRequestUsesAndroidPlatformIdentity() {
         val body = buildMinimalClaimRequestBody(
             appId = "123",
             deviceId = "device",
@@ -783,7 +824,7 @@ class GfnApiTest {
         )
         val sessionRequestData = body.getValue("sessionRequestData").jsonObject
 
-        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(GfnAppLaunchMode.TOUCH_FRIENDLY, sessionRequestData.getValue("appLaunchMode").jsonPrimitive.int)
     }
 
@@ -815,7 +856,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun highPerformanceTouchClaimKeepsBrowserPlatformIdentity() {
+    fun highPerformanceTouchClaimUsesNativeAndroidMonitorIdentity() {
         val body = buildMinimalClaimRequestBody(
             appId = "123",
             deviceId = "device",
@@ -824,9 +865,9 @@ class GfnApiTest {
         )
         val sessionRequestData = body.getValue("sessionRequestData").jsonObject
 
-        assertEquals("browser", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
-        assertEquals(0, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
+        assertEquals(100, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
     }
 
 }

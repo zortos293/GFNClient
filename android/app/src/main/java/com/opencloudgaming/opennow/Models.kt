@@ -1073,6 +1073,7 @@ data class GameVariant(
     val libraryStatus: String? = null,
     val lastPlayedDate: String? = null,
     val gfnStatus: String? = null,
+    val isFreeToPlay: Boolean = false,
 )
 
 @Immutable
@@ -1137,6 +1138,27 @@ internal fun shouldLaunchWithAccountLinked(game: GameInfo, selectedVariant: Game
     if (game.playType == "INSTALL_TO_PLAY") return false
     if (selectedVariant?.let(::isOwnedGameVariant) == true) return true
     return isGameInLibrary(game)
+}
+
+internal fun shouldAutoMarkFreeToPlayOwnership(game: GameInfo, selectedVariant: GameVariant?): Boolean =
+    game.playType != "INSTALL_TO_PLAY" &&
+        selectedVariant?.isFreeToPlay == true &&
+        !isOwnedGameVariant(selectedVariant)
+
+internal fun GameInfo.withManuallyOwnedVariant(variantId: String): GameInfo {
+    val selectedIndex = variants.indexOfFirst { it.id == variantId }
+    if (selectedIndex < 0) return this
+    return copy(
+        isInLibrary = true,
+        selectedVariantIndex = selectedIndex,
+        variants = variants.mapIndexed { index, variant ->
+            if (index == selectedIndex) {
+                variant.copy(libraryStatus = "MANUAL")
+            } else {
+                variant
+            }
+        },
+    )
 }
 
 internal fun mergeKnownLibraryGames(vararg groups: List<GameInfo>): List<GameInfo> {
@@ -1243,11 +1265,16 @@ internal fun libraryStoreDisplayNames(game: GameInfo): List<String> {
         .distinctBy { normalizeGameStore(it) }
 }
 
-private fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
-    val variants = (left.variants + right.variants).distinctBy { it.id }
+internal fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
+    val variants = linkedMapOf<String, GameVariant>()
+    for (variant in left.variants + right.variants) {
+        val existing = variants[variant.id]
+        variants[variant.id] = if (existing == null) variant else mergeGameVariant(existing, variant)
+    }
+    val mergedVariants = variants.values.toList()
     val selectedVariantId = left.variants.getOrNull(left.selectedVariantIndex)?.id
         ?: right.variants.getOrNull(right.selectedVariantIndex)?.id
-    val selectedIndex = selectedVariantId?.let { id -> variants.indexOfFirst { it.id == id } } ?: -1
+    val selectedIndex = selectedVariantId?.let { id -> mergedVariants.indexOfFirst { it.id == id } } ?: -1
     return left.copy(
         uuid = left.uuid ?: right.uuid,
         launchAppId = left.launchAppId ?: right.launchAppId,
@@ -1263,16 +1290,34 @@ private fun mergeGameInfo(left: GameInfo, right: GameInfo): GameInfo {
         publisherName = left.publisherName ?: right.publisherName,
         contentRatings = (left.contentRatings + right.contentRatings).distinct(),
         playabilityState = left.playabilityState ?: right.playabilityState,
-        variants = variants,
-        availableStores = displayStoresForVariants(variants),
+        variants = mergedVariants,
+        availableStores = displayStoresForVariants(mergedVariants),
         genres = (left.genres + right.genres).distinct(),
         featureLabels = (left.featureLabels + right.featureLabels).distinct(),
         searchText = listOfNotNull(left.searchText, right.searchText).joinToString(" ").ifBlank { null },
         lastPlayed = left.lastPlayed ?: right.lastPlayed,
         isInLibrary = left.isInLibrary || right.isInLibrary,
-        selectedVariantIndex = if (selectedIndex >= 0) selectedIndex else left.selectedVariantIndex.coerceAtMost(max(variants.size - 1, 0)),
+        selectedVariantIndex = if (selectedIndex >= 0) selectedIndex else left.selectedVariantIndex.coerceAtMost(max(mergedVariants.size - 1, 0)),
     )
 }
+
+private fun mergeGameVariant(left: GameVariant, right: GameVariant): GameVariant =
+    left.copy(
+        store = left.store.takeUnless { it.isBlank() || it.equals("Unknown", ignoreCase = true) } ?: right.store,
+        supportedControls = (left.supportedControls + right.supportedControls).distinct(),
+        librarySelected = when {
+            left.librarySelected == true || right.librarySelected == true -> true
+            else -> left.librarySelected ?: right.librarySelected
+        },
+        libraryStatus = when {
+            isOwnedLibraryStatus(left.libraryStatus) -> left.libraryStatus
+            isOwnedLibraryStatus(right.libraryStatus) -> right.libraryStatus
+            else -> left.libraryStatus ?: right.libraryStatus
+        },
+        lastPlayedDate = left.lastPlayedDate ?: right.lastPlayedDate,
+        gfnStatus = left.gfnStatus ?: right.gfnStatus,
+        isFreeToPlay = left.isFreeToPlay || right.isFreeToPlay,
+    )
 
 private fun variantLaunchRank(variant: GameVariant): Int =
     when {

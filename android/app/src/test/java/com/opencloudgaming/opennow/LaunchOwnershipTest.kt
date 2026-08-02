@@ -40,6 +40,36 @@ class LaunchOwnershipTest {
     }
 
     @Test
+    fun freeToPlayVariantIsMarkedBeforeLaunchOnlyWhenUnowned() {
+        val free = variant(libraryStatus = "NOT_OWNED", isFreeToPlay = true)
+        val ownedFree = variant(libraryStatus = "MANUAL", isFreeToPlay = true)
+        val paid = variant(libraryStatus = "NOT_OWNED")
+
+        assertTrue(shouldAutoMarkFreeToPlayOwnership(game(listOf(free)), free))
+        assertFalse(shouldAutoMarkFreeToPlayOwnership(game(listOf(ownedFree)), ownedFree))
+        assertFalse(shouldAutoMarkFreeToPlayOwnership(game(listOf(paid)), paid))
+        assertFalse(shouldAutoMarkFreeToPlayOwnership(game(listOf(free), playType = "INSTALL_TO_PLAY"), free))
+    }
+
+    @Test
+    fun markingFreeVariantUpdatesSelectedOwnershipLocally() {
+        val game = game(
+            variants = listOf(
+                variant(id = "ubisoft", store = "Ubisoft", librarySelected = true),
+                variant(id = "steam", store = "Steam", isFreeToPlay = true),
+            ),
+        )
+
+        val marked = game.withManuallyOwnedVariant("steam")
+
+        assertTrue(marked.isInLibrary)
+        assertEquals(1, marked.selectedVariantIndex)
+        assertEquals(true, marked.variants[0].librarySelected)
+        assertEquals(null, marked.variants[1].librarySelected)
+        assertEquals("MANUAL", marked.variants[1].libraryStatus)
+    }
+
+    @Test
     fun launchableVariantsPreferOwnedStoreEntryOverUnownedDuplicate() {
         val unowned = variant(id = "public-steam", store = "Steam", libraryStatus = "NOT_OWNED", librarySelected = true)
         val owned = variant(id = "owned-steam", store = "Steam", libraryStatus = "PLATFORM_SYNC")
@@ -47,6 +77,31 @@ class LaunchOwnershipTest {
         val variants = launchableGameVariants(listOf(unowned, owned))
 
         assertEquals(listOf("owned-steam"), variants.map { it.id })
+    }
+
+    @Test
+    fun publicCatalogMergeKeepsEveryStoreForDuplicateTitles() {
+        val catalogUno = game(
+            title = "UNO",
+            variants = listOf(variant(id = "ubisoft", store = "Ubisoft Connect")),
+        )
+        val publicUnoSteam = game(
+            id = "steam-uno",
+            title = "UNO",
+            variants = listOf(variant(id = "100236911", store = "Steam")),
+        )
+        val publicUnoUbisoft = game(
+            id = "ubisoft-uno",
+            title = "UNO",
+            variants = listOf(variant(id = "100932011", store = "Ubisoft Connect")),
+        )
+
+        val merged = mergeSupplementalPublicGameVariants(
+            games = listOf(catalogUno),
+            publicGames = listOf(publicUnoSteam, publicUnoUbisoft),
+        ).single()
+
+        assertEquals(listOf("Ubisoft Connect", "Steam"), merged.variants.map { it.store })
     }
 
     @Test
@@ -110,6 +165,32 @@ class LaunchOwnershipTest {
     }
 
     @Test
+    fun metadataEnrichmentMergesFieldsForTheSameVariant() {
+        val panelGame = game(
+            variants = listOf(variant(id = "steam", libraryStatus = "PLATFORM_SYNC")),
+            isInLibrary = true,
+        )
+        val metadataGame = game(
+            variants = listOf(
+                variant(id = "steam", isFreeToPlay = true).copy(supportedControls = listOf("GAMEPAD")),
+            ),
+        )
+
+        val merged = mergePanelGameWithMetadata(panelGame, metadataGame)
+
+        assertEquals("PLATFORM_SYNC", merged.variants.single().libraryStatus)
+        assertTrue(merged.variants.single().isFreeToPlay)
+        assertEquals(listOf("GAMEPAD"), merged.variants.single().supportedControls)
+        assertEquals(
+            "PLATFORM_SYNC",
+            mergeGameInfo(
+                metadataGame.copy(variants = listOf(variant(id = "steam", libraryStatus = "NOT_OWNED"))),
+                panelGame,
+            ).variants.single().libraryStatus,
+        )
+    }
+
+    @Test
     fun libraryStoreFiltersOnlyUseOwnedStores() {
         val game = game(
             variants = listOf(
@@ -142,12 +223,14 @@ class LaunchOwnershipTest {
         store: String = "Steam",
         libraryStatus: String? = null,
         librarySelected: Boolean? = null,
+        isFreeToPlay: Boolean = false,
     ): GameVariant =
         GameVariant(
             id = id,
             store = store,
             librarySelected = librarySelected,
             libraryStatus = libraryStatus,
+            isFreeToPlay = isFreeToPlay,
         )
 
     private fun game(

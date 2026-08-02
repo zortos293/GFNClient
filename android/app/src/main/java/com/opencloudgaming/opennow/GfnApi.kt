@@ -187,12 +187,7 @@ private fun cloudMatchClientIdentity(
     // resolution matrix (including ultrawide 2560×1080) while still enabling the
     // native touch digitizer on the host.
     if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
-        return NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY.copy(
-            deviceOs = "ANDROID",
-            deviceType = "TABLET",
-            userAgent = GFN_ANDROID_TOUCH_USER_AGENT,
-            desktopMonitorDescriptor = true,
-        )
+        return NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY
     }
     if (streamingBaseUrl.isNullOrBlank()) {
         return if (!isAndroidTv && appLaunchMode != null && preferNativeDesktopMode) {
@@ -228,10 +223,11 @@ internal object GfnAppLaunchMode {
     const val GAMEPAD_FRIENDLY = 2
     const val TOUCH_FRIENDLY = 3
 }
-private const val LIBRARY_WITH_TIME_QUERY_HASH = "039e8c0d553972975485fee56e59f2549d2fdb518e247a42ab5022056a74406f"
+private const val LIBRARY_WITH_TIME_QUERY_HASH = "7f54d6bbbf3b1c09d0e5264dfa36f0f4aaf5e2678f2089f0cbf0d4dda18c3af9"
 private const val DEFAULT_LOCALE = "en_US"
 private const val DEFAULT_CATALOG_FETCH_COUNT = 120
 private const val MAX_CATALOG_PAGES = 3
+private const val MAX_CATALOG_REQUEST_PAGES = 50
 private const val DEFAULT_SORT_ID = "relevance"
 private const val SESSION_MODIFY_ACTION_AD_UPDATE = 6
 internal const val OPENNOW_STREAM_SETTINGS_METADATA_KEY = "OpenNOWStreamSettingsSignature"
@@ -1622,6 +1618,53 @@ internal fun catalogScreenshotUrls(images: JsonObject?): List<String> =
 internal fun catalogGameDescription(app: JsonObject): String? =
     app.string("description") ?: app.string("shortDescription")
 
+internal data class LibraryBrowseSpec(
+    val filterIds: List<String>,
+    val sortOrderId: String?,
+)
+
+internal fun libraryBrowseSpec(payload: JsonObject): LibraryBrowseSpec? =
+    payload.obj("data")?.arr("panels")
+        ?.flatMap { panel -> panel.asObject()?.arr("sections").orEmpty() }
+        ?.mapNotNull { section -> section.asObject()?.obj("seeMoreInfo") }
+        ?.firstNotNullOfOrNull { seeMore ->
+            val filterIds = seeMore.arr("filterIds")?.mapNotNull { it.asString() }.orEmpty()
+            filterIds.takeIf { it.isNotEmpty() }?.let {
+                LibraryBrowseSpec(filterIds = it, sortOrderId = seeMore.string("sortOrderId"))
+            }
+        }
+
+internal fun hasFreeToPlayPaymentModel(paymentModels: JsonArray?): Boolean =
+    paymentModels.orEmpty().any { model ->
+        val name = model.asObject()?.string("__typename") ?: model.asString()
+        name == "FreeToPlayPaymentModel"
+    }
+
+internal fun mergeSupplementalPublicGameVariants(
+    games: List<GameInfo>,
+    publicGames: List<GameInfo>,
+): List<GameInfo> {
+    val publicByTitle = publicGames
+        .groupBy { it.title.normalizedTitleKey() }
+        .mapValues { (_, bucket) -> bucket.reduce(::mergeGameInfo) }
+    return games.map { game ->
+        val publicGame = publicByTitle[game.title.normalizedTitleKey()] ?: return@map game
+        val existingStores = game.variants.map { normalizeGameStore(it.store) }.toSet()
+        val supplemental = publicGame.variants.filter { normalizeGameStore(it.store) !in existingStores }
+        if (supplemental.isEmpty()) game else game.copy(
+            launchAppId = game.launchAppId ?: publicGame.launchAppId,
+            imageUrl = game.imageUrl ?: publicGame.imageUrl,
+            tvCardImageUrl = game.tvCardImageUrl ?: publicGame.tvCardImageUrl,
+            screenshotUrl = game.screenshotUrl ?: publicGame.screenshotUrl,
+            screenshotUrls = (game.screenshotUrls + publicGame.screenshotUrls).distinct(),
+            tvBannerUrl = game.tvBannerUrl ?: publicGame.tvBannerUrl,
+            variants = game.variants + supplemental,
+            availableStores = displayStoresForVariants(game.variants + supplemental),
+            searchText = listOfNotNull(game.searchText, publicGame.searchText).joinToString(" "),
+        )
+    }
+}
+
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
 ) {
@@ -1649,7 +1692,21 @@ class GfnCatalogRepository(
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
         val panels = runCatching { fetchPanels(token, listOf("LIBRARY"), vpcId, withLibraryTime = true) }
             .getOrElse { fetchPanels(token, listOf("LIBRARY"), vpcId, withLibraryTime = false) }
-        val games = enrichGamesWithMetadata(token, vpcId, flattenPanels(panels))
+        val panelGames = enrichGamesWithMetadata(token, vpcId, flattenPanels(panels))
+        val paginatedGames = libraryBrowseSpec(panels)?.let { spec ->
+            runCatching {
+                browseCatalog(
+                    token = token,
+                    providerStreamingBaseUrl = providerStreamingBaseUrl,
+                    searchQuery = "",
+                    sortId = spec.sortOrderId ?: DEFAULT_SORT_ID,
+                    filterIds = spec.filterIds,
+                    maxPages = MAX_CATALOG_REQUEST_PAGES,
+                    includeSupplementalPublicVariants = false,
+                ).games
+            }.getOrDefault(emptyList())
+        }.orEmpty()
+        val games = mergeKnownLibraryGames(panelGames, paginatedGames)
         return if (includeSupplementalPublicVariants) mergePublicGameVariants(games, fetchPublicGames()) else games
     }
 
@@ -1681,7 +1738,7 @@ class GfnCatalogRepository(
         var hasNextPage = false
         var endCursor: String? = null
         var cursor = ""
-        for (page in 0 until maxPages.coerceIn(1, MAX_CATALOG_PAGES)) {
+        for (page in 0 until maxPages.coerceIn(1, MAX_CATALOG_REQUEST_PAGES)) {
             val payload = postGraphQl(
                 query = query,
                 variables = buildJsonObject {
@@ -1736,7 +1793,7 @@ class GfnCatalogRepository(
             .build()
         val (code, text) = http.awaitText(request)
         if (code !in 200..299) return emptyList()
-        return OpenNowJson.parseToJsonElement(text).jsonArray
+        return dedupeGames(OpenNowJson.parseToJsonElement(text).jsonArray
             .mapNotNull { item ->
                 val obj = item.asObject() ?: return@mapNotNull null
                 if (obj.string("status") != "AVAILABLE") return@mapNotNull null
@@ -1759,7 +1816,51 @@ class GfnCatalogRepository(
                     variants = listOf(GameVariant(id = id, store = store)),
                     availableStores = displayStoresForVariants(listOf(GameVariant(id = id, store = store))),
                 )
+            })
+    }
+
+    suspend fun hydrateGameForLaunch(
+        token: String,
+        providerStreamingBaseUrl: String,
+        game: GameInfo,
+        selectedVariant: GameVariant?,
+    ): GameInfo {
+        val vpcId = getVpcId(token, providerStreamingBaseUrl)
+        val variantId = selectedVariant?.id?.toIntOrNull()
+        val query = if (variantId != null) launchMetadataByVariantQuery() else launchMetadataByAppQuery()
+        val variables = buildJsonObject {
+            put("vpcId", vpcId)
+            put("locale", DEFAULT_LOCALE)
+            if (variantId != null) {
+                putJsonArray("variantIds") { add(JsonPrimitive(variantId)) }
+            } else {
+                putJsonArray("appIds") { add(JsonPrimitive(game.uuid ?: game.id)) }
             }
+        }
+        val payload = postGraphQl(query, variables, token).checkGraphQlErrors("Launch metadata")
+        val hydrated = payload.obj("data")?.obj("apps")?.arr("items")
+            ?.firstNotNullOfOrNull { it.asObject() }
+            ?.let(::appToGame)
+            ?: error("Launch metadata did not include ${game.title}")
+        return mergeGameInfo(game, hydrated)
+    }
+
+    suspend fun addOwnedVariant(token: String, variantId: String): String {
+        val query = """
+            mutation AddOwnedVariant(${'$'}cmsId: String!, ${'$'}locale: String!) {
+              addOwnedVariant(language: ${'$'}locale, variantId: ${'$'}cmsId) { app { id } }
+            }
+        """.trimIndent()
+        val payload = postGraphQl(
+            query = query,
+            variables = buildJsonObject {
+                put("cmsId", variantId)
+                put("locale", DEFAULT_LOCALE)
+            },
+            token = token,
+        ).checkGraphQlErrors("Add free game to library")
+        return payload.obj("data")?.obj("addOwnedVariant")?.obj("app")?.string("id")
+            ?: error("GFN did not confirm that the free game was added to the library")
     }
 
     suspend fun resolveLaunchAppId(token: String, appIdOrUuid: String, providerStreamingBaseUrl: String): String? {
@@ -1883,9 +1984,11 @@ class GfnCatalogRepository(
     }
 
     private fun appToGame(app: JsonObject): GameInfo {
+        val appIsFreeToPlay = hasFreeToPlayPaymentModel(app.obj("computedValues")?.arr("paymentModels"))
         val variants = app.arr("variants")?.mapNotNull { raw ->
             val obj = raw.asObject() ?: return@mapNotNull null
             val library = obj.obj("gfn")?.obj("library")
+            val variantPaymentModels = obj.arr("paymentModels")
             GameVariant(
                 id = obj.string("id") ?: return@mapNotNull null,
                 store = obj.string("appStore") ?: "Unknown",
@@ -1894,6 +1997,7 @@ class GfnCatalogRepository(
                 libraryStatus = library?.string("status"),
                 lastPlayedDate = library?.string("lastPlayedDate"),
                 gfnStatus = obj.obj("gfn")?.string("status"),
+                isFreeToPlay = variantPaymentModels?.let(::hasFreeToPlayPaymentModel) ?: appIsFreeToPlay,
             )
         }.orEmpty()
         val numericAppId = resolveNumericAppId(app)
@@ -2008,6 +2112,40 @@ class GfnCatalogRepository(
         return OpenNowJson.parseToJsonElement(text).jsonObject
     }
 
+    private fun launchMetadataByAppQuery(): String = """
+        query GetLaunchAppData(${'$'}vpcId: String!, ${'$'}locale: String!, ${'$'}appIds: [String]!) {
+          apps(vpcId: ${'$'}vpcId, language: ${'$'}locale, appIds: ${'$'}appIds) {
+            items { ${launchMetadataFields()} }
+          }
+        }
+    """.trimIndent()
+
+    private fun launchMetadataByVariantQuery(): String = """
+        query GetLaunchVariantData(${'$'}vpcId: String!, ${'$'}locale: String!, ${'$'}variantIds: [Int]!) {
+          apps(vpcId: ${'$'}vpcId, language: ${'$'}locale, variantIds: ${'$'}variantIds) {
+            items { ${launchMetadataFields()} }
+          }
+        }
+    """.trimIndent()
+
+    private fun launchMetadataFields(): String = """
+        id
+        title
+        shortDescription
+        longDescription
+        publisherName
+        images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
+        computedValues { paymentModels { __typename } }
+        variants {
+          id
+          appStore
+          supportedControls
+          paymentModels { __typename }
+          gfn { status library { status selected lastPlayedDate } }
+        }
+        gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
+    """.trimIndent()
+
     private fun catalogQuery(hasSearch: Boolean): String {
         val appFields = """
             numberReturned
@@ -2020,8 +2158,9 @@ class GfnCatalogRepository(
               longDescription
               publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
-              variants { id appStore supportedControls gfn { status library { status selected } } }
-              gfn { playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
+              computedValues { paymentModels { __typename } }
+              variants { id appStore supportedControls paymentModels { __typename } gfn { status library { status selected } } }
+              gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
               itemMetadata { campaignIds }
             }
         """.trimIndent()
@@ -2046,50 +2185,11 @@ class GfnCatalogRepository(
 
     private fun dedupeGames(games: List<GameInfo>): List<GameInfo> =
         games.groupBy { game -> game.title.normalizedTitleKey().ifBlank { game.id } }.map { (_, bucket) ->
-            bucket.reduce { left, right ->
-                val variants = (left.variants + right.variants).distinctBy { it.id }
-                val selectedVariantId = left.variants.getOrNull(left.selectedVariantIndex)?.id
-                    ?: right.variants.getOrNull(right.selectedVariantIndex)?.id
-                val selectedIndex = selectedVariantId?.let { id -> variants.indexOfFirst { it.id == id } } ?: -1
-                left.copy(
-                    launchAppId = left.launchAppId ?: right.launchAppId,
-                    uuid = left.uuid ?: right.uuid,
-                    description = left.description ?: right.description,
-                    longDescription = left.longDescription ?: right.longDescription,
-                    imageUrl = left.imageUrl ?: right.imageUrl,
-                    tvCardImageUrl = left.tvCardImageUrl ?: right.tvCardImageUrl,
-                    screenshotUrl = left.screenshotUrl ?: right.screenshotUrl,
-                    screenshotUrls = (left.screenshotUrls + right.screenshotUrls).distinct(),
-                    tvBannerUrl = left.tvBannerUrl ?: right.tvBannerUrl,
-                    variants = variants,
-                    availableStores = displayStoresForVariants(variants),
-                    genres = (left.genres + right.genres).distinct(),
-                    featureLabels = (left.featureLabels + right.featureLabels).distinct(),
-                    isInLibrary = left.isInLibrary || right.isInLibrary,
-                    searchText = listOfNotNull(left.searchText, right.searchText).joinToString(" ").ifBlank { null },
-                    selectedVariantIndex = if (selectedIndex >= 0) selectedIndex else left.selectedVariantIndex.coerceAtMost(max(variants.size - 1, 0)),
-                )
-            }
+            bucket.reduce(::mergeGameInfo)
         }
 
     private fun mergePublicGameVariants(games: List<GameInfo>, publicGames: List<GameInfo>): List<GameInfo> {
-        val publicByTitle = publicGames.associateBy { it.title.normalizedTitleKey() }
-        return games.map { game ->
-            val publicGame = publicByTitle[game.title.normalizedTitleKey()] ?: return@map game
-            val existingStores = game.variants.map { normalizeGameStore(it.store) }.toSet()
-            val supplemental = publicGame.variants.filter { !isPrimaryCatalogStoreValue(it.store) && normalizeGameStore(it.store) !in existingStores }
-            if (supplemental.isEmpty()) game else game.copy(
-                launchAppId = game.launchAppId ?: publicGame.launchAppId,
-                imageUrl = game.imageUrl ?: publicGame.imageUrl,
-                tvCardImageUrl = game.tvCardImageUrl ?: publicGame.tvCardImageUrl,
-                screenshotUrl = game.screenshotUrl ?: publicGame.screenshotUrl,
-                screenshotUrls = (game.screenshotUrls + publicGame.screenshotUrls).distinct(),
-                tvBannerUrl = game.tvBannerUrl ?: publicGame.tvBannerUrl,
-                variants = game.variants + supplemental,
-                availableStores = displayStoresForVariants(game.variants + supplemental),
-                searchText = listOfNotNull(game.searchText, publicGame.searchText).joinToString(" "),
-            )
-        }
+        return mergeSupplementalPublicGameVariants(games, publicGames)
     }
 
     private fun GameInfo.matchesSearch(query: String): Boolean {

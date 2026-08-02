@@ -1715,13 +1715,39 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             runCatching {
-                val selectedVariant = game.variants.getOrNull(game.selectedVariantIndex) ?: game.variants.firstOrNull()
-                val candidateId = selectedVariant?.id ?: game.launchAppId ?: game.uuid ?: game.id
+                val requestedVariantId = game.variants.getOrNull(game.selectedVariantIndex)?.id
+                    ?: game.variants.firstOrNull()?.id
+                var launchGame = game
+                var selectedVariant = launchGame.variants.firstOrNull { it.id == requestedVariantId }
+                    ?: launchGame.variants.getOrNull(launchGame.selectedVariantIndex)
+                    ?: launchGame.variants.firstOrNull()
+                _state.update { it.copy(launchPhase = "Refreshing game access") }
+                runCatching {
+                    catalogRepository.hydrateGameForLaunch(token, baseUrl, launchGame, selectedVariant)
+                }.onSuccess { hydrated ->
+                    launchGame = hydrated
+                    selectedVariant = launchGame.variants.firstOrNull { it.id == requestedVariantId }
+                        ?: launchGame.variants.getOrNull(launchGame.selectedVariantIndex)
+                        ?: launchGame.variants.firstOrNull()
+                }.onFailure { error ->
+                    recordDebugEvent("launch", "Game access refresh failed; using cached metadata error=${error.debugMessage()}")
+                }
+                if (shouldAutoMarkFreeToPlayOwnership(launchGame, selectedVariant)) {
+                    val freeVariant = checkNotNull(selectedVariant)
+                    _state.update { it.copy(launchPhase = "Adding free game to library") }
+                    catalogRepository.addOwnedVariant(token, freeVariant.id)
+                    launchGame = launchGame.withManuallyOwnedVariant(freeVariant.id)
+                    selectedVariant = launchGame.variants.firstOrNull { it.id == freeVariant.id }
+                    recordDebugEvent("launch", "Added free-to-play variant to GFN library variant=${freeVariant.id}")
+                }
+                val accountLinked = shouldSendAccountLinked(launchGame, selectedVariant)
+                _state.update { it.copy(launchPhase = "Resolving game", streamGame = launchGame) }
+                val candidateId = selectedVariant?.id ?: launchGame.launchAppId ?: launchGame.uuid ?: launchGame.id
                 val launchAppId = candidateId.takeIf { it.all(Char::isDigit) }
-                    ?: game.launchAppId?.takeIf { it.all(Char::isDigit) }
+                    ?: launchGame.launchAppId?.takeIf { it.all(Char::isDigit) }
                     ?: catalogRepository.resolveLaunchAppId(token, candidateId, baseUrl)
-                    ?: error("Could not resolve numeric appId for ${game.title}")
-                recordDebugEvent("launch", "Resolved appId=$launchAppId candidate=$candidateId game=${game.title}")
+                    ?: error("Could not resolve numeric appId for ${launchGame.title}")
+                recordDebugEvent("launch", "Resolved appId=$launchAppId candidate=$candidateId game=${launchGame.title}")
 
                 _state.update { it.copy(launchPhase = "Checking active sessions") }
                 val active = sessionRepository.getActiveSessions(token, baseUrl, settings)
@@ -1730,11 +1756,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 val activeConflict = activeSessionLaunchConflict(active, numericLaunchAppId, settings)
                 if (activeConflict != null) {
                     pendingActiveSessionLaunch = PendingActiveSessionLaunch(
-                        game = game,
+                        game = launchGame,
                         launchAppId = launchAppId,
                         baseUrl = baseUrl,
                         settings = settings,
-                        accountLinked = shouldSendAccountLinked(game, selectedVariant),
+                        accountLinked = accountLinked,
                         activeSession = activeConflict,
                         returnPage = returnPage,
                     )
@@ -1744,7 +1770,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             activeSession = activeConflict,
                             activeSessionDecision = ActiveSessionDecision(
                                 activeSession = activeConflict,
-                                requestedGameTitle = game.title,
+                                requestedGameTitle = launchGame.title,
                             ),
                             streamSession = null,
                             launchPhase = "Active session found",
@@ -1759,11 +1785,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     token = token,
                     streamingBaseUrl = baseUrl,
                     appId = launchAppId,
-                    internalTitle = game.title,
+                    internalTitle = launchGame.title,
                     zone = "prod",
                     settings = settings,
-                    accountLinked = shouldSendAccountLinked(game, selectedVariant),
-                    appLaunchMode = appLaunchModeFor(game, settings),
+                    accountLinked = accountLinked,
+                    appLaunchMode = appLaunchModeFor(launchGame, settings),
                 )
                 recordDebugEvent("queue", "Created session ${created.debugSummary()}")
                 pollUntilReady(token, created, settings)

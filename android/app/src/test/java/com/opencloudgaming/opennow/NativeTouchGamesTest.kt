@@ -45,10 +45,10 @@ class NativeTouchGamesTest {
     }
 
     @Test
-    fun autoYieldsToHighPerformanceStreamAllocation() {
+    fun autoKeepsCatalogTouchAtHighPerformanceStreamAllocation() {
         val touchGame = game(supportedControls = listOf("TOUCHSCREEN"))
 
-        assertFalse(
+        assertTrue(
             shouldUseNativeTouch(
                 NativeTouchMode.Auto,
                 touchGame,

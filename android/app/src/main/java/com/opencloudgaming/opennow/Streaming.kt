@@ -1087,7 +1087,9 @@ object NativeStreamInputRouter {
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
         if (streamUiActive) return false
-        val isDirectClick = mouseDirectClick && event.isExternalMousePointerEvent()
+        // Direct click supports both external mouse/touchpad events AND finger touch events,
+        // as long as the user has enabled mouseDirectClick in settings.
+        val isDirectClick = mouseDirectClick && (event.isExternalMousePointerEvent() || event.isFingerTouchEvent())
         if (!event.isFingerTouchEvent() && !isDirectClick) return false
         updateNativeUiTouchPointers(event, width, height)
         if (nativeTouchEnabled && event.isFingerTouchEvent() && width > 0 && height > 0) {
@@ -2673,19 +2675,19 @@ internal fun streamPointForTouch(
     var offsetX = 0f
     var offsetY = 0f
 
-    if (!stretchToFit) {
-        val streamAspectRatio =
-            if (renderingAspectRatio > 0f) renderingAspectRatio else viewAspectOf(streamWidth, streamHeight)
-        val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
-        if (viewAspectRatio > streamAspectRatio) {
-            // Pillarboxed — bars left and right.
-            videoWidth = viewHeight * streamAspectRatio
-            offsetX = (viewWidth - videoWidth) / 2f
-        } else if (viewAspectRatio < streamAspectRatio) {
-            // Letterboxed — bars top and bottom.
-            videoHeight = viewWidth / streamAspectRatio
-            offsetY = (viewHeight - videoHeight) / 2f
-        }
+    // The renderer always applies aspect-ratio constraints (fillMaxHeight/Width + aspectRatio),
+    // so letterbox/pillarbox offsets exist regardless of stretchToFit.
+    val streamAspectRatio =
+        if (renderingAspectRatio > 0f) renderingAspectRatio else viewAspectOf(streamWidth, streamHeight)
+    val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
+    if (viewAspectRatio > streamAspectRatio) {
+        // Pillarboxed — bars left and right.
+        videoWidth = viewHeight * streamAspectRatio
+        offsetX = (viewWidth - videoWidth) / 2f
+    } else if (viewAspectRatio < streamAspectRatio) {
+        // Letterboxed — bars top and bottom.
+        videoHeight = viewWidth / streamAspectRatio
+        offsetY = (viewHeight - videoHeight) / 2f
     }
 
     val x = (touchX - offsetX) / videoWidth * streamWidth
@@ -2722,7 +2724,12 @@ internal class VirtualCursor {
     val position: StreamPoint get() = StreamPoint(x, y)
 
     fun onStreamSize(width: Int, height: Int) {
-        if (width <= 0 || height <= 0) return
+        if (width <= 0 || height <= 0) {
+            // Do not reset to 0,0 if we already have a valid size. This prevents the cursor
+            // from re-centering when the stream momentarily reports a 0x0 size during a
+            // resolution change or PiP transition.
+            if (streamWidth > 0 && streamHeight > 0) return
+        }
         if (!initialized) {
             // Direct click reanchors before pressing; this temporary value only keeps the generic
             // relative cursor model well-defined until that first DOWN arrives.
@@ -2749,8 +2756,8 @@ internal class VirtualCursor {
         val dx = (target.x - x).roundToInt()
         val dy = (target.y - y).roundToInt()
         if (dx == 0 && dy == 0) return null
-        x += dx
-        y += dy
+        x = target.x
+        y = target.y
         return CursorDelta(dx, dy)
     }
 
@@ -2766,10 +2773,10 @@ internal class VirtualCursor {
         x = targetX.toFloat()
         y = targetY.toFloat()
         return buildList {
-            add(CursorDelta(Short.MIN_VALUE.toInt(), Short.MIN_VALUE.toInt()))
-            if (targetX != 0 || targetY != 0) {
-                add(CursorDelta(targetX, targetY))
+            repeat(2) {
+                add(CursorDelta(Short.MIN_VALUE.toInt(), Short.MIN_VALUE.toInt()))
             }
+            add(CursorDelta(targetX, targetY))
         }
     }
 
@@ -2897,10 +2904,8 @@ private class TouchMouseState {
                             stretchToFit = stretchToFit,
                             renderingAspectRatio = renderingAspectRatio,
                         )
-                        if (!reanchorVirtualCursorTo(target, client)) {
-                            activePointerId = -1
-                            return true
-                        }
+                        // Move cursor smoothly to target without forced reanchoring.
+                        moveVirtualCursorTo(target, client)
 
                         selecting = client.setTouchMouseButton(true)
                         if (!selecting) {

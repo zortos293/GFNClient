@@ -2707,23 +2707,24 @@ internal fun streamPointForTouch(
     var offsetX = 0f
     var offsetY = 0f
 
-    if (!stretchToFit) {
-        val streamAspectRatio =
-            if (renderingAspectRatio.isFinite() && renderingAspectRatio > 0f) {
-                renderingAspectRatio
-            } else {
-                viewAspectOf(streamWidth, streamHeight)
-            }
-        val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
-        if (viewAspectRatio > streamAspectRatio) {
-            // Pillarboxed — bars left and right.
-            videoWidth = viewHeight * streamAspectRatio
-            offsetX = (viewWidth - videoWidth) / 2f
-        } else if (viewAspectRatio < streamAspectRatio) {
-            // Letterboxed — bars top and bottom.
-            videoHeight = viewWidth / streamAspectRatio
-            offsetY = (viewHeight - videoHeight) / 2f
+    // The renderer always applies aspect-ratio constraints (fillMaxHeight/Width + aspectRatio),
+    // so letterbox/pillarbox offsets exist regardless of stretchToFit.
+    val streamAspectRatio =
+        if (renderingAspectRatio.isFinite() && renderingAspectRatio > 0f) {
+            renderingAspectRatio
+        } else {
+            viewAspectOf(streamWidth, streamHeight)
         }
+    val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
+    if (viewAspectRatio > streamAspectRatio) {
+        // Pillarboxed — bars left and right.
+        videoWidth = viewHeight * streamAspectRatio
+        offsetX = (viewWidth - videoWidth) / 2f
+    } else if (viewAspectRatio < streamAspectRatio) {
+        // Letterboxed — bars top and bottom.
+        videoHeight = viewWidth / streamAspectRatio
+        offsetY = (viewHeight - videoHeight) / 2f
+    }
     }
 
     if (!videoWidth.isFinite() || !videoHeight.isFinite() || videoWidth <= 0f || videoHeight <= 0f) {

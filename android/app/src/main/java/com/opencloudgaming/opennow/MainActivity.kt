@@ -23,6 +23,18 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -49,16 +61,39 @@ class MainActivity : ComponentActivity() {
     private var phoneStreamOrientationLocked = false
     private var streamPictureInPictureReady = false
     private var streamPictureInPictureAspectRatio = Rational(16, 9)
+    private var startupDataReady = false
+    private var pendingExternalLaunchIntent: Intent? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         defaultRequestedOrientation = requestedOrientation
         volumeControlStream = AudioManager.STREAM_MUSIC
+        val openNowApplication = application as OpenNowApplication
+        pendingExternalLaunchIntent = intent
         setContent {
-            OpenNowApp(viewModel)
+            var ready by remember { mutableStateOf(false) }
+            LaunchedEffect(openNowApplication) {
+                openNowApplication.awaitStartupData()
+                ready = true
+            }
+            if (ready) {
+                OpenNowApp(viewModel)
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(Color(0xFF05070B)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(color = Color(0xFF69E6FF))
+                }
+            }
         }
         lifecycleScope.launch {
+            openNowApplication.awaitStartupData()
+            startupDataReady = true
+            viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
+            pendingExternalLaunchIntent?.let(viewModel::handleExternalLaunchIntent)
+            pendingExternalLaunchIntent = null
             viewModel.state.collect { state ->
                 requestQueueNotificationPermissionIfNeeded(state)
                 queueStatusNotifier.update(state)
@@ -77,18 +112,23 @@ class MainActivity : ComponentActivity() {
                 applyStreamDisplayRefreshRate(streamActive, state.activeStreamSettings?.fps ?: state.settings.stream.fps)
             }
         }
-        viewModel.handleExternalLaunchIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        viewModel.handleExternalLaunchIntent(intent)
+        if (startupDataReady) {
+            viewModel.handleExternalLaunchIntent(intent)
+        } else {
+            pendingExternalLaunchIntent = intent
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
+        if (startupDataReady) {
+            viewModel.setAndroidPictureInPictureActive(isAndroidPictureInPictureActive())
+        }
         if (streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
             applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
@@ -140,9 +180,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
+        if (startupDataReady) {
+            viewModel.setAndroidPictureInPictureActive(isInPictureInPictureMode)
+        }
         NativeStreamInputRouter.releaseTouchMouseForLifecycle()
     }
+
+    private fun isAndroidPictureInPictureActive(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
 
     override fun onStop() {
         super.onStop()
@@ -225,7 +270,7 @@ class MainActivity : ComponentActivity() {
             // Keep the foreground service alive long enough for onTaskRemoved()
             // to end the exact cloud session. Normal in-app exits already move
             // stream state to idle and cancel the service through update().
-            if (!shouldKeepAndroidStreamAlive(viewModel.state.value)) {
+            if (!startupDataReady || !shouldKeepAndroidStreamAlive(viewModel.state.value)) {
                 streamKeepAliveNotifier.cancel()
             }
         }

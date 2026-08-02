@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +24,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import java.util.concurrent.atomic.AtomicLong
 
 private const val STREAM_CHANNEL_ID = "opennow_active_stream"
 private const val STREAM_NOTIFICATION_ID = 4211
@@ -55,7 +57,8 @@ internal fun activeStreamShutdownRequest(state: OpenNowUiState): ActiveStreamShu
 
 class AndroidStreamKeepAliveNotifier(context: Context) {
     private val appContext = context.applicationContext
-    private var serviceStartRequested = false
+    private val commandVersion = AtomicLong()
+    @Volatile private var serviceStartRequested = false
     private var activeTitle: String? = null
     private var activeShutdownRequestJson: String? = null
     private var cancellationApplied = false
@@ -76,44 +79,49 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
             activeTitle == title &&
             activeShutdownRequestJson == shutdownRequestJson
         ) return
-        val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
-            action = STREAM_SERVICE_ACTION_START
-            putExtra(STREAM_SERVICE_EXTRA_TITLE, title)
-            putExtra(STREAM_SERVICE_EXTRA_SHUTDOWN_REQUEST, shutdownRequestJson)
-        }
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
+        serviceStartRequested = true
+        activeTitle = title
+        activeShutdownRequestJson = shutdownRequestJson
+        val version = commandVersion.incrementAndGet()
+        AndroidServiceCommandDispatcher.dispatch("stream-start") {
+            runCatching {
+                ensureStreamNotificationChannel(appContext)
+                val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
+                    action = STREAM_SERVICE_ACTION_START
+                    putExtra(STREAM_SERVICE_EXTRA_TITLE, title)
+                    putExtra(STREAM_SERVICE_EXTRA_SHUTDOWN_REQUEST, shutdownRequestJson)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
+            }.onFailure { error ->
+                if (commandVersion.get() == version) serviceStartRequested = false
+                Log.w(STREAM_SERVICE_TAG, "Unable to start stream foreground service", error)
             }
-            serviceStartRequested = true
-            activeTitle = title
-            activeShutdownRequestJson = shutdownRequestJson
-        }.onFailure { error ->
-            Log.w(STREAM_SERVICE_TAG, "Unable to start stream foreground service", error)
         }
     }
 
     fun cancel() {
         if (!serviceStartRequested && cancellationApplied) return
-        val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
-            action = STREAM_SERVICE_ACTION_STOP
-        }
-        runCatching {
-            if (serviceStartRequested) {
-                appContext.startService(intent)
-            } else {
-                appContext.stopService(intent)
-            }
-        }.onFailure { error ->
-            Log.w(STREAM_SERVICE_TAG, "Unable to stop stream foreground service", error)
-        }
+        commandVersion.incrementAndGet()
+        val startWasRequested = serviceStartRequested
         serviceStartRequested = false
         activeTitle = null
         activeShutdownRequestJson = null
         cancellationApplied = true
-        appContext.getSystemService(NotificationManager::class.java).cancel(STREAM_NOTIFICATION_ID)
+        AndroidServiceCommandDispatcher.dispatch("stream-stop") {
+            val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
+                action = STREAM_SERVICE_ACTION_STOP
+            }
+            if (startWasRequested) {
+                appContext.startService(intent)
+            } else {
+                appContext.stopService(intent)
+            }
+            appContext.getSystemService(NotificationManager::class.java).cancel(STREAM_NOTIFICATION_ID)
+        }
     }
 }
 
@@ -128,7 +136,7 @@ class AndroidStreamKeepAliveService : Service() {
             when (intent?.action) {
                 STREAM_SERVICE_ACTION_STOP -> {
                     releaseStreamWakeLock()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
                 STREAM_SERVICE_ACTION_START, null -> {
@@ -144,7 +152,7 @@ class AndroidStreamKeepAliveService : Service() {
                 }
                 else -> {
                     releaseStreamWakeLock()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
             }
@@ -164,13 +172,16 @@ class AndroidStreamKeepAliveService : Service() {
                 terminateCloudSessionAfterTaskRemoval(shutdownRequest)
                 withContext(Dispatchers.Main.immediate) {
                     releaseStreamWakeLock()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    ServiceCompat.stopForeground(
+                        this@AndroidStreamKeepAliveService,
+                        ServiceCompat.STOP_FOREGROUND_REMOVE,
+                    )
                     stopSelf()
                 }
             }
         } else if (shutdownRequest == null) {
             releaseStreamWakeLock()
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
         super.onTaskRemoved(rootIntent)

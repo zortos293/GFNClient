@@ -220,6 +220,14 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun controllerMouseAssistDropsNonFiniteAxisValues() {
+        assertNull(AndroidControllerMouseAssist.mouseDelta(Float.NaN, 0f))
+        assertNull(AndroidControllerMouseAssist.mouseDelta(0f, Float.POSITIVE_INFINITY))
+        assertEquals(Pair(0, 0f), AndroidControllerMouseAssist.scrollNotches(Float.NaN, 30, 0f))
+        assertEquals(Pair(0, 0f), AndroidControllerMouseAssist.scrollNotches(1f, 30, Float.NaN))
+    }
+
+    @Test
     fun mapsControllerMouseClicksWithoutTakingOverOtherGameplayButtons() {
         assertNull(AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.RIGHT_THUMB))
         assertEquals(1, AndroidControllerMouseAssist.mouseButtonForGamepad(GamepadButtonMapping.A))

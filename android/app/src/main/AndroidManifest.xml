@@ -52,6 +52,7 @@
             android:foregroundServiceType="mediaPlayback" />
         <activity
             android:name=".MainActivity"
+            android:enableOnBackInvokedCallback="false"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:exported="true"
             android:launchMode="singleTask"

@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -122,5 +123,30 @@ class StreamPointForTouchTest {
             StreamPoint(0f, 0f),
             map(touchX = 10f, touchY = 10f, viewWidth = 1280, viewHeight = 720, streamWidth = 0),
         )
+    }
+
+    @Test
+    fun nonFiniteMotionEventsAreRejectedBeforeCursorRounding() {
+        val nanX = map(touchX = Float.NaN, touchY = 100f, viewWidth = 1280, viewHeight = 720)
+        val infiniteY = map(touchX = 100f, touchY = Float.POSITIVE_INFINITY, viewWidth = 1280, viewHeight = 720)
+
+        assertFalse(nanX.x.isFinite())
+        assertFalse(nanX.y.isFinite())
+        assertFalse(infiniteY.x.isFinite())
+        assertFalse(infiniteY.y.isFinite())
+    }
+
+    @Test
+    fun nonFiniteRendererAspectFallsBackToTheStreamDimensions() {
+        val normal = map(touchX = 640f, touchY = 360f, viewWidth = 1280, viewHeight = 720)
+        val invalid = map(
+            touchX = 640f,
+            touchY = 360f,
+            viewWidth = 1280,
+            viewHeight = 720,
+            renderingAspectRatio = Float.POSITIVE_INFINITY,
+        )
+
+        assertEquals(normal, invalid)
     }
 }

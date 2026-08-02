@@ -92,4 +92,31 @@ class AppSettingsDefaultsTest {
 
         assertFalse(settings.showSessionReportAfterStream)
     }
+
+    @Test
+    fun persistedNonFiniteInputSettingsFallBackBeforeTheyReachMotionRounding() {
+        val normalized = AppSettings(
+            stream = StreamSettings(
+                mouseSensitivity = Float.NaN,
+                streamSharpeningAmount = Float.POSITIVE_INFINITY,
+            ),
+            posterSizeScale = Float.NaN,
+            tvSafeAreaPaddingDp = Float.NEGATIVE_INFINITY,
+            androidTouch = AndroidTouchSettings(
+                opacity = Float.NaN,
+                nativeTouchScrollScale = Float.POSITIVE_INFINITY,
+                nativeTouchJitterThresholdDp = Float.NaN,
+                offsets = mapOf("bad" to TouchOffset(Float.NaN, Float.POSITIVE_INFINITY)),
+            ),
+        ).normalizedForAndroid()
+
+        assertEquals(1f, normalized.stream.mouseSensitivity, 0f)
+        assertEquals(0.25f, normalized.stream.streamSharpeningAmount, 0f)
+        assertEquals(1f, normalized.posterSizeScale, 0f)
+        assertEquals(16f, normalized.tvSafeAreaPaddingDp, 0f)
+        assertEquals(AndroidTouchSettings().opacity, normalized.androidTouch.opacity, 0f)
+        assertEquals(1f, normalized.androidTouch.nativeTouchScrollScale, 0f)
+        assertEquals(8f, normalized.androidTouch.nativeTouchJitterThresholdDp, 0f)
+        assertEquals(TouchOffset(), normalized.androidTouch.offsets["bad"])
+    }
 }

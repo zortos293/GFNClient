@@ -1702,6 +1702,7 @@ internal data class ControllerMouseDelta(
 
 internal object AndroidControllerMouseAssist {
     fun mouseDelta(stickX: Float, stickY: Float): ControllerMouseDelta? {
+        if (!stickX.isFinite() || !stickY.isFinite()) return null
         val x = stickX.coerceIn(-1f, 1f)
         val y = stickY.coerceIn(-1f, 1f)
         val magnitude = sqrt(x * x + y * y).coerceIn(0f, 1f)
@@ -1713,6 +1714,7 @@ internal object AndroidControllerMouseAssist {
     }
 
     fun scrollNotches(stickY: Float, scrollSensitivity: Int, accumulator: Float): Pair<Int, Float> {
+        if (!stickY.isFinite() || !accumulator.isFinite()) return Pair(0, 0f)
         val y = stickY.coerceIn(-1f, 1f)
         if (abs(y) < 0.1f) return Pair(0, accumulator)
 
@@ -2618,8 +2620,17 @@ internal fun buildTouchBatch(
         val radiusX = pointer.radiusX / streamWidth * TOUCH_COORDINATE_MAX
         val radiusY = pointer.radiusY / streamHeight * TOUCH_COORDINATE_MAX
 
-        val outside = x < -radiusX || x > TOUCH_COORDINATE_MAX + radiusX ||
-            y < -radiusY || y > TOUCH_COORDINATE_MAX + radiusY
+        val finiteSample = x.isFinite() && y.isFinite() && radiusX.isFinite() && radiusY.isFinite()
+        if (!finiteSample && !lifting) continue
+
+        val safeX = if (x.isFinite()) x else 0f
+        val safeY = if (y.isFinite()) y else 0f
+        val safeRadiusX = if (radiusX.isFinite()) radiusX.coerceAtLeast(0f) else 0f
+        val safeRadiusY = if (radiusY.isFinite()) radiusY.coerceAtLeast(0f) else 0f
+        val safePointerRadiusX = if (pointer.radiusX.isFinite()) pointer.radiusX.coerceAtLeast(0f) else 0f
+        val safePointerRadiusY = if (pointer.radiusY.isFinite()) pointer.radiusY.coerceAtLeast(0f) else 0f
+        val outside = safeX < -safeRadiusX || safeX > TOUCH_COORDINATE_MAX + safeRadiusX ||
+            safeY < -safeRadiusY || safeY > TOUCH_COORDINATE_MAX + safeRadiusY
         if (outside && !lifting) continue
 
         val slot = (
@@ -2629,10 +2640,10 @@ internal fun buildTouchBatch(
         records += TouchRecord(
             slot = slot,
             phase = phase,
-            x = x.roundToInt().coerceIn(0, TOUCH_COORDINATE_MAX),
-            y = y.roundToInt().coerceIn(0, TOUCH_COORDINATE_MAX),
-            radiusX = pointer.radiusX.roundToInt(),
-            radiusY = pointer.radiusY.roundToInt(),
+            x = safeX.roundToInt().coerceIn(0, TOUCH_COORDINATE_MAX),
+            y = safeY.roundToInt().coerceIn(0, TOUCH_COORDINATE_MAX),
+            radiusX = safePointerRadiusX.roundToInt().coerceAtLeast(0),
+            radiusY = safePointerRadiusY.roundToInt().coerceAtLeast(0),
             timestampUs = timestampUs,
         )
     }
@@ -2667,6 +2678,9 @@ internal fun streamPointForTouch(
     if (viewWidth <= 0 || viewHeight <= 0 || streamWidth <= 0 || streamHeight <= 0) {
         return StreamPoint(0f, 0f)
     }
+    if (!touchX.isFinite() || !touchY.isFinite()) {
+        return StreamPoint(Float.NaN, Float.NaN)
+    }
 
     var videoWidth = viewWidth.toFloat()
     var videoHeight = viewHeight.toFloat()
@@ -2675,7 +2689,11 @@ internal fun streamPointForTouch(
 
     if (!stretchToFit) {
         val streamAspectRatio =
-            if (renderingAspectRatio > 0f) renderingAspectRatio else viewAspectOf(streamWidth, streamHeight)
+            if (renderingAspectRatio.isFinite() && renderingAspectRatio > 0f) {
+                renderingAspectRatio
+            } else {
+                viewAspectOf(streamWidth, streamHeight)
+            }
         val viewAspectRatio = viewAspectOf(viewWidth, viewHeight)
         if (viewAspectRatio > streamAspectRatio) {
             // Pillarboxed — bars left and right.
@@ -2688,8 +2706,15 @@ internal fun streamPointForTouch(
         }
     }
 
+    if (!videoWidth.isFinite() || !videoHeight.isFinite() || videoWidth <= 0f || videoHeight <= 0f) {
+        return StreamPoint(Float.NaN, Float.NaN)
+    }
+
     val x = (touchX - offsetX) / videoWidth * streamWidth
     val y = (touchY - offsetY) / videoHeight * streamHeight
+    if (!x.isFinite() || !y.isFinite()) {
+        return StreamPoint(Float.NaN, Float.NaN)
+    }
     return if (clamp) {
         StreamPoint(x.coerceIn(0f, streamWidth.toFloat()), y.coerceIn(0f, streamHeight.toFloat()))
     } else {
@@ -2746,6 +2771,7 @@ internal class VirtualCursor {
      * drag. Null when the rounded move is zero and there is nothing worth sending.
      */
     fun consumeDeltaTo(target: StreamPoint): CursorDelta? {
+        if (!target.x.isFinite() || !target.y.isFinite() || !x.isFinite() || !y.isFinite()) return null
         val dx = (target.x - x).roundToInt()
         val dy = (target.y - y).roundToInt()
         if (dx == 0 && dy == 0) return null
@@ -2760,7 +2786,13 @@ internal class VirtualCursor {
      * transmit it unchanged and any supported single-display stream is guaranteed to hit (0, 0).
      */
     fun reanchorDeltasTo(target: StreamPoint): List<CursorDelta> {
-        if (!initialized || streamWidth <= 0 || streamHeight <= 0) return emptyList()
+        if (
+            !initialized ||
+            streamWidth <= 0 ||
+            streamHeight <= 0 ||
+            !target.x.isFinite() ||
+            !target.y.isFinite()
+        ) return emptyList()
         val targetX = target.x.roundToInt().coerceIn(0, streamWidth - 1)
         val targetY = target.y.roundToInt().coerceIn(0, streamHeight - 1)
         x = targetX.toFloat()
@@ -3205,6 +3237,11 @@ class NativeStreamClient(
             priority = Thread.MAX_PRIORITY
         }
     }
+    private val teardownExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "opennow-native-teardown").apply {
+            priority = Thread.NORM_PRIORITY
+        }
+    }
     private val inputScope = CoroutineScope(SupervisorJob() + inputExecutor.asCoroutineDispatcher())
     private val inputEncoder = InputEncoder()
     private val audioDeviceModule: AudioDeviceModule =
@@ -3354,8 +3391,26 @@ class NativeStreamClient(
         val framesDecoded: Long?,
     )
 
+    private data class MicrophoneResources(
+        val sender: RtpSender?,
+        val track: AudioTrack?,
+        val source: AudioSource?,
+    )
+
     private fun recordStreamDiagnostic(message: String) {
         NativeInputDiagnostics.add("stream $message")
+    }
+
+    private fun enqueueNativeTeardown(label: String, command: () -> Unit) {
+        runCatching {
+            teardownExecutor.execute {
+                runCatching(command).onFailure { error ->
+                    recordStreamDiagnostic("native teardown failed step=$label error=${error.message.orEmpty()}")
+                }
+            }
+        }.onFailure { error ->
+            recordStreamDiagnostic("native teardown rejected step=$label error=${error.message.orEmpty()}")
+        }
     }
 
     init {
@@ -3408,7 +3463,9 @@ class NativeStreamClient(
             } else {
                 it.init(eglBase.eglBaseContext, rendererEvents)
             }
-            it.setEnableHardwareScaler(true)
+            // A fixed-size surface avoids vendor BufferQueue resize transactions that can
+            // block HardwareRenderer while the decoder is producing frames.
+            it.setEnableHardwareScaler(false)
             it.setMirror(false)
             // Do not give SurfaceViewRenderer an opaque View background. Its decoded
             // frames are presented by a separate Surface layer, so a normal View
@@ -3457,11 +3514,20 @@ class NativeStreamClient(
 
     private fun releaseRendererInternal(candidate: SurfaceViewRenderer) {
         prepareRendererForRelease(candidate)
-        candidate.release()
+        enqueueNativeTeardown("renderer-release") {
+            candidate.release()
+        }
     }
 
     private fun prepareRendererForRelease(candidate: SurfaceViewRenderer) {
-        detachRendererSink(candidate)
+        if (renderer === candidate && rendererSinkAttached) {
+            val attachedTrack = videoTrack
+            rendererSinkAttached = false
+            enqueueNativeTeardown("renderer-sink-detach") {
+                attachedTrack?.removeSink(candidate)
+            }
+            recordStreamDiagnostic("video renderer sink detach queued")
+        }
         rendererSurfaceCallback?.let(candidate.holder::removeCallback)
         rendererSurfaceCallback = null
         candidate.hideSurfaceBeforeRelease()
@@ -3646,11 +3712,21 @@ class NativeStreamClient(
     private fun finishRelease(preparedRenderer: SurfaceViewRenderer? = null) {
         inputScope.cancel()
         inputExecutor.shutdown()
-        preparedRenderer?.release()
-        factory?.dispose()
+        val activeFactory = factory
         factory = null
-        audioDeviceModule.release()
-        eglBase.release()
+        enqueueNativeTeardown("runtime-release") {
+            preparedRenderer?.let { renderer ->
+                runCatching { renderer.release() }
+                    .onFailure { error -> recordStreamDiagnostic("renderer release failed error=${error.message.orEmpty()}") }
+            }
+            runCatching { activeFactory?.dispose() }
+                .onFailure { error -> recordStreamDiagnostic("peer factory release failed error=${error.message.orEmpty()}") }
+            runCatching { audioDeviceModule.release() }
+                .onFailure { error -> recordStreamDiagnostic("audio module release failed error=${error.message.orEmpty()}") }
+            runCatching { eglBase.release() }
+                .onFailure { error -> recordStreamDiagnostic("EGL release failed error=${error.message.orEmpty()}") }
+        }
+        teardownExecutor.shutdown()
         scope.cancel()
     }
 
@@ -4188,7 +4264,12 @@ class NativeStreamClient(
         lastStatsSample = null
         lastIceState = null
         livenessWatchdog.reset()
-        signaling?.disconnect()
+        val closingSignaling = signaling
+        val closingVideoTrack = videoTrack
+        val closingRenderer = renderer
+        val closingRendererSinkAttached = rendererSinkAttached
+        val closingMicrophone = takeMicrophoneResources()
+        val closingPeerConnection = peerConnection
         signaling = null
         reliableInput = null
         partiallyReliableInput = null
@@ -4197,16 +4278,24 @@ class NativeStreamClient(
         partiallyReliableGamepadMask = 0
         hapticsAdvertised = null
         if (clearInputState) resetInputState()
-        if (rendererSinkAttached) {
-            videoTrack?.removeSink(renderer)
-            rendererSinkAttached = false
-        }
-        releaseMicrophoneTrack()
+        rendererSinkAttached = false
         videoTrack = null
         audioTrack = null
-        peerConnection?.close()
-        peerConnection?.dispose()
         peerConnection = null
+        enqueueNativeTeardown("transport-close") {
+            runCatching { closingSignaling?.disconnect() }
+                .onFailure { error -> recordStreamDiagnostic("signaling disconnect failed error=${error.message.orEmpty()}") }
+            if (closingRendererSinkAttached && closingRenderer != null) {
+                runCatching { closingVideoTrack?.removeSink(closingRenderer) }
+                    .onFailure { error -> recordStreamDiagnostic("video sink detach failed error=${error.message.orEmpty()}") }
+            }
+            runCatching { disposeMicrophoneResources(closingMicrophone) }
+                .onFailure { error -> recordStreamDiagnostic("microphone release failed error=${error.message.orEmpty()}") }
+            runCatching { closingPeerConnection?.close() }
+                .onFailure { error -> recordStreamDiagnostic("peer close failed error=${error.message.orEmpty()}") }
+            runCatching { closingPeerConnection?.dispose() }
+                .onFailure { error -> recordStreamDiagnostic("peer dispose failed error=${error.message.orEmpty()}") }
+        }
     }
 
     private fun handleSignaling(event: SignalingEvent, generation: Int) {
@@ -4470,21 +4559,31 @@ class NativeStreamClient(
 
     @Synchronized
     private fun releaseMicrophoneTrack() {
-        val sender = microphoneSender
-        val track = microphoneTrack
-        val source = microphoneSource
+        disposeMicrophoneResources(takeMicrophoneResources())
+    }
+
+    @Synchronized
+    private fun takeMicrophoneResources(): MicrophoneResources {
+        val resources = MicrophoneResources(
+            sender = microphoneSender,
+            track = microphoneTrack,
+            source = microphoneSource,
+        )
         microphoneSender = null
         microphoneTrack = null
         microphoneSource = null
+        return resources
+    }
 
+    private fun disposeMicrophoneResources(resources: MicrophoneResources) {
         try {
-            sender?.setTrack(null, false)
+            resources.sender?.setTrack(null, false)
         } catch (error: IllegalStateException) {
             if (!isDisposedRtpSenderFailure(error)) throw error
             recordStreamDiagnostic("microphone sender was already disposed during transport close")
         } finally {
-            if (track?.isDisposed == false) track.dispose()
-            source?.dispose()
+            if (resources.track?.isDisposed == false) resources.track.dispose()
+            resources.source?.dispose()
         }
     }
 
@@ -4572,6 +4671,7 @@ class NativeStreamClient(
                 recordStreamDiagnostic("ice gathering state=${state?.name ?: "null"} generation=$generation")
             }
             override fun onIceCandidate(candidate: IceCandidate?) {
+                if (generation != transportGeneration) return
                 if (candidate != null) {
                     recordStreamDiagnostic("local ICE candidate gathered ${candidate.diagnosticSummary()}")
                     signaling?.sendIceCandidate(candidate)
@@ -4583,6 +4683,7 @@ class NativeStreamClient(
                 recordStreamDiagnostic("ice candidates removed count=${candidates?.size ?: 0}")
             }
             override fun onAddStream(stream: MediaStream?) {
+                if (generation != transportGeneration) return
                 recordStreamDiagnostic("media stream added video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
                 stream?.videoTracks?.firstOrNull()?.let(::attachVideo)
                 stream?.audioTracks?.firstOrNull()?.let {
@@ -4594,12 +4695,14 @@ class NativeStreamClient(
                 recordStreamDiagnostic("media stream removed video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
             }
             override fun onDataChannel(channel: DataChannel?) {
+                if (generation != transportGeneration) return
                 if (channel != null) attachDataChannel(channel)
             }
             override fun onRenegotiationNeeded() {
                 recordStreamDiagnostic("renegotiation needed")
             }
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                if (generation != transportGeneration) return
                 val track = receiver?.track()
                 recordStreamDiagnostic("track added kind=${track?.kind().orEmpty()} streams=${streams?.size ?: 0}")
                 if (track is VideoTrack) attachVideo(track)
@@ -4609,6 +4712,7 @@ class NativeStreamClient(
                 }
             }
             override fun onTrack(transceiver: RtpTransceiver?) {
+                if (generation != transportGeneration) return
                 val track = transceiver?.receiver?.track()
                 recordStreamDiagnostic("transceiver track kind=${track?.kind().orEmpty()} media=${transceiver?.mediaType?.name ?: "unknown"}")
                 if (track is VideoTrack) attachVideo(track)
@@ -7090,7 +7194,13 @@ class InputEncoder {
 
 private fun timestampUs(): Long = SystemClock.elapsedRealtimeNanos() / 1000L
 
-internal fun shouldUseLowLatencyStreamAudio(androidTvProfile: Boolean): Boolean = !androidTvProfile
+/**
+ * WebRTC's low-latency AudioTrack path can race teardown and dereference a released AudioTrack.
+ * Stable buffering is preferable to a process crash on both handheld and TV devices.
+ */
+internal fun shouldUseLowLatencyStreamAudio(
+    @Suppress("UNUSED_PARAMETER") androidTvProfile: Boolean,
+): Boolean = false
 
 internal fun shouldRunControllerMouseLoop(
     controllerMouseAssistActive: Boolean,

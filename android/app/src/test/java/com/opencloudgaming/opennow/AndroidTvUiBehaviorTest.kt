@@ -224,9 +224,9 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun tvUsesStableAudioBufferingWhileMobileKeepsLowLatencyAudio() {
+    fun allAndroidDevicesUseStableAudioBuffering() {
         assertFalse(shouldUseLowLatencyStreamAudio(androidTvProfile = true))
-        assertTrue(shouldUseLowLatencyStreamAudio(androidTvProfile = false))
+        assertFalse(shouldUseLowLatencyStreamAudio(androidTvProfile = false))
     }
 
     @Test

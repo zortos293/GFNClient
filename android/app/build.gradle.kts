@@ -130,6 +130,8 @@ dependencies {
 
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.browser:browser:1.10.0")
+    // Play App Update still requests Fragment 1.0.0 transitively through Play Services.
+    implementation("androidx.fragment:fragment:1.8.9")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.material3:material3")

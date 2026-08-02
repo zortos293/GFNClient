@@ -164,6 +164,33 @@ class NativeTouchTest {
         assertTrue(batch(phase = TouchPhase.DOWN, pointers = pointers, viewHeight = 0).isEmpty())
     }
 
+    @Test
+    fun nonFinitePointerIsDroppedButItsLiftStillReleasesTheHostSlot() {
+        val allocator = TouchSlotAllocator()
+        batch(
+            allocator = allocator,
+            phase = TouchPhase.DOWN,
+            pointers = listOf(TouchPointerSample(pointerId = 1, x = 640f, y = 360f)),
+        )
+
+        assertTrue(
+            batch(
+                allocator = allocator,
+                phase = TouchPhase.MOVE,
+                pointers = listOf(TouchPointerSample(pointerId = 1, x = Float.NaN, y = 360f)),
+            ).isEmpty(),
+        )
+        val release = batch(
+            allocator = allocator,
+            phase = TouchPhase.UP,
+            pointers = listOf(TouchPointerSample(pointerId = 1, x = Float.NaN, y = Float.NaN)),
+        )
+
+        assertEquals(1, release.size)
+        assertEquals(TouchPhase.UP, release.single().phase)
+        assertEquals(0, allocator.activeCount)
+    }
+
     // -- Wire format -------------------------------------------------------------------------
 
     /** Strips the transport wrapper so the assertions below address the payload itself. */

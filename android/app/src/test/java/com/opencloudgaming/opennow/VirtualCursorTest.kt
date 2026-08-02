@@ -178,4 +178,16 @@ class VirtualCursorTest {
         cursor.onStreamSize(1920, 1080)
         assertEquals(StreamPoint(960f, 540f), cursor.position)
     }
+
+    @Test
+    fun nonFiniteTargetsAreDroppedWithoutPoisoningTheCursor() {
+        val cursor = VirtualCursor()
+        cursor.onStreamSize(1920, 1080)
+
+        assertNull(cursor.consumeDeltaTo(StreamPoint(Float.NaN, 100f)))
+        assertEquals(emptyList<CursorDelta>(), cursor.reanchorDeltasTo(StreamPoint(100f, Float.POSITIVE_INFINITY)))
+        assertEquals(StreamPoint(960f, 540f), cursor.position)
+
+        assertEquals(CursorDelta(-860, -340), cursor.consumeDeltaTo(StreamPoint(100f, 200f)))
+    }
 }

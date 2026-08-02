@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -11,7 +12,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class OpenNowApplication : Application() {
-    private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val startupDataReady = CompletableDeferred<Unit>()
     internal val httpClient by lazy(::defaultHttpClient)
     internal val authStore by lazy { AuthStore(this) }
     internal val authRepository by lazy { GfnAuthRepository(this, authStore, httpClient) }
@@ -20,17 +22,25 @@ class OpenNowApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        if (isTelevisionDevice()) {
-            startupScope.launch {
-                val settings = SettingsStore(this@OpenNowApplication).settings.value
-                delay(TV_BACKGROUND_SERVICE_START_DELAY_MS)
-                withContext(Dispatchers.Main) {
-                    initializeBackgroundServices(settings)
+        startupScope.launch {
+            val settings = runCatching {
+                SettingsStore(this@OpenNowApplication).settings.value.also {
+                    // Warm secure auth and run its one-time migration on the same background path.
+                    authStore.state.value
                 }
+            }.getOrElse { AppSettings() }
+            startupDataReady.complete(Unit)
+            if (isTelevisionDevice()) {
+                delay(TV_BACKGROUND_SERVICE_START_DELAY_MS)
             }
-        } else {
-            initializeBackgroundServices(SettingsStore(this).settings.value)
+            withContext(Dispatchers.Main) {
+                initializeBackgroundServices(settings)
+            }
         }
+    }
+
+    internal suspend fun awaitStartupData() {
+        startupDataReady.await()
     }
 
     override fun onTerminate() {

@@ -46,7 +46,7 @@ class ExternalPrefs private constructor(context: Context, val name: String) {
     private val writeScope = CoroutineScope(Dispatchers.IO.limitedParallelism(1))
 
     init {
-        val extDir = context.getExternalFilesDir(null)
+        val extDir = runCatching { context.getExternalFilesDir(null) }.getOrNull()
         primaryFile = File(extDir ?: context.filesDir, "$name.xml")
         fallbackFile = File(context.filesDir, "$name.xml")
         synchronized(lock) {
@@ -264,6 +264,72 @@ class ExternalPrefs private constructor(context: Context, val name: String) {
     }
 }
 
+private fun Float.finiteIn(minimum: Float, maximum: Float, fallback: Float): Float =
+    if (isFinite()) coerceIn(minimum, maximum) else fallback
+
+internal fun AppSettings.normalizedForAndroid(): AppSettings {
+    val streamDefaults = StreamSettings()
+    val touchDefaults = AndroidTouchSettings()
+    val compatibleStream = stream.withCodecColorCompatibility()
+    val lowPowerSafe = compatibleStream.copy(
+        codec = compatibleStream.codec,
+        sessionProxyUrl = stream.sessionProxyUrl.trim(),
+        maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
+        fps = compatibleStream.fps.coerceIn(30, 360),
+        mouseSensitivity = compatibleStream.mouseSensitivity.finiteIn(0.25f, 3f, streamDefaults.mouseSensitivity),
+        mouseAcceleration = compatibleStream.mouseAcceleration.coerceIn(1, 150),
+        mouseScrollSensitivity = compatibleStream.mouseScrollSensitivity.coerceIn(10, 100),
+        streamSharpeningAmount = compatibleStream.streamSharpeningAmount.finiteIn(
+            0f,
+            1f,
+            streamDefaults.streamSharpeningAmount,
+        ),
+    )
+    return copy(
+        stream = lowPowerSafe,
+        posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
+        androidTouch = androidTouch.copy(
+            opacity = androidTouch.opacity.finiteIn(0.15f, 1f, touchDefaults.opacity),
+            scale = androidTouch.scale.finiteIn(0.6f, 1.4f, touchDefaults.scale),
+            buttonScale = androidTouch.buttonScale.finiteIn(0.65f, 1.5f, touchDefaults.buttonScale),
+            stickScale = androidTouch.stickScale.finiteIn(0.65f, 1.5f, touchDefaults.stickScale),
+            joystickDeadZone = androidTouch.joystickDeadZone.finiteIn(0f, 0.3f, touchDefaults.joystickDeadZone),
+            edgePaddingDp = androidTouch.edgePaddingDp.finiteIn(0f, 72f, touchDefaults.edgePaddingDp),
+            bottomPaddingDp = androidTouch.bottomPaddingDp.finiteIn(0f, 120f, touchDefaults.bottomPaddingDp),
+            leftOffsetXDp = androidTouch.leftOffsetXDp.finiteIn(-220f, 220f, touchDefaults.leftOffsetXDp),
+            leftOffsetYDp = androidTouch.leftOffsetYDp.finiteIn(-160f, 160f, touchDefaults.leftOffsetYDp),
+            rightOffsetXDp = androidTouch.rightOffsetXDp.finiteIn(-220f, 220f, touchDefaults.rightOffsetXDp),
+            rightOffsetYDp = androidTouch.rightOffsetYDp.finiteIn(-160f, 160f, touchDefaults.rightOffsetYDp),
+            nativeTouchScrollScale = androidTouch.nativeTouchScrollScale.finiteIn(
+                0.25f,
+                2f,
+                touchDefaults.nativeTouchScrollScale,
+            ),
+            nativeTouchJitterThresholdDp = androidTouch.nativeTouchJitterThresholdDp.finiteIn(
+                0f,
+                24f,
+                touchDefaults.nativeTouchJitterThresholdDp,
+            ),
+            offsets = androidTouch.offsets.mapValues { (_, offset) ->
+                TouchOffset(
+                    x = offset.x.finiteIn(-320f, 320f, 0f),
+                    y = offset.y.finiteIn(-320f, 320f, 0f),
+                )
+            },
+        ),
+        streamIntroMusic = streamIntroMusic,
+        queueReadyMusic = queueReadyMusic,
+        legacyCropStreamToFill = false,
+        stretchStreamToFit = stretchStreamToFit,
+        streamPresentationProfileVersion = streamPresentationProfileVersion.coerceAtLeast(STREAM_PRESENTATION_PROFILE_VERSION),
+        nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
+        tvSafeAreaPaddingDp = tvSafeAreaPaddingDp.finiteIn(0f, 120f, 16f),
+        tvLayoutProfileVersion = tvLayoutProfileVersion.coerceAtLeast(0),
+        controllerUiSounds = controllerUiSounds,
+        autoFullScreen = true,
+    )
+}
+
 class SettingsStore(context: Context) {
     private val prefs = ExternalPrefs.get(context, STORE_NAME)
     private val androidTvProfile = isAndroidTvProfile(context)
@@ -283,7 +349,7 @@ class SettingsStore(context: Context) {
         val next = transform(_settings.value)
             .withCurrentStreamPresentationDefaults(androidTvProfile)
             .normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(next)).commit()
+        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(next)).apply()
         _settings.value = next
     }
 
@@ -291,7 +357,7 @@ class SettingsStore(context: Context) {
         val normalized = next
             .withCurrentStreamPresentationDefaults(androidTvProfile)
             .normalizedForAndroid()
-        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(normalized)).commit()
+        prefs.edit().putString(KEY_SETTINGS, OpenNowJson.encodeToString(normalized)).apply()
         _settings.value = normalized
     }
 
@@ -299,49 +365,6 @@ class SettingsStore(context: Context) {
         replace(AppSettings())
     }
 
-    private fun AppSettings.normalizedForAndroid(): AppSettings {
-        val compatibleStream = stream.withCodecColorCompatibility()
-        val lowPowerSafe = compatibleStream.copy(
-            codec = compatibleStream.codec,
-            sessionProxyUrl = stream.sessionProxyUrl.trim(),
-            maxBitrateMbps = compatibleStream.maxBitrateMbps.coerceIn(1, 150),
-            fps = compatibleStream.fps.coerceIn(30, 360),
-            streamSharpeningAmount = compatibleStream.streamSharpeningAmount.coerceIn(0f, 1f),
-        )
-        return copy(
-            stream = lowPowerSafe,
-            posterSizeScale = posterSizeScale.coerceIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE),
-            androidTouch = androidTouch.copy(
-                opacity = androidTouch.opacity.coerceIn(0.15f, 1f),
-                scale = androidTouch.scale.coerceIn(0.6f, 1.4f),
-                buttonScale = androidTouch.buttonScale.coerceIn(0.65f, 1.5f),
-                stickScale = androidTouch.stickScale.coerceIn(0.65f, 1.5f),
-                joystickDeadZone = androidTouch.joystickDeadZone.coerceIn(0f, 0.3f),
-                edgePaddingDp = androidTouch.edgePaddingDp.coerceIn(0f, 72f),
-                bottomPaddingDp = androidTouch.bottomPaddingDp.coerceIn(0f, 120f),
-                leftOffsetXDp = androidTouch.leftOffsetXDp.coerceIn(-220f, 220f),
-                leftOffsetYDp = androidTouch.leftOffsetYDp.coerceIn(-160f, 160f),
-                rightOffsetXDp = androidTouch.rightOffsetXDp.coerceIn(-220f, 220f),
-                rightOffsetYDp = androidTouch.rightOffsetYDp.coerceIn(-160f, 160f),
-                offsets = androidTouch.offsets.mapValues { (_, offset) ->
-                    TouchOffset(
-                        x = offset.x.coerceIn(-320f, 320f),
-                        y = offset.y.coerceIn(-320f, 320f)
-                    )
-                },
-            ),
-            streamIntroMusic = streamIntroMusic,
-            queueReadyMusic = queueReadyMusic,
-            legacyCropStreamToFill = false,
-            stretchStreamToFit = stretchStreamToFit,
-            streamPresentationProfileVersion = streamPresentationProfileVersion.coerceAtLeast(STREAM_PRESENTATION_PROFILE_VERSION),
-            nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
-            tvSafeAreaPaddingDp = tvSafeAreaPaddingDp.coerceIn(0f, 120f),
-            tvLayoutProfileVersion = tvLayoutProfileVersion.coerceAtLeast(0),
-            controllerUiSounds = controllerUiSounds,
-            autoFullScreen = true,
-        )
-    }
 }
 
 class AuthStore(context: Context) {
@@ -469,7 +492,7 @@ class CatalogCacheStore(context: Context) {
         if (legacyKeys.isNotEmpty()) {
             legacyPrefs.edit().apply {
                 legacyKeys.forEach(::remove)
-            }.commit()
+            }.apply()
         }
     }
 

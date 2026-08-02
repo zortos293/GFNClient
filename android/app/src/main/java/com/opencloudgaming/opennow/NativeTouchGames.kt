@@ -1,4 +1,5 @@
 package com.opencloudgaming.opennow
+import java.util.Locale
 
 /**
  * Which games get native touch.
@@ -16,10 +17,35 @@ package com.opencloudgaming.opennow
 internal const val SUPPORTED_CONTROL_TOUCHSCREEN = "TOUCHSCREEN"
 
 /** Whether the catalog itself claims this game takes touch, across any of its variants. */
-internal fun catalogClaimsTouchSupport(game: GameInfo): Boolean =
-    game.variants.any { variant ->
+
+internal val NATIVE_TOUCH_GAME_TITLES: Set<String> = setOf(
+    "NTE: Neverness to Everness",
+    "Genshin Impact",
+    "Fortnite",
+    "LEGO Fortnite Odyssey",
+    "Fortnite Festival",
+    "Slay the Spire",
+    "Dota Underlords",
+    "Into the Breach",
+    "Tabletop Simulator",
+    "Papers, Please",
+).mapTo(mutableSetOf()) { normalizeGameTitleForMatching(it) }
+
+internal fun normalizeGameTitleForMatching(title: String): String =
+    title.lowercase(Locale.US).filter { it.isLetterOrDigit() }
+
+internal fun catalogClaimsTouchSupport(game: GameInfo): Boolean {
+    if (normalizeGameTitleForMatching(game.title) in NATIVE_TOUCH_GAME_TITLES) return true
+    return game.variants.any { variant ->
         variant.supportedControls.any { it.equals(SUPPORTED_CONTROL_TOUCHSCREEN, ignoreCase = true) }
     }
+}
+
+/** Mirrors web's `getSupportedControlsForVariant` — uses the first variant with non-empty controls. */
+internal fun effectiveSupportedControls(game: GameInfo): List<String> =
+    game.variants.firstNotNullOfOrNull { variant ->
+        variant.supportedControls.takeIf { it.isNotEmpty() }
+    } ?: emptyList()
 
 internal fun nativeTouchModeLabel(mode: NativeTouchMode): String = when (mode) {
     NativeTouchMode.Auto -> "Supported games"
@@ -43,7 +69,9 @@ internal fun shouldUseNativeTouch(
     game: GameInfo?,
     streamSettings: StreamSettings,
 ): Boolean = shouldUseNativeTouch(mode, game) &&
-    (mode == NativeTouchMode.Always || !streamSettings.requiresNativeDesktopCloudMatchMode())
+    (mode == NativeTouchMode.Always ||
+        !streamSettings.requiresNativeDesktopCloudMatchMode() ||
+        (game != null && catalogClaimsTouchSupport(game)))
 
 /** One line per session showing the catalog signal and the resulting native-touch decision. */
 internal fun nativeTouchDiagnostics(game: GameInfo, enabled: Boolean): String {

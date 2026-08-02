@@ -137,9 +137,25 @@ private val NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     clientVersion = GFN_CLIENT_VERSION,
     deviceOs = "WINDOWS",
     deviceType = "DESKTOP",
-    // Keep the Android/browser UA: it is part of NVIDIA's Android allocation path and preserves
-    // the 1680x720 ultrawide mode. The desktop fields below are only for the monitor mode matrix.
     userAgent = GFN_BROWSER_USER_AGENT,
+    desktopMonitorDescriptor = true,
+)
+
+// Touch-capable identity mirroring commit 160e439e: uses the desktop-native streamer/client
+// (NVIDIA-CLASSIC / NATIVE) with ANDROID os + TABLET device type. This combination
+// tells the server to allocate the full desktop resolution matrix (including ultrawide
+// 2560x1080) while still enabling the native touch digitizer on the host.
+// desktopMonitorDescriptor = true ensures monitorSettings emits the full desktop
+// descriptor (monitorId/positionX/Y/dpi=100).
+private val NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
+    platformName = "browser",
+    persistGameSettings = false,
+    streamer = "NVIDIA-CLASSIC",
+    clientType = "NATIVE",
+    clientVersion = GFN_CLIENT_VERSION,
+    deviceOs = "ANDROID",
+    deviceType = "TABLET",
+    userAgent = GFN_ANDROID_TOUCH_USER_AGENT,
     desktopMonitorDescriptor = true,
 )
 
@@ -166,13 +182,20 @@ private fun cloudMatchClientIdentity(
     preferNativeDesktopMode: Boolean = false,
     isAndroidTv: Boolean = false,
 ): CloudMatchClientIdentity {
+    // Touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
+    // with Android os + TABLET device type, so the server allocates the full desktop
+    // resolution matrix (including ultrawide 2560×1080) while still enabling the
+    // native touch digitizer on the host.
+    if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
+        return NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY.copy(
+            deviceOs = "ANDROID",
+            deviceType = "TABLET",
+            userAgent = GFN_ANDROID_TOUCH_USER_AGENT,
+            desktopMonitorDescriptor = true,
+        )
+    }
     if (streamingBaseUrl.isNullOrBlank()) {
-        return if (
-            !isAndroidTv &&
-            appLaunchMode != null &&
-            appLaunchMode != GfnAppLaunchMode.TOUCH_FRIENDLY &&
-            preferNativeDesktopMode
-        ) {
+        return if (!isAndroidTv && appLaunchMode != null && preferNativeDesktopMode) {
             NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
         } else {
             NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
@@ -185,12 +208,7 @@ private fun cloudMatchClientIdentity(
         host == "cloudmatch.nvidiagrid.net" ||
         host.endsWith(".cloudmatch.nvidiagrid.net")
     if (!isNvidiaCloudMatch) return ALLIANCE_CLOUD_MATCH_IDENTITY
-    return if (
-        !isAndroidTv &&
-        appLaunchMode != null &&
-        appLaunchMode != GfnAppLaunchMode.TOUCH_FRIENDLY &&
-        preferNativeDesktopMode
-    ) {
+    return if (!isAndroidTv && appLaunchMode != null && preferNativeDesktopMode) {
         NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
     } else {
         NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
@@ -322,6 +340,9 @@ private fun monitorSettings(
     identity: CloudMatchClientIdentity,
 ): JsonObject =
     buildJsonObject {
+        // For touch sessions we MUST emit the full desktop descriptor
+        // (monitorId=0, positionX=0, positionY=0, dpi=100) so the server
+        // allocates the full resolution matrix including ultrawide.
         if (identity.desktopMonitorDescriptor) {
             put("monitorId", 0)
             put("positionX", 0)
@@ -463,7 +484,7 @@ internal fun buildMinimalClaimRequestBody(
     val identity = cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
-        preferNativeDesktopMode = settings?.requiresNativeDesktopCloudMatchMode() == true,
+        preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings?.requiresNativeDesktopCloudMatchMode() == true,
         isAndroidTv = isAndroidTv,
     )
     val profile = settings?.requestProfile()
@@ -479,7 +500,7 @@ internal fun buildMinimalClaimRequestBody(
             put("clientVersion", "30.0")
             put("deviceHashId", deviceId)
             put("internalTitle", JsonNull)
-            put("clientPlatformName", identity.platformName)
+            put("clientPlatformName", if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) "android" else identity.platformName)
             if (settings != null && profile != null) {
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps, identity))
@@ -2500,7 +2521,7 @@ class GfnSessionRepository(
                     includeOrigin = true,
                     streamingBaseUrl = base,
                     appLaunchMode = appLaunchMode,
-                    preferNativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode(),
+                    preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                     isAndroidTv = isAndroidTv,
                 ),
             )
@@ -2677,7 +2698,7 @@ class GfnSessionRepository(
                         includeOrigin = true,
                         streamingBaseUrl = active.streamingBaseUrl,
                         appLaunchMode = appLaunchMode,
-                        preferNativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode(),
+                        preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                         isAndroidTv = isAndroidTv,
                     ),
                 )
@@ -2804,7 +2825,7 @@ class GfnSessionRepository(
         val identity = cloudMatchClientIdentity(
             streamingBaseUrl = streamingBaseUrl,
             appLaunchMode = appLaunchMode,
-            preferNativeDesktopMode = settings.requiresNativeDesktopCloudMatchMode(),
+            preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
             isAndroidTv = isAndroidTv,
         )
         val profile = settings.requestProfile()
@@ -2820,7 +2841,7 @@ class GfnSessionRepository(
                 put("clientVersion", "30.0")
                 put("sdkVersion", "1.0")
                 put("streamerVersion", 1)
-                put("clientPlatformName", identity.platformName)
+                put("clientPlatformName", if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) "android" else identity.platformName)
                 putJsonArray("clientRequestMonitorSettings") {
                     add(monitorSettings(profile, settings.fps, identity))
                 }

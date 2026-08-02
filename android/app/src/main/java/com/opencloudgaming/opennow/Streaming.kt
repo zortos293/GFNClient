@@ -1087,7 +1087,9 @@ object NativeStreamInputRouter {
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
         if (streamUiActive) return false
-        val isDirectClick = mouseDirectClick && event.isExternalMousePointerEvent()
+        // Direct click supports both external mouse/touchpad events AND finger touch events,
+        // as long as the user has enabled mouseDirectClick in settings.
+        val isDirectClick = mouseDirectClick && (event.isExternalMousePointerEvent() || event.isFingerTouchEvent())
         if (!event.isFingerTouchEvent() && !isDirectClick) return false
         updateNativeUiTouchPointers(event, width, height)
         if (nativeTouchEnabled && event.isFingerTouchEvent() && width > 0 && height > 0) {
@@ -2747,6 +2749,8 @@ internal class VirtualCursor {
     val position: StreamPoint get() = StreamPoint(x, y)
 
     fun onStreamSize(width: Int, height: Int) {
+        // A transient 0x0 size during a resolution change or PiP transition is not a new
+        // coordinate space. Ignoring it also keeps a not-yet-initialized cursor uninitialized.
         if (width <= 0 || height <= 0) return
         if (!initialized) {
             // Direct click reanchors before pressing; this temporary value only keeps the generic
@@ -2775,6 +2779,8 @@ internal class VirtualCursor {
         val dx = (target.x - x).roundToInt()
         val dy = (target.y - y).roundToInt()
         if (dx == 0 && dy == 0) return null
+        // The protocol transmits whole-pixel relative motion, so advance the shadow by exactly
+        // what the host receives. Assigning the fractional target accumulates cursor drift.
         x += dx
         y += dy
         return CursorDelta(dx, dy)
@@ -2798,10 +2804,10 @@ internal class VirtualCursor {
         x = targetX.toFloat()
         y = targetY.toFloat()
         return buildList {
-            add(CursorDelta(Short.MIN_VALUE.toInt(), Short.MIN_VALUE.toInt()))
-            if (targetX != 0 || targetY != 0) {
-                add(CursorDelta(targetX, targetY))
+            repeat(2) {
+                add(CursorDelta(Short.MIN_VALUE.toInt(), Short.MIN_VALUE.toInt()))
             }
+            add(CursorDelta(targetX, targetY))
         }
     }
 
@@ -2929,10 +2935,8 @@ private class TouchMouseState {
                             stretchToFit = stretchToFit,
                             renderingAspectRatio = renderingAspectRatio,
                         )
-                        if (!reanchorVirtualCursorTo(target, client)) {
-                            activePointerId = -1
-                            return true
-                        }
+                        // Move cursor smoothly to target without forced reanchoring.
+                        moveVirtualCursorTo(target, client)
 
                         selecting = client.setTouchMouseButton(true)
                         if (!selecting) {

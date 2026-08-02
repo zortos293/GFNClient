@@ -44,6 +44,18 @@ internal fun shouldUseNativeTouch(
     streamSettings: StreamSettings,
 ): Boolean = shouldUseNativeTouch(mode, game)
 
+/**
+ * Resolves native game touch for the active stream after the player has made a session-level
+ * choice. A catalog touch capability is useful guidance, but it must not lock the player out of
+ * OpenNOW's virtual controller.
+ */
+internal fun shouldUseNativeTouchForStream(
+    mode: NativeTouchMode,
+    game: GameInfo?,
+    streamSettings: StreamSettings,
+    preferVirtualController: Boolean,
+): Boolean = !preferVirtualController && shouldUseNativeTouch(mode, game, streamSettings)
+
 /** One line per session showing the catalog signal and the resulting native-touch decision. */
 internal fun nativeTouchDiagnostics(game: GameInfo, enabled: Boolean): String {
     val controls = game.variants

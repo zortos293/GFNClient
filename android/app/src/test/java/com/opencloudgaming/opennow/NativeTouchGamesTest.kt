@@ -30,6 +30,30 @@ class NativeTouchGamesTest {
     }
 
     @Test
+    fun fortniteCanPreferTheVirtualControllerWithoutLosingCatalogTouchSupport() {
+        val fortnite = game(title = "Fortnite", supportedControls = listOf("TOUCHSCREEN"))
+        val streamSettings = StreamSettings()
+
+        assertTrue(catalogClaimsTouchSupport(fortnite))
+        assertTrue(
+            shouldUseNativeTouchForStream(
+                NativeTouchMode.Auto,
+                fortnite,
+                streamSettings,
+                preferVirtualController = false,
+            ),
+        )
+        assertFalse(
+            shouldUseNativeTouchForStream(
+                NativeTouchMode.Auto,
+                fortnite,
+                streamSettings,
+                preferVirtualController = true,
+            ),
+        )
+    }
+
+    @Test
     fun catalogTouchFlagIsCaseInsensitive() {
         assertTrue(catalogClaimsTouchSupport(game(supportedControls = listOf("Touchscreen"))))
         assertFalse(catalogClaimsTouchSupport(game(supportedControls = listOf("X_INPUT_GAMEPAD"))))

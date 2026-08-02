@@ -145,7 +145,16 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material.icons.automirrored.rounded.BatteryUnknown
+import androidx.compose.material.icons.rounded.Battery0Bar
+import androidx.compose.material.icons.rounded.Battery1Bar
+import androidx.compose.material.icons.rounded.Battery2Bar
+import androidx.compose.material.icons.rounded.Battery3Bar
+import androidx.compose.material.icons.rounded.Battery4Bar
+import androidx.compose.material.icons.rounded.Battery5Bar
+import androidx.compose.material.icons.rounded.Battery6Bar
 import androidx.compose.material.icons.rounded.BatteryFull
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.SignalCellular0Bar
 import androidx.compose.material.icons.rounded.SignalCellular4Bar
 import androidx.compose.material.icons.rounded.SignalCellularAlt
@@ -6716,6 +6725,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     }
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = streamReady)
     var showTouchControlsWithPhysicalController by remember(session?.sessionId) { mutableStateOf(false) }
+    var preferVirtualController by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptOpen by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptHandled by remember(session?.sessionId) { mutableStateOf(false) }
     var physicalControllerPromptDoNotShowAgain by remember(session?.sessionId) { mutableStateOf(false) }
@@ -6724,12 +6734,19 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         physicalControllerConnected &&
             state.settings.androidTouch.enabled &&
             !showTouchControlsWithPhysicalController
-    // The gamepad overlay and native touch want the same fingers. Native touch wins where it
-    // applies: the game is showing its own touch UI, so a virtual pad on top of it is in the way.
-    val nativeTouchActive = !tvProfile && shouldUseNativeTouch(
+    val builtInGameTouchSupported = !tvProfile && game?.let(::catalogClaimsTouchSupport) == true
+    val nativeTouchAvailable = !tvProfile && shouldUseNativeTouch(
         state.settings.androidTouch.nativeTouchMode,
-        state.streamGame,
+        game,
         state.activeStreamSettings ?: state.settings.stream,
+    )
+    // Native game touch and the virtual controller need exclusive ownership of the same fingers.
+    // Catalog touch remains the default, while a player's in-session controller choice wins.
+    val nativeTouchActive = !tvProfile && shouldUseNativeTouchForStream(
+        state.settings.androidTouch.nativeTouchMode,
+        game,
+        state.activeStreamSettings ?: state.settings.stream,
+        preferVirtualController = preferVirtualController,
     )
     val touchControlsVisible = shouldShowAndroidTouchControls(
         tvProfile = tvProfile,
@@ -6990,18 +7007,11 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     LaunchedEffect(
         streamReady,
         touchInputEnabled,
-        state.settings.androidTouch.nativeTouchMode,
+        nativeTouchActive,
         state.streamGame?.id,
-        state.activeStreamSettings?.resolution,
-        state.activeStreamSettings?.fps,
     ) {
         val game = state.streamGame
-        val wanted = !tvProfile && shouldUseNativeTouch(
-            state.settings.androidTouch.nativeTouchMode,
-            game,
-            state.activeStreamSettings ?: state.settings.stream,
-        )
-        val enabled = streamReady && touchInputEnabled && wanted
+        val enabled = streamReady && touchInputEnabled && nativeTouchActive
         NativeStreamInputRouter.setNativeTouchEnabled(enabled)
         // Records what the catalog says about this game even when we leave touch off, so the fixed
         // list in NativeTouchGames.kt can be filled in — and eventually retired — from real data.
@@ -7298,6 +7308,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     settings = state.settings,
                     tvProfile = tvProfile,
                     touchControlsVisible = touchControlsVisible,
+                    builtInGameTouchSupported = builtInGameTouchSupported,
+                    nativeTouchActive = nativeTouchActive,
                     controllerMouseAssistEnabled = controllerMouseAssistEnabled,
                     controllerMouseEmulationEnabled = controllerMouseEmulationEnabled,
                     showSessionTimer = state.settings.sessionCounterEnabled,
@@ -7386,21 +7398,44 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                         exitConfirmOpen = true
                     },
                     onTouchControlsToggle = {
-                        if (physicalControllerConnected && !touchControlsVisible) {
-                            showTouchControlsWithPhysicalController = true
-                            if (!state.settings.androidTouch.enabled) {
+                        when {
+                            nativeTouchActive -> {
+                                preferVirtualController = true
+                                if (physicalControllerConnected) {
+                                    showTouchControlsWithPhysicalController = true
+                                }
+                                if (!state.settings.androidTouch.enabled) {
+                                    viewModel.updateSettings(
+                                        state.settings.copy(
+                                            androidTouch = state.settings.androidTouch.copy(enabled = true),
+                                        ),
+                                    )
+                                }
+                            }
+                            preferVirtualController && nativeTouchAvailable && touchControlsVisible -> {
+                                // Turning the overlay back off restores the game's built-in touch
+                                // without changing the player's persisted controller preference.
+                                preferVirtualController = false
+                            }
+                            physicalControllerConnected && !touchControlsVisible -> {
+                                showTouchControlsWithPhysicalController = true
+                                if (!state.settings.androidTouch.enabled) {
+                                    viewModel.updateSettings(
+                                        state.settings.copy(
+                                            androidTouch = state.settings.androidTouch.copy(enabled = true),
+                                        ),
+                                    )
+                                }
+                            }
+                            else -> {
                                 viewModel.updateSettings(
                                     state.settings.copy(
-                                        androidTouch = state.settings.androidTouch.copy(enabled = true),
+                                        androidTouch = state.settings.androidTouch.copy(
+                                            enabled = !state.settings.androidTouch.enabled,
+                                        ),
                                     ),
                                 )
                             }
-                        } else {
-                            viewModel.updateSettings(
-                                state.settings.copy(
-                                    androidTouch = state.settings.androidTouch.copy(enabled = !state.settings.androidTouch.enabled),
-                                ),
-                            )
                         }
                     },
                     onMousePadToggle = {
@@ -8538,6 +8573,8 @@ private fun StreamControlsPanel(
     settings: AppSettings,
     tvProfile: Boolean,
     touchControlsVisible: Boolean,
+    builtInGameTouchSupported: Boolean,
+    nativeTouchActive: Boolean,
     controllerMouseAssistEnabled: Boolean,
     controllerMouseEmulationEnabled: Boolean,
     showSessionTimer: Boolean,
@@ -8669,6 +8706,11 @@ private fun StreamControlsPanel(
                     onButtonTone = onButtonTone,
                 )
                 StreamControlsPage.TouchControls -> {
+                    if (builtInGameTouchSupported) {
+                        item {
+                            BuiltInGameTouchNotice(usingBuiltInTouch = nativeTouchActive)
+                        }
+                    }
                     item {
                         ControlSection(stringResource(R.string.stream_panel_section_touch_controller)) {
                             ControlSwitchRow(
@@ -8678,9 +8720,11 @@ private fun StreamControlsPanel(
                                     onButtonTone()
                                     onTouchControlsToggle()
                                 },
-                                value = stringResource(
-                                    if (touchControlsVisible) R.string.common_visible else R.string.common_hidden,
-                                ),
+                                value = when {
+                                    touchControlsVisible -> stringResource(R.string.common_visible)
+                                    nativeTouchActive -> stringResource(R.string.stream_touch_builtin_active)
+                                    else -> stringResource(R.string.common_hidden)
+                                },
                             )
                             if (touchControlsVisible) {
                                 val cleanStyle = settings.androidTouch.touchControllerStyle == TouchControllerStyle.V2
@@ -8977,9 +9021,11 @@ private fun StreamControlsPanel(
                                 onButtonTone()
                                 page = StreamControlsPage.TouchControls
                             },
-                            value = stringResource(
-                                if (touchControlsVisible) R.string.common_visible else R.string.common_hidden,
-                            ),
+                            value = when {
+                                touchControlsVisible -> stringResource(R.string.common_visible)
+                                nativeTouchActive -> stringResource(R.string.stream_touch_builtin_active)
+                                else -> stringResource(R.string.common_hidden)
+                            },
                         )
                     }
                     // Mouse mode (Left stick): shown for all profiles — works with both physical
@@ -9020,6 +9066,40 @@ private fun StreamControlsPanel(
     DisposableEffect(Unit) {
         onDispose {
             NativeStreamInputRouter.clearStreamPanelTouchPassthroughBounds()
+        }
+    }
+}
+
+@Composable
+private fun BuiltInGameTouchNotice(usingBuiltInTouch: Boolean) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = OpenNowPalette.StatusNotice.copy(alpha = 0.10f),
+        contentColor = TextPrimary,
+        border = BorderStroke(1.dp, OpenNowPalette.StatusNotice.copy(alpha = 0.38f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                stringResource(R.string.stream_touch_builtin_title),
+                color = OpenNowPalette.StatusNotice,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                stringResource(
+                    if (usingBuiltInTouch) {
+                        R.string.stream_touch_builtin_available
+                    } else {
+                        R.string.stream_touch_builtin_overridden
+                    },
+                ),
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
@@ -11001,20 +11081,47 @@ private fun StreamBatteryIndicator(status: CompactStreamDeviceStatus, modifier: 
     val description = status.batteryPercent?.let { percent ->
         "Battery $percent percent${if (status.batteryCharging) ", charging" else ""}"
     } ?: "Battery unknown"
+    val level = streamBatteryLevel(status.batteryPercent)
+    val batteryIcon = when (level) {
+        StreamBatteryLevel.Unknown -> Icons.AutoMirrored.Rounded.BatteryUnknown
+        StreamBatteryLevel.Empty -> Icons.Rounded.Battery0Bar
+        StreamBatteryLevel.One -> Icons.Rounded.Battery1Bar
+        StreamBatteryLevel.Two -> Icons.Rounded.Battery2Bar
+        StreamBatteryLevel.Three -> Icons.Rounded.Battery3Bar
+        StreamBatteryLevel.Four -> Icons.Rounded.Battery4Bar
+        StreamBatteryLevel.Five -> Icons.Rounded.Battery5Bar
+        StreamBatteryLevel.Six -> Icons.Rounded.Battery6Bar
+        StreamBatteryLevel.Full -> Icons.Rounded.BatteryFull
+    }
+    val batteryTint = when {
+        status.batteryCharging -> Green
+        status.batteryPercent != null && status.batteryPercent <= 20 -> MaterialTheme.colorScheme.error
+        else -> TextPrimary
+    }
     Row(
         modifier = modifier.semantics { contentDescription = description },
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = Icons.Rounded.BatteryFull,
-            contentDescription = null,
-            tint = TextPrimary,
-            modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = 90f },
-        )
+        Box(Modifier.size(18.dp)) {
+            Icon(
+                imageVector = batteryIcon,
+                contentDescription = null,
+                tint = batteryTint,
+                modifier = Modifier.matchParentSize().graphicsLayer { rotationZ = 90f },
+            )
+            if (status.batteryCharging) {
+                Icon(
+                    imageVector = Icons.Rounded.Bolt,
+                    contentDescription = null,
+                    tint = batteryTint,
+                    modifier = Modifier.align(Alignment.Center).size(10.dp),
+                )
+            }
+        }
         Text(
             status.batteryPercent?.let { "$it%" } ?: "--%",
-            color = TextPrimary,
+            color = batteryTint,
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
         )

@@ -532,6 +532,23 @@ internal fun signalingFailureDisposition(
     else -> SignalingFailureDisposition.RetryTransport
 }
 
+internal fun shouldPreserveMediaAfterSignalingFailure(
+    disposition: SignalingFailureDisposition,
+    iceState: PeerConnection.IceConnectionState?,
+): Boolean {
+    if (disposition != SignalingFailureDisposition.RetryTransport) return false
+    return when (iceState) {
+        PeerConnection.IceConnectionState.CHECKING,
+        PeerConnection.IceConnectionState.CONNECTED,
+        PeerConnection.IceConnectionState.COMPLETED,
+        -> true
+        else -> false
+    }
+}
+
+internal fun signalingHeartbeatReply(message: JsonObject): String? =
+    if (message["hb"] != null) """{"hb":1}""" else null
+
 private fun IceCandidate.diagnosticSummary(): String {
     val raw = sdp
     val protocol = Regex("""\s(udp|tcp)\s""", RegexOption.IGNORE_CASE)
@@ -717,10 +734,11 @@ class GfnSignalingClient(
             val shouldAck = parsed["peer_info"]?.jsonObject?.get("id")?.jsonPrimitive?.intOrNull != peerId
             if (shouldAck) sendJson("""{"ack":$ack}""")
         }
-        if (parsed["hb"] != null) {
-            // The client already sends its own heartbeat every five seconds.
-            // Treat server heartbeat frames as acknowledgements instead of
-            // creating an unnecessary reply round trip.
+        signalingHeartbeatReply(parsed)?.let { reply ->
+            // Match the desktop client and acknowledge server-driven
+            // heartbeats immediately. The periodic client heartbeat remains
+            // a separate keepalive when the server does not initiate one.
+            sendJson(reply)
             return
         }
         val peerMsg = parsed["peer_msg"]?.jsonObject ?: return
@@ -4140,16 +4158,43 @@ class NativeStreamClient(
         if (controllerMouseEmulationActive) {
             val mouseButton = AndroidControllerMouseAssist.mouseButtonForGamepad(buttonMask)
             if (mouseButton != null) {
-                setControllerMouseButton(mouseButton, pressed)
+                val sent = setControllerMouseButton(mouseButton, pressed)
+                recordVirtualButtonDiagnostic(
+                    buttonMask = buttonMask,
+                    pressed = pressed,
+                    route = "mouse-$mouseButton",
+                    sent = sent,
+                )
                 return
             }
         }
         virtualButtons = if (pressed) virtualButtons or buttonMask else virtualButtons and buttonMask.inv()
         val steamOverlayChordActivated = virtualSteamOverlayChord.update(virtualButtons)
-        sendCurrentGamepadState()
+        val sent = sendCurrentGamepadState()
+        recordVirtualButtonDiagnostic(
+            buttonMask = buttonMask,
+            pressed = pressed,
+            route = "gamepad",
+            sent = sent,
+        )
         if (steamOverlayChordActivated) {
             scheduleVirtualSteamOverlayChordRelease()
         }
+    }
+
+    private fun recordVirtualButtonDiagnostic(
+        buttonMask: Int,
+        pressed: Boolean,
+        route: String,
+        sent: Boolean,
+    ) {
+        val action = if (pressed) "down" else "up"
+        val maskHex = buttonMask.toString(16).padStart(4, '0')
+        NativeInputDiagnostics.addRetained(
+            key = "controller.virtual-button.$maskHex.$action",
+            message = "virtual gamepad button mask=0x$maskHex action=$action route=$route sent=$sent " +
+                "buttons=$virtualButtons reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+        )
     }
 
     fun openSteamMenu() {
@@ -4312,7 +4357,14 @@ class NativeStreamClient(
             }
             is SignalingEvent.Disconnected -> {
                 recordStreamDiagnostic("signaling disconnected ${event.reason}")
-                when (signalingFailureDisposition(event.reason, normalClosureMeansSessionEnded = true)) {
+                val disposition = signalingFailureDisposition(event.reason, normalClosureMeansSessionEnded = true)
+                if (shouldPreserveMediaAfterSignalingFailure(disposition, lastIceState)) {
+                    recordStreamDiagnostic(
+                        "signaling disconnected while ICE=${lastIceState?.name}; preserving active media transport",
+                    )
+                    return
+                }
+                when (disposition) {
                     SignalingFailureDisposition.SessionEnded -> {
                         recordStreamDiagnostic("Signaling disconnected normally. Stopping stream.")
                         stop()
@@ -4328,7 +4380,14 @@ class NativeStreamClient(
             }
             is SignalingEvent.Error -> {
                 recordStreamDiagnostic("signaling error ${event.message}")
-                when (signalingFailureDisposition(event.message)) {
+                val disposition = signalingFailureDisposition(event.message)
+                if (shouldPreserveMediaAfterSignalingFailure(disposition, lastIceState)) {
+                    recordStreamDiagnostic(
+                        "signaling error while ICE=${lastIceState?.name}; preserving active media transport",
+                    )
+                    return
+                }
+                when (disposition) {
                     SignalingFailureDisposition.SessionEnded -> {
                         recordStreamDiagnostic("Signaling error indicates session terminated. Stopping stream.")
                         stop()

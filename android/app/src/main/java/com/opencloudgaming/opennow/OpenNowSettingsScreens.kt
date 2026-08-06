@@ -569,9 +569,7 @@ private fun SettingsContent(
                     min = 1f,
                     max = 150f,
                     step = 1f,
-                    descriptionProvider = { mbps ->
-                        "Est. data usage: %.1f GB/hour".format((mbps * 3600f) / (8f * 1000f))
-                    }
+                    descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) }
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
                 }
@@ -1256,6 +1254,10 @@ private fun persistCatalogBackgroundImage(context: android.content.Context, uri:
         temp.delete()
     }
 }
+
+/** Est. bandwidth a stream at [mbps] pulls per hour, shared by Settings and the in-stream panel. */
+internal fun streamBitrateUsageEstimate(mbps: Float): String =
+    "Est. data usage: %.1f GB/hour".format((mbps * 3600f) / (8f * 1000f))
 
 internal fun isManagedCatalogBackgroundImageFile(filesDir: File, candidate: File): Boolean {
     val normalizedFilesDir = runCatching { filesDir.canonicalFile }.getOrElse { filesDir.absoluteFile }

@@ -1311,6 +1311,7 @@ object NativeStreamInputRouter {
         shouldOpenStreamSystemMenuKey(
             keyCode = keyCode,
             controllerInputDevice = isControllerInputDevice(),
+            androidTvProfile = androidTvProfile,
         )
 
     private fun KeyEvent.isStreamControlsShortcutKey(): Boolean =
@@ -1331,8 +1332,15 @@ object NativeStreamInputRouter {
             dpadSource = isDpadSource(),
         )
 
-    fun shouldOpenStreamSystemMenuKey(keyCode: Int, controllerInputDevice: Boolean): Boolean =
-        keyCode == KeyEvent.KEYCODE_MENU && !controllerInputDevice
+    fun shouldOpenStreamSystemMenuKey(
+        keyCode: Int,
+        controllerInputDevice: Boolean,
+        androidTvProfile: Boolean = false,
+    ): Boolean =
+        (keyCode == KeyEvent.KEYCODE_MENU && !controllerInputDevice) ||
+            // Android TV remotes usually have no MENU key and many are reported as controller
+            // devices; the Guide button is the only dedicated "open menu" affordance there.
+            (androidTvProfile && keyCode == KeyEvent.KEYCODE_BUTTON_MODE)
 
     fun shouldHandleStreamExitKey(
         keyCode: Int,
@@ -1341,7 +1349,13 @@ object NativeStreamInputRouter {
         androidTvProfile: Boolean = false,
         dpadSource: Boolean = false,
     ): Boolean =
-        (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
+        // On Android TV the back/exit key must always open the stream overlay: some TV remotes
+        // are reported as controller devices (joystick source), which would otherwise route BACK
+        // into the game and leave the user with no way to open the controls menu. Gamepads keep
+        // their own B button (KEYCODE_BUTTON_B) for in-game back, so stealing KEYCODE_BACK is
+        // safe on TV.
+        (androidTvProfile && keyCode == KeyEvent.KEYCODE_BACK) ||
+            (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
             (androidTvProfile &&
                 dpadSource &&
                 keyCode == KeyEvent.KEYCODE_BUTTON_B &&
@@ -2725,7 +2739,6 @@ internal fun streamPointForTouch(
         videoHeight = viewWidth / streamAspectRatio
         offsetY = (viewHeight - videoHeight) / 2f
     }
-    }
 
     if (!videoWidth.isFinite() || !videoHeight.isFinite() || videoWidth <= 0f || videoHeight <= 0f) {
         return StreamPoint(Float.NaN, Float.NaN)
@@ -2768,9 +2781,15 @@ internal class VirtualCursor {
     val position: StreamPoint get() = StreamPoint(x, y)
 
     fun onStreamSize(width: Int, height: Int) {
-        // A transient 0x0 size during a resolution change or PiP transition is not a new
-        // coordinate space. Ignoring it also keeps a not-yet-initialized cursor uninitialized.
-        if (width <= 0 || height <= 0) return
+        if (width <= 0 || height <= 0) {
+            // Do not reset to 0,0 if we already have a valid size. This prevents the cursor
+            // from re-centering when the stream momentarily reports a 0x0 size during a
+            // resolution change or PiP transition.
+            if (streamWidth > 0 && streamHeight > 0) return
+            // Never anchor to a degenerate size either: a 0x0 report before the first valid size
+            // must leave the model uninitialised so the first real size anchors normally.
+            if (!initialized) return
+        }
         if (!initialized) {
             // Direct click reanchors before pressing; this temporary value only keeps the generic
             // relative cursor model well-defined until that first DOWN arrives.
@@ -2798,8 +2817,9 @@ internal class VirtualCursor {
         val dx = (target.x - x).roundToInt()
         val dy = (target.y - y).roundToInt()
         if (dx == 0 && dy == 0) return null
-        // The protocol transmits whole-pixel relative motion, so advance the shadow by exactly
-        // what the host receives. Assigning the fractional target accumulates cursor drift.
+        // Advance the model by what was actually sent, never by [target]: the difference is the
+        // rounding residue, and assigning [target] would swallow it every event, letting the model
+        // drift away from the host cursor over a long drag.
         x += dx
         y += dy
         return CursorDelta(dx, dy)
@@ -2894,7 +2914,10 @@ private class TouchMouseState {
         val deltas = virtualCursor.reanchorDeltasTo(target)
         if (deltas.isEmpty()) return false
         for (delta in deltas) {
-            if (!client.sendRawMouseMove(delta.dx, delta.dy)) {
+            // The reanchor series is order-sensitive: the host must clamp through the top-left
+            // boundary before moving to the target. The unordered loss-tolerant channel could
+            // deliver these out of order and clamp the cursor back to 0,0, so keep it reliable.
+            if (!client.sendRawMouseMove(delta.dx, delta.dy, partiallyReliable = false)) {
                 virtualCursor.forget()
                 return false
             }
@@ -3289,8 +3312,12 @@ class NativeStreamClient(
     private var partiallyReliableInput: DataChannel? = null
     private var statsChannel: DataChannel? = null
     private var lastParsedGameFps: Int? = null
+    // Informational only: gamepad packets are full-state snapshots and are always routed over
+    // the ordered reliable channel (see sendCurrentGamepadState), so this mask no longer affects
+    // routing. Kept for the SDP offer diagnostic log.
     private var partiallyReliableGamepadMask = 0
     private var hapticsAdvertised: Boolean? = null
+    private var lastHapticsAdvertisementAtMs = 0L
     private var videoTrack: VideoTrack? = null
     private var audioTrack: AudioTrack? = null
     private var microphoneSource: AudioSource? = null
@@ -3309,6 +3336,15 @@ class NativeStreamClient(
     private var session: SessionInfo? = null
     private var transportGeneration = 0
     private var reconnectAttempts = 0
+    /** Last bitrate (kbps) applied to the live local SDP, so slider drags do not re-apply the same value. */
+    private var appliedBitrateLimitKbps = 0
+    /**
+     * Bitrate ceiling (kbps) currently in effect for the *live* session, exposed for the overlay
+     * indicator. Null until the user moves the in-overlay slider; before that the session runs at
+     * the bitrate baked into the munged answer (i.e. settings). Reset on each fresh offer.
+     */
+    @Volatile
+    var liveBitrateLimitKbps: Int? = null
     private var videoSafeFallbackApplied = false
     private var catastrophicResolutionCodecFallbacks = 0
     private var firstDecodedResolutionEvaluated = false
@@ -3388,6 +3424,15 @@ class NativeStreamClient(
     private var physicalRightStickX = 0f
     private var physicalRightStickY = 0f
     private var controllerScrollAccumulator = 0f
+    // Mouse-move coalescing: external mice and controller-mouse emulation can emit many small
+    // deltas per second. One packet per window keeps the SCTP packet rate low (fewer chances of
+    // loss and retransmit stalls) at the cost of at most MOUSE_MOVE_COALESCE_MS of extra latency.
+    // The accumulator itself is a pure [MouseMoveCoalescer]; this lock guards it across the UI
+    // and input threads. One flush job is kept per window: a window is dirty exactly until its
+    // flush runs, so the coalescer's own [MouseMoveCoalescer.needsFlush] decides scheduling.
+    private val mouseMoveLock = Any()
+    private val mouseMoveCoalescer = MouseMoveCoalescer()
+    private var mouseMoveFlushJob: Job? = null
 
     private data class RumbleEffectProfile(
         val weakAmplitude: Int,
@@ -3473,19 +3518,19 @@ class NativeStreamClient(
                     }
                 }
             }
-            val sharpnessDrawer = if (settings.streamSharpeningEnabled) {
-                StreamSharpnessGlDrawer().also { drawer ->
-                    drawer.amount = streamSharpnessShaderStrength(true, settings.streamSharpeningAmount)
-                }
-            } else {
-                null
+            // Always attach the sharpness drawer so mid-session toggles take effect live: its
+            // fragment shader passes pixels through untouched while the amount is 0, and
+            // updateRendererSettings() adjusts the amount on the fly. Attaching it conditionally
+            // here used to make the overlay toggle dead whenever the session started with
+            // sharpening off (the drawer was never created to receive the new amount).
+            val sharpnessDrawer = StreamSharpnessGlDrawer().also { drawer ->
+                drawer.amount = streamSharpnessShaderStrength(
+                    settings.streamSharpeningEnabled,
+                    settings.streamSharpeningAmount,
+                )
             }
             rendererSharpnessDrawer = sharpnessDrawer
-            if (sharpnessDrawer != null) {
-                it.init(eglBase.eglBaseContext, rendererEvents, EglBase.CONFIG_PLAIN, sharpnessDrawer)
-            } else {
-                it.init(eglBase.eglBaseContext, rendererEvents)
-            }
+            it.init(eglBase.eglBaseContext, rendererEvents, EglBase.CONFIG_PLAIN, sharpnessDrawer)
             // A fixed-size surface avoids vendor BufferQueue resize transactions that can
             // block HardwareRenderer while the decoder is producing frames.
             it.setEnableHardwareScaler(false)
@@ -3589,6 +3634,22 @@ class NativeStreamClient(
             cancelPhoneRumble()
         }
         updateHapticsAdvertisement(force = true)
+    }
+
+    /**
+     * Applies every mid-session-adjustable setting in one call so overlay and settings-screen
+     * changes reach the renderer, the haptics advertisement, and the input router together. All
+     * three setters are idempotent (guarded on value change), so this is safe to invoke from any
+     * LaunchedEffect keyed on the relevant fields — including on every AndroidView update.
+     */
+    fun applyLiveSettings(
+        rendererSettings: StreamSettings,
+        phoneRumbleFallback: Boolean,
+        stretchToFit: Boolean,
+    ) {
+        updateRendererSettings(rendererSettings)
+        updateHapticsSettings(phoneRumbleFallback)
+        NativeStreamInputRouter.setStretchToFit(stretchToFit)
     }
 
     fun updateControllerMouseAssistAutoArm(enabled: Boolean) {
@@ -3849,7 +3910,12 @@ class NativeStreamClient(
         return false
     }
 
-    fun sendRawMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = false): Boolean {
+    /**
+     * Mouse deltas are state: a newer packet supersedes every older one, so loss is better served
+     * by the loss-tolerant channel (no head-of-line stall for the input stream behind it). Falls
+     * back to the reliable channel automatically when the partially-reliable one is not open.
+     */
+    fun sendRawMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
         return sendInput(
             inputEncoder.encodeMouseMove(dx, dy),
             partiallyReliable = partiallyReliable,
@@ -3872,10 +3938,56 @@ class NativeStreamClient(
             adjustedDx *= accelFactor
             adjustedDy *= accelFactor
         }
-        return sendInput(
-            inputEncoder.encodeMouseMove(adjustedDx.roundToInt(), adjustedDy.roundToInt()),
-            partiallyReliable = partiallyReliable,
-        )
+        return queueMouseMove(adjustedDx.roundToInt(), adjustedDy.roundToInt(), partiallyReliable)
+    }
+
+    /**
+     * Queues one mouse delta into the current coalescing window instead of sending it immediately.
+     * External mice can emit 125-500 events per second; sending each as its own SCTP packet makes
+     * the transport carry far more packets than the input needs, which raises the chance of loss
+     * and head-of-line stalls on the reliable channel. Batching into a single packet per window
+     * keeps the packet rate flat while adding at most [MOUSE_MOVE_COALESCE_MS] of latency.
+     *
+     * Returns false only when no input channel is open yet, so callers that log "sent" or rewind
+     * their cursor model (direct click) keep their existing semantics.
+     */
+    private fun queueMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean): Boolean {
+        val channelOpen =
+            if (partiallyReliable && partiallyReliableInput?.state() == DataChannel.State.OPEN) {
+                true
+            } else {
+                reliableInput?.state() == DataChannel.State.OPEN
+            }
+        if (!channelOpen) return false
+        if (dx == 0 && dy == 0) return true
+        val scheduleFlush: Boolean
+        synchronized(mouseMoveLock) {
+            scheduleFlush = !mouseMoveCoalescer.needsFlush
+            mouseMoveCoalescer.add(dx, dy, partiallyReliable)
+        }
+        if (scheduleFlush) {
+            mouseMoveFlushJob?.cancel()
+            // Flush on the dedicated input thread, not the main scope: during a mouse/touch flood
+            // the main thread is exactly where the delay would stretch, weakening the window.
+            mouseMoveFlushJob = inputScope.launch {
+                delay(MOUSE_MOVE_COALESCE_MS)
+                flushQueuedMouseMove()
+            }
+        }
+        return true
+    }
+
+    private fun flushQueuedMouseMove() {
+        val batch: MouseMoveBatch?
+        synchronized(mouseMoveLock) {
+            batch = mouseMoveCoalescer.flush()
+        }
+        if (batch != null) {
+            sendInput(
+                inputEncoder.encodeMouseMove(batch.dx, batch.dy),
+                partiallyReliable = batch.partiallyReliable,
+            )
+        }
     }
 
     private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
@@ -4080,6 +4192,45 @@ class NativeStreamClient(
         audioDeviceModule.setMicrophoneMute(!enabled)
         microphoneTrack?.setEnabled(enabled)
         recordStreamDiagnostic("microphone ${if (enabled) "enabled" else "muted"}")
+    }
+
+    /**
+     * Applies a new receive bitrate ceiling to the live session, mirroring the desktop client's
+     * setMaxBitrateKbps: replace b=AS in the video section of the local description and re-apply
+     * it locally. libwebrtc picks the change up and reports the new ceiling to the server via RTCP
+     * feedback, so the encoder adapts without a full renegotiation. Non-fatal on failure — the
+     * change simply takes effect on the next session.
+     */
+    fun updateBitrateLimit(maxBitrateKbps: Int) {
+        if (appliedBitrateLimitKbps == maxBitrateKbps) return
+        val pc = peerConnection ?: return
+        val current = pc.localDescription ?: return
+        val updated = SdpTools.replaceVideoBitrateInSdp(current.description, maxBitrateKbps)
+        if (updated == current.description) {
+            // No b=AS line to update; should not happen once mungeAnswerSdp ran at session start.
+            appliedBitrateLimitKbps = maxBitrateKbps
+            liveBitrateLimitKbps = maxBitrateKbps
+            return
+        }
+        // Optimistic dedup so a slider drag does not queue a setLocalDescription per tick;
+        // on failure we revert the guard so the same value can be retried (e.g. transient error).
+        val previous = appliedBitrateLimitKbps
+        appliedBitrateLimitKbps = maxBitrateKbps
+        liveBitrateLimitKbps = maxBitrateKbps
+        pc.setLocalDescription(
+            object : SimpleSdpObserver() {
+                override fun onSetSuccess() {
+                    recordStreamDiagnostic("live bitrate limit applied $maxBitrateKbps kbps")
+                }
+
+                override fun onSetFailure(error: String?) {
+                    appliedBitrateLimitKbps = previous
+                    liveBitrateLimitKbps = previous.takeIf { it > 0 }
+                    recordStreamDiagnostic("live bitrate limit failed error=${error.orEmpty()} (applies next session)")
+                }
+            },
+            SessionDescription(current.type, updated),
+        )
     }
 
     fun setTouchMouseButton(pressed: Boolean): Boolean {
@@ -4326,7 +4477,10 @@ class NativeStreamClient(
         statsChannel = null
         lastParsedGameFps = null
         partiallyReliableGamepadMask = 0
+        appliedBitrateLimitKbps = 0
+        liveBitrateLimitKbps = null
         hapticsAdvertised = null
+        lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
         rendererSinkAttached = false
         videoTrack = null
@@ -4413,6 +4567,9 @@ class NativeStreamClient(
 
     private fun handleOffer(rawOffer: String, generation: Int) {
         val currentSession = session ?: return
+        // A new offer brings a fresh local answer; let the first live bitrate update re-apply.
+        appliedBitrateLimitKbps = 0
+        liveBitrateLimitKbps = null
         offerTimeoutJob?.cancel()
         offerTimeoutJob = null
         recordStreamDiagnostic(sdpDiagnosticSummary("raw offer", rawOffer))
@@ -5672,7 +5829,13 @@ class NativeStreamClient(
     }
 
     private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
-        val partiallyReliable = canSendGamepadPartiallyReliable(controllerId)
+        // Gamepad state is a full snapshot (buttons + sticks) that must arrive in order. On the
+        // loss-tolerant unordered channel, a dropped or reordered packet can regress a pressed
+        // button combination (A+B arriving as just A), which shows up as "cannot press multiple
+        // buttons simultaneously" on the virtual gamepad. Keep gamepad state on the ordered
+        // reliable channel; packets are small and sent on change plus the 100ms keepalive, so
+        // reliable adds no meaningful latency.
+        val partiallyReliable = false
         val buttons =
             physicalSteamOverlayChord.effectiveButtons(physicalButtons) or
                 physicalHatButtons or
@@ -5816,13 +5979,25 @@ class NativeStreamClient(
             return false
         }
         val bufferedAmount = channel.bufferedAmount()
-        if (bufferedAmount > 65536) {
+        // State inputs (mouse moves, touch MOVE, gamepad) are superseded by newer packets, so the
+        // loss-tolerant channel drops them early instead of letting the queue grow into lag.
+        // Critical one-shot events (buttons, lifts, keystrokes) keep the generous reliable
+        // threshold and are only dropped when the channel is genuinely backed up.
+        // Keyed on the requested reliability, not the physical channel: when the reliable channel
+        // is down and a critical one-shot event falls back onto the loss-tolerant channel, it must
+        // keep the generous threshold instead of being dropped as if it were a state input.
+        val dropThreshold = if (partiallyReliable) {
+            INPUT_PARTIAL_BACKPRESSURE_DROP_THRESHOLD
+        } else {
+            INPUT_RELIABLE_BACKPRESSURE_DROP_THRESHOLD
+        }
+        if (bufferedAmount > dropThreshold) {
             NativeInputDiagnostics.retainThrottled(
                 key = "input.last-drop",
                 minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
             ) {
                 "input dropped backpressure requestedPartial=$partiallyReliable label=${channel.label()} " +
-                    "bufferedAmount=$bufferedAmount bytes=${bytes.size}"
+                    "bufferedAmount=$bufferedAmount threshold=$dropThreshold bytes=${bytes.size}"
             }
             return false
         }
@@ -5916,11 +6091,16 @@ class NativeStreamClient(
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
         if (reliableInput?.state() != DataChannel.State.OPEN) return
-        if (!force && hapticsAdvertised != null) return
+        val now = SystemClock.elapsedRealtime()
+        // Periodically re-advertise: the controller can connect (or start reporting a vibrator)
+        // after the session began, and once advertised with enabled=false the server keeps
+        // haptics disabled for the whole session unless we re-advertise enabled=true.
+        if (!force && hapticsAdvertised != null && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
         val enabled = hapticsOutputAvailable()
-        if (hapticsAdvertised == enabled) return
+        if (hapticsAdvertised == enabled && now - lastHapticsAdvertisementAtMs < HAPTICS_ADVERTISEMENT_REFRESH_MS) return
         if (sendReliableInput(inputEncoder.encodeHapticsEnabled(enabled))) {
             hapticsAdvertised = enabled
+            lastHapticsAdvertisementAtMs = now
             NativeInputDiagnostics.add("gamepad haptics advertised enabled=$enabled force=$force")
         }
     }
@@ -6159,12 +6339,6 @@ class NativeStreamClient(
         return (1 shl id) or (1 shl (id + 8))
     }
 
-    private fun canSendGamepadPartiallyReliable(controllerId: Int): Boolean {
-        if (partiallyReliableInput?.state() != DataChannel.State.OPEN) return false
-        val mask = 1 shl (controllerId and 0x1f)
-        return (partiallyReliableGamepadMask and mask) != 0
-    }
-
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source
     private fun MotionEvent.isMouseLikePointer(): Boolean {
         val controllerSource = isFromSource(InputDevice.SOURCE_JOYSTICK) || isFromSource(InputDevice.SOURCE_GAMEPAD)
@@ -6272,10 +6446,16 @@ class NativeStreamClient(
         private const val RUMBLE_EFFECT_MS = 90L
         private const val RUMBLE_THROTTLE_MS = 35L
         private const val HAPTICS_LOG_INTERVAL_MS = 5000L
+        private const val HAPTICS_ADVERTISEMENT_REFRESH_MS = 5000L
         private const val ANALOG_ACTIVITY_THRESHOLD = 0.01f
         private const val ANALOG_DIAGNOSTIC_INTERVAL_MS = 250L
         private const val GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS = 1_000L
+        private const val MOUSE_MOVE_COALESCE_MS = 8L
+        // State inputs are superseded by newer packets, so they are dropped well before the queue
+        // can grow into lag; one-shot critical events keep the generous reliable threshold.
+        private const val INPUT_PARTIAL_BACKPRESSURE_DROP_THRESHOLD = 16_384L
+        private const val INPUT_RELIABLE_BACKPRESSURE_DROP_THRESHOLD = 65_536L
     }
 
     private fun radialDeadzoneScale(x: Float, y: Float, deadzone: Float = 0.15f): Float {
@@ -6519,6 +6699,32 @@ object SdpTools {
             if ((line.startsWith("m=video") || line.startsWith("m=audio")) && !lines.getOrNull(index + 1).orEmpty().startsWith("b=")) {
                 out += if (line.startsWith("m=video")) "b=AS:$maxBitrateKbps" else "b=AS:128"
             }
+        }
+        return out.joinToString(lineEnding)
+    }
+
+    /**
+     * Replaces the existing b=AS bandwidth line in the video section of an SDP string, leaving
+     * audio untouched. Unlike [mungeAnswerSdp] this is safe to call repeatedly on the same SDP
+     * (idempotent), which is what a mid-stream bitrate ceiling update needs.
+     */
+    fun replaceVideoBitrateInSdp(sdp: String, maxBitrateKbps: Int): String {
+        val lineEnding = if (sdp.contains("\r\n")) "\r\n" else "\n"
+        val lines = sdp.split(Regex("\r?\n"))
+        val out = mutableListOf<String>()
+        var inVideoSection = false
+        var bitrateReplaced = false
+        for (line in lines) {
+            if (line.startsWith("m=")) {
+                inVideoSection = line.startsWith("m=video")
+                bitrateReplaced = false
+            }
+            if (inVideoSection && !bitrateReplaced && line.startsWith("b=AS:")) {
+                out += "b=AS:$maxBitrateKbps"
+                bitrateReplaced = true
+                continue
+            }
+            out += line
         }
         return out.joinToString(lineEnding)
     }

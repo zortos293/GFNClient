@@ -92,6 +92,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -6714,6 +6715,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var streamGuideOpen by remember(session?.sessionId) { mutableStateOf(false) }
     var streamGuideStep by remember(session?.sessionId) { mutableStateOf(StreamGuideStep.OpenControls) }
     var statsVisible by remember(state.settings.showStatsOnLaunch) { mutableStateOf(state.settings.showStatsOnLaunch) }
+    // Bitrate ceiling (kbps) the live session is currently capped at; mirrors client.liveBitrateLimitKbps.
+    var liveBitrateLimitKbps by remember(session?.sessionId) { mutableStateOf<Int?>(null) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
     var videoTransportFallbackReason by remember { mutableStateOf<String?>(null) }
     var controllerMouseAssistEnabled by remember(session?.sessionId) { mutableStateOf(false) }
@@ -6927,6 +6930,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         client.updateControllerMouseAssistAutoArm(tvProfile)
     }
 
+    LaunchedEffect(streamReady, session?.sessionId, controlsOpen) {
+        while (streamReady && controlsOpen) {
+            liveBitrateLimitKbps = client.liveBitrateLimitKbps
+            delay(1000L)
+        }
+    }
+
     LaunchedEffect(streamReady, state.settings.androidStreamGuideDismissed, session?.sessionId) {
         val shouldOpenGuide = streamReady && !state.settings.androidStreamGuideDismissed
         streamGuideOpen = shouldOpenGuide
@@ -7037,9 +7047,6 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
 
-    LaunchedEffect(state.settings.phoneRumbleFallback) {
-        client.updateHapticsSettings(state.settings.phoneRumbleFallback)
-    }
     LaunchedEffect(streamReady, microphoneRequested, microphonePermissionResolved, session?.sessionId) {
         if (streamReady && microphoneRequested && !microphonePermissionResolved) {
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -7129,6 +7136,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 externalMouseRoot = activity?.window?.decorView,
                 onMouseCaptureInput = { (activity as? MainActivity)?.enforceStreamSystemUiFromInput() },
                 stretchToFit = stretchToFit,
+                phoneRumbleFallback = state.settings.phoneRumbleFallback,
             )
             if (statsVisible) {
                 StreamStatsPill(
@@ -7321,6 +7329,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     microphonePermissionGranted = microphonePermissionGranted,
                     microphoneEnabled = microphoneEnabled,
                     statsVisible = statsVisible,
+                    liveBitrateLimitKbps = liveBitrateLimitKbps,
                     touchLayoutEditing = touchLayoutEditing,
                     bugReportSubmission = state.bugReportSubmission,
                     bugReportVersionCheck = state.bugReportVersionCheck,
@@ -7501,6 +7510,15 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                                 stretchStreamToFit = next,
                             ),
                         )
+                    },
+                    onMaxBitrateChange = { value ->
+                        viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = value) }
+                        // Apply to the live session too: replaces b=AS in the local SDP so the
+                        // server adapts via RTCP feedback without a full renegotiation.
+                        client.updateBitrateLimit(value * 1000)
+                        // Optimistic indicator; the polling LaunchedEffect corrects it if the live
+                        // apply fails (fallback to next-session only).
+                        liveBitrateLimitKbps = value * 1000
                     },
                     onTouchScaleChange = { value ->
                         viewModel.updateSettings(state.settings.copy(androidTouch = state.settings.androidTouch.copy(scale = value)))
@@ -7722,6 +7740,7 @@ private fun StreamVideoSurface(
     externalMouseRoot: android.view.View?,
     onMouseCaptureInput: () -> Unit,
     stretchToFit: Boolean,
+    phoneRumbleFallback: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val rootView = LocalView.current
@@ -7781,20 +7800,19 @@ private fun StreamVideoSurface(
         zoomScale = 1f
         zoomOffset = Offset.Zero
     }
-    LaunchedEffect(stretchToFit) {
-        NativeStreamInputRouter.setStretchToFit(stretchToFit)
-    }
-    LaunchedEffect(streamAspectRatio) {
-        NativeStreamInputRouter.setRenderingAspectRatio(streamAspectRatio)
-    }
     LaunchedEffect(
         settings.mouseSensitivity,
         settings.mouseScrollSensitivity,
         settings.mouseAcceleration,
         settings.streamSharpeningEnabled,
         settings.streamSharpeningAmount,
+        stretchToFit,
+        phoneRumbleFallback,
     ) {
-        client.updateRendererSettings(settings)
+        client.applyLiveSettings(settings, phoneRumbleFallback, stretchToFit)
+    }
+    LaunchedEffect(streamAspectRatio) {
+        NativeStreamInputRouter.setRenderingAspectRatio(streamAspectRatio)
     }
     LaunchedEffect(
         androidTouch.nativeTouchScrollScale,
@@ -7846,48 +7864,49 @@ private fun StreamVideoSurface(
                 },
             contentAlignment = Alignment.Center,
         ) {
-            // AndroidView resizes the SurfaceView in place. Re-keying it as the viewport
-            // settles creates overlapping renderer surfaces during stream startup.
-            key(settings.streamSharpeningEnabled) {
-                AndroidView(
-                    modifier = rendererModifier,
-                    factory = { ctx ->
-                        client.createRenderer(ctx, settings).apply {
-                            isFocusable = false
-                            isFocusableInTouchMode = false
-                            hideAndroidPointerTree()
-                            scaleX = stretchScale.first
-                            scaleY = stretchScale.second
-                        }
-                    },
-                    update = { renderer ->
-                        client.updateRendererSettings(settings)
-                        renderer.scaleX = stretchScale.first
-                        renderer.scaleY = stretchScale.second
-                        renderer.isFocusable = false
-                        renderer.isFocusableInTouchMode = false
-                        pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
-                            client.dispatchMotion(event)
-                        }
-                        if (hideExternalMousePointer) {
-                            pointerRootView.hideAndroidPointerTree()
-                            renderer.hideAndroidPointerTree()
-                        } else {
-                            pointerRootView.showAndroidPointerTree()
-                            renderer.showAndroidPointerTree()
-                        }
-                        renderer.setOnKeyListener(null)
-                        renderer.setOnGenericMotionListener { _, event ->
-                            if (hideExternalMousePointer) pointerRootView.hideAndroidPointerTree()
-                            client.dispatchMotion(event)
-                        }
-                        renderer.setOnTouchListener { view, event ->
-                            NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
-                        }
-                    },
-                    onRelease = client::releaseRenderer,
-                )
-            }
+            // The sharpness drawer is always attached (Streaming.kt createRenderer), so toggling
+            // sharpening mid-session is handled entirely by the update lambda below via
+            // applyLiveSettings → drawer.amount. Re-keying this AndroidView on that flag used to
+            // tear down and recreate the SurfaceViewRenderer on every toggle, causing a visible
+            // restart/flicker of the video surface.
+            AndroidView(
+                modifier = rendererModifier,
+                factory = { ctx ->
+                    client.createRenderer(ctx, settings).apply {
+                        isFocusable = false
+                        isFocusableInTouchMode = false
+                        hideAndroidPointerTree()
+                        scaleX = stretchScale.first
+                        scaleY = stretchScale.second
+                    }
+                },
+                update = { renderer ->
+                    client.applyLiveSettings(settings, phoneRumbleFallback, stretchToFit)
+                    renderer.scaleX = stretchScale.first
+                    renderer.scaleY = stretchScale.second
+                    renderer.isFocusable = false
+                    renderer.isFocusableInTouchMode = false
+                    pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
+                        client.dispatchMotion(event)
+                    }
+                    if (hideExternalMousePointer) {
+                        pointerRootView.hideAndroidPointerTree()
+                        renderer.hideAndroidPointerTree()
+                    } else {
+                        pointerRootView.showAndroidPointerTree()
+                        renderer.showAndroidPointerTree()
+                    }
+                    renderer.setOnKeyListener(null)
+                    renderer.setOnGenericMotionListener { _, event ->
+                        if (hideExternalMousePointer) pointerRootView.hideAndroidPointerTree()
+                        client.dispatchMotion(event)
+                    }
+                    renderer.setOnTouchListener { view, event ->
+                        NativeStreamInputRouter.dispatchTouch(event, view.width, view.height)
+                    }
+                },
+                onRelease = client::releaseRenderer,
+            )
         }
         FingerMouseInputLayer(
             enabled = touchMouseEnabled,
@@ -8567,6 +8586,48 @@ private enum class StreamControlsPage {
 }
 
 @Composable
+private fun ControlBitrateLiveHint(
+    liveBitrateMbps: Int,
+    liveOverridden: Boolean,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Green.copy(alpha = if (liveOverridden) 0.18f else 0.10f))
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    stringResource(R.string.stream_panel_bitrate_live_badge),
+                    color = if (liveOverridden) Green else TextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Text(
+                stringResource(R.string.stream_panel_bitrate_live_summary, liveBitrateMbps),
+                color = TextMuted,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        Text(
+            stringResource(R.string.stream_panel_bitrate_next_session_hint),
+            color = TextMuted.copy(alpha = 0.72f),
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
+}
+
+@Composable
 private fun StreamControlsPanel(
     gameTitle: String,
     status: String?,
@@ -8586,6 +8647,7 @@ private fun StreamControlsPanel(
     microphonePermissionGranted: Boolean,
     microphoneEnabled: Boolean,
     statsVisible: Boolean,
+    liveBitrateLimitKbps: Int?,
     touchLayoutEditing: Boolean,
     bugReportSubmission: BugReportSubmissionState,
     bugReportVersionCheck: AndroidBugReportVersionCheckState,
@@ -8615,6 +8677,7 @@ private fun StreamControlsPanel(
     onJoystickDeadZoneChange: (Float) -> Unit,
     onSharpeningToggle: () -> Unit,
     onSharpeningAmountChange: (Float) -> Unit,
+    onMaxBitrateChange: (Int) -> Unit,
     onStretchToFitToggle: () -> Unit,
     onTouchScaleChange: (Float) -> Unit,
     onButtonScaleChange: (Float) -> Unit,
@@ -8909,6 +8972,20 @@ private fun StreamControlsPanel(
                             onStretchToFitToggle()
                         },
                         value = onOffLabel(settings.stretchStreamToFit),
+                    )
+                    ControlSliderRow(
+                        label = stringResource(R.string.settings_bitrate),
+                        value = settings.stream.maxBitrateMbps.toFloat(),
+                        min = 1f,
+                        max = 150f,
+                        step = 1f,
+                        unit = "Mbps",
+                        descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
+                        onChange = { value -> onMaxBitrateChange(value.roundToInt()) },
+                    )
+                    ControlBitrateLiveHint(
+                        liveBitrateMbps = liveBitrateLimitKbps?.div(1000) ?: settings.stream.maxBitrateMbps,
+                        liveOverridden = liveBitrateLimitKbps != null,
                     )
                 }
             }
@@ -10396,6 +10473,10 @@ private fun StreamKeyboardBar(
     }
     Surface(
         modifier = modifier
+            // The stream runs edge-to-edge with the system bars hidden, so adjustResize does not
+            // push this bar up when the IME opens: without imePadding the Android keyboard would
+            // cover the text field and the action buttons below it.
+            .imePadding()
             .fillMaxWidth()
             // The keyboard bar registered no passthrough bounds at all, so on a phone every tap on
             // it — including on the text field — was also forwarded into the game as touch input.

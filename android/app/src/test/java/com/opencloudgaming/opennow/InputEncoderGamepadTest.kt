@@ -363,6 +363,42 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun opensOverlayWithGuideButtonOnAndroidTv() {
+        assertTrue(
+            NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(
+                KeyEvent.KEYCODE_BUTTON_MODE,
+                controllerInputDevice = true,
+                androidTvProfile = true,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldOpenStreamSystemMenuKey(
+                KeyEvent.KEYCODE_BUTTON_MODE,
+                controllerInputDevice = true,
+            ),
+        )
+    }
+
+    @Test
+    fun backAlwaysOpensOverlayOnAndroidTvEvenForControllerSource() {
+        assertTrue(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BACK,
+                controllerInputDevice = true,
+                hardwareKeyboardSource = false,
+                androidTvProfile = true,
+            ),
+        )
+        assertFalse(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BACK,
+                controllerInputDevice = true,
+                hardwareKeyboardSource = false,
+            ),
+        )
+    }
+
+    @Test
     fun clampsStreamSharpnessShaderStrength() {
         assertEquals(0f, streamSharpnessShaderStrength(enabled = false, amount = 1f), 0.0001f)
         assertEquals(0f, streamSharpnessShaderStrength(enabled = true, amount = -1f), 0.0001f)

@@ -576,6 +576,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         description = description,
                         versionName = BuildConfig.VERSION_NAME,
                         versionCode = BuildConfig.VERSION_CODE.toString(),
+                        reporterId = androidBugReportReporterId(authStore.stableDeviceId()),
                         metadata = metadata,
                         files = listOf(
                             AndroidBugReportAttachment(
@@ -2299,13 +2300,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     private fun streamSettingsBeforeDeviceAdjustment(): StreamSettings {
         val snapshot = state.value
-        return snapshot.settings.stream
-            .withResolutionAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
-            .withFpsAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
-            .withHdrAllowed(snapshot.subscriptionInfo, snapshot.authSession?.user?.membershipTier)
-            .withAndroidSettingsAvailability()
-            .withAndroidHdrCompatibility(androidTvProfile)
-            .withCodecColorCompatibility()
+        return snapshot.settings.stream.eligibleForAndroidLaunch(
+            subscriptionInfo = snapshot.subscriptionInfo,
+            fallbackMembershipTier = snapshot.authSession?.user?.membershipTier,
+            androidTvProfile = androidTvProfile,
+        )
     }
 
     private suspend fun resolveFallbackLaunchAppId(
@@ -2470,9 +2469,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         )
         if (now - lastRuntimeStatsEventAtMs >= STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS) {
             lastRuntimeStatsEventAtMs = now
+            val requestedSettings = streamSettingsBeforeDeviceAdjustment()
+            val transportSettings = state.value.activeStreamSettings ?: requestedSettings
             recordDebugEvent(
                 "runtime",
-                "stats ${stats.debugSummary()} device=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}",
+                "stats requestedMaxBitrateMbps=${requestedSettings.maxBitrateMbps} transportMaxBitrateMbps=${transportSettings.maxBitrateMbps} " +
+                    "${stats.debugSummary()} device=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}",
             )
         }
     }
@@ -3000,6 +3002,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     val mergedLibrary = withContext(Dispatchers.Default) {
                         mergeKnownLibraryGames(library, main, catalog.games)
                     }
+                    recordDebugEvent(
+                        "catalog",
+                        "Library counts raw=${library.size} main=${main.size} mainOwned=${main.count(::isGameInLibrary)} " +
+                            "catalog=${catalog.games.size} catalogOwned=${catalog.games.count(::isGameInLibrary)} " +
+                            "merged=${mergedLibrary.size} activeFilters=${state.value.libraryFilterIds.sorted().joinToString(",").ifBlank { "none" }}",
+                    )
                     withContext(Dispatchers.IO) {
                         catalogCacheStore.saveMainGames(session.user.userId, baseUrl, main)
                         catalogCacheStore.saveLibraryGames(session.user.userId, baseUrl, mergedLibrary)
@@ -3569,6 +3577,7 @@ private fun StreamSettings.debugSummary(): String =
 
 private fun StreamRuntimeStats.hasDebugValues(): Boolean =
     bitrateKbps != null ||
+        availableIncomingBitrateKbps != null ||
         pingMs != null ||
         fps != null ||
         receivedFps != null ||
@@ -3577,7 +3586,11 @@ private fun StreamRuntimeStats.hasDebugValues(): Boolean =
         !codec.isNullOrBlank()
 
 private fun StreamRuntimeStats.debugSummary(): String =
-    "bitrateKbps=${bitrateKbps ?: 0} pingMs=${pingMs ?: -1} fps=${fps ?: 0} receivedFps=${receivedFps ?: 0} decodedFps=${decodedFps ?: 0} resolution=${resolution.orEmpty()} codec=${codec.orEmpty()}"
+    "bitrateKbps=${bitrateKbps ?: 0} availableIncomingBitrateKbps=${availableIncomingBitrateKbps ?: -1} " +
+        "pingMs=${pingMs ?: -1} fps=${fps ?: 0} receivedFps=${receivedFps ?: 0} decodedFps=${decodedFps ?: 0} " +
+        "decodeMs=${decodeMs ?: -1.0} jitterMs=${jitterMs ?: -1.0} packetLossPct=${packetLossPct ?: -1.0} " +
+        "packetsLostDelta=${packetsLostDelta ?: -1} packetsReceivedDelta=${packetsReceivedDelta ?: -1} " +
+        "resolution=${resolution.orEmpty()} codec=${codec.orEmpty()}"
 
 private fun TimedStreamRuntimeStats.debugSummary(nowMs: Long): String {
     val formatter = DateFormat.getTimeInstance(DateFormat.MEDIUM, Locale.US)

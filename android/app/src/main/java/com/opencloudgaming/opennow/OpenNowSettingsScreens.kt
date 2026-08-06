@@ -292,6 +292,10 @@ internal fun SettingsScreen(
                         .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
+                    SettingsRefreshAction(
+                        refreshing = state.settingsRefreshing,
+                        onRefresh = viewModel::refreshSettings,
+                    )
                     AnimatedVisibility(visible = showSearch) {
                         NativeSearchField(
                             query = searchQuery,
@@ -332,6 +336,12 @@ internal fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item {
+                        SettingsRefreshAction(
+                            refreshing = state.settingsRefreshing,
+                            onRefresh = viewModel::refreshSettings,
+                        )
+                    }
+                    item {
                         AnimatedVisibility(visible = showSearch) {
                             NativeSearchField(
                                 query = searchQuery,
@@ -361,6 +371,24 @@ internal fun SettingsScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SettingsRefreshAction(
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        OutlinedButton(
+            onClick = onRefresh,
+            enabled = !refreshing,
+        ) {
+            Text(if (refreshing) "Refreshing…" else "Refresh")
         }
     }
 }
@@ -723,7 +751,7 @@ private fun SettingsContent(
                     )
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "layout", "language", "clipboard", "paste") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "button", "shortcut", "layout", "language", "clipboard", "paste") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_microphone),
                     checked = settings.stream.microphoneMode != MicrophoneMode.Disabled,
@@ -756,6 +784,13 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_stream_keyboard_button),
+                    checked = !settings.hideStreamButtons,
+                    description = stringResource(R.string.settings_stream_keyboard_button_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(hideStreamButtons = !enabled))
+                }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
                 NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f, valueFormatter = { "%.2fx".format(it) }) {
@@ -877,7 +912,7 @@ private fun SettingsContent(
                 NumberSlider("Touch layout scale", settings.androidTouch.scale, 0.6f, 1.4f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(scale = value))) }
                 NumberSlider("Touch button size", settings.androidTouch.buttonScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(buttonScale = value))) }
                 NumberSlider("Touch stick size", settings.androidTouch.stickScale, 0.65f, 1.5f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(stickScale = value))) }
-                NumberSlider("Touch opacity", settings.androidTouch.opacity, 0.15f, 1f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(opacity = value))) }
+                NumberSlider("Touch opacity", settings.androidTouch.opacity, 0f, 1f, 0.05f) { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(opacity = value))) }
                 NumberSlider("Touch edge padding", settings.androidTouch.edgePaddingDp, 0f, 72f, 1f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(edgePaddingDp = value))) }
                 NumberSlider("Touch bottom padding", settings.androidTouch.bottomPaddingDp, 0f, 120f, 1f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(bottomPaddingDp = value))) }
                 NumberSlider("Left controls horizontal offset", settings.androidTouch.leftOffsetXDp, -220f, 220f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(leftOffsetXDp = value))) }
@@ -1150,6 +1185,7 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
     val presetOptions = listOf(
         CatalogBackgroundPreset.ColorfulAbstract to stringResource(R.string.catalog_background_colorful_abstract),
         CatalogBackgroundPreset.Original to stringResource(R.string.catalog_background_original),
+        CatalogBackgroundPreset.AbsoluteCinema to stringResource(R.string.catalog_background_absolute_cinema),
     )
     Surface(
         modifier = Modifier.fillMaxWidth(),

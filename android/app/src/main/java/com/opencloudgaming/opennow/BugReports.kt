@@ -3,7 +3,9 @@ package com.opencloudgaming.opennow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -12,12 +14,14 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.security.MessageDigest
 
 internal const val ANDROID_BUG_REPORT_ENDPOINT =
     "https://api.printedwaste.com/releases/opennow/bug-reports"
 internal const val ANDROID_BUG_REPORT_MAX_FILES = 5
 internal const val ANDROID_BUG_REPORT_MAX_FILE_BYTES = 10L * 1024L * 1024L
 internal const val ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS = 50
+internal const val ANDROID_BUG_REPORT_REPORTER_ID_PREFIX = "br1_"
 
 enum class AndroidBugReportVersionCheckStatus {
     NotChecked,
@@ -73,6 +77,7 @@ internal data class AndroidBugReport(
     val description: String,
     val versionName: String,
     val versionCode: String,
+    val reporterId: String,
     val metadata: String,
     val files: List<AndroidBugReportAttachment>,
 )
@@ -80,6 +85,30 @@ internal data class AndroidBugReport(
 internal data class AndroidBugReportReceipt(
     val reference: String?,
 )
+
+internal data class AndroidBugReportServerError(
+    val code: String?,
+    val message: String,
+    val retryable: Boolean?,
+)
+
+internal class AndroidBugReportUploadException(
+    val serverCode: String?,
+    val retryable: Boolean?,
+    message: String,
+) : IllegalStateException(message)
+
+/**
+ * Stable, installation-scoped abuse-prevention key. The raw GFN device ID is deliberately never
+ * uploaded: a namespaced SHA-256 digest keeps bug reports unlinkable to the provider credential
+ * while still giving the report service a consistent value to rate-limit or block.
+ */
+internal fun androidBugReportReporterId(stableDeviceId: String): String {
+    require(stableDeviceId.isNotBlank()) { "Bug report installation ID is unavailable" }
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest("opennow-android-bug-report-v1:$stableDeviceId".toByteArray(Charsets.UTF_8))
+    return ANDROID_BUG_REPORT_REPORTER_ID_PREFIX + digest.joinToString("") { "%02x".format(it) }
+}
 
 internal fun buildAndroidBugReportMetadata(
     logFileName: String,
@@ -100,6 +129,9 @@ internal fun buildAndroidBugReportRequest(
     }
     require(report.versionName.isNotBlank()) { "App version is unavailable" }
     require(report.versionCode.isNotBlank()) { "App build is unavailable" }
+    require(report.reporterId.matches(ANDROID_BUG_REPORT_REPORTER_ID_REGEX)) {
+        "Bug report installation ID is invalid"
+    }
     require(report.files.size <= ANDROID_BUG_REPORT_MAX_FILES) {
         "Bug reports support up to $ANDROID_BUG_REPORT_MAX_FILES files"
     }
@@ -113,6 +145,7 @@ internal fun buildAndroidBugReportRequest(
         .addFormDataPart("versionName", report.versionName)
         .addFormDataPart("versionCode", report.versionCode)
         .addFormDataPart("platform", "android")
+        .addFormDataPart("reporterId", report.reporterId)
         .addFormDataPart("metadata", report.metadata)
 
     report.files.forEach { attachment ->
@@ -142,16 +175,19 @@ internal suspend fun uploadAndroidBugReport(
     http.newCall(buildAndroidBugReportRequest(report)).execute().use { response ->
         val body = response.body.string().take(MAX_BUG_REPORT_RESPONSE_CHARS)
         if (!response.isSuccessful) {
-            val detail = body
-                .lineSequence()
-                .joinToString(" ") { it.trim() }
-                .take(320)
-                .takeIf(String::isNotBlank)
-            error(
-                buildString {
-                    append("Bug report upload failed (HTTP ${response.code})")
-                    detail?.let { append(": $it") }
-                },
+            val serverError = parseAndroidBugReportServerError(body, response.code)
+            throw AndroidBugReportUploadException(
+                serverCode = serverError.code,
+                retryable = serverError.retryable,
+                message = serverError.message,
+            )
+        }
+        if (androidBugReportResponseExplicitlyRejected(body)) {
+            val serverError = parseAndroidBugReportServerError(body, response.code)
+            throw AndroidBugReportUploadException(
+                serverCode = serverError.code,
+                retryable = serverError.retryable,
+                message = serverError.message,
             )
         }
         AndroidBugReportReceipt(reference = parseAndroidBugReportReference(body))
@@ -164,4 +200,49 @@ internal fun parseAndroidBugReportReference(body: String): String? = runCatching
         .firstNotNullOfOrNull { key -> json[key]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) }
 }.getOrNull()
 
+internal fun parseAndroidBugReportServerError(
+    body: String,
+    statusCode: Int,
+): AndroidBugReportServerError {
+    val root = parseBugReportJsonObject(body)
+    val error = root?.get("error")?.let { element ->
+        runCatching { element.jsonObject }.getOrNull()
+    }
+    val payload = error ?: root
+    val customMessage = payload?.serverString("message")
+        ?.replace(BUG_REPORT_RESPONSE_WHITESPACE, " ")
+        ?.trim()
+        ?.take(MAX_BUG_REPORT_PUBLIC_MESSAGE_CHARS)
+        ?.takeIf(String::isNotBlank)
+    return AndroidBugReportServerError(
+        code = payload?.serverString("code")?.take(MAX_BUG_REPORT_SERVER_CODE_CHARS),
+        message = customMessage ?: when (statusCode) {
+            403 -> "Bug reporting is unavailable for this installation."
+            429 -> "Too many bug reports were sent. Try again later."
+            else -> "Bug report upload failed (HTTP $statusCode)."
+        },
+        retryable = payload?.get("retryable")?.let { element ->
+            runCatching { element.jsonPrimitive.booleanOrNull }.getOrNull()
+        },
+    )
+}
+
+private fun androidBugReportResponseExplicitlyRejected(body: String): Boolean =
+    (parseBugReportJsonObject(body)
+        ?.get("ok")
+        ?.let { element -> runCatching { element.jsonPrimitive.booleanOrNull }.getOrNull() }) == false
+
+private fun parseBugReportJsonObject(body: String): JsonObject? = runCatching {
+    OpenNowJson.parseToJsonElement(body).jsonObject
+}.getOrNull()
+
+private fun JsonObject.serverString(key: String): String? =
+    get(key)?.let { element ->
+        runCatching { element.jsonPrimitive.contentOrNull }.getOrNull()
+    }?.takeIf(String::isNotBlank)
+
 private const val MAX_BUG_REPORT_RESPONSE_CHARS = 64 * 1024
+private const val MAX_BUG_REPORT_PUBLIC_MESSAGE_CHARS = 320
+private const val MAX_BUG_REPORT_SERVER_CODE_CHARS = 80
+private val ANDROID_BUG_REPORT_REPORTER_ID_REGEX = Regex("^br1_[0-9a-f]{64}$")
+private val BUG_REPORT_RESPONSE_WHITESPACE = Regex("\\s+")

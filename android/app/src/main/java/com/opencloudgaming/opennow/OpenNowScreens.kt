@@ -11,6 +11,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.annotation.StringRes
 import android.speech.RecognizerIntent
@@ -57,6 +58,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.BasicTextField
@@ -92,6 +94,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -127,6 +130,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material3.IconButton
@@ -138,6 +142,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Slider
@@ -210,6 +215,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -247,6 +253,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -307,6 +314,7 @@ private const val DEVICE_LOGIN_SIDE_BY_SIDE_MIN_WIDTH_DP = 520
 private const val COMPACT_STREAM_DEVICE_STATUS_REFRESH_MS = 5_000L
 private const val QUEUE_POSITION_VISUAL_SETTLE_MS = 1100L
 private const val ACTIVE_STREAM_MODE_NOTICE_DURATION_MS = 8_000L
+private const val STREAM_NETWORK_NOTICE_DURATION_MS = 12_000L
 private val UiAccent.color: Color
     get() = when (this) {
         UiAccent.OpenNow -> OpenNowPalette.AccentDefault
@@ -378,7 +386,10 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
 }
 
 @Composable
-fun OpenNowApp(viewModel: OpenNowViewModel) {
+fun OpenNowApp(
+    viewModel: OpenNowViewModel,
+    onMicrophoneCaptureActiveChange: (Boolean) -> Unit = {},
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -561,7 +572,12 @@ fun OpenNowApp(viewModel: OpenNowViewModel) {
             ) {
                 Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
                     when {
-                        state.authSession != null -> MainShell(state, viewModel, musicControl)
+                        state.authSession != null -> MainShell(
+                            state = state,
+                            viewModel = viewModel,
+                            musicControl = musicControl,
+                            onMicrophoneCaptureActiveChange = onMicrophoneCaptureActiveChange,
+                        )
                         else -> LoginScreen(state, viewModel)
                     }
                 }
@@ -2019,6 +2035,7 @@ private val CatalogBackgroundPreset.drawableRes: Int
     get() = when (this) {
         CatalogBackgroundPreset.ColorfulAbstract -> R.drawable.catalog_colorful_abstract_background
         CatalogBackgroundPreset.Original -> R.drawable.catalog_default_background
+        CatalogBackgroundPreset.AbsoluteCinema -> R.drawable.catalog_absolute_cinema_background
     }
 
 @Composable
@@ -2039,6 +2056,7 @@ private fun MainShell(
     state: OpenNowUiState,
     viewModel: OpenNowViewModel,
     musicControl: TopBarMusicControl,
+    onMicrophoneCaptureActiveChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val inStream = state.page == AppPage.Stream
@@ -2337,7 +2355,11 @@ private fun MainShell(
                                     },
                                     onDetailRouteChange = { settingsDetailRouteOpen = it },
                                 )
-                                AppPage.Stream -> StreamScreen(state, viewModel)
+                                AppPage.Stream -> StreamScreen(
+                                    state = state,
+                                    viewModel = viewModel,
+                                    onMicrophoneCaptureActiveChange = onMicrophoneCaptureActiveChange,
+                                )
                             }
                         }
                         if (showMinimizedQueueDock && showNavigationRail) {
@@ -4035,6 +4057,7 @@ private fun StoreGameGrid(
                         libraryGames = state.libraryGames,
                         favoriteIds = favoriteIds,
                         queuedGameKeys = state.queuedGameKeys,
+                        showInQueue = shouldShowStoreInQueueRail(state.catalogSearch),
                         settings = settings,
                         tvProfile = tvProfile,
                         controllerActionMode = controllerActionMode,
@@ -4087,6 +4110,7 @@ private fun StoreStartRails(
     libraryGames: List<GameInfo>,
     favoriteIds: List<String>,
     queuedGameKeys: List<String>,
+    showInQueue: Boolean,
     settings: AppSettings,
     tvProfile: Boolean,
     controllerActionMode: Boolean,
@@ -4126,10 +4150,14 @@ private fun StoreStartRails(
             )
         }
         StoreStartRail(R.string.store_continue_playing, startRails.continuePlaying, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
-        StoreStartRail(R.string.store_in_queue, startRails.inQueue, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
+        if (showInQueue) {
+            StoreStartRail(R.string.store_in_queue, startRails.inQueue, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
+        }
         StoreStartRail(R.string.store_favorites, startRails.favorites, favoriteIds, settings, tvProfile, controllerActionMode, onSelect, onFavorite, onPlay, onChooseStore)
     }
 }
+
+internal fun shouldShowStoreInQueueRail(catalogSearch: String): Boolean = catalogSearch.isBlank()
 
 /** Small wrapper so the three start rails don't repeat an eleven-argument call three times. */
 @Composable
@@ -4690,6 +4718,9 @@ internal fun controllerFocusPulseAlpha(progress: Float): Float {
     return 0.58f * remaining * remaining
 }
 
+internal fun controllerFocusDashPhaseDp(progress: Float): Float =
+    30f * progress.coerceIn(0f, 1f)
+
 private data class GameGridSpec(
     val cells: GridCells,
     /** Only used to size skeleton placeholder runs; the real column count is the grid's to decide. */
@@ -4819,9 +4850,12 @@ private fun BoxScope.ControllerFocusFrameCanvas(
 ) {
     Canvas(Modifier.matchParentSize().padding(2.dp)) {
         val outerRadius = (cornerRadius - 2.dp).toPx().coerceAtLeast(0f)
+        val innerInset = 3.dp.toPx()
+        val innerRadius = (outerRadius - innerInset).coerceAtLeast(0f)
 
-        // Keep every animated pixel on the card edge. The pulse expands by
-        // widening the outer stroke and fading; it never creates an inner box.
+        // A broad accent stroke supplies the glow, a spaced accent stroke travels around the
+        // perimeter, and a crisp inset white stroke keeps focus readable on bright artwork.
+        // Everything stays on the card edge so focus never obscures the poster itself.
         drawRoundRect(
             color = accent.copy(alpha = 0.18f),
             cornerRadius = CornerRadius(outerRadius, outerRadius),
@@ -4835,8 +4869,24 @@ private fun BoxScope.ControllerFocusFrameCanvas(
             )
         }
         drawRoundRect(
-            color = Color.White.copy(alpha = 0.96f),
+            color = accent.copy(alpha = 0.98f),
             cornerRadius = CornerRadius(outerRadius, outerRadius),
+            style = Stroke(
+                width = 3.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(
+                    intervals = floatArrayOf(18.dp.toPx(), 12.dp.toPx()),
+                    phase = controllerFocusDashPhaseDp(pulseProgress ?: 0f).dp.toPx(),
+                ),
+            ),
+        )
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.98f),
+            topLeft = Offset(innerInset, innerInset),
+            size = Size(
+                width = (size.width - innerInset * 2f).coerceAtLeast(0f),
+                height = (size.height - innerInset * 2f).coerceAtLeast(0f),
+            ),
+            cornerRadius = CornerRadius(innerRadius, innerRadius),
             style = Stroke(width = 2.dp.toPx()),
         )
     }
@@ -5271,7 +5321,11 @@ private fun ZortosPlayMark(
 }
 
 @Composable
-private fun AnimatedLaunchOverlay(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun AnimatedLaunchOverlay(
+    modifier: Modifier = Modifier,
+    enterFromTop: Boolean = false,
+    content: @Composable () -> Unit,
+) {
     val visibleState = remember {
         MutableTransitionState(false).apply {
             targetState = true
@@ -5279,8 +5333,12 @@ private fun AnimatedLaunchOverlay(modifier: Modifier = Modifier, content: @Compo
     }
     AnimatedVisibility(
         visibleState = visibleState,
-        enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.94f),
-        exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 }) + scaleOut(targetScale = 0.94f),
+        enter = fadeIn() +
+            slideInVertically(initialOffsetY = { if (enterFromTop) -it / 4 else it / 4 }) +
+            scaleIn(initialScale = 0.94f),
+        exit = fadeOut() +
+            slideOutVertically(targetOffsetY = { if (enterFromTop) -it / 4 else it / 4 }) +
+            scaleOut(targetScale = 0.94f),
         modifier = modifier,
     ) {
         content()
@@ -6694,10 +6752,17 @@ private fun StoreLaunchVariantRow(
 }
 
 @Composable
-private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+private fun StreamScreen(
+    state: OpenNowUiState,
+    viewModel: OpenNowViewModel,
+    onMicrophoneCaptureActiveChange: (Boolean) -> Unit,
+) {
     val context = LocalContext.current
     val activity = context as? Activity
     val view = LocalView.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
     val audioController = remember(context) { AndroidNerdAudioController(context.applicationContext) }
     val session = state.streamSession
     val game = state.streamGame
@@ -6709,7 +6774,8 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     var controlsOpen by remember { mutableStateOf(false) }
     var exitConfirmOpen by remember { mutableStateOf(false) }
     var keyboardOpen by remember { mutableStateOf(false) }
-    var keyboardText by remember { mutableStateOf("") }
+    var keyboardValue by remember(session?.sessionId) { mutableStateOf(TextFieldValue()) }
+    var keyboardSyncedText by remember(session?.sessionId) { mutableStateOf<String?>(null) }
     var audioMuted by remember { mutableStateOf(false) }
     var touchLayoutEditing by remember { mutableStateOf(false) }
     var streamGuideOpen by remember(session?.sessionId) { mutableStateOf(false) }
@@ -6718,6 +6784,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     // Bitrate ceiling (kbps) the live session is currently capped at; mirrors client.liveBitrateLimitKbps.
     var liveBitrateLimitKbps by remember(session?.sessionId) { mutableStateOf<Int?>(null) }
     var streamStats by remember { mutableStateOf(StreamRuntimeStats()) }
+    var networkNotice by remember(session?.sessionId) { mutableStateOf<StreamNetworkWarning?>(null) }
+    var networkNoticeSequence by remember(session?.sessionId) { mutableIntStateOf(0) }
+    val networkWarningGate = remember(session?.sessionId) { StreamNetworkWarningGate() }
     var videoTransportFallbackReason by remember { mutableStateOf<String?>(null) }
     var controllerMouseAssistEnabled by remember(session?.sessionId) { mutableStateOf(false) }
     var controllerMouseEmulationEnabled by remember(session?.sessionId) { mutableStateOf(state.settings.controllerMouseEmulation) }
@@ -6770,7 +6839,13 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
     // activeStreamSettings tracks the transport profile and can deliberately
     // change during safe-codec recovery. Keep the original launch profile so
     // requested, server-selected, decoded, and recovery modes remain distinct.
-    val requestedStreamSettings = remember(session?.sessionId) { launchStreamSettings }
+    val requestedStreamSettings = remember(session?.sessionId) {
+        state.settings.stream.eligibleForAndroidLaunch(
+            subscriptionInfo = state.subscriptionInfo,
+            fallbackMembershipTier = state.authSession?.user?.membershipTier,
+            androidTvProfile = tvProfile,
+        )
+    }
     val microphoneRequested = launchStreamSettings.microphoneMode != MicrophoneMode.Disabled
     val initialMicrophonePermissionGranted = remember(session?.sessionId, microphoneRequested) {
         !microphoneRequested ||
@@ -6804,10 +6879,18 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         streamSharpeningAmount = state.settings.stream.streamSharpeningAmount,
         mouseScrollSensitivity = state.settings.stream.mouseScrollSensitivity,
     )
+    val streamTransportIdentity = session?.nativeStreamTransportIdentity()
     val statsAlignment = when (state.settings.streamStatsPosition) {
         StreamStatsPosition.Left -> Alignment.TopStart
         StreamStatsPosition.Center -> Alignment.TopCenter
         StreamStatsPosition.Right -> Alignment.TopEnd
+    }
+    val openStreamKeyboard = {
+        NativeStreamInputRouter.setStreamUiActive(true)
+        controlsOpen = false
+        exitConfirmOpen = false
+        physicalControllerPromptOpen = false
+        keyboardOpen = true
     }
     val dismissStreamGuide = {
         streamGuideOpen = false
@@ -6816,6 +6899,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
     val openControlsForGuide = {
+        // Claim UI routing before Compose replaces the launcher with the panel. Waiting for the
+        // keyed effect below leaves a short window where native touch can forward the activating
+        // gesture into the game or retarget its trailing event into the newly opened menu.
+        NativeStreamInputRouter.setStreamUiActive(true)
         keyboardOpen = false
         exitConfirmOpen = false
         physicalControllerPromptOpen = false
@@ -6835,6 +6922,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
     val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen || touchLayoutEditing
+    val streamKeyboardImeVisible = keyboardOpen && WindowInsets.ime.getBottom(density) > 0
     val externalMousePassthroughActive = streamReady && !streamOverlayOpen
     val handleStreamBack = {
         when {
@@ -6848,7 +6936,10 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             keyboardOpen -> keyboardOpen = false
             physicalControllerPromptOpen -> physicalControllerPromptOpen = false
             controlsOpen -> controlsOpen = false
-            else -> controlsOpen = true
+            else -> {
+                NativeStreamInputRouter.setStreamUiActive(true)
+                controlsOpen = true
+            }
         }
     }
     BackHandler(enabled = streamReady) {
@@ -7053,7 +7144,7 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
         }
     }
     LaunchedEffect(
-        session,
+        streamTransportIdentity,
         streamReady,
         microphonePermissionGranted,
         microphonePermissionResolved,
@@ -7063,6 +7154,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 mode = launchStreamSettings.microphoneMode,
                 permissionGranted = microphonePermissionGranted,
             )
+            // Promote the already-running stream service while the activity is visible and before
+            // WebRTC opens AudioRecord. Android 14+ rejects that promotion from the background.
+            onMicrophoneCaptureActiveChange(captureMicrophone)
             microphoneEnabled = captureMicrophone
             client.setMicrophoneEnabled(captureMicrophone)
             client.start(
@@ -7099,6 +7193,23 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             viewModel.recordActiveStreamMode(activeStreamMode)
         }
     }
+    LaunchedEffect(streamReady, streamStats) {
+        val candidate = if (streamReady) {
+            streamNetworkWarning(streamStats)
+        } else {
+            null
+        }
+        networkWarningGate.update(candidate)?.let { warning ->
+            networkNotice = warning
+            networkNoticeSequence += 1
+        }
+    }
+    LaunchedEffect(networkNoticeSequence) {
+        if (networkNoticeSequence <= 0) return@LaunchedEffect
+        val displayedSequence = networkNoticeSequence
+        delay(STREAM_NETWORK_NOTICE_DURATION_MS)
+        if (networkNoticeSequence == displayedSequence) networkNotice = null
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (state.activeSessionDecision != null) {
@@ -7124,13 +7235,14 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             StreamVideoSurface(
                 client = client,
                 settings = streamSettings,
+                viewportSettings = requestedStreamSettings,
                 androidTouch = state.settings.androidTouch,
-                decodedResolution = streamStats.resolution,
-                serverNegotiatedResolution = session.negotiatedStreamProfile?.resolution,
                 hideExternalMousePointer = externalMousePassthroughActive,
-                touchMouseEnabled = touchInputEnabled && state.settings.androidTouch.mousePad,
+                touchMouseEnabled =
+                    touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive,
                 pinchZoomEnabled = streamPinchZoomEnabled(
-                    touchMouseEnabled = touchInputEnabled && state.settings.androidTouch.mousePad,
+                    touchMouseEnabled =
+                        touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive,
                     touchControllerVisible = touchControlsVisible,
                 ),
                 externalMouseRoot = activity?.window?.decorView,
@@ -7141,28 +7253,38 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
             if (statsVisible) {
                 StreamStatsPill(
                     streamStats = streamStats,
-                    streamSettings = launchStreamSettings,
+                    streamSettings = requestedStreamSettings,
                     style = state.settings.streamStatsStyle,
                     metrics = state.settings.streamStatsMetrics,
                     serverLocation = session.zone,
+                    keyboardButtonEnabled = !state.settings.hideStreamButtons,
+                    onKeyboardOpen = openStreamKeyboard,
                     modifier = Modifier.align(statsAlignment),
                 )
             }
-            if (activeStreamMode != null) {
-                ActiveStreamModePill(
-                    status = activeStreamMode,
-                    recoveryReason = videoTransportFallbackReason,
-                    bugReportSubmission = state.bugReportSubmission,
-                    bugReportVersionCheck = state.bugReportVersionCheck,
-                    update = state.androidUpdate,
-                    onBugReportSubmit = viewModel::submitBugReport,
-                    onBugReportReset = viewModel::resetBugReportSubmission,
-                    onBugReportVersionCheck = viewModel::verifyBugReportVersion,
-                    onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
+            if (networkNotice != null || activeStreamMode != null) {
+                Column(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = if (statsVisible && statsAlignment == Alignment.TopCenter) 48.dp else 8.dp),
-                )
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    networkNotice?.let { StreamNetworkQualityNotice(it) }
+                    activeStreamMode?.let { status ->
+                        ActiveStreamModePill(
+                            status = status,
+                            recoveryReason = videoTransportFallbackReason,
+                            bugReportSubmission = state.bugReportSubmission,
+                            bugReportVersionCheck = state.bugReportVersionCheck,
+                            update = state.androidUpdate,
+                            onBugReportSubmit = viewModel::submitBugReport,
+                            onBugReportReset = viewModel::resetBugReportSubmission,
+                            onBugReportVersionCheck = viewModel::verifyBugReportVersion,
+                            onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
+                        )
+                    }
+                }
             }
             if (touchControlsVisible) {
                 TouchOverlay(
@@ -7284,26 +7406,9 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     },
                 )
             }
-            // A wash behind the panel. Backdrop blur is impossible here — the video is a
-            // SurfaceView on its own hardware layer, which neither Modifier.blur nor RenderEffect
-            // can sample across — so separation comes from a gradient plus the panel's own fill.
-            AnimatedVisibility(
-                visible = controlsOpen,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier.matchParentSize(),
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                0f to Color.Transparent,
-                                1f to OpenNowPalette.StreamScrim,
-                            ),
-                        ),
-                )
-            }
+            // Keep the decoded frame untouched when the Quick Menu is open. A full-screen
+            // translucent wash over SurfaceViewRenderer looked like a stuck grey compositor
+            // layer on physical devices; the panel has its own opaque fill and border.
             AnimatedVisibility(
                 visible = controlsOpen,
                 enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }) + scaleIn(initialScale = 0.96f),
@@ -7377,16 +7482,18 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                     onStatsMetricsChange = { metrics ->
                         viewModel.updateSettings(state.settings.copy(streamStatsMetrics = metrics))
                     },
+                    onKeyboardButtonToggle = {
+                        viewModel.updateSettings(
+                            state.settings.copy(hideStreamButtons = !state.settings.hideStreamButtons),
+                        )
+                    },
                     onPhoneRumbleFallbackToggle = {
                         viewModel.updateSettings(state.settings.copy(phoneRumbleFallback = !state.settings.phoneRumbleFallback))
                     },
                     onTouchLayoutEditingToggle = {
                         touchLayoutEditing = !touchLayoutEditing
                     },
-                    onKeyboardOpen = {
-                        controlsOpen = false
-                        keyboardOpen = true
-                    },
+                    onKeyboardOpen = openStreamKeyboard,
                     onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
                     onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
                     onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
@@ -7578,20 +7685,50 @@ private fun StreamScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
                 )
             }
             if (keyboardOpen) {
-                AnimatedLaunchOverlay(Modifier.align(Alignment.BottomCenter)) {
+                if (streamKeyboardImeVisible) {
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .pointerInput(Unit) {
+                                detectTapGestures {
+                                    keyboardController?.hide()
+                                    focusManager.clearFocus(force = true)
+                                }
+                            },
+                    )
+                }
+                AnimatedLaunchOverlay(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .imePadding(),
+                ) {
                     StreamKeyboardBar(
-                        text = keyboardText,
-                        onTextChange = { keyboardText = it },
-                        onSend = {
-                            val text = keyboardText
-                            if (text.isNotBlank()) {
-                                client.sendText(text)
-                                keyboardText = ""
-                                keyboardOpen = false
+                        value = keyboardValue,
+                        syncedText = keyboardSyncedText,
+                        onValueChange = { next ->
+                            if (next.text.length <= MAX_STREAM_KEYBOARD_TEXT_LENGTH) {
+                                keyboardValue = next
                             }
                         },
-                        onBackspace = { client.sendKeyCode(KeyEvent.KEYCODE_DEL) },
-                        onEnter = { client.sendKeyCode(KeyEvent.KEYCODE_ENTER) },
+                        onSend = {
+                            val text = keyboardValue.text
+                            val action = streamKeyboardApplyAction(keyboardSyncedText, text)
+                            when (action) {
+                                StreamKeyboardApplyAction.Type -> client.sendText(text)
+                                StreamKeyboardApplyAction.Replace -> client.replaceText(text)
+                                StreamKeyboardApplyAction.None -> Unit
+                            }
+                            if (action != StreamKeyboardApplyAction.None) {
+                                keyboardSyncedText = text
+                            }
+                        },
+                        onEnter = {
+                            client.sendTextControlKey(KeyEvent.KEYCODE_ENTER)
+                            if (keyboardSyncedText != null) {
+                                keyboardValue = TextFieldValue()
+                                keyboardSyncedText = null
+                            }
+                        },
                         onEsc = { client.sendKeyCode(KeyEvent.KEYCODE_ESCAPE) },
                         onDone = { keyboardOpen = false },
                     )
@@ -7731,9 +7868,8 @@ private fun formatSessionWarningThreshold(thresholdSeconds: Int): String {
 private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
+    viewportSettings: StreamSettings,
     androidTouch: AndroidTouchSettings,
-    decodedResolution: String?,
-    serverNegotiatedResolution: String?,
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
     pinchZoomEnabled: Boolean,
@@ -7750,8 +7886,8 @@ private fun StreamVideoSurface(
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var zoomOffset by remember { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
-    val streamAspectRatio = remember(decodedResolution, serverNegotiatedResolution, settings.resolution, settings.aspectRatio) {
-        streamRendererAspectRatio(settings, decodedResolution, serverNegotiatedResolution)
+    val streamAspectRatio = remember(viewportSettings.resolution, viewportSettings.aspectRatio) {
+        streamRendererAspectRatio(viewportSettings)
     }
     val viewportAspectRatio = remember(viewportSize) {
         if (viewportSize.width > 0 && viewportSize.height > 0) {
@@ -7786,8 +7922,8 @@ private fun StreamVideoSurface(
         )
     }
     LaunchedEffect(
-        settings.resolution,
-        settings.aspectRatio,
+        viewportSettings.resolution,
+        viewportSettings.aspectRatio,
         settings.streamSharpeningEnabled,
         touchMouseEnabled,
         pinchZoomEnabled,
@@ -7799,6 +7935,16 @@ private fun StreamVideoSurface(
     ) {
         zoomScale = 1f
         zoomOffset = Offset.Zero
+    }
+    LaunchedEffect(stretchToFit) {
+        NativeStreamInputRouter.setStretchToFit(stretchToFit)
+    }
+    LaunchedEffect(zoomScale, zoomOffset) {
+        NativeStreamInputRouter.setPresentationTransform(
+            zoomScale = zoomScale,
+            translationX = zoomOffset.x,
+            translationY = zoomOffset.y,
+        )
     }
     LaunchedEffect(
         settings.mouseSensitivity,
@@ -7824,6 +7970,7 @@ private fun StreamVideoSurface(
         )
     }
     DisposableEffect(client, rootView, pointerRootView, hideExternalMousePointer) {
+        NativeStreamInputRouter.setExternalMousePointerCaptureEnabled(hideExternalMousePointer)
         pointerRootView.configureAndroidMousePointerCapture(hideExternalMousePointer, { currentOnMouseCaptureInput() }) { event ->
             client.dispatchMotion(event)
         }
@@ -7833,6 +7980,8 @@ private fun StreamVideoSurface(
             pointerRootView.showAndroidPointerTree()
         }
         onDispose {
+            NativeStreamInputRouter.setPresentationTransform(1f, 0f, 0f)
+            NativeStreamInputRouter.setExternalMousePointerCaptureEnabled(false)
             pointerRootView.clearAndroidMousePointerCapture()
             pointerRootView.showAndroidPointerTree()
         }
@@ -7911,13 +8060,25 @@ private fun StreamVideoSurface(
         FingerMouseInputLayer(
             enabled = touchMouseEnabled,
             pinchZoomEnabled = pinchZoomEnabled,
-            onZoomGesture = { scaleChange, pan ->
+            onZoomGesture = { scaleChange, pan, centroid ->
+                val previousScale = zoomScale
                 val nextScale = (zoomScale * scaleChange).coerceIn(1f, 3f)
+                val appliedScaleChange = nextScale / previousScale
+                val viewportCenter = Offset(viewportSize.width / 2f, viewportSize.height / 2f)
                 zoomScale = nextScale
                 zoomOffset = if (nextScale <= 1.001f) {
                     Offset.Zero
                 } else {
-                    clampStreamZoomOffset(zoomOffset + pan, nextScale, viewportSize)
+                    // Keep the content under the pinch centroid anchored while scaling, then
+                    // apply the fingers' pan. Scaling around the viewport centre without this
+                    // correction makes an off-centre zoom appear to slide away from the user.
+                    val focalCorrection =
+                        (centroid - viewportCenter) * (1f - appliedScaleChange)
+                    clampStreamZoomOffset(
+                        zoomOffset * appliedScaleChange + focalCorrection + pan,
+                        nextScale,
+                        viewportSize,
+                    )
                 }
             },
             modifier = Modifier.matchParentSize(),
@@ -7927,15 +8088,12 @@ private fun StreamVideoSurface(
 
 internal fun streamRendererAspectRatio(
     settings: StreamSettings,
-    decodedResolution: String?,
-    serverNegotiatedResolution: String? = null,
 ): Float {
-    val expectedPixels = streamResolutionPixels(settings)
-    val decodedPixels = parseResolutionPixelsOrNull(decodedResolution)
-        ?.takeIf(::isStableDecodedStreamResolution)
-    val negotiatedPixels = parseResolutionPixelsOrNull(serverNegotiatedResolution)
-        ?.takeIf(::isStableDecodedStreamResolution)
-    return streamAspectRatioForPixels(decodedPixels ?: negotiatedPixels ?: expectedPixels)
+    // Keep the visible viewport locked to the profile the user selected. The host may
+    // briefly emit a launcher/bootstrap size or change its game output mode even though
+    // dynamic stream-resolution control is disabled in the NVST SDP. Decoded dimensions
+    // are still retained for diagnostics and input mapping, but must not resize the UI.
+    return streamAspectRatioForPixels(streamResolutionPixels(settings))
 }
 
 internal fun streamStretchScale(
@@ -7963,13 +8121,6 @@ private fun streamAspectRatioForPixels(pixels: Pair<Int, Int>): Float {
     if (width <= 0 || height <= 0) return 16f / 9f
     return width.toFloat() / height.toFloat()
 }
-
-private fun isStableDecodedStreamResolution(pixels: Pair<Int, Int>): Boolean =
-    pixels.first >= MIN_STABLE_DECODED_STREAM_WIDTH_PX &&
-        pixels.second >= MIN_STABLE_DECODED_STREAM_HEIGHT_PX
-
-private const val MIN_STABLE_DECODED_STREAM_WIDTH_PX = 320
-private const val MIN_STABLE_DECODED_STREAM_HEIGHT_PX = 180
 
 private fun clampStreamZoomOffset(offset: Offset, zoomScale: Float, viewportSize: IntSize): Offset {
     if (zoomScale <= 1.001f || viewportSize.width <= 0 || viewportSize.height <= 0) return Offset.Zero
@@ -8045,7 +8196,7 @@ private fun android.view.View.applyAndroidPointerIconTree(icon: PointerIcon?) {
 private fun FingerMouseInputLayer(
     enabled: Boolean,
     pinchZoomEnabled: Boolean,
-    onZoomGesture: (scaleChange: Float, pan: Offset) -> Unit,
+    onZoomGesture: (scaleChange: Float, pan: Offset, centroid: Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (!enabled) return
@@ -8093,6 +8244,7 @@ private fun FingerMouseInputLayer(
                         onZoomGesture(
                             (distance / lastPinchDistance).coerceIn(0.82f, 1.22f),
                             centroid - lastPinchCentroid,
+                            centroid,
                         )
                     }
                     pinchActive = true
@@ -8659,6 +8811,7 @@ private fun StreamControlsPanel(
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
+    onKeyboardButtonToggle: () -> Unit,
     onPhoneRumbleFallbackToggle: () -> Unit,
     onTouchLayoutEditingToggle: () -> Unit,
     onKeyboardOpen: () -> Unit,
@@ -8766,6 +8919,7 @@ private fun StreamControlsPanel(
                     onStatsStyleCycle = onStatsStyleCycle,
                     onStatsPositionCycle = onStatsPositionCycle,
                     onStatsMetricsChange = onStatsMetricsChange,
+                    onKeyboardButtonToggle = onKeyboardButtonToggle,
                     onButtonTone = onButtonTone,
                 )
                 StreamControlsPage.TouchControls -> {
@@ -8873,7 +9027,7 @@ private fun StreamControlsPanel(
                             // against the game without leaving the stream.
                             TouchLayoutSlider(R.string.stream_panel_layout_scale, settings.androidTouch.scale, 0.6f, 1.4f, TOUCH_SCALE_SLIDER_STEP, onTouchScaleChange)
                             TouchLayoutSlider(R.string.stream_panel_button_size, settings.androidTouch.buttonScale, 0.65f, 1.5f, TOUCH_SCALE_SLIDER_STEP, onButtonScaleChange)
-                            TouchLayoutSlider(R.string.stream_panel_opacity, settings.androidTouch.opacity, 0.15f, 1f, TOUCH_SCALE_SLIDER_STEP, onOpacityChange)
+                            TouchLayoutSlider(R.string.stream_panel_opacity, settings.androidTouch.opacity, 0f, 1f, TOUCH_SCALE_SLIDER_STEP, onOpacityChange)
                             TouchLayoutSlider(R.string.stream_panel_edge_padding, settings.androidTouch.edgePaddingDp, 0f, 72f, TOUCH_DP_SLIDER_STEP, onTouchEdgePaddingChange, unit = DP_UNIT)
                             TouchLayoutSlider(R.string.stream_panel_bottom_padding, settings.androidTouch.bottomPaddingDp, 0f, 120f, TOUCH_DP_SLIDER_STEP, onTouchBottomPaddingChange, unit = DP_UNIT)
                             TouchLayoutSlider(R.string.stream_panel_left_position, settings.androidTouch.leftOffsetYDp, -160f, 160f, TOUCH_DP_SLIDER_STEP, onTouchLeftOffsetChange, unit = DP_UNIT)
@@ -8921,6 +9075,15 @@ private fun StreamControlsPanel(
             item {
                 ControlSection(stringResource(R.string.stream_panel_section_display)) {
                     ControlSwitchRow(
+                        label = stringResource(R.string.stream_panel_stretch_to_fit),
+                        checked = settings.stretchStreamToFit,
+                        onCheckedChange = {
+                            onButtonTone()
+                            onStretchToFitToggle()
+                        },
+                        value = onOffLabel(settings.stretchStreamToFit),
+                    )
+                    ControlSwitchRow(
                         label = stringResource(R.string.stream_panel_audio),
                         checked = !audioMuted,
                         onCheckedChange = {
@@ -8964,15 +9127,6 @@ private fun StreamControlsPanel(
                             onChange = onSharpeningAmountChange,
                         )
                     }
-                    ControlSwitchRow(
-                        label = stringResource(R.string.stream_panel_stretch_to_fit),
-                        checked = settings.stretchStreamToFit,
-                        onCheckedChange = {
-                            onButtonTone()
-                            onStretchToFitToggle()
-                        },
-                        value = onOffLabel(settings.stretchStreamToFit),
-                    )
                     ControlSliderRow(
                         label = stringResource(R.string.settings_bitrate),
                         value = settings.stream.maxBitrateMbps.toFloat(),
@@ -9232,12 +9386,12 @@ private fun BugReportDataDisclosure(
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Text(
-                        "PrintedWaste and OpenNOW maintainers may view the report text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, and a redacted diagnostic log.",
+                        "PrintedWaste and OpenNOW maintainers may view the report text, app version/build, device model, Android version, provider and membership category, current game, stream status/settings, a pseudonymous installation identifier for abuse prevention, and a redacted diagnostic log.",
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "The automatic log removes account names, credentials, session IDs, and network addresses before upload.",
+                        "The automatic log removes account names, credentials, session IDs, and network addresses before upload. The raw device ID is not sent.",
                         color = TextPrimary,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.SemiBold,
@@ -9305,6 +9459,7 @@ private fun Modifier.streamTouchPassthrough(id: String, inflate: Dp = 8.dp): Mod
 
 private const val PASSTHROUGH_ID_PANEL = "controls-panel"
 private const val PASSTHROUGH_ID_KEYBOARD = "keyboard-bar"
+private const val PASSTHROUGH_ID_STATUS_BAR_KEYBOARD = "status-bar-keyboard"
 private const val PASSTHROUGH_ID_EXIT = "exit-confirmation"
 
 @Composable
@@ -10221,6 +10376,7 @@ private fun LazyListScope.statusBarPageItems(
     onStatsStyleCycle: () -> Unit,
     onStatsPositionCycle: () -> Unit,
     onStatsMetricsChange: (StreamStatsMetrics) -> Unit,
+    onKeyboardButtonToggle: () -> Unit,
     onButtonTone: () -> Unit,
 ) {
     val metrics = settings.streamStatsMetrics
@@ -10266,7 +10422,7 @@ private fun LazyListScope.statusBarPageItems(
         )
     }
     item {
-        // Ten small toggles side by side; the standard row height would waste the panel.
+        // Compact toggles side by side; the standard row height would waste the panel.
         val statusBarMetricStyle = ControlRowStyle.stream().copy(
             verticalPadding = 6.dp,
             labelStyle = MaterialTheme.typography.labelMedium,
@@ -10286,6 +10442,16 @@ private fun LazyListScope.statusBarPageItems(
                 horizontalArrangement = Arrangement.spacedBy(gap),
                 verticalArrangement = Arrangement.spacedBy(gap),
             ) {
+                ControlSwitchRow(
+                    label = stringResource(R.string.stream_statusbar_metric_keyboard),
+                    checked = !settings.hideStreamButtons,
+                    onCheckedChange = {
+                        onButtonTone()
+                        onKeyboardButtonToggle()
+                    },
+                    modifier = Modifier.width(itemWidth),
+                    style = statusBarMetricStyle,
+                )
                 ControlSwitchRow(
                     label = stringResource(R.string.stream_statusbar_metric_fps),
                     checked = metrics.fps,
@@ -10450,10 +10616,10 @@ private const val DP_UNIT = "dp"
 
 @Composable
 private fun StreamKeyboardBar(
-    text: String,
-    onTextChange: (String) -> Unit,
+    value: TextFieldValue,
+    syncedText: String?,
+    onValueChange: (TextFieldValue) -> Unit,
     onSend: () -> Unit,
-    onBackspace: () -> Unit,
     onEnter: () -> Unit,
     onEsc: () -> Unit,
     onDone: () -> Unit,
@@ -10461,9 +10627,13 @@ private fun StreamKeyboardBar(
 ) {
     val inputFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val applyAction = streamKeyboardApplyAction(syncedText, value.text)
     val sendIfReady = {
-        if (text.isNotBlank()) {
+        if (applyAction != StreamKeyboardApplyAction.None) {
             onSend()
+            keyboardController?.hide()
+            focusManager.clearFocus(force = true)
         }
     }
     LaunchedEffect(Unit) {
@@ -10481,52 +10651,77 @@ private fun StreamKeyboardBar(
             // The keyboard bar registered no passthrough bounds at all, so on a phone every tap on
             // it — including on the text field — was also forwarded into the game as touch input.
             .streamTouchPassthrough(PASSTHROUGH_ID_KEYBOARD),
-        // Bottom-anchored, so only the top corners round. It was the one square-cornered overlay.
+        // imePadding on the parent keeps this single compact row directly above the system IME.
         shape = RoundedCornerShape(topStart = OpenNowRadius.lg, topEnd = OpenNowRadius.lg),
         color = OpenNowPalette.PanelOverVideo,
         border = BorderStroke(1.dp, OpenNowPalette.PanelHairline),
         tonalElevation = 8.dp,
     ) {
-        Column(Modifier.padding(OpenNowSpacing.md), verticalArrangement = Arrangement.spacedBy(OpenNowSpacing.sm)) {
+        Row(
+            modifier = Modifier.padding(horizontal = OpenNowSpacing.sm, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             OutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
+                value = value,
+                onValueChange = onValueChange,
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .weight(1f)
+                    .height(52.dp)
                     .focusRequester(inputFocusRequester),
                 singleLine = true,
-                placeholder = { Text("Type into stream", color = TextMuted) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Send),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium,
+                ),
+                placeholder = { Text("Type or edit stream text", color = TextMuted) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.72f),
+                    focusedContainerColor = Color.Black.copy(alpha = 0.52f),
+                    unfocusedContainerColor = Color.Black.copy(alpha = 0.42f),
+                ),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { sendIfReady() }),
-                trailingIcon = {
-                    TextButton(
-                        onClick = {
-                            if (text.length < MAX_STREAM_KEYBOARD_TEXT_LENGTH) {
-                                onTextChange("$text@")
-                            }
-                        },
-                    ) {
-                        Text("@")
-                    }
-                },
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = sendIfReady, enabled = text.isNotBlank(), modifier = Modifier.weight(1f)) { Text("Send") }
-                OutlinedButton(onClick = onBackspace, modifier = Modifier.weight(1f)) { Text("⌫") }
-                OutlinedButton(onClick = onEnter, modifier = Modifier.weight(1f)) { Text("Enter") }
-                OutlinedButton(onClick = onEsc, modifier = Modifier.weight(1f)) { Text("Esc") }
-                TextButton(
-                    onClick = {
-                        keyboardController?.hide()
-                        onDone()
-                    },
-                ) { Text("Done") }
+            Button(
+                onClick = sendIfReady,
+                enabled = applyAction != StreamKeyboardApplyAction.None,
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                Text(if (applyAction == StreamKeyboardApplyAction.Replace) "Update" else "Type")
             }
+            OutlinedButton(onClick = onEnter, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Enter") }
+            TextButton(onClick = onEsc, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Esc") }
+            TextButton(
+                onClick = {
+                    keyboardController?.hide()
+                    focusManager.clearFocus(force = true)
+                    onDone()
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) { Text("Done") }
         }
     }
 }
 
 private const val MAX_STREAM_KEYBOARD_TEXT_LENGTH = 4096
+
+internal enum class StreamKeyboardApplyAction {
+    None,
+    Type,
+    Replace,
+}
+
+internal fun streamKeyboardApplyAction(syncedText: String?, draft: String): StreamKeyboardApplyAction = when {
+    syncedText == draft -> StreamKeyboardApplyAction.None
+    syncedText != null -> StreamKeyboardApplyAction.Replace
+    draft.isNotEmpty() -> StreamKeyboardApplyAction.Type
+    else -> StreamKeyboardApplyAction.None
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -10536,9 +10731,11 @@ private fun StreamStatsPill(
     style: StreamStatsStyle,
     metrics: StreamStatsMetrics,
     serverLocation: String?,
+    keyboardButtonEnabled: Boolean,
+    onKeyboardOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (metrics.enabledCount() == 0) return
+    if (metrics.enabledCount() == 0 && !keyboardButtonEnabled) return
     val compact = style == StreamStatsStyle.Compact
     val deviceStatus = rememberCompactStreamDeviceStatus()
     Surface(
@@ -10559,6 +10756,9 @@ private fun StreamStatsPill(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 StreamStatsMetricItems(streamStats, streamSettings, metrics, deviceStatus, serverLocation)
+                if (keyboardButtonEnabled) {
+                    StreamStatusKeyboardButton(onClick = onKeyboardOpen)
+                }
             }
         } else {
             FlowRow(
@@ -10578,8 +10778,59 @@ private fun StreamStatsPill(
                     // Two aligned columns instead of a ragged pair of runs.
                     itemModifier = Modifier.weight(1f),
                 )
+                if (keyboardButtonEnabled) {
+                    StreamStatusKeyboardButton(onClick = onKeyboardOpen)
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun StreamStatusKeyboardButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(28.dp)
+            .streamTouchPassthrough(PASSTHROUGH_ID_STATUS_BAR_KEYBOARD, inflate = 8.dp)
+            .clickable(role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Keyboard,
+            contentDescription = stringResource(R.string.stream_panel_cd_keyboard),
+            tint = TextPrimary,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
+@Composable
+private fun StreamNetworkQualityNotice(
+    warning: StreamNetworkWarning,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .padding(horizontal = 8.dp)
+            .widthIn(max = 520.dp)
+            .semantics { contentDescription = warning.message },
+        shape = RoundedCornerShape(OpenNowRadius.md),
+        color = Color(0xff4a2f0b).copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, OpenNowPalette.StatusNotice.copy(alpha = 0.62f)),
+        tonalElevation = 0.dp,
+    ) {
+        Text(
+            text = warning.message,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            color = Color(0xffffd38a),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -11061,7 +11312,13 @@ private fun StreamStatsMetricItems(
         }
     }
     if (metrics.bitrate) {
-        StreamStatsText(formatRuntimeBitrate(streamStats.bitrateKbps), modifier = itemModifier)
+        StreamStatsText(
+            formatRuntimeBitrateStatus(
+                actualBitrateKbps = streamStats.bitrateKbps,
+                requestedMaxBitrateMbps = streamSettings.maxBitrateMbps,
+            ),
+            modifier = itemModifier,
+        )
     }
     if (metrics.battery) {
         StreamBatteryIndicator(deviceStatus, itemModifier)
@@ -11284,6 +11541,11 @@ private fun formatRuntimeBitrate(bitrateKbps: Int?): String {
         "$kbps Kbps"
     }
 }
+
+internal fun formatRuntimeBitrateStatus(
+    actualBitrateKbps: Int?,
+    requestedMaxBitrateMbps: Int,
+): String = "${formatRuntimeBitrate(actualBitrateKbps)} / ${requestedMaxBitrateMbps.coerceAtLeast(1)} Mbps max"
 
 private fun shouldHideStreamStatusText(status: String): Boolean =
     status.trim().replace('_', ' ').let {
@@ -14607,8 +14869,8 @@ internal fun UrlImage(
 
 @Composable
 private fun LoadingShimmer(modifier: Modifier = Modifier) {
-    // Use the shared shimmer offset from GameGridSkeleton if available; fall back to a
-    // local animation only when LoadingShimmer is used outside a GameGridSkeleton context.
+    // Use the shared grid animation when available; the local fallback only runs while an
+    // individual image placeholder is actually composed.
     // Using nullable avoids treating 0f (a valid animation start value) as "not provided".
     val reduceMotion = LocalReduceMotion.current
     val sharedPulse = LocalTvLoadingPulse.current
@@ -14653,13 +14915,23 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
                     drawRect(highlightColor1.copy(alpha = 0.08f + pulse.value * 0.18f))
                 } else {
                     val width = size.width
-                    val height = size.height
-                    // Keep the highlight narrow and move it fully beyond both edges. The
-                    // repeat seam then joins two identical base-color frames instead of
-                    // visibly snapping a full-card gradient back to the beginning.
                     val bandWidth = (width * 0.52f).coerceAtLeast(1f)
-                    val bandCenter = -2f * bandWidth + (shimmer?.value ?: 0f) * (width + 4f * bandWidth)
-                    val brush = Brush.linearGradient(
+                    // Observe the transition for draw invalidations, but anchor the visible phase
+                    // to device uptime so recreating an image loader cannot jump the band back.
+                    val animationFrame = shimmer?.value
+                    val bandStart = shimmerBandStartX(
+                        progress = if (animationFrame == null) {
+                            0f
+                        } else {
+                            shimmerProgressAtUptime(SystemClock.uptimeMillis())
+                        },
+                        containerWidth = width,
+                        bandWidth = bandWidth,
+                    )
+                    // A horizontal shader gives the sweep exact bounds. At both repeat endpoints
+                    // its transparent edge only touches the card, so Restart cannot paint a
+                    // backward-moving frame on tall poster placeholders.
+                    val brush = Brush.horizontalGradient(
                         colors = listOf(
                             Color.Transparent,
                             highlightColor1,
@@ -14667,13 +14939,25 @@ private fun LoadingShimmer(modifier: Modifier = Modifier) {
                             highlightColor1,
                             Color.Transparent,
                         ),
-                        start = Offset(bandCenter - bandWidth, -height),
-                        end = Offset(bandCenter + bandWidth, height * 2f),
+                        startX = bandStart,
+                        endX = bandStart + bandWidth,
                     )
                     drawRect(brush)
                 }
             }
     )
+}
+
+internal fun shimmerProgressAtUptime(uptimeMillis: Long): Float {
+    val cycleDurationMs = SHIMMER_CYCLE_DURATION_MS.toLong()
+    return Math.floorMod(uptimeMillis, cycleDurationMs).toFloat() / cycleDurationMs
+}
+
+internal fun shimmerBandStartX(progress: Float, containerWidth: Float, bandWidth: Float): Float {
+    val safeWidth = containerWidth.coerceAtLeast(0f)
+    val safeBandWidth = bandWidth.coerceAtLeast(1f)
+    return -safeBandWidth +
+        progress.coerceIn(0f, 1f) * (safeWidth + safeBandWidth)
 }
 
 @Composable

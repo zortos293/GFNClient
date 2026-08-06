@@ -804,7 +804,163 @@ internal fun signalingWebSocketHttpClient(base: OkHttpClient): OkHttpClient =
         .connectionSpecs(listOf(SIGNALING_TLS_1_2))
         .build()
 
+/**
+ * Owns the app-UI side of an in-progress touch gesture independently from the bounds that first
+ * claimed it. Compose overlays can disappear and replace one another between DOWN and UP (for
+ * example, the stream-menu launcher is replaced by the menu panel). Removing the launcher's bounds
+ * must not turn that already-owned finger back into a game touch or let its trailing UP activate a
+ * control in the newly opened panel.
+ */
+internal class NativeUiTouchRoutingState {
+    @Volatile
+    private var streamChromeBounds: TouchPassthroughBounds? = null
+    @Volatile
+    private var streamPanelBounds: TouchPassthroughBounds? = null
+    @Volatile
+    private var overlayBounds: Map<String, TouchPassthroughBounds> = emptyMap()
+    @Volatile
+    private var touchControllerBounds: Map<String, TouchPassthroughBounds> = emptyMap()
+    @Volatile
+    private var touchControllerVisible = false
+
+    private val ownedPointerIds = mutableSetOf<Int>()
+
+    @Volatile
+    var passthroughActive: Boolean = false
+        private set
+
+    fun setStreamChromeBounds(left: Int, top: Int, right: Int, bottom: Int) {
+        streamChromeBounds = TouchPassthroughBounds(left, top, right, bottom)
+    }
+
+    fun clearStreamChromeBounds() {
+        streamChromeBounds = null
+    }
+
+    fun setOverlayBound(id: String, left: Int, top: Int, right: Int, bottom: Int) {
+        overlayBounds = overlayBounds.toMutableMap().also {
+            it[id] = TouchPassthroughBounds(left, top, right, bottom)
+        }
+    }
+
+    fun clearOverlayBound(id: String) {
+        if (id !in overlayBounds) return
+        overlayBounds = overlayBounds.toMutableMap().also { it.remove(id) }
+    }
+
+    fun setStreamPanelBounds(left: Int, top: Int, right: Int, bottom: Int) {
+        streamPanelBounds = TouchPassthroughBounds(left, top, right, bottom)
+    }
+
+    fun clearStreamPanelBounds() {
+        streamPanelBounds = null
+    }
+
+    fun setTouchControllerBounds(left: Int, top: Int, right: Int, bottom: Int) {
+        touchControllerBounds = mapOf("default" to TouchPassthroughBounds(left, top, right, bottom))
+    }
+
+    fun setTouchControllerBound(id: String, left: Int, top: Int, right: Int, bottom: Int) {
+        touchControllerBounds = touchControllerBounds.toMutableMap().also {
+            it[id] = TouchPassthroughBounds(left, top, right, bottom)
+        }
+    }
+
+    fun clearTouchControllerBound(id: String) {
+        if (id !in touchControllerBounds) return
+        touchControllerBounds = touchControllerBounds.toMutableMap().also { it.remove(id) }
+    }
+
+    fun setTouchControllerVisible(visible: Boolean) {
+        touchControllerVisible = visible
+        if (!visible) touchControllerBounds = emptyMap()
+    }
+
+    fun clearTouchControllerBounds() {
+        touchControllerBounds = emptyMap()
+        touchControllerVisible = false
+    }
+
+    fun touchesRegisteredUi(x: Float, y: Float, width: Int, height: Int): Boolean {
+        if (streamChromeBounds?.contains(x, y) == true) return true
+        if (streamPanelBounds?.contains(x, y) == true) return true
+        if (overlayBounds.values.any { it.contains(x, y) }) return true
+        if (touchControllerBounds.values.any { it.contains(x, y) }) return true
+        return touchControllerVisible &&
+            width > 0 &&
+            height > 0 &&
+            y >= height * TOUCH_CONTROLLER_FALLBACK_TOP_RATIO
+    }
+
+    fun beginPointerGesture(pointerId: Int, touchesUi: Boolean) {
+        ownedPointerIds.clear()
+        if (touchesUi) ownedPointerIds += pointerId
+        syncPassthroughActive()
+    }
+
+    fun addPointer(pointerId: Int, touchesUi: Boolean) {
+        if (touchesUi) ownedPointerIds += pointerId
+        syncPassthroughActive()
+    }
+
+    fun ownsPointer(pointerId: Int): Boolean = pointerId in ownedPointerIds
+
+    fun hasOwnedPointer(): Boolean = ownedPointerIds.isNotEmpty()
+
+    fun ownedPointers(): Set<Int> = ownedPointerIds
+
+    fun releasePointer(pointerId: Int) {
+        ownedPointerIds.remove(pointerId)
+        syncPassthroughActive()
+    }
+
+    fun endPointerGesture() {
+        ownedPointerIds.clear()
+        syncPassthroughActive()
+    }
+
+    fun setLegacyPassthroughActive(active: Boolean) {
+        passthroughActive = active
+    }
+
+    private fun syncPassthroughActive() {
+        passthroughActive = ownedPointerIds.isNotEmpty()
+    }
+
+    private data class TouchPassthroughBounds(
+        val left: Int,
+        val top: Int,
+        val right: Int,
+        val bottom: Int,
+    ) {
+        fun contains(x: Float, y: Float): Boolean =
+            x >= left - EDGE_SLOP_PX &&
+                x <= right + EDGE_SLOP_PX &&
+                y >= top - EDGE_SLOP_PX &&
+                y <= bottom + EDGE_SLOP_PX
+
+        companion object {
+            private const val EDGE_SLOP_PX = 24
+        }
+    }
+
+    private companion object {
+        const val TOUCH_CONTROLLER_FALLBACK_TOP_RATIO = 0.52f
+    }
+}
+
+internal fun shouldConsumeNativeUiTransitionTouch(
+    streamUiActive: Boolean,
+    hasOwnedPointer: Boolean,
+): Boolean = streamUiActive && hasOwnedPointer
+
 object NativeStreamInputRouter {
+    private data class PresentationTransform(
+        val zoomScale: Float = 1f,
+        val translationX: Float = 0f,
+        val translationY: Float = 0f,
+    )
+
     @Volatile
     private var client: NativeStreamClient? = null
     @Volatile
@@ -812,6 +968,16 @@ object NativeStreamInputRouter {
     fun setAndroidTvProfile(enabled: Boolean) {
         androidTvProfile = enabled
     }
+    @Volatile
+    private var externalMousePointerCaptureEnabled = false
+
+    fun setExternalMousePointerCaptureEnabled(enabled: Boolean) {
+        externalMousePointerCaptureEnabled = enabled
+    }
+
+    fun isExternalMousePointerCaptureEnabled(): Boolean =
+        externalMousePointerCaptureEnabled
+
     @Volatile
     private var touchMouseEnabled = false
     @Volatile
@@ -821,9 +987,9 @@ object NativeStreamInputRouter {
     @Volatile
     private var renderingAspectRatio = 0f
     @Volatile
-    private var decodedStreamWidth = 0
+    private var presentationTransform = PresentationTransform()
     @Volatile
-    private var decodedStreamHeight = 0
+    private var decodedStreamResolution = 0 to 0
     @Volatile
     private var captureAllTouch = false
     @Volatile
@@ -833,25 +999,7 @@ object NativeStreamInputRouter {
     private var systemBackHandler: (() -> Unit)? = null
     @Volatile
     private var streamUiActive = false
-    @Volatile
-    private var streamChromePassthroughBounds: TouchPassthroughBounds? = null
-    @Volatile
-    private var streamPanelPassthroughBounds: TouchPassthroughBounds? = null
-    /**
-     * Bounds for transient full-screen or anchored overlays, keyed so they cannot clobber each
-     * other. The keyboard bar, the exit confirmation and the controls launcher can all be present
-     * across the same stream, and a single shared slot meant whichever disposed last wiped the
-     * others' rect and left them forwarding taps into the game.
-     */
-    @Volatile
-    private var overlayPassthroughBounds: Map<String, TouchPassthroughBounds> = emptyMap()
-    @Volatile
-    private var touchControllerPassthroughBounds: Map<String, TouchPassthroughBounds> = emptyMap()
-    @Volatile
-    private var touchControllerVisible = false
-    @Volatile
-    private var uiTouchPassthroughActive = false
-    private val nativeUiTouchPointerIds = mutableSetOf<Int>()
+    private val nativeUiTouchRouting = NativeUiTouchRoutingState()
     private val touchMouseState = TouchMouseState()
 
     /**
@@ -875,8 +1023,8 @@ object NativeStreamInputRouter {
         client = next
         // Never carry an in-progress drag position into a different host session.
         touchMouseState.forgetCursorPosition()
-        decodedStreamWidth = 0
-        decodedStreamHeight = 0
+        decodedStreamResolution = 0 to 0
+        resetPresentationTransform()
     }
 
     fun detach(next: NativeStreamClient) {
@@ -884,8 +1032,9 @@ object NativeStreamInputRouter {
             client = null
             touchMouseState.forgetCursorPosition()
             touchSlots.clear()
-            decodedStreamWidth = 0
-            decodedStreamHeight = 0
+            nativeUiTouchRouting.endPointerGesture()
+            decodedStreamResolution = 0 to 0
+            resetPresentationTransform()
         }
     }
 
@@ -897,6 +1046,7 @@ object NativeStreamInputRouter {
     fun releaseTouchMouseForLifecycle() {
         touchMouseState.reset(client)
         releaseAllNativeTouches()
+        nativeUiTouchRouting.endPointerGesture()
     }
 
     fun setTouchMouseEnabled(enabled: Boolean) {
@@ -917,6 +1067,7 @@ object NativeStreamInputRouter {
         // Leaving the mode mid-gesture would otherwise strand whatever fingers are down.
         releaseAllNativeTouches()
         nativeTouchDownPoints.clear()
+        nativeUiTouchRouting.endPointerGesture()
         touchMouseState.reset(client)
     }
 
@@ -940,12 +1091,45 @@ object NativeStreamInputRouter {
         }
     }
 
+    /**
+     * Mirrors the uniform scale and translation applied by the Compose stream surface. Input is
+     * mapped through the inverse transform before letterbox/stretch mapping, so direct click keeps
+     * targeting the pixel visibly under the finger after pinch zoom or pan.
+     */
+    fun setPresentationTransform(zoomScale: Float, translationX: Float, translationY: Float) {
+        val safeScale = zoomScale.takeIf { it.isFinite() }?.coerceIn(1f, 3f) ?: 1f
+        val safeTranslationX = translationX.takeIf { it.isFinite() } ?: 0f
+        val safeTranslationY = translationY.takeIf { it.isFinite() } ?: 0f
+        val next = PresentationTransform(safeScale, safeTranslationX, safeTranslationY)
+        if (presentationTransform == next) return
+        touchMouseState.reset(client)
+        presentationTransform = next
+    }
+
+    private fun resetPresentationTransform() {
+        presentationTransform = PresentationTransform()
+    }
+
     fun setDecodedStreamResolution(width: Int, height: Int) {
         if (width > 0 && height > 0) {
-            decodedStreamWidth = width
-            decodedStreamHeight = height
+            val next = width to height
+            if (decodedStreamResolution != next) {
+                // A new decoded geometry changes the visible content bounds even though the
+                // selected viewport remains fixed. End in-flight gestures before switching
+                // coordinate spaces so a held pointer cannot jump across the host screen.
+                touchMouseState.reset(client)
+                releaseAllNativeTouches()
+            }
+            decodedStreamResolution = next
         }
     }
+
+    private fun inputContentAspectRatio(decodedResolution: Pair<Int, Int>): Float =
+        if (decodedResolution.first > 0 && decodedResolution.second > 0) {
+            decodedResolution.first.toFloat() / decodedResolution.second.toFloat()
+        } else {
+            renderingAspectRatio
+        }
 
     fun setCaptureAllTouch(enabled: Boolean) {
         captureAllTouch = enabled
@@ -967,6 +1151,14 @@ object NativeStreamInputRouter {
 
 
     fun setStreamUiActive(active: Boolean) {
+        if (active && !streamUiActive) {
+            // A system/menu action can open app UI while a native game touch is still held. The
+            // host will not receive that finger's eventual UP once UI routing takes over, so cancel
+            // it at the transition instead of leaving a stuck press in the game.
+            releaseAllNativeTouches()
+            nativeTouchDownPoints.clear()
+            touchMouseState.reset(client)
+        }
         streamUiActive = active
     }
 
@@ -1005,67 +1197,47 @@ object NativeStreamInputRouter {
                 (keyCode == KeyEvent.KEYCODE_BACK && controllerSource))
 
     fun setUiTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
-        streamChromePassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
+        nativeUiTouchRouting.setStreamChromeBounds(left, top, right, bottom)
     }
 
     fun clearUiTouchPassthroughBounds() {
-        streamChromePassthroughBounds = null
-        uiTouchPassthroughActive = false
-        nativeUiTouchPointerIds.clear()
+        nativeUiTouchRouting.clearStreamChromeBounds()
     }
 
     fun setOverlayTouchPassthroughBound(id: String, left: Int, top: Int, right: Int, bottom: Int) {
-        overlayPassthroughBounds = overlayPassthroughBounds.toMutableMap().also {
-            it[id] = TouchPassthroughBounds(left, top, right, bottom)
-        }
+        nativeUiTouchRouting.setOverlayBound(id, left, top, right, bottom)
     }
 
     fun clearOverlayTouchPassthroughBound(id: String) {
-        if (id !in overlayPassthroughBounds) return
-        overlayPassthroughBounds = overlayPassthroughBounds.toMutableMap().also { it.remove(id) }
-        uiTouchPassthroughActive = false
-        nativeUiTouchPointerIds.clear()
+        nativeUiTouchRouting.clearOverlayBound(id)
     }
 
     fun setStreamPanelTouchPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
-        streamPanelPassthroughBounds = TouchPassthroughBounds(left, top, right, bottom)
+        nativeUiTouchRouting.setStreamPanelBounds(left, top, right, bottom)
     }
 
     fun clearStreamPanelTouchPassthroughBounds() {
-        streamPanelPassthroughBounds = null
-        uiTouchPassthroughActive = false
-        nativeUiTouchPointerIds.clear()
+        nativeUiTouchRouting.clearStreamPanelBounds()
     }
 
     fun setTouchControllerPassthroughBounds(left: Int, top: Int, right: Int, bottom: Int) {
-        touchControllerPassthroughBounds = mapOf("default" to TouchPassthroughBounds(left, top, right, bottom))
+        nativeUiTouchRouting.setTouchControllerBounds(left, top, right, bottom)
     }
 
     fun setTouchControllerPassthroughBound(id: String, left: Int, top: Int, right: Int, bottom: Int) {
-        touchControllerPassthroughBounds = touchControllerPassthroughBounds.toMutableMap().also {
-            it[id] = TouchPassthroughBounds(left, top, right, bottom)
-        }
+        nativeUiTouchRouting.setTouchControllerBound(id, left, top, right, bottom)
     }
 
     fun clearTouchControllerPassthroughBound(id: String) {
-        if (id !in touchControllerPassthroughBounds) return
-        touchControllerPassthroughBounds = touchControllerPassthroughBounds.toMutableMap().also { it.remove(id) }
+        nativeUiTouchRouting.clearTouchControllerBound(id)
     }
 
     fun setTouchControllerVisible(visible: Boolean) {
-        touchControllerVisible = visible
-        if (!visible) {
-            touchControllerPassthroughBounds = emptyMap()
-            uiTouchPassthroughActive = false
-            nativeUiTouchPointerIds.clear()
-        }
+        nativeUiTouchRouting.setTouchControllerVisible(visible)
     }
 
     fun clearTouchControllerPassthroughBounds() {
-        touchControllerPassthroughBounds = emptyMap()
-        touchControllerVisible = false
-        uiTouchPassthroughActive = false
-        nativeUiTouchPointerIds.clear()
+        nativeUiTouchRouting.clearTouchControllerBounds()
     }
 
     fun cancelTouchMouse() {
@@ -1073,7 +1245,18 @@ object NativeStreamInputRouter {
     }
 
     fun isNativeUiTouchGestureActive(): Boolean =
-        nativeUiTouchPointerIds.isNotEmpty()
+        nativeUiTouchRouting.hasOwnedPointer()
+
+    /**
+     * If app UI was opened on DOWN, consume the remainder of that launcher gesture before Android
+     * can retarget its UP to a control at the same coordinates in the newly mounted panel.
+     */
+    fun shouldConsumeUiTransitionTouchBeforeViews(event: MotionEvent): Boolean =
+        event.isFingerTouchEvent() &&
+            shouldConsumeNativeUiTransitionTouch(
+                streamUiActive = streamUiActive,
+                hasOwnedPointer = nativeUiTouchRouting.hasOwnedPointer(),
+            )
 
     fun shouldForwardTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean {
         val isDirectClick = mouseDirectClick && event.isExternalMousePointerEvent()
@@ -1095,12 +1278,12 @@ object NativeStreamInputRouter {
         // can drive the pointer. Native touch forwards every finger by definition, so a two-finger
         // gesture reaching this point is the normal case rather than something to hand to the views.
         if (isNativeTouch) return true
-        return event.pointerCount == 1 || nativeUiTouchPointerIds.isNotEmpty()
+        return event.pointerCount == 1 || nativeUiTouchRouting.hasOwnedPointer()
     }
 
     fun shouldCaptureTouchBeforeViews(event: MotionEvent, width: Int, height: Int): Boolean =
         shouldForwardTouchBeforeViews(event, width, height) &&
-            nativeUiTouchPointerIds.isEmpty()
+            !nativeUiTouchRouting.hasOwnedPointer()
 
     fun dispatchTouch(event: MotionEvent, width: Int, height: Int): Boolean {
         val current = client ?: return false
@@ -1113,18 +1296,23 @@ object NativeStreamInputRouter {
         if (nativeTouchEnabled && event.isFingerTouchEvent() && width > 0 && height > 0) {
             return dispatchNativeTouch(event, current, width, height)
         }
+        val decodedResolution = decodedStreamResolution
+        val transform = presentationTransform
         return touchMouseState.handle(
             event = event,
             enabled = (touchMouseEnabled || isDirectClick) && width > 0 && height > 0,
             client = current,
-            ignoredPointerIds = nativeUiTouchPointerIds,
+            ignoredPointerIds = nativeUiTouchRouting.ownedPointers(),
             directClick = mouseDirectClick,
             width = width,
             height = height,
             stretchToFit = stretchToFit,
-            renderingAspectRatio = renderingAspectRatio,
-            decodedStreamWidth = decodedStreamWidth,
-            decodedStreamHeight = decodedStreamHeight,
+            renderingAspectRatio = inputContentAspectRatio(decodedResolution),
+            presentationZoomScale = transform.zoomScale,
+            presentationTranslationX = transform.translationX,
+            presentationTranslationY = transform.translationY,
+            decodedStreamWidth = decodedResolution.first,
+            decodedStreamHeight = decodedResolution.second,
         )
     }
 
@@ -1163,7 +1351,7 @@ object NativeStreamInputRouter {
             if (index !in 0 until event.pointerCount) return@mapNotNull null
             val pointerId = event.getPointerId(index)
             // Fingers on our own chrome belong to the overlay, not the game.
-            if (pointerId in nativeUiTouchPointerIds) return@mapNotNull null
+            if (nativeUiTouchRouting.ownsPointer(pointerId)) return@mapNotNull null
 
             val rawX = event.getX(index)
             val rawY = event.getY(index)
@@ -1218,7 +1406,11 @@ object NativeStreamInputRouter {
         }
         if (pointers.isEmpty()) return false
 
-        val (streamWidth, streamHeight) = streamResolutionPixels(client.settings)
+        val settingsResolution = streamResolutionPixels(client.settings)
+        val decodedResolution = decodedStreamResolution
+        val transform = presentationTransform
+        val streamWidth = decodedResolution.first.takeIf { it > 0 } ?: settingsResolution.first
+        val streamHeight = decodedResolution.second.takeIf { it > 0 } ?: settingsResolution.second
         val records = buildTouchBatch(
             allocator = touchSlots,
             phase = phase,
@@ -1228,7 +1420,10 @@ object NativeStreamInputRouter {
             streamWidth = streamWidth,
             streamHeight = streamHeight,
             stretchToFit = stretchToFit,
-            renderingAspectRatio = renderingAspectRatio,
+            renderingAspectRatio = inputContentAspectRatio(decodedResolution),
+            presentationZoomScale = transform.zoomScale,
+            presentationTranslationX = transform.translationX,
+            presentationTranslationY = transform.translationY,
         )
         if (records.isEmpty()) return false
         return client.sendNativeTouch(records)
@@ -1486,16 +1681,17 @@ object NativeStreamInputRouter {
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                uiTouchPassthroughActive =
-                    pointerTouchesNativeUi(event, 0, width, height)
-                return uiTouchPassthroughActive
+                nativeUiTouchRouting.setLegacyPassthroughActive(
+                    pointerTouchesNativeUi(event, 0, width, height),
+                )
+                return nativeUiTouchRouting.passthroughActive
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val wasActive = uiTouchPassthroughActive
-                uiTouchPassthroughActive = false
+                val wasActive = nativeUiTouchRouting.passthroughActive
+                nativeUiTouchRouting.setLegacyPassthroughActive(false)
                 return wasActive
             }
-            else -> if (uiTouchPassthroughActive) {
+            else -> if (nativeUiTouchRouting.passthroughActive) {
                 return true
             }
         }
@@ -1506,19 +1702,21 @@ object NativeStreamInputRouter {
         if (!event.isFingerTouchEvent()) return
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                nativeUiTouchPointerIds.clear()
-                if (pointerTouchesNativeUi(event, 0, width, height)) {
-                    nativeUiTouchPointerIds += event.getPointerId(0)
-                }
+                nativeUiTouchRouting.beginPointerGesture(
+                    pointerId = event.getPointerId(0),
+                    touchesUi = pointerTouchesNativeUi(event, 0, width, height),
+                )
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 val index = event.actionIndex
-                if (index in 0 until event.pointerCount && pointerTouchesNativeUi(event, index, width, height)) {
-                    nativeUiTouchPointerIds += event.getPointerId(index)
+                if (index in 0 until event.pointerCount) {
+                    nativeUiTouchRouting.addPointer(
+                        pointerId = event.getPointerId(index),
+                        touchesUi = pointerTouchesNativeUi(event, index, width, height),
+                    )
                 }
             }
         }
-        uiTouchPassthroughActive = nativeUiTouchPointerIds.isNotEmpty()
     }
 
     fun postDispatchTouch(event: MotionEvent) {
@@ -1527,15 +1725,14 @@ object NativeStreamInputRouter {
             MotionEvent.ACTION_POINTER_UP -> {
                 val index = event.actionIndex
                 if (index in 0 until event.pointerCount) {
-                    nativeUiTouchPointerIds.remove(event.getPointerId(index))
+                    nativeUiTouchRouting.releasePointer(event.getPointerId(index))
                 }
             }
             MotionEvent.ACTION_UP,
             MotionEvent.ACTION_CANCEL -> {
-                nativeUiTouchPointerIds.clear()
+                nativeUiTouchRouting.endPointerGesture()
             }
         }
-        uiTouchPassthroughActive = nativeUiTouchPointerIds.isNotEmpty()
     }
 
     private fun eventHasNativeUiTouchPointer(event: MotionEvent, width: Int, height: Int): Boolean =
@@ -1549,7 +1746,7 @@ object NativeStreamInputRouter {
         }
 
     private fun isNativeUiTouchPointer(event: MotionEvent, index: Int, width: Int, height: Int): Boolean =
-        event.getPointerId(index) in nativeUiTouchPointerIds ||
+        nativeUiTouchRouting.ownsPointer(event.getPointerId(index)) ||
             pointerTouchesNativeUi(event, index, width, height)
 
     private fun pointerTouchesNativeUi(event: MotionEvent, index: Int, width: Int, height: Int): Boolean {
@@ -1564,39 +1761,8 @@ object NativeStreamInputRouter {
         val isNearEdge = !androidTvProfile && width > 0 && (x < edgeWidthPx || x > width - edgeWidthPx)
         if (isNearEdge) return true
 
-        return streamChromePassthroughBounds?.contains(x, y) == true ||
-            streamPanelPassthroughBounds?.contains(x, y) == true ||
-            overlayPassthroughBounds.values.any { it.contains(x, y) } ||
-            touchControllerContains(x, y, width, height)
+        return nativeUiTouchRouting.touchesRegisteredUi(x, y, width, height)
     }
-
-    private fun touchControllerContains(x: Float, y: Float, width: Int, height: Int): Boolean {
-        val bounds = touchControllerPassthroughBounds
-        if (bounds.isNotEmpty()) return bounds.values.any { it.contains(x, y) }
-        return touchControllerVisible &&
-            width > 0 &&
-            height > 0 &&
-            y >= height * TOUCH_CONTROLLER_FALLBACK_TOP_RATIO
-    }
-
-    private data class TouchPassthroughBounds(
-        val left: Int,
-        val top: Int,
-        val right: Int,
-        val bottom: Int,
-    ) {
-        fun contains(x: Float, y: Float): Boolean =
-            x >= left - EDGE_SLOP_PX &&
-                x <= right + EDGE_SLOP_PX &&
-                y >= top - EDGE_SLOP_PX &&
-                y <= bottom + EDGE_SLOP_PX
-
-        companion object {
-            private const val EDGE_SLOP_PX = 24
-        }
-    }
-
-    private const val TOUCH_CONTROLLER_FALLBACK_TOP_RATIO = 0.52f
 }
 
 enum class InputDataChannelRole {
@@ -1634,13 +1800,24 @@ internal object AndroidControllerInput {
     fun isControllerDevice(device: InputDevice?): Boolean =
         device != null && isControllerDevice(device.sources, device.name)
 
-    fun isControllerDevice(source: Int, deviceName: String?): Boolean =
-        hasControllerSource(source) ||
-            (source.hasSource(InputDevice.SOURCE_DPAD) && isKnownControllerName(deviceName))
+    fun isControllerDevice(source: Int, deviceName: String?): Boolean {
+        val knownController = isKnownControllerName(deviceName)
+        // Some Bluetooth/USB keyboard and mouse receivers expose stray GAMEPAD or JOYSTICK source
+        // bits. Advertising those idle composite interfaces as an XInput pad makes games switch
+        // away from mouse/keyboard even though no controller exists.
+        if (!knownController && isClearlyKeyboardOrMouse(deviceName)) return false
+        return hasControllerSource(source) ||
+            (source.hasSource(InputDevice.SOURCE_DPAD) && knownController)
+    }
 
-    fun isControllerEvent(source: Int, deviceId: Int): Boolean =
-        hasControllerSource(source) ||
-            isControllerDevice(InputDevice.getDevice(deviceId))
+    fun isControllerEvent(source: Int, deviceId: Int): Boolean {
+        val device = InputDevice.getDevice(deviceId)
+        return if (device != null) {
+            isControllerDevice(device.sources or source, device.name)
+        } else {
+            hasControllerSource(source)
+        }
+    }
 
     fun isKnownControllerName(name: String?): Boolean {
         val normalized = name.orEmpty().lowercase(Locale.US)
@@ -1659,6 +1836,14 @@ internal object AndroidControllerInput {
             normalized.contains("razer kishi") ||
             normalized.contains("switch pro") ||
             normalized.contains("gamepad")
+    }
+
+    private fun isClearlyKeyboardOrMouse(name: String?): Boolean {
+        val normalized = name.orEmpty().lowercase(Locale.US)
+        return normalized.contains("keyboard") ||
+            normalized.contains("mouse") ||
+            normalized.contains("touchpad") ||
+            normalized.contains("trackpad")
     }
 
     fun controllerFamily(device: InputDevice?): AndroidControllerFamily? =
@@ -2626,6 +2811,9 @@ internal fun buildTouchBatch(
     streamHeight: Int,
     stretchToFit: Boolean,
     renderingAspectRatio: Float,
+    presentationZoomScale: Float = 1f,
+    presentationTranslationX: Float = 0f,
+    presentationTranslationY: Float = 0f,
     timestampUs: Long = 0L,
 ): List<TouchRecord> {
     if (viewWidth <= 0 || viewHeight <= 0 || streamWidth <= 0 || streamHeight <= 0) return emptyList()
@@ -2647,6 +2835,9 @@ internal fun buildTouchBatch(
             streamHeight = streamHeight,
             stretchToFit = stretchToFit,
             renderingAspectRatio = renderingAspectRatio,
+            presentationZoomScale = presentationZoomScale,
+            presentationTranslationX = presentationTranslationX,
+            presentationTranslationY = presentationTranslationY,
             clamp = false,
         )
         val x = point.x / streamWidth * TOUCH_COORDINATE_MAX
@@ -2686,8 +2877,8 @@ internal fun buildTouchBatch(
 
 /**
  * Maps a touch inside a view of [viewWidth] x [viewHeight] onto the stream's pixel space, undoing
- * the letterbox/pillarbox bars the renderer adds whenever the view and the stream disagree about
- * aspect ratio.
+ * the presentation zoom/pan first, then the letterbox/pillarbox bars the renderer adds whenever
+ * the view and the stream disagree about aspect ratio.
  *
  * Everything it needs arrives as an argument, and the result is expressed as a fraction of the
  * view — which is why a window resize (PiP, rotation, minimise) needs no cursor bookkeeping at all.
@@ -2703,6 +2894,9 @@ internal fun streamPointForTouch(
     streamHeight: Int,
     stretchToFit: Boolean,
     renderingAspectRatio: Float,
+    presentationZoomScale: Float = 1f,
+    presentationTranslationX: Float = 0f,
+    presentationTranslationY: Float = 0f,
     /**
      * Clamping is right for a cursor, which must land somewhere. Native touch passes false so it
      * can tell a finger on the letterbox bar from one at the edge of the picture, and drop it.
@@ -2715,6 +2909,18 @@ internal fun streamPointForTouch(
     if (!touchX.isFinite() || !touchY.isFinite()) {
         return StreamPoint(Float.NaN, Float.NaN)
     }
+
+    val safeZoomScale = presentationZoomScale
+        .takeIf { it.isFinite() && it >= 1f }
+        ?: 1f
+    val safeTranslationX = presentationTranslationX.takeIf { it.isFinite() } ?: 0f
+    val safeTranslationY = presentationTranslationY.takeIf { it.isFinite() } ?: 0f
+    val viewCenterX = viewWidth / 2f
+    val viewCenterY = viewHeight / 2f
+    val untransformedTouchX =
+        viewCenterX + (touchX - viewCenterX - safeTranslationX) / safeZoomScale
+    val untransformedTouchY =
+        viewCenterY + (touchY - viewCenterY - safeTranslationY) / safeZoomScale
 
     var videoWidth = viewWidth.toFloat()
     var videoHeight = viewHeight.toFloat()
@@ -2744,8 +2950,8 @@ internal fun streamPointForTouch(
         return StreamPoint(Float.NaN, Float.NaN)
     }
 
-    val x = (touchX - offsetX) / videoWidth * streamWidth
-    val y = (touchY - offsetY) / videoHeight * streamHeight
+    val x = (untransformedTouchX - offsetX) / videoWidth * streamWidth
+    val y = (untransformedTouchY - offsetY) / videoHeight * streamHeight
     if (!x.isFinite() || !y.isFinite()) {
         return StreamPoint(Float.NaN, Float.NaN)
     }
@@ -2935,6 +3141,9 @@ private class TouchMouseState {
         height: Int = 0,
         stretchToFit: Boolean = false,
         renderingAspectRatio: Float = 0f,
+        presentationZoomScale: Float = 1f,
+        presentationTranslationX: Float = 0f,
+        presentationTranslationY: Float = 0f,
         decodedStreamWidth: Int = 0,
         decodedStreamHeight: Int = 0,
     ): Boolean {
@@ -2976,6 +3185,9 @@ private class TouchMouseState {
                             streamHeight = streamHeight,
                             stretchToFit = stretchToFit,
                             renderingAspectRatio = renderingAspectRatio,
+                            presentationZoomScale = presentationZoomScale,
+                            presentationTranslationX = presentationTranslationX,
+                            presentationTranslationY = presentationTranslationY,
                         )
                         // Move cursor smoothly to target without forced reanchoring.
                         moveVirtualCursorTo(target, client)
@@ -3007,6 +3219,9 @@ private class TouchMouseState {
                                     streamHeight = streamHeight,
                                     stretchToFit = stretchToFit,
                                     renderingAspectRatio = renderingAspectRatio,
+                                    presentationZoomScale = presentationZoomScale,
+                                    presentationTranslationX = presentationTranslationX,
+                                    presentationTranslationY = presentationTranslationY,
                                 ),
                                 client,
                             )
@@ -3298,6 +3513,37 @@ class NativeStreamClient(
             .setUseStereoOutput(true)
             .setUseHardwareAcousticEchoCanceler(true)
             .setUseHardwareNoiseSuppressor(true)
+            .setAudioRecordErrorCallback(
+                object : JavaAudioDeviceModule.AudioRecordErrorCallback {
+                    override fun onWebRtcAudioRecordInitError(errorMessage: String?) {
+                        recordStreamDiagnostic("microphone capture init failed error=${errorMessage.orEmpty()}")
+                    }
+
+                    override fun onWebRtcAudioRecordStartError(
+                        errorCode: JavaAudioDeviceModule.AudioRecordStartErrorCode?,
+                        errorMessage: String?,
+                    ) {
+                        recordStreamDiagnostic(
+                            "microphone capture start failed code=${errorCode?.name.orEmpty()} error=${errorMessage.orEmpty()}",
+                        )
+                    }
+
+                    override fun onWebRtcAudioRecordError(errorMessage: String?) {
+                        recordStreamDiagnostic("microphone capture runtime failed error=${errorMessage.orEmpty()}")
+                    }
+                },
+            )
+            .setAudioRecordStateCallback(
+                object : JavaAudioDeviceModule.AudioRecordStateCallback {
+                    override fun onWebRtcAudioRecordStart() {
+                        recordStreamDiagnostic("microphone capture started")
+                    }
+
+                    override fun onWebRtcAudioRecordStop() {
+                        recordStreamDiagnostic("microphone capture stopped")
+                    }
+                },
+            )
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_GAME)
@@ -3402,6 +3648,7 @@ class NativeStreamClient(
     private var hardwareKeyboardEventLogged = false
     private var physicalGamepadAxisLogged = false
     private var lastStatsSample: StreamStatsSample? = null
+    private val packetLossWindow = StreamPacketLossWindow()
     private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
     private var firstVideoFrameWatchdog = FirstVideoFrameWatchdog(
@@ -3444,6 +3691,7 @@ class NativeStreamClient(
     }
 
     private data class StreamStatsSample(
+        val inboundRtpId: String,
         val atMs: Double,
         val bytesReceived: Long,
         val framesReceived: Long,
@@ -3742,6 +3990,7 @@ class NativeStreamClient(
         catastrophicResolutionCodecFallbacks = 0
         sessionRecoveryRequested = false
         lastStatsSample = null
+        packetLossWindow.reset()
         livenessWatchdog.reset()
         firstVideoFrameWatchdog.reset()
         onStats(StreamRuntimeStats())
@@ -4141,11 +4390,57 @@ class NativeStreamClient(
         val textToSend = text.take(STREAM_TEXT_SEND_MAX_CHARS)
         scope.launch {
             textSendMutex.withLock {
-                textToSend.forEach { char ->
-                    sendTextChar(char)
-                }
+                sendTextLocked(textToSend)
             }
         }
+    }
+
+    /** Rewrites the focused remote field while the in-app editor still owns input focus. */
+    fun replaceText(text: String) {
+        val textToSend = text.take(STREAM_TEXT_SEND_MAX_CHARS)
+        scope.launch {
+            textSendMutex.withLock {
+                if (!selectAllAndDeleteRemoteText()) return@withLock
+                sendTextLocked(textToSend)
+            }
+        }
+    }
+
+    /** Queues editor control keys behind any text currently being replayed to the host. */
+    fun sendTextControlKey(keyCode: Int) {
+        scope.launch {
+            textSendMutex.withLock {
+                sendTextKeyStroke(keyCode)
+            }
+        }
+    }
+
+    private suspend fun sendTextLocked(text: String) {
+        text.forEach { char -> sendTextChar(char) }
+    }
+
+    private suspend fun selectAllAndDeleteRemoteText(): Boolean {
+        val ctrl = InputEncoder.mapKeyboardPayload(KeyEvent.KEYCODE_CTRL_LEFT, unicode = 0, scanCode = 0)
+            ?: return false
+        val selectAll = InputEncoder.mapKeyboardPayload(
+            keyCode = KeyEvent.KEYCODE_A,
+            unicode = 0,
+            scanCode = 0,
+            ctrl = true,
+        ) ?: return false
+        val ctrlPressed = sendKeyboardPayloadWithRetry(ctrl.copy(modifiers = 0x02), isDown = true)
+        if (!ctrlPressed) return false
+        val selected = sendKeyboardPayloadWithRetry(selectAll, isDown = true) &&
+            sendKeyboardPayloadWithRetry(selectAll, isDown = false)
+        val ctrlReleased = sendKeyboardPayloadWithRetry(ctrl.copy(modifiers = 0), isDown = false)
+        if (!selected || !ctrlReleased) return false
+        return sendTextKeyStroke(KeyEvent.KEYCODE_DEL)
+    }
+
+    private suspend fun sendTextKeyStroke(keyCode: Int): Boolean {
+        val payload = InputEncoder.mapKeyboardPayload(keyCode, unicode = 0, scanCode = 0) ?: return false
+        return sendKeyboardPayloadWithRetry(payload, isDown = true) &&
+            sendKeyboardPayloadWithRetry(payload, isDown = false)
     }
 
     private fun sendKeyboardPayload(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean =
@@ -4342,7 +4637,7 @@ class NativeStreamClient(
     ) {
         val action = if (pressed) "down" else "up"
         val maskHex = buttonMask.toString(16).padStart(4, '0')
-        NativeInputDiagnostics.addRetained(
+        NativeInputDiagnostics.retain(
             key = "controller.virtual-button.$maskHex.$action",
             message = "virtual gamepad button mask=0x$maskHex action=$action route=$route sent=$sent " +
                 "buttons=$virtualButtons reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
@@ -4428,6 +4723,7 @@ class NativeStreamClient(
         inputDropLogged = false
         lastIceState = null
         lastStatsSample = null
+        packetLossWindow.reset()
         firstDecodedResolutionEvaluated = false
         transportHasStableMedia = false
         consecutiveTransportProgressSamples = 0
@@ -4463,6 +4759,7 @@ class NativeStreamClient(
         statsJob = null
         offerTimeoutJob = null
         lastStatsSample = null
+        packetLossWindow.reset()
         lastIceState = null
         livenessWatchdog.reset()
         val closingSignaling = signaling
@@ -5338,7 +5635,10 @@ class NativeStreamClient(
         val packetsLost = members["packetsLost"].statsLong() ?: 0L
         val packetsReceived = members["packetsReceived"].statsLong() ?: 0L
 
-        val previous = lastStatsSample
+        val previous = lastStatsSample?.takeIf { it.inboundRtpId == inboundVideo?.id }
+        if (lastStatsSample != null && previous == null) {
+            packetLossWindow.reset()
+        }
         val elapsedSeconds = previous?.let { (timestampMs - it.atMs) / 1000.0 }?.takeIf { it > 0.0 }
         val bitrateKbps = if (previous != null && bytesReceived != null && elapsedSeconds != null) {
             (((bytesReceived - previous.bytesReceived).coerceAtLeast(0) * 8.0) / elapsedSeconds / 1000.0)
@@ -5370,23 +5670,24 @@ class NativeStreamClient(
             null
         }
 
-        val packetLossPct = if (previous != null) {
-            val deltaLost = packetsLost - previous.packetsLost
-            val deltaReceived = packetsReceived - previous.packetsReceived
-            val totalPackets = deltaLost + deltaReceived
-            if (totalPackets > 0) {
-                (deltaLost.toDouble() / totalPackets.toDouble() * 100.0).coerceIn(0.0, 100.0)
-            } else {
-                0.0
-            }
-        } else {
-            null
+        val packetDelta = previous?.let {
+            streamPacketDelta(
+                currentLost = packetsLost,
+                currentReceived = packetsReceived,
+                previousLost = it.packetsLost,
+                previousReceived = it.packetsReceived,
+            )
         }
-        val packetsLostDelta = previous?.let { (packetsLost - it.packetsLost).coerceAtLeast(0L) }
-        val packetsReceivedDelta = previous?.let { (packetsReceived - it.packetsReceived).coerceAtLeast(0L) }
+        if (previous != null && packetDelta == null) {
+            packetLossWindow.reset()
+        }
+        val packetLossPct = packetDelta?.let(packetLossWindow::add)
+        val packetsLostDelta = packetDelta?.lost
+        val packetsReceivedDelta = packetDelta?.received
 
-        if (bytesReceived != null || framesDecoded != null) {
+        if (inboundVideo != null && (bytesReceived != null || framesDecoded != null)) {
             lastStatsSample = StreamStatsSample(
+                inboundRtpId = inboundVideo.id,
                 atMs = timestampMs,
                 bytesReceived = bytesReceived ?: previous?.bytesReceived ?: 0L,
                 framesReceived = framesReceived ?: previous?.framesReceived ?: 0L,
@@ -5400,6 +5701,10 @@ class NativeStreamClient(
         val pingMs = activePair?.members?.get("currentRoundTripTime")
             .statsDouble()
             ?.let { (it * 1000.0).roundToInt().coerceAtLeast(0) }
+        val availableIncomingBitrateKbps = activePair?.members?.get("availableIncomingBitrate")
+            .statsDouble()
+            ?.takeIf { it >= 0.0 }
+            ?.let { (it / 1000.0).roundToInt().coerceAtLeast(0) }
         val resolution = if (width != null && height != null && width > 0 && height > 0) {
             "${width}x$height"
         } else {
@@ -5409,11 +5714,10 @@ class NativeStreamClient(
         return RuntimeStatsSnapshot(
             stats = StreamRuntimeStats(
                 bitrateKbps = bitrateKbps,
+                availableIncomingBitrateKbps = availableIncomingBitrateKbps,
                 pingMs = pingMs,
                 fps = explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 },
-                gameFps = lastParsedGameFps ?: (explicitFps?.roundToInt()?.takeIf { it > 0 } ?: derivedFps?.takeIf { it > 0 } ?: settings.fps).let { base ->
-                    if (base > 0) (base + (-1..0).random()).coerceAtLeast(30) else null
-                },
+                gameFps = lastParsedGameFps,
                 receivedFps = receivedFps?.takeIf { it > 0 },
                 decodedFps = derivedFps?.takeIf { it > 0 },
                 resolution = resolution,

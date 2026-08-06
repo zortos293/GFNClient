@@ -270,7 +270,7 @@ private fun Float.finiteIn(minimum: Float, maximum: Float, fallback: Float): Flo
 internal fun AppSettings.normalizedForAndroid(): AppSettings {
     val streamDefaults = StreamSettings()
     val touchDefaults = AndroidTouchSettings()
-    val compatibleStream = stream.withCodecColorCompatibility()
+    val compatibleStream = stream.withAndroidSettingsAvailability()
     val lowPowerSafe = compatibleStream.copy(
         codec = compatibleStream.codec,
         sessionProxyUrl = stream.sessionProxyUrl.trim(),
@@ -288,8 +288,9 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
     return copy(
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
+        streamKeyboardButtonPosition = streamKeyboardButtonPosition.normalized(),
         androidTouch = androidTouch.copy(
-            opacity = androidTouch.opacity.finiteIn(0.15f, 1f, touchDefaults.opacity),
+            opacity = androidTouch.opacity.finiteIn(0f, 1f, touchDefaults.opacity),
             scale = androidTouch.scale.finiteIn(0.6f, 1.4f, touchDefaults.scale),
             buttonScale = androidTouch.buttonScale.finiteIn(0.65f, 1.5f, touchDefaults.buttonScale),
             stickScale = androidTouch.stickScale.finiteIn(0.65f, 1.5f, touchDefaults.stickScale),

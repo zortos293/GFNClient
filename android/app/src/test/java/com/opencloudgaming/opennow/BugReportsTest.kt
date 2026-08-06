@@ -7,6 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BugReportsTest {
+    private val reporterId = androidBugReportReporterId("test-gfn-device-id")
+
     @Test
     fun buildsPrintedWasteMultipartReportWithRedactedLogAttachment() {
         val request = buildAndroidBugReportRequest(
@@ -15,6 +17,7 @@ class BugReportsTest {
                 description = " Video stopped after reconnecting and remained frozen until I restarted the session. ",
                 versionName = "0.9.0",
                 versionCode = "45",
+                reporterId = reporterId,
                 metadata = """{"device":"Pixel 9","sessionId":"[redacted]"}""",
                 files = listOf(
                     AndroidBugReportAttachment(
@@ -41,6 +44,7 @@ class BugReportsTest {
         assertTrue(multipart.contains("name=\"versionName\"\r\n\r\n0.9.0"))
         assertTrue(multipart.contains("name=\"versionCode\"\r\n\r\n45"))
         assertTrue(multipart.contains("name=\"platform\"\r\n\r\nandroid"))
+        assertTrue(multipart.contains("name=\"reporterId\"\r\n\r\n$reporterId"))
         assertTrue(multipart.contains("name=\"files\"; filename=\"opennow.log\""))
         assertTrue(multipart.contains("sessionId=[redacted]"))
     }
@@ -67,6 +71,7 @@ class BugReportsTest {
                 "The stream stopped decoding video after a reconnect and did not recover.",
                 "0.9.0",
                 "45",
+                reporterId,
                 "{}",
                 files,
             ),
@@ -81,6 +86,7 @@ class BugReportsTest {
                 "The stream stopped decoding video after a reconnect and did not recover.",
                 "0.9.0",
                 "45",
+                reporterId,
                 "{}",
                 listOf(
                     AndroidBugReportAttachment(
@@ -107,6 +113,7 @@ class BugReportsTest {
                 description = "It lagged.",
                 versionName = "1.0.5",
                 versionCode = "60",
+                reporterId = reporterId,
                 metadata = "{}",
                 files = emptyList(),
             ),
@@ -153,5 +160,54 @@ class BugReportsTest {
                 AndroidBugReportVersionCheckState(AndroidBugReportVersionCheckStatus.NotChecked),
             ),
         )
+    }
+
+    @Test
+    fun reporterIdIsStableButDoesNotExposeTheRawProviderDeviceId() {
+        val rawDeviceId = "4fe17fe6-4b40-4897-bc3a-1e61cb4fd3aa"
+        val first = androidBugReportReporterId(rawDeviceId)
+        val second = androidBugReportReporterId(rawDeviceId)
+        val different = androidBugReportReporterId("a-different-installation")
+
+        assertEquals(first, second)
+        assertTrue(first.startsWith(ANDROID_BUG_REPORT_REPORTER_ID_PREFIX))
+        assertEquals(ANDROID_BUG_REPORT_REPORTER_ID_PREFIX.length + 64, first.length)
+        assertFalse(first.contains(rawDeviceId))
+        assertFalse(first == different)
+    }
+
+    @Test
+    fun parsesStructuredBanMessageForDisplay() {
+        val error = parseAndroidBugReportServerError(
+            body = """
+                {
+                  "ok": false,
+                  "error": {
+                    "code": "REPORTER_BANNED",
+                    "message": "Bug reporting is disabled for this installation.  Contact support if this is a mistake.",
+                    "retryable": false
+                  }
+                }
+            """.trimIndent(),
+            statusCode = 403,
+        )
+
+        assertEquals("REPORTER_BANNED", error.code)
+        assertEquals(
+            "Bug reporting is disabled for this installation. Contact support if this is a mistake.",
+            error.message,
+        )
+        assertEquals(false, error.retryable)
+    }
+
+    @Test
+    fun nonJsonFailureUsesSafeStatusMessageInsteadOfRawResponse() {
+        val error = parseAndroidBugReportServerError(
+            body = "<html>private reverse proxy failure details</html>",
+            statusCode = 502,
+        )
+
+        assertEquals("Bug report upload failed (HTTP 502).", error.message)
+        assertFalse(error.message.contains("private reverse proxy"))
     }
 }

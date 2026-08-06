@@ -96,6 +96,20 @@ class InputEncoderGamepadTest {
     }
 
     @Test
+    fun doesNotAdvertiseCompositeKeyboardsAndMiceAsGamepads() {
+        val misleadingSources =
+            InputDevice.SOURCE_GAMEPAD or
+                InputDevice.SOURCE_JOYSTICK or
+                InputDevice.SOURCE_KEYBOARD or
+                InputDevice.SOURCE_MOUSE
+
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "SEMICO USB Keyboard System Control"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "BT5.2 Mouse"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Gaming KB Gaming KB Keyboard"))
+        assertTrue(AndroidControllerInput.isControllerDevice(misleadingSources, "Xbox Wireless Controller"))
+    }
+
+    @Test
     fun reusesPrimarySlotWhenAndroidReassignsControllerDeviceId() {
         val controllerSlots = linkedMapOf<Int, Int>()
         val initial = AndroidControllerSlotRegistry.assign(

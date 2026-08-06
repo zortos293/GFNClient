@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -16,6 +17,52 @@ import org.junit.Test
  * reported even when the finger has left the picture, or the host holds it down forever.
  */
 class NativeTouchTest {
+
+    // -- Local UI ownership -----------------------------------------------------------------
+
+    @Test
+    fun removingLauncherBoundsDoesNotReclassifyItsActiveFingerAsGameTouch() {
+        val routing = NativeUiTouchRoutingState()
+        routing.setStreamChromeBounds(left = 20, top = 20, right = 120, bottom = 80)
+        routing.beginPointerGesture(
+            pointerId = 7,
+            touchesUi = routing.touchesRegisteredUi(x = 60f, y = 50f, width = 1280, height = 720),
+        )
+
+        routing.clearStreamChromeBounds()
+
+        assertFalse(routing.touchesRegisteredUi(x = 60f, y = 50f, width = 1280, height = 720))
+        assertTrue(routing.ownsPointer(7))
+        assertTrue(routing.passthroughActive)
+
+        routing.endPointerGesture()
+        assertFalse(routing.ownsPointer(7))
+        assertFalse(routing.passthroughActive)
+    }
+
+    @Test
+    fun replacingTransientOverlayKeepsPointerOwnershipUntilLift() {
+        val routing = NativeUiTouchRoutingState()
+        routing.setOverlayBound("menu-launcher", left = 900, top = 20, right = 1020, bottom = 100)
+        routing.beginPointerGesture(
+            pointerId = 12,
+            touchesUi = routing.touchesRegisteredUi(x = 960f, y = 60f, width = 1280, height = 720),
+        )
+
+        routing.clearOverlayBound("menu-launcher")
+        routing.setOverlayBound("controls-panel", left = 700, top = 10, right = 1280, bottom = 720)
+
+        assertTrue(routing.ownsPointer(12))
+        routing.releasePointer(12)
+        assertFalse(routing.hasOwnedPointer())
+    }
+
+    @Test
+    fun onlyAnOwnedLauncherGestureIsConsumedAfterUiOpens() {
+        assertTrue(shouldConsumeNativeUiTransitionTouch(streamUiActive = true, hasOwnedPointer = true))
+        assertFalse(shouldConsumeNativeUiTransitionTouch(streamUiActive = false, hasOwnedPointer = true))
+        assertFalse(shouldConsumeNativeUiTransitionTouch(streamUiActive = true, hasOwnedPointer = false))
+    }
 
     // -- Slot allocation ---------------------------------------------------------------------
 

@@ -1,0 +1,51 @@
+package com.opencloudgaming.opennow
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ExternalMousePointerCaptureTest {
+    @Test
+    fun retriesCaptureForMouseMotionWhenStreamingWithoutAnOverlay() {
+        assertTrue(
+            shouldRequestAndroidMousePointerCapture(
+                streamActive = true,
+                captureEnabled = true,
+                windowFocused = true,
+                hasPointerCapture = false,
+                mouseLikePointer = true,
+            ),
+        )
+    }
+
+    @Test
+    fun doesNotStealCaptureFromOverlaysOrOtherPointerSources() {
+        assertFalse(
+            shouldRequestAndroidMousePointerCapture(
+                streamActive = true,
+                captureEnabled = false,
+                windowFocused = true,
+                hasPointerCapture = false,
+                mouseLikePointer = true,
+            ),
+        )
+        assertFalse(
+            shouldRequestAndroidMousePointerCapture(
+                streamActive = true,
+                captureEnabled = true,
+                windowFocused = true,
+                hasPointerCapture = false,
+                mouseLikePointer = false,
+            ),
+        )
+        assertFalse(
+            shouldRequestAndroidMousePointerCapture(
+                streamActive = true,
+                captureEnabled = true,
+                windowFocused = true,
+                hasPointerCapture = true,
+                mouseLikePointer = true,
+            ),
+        )
+    }
+}

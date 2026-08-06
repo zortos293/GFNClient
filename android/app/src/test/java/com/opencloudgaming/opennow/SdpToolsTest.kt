@@ -182,8 +182,13 @@ class SdpToolsTest {
 
         assertTrue(nvst.contains("a=video.clientViewportWd:1680"))
         assertTrue(nvst.contains("a=video.clientViewportHt:720"))
+        assertTrue(nvst.contains("a=vqos.dynamicStreamingMode:0"))
+        assertTrue(nvst.contains("a=vqos.drc.enable:0"))
+        assertTrue(nvst.contains("a=vqos.dfc.adjustResAndFps:0"))
+        assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.enable:0"))
         assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.minResolutionPercent:100"))
         assertTrue(nvst.contains("a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999"))
+        assertTrue(nvst.contains("a=vqos.grc.enable:0"))
         assertTrue(nvst.contains("a=video.scalingFeature1:0"))
         assertFalse(nvst.contains("a=video.clientViewportWd:1920"))
     }

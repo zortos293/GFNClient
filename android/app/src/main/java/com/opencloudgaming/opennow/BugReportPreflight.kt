@@ -219,11 +219,15 @@ private fun buildVideoDevicePreflightCard(
     }.distinctBy { it.title }
     val facts = buildList {
         add("Requested $requestedResolution@${evidence.requestedSettings.fps}")
+        add("Requested max ${evidence.requestedSettings.maxBitrateMbps} Mbps")
         deliveredResolution?.let { add("Delivered $it") }
         add("Codec $deliveredCodec")
         hardwareDecoder?.let { add(if (it) "Hardware decoder" else "Software decoder") }
         averageFps?.let { add("${it.roundToInt()} FPS average") }
         averageBitrateKbps?.takeIf { it >= 0 }?.let { add("${formatPreflightMbps(it)} Mbps video") }
+        evidence.runtimeStats.availableIncomingBitrateKbps
+            ?.takeIf { it >= 0 }
+            ?.let { add("${formatPreflightMbps(it)} Mbps WebRTC receive estimate") }
         when {
             evidence.codecReport?.constrainedRuntimeProfile == true -> add("Constrained device profile")
             evidence.codecReport?.lowPowerGpuProfile == true -> add("Low-power device profile")

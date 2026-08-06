@@ -1,0 +1,42 @@
+package com.opencloudgaming.opennow
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class StreamPacketLossTest {
+    @Test
+    fun counterResetDoesNotBecomeAFalseLossSample() {
+        assertNull(
+            streamPacketDelta(
+                currentLost = 0,
+                currentReceived = 20,
+                previousLost = 4,
+                previousReceived = 1_000,
+            ),
+        )
+    }
+
+    @Test
+    fun rollingWindowDoesNotPublishAOneSampleFiftyPercentSpike() {
+        val window = StreamPacketLossWindow(maximumSamples = 5, minimumSamples = 3)
+
+        assertNull(window.add(StreamPacketDelta(lost = 1, received = 1)))
+        assertNull(window.add(StreamPacketDelta(lost = 0, received = 600)))
+        assertEquals(
+            1.0 / 1_202.0 * 100.0,
+            window.add(StreamPacketDelta(lost = 0, received = 600)) ?: -1.0,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun rollingWindowKeepsOnlyRecentSamples() {
+        val window = StreamPacketLossWindow(maximumSamples = 3, minimumSamples = 1)
+
+        window.add(StreamPacketDelta(lost = 3, received = 0))
+        window.add(StreamPacketDelta(lost = 0, received = 100))
+        window.add(StreamPacketDelta(lost = 0, received = 100))
+        assertEquals(0.0, window.add(StreamPacketDelta(lost = 0, received = 100)) ?: -1.0, 0.0001)
+    }
+}

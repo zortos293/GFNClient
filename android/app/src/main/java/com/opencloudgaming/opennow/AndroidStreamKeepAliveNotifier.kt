@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -32,6 +34,7 @@ private const val STREAM_SERVICE_ACTION_START = "com.opencloudgaming.opennow.str
 private const val STREAM_SERVICE_ACTION_STOP = "com.opencloudgaming.opennow.stream.STOP"
 private const val STREAM_SERVICE_EXTRA_TITLE = "title"
 private const val STREAM_SERVICE_EXTRA_SHUTDOWN_REQUEST = "shutdown_request"
+private const val STREAM_SERVICE_EXTRA_MICROPHONE_CAPTURE = "microphone_capture"
 private const val STREAM_SERVICE_TAG = "OpenNOWStreamService"
 private const val STREAM_TASK_REMOVAL_TIMEOUT_MS = 15_000L
 
@@ -55,12 +58,32 @@ internal fun activeStreamShutdownRequest(state: OpenNowUiState): ActiveStreamShu
     )
 }
 
+internal fun androidStreamForegroundServiceType(
+    microphoneCaptureActive: Boolean,
+    sdkInt: Int,
+): Int =
+    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+        if (microphoneCaptureActive && sdkInt >= Build.VERSION_CODES.R) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else {
+            0
+        }
+
+internal fun shouldPrepareAndroidStreamMicrophone(
+    state: OpenNowUiState,
+    permissionGranted: Boolean,
+): Boolean =
+    shouldKeepAndroidStreamAlive(state) &&
+        (state.activeStreamSettings ?: state.settings.stream).microphoneMode != MicrophoneMode.Disabled &&
+        permissionGranted
+
 class AndroidStreamKeepAliveNotifier(context: Context) {
     private val appContext = context.applicationContext
     private val commandVersion = AtomicLong()
     @Volatile private var serviceStartRequested = false
     private var activeTitle: String? = null
     private var activeShutdownRequestJson: String? = null
+    private var activeMicrophoneCapture = false
     private var cancellationApplied = false
 
     fun update(state: OpenNowUiState) {
@@ -74,14 +97,45 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
         val shutdownRequestJson = activeStreamShutdownRequest(state)?.let { request ->
             OpenNowJson.encodeToString(request)
         }
+        val microphoneCaptureActive = shouldPrepareAndroidStreamMicrophone(
+            state = state,
+            permissionGranted = appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+        requestStart(title, shutdownRequestJson, microphoneCaptureActive)
+    }
+
+    /**
+     * Marks the stream as microphone-capable before WebRTC opens AudioRecord. The flag remains set
+     * while the user mutes the track because WebRTC can keep the capture device open across mute
+     * and transport reconnects.
+     */
+    fun setMicrophoneCaptureActive(active: Boolean) {
+        if (activeMicrophoneCapture == active) return
+        val title = activeTitle
+        val shutdownRequestJson = activeShutdownRequestJson
+        if (!serviceStartRequested || title == null) {
+            activeMicrophoneCapture = active
+            return
+        }
+        requestStart(title, shutdownRequestJson, active)
+    }
+
+    private fun requestStart(
+        title: String,
+        shutdownRequestJson: String?,
+        microphoneCaptureActive: Boolean,
+    ) {
         if (
             serviceStartRequested &&
             activeTitle == title &&
-            activeShutdownRequestJson == shutdownRequestJson
+            activeShutdownRequestJson == shutdownRequestJson &&
+            activeMicrophoneCapture == microphoneCaptureActive
         ) return
         serviceStartRequested = true
         activeTitle = title
         activeShutdownRequestJson = shutdownRequestJson
+        activeMicrophoneCapture = microphoneCaptureActive
         val version = commandVersion.incrementAndGet()
         AndroidServiceCommandDispatcher.dispatch("stream-start") {
             runCatching {
@@ -90,6 +144,7 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
                     action = STREAM_SERVICE_ACTION_START
                     putExtra(STREAM_SERVICE_EXTRA_TITLE, title)
                     putExtra(STREAM_SERVICE_EXTRA_SHUTDOWN_REQUEST, shutdownRequestJson)
+                    putExtra(STREAM_SERVICE_EXTRA_MICROPHONE_CAPTURE, microphoneCaptureActive)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     appContext.startForegroundService(intent)
@@ -110,6 +165,7 @@ class AndroidStreamKeepAliveNotifier(context: Context) {
         serviceStartRequested = false
         activeTitle = null
         activeShutdownRequestJson = null
+        activeMicrophoneCapture = false
         cancellationApplied = true
         AndroidServiceCommandDispatcher.dispatch("stream-stop") {
             val intent = Intent(appContext, AndroidStreamKeepAliveService::class.java).apply {
@@ -148,7 +204,13 @@ class AndroidStreamKeepAliveService : Service() {
                                     Log.w(STREAM_SERVICE_TAG, "Unable to read active stream shutdown request", error)
                                 }
                         }
-                    startStreamForeground(intent?.getStringExtra(STREAM_SERVICE_EXTRA_TITLE) ?: "OpenNOW")
+                    startStreamForeground(
+                        title = intent?.getStringExtra(STREAM_SERVICE_EXTRA_TITLE) ?: "OpenNOW",
+                        microphoneCaptureActive = intent?.getBooleanExtra(
+                            STREAM_SERVICE_EXTRA_MICROPHONE_CAPTURE,
+                            false,
+                        ) == true,
+                    )
                 }
                 else -> {
                     releaseStreamWakeLock()
@@ -219,12 +281,16 @@ class AndroidStreamKeepAliveService : Service() {
         }
     }
 
-    private fun startStreamForeground(title: String) {
+    private fun startStreamForeground(title: String, microphoneCaptureActive: Boolean) {
         ensureStreamNotificationChannel(this)
         acquireStreamWakeLock()
         val notification = buildStreamNotification(this, title)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(STREAM_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            startForeground(
+                STREAM_NOTIFICATION_ID,
+                notification,
+                androidStreamForegroundServiceType(microphoneCaptureActive, Build.VERSION.SDK_INT),
+            )
         } else {
             startForeground(STREAM_NOTIFICATION_ID, notification)
         }

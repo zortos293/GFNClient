@@ -18,6 +18,10 @@ class CatalogBackgroundTest {
             CatalogWallpaperSelection.BuiltIn(CatalogBackgroundPreset.Original),
             catalogWallpaperSelection(CatalogBackgroundPreset.Original, "   "),
         )
+        assertEquals(
+            CatalogWallpaperSelection.BuiltIn(CatalogBackgroundPreset.AbsoluteCinema),
+            catalogWallpaperSelection(CatalogBackgroundPreset.AbsoluteCinema, null),
+        )
     }
 
     @Test

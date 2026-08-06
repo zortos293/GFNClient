@@ -589,7 +589,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals("1920x1080", adjusted.resolution)
+        assertEquals("3840x2160", adjusted.resolution)
         assertEquals("16:9", adjusted.aspectRatio)
         assertEquals(60, adjusted.fps)
         assertEquals(25, adjusted.maxBitrateMbps)
@@ -748,7 +748,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H265, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals("1920x1080", adjusted.resolution)
+        assertEquals("3840x2160", adjusted.resolution)
         assertEquals(60, adjusted.fps)
         assertEquals(25, adjusted.maxBitrateMbps)
         assertEquals(false, adjusted.hdrEnabled)
@@ -846,7 +846,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun keepsLowPowerAndroidTvUltrawideWithinDecoderBounds() {
+    fun keepsSelectedLowPowerAndroidTvUltrawideGeometry() {
         val adjusted = StreamSettings(
             resolution = "3440x1440",
             aspectRatio = "21:9",
@@ -856,7 +856,7 @@ class StreamSettingsDeviceAdjustmentTest {
 
         assertEquals(VideoCodec.H264, adjusted.codec)
         assertEquals(ColorQuality.EightBit420, adjusted.colorQuality)
-        assertEquals("2560x1080", adjusted.resolution)
+        assertEquals("3440x1440", adjusted.resolution)
         assertEquals("21:9", adjusted.aspectRatio)
     }
 
@@ -936,7 +936,7 @@ class StreamSettingsDeviceAdjustmentTest {
     }
 
     @Test
-    fun capsResolutionToDecoderCapabilities() {
+    fun preservesResolutionWhenDecoderCapabilitiesAreConservative() {
         val report = RuntimeCodecReport(
             capabilities = listOf(
                 CodecCapability(
@@ -962,7 +962,22 @@ class StreamSettingsDeviceAdjustmentTest {
         )
 
         val adjusted = settings.adjustedForDevice(report)
-        assertEquals("2560x1080", adjusted.resolution)
+        assertEquals("3440x1440", adjusted.resolution)
+    }
+
+    @Test
+    fun legacyPortalGeometryUsesProviderTwentyOneByNineSixtyFpsProfile() {
+        val adjusted = StreamSettings(
+            resolution = "1376x640",
+            aspectRatio = "19.5:9",
+            fps = 120,
+            codec = VideoCodec.H265,
+        ).adjustedForDevice(report = null)
+
+        assertEquals("1376x590", adjusted.resolution)
+        assertEquals("21:9", adjusted.aspectRatio)
+        assertEquals(60, adjusted.fps)
+        assertEquals(VideoCodec.H265, adjusted.codec)
     }
 
     @Test

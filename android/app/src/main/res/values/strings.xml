@@ -85,7 +85,7 @@
     <string name="stream_panel_status_bar_summary">%1$s · %2$d items</string>
     <string name="stream_panel_sharpening">Stream sharpening</string>
     <string name="stream_panel_sharpening_amount">Sharpness amount</string>
-    <string name="stream_panel_stretch_to_fit">Stretch to fit</string>
+    <string name="stream_panel_stretch_to_fit">Stretch to fill</string>
     <string name="stream_panel_microphone">Microphone</string>
     <string name="stream_panel_microphone_permission">Permission required</string>
     <string name="stream_panel_steam_menu">Steam Menu</string>
@@ -152,6 +152,7 @@
     <string name="stream_statusbar_metric_server">Server</string>
     <string name="stream_statusbar_metric_latency">Dec / Jit</string>
     <string name="stream_statusbar_metric_loss">Loss</string>
+    <string name="stream_statusbar_metric_keyboard">Keyboard</string>
 
     <!-- Session report -->
     <string name="session_report_score">%1$d/100</string>
@@ -293,6 +294,7 @@
     <string name="settings_catalog_background_built_in">Built-in background</string>
     <string name="catalog_background_colorful_abstract">Colorful abstract (default)</string>
     <string name="catalog_background_original">Original OpenNOW</string>
+    <string name="catalog_background_absolute_cinema">Absolute Cinema</string>
     <string name="action_choose_image">Choose image</string>
     <string name="action_use_default">Use default</string>
     <string name="settings_tv_safe_area">Screen edge padding</string>
@@ -300,7 +302,9 @@
     <string name="settings_show_store_labels">Show store labels</string>
     <string name="settings_card_size">Game card size</string>
     <string name="settings_hide_stream_buttons">Hide stream buttons</string>
-    <string name="settings_show_stats">Show stats on launch</string>
+    <string name="settings_stream_keyboard_button">On-screen keyboard button</string>
+    <string name="settings_stream_keyboard_button_desc">Shows a compact keyboard icon in the stream status bar.</string>
+    <string name="settings_show_stats">Show status bar by default</string>
     <string name="settings_stats_position">Stats overlay position</string>
     <string name="settings_hide_server_selector">Hide server selector</string>
     <string name="settings_button_press_tones">Button press tones</string>
@@ -311,7 +315,7 @@
     <string name="intro_music_start_playing">Playing</string>
     <string name="settings_queue_ready_music">Play music when queue finishes</string>
     <string name="action_mute_music">Mute music</string>
-    <string name="settings_stretch_stream_to_fit">Stretch stream to fit</string>
+    <string name="settings_stretch_stream_to_fit">Stretch stream to fill</string>
     <string name="settings_session_counter">Smart session timer</string>
     <string name="settings_thanks_body">Thanks to the people helping improve OpenNOW for everyone.</string>
     <string name="settings_thanks_darkevilpt">DarkevilPT</string>

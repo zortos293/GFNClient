@@ -23,6 +23,9 @@ class StreamPointForTouchTest {
         streamHeight: Int = 1080,
         stretchToFit: Boolean = false,
         renderingAspectRatio: Float = 0f,
+        presentationZoomScale: Float = 1f,
+        presentationTranslationX: Float = 0f,
+        presentationTranslationY: Float = 0f,
     ) = streamPointForTouch(
         touchX = touchX,
         touchY = touchY,
@@ -32,6 +35,9 @@ class StreamPointForTouchTest {
         streamHeight = streamHeight,
         stretchToFit = stretchToFit,
         renderingAspectRatio = renderingAspectRatio,
+        presentationZoomScale = presentationZoomScale,
+        presentationTranslationX = presentationTranslationX,
+        presentationTranslationY = presentationTranslationY,
     )
 
     @Test
@@ -99,6 +105,72 @@ class StreamPointForTouchTest {
         // Video is 1280x548.57 centred in 1280x720, so the view centre sits at the video centre.
         assertEquals(960f, point.x, 0.01f)
         assertEquals(540f, point.y, 0.5f)
+    }
+
+    @Test
+    fun changedUltrawideDecodedFrameRemainsCenteredInsideTheViewport() {
+        // A provider can change the decoded 1376x640 frame to 1376x590 without changing the
+        // selected viewport. The real content is still centred and input follows its actual bars.
+        val decodedAspectRatio = 1376f / 590f
+        val videoHeight = 1920f / decodedAspectRatio
+        val videoTop = (1080f - videoHeight) / 2f
+
+        val topCentre = map(
+            touchX = 960f,
+            touchY = videoTop,
+            viewWidth = 1920,
+            viewHeight = 1080,
+            streamWidth = 1376,
+            streamHeight = 590,
+            renderingAspectRatio = decodedAspectRatio,
+        )
+        val centre = map(
+            touchX = 960f,
+            touchY = 540f,
+            viewWidth = 1920,
+            viewHeight = 1080,
+            streamWidth = 1376,
+            streamHeight = 590,
+            renderingAspectRatio = decodedAspectRatio,
+        )
+
+        assertEquals(688f, topCentre.x, 0.01f)
+        assertEquals(0f, topCentre.y, 0.01f)
+        assertEquals(688f, centre.x, 0.01f)
+        assertEquals(295f, centre.y, 0.01f)
+    }
+
+    @Test
+    fun pinchZoomAndPanAreInvertedBeforeStreamMapping() {
+        // The unzoomed view point (480, 270) is displayed at (420, 140) after a 2x zoom plus
+        // translation (100, -40). Tapping that displayed point must still target the same pixel.
+        val point = map(
+            touchX = 420f,
+            touchY = 140f,
+            viewWidth = 1280,
+            viewHeight = 720,
+            presentationZoomScale = 2f,
+            presentationTranslationX = 100f,
+            presentationTranslationY = -40f,
+        )
+
+        assertEquals(720f, point.x, 0.01f)
+        assertEquals(405f, point.y, 0.01f)
+    }
+
+    @Test
+    fun stretchAndZoomMapTheVisibleFilledSurface() {
+        val point = map(
+            touchX = 240f,
+            touchY = 180f,
+            viewWidth = 960,
+            viewHeight = 720,
+            stretchToFit = true,
+            presentationZoomScale = 2f,
+        )
+
+        assertEquals(720f, point.x, 0.01f)
+        assertEquals(405f, point.y, 0.01f)
     }
 
     /**

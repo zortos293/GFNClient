@@ -133,6 +133,9 @@ class AndroidTvUiBehaviorTest {
         assertEquals(13f, controllerFocusPulseStrokeWidthDp(1f), 0f)
         assertTrue(controllerFocusPulseAlpha(0f) > controllerFocusPulseAlpha(0.5f))
         assertEquals(0f, controllerFocusPulseAlpha(1f), 0f)
+        assertEquals(0f, controllerFocusDashPhaseDp(0f), 0f)
+        assertEquals(15f, controllerFocusDashPhaseDp(0.5f), 0f)
+        assertEquals(30f, controllerFocusDashPhaseDp(1f), 0f)
     }
 
     @Test
@@ -250,6 +253,13 @@ class AndroidTvUiBehaviorTest {
         val smallCards = storeRailVisibleCardCount(900f, 146f, 10f, 0.75f)
         val largeCards = storeRailVisibleCardCount(900f, 146f, 10f, 1.4f)
         assertTrue(smallCards > largeCards)
+    }
+
+    @Test
+    fun storeSearchHidesTheInQueueRail() {
+        assertTrue(shouldShowStoreInQueueRail(""))
+        assertTrue(shouldShowStoreInQueueRail("   "))
+        assertFalse(shouldShowStoreInQueueRail("Fortnite"))
     }
 
     @Test

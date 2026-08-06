@@ -1,5 +1,7 @@
 package com.opencloudgaming.opennow
 
+import android.content.pm.ServiceInfo
+import android.os.Build
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -8,6 +10,59 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidStreamKeepAliveNotifierTest {
+    @Test
+    fun addsMicrophoneForegroundTypeOnlyWhenCaptureIsActiveAndSupported() {
+        assertEquals(
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            androidStreamForegroundServiceType(
+                microphoneCaptureActive = false,
+                sdkInt = Build.VERSION_CODES.VANILLA_ICE_CREAM,
+            ),
+        )
+        assertEquals(
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            androidStreamForegroundServiceType(
+                microphoneCaptureActive = true,
+                sdkInt = Build.VERSION_CODES.VANILLA_ICE_CREAM,
+            ),
+        )
+        assertEquals(
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            androidStreamForegroundServiceType(
+                microphoneCaptureActive = true,
+                sdkInt = Build.VERSION_CODES.Q,
+            ),
+        )
+    }
+
+    @Test
+    fun preparesMicrophoneServiceOnlyForReadyPermittedMicrophoneStream() {
+        val readyMicrophoneState = OpenNowUiState(
+            page = AppPage.Stream,
+            streamStatus = "streaming",
+            streamSession = readySession(),
+            activeStreamSettings = StreamSettings(microphoneMode = MicrophoneMode.VoiceActivity),
+        )
+
+        assertTrue(shouldPrepareAndroidStreamMicrophone(readyMicrophoneState, permissionGranted = true))
+        assertFalse(shouldPrepareAndroidStreamMicrophone(readyMicrophoneState, permissionGranted = false))
+        assertFalse(
+            shouldPrepareAndroidStreamMicrophone(
+                readyMicrophoneState.copy(
+                    activeStreamSettings = StreamSettings(microphoneMode = MicrophoneMode.Disabled),
+                ),
+                permissionGranted = true,
+            ),
+        )
+        assertFalse(
+            shouldPrepareAndroidStreamMicrophone(
+                readyMicrophoneState.copy(page = AppPage.Home),
+                permissionGranted = true,
+            ),
+        )
+    }
+
     @Test
     fun keepsReadyStreamAlive() {
         val state = OpenNowUiState(

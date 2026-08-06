@@ -21,6 +21,7 @@ class BugReportPreflightTest {
                 requestedSettings = settings,
                 runtimeStats = StreamRuntimeStats(
                     bitrateKbps = 28_000,
+                    availableIncomingBitrateKbps = 74_000,
                     pingMs = 24,
                     fps = 60,
                     resolution = "1920x1080",
@@ -45,6 +46,16 @@ class BugReportPreflightTest {
         assertTrue(connection.recommendations.isEmpty())
         assertFalse(connection.toString().contains("Use 5 GHz"))
         assertFalse(connection.toString().contains("2.4 GHz Wi-Fi"))
+        val video = deck.cards[1]
+        assertTrue(video.facts.contains("Requested max 35 Mbps"))
+        assertTrue(video.facts.contains("28 Mbps video"))
+        assertTrue(video.facts.contains("74 Mbps WebRTC receive estimate"))
+    }
+
+    @Test
+    fun runtimeBitrateStatusShowsActualAndRequestedMaximum() {
+        assertEquals("28.4 Mbps / 35 Mbps max", formatRuntimeBitrateStatus(28_400, 35))
+        assertEquals("-- / 35 Mbps max", formatRuntimeBitrateStatus(null, 35))
     }
 
     @Test

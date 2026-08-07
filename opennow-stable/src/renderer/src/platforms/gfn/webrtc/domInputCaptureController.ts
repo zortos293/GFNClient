@@ -742,7 +742,10 @@ export class DomInputCaptureController {
       }
     };
 
-    const queueUnlockedAbsolutePointer = (event: MouseEvent | PointerEvent): void => {
+    const queueUnlockedAbsolutePointer = (
+      event: MouseEvent | PointerEvent,
+      flushAfterQueue = true,
+    ): void => {
       const rect = pointerLockTarget.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
         return;
@@ -756,7 +759,9 @@ export class DomInputCaptureController {
         : { x, y, width: rect.width, height: rect.height };
       this.pendingMouseTimestampUs = timestampUs(event.timeStamp);
       this.mouseCoalescedBatchEntries += 1;
-      afterPointerMovement();
+      if (flushAfterQueue) {
+        afterPointerMovement();
+      }
     };
 
     const tryAutoLock = (): void => {
@@ -1115,7 +1120,7 @@ export class DomInputCaptureController {
       }
       event.preventDefault();
       if (escapePointerFallbackActive && !isPointerLockActive()) {
-        queueUnlockedAbsolutePointer(event);
+        queueUnlockedAbsolutePointer(event, false);
       }
       flushMouse(true);
       const payload = this.dependencies.inputEncoder.encodeMouseButtonDown({
@@ -1140,7 +1145,7 @@ export class DomInputCaptureController {
       }
       event.preventDefault();
       if (escapePointerFallbackActive && !isPointerLockActive()) {
-        queueUnlockedAbsolutePointer(event);
+        queueUnlockedAbsolutePointer(event, false);
       }
       flushMouse(true);
       const payload = this.dependencies.inputEncoder.encodeMouseButtonUp({
@@ -1165,7 +1170,7 @@ export class DomInputCaptureController {
       }
       event.preventDefault();
       if (escapePointerFallbackActive && !isPointerLockActive()) {
-        queueUnlockedAbsolutePointer(event);
+        queueUnlockedAbsolutePointer(event, false);
       }
       flushMouse(true);
       // Official GFN client sends negated raw deltaY as int16 (no quantization to ±120).

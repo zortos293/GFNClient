@@ -87,6 +87,7 @@ import java.nio.FloatBuffer
 import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -516,6 +517,7 @@ private fun signalingUrlForDiagnostics(url: String, sessionId: String): String =
 
 internal enum class SignalingFailureDisposition {
     RetryTransport,
+    RetrySignaling,
     RecoverSession,
     SessionEnded,
 }
@@ -527,16 +529,36 @@ internal fun signalingFailureDisposition(
     message.contains("http=410", ignoreCase = true) -> SignalingFailureDisposition.SessionEnded
     message.contains("http=404", ignoreCase = true) ||
         message.contains("Not Found", ignoreCase = true) -> SignalingFailureDisposition.RecoverSession
+    isTransientSignalingServiceFailure(message) -> SignalingFailureDisposition.RetrySignaling
     normalClosureMeansSessionEnded && message.contains("code=1000", ignoreCase = true) ->
         SignalingFailureDisposition.SessionEnded
     else -> SignalingFailureDisposition.RetryTransport
 }
 
+internal fun isTransientSignalingServiceFailure(message: String): Boolean =
+    TRANSIENT_SIGNALING_HTTP_STATUS.containsMatchIn(message) ||
+        message.contains("Service Unavailable", ignoreCase = true)
+
+internal fun transientSignalingRetryDelayMs(failureCount: Int): Long? = when (failureCount) {
+    1 -> 1_000L
+    2 -> 2_000L
+    3 -> 4_000L
+    else -> null
+}
+
+internal fun normalSignalingClosureMeansSessionEnded(transportHasStableMedia: Boolean): Boolean =
+    !transportHasStableMedia
+
 internal fun shouldPreserveMediaAfterSignalingFailure(
     disposition: SignalingFailureDisposition,
     iceState: PeerConnection.IceConnectionState?,
 ): Boolean {
-    if (disposition != SignalingFailureDisposition.RetryTransport) return false
+    if (
+        disposition != SignalingFailureDisposition.RetryTransport &&
+        disposition != SignalingFailureDisposition.RetrySignaling
+    ) {
+        return false
+    }
     return when (iceState) {
         PeerConnection.IceConnectionState.CHECKING,
         PeerConnection.IceConnectionState.CONNECTED,
@@ -545,6 +567,9 @@ internal fun shouldPreserveMediaAfterSignalingFailure(
         else -> false
     }
 }
+
+private val TRANSIENT_SIGNALING_HTTP_STATUS =
+    Regex("""http=(?:429|500|502|503|504)\b""", RegexOption.IGNORE_CASE)
 
 internal fun signalingHeartbeatReply(message: JsonObject): String? =
     if (message["hb"] != null) """{"hb":1}""" else null
@@ -3565,8 +3590,15 @@ class NativeStreamClient(
     private var factory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
     private var signaling: GfnSignalingClient? = null
+    @Volatile
     private var reliableInput: DataChannel? = null
+    @Volatile
     private var partiallyReliableInput: DataChannel? = null
+    @Volatile
+    private var reliableInputState: DataChannel.State? = null
+    @Volatile
+    private var partiallyReliableInputState: DataChannel.State? = null
+    private val pendingInputSends = AtomicInteger(0)
     private var statsChannel: DataChannel? = null
     private var lastParsedGameFps: Int? = null
     // Informational only: gamepad packets are full-state snapshots and are always routed over
@@ -3593,6 +3625,7 @@ class NativeStreamClient(
     private var session: SessionInfo? = null
     private var transportGeneration = 0
     private var reconnectAttempts = 0
+    private var transientSignalingFailures = 0
     /** Last bitrate (kbps) applied to the live local SDP, so slider drags do not re-apply the same value. */
     private var appliedBitrateLimitKbps = 0
     /**
@@ -3999,6 +4032,7 @@ class NativeStreamClient(
         this.settings = settings
         transportGeneration += 1
         reconnectAttempts = 0
+        transientSignalingFailures = 0
         videoSafeFallbackApplied = false
         catastrophicResolutionCodecFallbacks = 0
         stableMediaStallRestarts = 0
@@ -4027,6 +4061,7 @@ class NativeStreamClient(
         stopControllerMouseLoop()
         transportGeneration += 1
         reconnectAttempts = 0
+        transientSignalingFailures = 0
         stableMediaStallRestarts = 0
         sessionRecoveryRequested = false
         livenessWatchdog.reset()
@@ -4161,7 +4196,7 @@ class NativeStreamClient(
         }
         val sent = sendReliableInput(packet)
         if (hardwareKeyboard && !sent) {
-            NativeInputDiagnostics.add("hardware keyboard consumed without send key=${event.keyCode} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
+            NativeInputDiagnostics.add("hardware keyboard consumed without send key=${event.keyCode} ${inputChannelStateSummary()}")
         }
         return sent || hardwareKeyboard
     }
@@ -4218,12 +4253,7 @@ class NativeStreamClient(
      * their cursor model (direct click) keep their existing semantics.
      */
     private fun queueMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean): Boolean {
-        val channelOpen =
-            if (partiallyReliable && partiallyReliableInput?.state() == DataChannel.State.OPEN) {
-                true
-            } else {
-                reliableInput?.state() == DataChannel.State.OPEN
-            }
+        val channelOpen = openInputChannel(partiallyReliable, fallbackToReliable = true) != null
         if (!channelOpen) return false
         if (dx == 0 && dy == 0) return true
         val scheduleFlush: Boolean
@@ -4334,7 +4364,7 @@ class NativeStreamClient(
                 rememberMousePosition(event)
                 val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
-                    NativeInputDiagnostics.add("external mouse button consumed without send action=press button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
+                    NativeInputDiagnostics.add("external mouse button consumed without send action=press button=${event.actionButton} ${inputChannelStateSummary()}")
                 }
                 return true
             }
@@ -4343,7 +4373,7 @@ class NativeStreamClient(
                 mouseSuppressNextAbsoluteDelta = true
                 val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
-                    NativeInputDiagnostics.add("external mouse button consumed without send action=release button=${event.actionButton} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}")
+                    NativeInputDiagnostics.add("external mouse button consumed without send action=release button=${event.actionButton} ${inputChannelStateSummary()}")
                 }
                 return true
             }
@@ -4398,7 +4428,7 @@ class NativeStreamClient(
             "overlay keyboard key=$keyCode mapped=${mapped != null} " +
                 "vk=${mapped?.keycode} scan=${mapped?.scancode} " +
                 "downQueued=$downQueued upQueued=$upQueued " +
-                "reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+                inputChannelStateSummary(),
         )
     }
 
@@ -4488,7 +4518,7 @@ class NativeStreamClient(
             }
         }
         NativeInputDiagnostics.add(
-            "overlay keyboard dropped key=${payload.keycode} action=${if (isDown) "down" else "up"} reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+            "overlay keyboard dropped key=${payload.keycode} action=${if (isDown) "down" else "up"} ${inputChannelStateSummary()}",
         )
         return false
     }
@@ -4557,7 +4587,7 @@ class NativeStreamClient(
         val reliableSent = sendInput(packet, partiallyReliable = false)
         val partialSent = sendInput(packet, partiallyReliable = true)
         NativeInputDiagnostics.add(
-            "$source button=$button ${if (pressed) "down" else "up"} reliableSent=$reliableSent partialSent=$partialSent reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+            "$source button=$button ${if (pressed) "down" else "up"} reliableSent=$reliableSent partialSent=$partialSent ${inputChannelStateSummary()}",
         )
         return reliableSent || partialSent
     }
@@ -4657,7 +4687,7 @@ class NativeStreamClient(
         NativeInputDiagnostics.retain(
             key = "controller.virtual-button.$maskHex.$action",
             message = "virtual gamepad button mask=0x$maskHex action=$action route=$route sent=$sent " +
-                "buttons=$virtualButtons reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+                "buttons=$virtualButtons ${inputChannelStateSummary()}",
         )
     }
 
@@ -4788,6 +4818,8 @@ class NativeStreamClient(
         signaling = null
         reliableInput = null
         partiallyReliableInput = null
+        reliableInputState = null
+        partiallyReliableInputState = null
         statsChannel = null
         lastParsedGameFps = null
         partiallyReliableGamepadMask = 0
@@ -4820,13 +4852,22 @@ class NativeStreamClient(
         if (generation != transportGeneration) return
         when (event) {
             SignalingEvent.Connected -> {
+                transientSignalingFailures = 0
                 recordStreamDiagnostic("signaling connected generation=$generation")
                 emitState("Waiting for offer")
                 startOfferTimeout(generation)
             }
             is SignalingEvent.Disconnected -> {
                 recordStreamDiagnostic("signaling disconnected ${event.reason}")
-                val disposition = signalingFailureDisposition(event.reason, normalClosureMeansSessionEnded = true)
+                // A clean WebSocket close is not proof that an already-playing cloud session
+                // ended. With packet loss or high RTT the signaling socket can close while the
+                // media path is still healthy (or independently reconnectable). Only treat a
+                // normal close as terminal before media has demonstrated sustained progress;
+                // explicit 410/session-ended responses remain terminal in every phase.
+                val disposition = signalingFailureDisposition(
+                    event.reason,
+                    normalClosureMeansSessionEnded = normalSignalingClosureMeansSessionEnded(transportHasStableMedia),
+                )
                 if (shouldPreserveMediaAfterSignalingFailure(disposition, lastIceState)) {
                     recordStreamDiagnostic(
                         "signaling disconnected while ICE=${lastIceState?.name}; preserving active media transport",
@@ -4843,6 +4884,8 @@ class NativeStreamClient(
                         recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
                         requestSessionRecovery("Signaling endpoint became unavailable while connecting to the cloud session.")
                     }
+                    SignalingFailureDisposition.RetrySignaling ->
+                        scheduleTransientSignalingRetry(event.reason, generation)
                     SignalingFailureDisposition.RetryTransport ->
                         scheduleTransportReconnect("Signaling disconnected: ${event.reason}", SIGNALING_RECONNECT_DELAY_MS, generation)
                 }
@@ -4866,6 +4909,8 @@ class NativeStreamClient(
                         recordStreamDiagnostic("Signaling endpoint is stale. Recovering cloud session.")
                         requestSessionRecovery("Signaling endpoint became unavailable while connecting to the cloud session.")
                     }
+                    SignalingFailureDisposition.RetrySignaling ->
+                        scheduleTransientSignalingRetry(event.message, generation)
                     SignalingFailureDisposition.RetryTransport ->
                         scheduleTransportReconnect("Signaling failed: ${event.message}", SIGNALING_RECONNECT_DELAY_MS, generation)
                 }
@@ -5316,7 +5361,42 @@ class NativeStreamClient(
         }
     }
 
-    private fun restartTransport(reason: String, videoFailure: Boolean = false) {
+    private fun scheduleTransientSignalingRetry(message: String, generation: Int) {
+        if (generation != transportGeneration || iceRecoveryJob?.isActive == true) {
+            recordStreamDiagnostic(
+                "signaling service retry not scheduled generation=$generation activeJob=${iceRecoveryJob?.isActive == true}",
+            )
+            return
+        }
+        transientSignalingFailures += 1
+        val failureCount = transientSignalingFailures
+        val delayMs = transientSignalingRetryDelayMs(failureCount)
+        if (delayMs == null) {
+            recordStreamDiagnostic("signaling service retry limit reached failures=$failureCount")
+            requestSessionRecovery(
+                "The signaling service stayed unavailable after ${failureCount - 1} retries.",
+            )
+            return
+        }
+        recordStreamDiagnostic(
+            "signaling service retry scheduled failure=$failureCount/$MAX_TRANSIENT_SIGNALING_RETRIES " +
+                "delayMs=$delayMs generation=$generation",
+        )
+        iceRecoveryJob = scope.launch {
+            delay(delayMs)
+            if (generation != transportGeneration) return@launch
+            restartTransport(
+                reason = "Signaling service unavailable: $message",
+                consumeReconnectAttempt = false,
+            )
+        }
+    }
+
+    private fun restartTransport(
+        reason: String,
+        videoFailure: Boolean = false,
+        consumeReconnectAttempt: Boolean = true,
+    ) {
         val currentSession = session ?: return
         val currentSettings = settings
         val hadStableMedia = transportHasStableMedia
@@ -5334,16 +5414,23 @@ class NativeStreamClient(
         ) {
             return
         }
-        if (reconnectAttempts >= MAX_TRANSPORT_RECONNECT_ATTEMPTS) {
+        if (consumeReconnectAttempt && reconnectAttempts >= MAX_TRANSPORT_RECONNECT_ATTEMPTS) {
             recordStreamDiagnostic("reconnect limit reached reason=$reason attempts=$reconnectAttempts")
             requestSessionRecovery("$reason. Stream reconnect failed after $MAX_TRANSPORT_RECONNECT_ATTEMPTS attempts.")
             return
         }
-        reconnectAttempts += 1
+        if (consumeReconnectAttempt) reconnectAttempts += 1
         transportGeneration += 1
         val generation = transportGeneration
-        recordStreamDiagnostic("transport restart reason=$reason attempt=$reconnectAttempts generation=$generation")
-        emitState("Reconnecting stream ($reconnectAttempts/$MAX_TRANSPORT_RECONNECT_ATTEMPTS)")
+        recordStreamDiagnostic(
+            "transport restart reason=$reason attempt=$reconnectAttempts " +
+                "signalingFailures=$transientSignalingFailures generation=$generation",
+        )
+        if (consumeReconnectAttempt) {
+            emitState("Reconnecting stream ($reconnectAttempts/$MAX_TRANSPORT_RECONNECT_ATTEMPTS)")
+        } else {
+            emitState("Reconnecting signaling ($transientSignalingFailures/$MAX_TRANSIENT_SIGNALING_RETRIES)")
+        }
         closeTransport(clearInputState = false, cancelRecovery = false)
         val codecSettleDelayMs = advancedCodecRestartSettleDelayMs(
             codec = currentSettings.codec,
@@ -5451,9 +5538,10 @@ class NativeStreamClient(
         val label = channel.label()
         val normalizedLabel = label.lowercase(Locale.US)
         val role = InputDataChannelLabels.classify(label)
+        val initialState = channel.state()
         NativeInputDiagnostics.addRetained(
             key = "channel.$normalizedLabel",
-            message = "data channel attached label=$normalizedLabel role=$role state=${channel.state()}",
+            message = "data channel attached label=$normalizedLabel role=$role state=$initialState",
         )
         if (normalizedLabel == "stats_channel") {
             statsChannel = channel
@@ -5469,18 +5557,30 @@ class NativeStreamClient(
             return
         }
         when (role) {
-            InputDataChannelRole.Reliable -> reliableInput = channel
-            InputDataChannelRole.PartiallyReliable -> partiallyReliableInput = channel
+            InputDataChannelRole.Reliable -> {
+                reliableInput = channel
+                reliableInputState = initialState
+            }
+            InputDataChannelRole.PartiallyReliable -> {
+                partiallyReliableInput = channel
+                partiallyReliableInputState = initialState
+            }
             InputDataChannelRole.Other -> return
         }
         channel.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) = Unit
             override fun onStateChange() {
+                val state = channel.state()
+                when (role) {
+                    InputDataChannelRole.Reliable -> if (reliableInput === channel) reliableInputState = state
+                    InputDataChannelRole.PartiallyReliable -> if (partiallyReliableInput === channel) partiallyReliableInputState = state
+                    InputDataChannelRole.Other -> Unit
+                }
                 NativeInputDiagnostics.addRetained(
                     key = "channel.$normalizedLabel",
-                    message = "input channel state label=$normalizedLabel role=$role state=${channel.state()}",
+                    message = "input channel state label=$normalizedLabel role=$role state=$state",
                 )
-                if (channel.state() == DataChannel.State.OPEN) {
+                if (state == DataChannel.State.OPEN) {
                     inputDropLogged = false
                     NativeInputDiagnostics.add("input channel open label=$normalizedLabel")
                     updateHapticsAdvertisement(force = true)
@@ -6066,7 +6166,7 @@ class NativeStreamClient(
                 "physical gamepad analog device=${event.deviceId}:${event.device?.name.orEmpty()} slot=$controllerId " +
                     "left=${leftX.formatAxis()},${leftY.formatAxis()} right=${rightX.formatAxis()},${rightY.formatAxis()} " +
                     "triggers=${lt.formatAxis()},${rt.formatAxis()} sources=${axes.leftSource}/${axes.rightSource} " +
-                    "sent=$sent reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}"
+                    "sent=$sent ${inputChannelStateSummary()}"
             }
         }
         return sent
@@ -6239,7 +6339,7 @@ class NativeStreamClient(
                 "bitmap=$bitmap buttons=$buttons triggers=$leftTrigger,$rightTrigger " +
                 "left=$leftStickX,$leftStickY right=$rightStickX,$rightStickY " +
                 "physicalActive=$physicalControllerActive virtualVisible=$virtualControllerVisible " +
-                "reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}"
+                inputChannelStateSummary()
         }
         if (leftStickX != 0 || leftStickY != 0 || rightStickX != 0 || rightStickY != 0) {
             NativeInputDiagnostics.retainThrottled(
@@ -6249,7 +6349,7 @@ class NativeStreamClient(
                 "gamepad stick packet slot=$controllerId sent=$sent left=$leftStickX,$leftStickY right=$rightStickX,$rightStickY " +
                     "leftSource=${if (virtualLeftStickActive) "virtual" else "physical"} " +
                     "rightSource=${if (virtualRightStickActive) "virtual" else "physical"} " +
-                    "reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}"
+                    inputChannelStateSummary()
             }
         }
         return sent
@@ -6325,58 +6425,98 @@ class NativeStreamClient(
         if (sendInput(bytes, partiallyReliable = false)) return true
         val sentPartial = sendInput(bytes, partiallyReliable = true, fallbackToReliable = false)
         if (sentPartial) {
-            NativeInputDiagnostics.add("reliable input used partial fallback reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()} bytes=${bytes.size}")
+            NativeInputDiagnostics.add("reliable input used partial fallback ${inputChannelStateSummary()} bytes=${bytes.size}")
         }
         return sentPartial
     }
 
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean, fallbackToReliable: Boolean): Boolean {
-        val channel = if (partiallyReliable && partiallyReliableInput?.state() == DataChannel.State.OPEN) {
-            partiallyReliableInput
-        } else if (partiallyReliable && !fallbackToReliable) {
-            null
-        } else {
-            reliableInput
-        }
-        if (channel?.state() != DataChannel.State.OPEN) {
+        val queuedChannel = openInputChannel(partiallyReliable, fallbackToReliable)
+        if (queuedChannel == null) {
             if (!inputDropLogged) {
                 inputDropLogged = true
                 NativeInputDiagnostics.addRetained(
                     key = "input.last-drop",
-                    message = "input dropped noOpenChannel requestedPartial=$partiallyReliable reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()} bytes=${bytes.size}",
+                    message = "input dropped noOpenChannel requestedPartial=$partiallyReliable ${inputChannelStateSummary()} bytes=${bytes.size}",
                 )
             }
             return false
         }
-        val bufferedAmount = channel.bufferedAmount()
-        // State inputs (mouse moves, touch MOVE, gamepad) are superseded by newer packets, so the
-        // loss-tolerant channel drops them early instead of letting the queue grow into lag.
-        // Critical one-shot events (buttons, lifts, keystrokes) keep the generous reliable
-        // threshold and are only dropped when the channel is genuinely backed up.
-        // Keyed on the requested reliability, not the physical channel: when the reliable channel
-        // is down and a critical one-shot event falls back onto the loss-tolerant channel, it must
-        // keep the generous threshold instead of being dropped as if it were a state input.
-        val dropThreshold = if (partiallyReliable) {
-            INPUT_PARTIAL_BACKPRESSURE_DROP_THRESHOLD
-        } else {
-            INPUT_RELIABLE_BACKPRESSURE_DROP_THRESHOLD
-        }
-        if (bufferedAmount > dropThreshold) {
+        val pending = pendingInputSends.incrementAndGet()
+        if (pending > MAX_PENDING_INPUT_SENDS) {
+            pendingInputSends.decrementAndGet()
             NativeInputDiagnostics.retainThrottled(
                 key = "input.last-drop",
                 minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
             ) {
-                "input dropped backpressure requestedPartial=$partiallyReliable label=${channel.label()} " +
-                    "bufferedAmount=$bufferedAmount threshold=$dropThreshold bytes=${bytes.size}"
+                "input dropped senderQueue pending=$pending limit=$MAX_PENDING_INPUT_SENDS " +
+                    "requestedPartial=$partiallyReliable bytes=${bytes.size}"
             }
             return false
         }
+        // Do not call any DataChannel JNI accessor from Android's input-dispatch thread.
+        // state(), bufferedAmount(), and send() can all contend on WebRTC/native locks; keeping
+        // the complete sequence on the dedicated sender prevents a slow network/native lock from
+        // turning a touch event into an Input dispatching timed out ANR.
         inputScope.launch {
-            runCatching {
-                channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
+            try {
+                sendInputOnWorker(queuedChannel, bytes, partiallyReliable)
+            } finally {
+                pendingInputSends.decrementAndGet()
             }
         }
         return true
+    }
+
+    private fun openInputChannel(partiallyReliable: Boolean, fallbackToReliable: Boolean): DataChannel? =
+        when {
+            partiallyReliable && partiallyReliableInputState == DataChannel.State.OPEN -> partiallyReliableInput
+            partiallyReliable && !fallbackToReliable -> null
+            reliableInputState == DataChannel.State.OPEN -> reliableInput
+            else -> null
+        }
+
+    private fun inputChannelStateSummary(): String =
+        "reliable=${reliableInputState?.name ?: "none"} partial=${partiallyReliableInputState?.name ?: "none"}"
+
+    private fun sendInputOnWorker(
+        channel: DataChannel,
+        bytes: ByteArray,
+        partiallyReliable: Boolean,
+    ) {
+        runCatching {
+            if (channel.state() != DataChannel.State.OPEN) return@runCatching
+            val bufferedAmount = channel.bufferedAmount()
+            // State inputs (mouse moves, touch MOVE, gamepad) are superseded by newer packets, so
+            // the loss-tolerant channel drops them early instead of letting the queue grow into
+            // lag. Critical one-shot events (buttons, lifts, keystrokes) keep the generous reliable
+            // threshold and are only dropped when the channel is genuinely backed up. Key this on
+            // requested reliability so a critical event using the partial fallback stays critical.
+            val dropThreshold = if (partiallyReliable) {
+                INPUT_PARTIAL_BACKPRESSURE_DROP_THRESHOLD
+            } else {
+                INPUT_RELIABLE_BACKPRESSURE_DROP_THRESHOLD
+            }
+            if (bufferedAmount > dropThreshold) {
+                NativeInputDiagnostics.retainThrottled(
+                    key = "input.last-drop",
+                    minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
+                ) {
+                    "input dropped backpressure requestedPartial=$partiallyReliable label=${channel.label()} " +
+                        "bufferedAmount=$bufferedAmount threshold=$dropThreshold bytes=${bytes.size}"
+                }
+                return@runCatching
+            }
+            channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
+        }.onFailure { error ->
+            NativeInputDiagnostics.retainThrottled(
+                key = "input.last-send-error",
+                minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
+            ) {
+                "input send failed requestedPartial=$partiallyReliable bytes=${bytes.size} " +
+                    "error=${error.javaClass.simpleName}"
+            }
+        }
     }
 
     private fun clearPhysicalControllerInputState() {
@@ -6455,12 +6595,12 @@ class NativeStreamClient(
         val sent = sendCurrentGamepadState()
         NativeInputDiagnostics.addRetained(
             key = "controller.prime",
-            message = "gamepad state prime reason=$reason sent=$sent connected=$physicalControllerConnected active=$physicalControllerActive slot=$activeControllerId reliable=${reliableInput?.state()} partial=${partiallyReliableInput?.state()}",
+            message = "gamepad state prime reason=$reason sent=$sent connected=$physicalControllerConnected active=$physicalControllerActive slot=$activeControllerId ${inputChannelStateSummary()}",
         )
     }
 
     private fun updateHapticsAdvertisement(force: Boolean = false) {
-        if (reliableInput?.state() != DataChannel.State.OPEN) return
+        if (reliableInputState != DataChannel.State.OPEN) return
         val now = SystemClock.elapsedRealtime()
         // Periodically re-advertise: the controller can connect (or start reporting a vibrator)
         // after the session began, and once advertised with enabled=false the server keeps
@@ -6822,6 +6962,7 @@ class NativeStreamClient(
         private const val GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val MOUSE_MOVE_COALESCE_MS = 8L
+        private const val MAX_PENDING_INPUT_SENDS = 256
         // State inputs are superseded by newer packets, so they are dropped well before the queue
         // can grow into lag; one-shot critical events keep the generous reliable threshold.
         private const val INPUT_PARTIAL_BACKPRESSURE_DROP_THRESHOLD = 16_384L
@@ -7869,6 +8010,7 @@ private const val ICE_FAILED_RECONNECT_DELAY_MS = 250L
 private const val SIGNALING_RECONNECT_DELAY_MS = 1000L
 private const val ANDROID_CODEC_RESTART_SETTLE_MS = 180L
 private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 3
+private const val MAX_TRANSIENT_SIGNALING_RETRIES = 3
 private const val OFFER_TIMEOUT_MS = 12_000L
 private const val MEDIA_STALL_KEYFRAME_AFTER_MS = 5_000L
 private const val MEDIA_STALL_KEYFRAME_INTERVAL_MS = 2_500L

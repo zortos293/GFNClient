@@ -19,7 +19,7 @@ class StreamSignalingFailureTest {
     }
 
     @Test
-    fun goneSessionAndNormalServerCloseRemainTerminal() {
+    fun goneSessionAndPreStreamNormalServerCloseRemainTerminal() {
         assertEquals(
             SignalingFailureDisposition.SessionEnded,
             signalingFailureDisposition("http=410 Gone"),
@@ -31,11 +31,41 @@ class StreamSignalingFailureTest {
     }
 
     @Test
+    fun normalServerCloseAfterStableMediaRetriesInsteadOfEndingSession() {
+        assertTrue(normalSignalingClosureMeansSessionEnded(transportHasStableMedia = false))
+        assertFalse(normalSignalingClosureMeansSessionEnded(transportHasStableMedia = true))
+        assertEquals(
+            SignalingFailureDisposition.RetryTransport,
+            signalingFailureDisposition(
+                "code=1000",
+                normalClosureMeansSessionEnded = normalSignalingClosureMeansSessionEnded(
+                    transportHasStableMedia = true,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun transientSignalingFailureRetriesTransport() {
         assertEquals(
             SignalingFailureDisposition.RetryTransport,
             signalingFailureDisposition("socket timeout"),
         )
+    }
+
+    @Test
+    fun serviceUnavailableUsesSeparateBoundedSignalingBackoff() {
+        assertEquals(
+            SignalingFailureDisposition.RetrySignaling,
+            signalingFailureDisposition(
+                "ProtocolException: Expected HTTP 101 response but was '503 Service Unavailable' http=503",
+            ),
+        )
+        assertEquals(SignalingFailureDisposition.RetrySignaling, signalingFailureDisposition("http=429"))
+        assertEquals(1_000L, transientSignalingRetryDelayMs(1))
+        assertEquals(2_000L, transientSignalingRetryDelayMs(2))
+        assertEquals(4_000L, transientSignalingRetryDelayMs(3))
+        assertNull(transientSignalingRetryDelayMs(4))
     }
 
     @Test
@@ -54,6 +84,12 @@ class StreamSignalingFailureTest {
         assertTrue(shouldPreserveMediaAfterSignalingFailure(transient, PeerConnection.IceConnectionState.CHECKING))
         assertTrue(shouldPreserveMediaAfterSignalingFailure(transient, PeerConnection.IceConnectionState.CONNECTED))
         assertTrue(shouldPreserveMediaAfterSignalingFailure(transient, PeerConnection.IceConnectionState.COMPLETED))
+        assertTrue(
+            shouldPreserveMediaAfterSignalingFailure(
+                SignalingFailureDisposition.RetrySignaling,
+                PeerConnection.IceConnectionState.CONNECTED,
+            ),
+        )
         assertFalse(shouldPreserveMediaAfterSignalingFailure(transient, PeerConnection.IceConnectionState.DISCONNECTED))
         assertFalse(shouldPreserveMediaAfterSignalingFailure(transient, PeerConnection.IceConnectionState.FAILED))
         assertFalse(shouldPreserveMediaAfterSignalingFailure(transient, null))

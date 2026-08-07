@@ -26,6 +26,7 @@ import {
 } from "./stream/StreamEmptyStates";
 import { StreamQuickMenu } from "./stream/quick-menu/StreamQuickMenu";
 import { MotionSpinner } from "./MotionSpinner";
+import { isStreamPointerLocked } from "../lib/pointerLock";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
@@ -490,7 +491,8 @@ export function StreamView({
   useEffect(() => {
     const handlePointerLockChange = () => {
       setIsPointerLocked(
-        document.pointerLockElement === localVideoRef.current || nativeInputCaptureActive,
+        (localVideoRef.current !== null && isStreamPointerLocked(localVideoRef.current))
+          || nativeInputCaptureActive,
       );
     };
     handlePointerLockChange();

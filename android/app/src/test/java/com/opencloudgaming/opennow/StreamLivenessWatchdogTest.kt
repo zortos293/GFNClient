@@ -182,6 +182,42 @@ class StreamLivenessWatchdogTest {
     }
 
     @Test
+    fun repeatedStableAdvancedCodecStallsFallBackOnlyOnTv() {
+        assertFalse(
+            repeatedStableMediaStallShouldApplySafeVideoFallback(
+                androidTvProfile = true,
+                transportCodec = VideoCodec.AV1,
+                completedStableMediaStallRestarts = 1,
+                safeVideoFallbackApplied = false,
+            ),
+        )
+        assertTrue(
+            repeatedStableMediaStallShouldApplySafeVideoFallback(
+                androidTvProfile = true,
+                transportCodec = VideoCodec.AV1,
+                completedStableMediaStallRestarts = 2,
+                safeVideoFallbackApplied = false,
+            ),
+        )
+        assertFalse(
+            repeatedStableMediaStallShouldApplySafeVideoFallback(
+                androidTvProfile = false,
+                transportCodec = VideoCodec.AV1,
+                completedStableMediaStallRestarts = 2,
+                safeVideoFallbackApplied = false,
+            ),
+        )
+        assertFalse(
+            repeatedStableMediaStallShouldApplySafeVideoFallback(
+                androidTvProfile = true,
+                transportCodec = VideoCodec.H264,
+                completedStableMediaStallRestarts = 2,
+                safeVideoFallbackApplied = false,
+            ),
+        )
+    }
+
+    @Test
     fun requestsKeyframesBeforeRestartingStalledMedia() {
         val watchdog = StreamLivenessWatchdog(
             keyframeAfterMs = 1_000L,

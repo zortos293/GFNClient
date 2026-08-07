@@ -2808,6 +2808,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} constrained=${codecReport?.constrainedRuntimeProfile} tv=${codecReport?.androidTvProfile}")
             appendLine("device.runtime=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}")
             appendLine("stream.runtime.latest=${latestStreamRuntimeStats?.debugSummary(System.currentTimeMillis()) ?: "empty"}")
+            appendLine(ProcessCpuDiagnostics.snapshot())
             codecReport?.capabilities?.forEach { cap ->
                 appendLine("codec.${cap.codec}: decoder=${cap.decoderName ?: "none"} hardware=${cap.hardwareDecoder} nativeAvailable=${cap.nativeDecoderAvailable ?: "unknown"} webRtc=${cap.webRtcDecoderName ?: "none"} webRtcAvailable=${cap.webRtcDecoderAvailable ?: "unknown"} webRtcHardware=${cap.webRtcHardwareDecoderAvailable ?: "unknown"} encoder=${cap.encoderName ?: "none"}")
             }
@@ -3582,6 +3583,7 @@ private fun StreamRuntimeStats.hasDebugValues(): Boolean =
         fps != null ||
         receivedFps != null ||
         decodedFps != null ||
+        processCpuPercent != null ||
         !resolution.isNullOrBlank() ||
         !codec.isNullOrBlank()
 
@@ -3590,6 +3592,7 @@ private fun StreamRuntimeStats.debugSummary(): String =
         "pingMs=${pingMs ?: -1} fps=${fps ?: 0} receivedFps=${receivedFps ?: 0} decodedFps=${decodedFps ?: 0} " +
         "decodeMs=${decodeMs ?: -1.0} jitterMs=${jitterMs ?: -1.0} packetLossPct=${packetLossPct ?: -1.0} " +
         "packetsLostDelta=${packetsLostDelta ?: -1} packetsReceivedDelta=${packetsReceivedDelta ?: -1} " +
+        "processCpuPct=${processCpuPercent ?: -1.0} deviceCpuCapacityPct=${deviceCpuCapacityPercent ?: -1.0} cpuCores=${cpuLogicalCoreCount ?: 0} " +
         "resolution=${resolution.orEmpty()} codec=${codec.orEmpty()}"
 
 private fun TimedStreamRuntimeStats.debugSummary(nowMs: Long): String {

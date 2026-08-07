@@ -3698,7 +3698,7 @@ private fun GameGridSkeleton(
                 gridItems(placeholderItems, key = { it }) {
                     GameCardSkeleton(
                         squareCard = gridSpec.squareCards,
-                        thumbnailFavoriteOverlay = !artworkOnly && !tvProfile,
+                        thumbnailFavoriteOverlay = true,
                         showStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -3972,7 +3972,7 @@ private fun GameGrid(
                             enabled = settings.showCardTitles,
                         ),
                         squareCard = gridSpec.squareCards,
-                        thumbnailFavoriteOverlay = !tvProfile,
+                        thumbnailFavoriteOverlay = true,
                         controllerActionMode = controllerActionMode,
                         onSelect = onSelect,
                         onFavorite = onFavorite,
@@ -4091,7 +4091,7 @@ private fun StoreGameGrid(
                             enabled = settings.showCardTitles,
                         ),
                         squareCard = gridSpec.squareCards,
-                        thumbnailFavoriteOverlay = !tvProfile,
+                        thumbnailFavoriteOverlay = true,
                         controllerActionMode = controllerActionMode,
                         onSelect = onSelect,
                         onFavorite = onFavorite,
@@ -5167,8 +5167,8 @@ internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = false
 internal fun shouldUseArtworkOnlyCatalogCards(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
     tvProfile || controllerActionMode
 
-internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
-    !tvProfile && !controllerActionMode
+@Suppress("UNUSED_PARAMETER")
+internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean = true
 
 internal fun shouldShowGameStoreLabels(tvProfile: Boolean, enabled: Boolean): Boolean =
     enabled && !tvProfile
@@ -7230,6 +7230,7 @@ private fun StreamScreen(
                 client = client,
                 settings = streamSettings,
                 viewportSettings = requestedStreamSettings,
+                decodedResolution = streamStats.resolution,
                 androidTouch = state.settings.androidTouch,
                 hideExternalMousePointer = externalMousePassthroughActive,
                 touchMouseEnabled =
@@ -7852,6 +7853,7 @@ private fun StreamVideoSurface(
     client: NativeStreamClient,
     settings: StreamSettings,
     viewportSettings: StreamSettings,
+    decodedResolution: String?,
     androidTouch: AndroidTouchSettings,
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
@@ -7870,6 +7872,12 @@ private fun StreamVideoSurface(
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     val streamAspectRatio = remember(viewportSettings.resolution, viewportSettings.aspectRatio) {
         streamRendererAspectRatio(viewportSettings)
+    }
+    val stretchContentAspectRatio = remember(decodedResolution, streamAspectRatio) {
+        streamStretchContentAspectRatio(
+            selectedAspectRatio = streamAspectRatio,
+            decodedResolution = decodedResolution,
+        )
     }
     val viewportAspectRatio = remember(viewportSize) {
         if (viewportSize.width > 0 && viewportSize.height > 0) {
@@ -7896,11 +7904,11 @@ private fun StreamVideoSurface(
 
     // SCALE_ASPECT_FIT preserves every decoded pixel. Stretching the View on only
     // the mismatching axis removes the bars without cropping HUD or edge content.
-    val stretchScale = remember(stretchToFit, viewportAspectRatio, streamAspectRatio) {
+    val stretchScale = remember(stretchToFit, viewportAspectRatio, stretchContentAspectRatio) {
         streamStretchScale(
             enabled = stretchToFit,
             viewportAspectRatio = viewportAspectRatio,
-            streamAspectRatio = streamAspectRatio,
+            streamAspectRatio = stretchContentAspectRatio,
         )
     }
     LaunchedEffect(
@@ -8073,6 +8081,15 @@ internal fun streamRendererAspectRatio(
     // dynamic stream-resolution control is disabled in the NVST SDP. Decoded dimensions
     // are still retained for diagnostics and input mapping, but must not resize the UI.
     return streamAspectRatioForPixels(streamResolutionPixels(settings))
+}
+
+internal fun streamStretchContentAspectRatio(
+    selectedAspectRatio: Float,
+    decodedResolution: String?,
+): Float {
+    val decodedPixels = parseResolutionPixelsOrNull(decodedResolution) ?: return selectedAspectRatio
+    val decodedAspectRatio = decodedPixels.first.toFloat() / decodedPixels.second.toFloat()
+    return decodedAspectRatio.takeIf { it.isFinite() && it > 0f } ?: selectedAspectRatio
 }
 
 internal fun streamStretchScale(

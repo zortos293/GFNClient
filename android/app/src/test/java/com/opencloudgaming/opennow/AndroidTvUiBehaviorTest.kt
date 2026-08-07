@@ -92,7 +92,8 @@ class AndroidTvUiBehaviorTest {
             catalogCardImageUrl(game, tvProfile = true),
         )
         assertFalse(shouldOverlayCatalogCardTitle(tvProfile = true))
-        assertFalse(shouldShowCatalogCardActions(tvProfile = true, controllerActionMode = false))
+        assertTrue(shouldShowCatalogCardActions(tvProfile = true, controllerActionMode = false))
+        assertTrue(shouldShowCatalogCardActions(tvProfile = false, controllerActionMode = true))
     }
 
     @Test

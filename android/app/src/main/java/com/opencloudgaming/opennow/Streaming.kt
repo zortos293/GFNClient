@@ -2585,6 +2585,17 @@ internal fun transportRestartShouldApplySafeVideoFallback(
     transportHasStableMedia: Boolean,
 ): Boolean = videoFailure && reconnectAttempts >= 1 && !transportHasStableMedia
 
+internal fun repeatedStableMediaStallShouldApplySafeVideoFallback(
+    androidTvProfile: Boolean,
+    transportCodec: VideoCodec,
+    completedStableMediaStallRestarts: Int,
+    safeVideoFallbackApplied: Boolean,
+): Boolean =
+    androidTvProfile &&
+        transportCodec != VideoCodec.H264 &&
+        completedStableMediaStallRestarts >= 2 &&
+        !safeVideoFallbackApplied
+
 private fun newStreamLivenessWatchdog(androidTvProfile: Boolean): StreamLivenessWatchdog {
     val timing = streamRecoveryTiming(androidTvProfile)
     return StreamLivenessWatchdog(
@@ -3556,6 +3567,7 @@ class NativeStreamClient(
     private var reconnectAttempts = 0
     private var videoSafeFallbackApplied = false
     private var catastrophicResolutionCodecFallbacks = 0
+    private var stableMediaStallRestarts = 0
     private var firstDecodedResolutionEvaluated = false
     private var transportHasStableMedia = false
     private var consecutiveTransportProgressSamples = 0
@@ -3611,6 +3623,7 @@ class NativeStreamClient(
     private var hardwareKeyboardEventLogged = false
     private var physicalGamepadAxisLogged = false
     private var lastStatsSample: StreamStatsSample? = null
+    private val processCpuSampler = ProcessCpuSampler()
     private val packetLossWindow = StreamPacketLossWindow()
     private var androidTvProfile = initialAndroidTvProfile
     private var livenessWatchdog = newStreamLivenessWatchdog(androidTvProfile)
@@ -3926,8 +3939,11 @@ class NativeStreamClient(
         reconnectAttempts = 0
         videoSafeFallbackApplied = false
         catastrophicResolutionCodecFallbacks = 0
+        stableMediaStallRestarts = 0
         sessionRecoveryRequested = false
         lastStatsSample = null
+        processCpuSampler.reset()
+        ProcessCpuDiagnostics.beginStream()
         packetLossWindow.reset()
         livenessWatchdog.reset()
         firstVideoFrameWatchdog.reset()
@@ -3949,6 +3965,7 @@ class NativeStreamClient(
         stopControllerMouseLoop()
         transportGeneration += 1
         reconnectAttempts = 0
+        stableMediaStallRestarts = 0
         sessionRecoveryRequested = false
         livenessWatchdog.reset()
         firstVideoFrameWatchdog.reset()
@@ -5433,7 +5450,14 @@ class NativeStreamClient(
         val pc = peerConnection ?: return
         val generation = transportGeneration
         pc.getStats(RTCStatsCollectorCallback { report ->
-            val snapshot = buildRuntimeStatsSnapshot(report.timestampUs / 1000.0, report.statsMap.values)
+            if (generation != transportGeneration) return@RTCStatsCollectorCallback
+            val cpuSample = processCpuSampler.sample()
+            cpuSample?.let(ProcessCpuDiagnostics::record)
+            val snapshot = buildRuntimeStatsSnapshot(
+                timestampMs = report.timestampUs / 1000.0,
+                stats = report.statsMap.values,
+                cpuSample = cpuSample,
+            )
             scope.launch {
                 if (generation != transportGeneration) return@launch
                 if (handleCatastrophicFirstDecodedResolution(snapshot)) {
@@ -5446,7 +5470,11 @@ class NativeStreamClient(
         })
     }
 
-    private fun buildRuntimeStatsSnapshot(timestampMs: Double, stats: Collection<RTCStats>): RuntimeStatsSnapshot {
+    private fun buildRuntimeStatsSnapshot(
+        timestampMs: Double,
+        stats: Collection<RTCStats>,
+        cpuSample: ProcessCpuUsageSample?,
+    ): RuntimeStatsSnapshot {
         val inboundVideo = stats.firstOrNull { stat ->
             val members = stat.members
             stat.type == "inbound-rtp" &&
@@ -5569,6 +5597,9 @@ class NativeStreamClient(
                 packetLossPct = packetLossPct,
                 packetsLostDelta = packetsLostDelta,
                 packetsReceivedDelta = packetsReceivedDelta,
+                processCpuPercent = cpuSample?.processCpuPercent,
+                deviceCpuCapacityPercent = cpuSample?.deviceCpuCapacityPercent,
+                cpuLogicalCoreCount = cpuSample?.logicalCoreCount,
             ),
             bytesReceived = bytesReceived,
             framesDecoded = framesDecoded,
@@ -5692,6 +5723,26 @@ class NativeStreamClient(
                 NativeInputDiagnostics.add("media stall keyframe requested stalledMs=${action.stalledMs} attempt=${action.attempt}")
             }
             is StreamLivenessAction.RestartTransport -> {
+                if (transportHasStableMedia) {
+                    stableMediaStallRestarts += 1
+                    NativeInputDiagnostics.add(
+                        "stable media stall count=$stableMediaStallRestarts codec=${settings.codec} androidTv=$androidTvProfile",
+                    )
+                }
+                if (
+                    repeatedStableMediaStallShouldApplySafeVideoFallback(
+                        androidTvProfile = androidTvProfile,
+                        transportCodec = settings.codec,
+                        completedStableMediaStallRestarts = stableMediaStallRestarts,
+                        safeVideoFallbackApplied = videoSafeFallbackApplied,
+                    ) &&
+                    requestSafeVideoFallback(
+                        message = "Decoder repeatedly stalled after stable playback; restarting with safe H264 profile",
+                        diagnosticReason = "repeated stable media stall",
+                    )
+                ) {
+                    return
+                }
                 if (
                     !transportHasStableMedia &&
                     requestSafeVideoFallback(
@@ -5731,6 +5782,8 @@ class NativeStreamClient(
         restartWhenAlreadySafe: Boolean = false,
     ): Boolean {
         val currentSession = session ?: return false
+        val previousCodec = settings.codec
+        val hadStableMedia = transportHasStableMedia
         val fallback = settings.androidSafeVideoFallback()
         val alreadySafe = settings == fallback
         if (videoSafeFallbackApplied || (alreadySafe && !restartWhenAlreadySafe)) return false
@@ -5749,7 +5802,20 @@ class NativeStreamClient(
         )
         emitState("Reconnecting stream with safe H264 profile")
         emitVideoTransportFallbackApplied(message, fallback)
-        startTransport(currentSession, fallback, generation)
+        val settleDelayMs = advancedCodecRestartSettleDelayMs(previousCodec, hadStableMedia)
+        if (settleDelayMs == 0L) {
+            startTransport(currentSession, fallback, generation)
+        } else {
+            recordStreamDiagnostic(
+                "waiting ${settleDelayMs}ms for $previousCodec decoder release before safe fallback generation=$generation",
+            )
+            iceRecoveryJob = scope.launch {
+                delay(settleDelayMs)
+                if (generation != transportGeneration || session?.sessionId != currentSession.sessionId) return@launch
+                iceRecoveryJob = null
+                startTransport(currentSession, fallback, generation)
+            }
+        }
         return true
     }
 

@@ -292,10 +292,6 @@ internal fun SettingsScreen(
                         .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    SettingsRefreshAction(
-                        refreshing = state.settingsRefreshing,
-                        onRefresh = viewModel::refreshSettings,
-                    )
                     AnimatedVisibility(visible = showSearch) {
                         NativeSearchField(
                             query = searchQuery,
@@ -336,12 +332,6 @@ internal fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     item {
-                        SettingsRefreshAction(
-                            refreshing = state.settingsRefreshing,
-                            onRefresh = viewModel::refreshSettings,
-                        )
-                    }
-                    item {
                         AnimatedVisibility(visible = showSearch) {
                             NativeSearchField(
                                 query = searchQuery,
@@ -371,24 +361,6 @@ internal fun SettingsScreen(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun SettingsRefreshAction(
-    refreshing: Boolean,
-    onRefresh: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
-    ) {
-        OutlinedButton(
-            onClick = onRefresh,
-            enabled = !refreshing,
-        ) {
-            Text(if (refreshing) "Refreshing…" else "Refresh")
         }
     }
 }

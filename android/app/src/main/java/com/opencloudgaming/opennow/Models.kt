@@ -1694,6 +1694,9 @@ data class StreamRuntimeStats(
     val packetLossPct: Double? = null,
     val packetsLostDelta: Long? = null,
     val packetsReceivedDelta: Long? = null,
+    val processCpuPercent: Double? = null,
+    val deviceCpuCapacityPercent: Double? = null,
+    val cpuLogicalCoreCount: Int? = null,
 )
 
 internal fun CodecCapability.streamingDecoderAvailable(): Boolean =

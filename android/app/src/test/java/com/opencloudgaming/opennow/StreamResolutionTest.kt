@@ -255,6 +255,40 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun stretchUsesDecodedAspectWhenGameChangesItsOutputMode() {
+        val selectedAspect = 1920f / 1080f
+        val decodedAspect = streamStretchContentAspectRatio(
+            selectedAspectRatio = selectedAspect,
+            decodedResolution = "1728x1080",
+        )
+        val scale = streamStretchScale(
+            enabled = true,
+            viewportAspectRatio = selectedAspect,
+            streamAspectRatio = decodedAspect,
+        )
+
+        assertEquals(1.6f, decodedAspect, 0.0001f)
+        assertEquals(10f / 9f, scale.first, 0.0001f)
+        assertEquals(1f, scale.second, 0.0001f)
+    }
+
+    @Test
+    fun stretchFallsBackToSelectedAspectUntilDecodedModeIsKnown() {
+        val selectedAspect = 16f / 9f
+
+        assertEquals(
+            selectedAspect,
+            streamStretchContentAspectRatio(selectedAspect, decodedResolution = null),
+            0.0001f,
+        )
+        assertEquals(
+            selectedAspect,
+            streamStretchContentAspectRatio(selectedAspect, decodedResolution = "invalid"),
+            0.0001f,
+        )
+    }
+
+    @Test
     fun pinchZoomIsDisabledWhileTouchControllerIsVisible() {
         assertFalse(
             streamPinchZoomEnabled(

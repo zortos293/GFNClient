@@ -61,6 +61,18 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
+        assertFalse(settings.stream.streamSharpeningEnabled)
+    }
+
+    @Test
+    fun olderSavedSettingsKeepStreamSharpeningDisabledUnlessExplicitlyEnabled() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedIn = OpenNowJson.decodeFromString<AppSettings>(
+            """{"stream":{"streamSharpeningEnabled":true}}""",
+        )
+
+        assertFalse(defaulted.stream.streamSharpeningEnabled)
+        assertTrue(optedIn.stream.streamSharpeningEnabled)
     }
 
     @Test

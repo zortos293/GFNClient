@@ -63,6 +63,7 @@ import {
 } from "./lib/gameCatalog";
 import { resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
 import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
+import { getStreamPointerLockTarget, isStreamPointerLocked } from "./lib/pointerLock";
 import { normalizeMembershipTier } from "./lib/queueAds";
 import { clearRuntimeSnapshot, type RuntimeSnapshot } from "./lib/runtimeSnapshot";
 import { getEnabledSessionProxyUrl } from "./lib/sessionProxy";
@@ -996,7 +997,7 @@ export function App(): JSX.Element {
   }, []);
 
   const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement) => {
-    const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
+    const lockTarget = getStreamPointerLockTarget(target);
     const requestPointerLockCompat = async (
       options?: { unadjustedMovement?: boolean },
     ): Promise<void> => {
@@ -2201,7 +2202,7 @@ export function App(): JSX.Element {
         {
           const targetVideo = videoRef.current;
           if (streamStatus === "streaming" && targetVideo) {
-            if (document.pointerLockElement === targetVideo) {
+            if (isStreamPointerLocked(targetVideo)) {
               clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
               document.exitPointerLock();
             } else {

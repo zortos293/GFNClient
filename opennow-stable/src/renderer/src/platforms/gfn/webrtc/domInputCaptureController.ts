@@ -1114,6 +1114,9 @@ export class DomInputCaptureController {
         return;
       }
       event.preventDefault();
+      if (escapePointerFallbackActive && !isPointerLockActive()) {
+        queueUnlockedAbsolutePointer(event);
+      }
       flushMouse(true);
       const payload = this.dependencies.inputEncoder.encodeMouseButtonDown({
         button: toMouseButton(event.button),
@@ -1136,6 +1139,9 @@ export class DomInputCaptureController {
         return;
       }
       event.preventDefault();
+      if (escapePointerFallbackActive && !isPointerLockActive()) {
+        queueUnlockedAbsolutePointer(event);
+      }
       flushMouse(true);
       const payload = this.dependencies.inputEncoder.encodeMouseButtonUp({
         button: toMouseButton(event.button),
@@ -1158,6 +1164,9 @@ export class DomInputCaptureController {
         return;
       }
       event.preventDefault();
+      if (escapePointerFallbackActive && !isPointerLockActive()) {
+        queueUnlockedAbsolutePointer(event);
+      }
       flushMouse(true);
       // Official GFN client sends negated raw deltaY as int16 (no quantization to ±120).
       // Clamp to int16 range since browser deltaY can exceed it with fast scrolling.

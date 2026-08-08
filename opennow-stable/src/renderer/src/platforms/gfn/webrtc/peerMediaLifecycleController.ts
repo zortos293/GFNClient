@@ -3,6 +3,7 @@ interface PeerMediaLifecycleDependencies {
   audioElement: HTMLAudioElement;
   onRenderFrame: () => void;
   log: (message: string) => void;
+  createAudioContext?: () => AudioContext;
 }
 
 export class PeerMediaLifecycleController {
@@ -11,6 +12,7 @@ export class PeerMediaLifecycleController {
   private audioContext: AudioContext | null = null;
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioGainNode: GainNode | null = null;
+  private audioRoutingGeneration = 0;
   private outputVolume = 1;
 
   constructor(private readonly dependencies: PeerMediaLifecycleDependencies) {
@@ -67,14 +69,15 @@ export class PeerMediaLifecycleController {
     }
 
     if (track.kind === "audio") {
-      this.replaceTrackInStream(this.audioStream, track);
       this.cleanupAudioRouting();
+      this.replaceTrackInStream(this.audioStream, track);
+      const generation = this.audioRoutingGeneration;
 
       let audioContext: AudioContext | null = null;
       let audioSourceNode: MediaStreamAudioSourceNode | null = null;
       let audioGainNode: GainNode | null = null;
       try {
-        audioContext = new AudioContext({
+        audioContext = this.dependencies.createAudioContext?.() ?? new AudioContext({
           latencyHint: "interactive",
           sampleRate: 48000,
         });
@@ -83,36 +86,34 @@ export class PeerMediaLifecycleController {
         audioGainNode.gain.value = this.outputVolume;
         audioSourceNode.connect(audioGainNode);
         audioGainNode.connect(audioContext.destination);
-        if (audioContext.state === "suspended") {
-          void audioContext.resume();
-        }
         this.audioContext = audioContext;
         this.audioSourceNode = audioSourceNode;
         this.audioGainNode = audioGainNode;
-        this.dependencies.log(
-          `Audio routed through AudioContext (latency: ${(audioContext.baseLatency * 1000).toFixed(1)}ms, sampleRate: ${audioContext.sampleRate}Hz)`,
-        );
+        if (audioContext.state === "running") {
+          this.logAudioContextRouting(audioContext);
+        } else {
+          void this.resumeAudioContext(
+            audioContext,
+            audioSourceNode,
+            audioGainNode,
+            track,
+            generation,
+          );
+        }
       } catch (error) {
-        if (audioSourceNode) {
-          try {
-            audioSourceNode.disconnect();
-          } catch {
-            // Ignore cleanup errors from a partially-created node.
-          }
+        if (this.audioContext === audioContext) {
+          this.audioContext = null;
+          this.audioSourceNode = null;
+          this.audioGainNode = null;
         }
-        if (audioGainNode) {
-          try {
-            audioGainNode.disconnect();
-          } catch {
-            // Ignore cleanup errors from a partially-created node.
-          }
+        this.releaseAudioGraph(audioContext, audioSourceNode, audioGainNode);
+        if (this.isCurrentAudioTrack(track, generation)) {
+          this.startDirectAudioPlayback(
+            `AudioContext creation failed, falling back to audio element: ${String(error)}`,
+            track,
+            generation,
+          );
         }
-        if (audioContext) {
-          void audioContext.close().catch(() => {});
-        }
-        this.startDirectAudioPlayback(
-          `AudioContext creation failed, falling back to audio element: ${String(error)}`,
-        );
       }
     }
   }
@@ -129,7 +130,6 @@ export class PeerMediaLifecycleController {
   }
 
   reset(): void {
-    this.cleanupAudioRouting();
     this.clearTracks();
   }
 
@@ -138,6 +138,7 @@ export class PeerMediaLifecycleController {
   }
 
   clearTracks(): void {
+    this.cleanupAudioRouting();
     for (const track of this.videoStream.getTracks()) {
       this.videoStream.removeTrack(track);
     }
@@ -160,41 +161,120 @@ export class PeerMediaLifecycleController {
   }
 
   private cleanupAudioRouting(): void {
-    if (this.audioSourceNode) {
-      try {
-        this.audioSourceNode.disconnect();
-      } catch {
-        // Ignore cleanup errors from an already-disconnected node.
-      }
-      this.audioSourceNode = null;
-    }
-    if (this.audioGainNode) {
-      try {
-        this.audioGainNode.disconnect();
-      } catch {
-        // Ignore cleanup errors from an already-disconnected node.
-      }
-      this.audioGainNode = null;
-    }
-    if (this.audioContext) {
-      void this.audioContext.close().catch(() => {});
-      this.audioContext = null;
-    }
+    this.audioRoutingGeneration++;
+    const audioContext = this.audioContext;
+    const audioSourceNode = this.audioSourceNode;
+    const audioGainNode = this.audioGainNode;
+    this.audioContext = null;
+    this.audioSourceNode = null;
+    this.audioGainNode = null;
+    this.releaseAudioGraph(audioContext, audioSourceNode, audioGainNode);
     this.dependencies.audioElement.pause();
     this.dependencies.audioElement.muted = true;
   }
 
-  private startDirectAudioPlayback(reason: string): void {
+  private releaseAudioGraph(
+    audioContext: AudioContext | null,
+    audioSourceNode: MediaStreamAudioSourceNode | null,
+    audioGainNode: GainNode | null,
+  ): void {
+    if (audioSourceNode) {
+      try {
+        audioSourceNode.disconnect();
+      } catch {
+        // Ignore cleanup errors from an already-disconnected node.
+      }
+    }
+    if (audioGainNode) {
+      try {
+        audioGainNode.disconnect();
+      } catch {
+        // Ignore cleanup errors from an already-disconnected node.
+      }
+    }
+    if (audioContext) {
+      try {
+        void audioContext.close().catch(() => {});
+      } catch {
+        // Ignore cleanup errors from a partially-created context.
+      }
+    }
+  }
+
+  private async resumeAudioContext(
+    audioContext: AudioContext,
+    audioSourceNode: MediaStreamAudioSourceNode,
+    audioGainNode: GainNode,
+    track: MediaStreamTrack,
+    generation: number,
+  ): Promise<void> {
+    let resumeError: unknown = null;
+    try {
+      await audioContext.resume();
+    } catch (error) {
+      resumeError = error;
+    }
+
+    if (
+      !this.isCurrentAudioTrack(track, generation) ||
+      this.audioContext !== audioContext ||
+      this.audioSourceNode !== audioSourceNode ||
+      this.audioGainNode !== audioGainNode
+    ) {
+      return;
+    }
+
+    if (audioContext.state === "running") {
+      this.logAudioContextRouting(audioContext);
+      return;
+    }
+
+    this.audioContext = null;
+    this.audioSourceNode = null;
+    this.audioGainNode = null;
+    const failedState = audioContext.state;
+    this.releaseAudioGraph(audioContext, audioSourceNode, audioGainNode);
+    const reason = resumeError
+      ? `AudioContext resume failed, falling back to audio element: ${String(resumeError)}`
+      : `AudioContext remained ${failedState} after resume, falling back to audio element`;
+    this.startDirectAudioPlayback(reason, track, generation);
+  }
+
+  private logAudioContextRouting(audioContext: AudioContext): void {
+    this.dependencies.log(
+      `Audio routed through AudioContext (latency: ${(audioContext.baseLatency * 1000).toFixed(1)}ms, sampleRate: ${audioContext.sampleRate}Hz)`,
+    );
+  }
+
+  private isCurrentAudioTrack(track: MediaStreamTrack, generation: number): boolean {
+    return (
+      generation === this.audioRoutingGeneration &&
+      this.audioStream.getAudioTracks()[0] === track
+    );
+  }
+
+  private startDirectAudioPlayback(
+    reason: string,
+    track: MediaStreamTrack,
+    generation: number,
+  ): void {
+    if (!this.isCurrentAudioTrack(track, generation)) {
+      return;
+    }
     this.dependencies.log(reason);
     this.dependencies.audioElement.muted = false;
     this.dependencies.audioElement.volume = this.outputVolume;
     this.dependencies.audioElement
       .play()
       .then(() => {
-        this.dependencies.log("Audio track attached (fallback)");
+        if (this.isCurrentAudioTrack(track, generation)) {
+          this.dependencies.log("Audio track attached (fallback)");
+        }
       })
       .catch((playError) => {
-        this.dependencies.log(`Audio autoplay blocked: ${String(playError)}`);
+        if (this.isCurrentAudioTrack(track, generation)) {
+          this.dependencies.log(`Audio autoplay blocked: ${String(playError)}`);
+        }
       });
   }
 }

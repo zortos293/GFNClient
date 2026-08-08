@@ -11,6 +11,28 @@ export interface LogEntry {
   args: unknown[];
 }
 
+interface ConsoleOutputStream {
+  destroyed?: boolean;
+  writable?: boolean;
+  writableEnded?: boolean;
+  on?(event: "error", listener: (error: unknown) => void): unknown;
+  removeListener?(event: "error", listener: (error: unknown) => void): unknown;
+  listeners?(event: "error"): unknown[];
+}
+
+interface ConsoleOutputStreams {
+  stdout?: ConsoleOutputStream;
+  stderr?: ConsoleOutputStream;
+}
+
+const BROKEN_WRITE_ERROR_CODES = new Set([
+  "EIO",
+  "EPIPE",
+  "ERR_STREAM_DESTROYED",
+  "ERR_STREAM_PREMATURE_CLOSE",
+  "ERR_STREAM_WRITE_AFTER_END",
+]);
+
 /** Maximum number of log entries to keep in memory */
 const MAX_LOG_ENTRIES = 5000;
 
@@ -95,15 +117,53 @@ export function createRedactedLogExport(entries: LogEntry[]): string {
   return lines.join("\n");
 }
 
+export function isTerminalBrokenWriteError(
+  error: unknown,
+  stream?: Pick<ConsoleOutputStream, "destroyed" | "writable" | "writableEnded">,
+): boolean {
+  if (!error || (typeof error !== "object" && typeof error !== "function")) {
+    return false;
+  }
+
+  const code = "code" in error && typeof error.code === "string" ? error.code : "";
+  if (BROKEN_WRITE_ERROR_CODES.has(code)) {
+    return true;
+  }
+
+  if (!stream?.destroyed && stream?.writable !== false && !stream?.writableEnded) {
+    return false;
+  }
+
+  const message = "message" in error && typeof error.message === "string" ? error.message : "";
+  return /broken pipe|destroyed stream|stream (?:was )?destroyed|write after end|write.*(?:closed|ended|stream)/i.test(message);
+}
+
+function getProcessOutputStreams(): ConsoleOutputStreams {
+  const runtimeProcess = (globalThis as {
+    process?: ConsoleOutputStreams;
+  }).process;
+  return {
+    stdout: runtimeProcess?.stdout,
+    stderr: runtimeProcess?.stderr,
+  };
+}
+
 /**
  * Logger class that captures console output
  */
 export class LogCapture {
   private entries: LogEntry[] = [];
   private originalConsole: Partial<typeof console> | null = null;
+  private streamErrorListeners: Array<{
+    stream: ConsoleOutputStream;
+    listener: (error: unknown) => void;
+  }> = [];
   private processName: string;
 
-  constructor(processName: string) {
+  constructor(
+    processName: string,
+    private readonly outputStreams: ConsoleOutputStreams = getProcessOutputStreams(),
+  ) {
     this.processName = processName;
   }
 
@@ -163,6 +223,7 @@ export class LogCapture {
       info: console.info,
       debug: console.debug,
     };
+    this.installStreamErrorHandlers();
 
     // Extract prefix from first argument if it's a string like "[Module] message"
     const extractPrefix = (args: unknown[]): { prefix: string; message: string; rest: unknown[] } => {
@@ -183,35 +244,82 @@ export class LogCapture {
       };
     };
 
+    const forward = (level: LogEntry["level"], args: unknown[]): void => {
+      const method = this.originalConsole?.[level];
+      if (!method) {
+        return;
+      }
+
+      const stream = level === "error" || level === "warn"
+        ? this.outputStreams.stderr
+        : this.outputStreams.stdout;
+      try {
+        method.apply(console, args);
+      } catch (error) {
+        if (!isTerminalBrokenWriteError(error, stream)) {
+          throw error;
+        }
+      }
+    };
+
     console.log = (...args: unknown[]) => {
       const { prefix, message, rest } = extractPrefix(args);
       this.addEntry("log", prefix, message, rest);
-      this.originalConsole?.log?.apply(console, args);
+      forward("log", args);
     };
 
     console.error = (...args: unknown[]) => {
       const { prefix, message, rest } = extractPrefix(args);
       this.addEntry("error", prefix, message, rest);
-      this.originalConsole?.error?.apply(console, args);
+      forward("error", args);
     };
 
     console.warn = (...args: unknown[]) => {
       const { prefix, message, rest } = extractPrefix(args);
       this.addEntry("warn", prefix, message, rest);
-      this.originalConsole?.warn?.apply(console, args);
+      forward("warn", args);
     };
 
     console.info = (...args: unknown[]) => {
       const { prefix, message, rest } = extractPrefix(args);
       this.addEntry("info", prefix, message, rest);
-      this.originalConsole?.info?.apply(console, args);
+      forward("info", args);
     };
 
     console.debug = (...args: unknown[]) => {
       const { prefix, message, rest } = extractPrefix(args);
       this.addEntry("debug", prefix, message, rest);
-      this.originalConsole?.debug?.apply(console, args);
+      forward("debug", args);
     };
+  }
+
+  private installStreamErrorHandlers(): void {
+    const streams = new Set(
+      [this.outputStreams.stdout, this.outputStreams.stderr].filter(
+        (stream): stream is ConsoleOutputStream => Boolean(stream),
+      ),
+    );
+
+    for (const stream of streams) {
+      if (!stream.on) {
+        continue;
+      }
+
+      const listener = (error: unknown): void => {
+        if (isTerminalBrokenWriteError(error, stream)) {
+          return;
+        }
+
+        const otherErrorListeners = stream.listeners?.("error").filter(
+          (candidate) => candidate !== listener,
+        );
+        if (!otherErrorListeners || otherErrorListeners.length === 0) {
+          throw error;
+        }
+      };
+      stream.on("error", listener);
+      this.streamErrorListeners.push({ stream, listener });
+    }
   }
 
   /**
@@ -224,6 +332,10 @@ export class LogCapture {
       if (this.originalConsole.warn) console.warn = this.originalConsole.warn;
       if (this.originalConsole.info) console.info = this.originalConsole.info;
       if (this.originalConsole.debug) console.debug = this.originalConsole.debug;
+      for (const { stream, listener } of this.streamErrorListeners) {
+        stream.removeListener?.("error", listener);
+      }
+      this.streamErrorListeners = [];
       this.originalConsole = null;
     }
   }

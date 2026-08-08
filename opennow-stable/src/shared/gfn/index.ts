@@ -9,6 +9,7 @@ export * from "./stream";
 export * from "./keyboard";
 export * from "./nativeStreamer";
 export * from "./videoShader";
+export * from "./frameGeneration";
 export * from "./settings";
 export * from "./entitlements";
 export * from "./subscription";

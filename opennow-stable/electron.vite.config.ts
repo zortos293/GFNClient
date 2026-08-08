@@ -46,11 +46,29 @@ export default defineConfig({
   renderer: {
     build: {
       outDir: "dist",
+      rollupOptions: {
+        output: {
+          assetFileNames: (assetInfo) => {
+            const name = assetInfo.names[0] ?? "";
+            if (
+              name === "rt_v7s.bin"
+              || name === "rt_v7s.json"
+              || name === "LICENSE"
+              || name === "WEIGHTS_LICENSE.md"
+            ) {
+              return "assets/framegen/[name][extname]";
+            }
+            return "assets/[name]-[hash][extname]";
+          },
+        },
+      },
     },
     plugins: [react()],
     resolve: {
       alias: {
         "@shared": resolve("src/shared"),
+        "@framegen-assets": resolve("node_modules/framegen"),
+        "@framegen-notices": resolve("src/renderer/src/platforms/gfn/framegen"),
       },
     },
   },

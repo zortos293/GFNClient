@@ -18,6 +18,7 @@ import type {
   StreamSettings,
   StreamRegion,
   VideoShaderSettings,
+  FrameGenerationSettings,
 } from "@shared/gfn";
 import { discordGameImageUrl } from "@shared/discord";
 import {
@@ -1351,6 +1352,10 @@ export function App(): JSX.Element {
 
   const handleVideoShaderChange = useCallback((value: VideoShaderSettings) => {
     void updateSetting("videoShader", value);
+  }, [updateSetting]);
+
+  const handleFrameGenerationChange = useCallback((value: FrameGenerationSettings) => {
+    void updateSetting("frameGeneration", value);
   }, [updateSetting]);
 
   const handleExitApp = useCallback(() => {
@@ -2754,6 +2759,8 @@ export function App(): JSX.Element {
               allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
               videoShader={settings.videoShader}
               onVideoShaderChange={handleVideoShaderChange}
+              frameGeneration={settings.frameGeneration}
+              onFrameGenerationChange={handleFrameGenerationChange}
             />
           </m.div>
         )}

@@ -7,6 +7,7 @@ import type { SettingsChangeHandler } from "./streamSettingsTypes";
 import { StreamQualityControls } from "./StreamQualityControls";
 import { SessionProxySettings } from "./SessionProxySettings";
 import { VideoShaderControls } from "./VideoShaderControls";
+import { FrameGenerationControls } from "./FrameGenerationControls";
 import { StreamSessionOptions } from "./StreamSessionOptions";
 
 interface StreamVideoSectionProps {
@@ -60,6 +61,10 @@ export function StreamVideoSection({
           onBlockingOverlayChange={onBlockingOverlayChange}
         />
         <StreamSessionOptions settings={settings} handleChange={handleChange} />
+        <FrameGenerationControls
+          settings={settings}
+          handleChange={handleChange}
+        />
         <VideoShaderControls
           settings={settings}
           handleChange={handleChange}

@@ -30,6 +30,7 @@ interface LoadedWeights {
 interface FramegenRuntime {
   w: number;
   h: number;
+  factor: FrameInterpolationSettings["factor"];
   rt: RT;
   texA: GpuTexture;
   texB: GpuTexture;
@@ -66,6 +67,15 @@ function createRgbaTexture(device: GpuDevice, w: number, h: number, storage: boo
   });
 }
 
+function destroyRuntimeResources(runtime: FramegenRuntime): void {
+  for (const tex of runtime.midTexs) {
+    tex.destroy();
+  }
+  runtime.texA.destroy();
+  runtime.texB.destroy();
+  runtime.rt.destroy();
+}
+
 let weightsPromise: Promise<LoadedWeights> | null = null;
 
 async function fetchWeightsFromBase(base: string): Promise<LoadedWeights> {
@@ -74,21 +84,23 @@ async function fetchWeightsFromBase(base: string): Promise<LoadedWeights> {
     fetch(`${base}/rt_v7s.json`),
   ]);
   if (!binRes.ok || !manifestRes.ok) {
-    throw new Error(`weights fetch failed (bin=${binRes.status}, manifest=${manifestRes.status}) from ${base}`);
+    throw new Error(
+      `weights fetch failed (bin=${binRes.status}, manifest=${manifestRes.status}) from ${base}`,
+    );
   }
   const bin = await binRes.arrayBuffer();
   const manifest = (await manifestRes.json()) as LoadedWeights["manifest"];
   return { bin, manifest };
 }
 
-/** Clear a rejected cache entry so a later toggle/retry can succeed. */
+/** Clear a rejected/stale cache entry so a later toggle/retry can succeed. */
 function resetWeightsCache(): void {
   weightsPromise = null;
 }
 
 async function loadWeights(): Promise<LoadedWeights> {
   if (!weightsPromise) {
-    weightsPromise = (async () => {
+    const pending = (async () => {
       // Vite/electron-vite copies `public/framegen-weights` to the app origin root.
       const baseUrl = import.meta.env.BASE_URL || "/";
       const localBase = `${baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`}framegen-weights`;
@@ -98,11 +110,18 @@ async function loadWeights(): Promise<LoadedWeights> {
         // Fall through to CDN when local assets were not copied at install time.
       }
       return fetchWeightsFromBase(FRAMEGEN_WEIGHTS_CDN);
-    })().catch((error) => {
-      // Do not sticky-cache a rejected promise across retries.
-      weightsPromise = null;
-      throw error;
-    });
+    })();
+
+    weightsPromise = pending.then(
+      (weights) => weights,
+      (error) => {
+        // Never sticky-cache a rejected promise across retries.
+        if (weightsPromise === pending || weightsPromise === null) {
+          weightsPromise = null;
+        }
+        throw error;
+      },
+    );
   }
   return weightsPromise;
 }
@@ -173,28 +192,60 @@ export class FrameInterpolationPipeline {
   public updateSettings(settings: FrameInterpolationSettings): void {
     const prev = this.settings;
     this.settings = { ...settings };
-    // Allow retry after a previous hard failure if the user toggles the feature.
+
+    // Allow retry after a previous hard failure when the user re-enables the feature.
     if (settings.enabled && !prev.enabled) {
       this.initFailed = false;
       this.statusMessage = "";
+      resetWeightsCache();
     }
-    if (prev.quality !== settings.quality || prev.factor !== settings.factor) {
-      this.generation += 1;
+
+    const shapeChanged = prev.quality !== settings.quality || prev.factor !== settings.factor;
+    if (shapeChanged) {
+      this.invalidateGeneration("settings shape change");
       this.destroyRuntime();
     }
+
+    // Disabling must stop loops and free GPU work immediately.
+    if (!settings.enabled && prev.enabled) {
+      this.invalidateGeneration("disabled");
+      this.destroyRuntime();
+    }
+
     void this.applyActivation();
   }
 
   public dispose(): void {
     this.disposed = true;
-    this.generation += 1;
+    this.invalidateGeneration("dispose");
     this.stopLoops();
     this.destroyRuntime();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
-    this.device?.destroy();
+    try {
+      this.device?.destroy();
+    } catch {
+      // Device may already be lost.
+    }
     this.device = null;
     this.canvas.remove();
+  }
+
+  private invalidateGeneration(_reason: string): void {
+    this.generation += 1;
+  }
+
+  private isStepCurrent(gen: number, runtime?: FramegenRuntime | null, device?: GpuDevice | null): boolean {
+    if (this.disposed || gen !== this.generation || !this.active || this.initFailed) {
+      return false;
+    }
+    if (runtime !== undefined && this.runtime !== runtime) {
+      return false;
+    }
+    if (device !== undefined && this.device !== device) {
+      return false;
+    }
+    return true;
   }
 
   private async applyActivation(): Promise<void> {
@@ -208,7 +259,10 @@ export class FrameInterpolationPipeline {
       this.stopLoops();
       this.canvas.style.display = "none";
       this.hasRenderedFrame = false;
-      this.statusMessage = "";
+      // Keep statusMessage when initFailed so the user can see why it stopped.
+      if (!this.initFailed) {
+        this.statusMessage = "";
+      }
       return;
     }
 
@@ -251,15 +305,26 @@ export class FrameInterpolationPipeline {
       if (adapter.features.has("shader-f16")) {
         requiredFeatures.push("shader-f16");
       }
-      this.device = await adapter.requestDevice({
+      const device = await adapter.requestDevice({
         requiredFeatures,
       });
-      void this.device.lost.then((info) => {
+      if (this.disposed) {
+        device.destroy();
+        return;
+      }
+      this.device = device;
+      void device.lost.then((info) => {
+        if (this.device !== device) {
+          return;
+        }
         console.warn("[FrameInterpolation] GPU device lost:", info.message);
         this.initFailed = true;
+        this.statusMessage = "WebGPU device lost";
+        this.invalidateGeneration("device lost");
         this.device = null;
         this.destroyRuntime();
-        void this.applyActivation();
+        this.stopLoops();
+        this.active = false;
       });
       this.statusMessage = "";
     } catch (error) {
@@ -278,7 +343,13 @@ export class FrameInterpolationPipeline {
       return null;
     }
     const { w, h } = resolveModelSize(videoWidth, videoHeight, this.settings.quality);
-    if (this.runtime && this.runtime.w === w && this.runtime.h === h) {
+    const factor = this.settings.factor;
+    if (
+      this.runtime
+      && this.runtime.w === w
+      && this.runtime.h === h
+      && this.runtime.factor === factor
+    ) {
       return this.runtime;
     }
 
@@ -287,7 +358,7 @@ export class FrameInterpolationPipeline {
 
     try {
       const weights = await loadWeights();
-      if (this.disposed || gen !== this.generation || !this.device) {
+      if (!this.isStepCurrent(gen) || !this.device) {
         return null;
       }
       const rt = await createRT(this.device, {
@@ -298,14 +369,14 @@ export class FrameInterpolationPipeline {
         textureInput: true,
         textureOutput: true,
       });
-      if (this.disposed || gen !== this.generation || !this.device) {
+      if (!this.isStepCurrent(gen) || !this.device) {
         rt.destroy();
         return null;
       }
 
       const texA = createRgbaTexture(this.device, w, h, false);
       const texB = createRgbaTexture(this.device, w, h, false);
-      const midCount = Math.max(1, this.settings.factor - 1);
+      const midCount = Math.max(1, factor - 1);
       const midTexs = Array.from({ length: midCount }, () =>
         createRgbaTexture(this.device!, w, h, true),
       );
@@ -319,7 +390,7 @@ export class FrameInterpolationPipeline {
         throw new Error("2D context unavailable for frame scaling");
       }
 
-      if (this.disposed || gen !== this.generation) {
+      if (!this.isStepCurrent(gen)) {
         for (const tex of midTexs) tex.destroy();
         texA.destroy();
         texB.destroy();
@@ -327,11 +398,14 @@ export class FrameInterpolationPipeline {
         return null;
       }
 
-      this.runtime = { w, h, rt, texA, texB, midTexs, scaleCanvas, scaleCtx };
+      this.runtime = { w, h, factor, rt, texA, texB, midTexs, scaleCanvas, scaleCtx };
       this.hasPrevFrame = false;
       this.statusMessage = "";
       return this.runtime;
     } catch (error) {
+      if (this.disposed || gen !== this.generation) {
+        return null;
+      }
       console.warn(
         "[FrameInterpolation] Runtime create failed:",
         error instanceof Error ? error.message : String(error),
@@ -352,12 +426,7 @@ export class FrameInterpolationPipeline {
     }
     this.presentQueue = [];
     if (this.runtime) {
-      for (const tex of this.runtime.midTexs) {
-        tex.destroy();
-      }
-      this.runtime.texA.destroy();
-      this.runtime.texB.destroy();
-      this.runtime.rt.destroy();
+      destroyRuntimeResources(this.runtime);
       this.runtime = null;
     }
     this.hasPrevFrame = false;
@@ -380,7 +449,7 @@ export class FrameInterpolationPipeline {
     const video = this.videoElement;
     if (typeof video.requestVideoFrameCallback === "function") {
       const onFrame = (): void => {
-        if (!this.active || this.disposed) return;
+        if (!this.active || this.disposed || this.initFailed) return;
         void this.onSourceFrame();
         this.frameCallbackId = video.requestVideoFrameCallback(onFrame);
       };
@@ -433,14 +502,7 @@ export class FrameInterpolationPipeline {
       this.lastSourceAtMs = now;
 
       const runtime = await this.ensureRuntime(videoWidth, videoHeight);
-      if (
-        !runtime
-        || this.disposed
-        || !this.active
-        || gen !== this.generation
-        || this.runtime !== runtime
-        || this.device !== device
-      ) {
+      if (!this.isStepCurrent(gen, runtime, device) || !runtime) {
         return;
       }
 
@@ -449,7 +511,7 @@ export class FrameInterpolationPipeline {
       runtime.scaleCtx.drawImage(video, 0, 0, runtime.w, runtime.h);
 
       if (!this.hasPrevFrame) {
-        if (gen !== this.generation || this.runtime !== runtime) return;
+        if (!this.isStepCurrent(gen, runtime, device)) return;
         device.queue.copyExternalImageToTexture(
           { source: runtime.scaleCanvas },
           { texture: runtime.texA },
@@ -460,7 +522,7 @@ export class FrameInterpolationPipeline {
         return;
       }
 
-      if (gen !== this.generation || this.runtime !== runtime) return;
+      if (!this.isStepCurrent(gen, runtime, device)) return;
       device.queue.copyExternalImageToTexture(
         { source: runtime.scaleCanvas },
         { texture: runtime.texB },
@@ -470,23 +532,24 @@ export class FrameInterpolationPipeline {
       runtime.rt.prepPair(runtime.texA, runtime.texB);
       const midCount = runtime.midTexs.length;
       for (let i = 0; i < midCount; i++) {
+        if (!this.isStepCurrent(gen, runtime, device)) return;
         const t = (i + 1) / (midCount + 1);
         runtime.rt.runT(t, runtime.midTexs[i]!);
       }
 
       const midBitmaps: ImageBitmap[] = [];
       for (const midTex of runtime.midTexs) {
-        if (gen !== this.generation || this.runtime !== runtime) {
+        if (!this.isStepCurrent(gen, runtime, device)) {
           for (const bitmap of midBitmaps) bitmap.close();
           return;
         }
-        const bitmap = await this.textureToBitmap(device, midTex, runtime.w, runtime.h);
+        const bitmap = await this.textureToBitmap(device, midTex, runtime.w, runtime.h, gen);
         if (bitmap) {
           midBitmaps.push(bitmap);
         }
       }
 
-      if (gen !== this.generation || this.runtime !== runtime || this.device !== device) {
+      if (!this.isStepCurrent(gen, runtime, device)) {
         for (const bitmap of midBitmaps) bitmap.close();
         return;
       }
@@ -504,17 +567,18 @@ export class FrameInterpolationPipeline {
         hold += slot;
         this.presentQueue.push({ bitmap, holdUntilMs: hold });
       }
-      this.presentQueue.push({
-        bitmap: await createImageBitmap(video),
-        holdUntilMs: hold + slot,
-      });
 
-      if (gen !== this.generation) {
-        // Queue was built under a stale generation; drop it.
+      const sourceBitmap = await createImageBitmap(video);
+      if (!this.isStepCurrent(gen, runtime, device)) {
+        sourceBitmap.close();
         for (const item of this.presentQueue) item.bitmap.close();
         this.presentQueue = [];
         return;
       }
+      this.presentQueue.push({
+        bitmap: sourceBitmap,
+        holdUntilMs: hold + slot,
+      });
 
       const maxQueued = (midCount + 1) * 2;
       while (this.presentQueue.length > maxQueued) {
@@ -539,10 +603,15 @@ export class FrameInterpolationPipeline {
     texture: GpuTexture,
     w: number,
     h: number,
+    gen: number,
   ): Promise<ImageBitmap | null> {
+    let buffer: GPUBuffer | null = null;
     try {
+      if (!this.isStepCurrent(gen, undefined, device)) {
+        return null;
+      }
       const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
-      const buffer = device.createBuffer({
+      buffer = device.createBuffer({
         size: bytesPerRow * h,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       });
@@ -554,6 +623,15 @@ export class FrameInterpolationPipeline {
       );
       device.queue.submit([encoder.finish()]);
       await buffer.mapAsync(GPUMapMode.READ);
+      if (!this.isStepCurrent(gen, undefined, device)) {
+        try {
+          buffer.unmap();
+        } catch {
+          // ignore
+        }
+        buffer.destroy();
+        return null;
+      }
       const packed = new Uint8ClampedArray(w * h * 4);
       const mapped = new Uint8Array(buffer.getMappedRange());
       for (let y = 0; y < h; y++) {
@@ -561,16 +639,29 @@ export class FrameInterpolationPipeline {
       }
       buffer.unmap();
       buffer.destroy();
+      buffer = null;
       const imageData = new ImageData(packed, w, h);
       return await createImageBitmap(imageData);
     } catch {
+      if (buffer) {
+        try {
+          buffer.unmap();
+        } catch {
+          // ignore
+        }
+        try {
+          buffer.destroy();
+        } catch {
+          // ignore
+        }
+      }
       return null;
     }
   }
 
   private presentQueued(): void {
     const ctx = this.presentCtx;
-    if (!ctx || !this.active) return;
+    if (!ctx || !this.active || this.disposed) return;
     const now = performance.now();
 
     let readyIndex = -1;

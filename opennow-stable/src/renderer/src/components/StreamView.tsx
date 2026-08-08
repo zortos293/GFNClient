@@ -9,8 +9,14 @@ import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import type {
+  FrameInterpolationSettings,
+  MicrophoneMode,
+  SubscriptionInfo,
+  VideoShaderSettings,
+} from "@shared/gfn";
 import { VideoShaderPipeline } from "../platforms/gfn/videoShaderPipeline";
+import { FrameInterpolationPipeline } from "../platforms/gfn/frameInterpolationPipeline";
 import { formatShortcutForDisplay } from "../shortcuts";
 import { useScreenshotGallery } from "../hooks/useScreenshotGallery";
 import { useStreamMenuNavigation } from "../hooks/useStreamMenuNavigation";
@@ -101,6 +107,7 @@ interface StreamViewProps {
   allowEscapeToExitFullscreen?: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
+  frameInterpolation: FrameInterpolationSettings;
 }
 
 export function StreamView({
@@ -156,6 +163,7 @@ export function StreamView({
   className,
   videoShader,
   onVideoShaderChange,
+  frameInterpolation,
 }: StreamViewProps): JSX.Element {
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
@@ -170,6 +178,7 @@ export function StreamView({
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const shaderPipelineRef = useRef<VideoShaderPipeline | null>(null);
+  const frameInterpolationPipelineRef = useRef<FrameInterpolationPipeline | null>(null);
   const streamHasVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => hasVisibleStreamVideo(stats),
@@ -390,9 +399,26 @@ export function StreamView({
     }
   }, [videoShader, gstreamerEnabled, nativeRendererActive]);
 
+  // Experimental Framegen WebGPU frame interpolation (web client path only).
+  useEffect(() => {
+    const video = localVideoRef.current;
+    if (!video) return;
+    const effective = gstreamerEnabled || nativeRendererActive
+      ? { ...frameInterpolation, enabled: false }
+      : frameInterpolation;
+    if (!frameInterpolationPipelineRef.current) {
+      if (!effective.enabled) return;
+      frameInterpolationPipelineRef.current = new FrameInterpolationPipeline(video, effective);
+    } else {
+      frameInterpolationPipelineRef.current.updateSettings(effective);
+    }
+  }, [frameInterpolation, gstreamerEnabled, nativeRendererActive]);
+
   useEffect(() => () => {
     shaderPipelineRef.current?.dispose();
     shaderPipelineRef.current = null;
+    frameInterpolationPipelineRef.current?.dispose();
+    frameInterpolationPipelineRef.current = null;
   }, []);
 
   const setVideoRef = useCallback((element: HTMLVideoElement | null) => {

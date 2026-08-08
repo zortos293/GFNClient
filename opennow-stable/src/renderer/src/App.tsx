@@ -2754,6 +2754,7 @@ export function App(): JSX.Element {
               allowEscapeToExitFullscreen={settings.allowEscapeToExitFullscreen}
               videoShader={settings.videoShader}
               onVideoShaderChange={handleVideoShaderChange}
+              frameInterpolation={settings.frameInterpolation}
             />
           </m.div>
         )}

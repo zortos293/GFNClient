@@ -53,5 +53,8 @@ export default defineConfig({
         "@shared": resolve("src/shared"),
       },
     },
+    optimizeDeps: {
+      include: ["framegen"],
+    },
   },
 });

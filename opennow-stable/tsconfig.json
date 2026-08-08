@@ -7,6 +7,9 @@
     "paths": {
       "@shared/*": [
         "./src/shared/*"
+      ],
+      "framegen": [
+        "./src/renderer/src/types/framegen.d.ts"
       ]
     },
     "strict": true,
@@ -20,7 +23,8 @@
       "DOM.Iterable"
     ],
     "types": [
-      "vite/client"
+      "vite/client",
+      "@webgpu/types"
     ],
     "skipLibCheck": true,
     "noEmit": true

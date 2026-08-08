@@ -26,7 +26,7 @@ import {
   exchangeAuthorizationCode,
   findAvailablePort,
   generatePkce,
-  waitForAuthorizationCode,
+  openAuthorizationUrlAndWaitForCode,
 } from "./auth/oauthFlow";
 import { PersistedAccountState } from "./auth/persistedAccountState";
 import {
@@ -221,9 +221,12 @@ export class AuthService {
     const { verifier, challenge } = generatePkce();
     const port = await findAvailablePort();
     const authUrl = buildAuthUrl(provider, challenge, port);
-    const codePromise = waitForAuthorizationCode(port, 120000);
-    await shell.openExternal(authUrl);
-    const code = await codePromise;
+    const code = await openAuthorizationUrlAndWaitForCode(
+      authUrl,
+      port,
+      120000,
+      (url) => shell.openExternal(url),
+    );
     const initialTokens = await exchangeAuthorizationCode(code, verifier, port);
     const session = await this.buildLoginSession(initialTokens, provider);
     return this.saveLoginSession(session);

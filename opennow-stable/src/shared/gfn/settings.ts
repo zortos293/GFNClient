@@ -13,6 +13,10 @@ import type {
 } from "./nativeStreamer";
 import { DEFAULT_KEYBOARD_LAYOUT, type GameLanguage, type KeyboardLayout } from "./keyboard";
 import { DEFAULT_VIDEO_SHADER_SETTINGS, type VideoShaderSettings } from "./videoShader";
+import {
+  DEFAULT_FRAME_GENERATION_SETTINGS,
+  type FrameGenerationSettings,
+} from "./frameGeneration";
 import type { UpdateChannel } from "./updater";
 import { normalizeStreamPreferences } from "./stream";
 
@@ -142,6 +146,8 @@ export interface Settings {
   lastSeenReleaseHighlightsVersion: string;
   /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
   videoShader: VideoShaderSettings;
+  /** Experimental 2x neural interpolation for the embedded web stream */
+  frameGeneration: FrameGenerationSettings;
   /**
    * First-run consent for anonymous error reporting.
    * `"unset"` shows the one-time prompt; only `"granted"` enables exception capture.
@@ -280,6 +286,7 @@ export function createDefaultSettings(platform: string): Settings {
     allowEscapeToExitFullscreen: false,
     lastSeenReleaseHighlightsVersion: "",
     videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
+    frameGeneration: { ...DEFAULT_FRAME_GENERATION_SETTINGS },
     errorReportingConsent: "unset",
     telemetryInstallId: "",
   };

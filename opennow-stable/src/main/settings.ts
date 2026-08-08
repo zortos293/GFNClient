@@ -17,6 +17,7 @@ import {
   normalizeStreamPreferences,
   normalizeTransportModeForPlatform,
   normalizeVideoShaderSettings,
+  normalizeFrameGenerationSettings,
   normalizeUpdateChannel,
 } from "@shared/gfn";
 
@@ -291,6 +292,12 @@ export class SettingsManager {
     const videoShader = normalizeVideoShaderSettings(settings.videoShader);
     if (JSON.stringify(settings.videoShader) !== JSON.stringify(videoShader)) {
       settings.videoShader = videoShader;
+      migrated = true;
+    }
+
+    const frameGeneration = normalizeFrameGenerationSettings(settings.frameGeneration);
+    if (JSON.stringify(settings.frameGeneration) !== JSON.stringify(frameGeneration)) {
+      settings.frameGeneration = frameGeneration;
       migrated = true;
     }
 

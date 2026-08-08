@@ -9,8 +9,14 @@ import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import type {
+  FrameGenerationSettings,
+  MicrophoneMode,
+  SubscriptionInfo,
+  VideoShaderSettings,
+} from "@shared/gfn";
 import { VideoShaderPipeline } from "../platforms/gfn/videoShaderPipeline";
+import { FrameGenerationPipeline } from "../platforms/gfn/frameGenerationPipeline";
 import { formatShortcutForDisplay } from "../shortcuts";
 import { useScreenshotGallery } from "../hooks/useScreenshotGallery";
 import { useStreamMenuNavigation } from "../hooks/useStreamMenuNavigation";
@@ -101,6 +107,8 @@ interface StreamViewProps {
   allowEscapeToExitFullscreen?: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
+  frameGeneration: FrameGenerationSettings;
+  onFrameGenerationChange: (value: FrameGenerationSettings) => void;
 }
 
 export function StreamView({
@@ -156,6 +164,8 @@ export function StreamView({
   className,
   videoShader,
   onVideoShaderChange,
+  frameGeneration,
+  onFrameGenerationChange,
 }: StreamViewProps): JSX.Element {
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
@@ -170,6 +180,7 @@ export function StreamView({
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const shaderPipelineRef = useRef<VideoShaderPipeline | null>(null);
+  const frameGenerationPipelineRef = useRef<FrameGenerationPipeline | null>(null);
   const streamHasVideo = useStreamDiagnosticsSelector(
     diagnosticsStore,
     (stats) => hasVisibleStreamVideo(stats),
@@ -374,12 +385,31 @@ export function StreamView({
   });
   const suppressVideoFocusOnSidebarCloseRef = useRef(false);
 
-  // Video shader post-processing pipeline (embedded WebRTC path only; the
-  // native streamer renders outside Chromium so shaders cannot apply there).
   useEffect(() => {
     const video = localVideoRef.current;
     if (!video) return;
     const effective = gstreamerEnabled || nativeRendererActive
+      ? { ...frameGeneration, enabled: false }
+      : frameGeneration;
+    if (!frameGenerationPipelineRef.current) {
+      if (!effective.enabled) return;
+      frameGenerationPipelineRef.current = new FrameGenerationPipeline(video, effective);
+    } else {
+      frameGenerationPipelineRef.current.updateSettings(effective);
+    }
+  }, [frameGeneration, gstreamerEnabled, nativeRendererActive]);
+
+  useEffect(() => () => {
+    frameGenerationPipelineRef.current?.dispose();
+    frameGenerationPipelineRef.current = null;
+  }, []);
+
+  // Video filters and neural frame generation are intentionally mutually
+  // exclusive until filters can consume a WebGPU canvas without readback.
+  useEffect(() => {
+    const video = localVideoRef.current;
+    if (!video) return;
+    const effective = gstreamerEnabled || nativeRendererActive || frameGeneration.enabled
       ? { ...videoShader, enabled: false }
       : videoShader;
     if (!shaderPipelineRef.current) {
@@ -388,7 +418,7 @@ export function StreamView({
     } else {
       shaderPipelineRef.current.updateSettings(effective);
     }
-  }, [videoShader, gstreamerEnabled, nativeRendererActive]);
+  }, [videoShader, frameGeneration.enabled, gstreamerEnabled, nativeRendererActive]);
 
   useEffect(() => () => {
     shaderPipelineRef.current?.dispose();
@@ -704,6 +734,8 @@ export function StreamView({
         gstreamerEnabled={gstreamerEnabled}
         videoShader={videoShader}
         onVideoShaderChange={onVideoShaderChange}
+        frameGeneration={frameGeneration}
+        onFrameGenerationChange={onFrameGenerationChange}
         microphoneMode={microphoneMode}
         onMicrophoneModeChange={onMicrophoneModeChange}
         diagnosticsStore={diagnosticsStore}

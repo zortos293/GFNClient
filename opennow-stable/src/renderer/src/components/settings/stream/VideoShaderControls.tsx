@@ -26,6 +26,8 @@ export function VideoShaderControls({
   handlePreview,
 }: VideoShaderControlsProps): JSX.Element {
   const { t } = useTranslation();
+  const frameGenerationEnabled = settings.frameGeneration.enabled;
+  const nativeUnavailable = settings.streamClientMode === "native";
 
   return (
     <div className="settings-row settings-row--column">
@@ -46,6 +48,10 @@ export function VideoShaderControls({
             id="settings-stream-video-filters-enabled"
             type="checkbox"
             checked={settings.videoShader.enabled}
+            disabled={
+              nativeUnavailable
+              || (frameGenerationEnabled && !settings.videoShader.enabled)
+            }
             onChange={(event) => {
               handleChange("videoShader", {
                 ...settings.videoShader,
@@ -57,8 +63,10 @@ export function VideoShaderControls({
         </label>
       </div>
       <span className="settings-subtle-hint">
-        {settings.streamClientMode === "native"
+        {nativeUnavailable
           ? t("settings.videoFilters.nativeUnavailable")
+          : frameGenerationEnabled
+            ? t("settings.videoFilters.frameGenerationUnavailable")
           : t("settings.videoFilters.hint")}
       </span>
       {settings.videoShader.enabled && (

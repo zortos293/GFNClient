@@ -2,7 +2,12 @@ import { useRef } from "react";
 import type { Dispatch, JSX, RefObject, SetStateAction } from "react";
 import { AnimatePresence, m } from "motion/react";
 import { Gauge, Images, Keyboard, LogOut, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
-import type { MicrophoneMode, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import type {
+  FrameGenerationSettings,
+  MicrophoneMode,
+  SubscriptionInfo,
+  VideoShaderSettings,
+} from "@shared/gfn";
 import SideBar from "../../SideBar";
 import type { StreamDiagnosticsStore } from "../../../utils/streamDiagnosticsStore";
 import { useMicMeter } from "../../../hooks/useMicMeter";
@@ -48,6 +53,8 @@ interface StreamQuickMenuProps {
   gstreamerEnabled: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
+  frameGeneration: FrameGenerationSettings;
+  onFrameGenerationChange: (value: FrameGenerationSettings) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   diagnosticsStore: StreamDiagnosticsStore;
@@ -91,6 +98,8 @@ export function StreamQuickMenu({
   gstreamerEnabled,
   videoShader,
   onVideoShaderChange,
+  frameGeneration,
+  onFrameGenerationChange,
   microphoneMode,
   onMicrophoneModeChange,
   diagnosticsStore,
@@ -230,6 +239,8 @@ export function StreamQuickMenu({
                 gstreamerEnabled={gstreamerEnabled}
                 videoShader={videoShader}
                 onVideoShaderChange={onVideoShaderChange}
+                frameGeneration={frameGeneration}
+                onFrameGenerationChange={onFrameGenerationChange}
                 microphoneMode={microphoneMode}
                 onMicrophoneModeChange={onMicrophoneModeChange}
                 diagnosticsStore={diagnosticsStore}

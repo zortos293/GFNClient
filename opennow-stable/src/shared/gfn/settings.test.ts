@@ -41,12 +41,15 @@ test("creates fresh mutable nested settings defaults", () => {
   assert.notStrictEqual(first, second);
   assert.notStrictEqual(first.favoriteGameIds, second.favoriteGameIds);
   assert.notStrictEqual(first.videoShader, second.videoShader);
+  assert.notStrictEqual(first.frameGeneration, second.frameGeneration);
 
   first.favoriteGameIds.push("game-1");
   first.videoShader.sharpen = 0;
+  first.frameGeneration.quality = 1080;
 
   assert.deepEqual(second.favoriteGameIds, []);
   assert.equal(second.videoShader.sharpen, 40);
+  assert.deepEqual(second.frameGeneration, { enabled: false, quality: 720 });
 });
 
 test("creates fresh platform shortcut collections", () => {

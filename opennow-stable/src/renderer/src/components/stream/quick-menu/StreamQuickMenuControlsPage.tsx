@@ -1,5 +1,9 @@
 import type { JSX, RefObject } from "react";
-import type { MicrophoneMode, VideoShaderSettings } from "@shared/gfn";
+import type {
+  FrameGenerationSettings,
+  MicrophoneMode,
+  VideoShaderSettings,
+} from "@shared/gfn";
 import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
 import type { StreamDiagnosticsStore } from "../../../utils/streamDiagnosticsStore";
 import { SidebarMicMutedBadge } from "../StreamEmptyStates";
@@ -27,6 +31,8 @@ interface StreamQuickMenuControlsPageProps {
   gstreamerEnabled: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
+  frameGeneration: FrameGenerationSettings;
+  onFrameGenerationChange: (value: FrameGenerationSettings) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   diagnosticsStore: StreamDiagnosticsStore;
@@ -42,6 +48,8 @@ export function StreamQuickMenuControlsPage({
   gstreamerEnabled,
   videoShader,
   onVideoShaderChange,
+  frameGeneration,
+  onFrameGenerationChange,
   microphoneMode,
   onMicrophoneModeChange,
   diagnosticsStore,
@@ -105,6 +113,45 @@ export function StreamQuickMenuControlsPage({
       <div className="sidebar-separator" aria-hidden="true" />
       <section className="sidebar-section">
         <div className="sidebar-section-header">
+          <span>Neural Frame Generation · 2x</span>
+          <span className="sidebar-section-sub">Experimental WebGPU interpolation.</span>
+        </div>
+        {gstreamerEnabled ? (
+          <span className="sidebar-hint">Frame generation is unavailable with the native streamer.</span>
+        ) : (
+          <>
+            <div className="sidebar-row sidebar-row--aligned">
+              <span className="sidebar-label">Enable 2x Frame Generation</span>
+              <label
+                className="sidebar-mini-toggle"
+                title={videoShader.enabled ? "Turn off Video Filters first" : "Enable neural frame generation"}
+                tabIndex={0}
+              >
+                <input
+                  type="checkbox"
+                  name="enable-frame-generation"
+                  checked={frameGeneration.enabled}
+                  disabled={videoShader.enabled && !frameGeneration.enabled}
+                  aria-label="Enable 2x neural frame generation"
+                  onChange={(event) => onFrameGenerationChange({
+                    ...frameGeneration,
+                    enabled: event.target.checked,
+                  })}
+                />
+                <span className="sidebar-mini-toggle-track" />
+              </label>
+            </div>
+            <span className="sidebar-hint">
+              {videoShader.enabled
+                ? "Turn off Video Filters first. The two GPU pipelines are mutually exclusive."
+                : `Adds one source-frame of latency. Processing cap: ${frameGeneration.quality}p.`}
+            </span>
+          </>
+        )}
+      </section>
+      <div className="sidebar-separator" aria-hidden="true" />
+      <section className="sidebar-section">
+        <div className="sidebar-section-header">
           <span>Video Filters</span>
           <span className="sidebar-section-sub">GPU shaders applied to the stream.</span>
         </div>
@@ -119,6 +166,7 @@ export function StreamQuickMenuControlsPage({
                   type="checkbox"
                   name="enable-video-filters"
                   checked={videoShader.enabled}
+                  disabled={frameGeneration.enabled && !videoShader.enabled}
                   aria-label="Enable video filters"
                   onChange={(event) => onVideoShaderChange({ ...videoShader, enabled: event.target.checked })}
                 />
@@ -167,6 +215,11 @@ export function StreamQuickMenuControlsPage({
                   </button>
                 </div>
               </>
+            )}
+            {frameGeneration.enabled && (
+              <span className="sidebar-hint">
+                Turn off Neural Frame Generation first. The two GPU pipelines are mutually exclusive.
+              </span>
             )}
           </>
         )}

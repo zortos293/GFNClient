@@ -81,6 +81,11 @@ async function fetchWeightsFromBase(base: string): Promise<LoadedWeights> {
   return { bin, manifest };
 }
 
+/** Clear a rejected cache entry so a later toggle/retry can succeed. */
+function resetWeightsCache(): void {
+  weightsPromise = null;
+}
+
 async function loadWeights(): Promise<LoadedWeights> {
   if (!weightsPromise) {
     weightsPromise = (async () => {
@@ -93,7 +98,11 @@ async function loadWeights(): Promise<LoadedWeights> {
         // Fall through to CDN when local assets were not copied at install time.
       }
       return fetchWeightsFromBase(FRAMEGEN_WEIGHTS_CDN);
-    })();
+    })().catch((error) => {
+      // Do not sticky-cache a rejected promise across retries.
+      weightsPromise = null;
+      throw error;
+    });
   }
   return weightsPromise;
 }
@@ -113,6 +122,8 @@ export class FrameInterpolationPipeline {
   private hasRenderedFrame = false;
   private statusMessage = "";
   private stepInFlight = false;
+  /** Bumped when runtime/device ownership changes; async steps abort if stale. */
+  private generation = 0;
 
   private device: GpuDevice | null = null;
   private runtime: FramegenRuntime | null = null;
@@ -162,7 +173,13 @@ export class FrameInterpolationPipeline {
   public updateSettings(settings: FrameInterpolationSettings): void {
     const prev = this.settings;
     this.settings = { ...settings };
+    // Allow retry after a previous hard failure if the user toggles the feature.
+    if (settings.enabled && !prev.enabled) {
+      this.initFailed = false;
+      this.statusMessage = "";
+    }
     if (prev.quality !== settings.quality || prev.factor !== settings.factor) {
+      this.generation += 1;
       this.destroyRuntime();
     }
     void this.applyActivation();
@@ -170,6 +187,7 @@ export class FrameInterpolationPipeline {
 
   public dispose(): void {
     this.disposed = true;
+    this.generation += 1;
     this.stopLoops();
     this.destroyRuntime();
     this.resizeObserver?.disconnect();
@@ -256,7 +274,7 @@ export class FrameInterpolationPipeline {
   }
 
   private async ensureRuntime(videoWidth: number, videoHeight: number): Promise<FramegenRuntime | null> {
-    if (!this.device || this.disposed) {
+    if (!this.device || this.disposed || this.initFailed) {
       return null;
     }
     const { w, h } = resolveModelSize(videoWidth, videoHeight, this.settings.quality);
@@ -264,10 +282,14 @@ export class FrameInterpolationPipeline {
       return this.runtime;
     }
 
+    const gen = this.generation;
     this.destroyRuntime();
 
     try {
       const weights = await loadWeights();
+      if (this.disposed || gen !== this.generation || !this.device) {
+        return null;
+      }
       const rt = await createRT(this.device, {
         w,
         h,
@@ -276,6 +298,10 @@ export class FrameInterpolationPipeline {
         textureInput: true,
         textureOutput: true,
       });
+      if (this.disposed || gen !== this.generation || !this.device) {
+        rt.destroy();
+        return null;
+      }
 
       const texA = createRgbaTexture(this.device, w, h, false);
       const texB = createRgbaTexture(this.device, w, h, false);
@@ -293,6 +319,14 @@ export class FrameInterpolationPipeline {
         throw new Error("2D context unavailable for frame scaling");
       }
 
+      if (this.disposed || gen !== this.generation) {
+        for (const tex of midTexs) tex.destroy();
+        texA.destroy();
+        texB.destroy();
+        rt.destroy();
+        return null;
+      }
+
       this.runtime = { w, h, rt, texA, texB, midTexs, scaleCanvas, scaleCtx };
       this.hasPrevFrame = false;
       this.statusMessage = "";
@@ -303,7 +337,11 @@ export class FrameInterpolationPipeline {
         error instanceof Error ? error.message : String(error),
       );
       this.statusMessage = "Framegen runtime failed";
+      this.initFailed = true;
+      resetWeightsCache();
       this.destroyRuntime();
+      this.stopLoops();
+      this.active = false;
       return null;
     }
   }
@@ -368,7 +406,7 @@ export class FrameInterpolationPipeline {
   }
 
   private async onSourceFrame(): Promise<void> {
-    if (this.stepInFlight) {
+    if (this.stepInFlight || this.initFailed) {
       return;
     }
     const device = this.device;
@@ -382,6 +420,7 @@ export class FrameInterpolationPipeline {
       return;
     }
 
+    const gen = this.generation;
     this.stepInFlight = true;
     try {
       const now = performance.now();
@@ -394,13 +433,23 @@ export class FrameInterpolationPipeline {
       this.lastSourceAtMs = now;
 
       const runtime = await this.ensureRuntime(videoWidth, videoHeight);
-      if (!runtime || this.disposed || !this.active) return;
+      if (
+        !runtime
+        || this.disposed
+        || !this.active
+        || gen !== this.generation
+        || this.runtime !== runtime
+        || this.device !== device
+      ) {
+        return;
+      }
 
       runtime.scaleCanvas.width = runtime.w;
       runtime.scaleCanvas.height = runtime.h;
       runtime.scaleCtx.drawImage(video, 0, 0, runtime.w, runtime.h);
 
       if (!this.hasPrevFrame) {
+        if (gen !== this.generation || this.runtime !== runtime) return;
         device.queue.copyExternalImageToTexture(
           { source: runtime.scaleCanvas },
           { texture: runtime.texA },
@@ -411,6 +460,7 @@ export class FrameInterpolationPipeline {
         return;
       }
 
+      if (gen !== this.generation || this.runtime !== runtime) return;
       device.queue.copyExternalImageToTexture(
         { source: runtime.scaleCanvas },
         { texture: runtime.texB },
@@ -426,10 +476,19 @@ export class FrameInterpolationPipeline {
 
       const midBitmaps: ImageBitmap[] = [];
       for (const midTex of runtime.midTexs) {
+        if (gen !== this.generation || this.runtime !== runtime) {
+          for (const bitmap of midBitmaps) bitmap.close();
+          return;
+        }
         const bitmap = await this.textureToBitmap(device, midTex, runtime.w, runtime.h);
         if (bitmap) {
           midBitmaps.push(bitmap);
         }
+      }
+
+      if (gen !== this.generation || this.runtime !== runtime || this.device !== device) {
+        for (const bitmap of midBitmaps) bitmap.close();
+        return;
       }
 
       // Current source becomes the next previous frame.
@@ -450,12 +509,22 @@ export class FrameInterpolationPipeline {
         holdUntilMs: hold + slot,
       });
 
+      if (gen !== this.generation) {
+        // Queue was built under a stale generation; drop it.
+        for (const item of this.presentQueue) item.bitmap.close();
+        this.presentQueue = [];
+        return;
+      }
+
       const maxQueued = (midCount + 1) * 2;
       while (this.presentQueue.length > maxQueued) {
         const dropped = this.presentQueue.shift();
         dropped?.bitmap.close();
       }
     } catch (error) {
+      if (this.disposed || gen !== this.generation) {
+        return;
+      }
       console.warn(
         "[FrameInterpolation] Frame step failed:",
         error instanceof Error ? error.message : String(error),

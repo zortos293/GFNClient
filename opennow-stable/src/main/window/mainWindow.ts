@@ -13,6 +13,7 @@ import {
 } from "../escapeFullscreenGuard";
 import { captureMainException } from "../telemetry/posthog";
 import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
+import { shouldReportRendererTermination } from "./rendererLifecycle";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
@@ -31,6 +32,7 @@ export interface CreateMainWindowDeps {
   setStreamInputActive(active: boolean): void;
   getNativeRawInputOwnsEscape(): boolean;
   setNativeRawInputOwnsEscape(ownsEscape: boolean): void;
+  isAppShutdownRequested(): boolean;
 }
 
 export async function createMainWindow(
@@ -82,6 +84,15 @@ export async function createMainWindow(
   deps.setMainWindow(window);
 
   window.webContents.on("render-process-gone", (_event, details) => {
+    if (
+      !shouldReportRendererTermination(
+        details.reason,
+        deps.isAppShutdownRequested(),
+      )
+    ) {
+      console.log("[Main] Renderer process exited during shutdown:", details);
+      return;
+    }
     console.error("[Main] Renderer process gone:", details);
     captureMainException(new Error(`Renderer process gone: ${details.reason}`), {
       reason: details.reason,

@@ -41,7 +41,7 @@ import type { AppUpdaterController } from "../updater";
 import type { SignalingCoordinator } from "../signaling/signalingCoordinator";
 import { fetchThanksData } from "../thanks/fetchThanksData";
 import { applyTelemetrySettingsChange, syncMainTelemetry } from "../telemetry/posthog";
-import { openExternalHttpUrl } from "../window/externalUrl";
+import { openExplicitExternalUrl } from "../window/externalUrl";
 
 type DiscordMonitor = {
   start(): void;
@@ -165,7 +165,7 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
   ipcMain.handle(
     IPC_CHANNELS.OPEN_EXTERNAL_URL,
     async (_event, url: string): Promise<void> => {
-      await openExternalHttpUrl(url);
+      await openExplicitExternalUrl(url);
     },
   );
 

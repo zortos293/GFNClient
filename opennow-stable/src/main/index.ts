@@ -427,6 +427,7 @@ function createMainWindowDeps() {
     setNativeRawInputOwnsEscape: (ownsEscape: boolean) => {
       nativeRawInputOwnsEscapeRuntime = ownsEscape;
     },
+    isAppShutdownRequested: () => isShutdownRequested,
   };
 }
 

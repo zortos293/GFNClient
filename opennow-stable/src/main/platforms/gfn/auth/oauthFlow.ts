@@ -79,8 +79,16 @@ export async function findAvailablePort(): Promise<number> {
   throw new Error("No available OAuth callback ports");
 }
 
-export async function waitForAuthorizationCode(port: number, timeoutMs: number): Promise<string> {
+export async function waitForAuthorizationCode(
+  port: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    let timer: NodeJS.Timeout | null = null;
+    let listenPending = true;
+    let pendingResult: string | Error | undefined;
+    let settlementStarted = false;
     const server = createServer((request, response) => {
       const url = new URL(request.url ?? "/", `http://localhost:${port}`);
       const code = url.searchParams.get("code");
@@ -94,25 +102,107 @@ export async function waitForAuthorizationCode(port: number, timeoutMs: number):
 
       response.statusCode = 200;
       response.setHeader("Content-Type", "text/html; charset=utf-8");
-      response.end(html);
-
-      server.close(() => {
-        if (code) {
-          resolve(code);
-          return;
-        }
-        reject(new Error(error ?? "Authorization failed"));
+      response.setHeader("Connection", "close");
+      response.end(html, () => {
+        finish(code ?? new Error(error ?? "Authorization failed"));
       });
     });
 
-    server.listen(port, "127.0.0.1", () => {
-      const timer = setTimeout(() => {
-        server.close(() => reject(new Error("Timed out waiting for OAuth callback")));
-      }, timeoutMs);
+    const settle = (result: string | Error): void => {
+      if (typeof result === "string") {
+        resolve(result);
+      } else {
+        reject(result);
+      }
+    };
 
-      server.once("close", () => clearTimeout(timer));
+    const closeAndSettle = (): void => {
+      if (settlementStarted || pendingResult === undefined) return;
+      settlementStarted = true;
+      const result = pendingResult;
+      if (!server.listening) {
+        settle(result);
+        return;
+      }
+
+      try {
+        server.close(() => settle(result));
+        server.closeAllConnections();
+      } catch {
+        settle(result);
+      }
+    };
+
+    const finish = (result: string | Error): void => {
+      if (pendingResult !== undefined) return;
+      pendingResult = result;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      signal?.removeEventListener("abort", handleAbort);
+      if (!listenPending) {
+        closeAndSettle();
+      }
+    };
+
+    const handleAbort = (): void => {
+      finish(new Error("OAuth login was cancelled."));
+    };
+
+    server.once("error", (error) => {
+      listenPending = false;
+      finish(error);
+      closeAndSettle();
     });
+    server.listen(port, "127.0.0.1", () => {
+      listenPending = false;
+      if (pendingResult !== undefined) {
+        closeAndSettle();
+        return;
+      }
+      timer = setTimeout(() => {
+        finish(new Error("Timed out waiting for OAuth callback"));
+      }, timeoutMs);
+    });
+
+    if (signal?.aborted) {
+      handleAbort();
+    } else {
+      signal?.addEventListener("abort", handleAbort, { once: true });
+    }
   });
+}
+
+export async function openAuthorizationUrlAndWaitForCode(
+  authUrl: string,
+  port: number,
+  timeoutMs: number,
+  openExternal: (url: string) => Promise<void>,
+): Promise<string> {
+  const abortController = new AbortController();
+  const resultPromise = waitForAuthorizationCode(
+    port,
+    timeoutMs,
+    abortController.signal,
+  ).then(
+    (code) => ({ code }),
+    (error: unknown) => ({ error }),
+  );
+
+  try {
+    await openExternal(authUrl);
+  } catch (error) {
+    abortController.abort();
+    await resultPromise;
+    throw error;
+  }
+
+  const result = await resultPromise;
+  if ("error" in result) {
+    throw result.error;
+  }
+  return result.code;
 }
 
 export async function exchangeAuthorizationCode(

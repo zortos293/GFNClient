@@ -131,8 +131,10 @@ export class VideoShaderPipeline {
   private active = false;
   private disposed = false;
   private contextFailed = false;
+  private contextLost = false;
   private frameCallbackId: number | null = null;
   private rafId: number | null = null;
+  private renderLoopGeneration = 0;
   private hasRenderedFrame = false;
   private readonly startTimeMs = performance.now();
 
@@ -151,6 +153,8 @@ export class VideoShaderPipeline {
     this.canvas.style.zIndex = "5";
     this.canvas.style.pointerEvents = "none";
     this.canvas.style.display = "none";
+    this.canvas.addEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.addEventListener("webglcontextrestored", this.onContextRestored);
     videoElement.insertAdjacentElement("afterend", this.canvas);
 
     if (typeof ResizeObserver !== "undefined") {
@@ -180,6 +184,8 @@ export class VideoShaderPipeline {
     this.stopRenderLoop();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     if (this.gl) {
       if (this.texture) this.gl.deleteTexture(this.texture);
       if (this.program) this.gl.deleteProgram(this.program);
@@ -188,11 +194,16 @@ export class VideoShaderPipeline {
     this.gl = null;
     this.program = null;
     this.texture = null;
+    this.uniforms = null;
     this.canvas.remove();
   }
 
   private applyActivation(): void {
-    const shouldRun = !this.disposed && !this.contextFailed && videoShaderHasVisibleEffect(this.settings);
+    const shouldRun =
+      !this.disposed &&
+      !this.contextFailed &&
+      !this.contextLost &&
+      videoShaderHasVisibleEffect(this.settings);
     if (shouldRun === this.active) {
       return;
     }
@@ -243,12 +254,16 @@ export class VideoShaderPipeline {
     const vs = compile(gl.VERTEX_SHADER, VERTEX_SHADER);
     const fs = compile(gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
     if (!vs || !fs) {
+      if (vs) gl.deleteShader(vs);
+      if (fs) gl.deleteShader(fs);
       this.contextFailed = true;
       return false;
     }
 
     const program = gl.createProgram();
     if (!program) {
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
       this.contextFailed = true;
       return false;
     }
@@ -265,6 +280,11 @@ export class VideoShaderPipeline {
     }
 
     const texture = gl.createTexture();
+    if (!texture) {
+      gl.deleteProgram(program);
+      this.contextFailed = true;
+      return false;
+    }
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -285,21 +305,33 @@ export class VideoShaderPipeline {
     };
     gl.uniform1i(this.uniforms.frame, 0);
 
-    this.canvas.addEventListener("webglcontextlost", this.onContextLost);
-
     this.gl = gl;
     this.program = program;
     this.texture = texture;
+    this.contextFailed = false;
     return true;
   }
 
   private readonly onContextLost = (event: Event): void => {
     event.preventDefault();
-    console.warn("[VideoShader] WebGL context lost; shader pipeline disabled");
-    this.contextFailed = true;
+    this.canvas.style.display = "none";
+    this.hasRenderedFrame = false;
+    this.contextLost = true;
     this.gl = null;
     this.program = null;
     this.texture = null;
+    this.uniforms = null;
+    this.applyActivation();
+    console.warn("[VideoShader] WebGL context lost; showing unprocessed video");
+  };
+
+  private readonly onContextRestored = (): void => {
+    if (this.disposed || !this.contextLost) {
+      return;
+    }
+    this.contextLost = false;
+    this.contextFailed = false;
+    console.info("[VideoShader] WebGL context restored; reinitializing shader pipeline");
     this.applyActivation();
   };
 
@@ -317,18 +349,31 @@ export class VideoShaderPipeline {
 
   private startRenderLoop(): void {
     this.stopRenderLoop();
+    const generation = this.renderLoopGeneration;
     const video = this.videoElement;
     if (typeof video.requestVideoFrameCallback === "function") {
       const onFrame = (): void => {
-        if (!this.active || this.disposed) return;
+        if (generation !== this.renderLoopGeneration || !this.active || this.disposed) {
+          return;
+        }
+        this.frameCallbackId = null;
         this.renderFrame();
+        if (generation !== this.renderLoopGeneration || !this.active || this.disposed) {
+          return;
+        }
         this.frameCallbackId = video.requestVideoFrameCallback(onFrame);
       };
       this.frameCallbackId = video.requestVideoFrameCallback(onFrame);
     } else {
       const onRaf = (): void => {
-        if (!this.active || this.disposed) return;
+        if (generation !== this.renderLoopGeneration || !this.active || this.disposed) {
+          return;
+        }
+        this.rafId = null;
         this.renderFrame();
+        if (generation !== this.renderLoopGeneration || !this.active || this.disposed) {
+          return;
+        }
         this.rafId = requestAnimationFrame(onRaf);
       };
       this.rafId = requestAnimationFrame(onRaf);
@@ -336,6 +381,7 @@ export class VideoShaderPipeline {
   }
 
   private stopRenderLoop(): void {
+    this.renderLoopGeneration++;
     if (this.frameCallbackId !== null) {
       this.videoElement.cancelVideoFrameCallback?.(this.frameCallbackId);
       this.frameCallbackId = null;
@@ -349,7 +395,7 @@ export class VideoShaderPipeline {
   private renderFrame(): void {
     const gl = this.gl;
     const video = this.videoElement;
-    if (!gl || !this.program || !this.texture || !this.uniforms) return;
+    if (!gl || !this.program || !this.texture || !this.uniforms || gl.isContextLost()) return;
 
     const videoWidth = video.videoWidth;
     const videoHeight = video.videoHeight;
@@ -398,7 +444,7 @@ export class VideoShaderPipeline {
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    if (!this.hasRenderedFrame) {
+    if (!gl.isContextLost() && !this.hasRenderedFrame) {
       this.hasRenderedFrame = true;
       this.canvas.style.display = "block";
     }

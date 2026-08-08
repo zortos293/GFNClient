@@ -706,9 +706,6 @@ export class DomInputCaptureController {
       const elapsed = now - this.mouseFlushLastSendMs;
       if (this.mouseFlushIntervalMs <= 0 || elapsed >= this.mouseFlushIntervalMs) {
         flushMouse();
-        if (hasPendingMouseMovement()) {
-          scheduleMouseBatchFlush();
-        }
         return;
       }
 
@@ -718,15 +715,11 @@ export class DomInputCaptureController {
           flushMouse();
         } catch (err) {
           this.dependencies.log(`Mouse flush tick failed (non-fatal): ${String(err)}`);
-        } finally {
-          if (hasPendingMouseMovement()) {
-            scheduleMouseBatchFlush();
-          }
         }
       }, Math.max(0, this.mouseFlushIntervalMs - elapsed));
     };
 
-    /** Official GFN Cp(): after wm(), flush when the mouse batch transitions empty -> non-empty. */
+    /** Official GFN Cp(): flush on empty -> non-empty, or when new input makes a parked residual sendable. */
     const afterPointerMovement = (): void => {
       if (!hasPendingMouseMovement()) {
         return;
@@ -734,9 +727,6 @@ export class DomInputCaptureController {
       const elapsed = performance.now() - this.mouseFlushLastSendMs;
       if (this.mouseFlushIntervalMs <= 0 || elapsed >= this.mouseFlushIntervalMs) {
         flushMouse();
-        if (hasPendingMouseMovement()) {
-          scheduleMouseBatchFlush();
-        }
       } else {
         scheduleMouseBatchFlush();
       }
@@ -921,7 +911,10 @@ export class DomInputCaptureController {
       for (const sample of events) {
         queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
       }
-      if (!hadBatch && hasPendingMouseMovement()) {
+      if (
+        hasPendingMouseMovement()
+        && (!hadBatch || this.mouseFlushTimer === null)
+      ) {
         afterPointerMovement();
       }
     };

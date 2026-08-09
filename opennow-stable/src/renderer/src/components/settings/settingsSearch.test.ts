@@ -29,6 +29,22 @@ test("routes frame stats and codec searches to diagnostics", () => {
   assert.equal(settingsScopeMatchesSearch("interface", "frame stats"), false);
 });
 
+test("routes legacy session timing aliases from interface to diagnostics", () => {
+  const movedQueries = [
+    "session time left",
+    "session countdown",
+    "free tier time",
+    "priority time",
+    "ultimate time",
+    "counter",
+  ];
+
+  for (const query of movedQueries) {
+    assert.equal(settingsScopeMatchesSearch("stream-diagnostics", query), true);
+    assert.equal(settingsScopeMatchesSearch("interface", query), false);
+  }
+});
+
 test("matches search tokens by word prefix", () => {
   assert.equal(
     settingsScopeMatchesSearch("stream-diagnostics", "diag over"),

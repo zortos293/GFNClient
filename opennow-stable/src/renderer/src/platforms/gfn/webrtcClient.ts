@@ -711,15 +711,16 @@ export class GfnWebRtcClient {
     this.domInputController.suppressNextSyntheticEscapeOnPointerLockLoss(durationMs);
   }
 
-  public async setMaxBitrateKbps(kbps: number): Promise<void> {
+  public async setMaxBitrateKbps(kbps: number): Promise<boolean> {
     const normalizedKbps = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(kbps));
     if (!this.pc) {
-      return;
+      return false;
     }
 
     const result = await updateVideoSenderBitrate(this.pc, normalizedKbps);
     if (result.status === "updated") {
       this.log(`Bitrate ceiling updated to ${normalizedKbps} kbps via sender parameters`);
+      return true;
     } else if (result.status === "unavailable") {
       this.log(
         `No video sender supports a live bitrate update; ${normalizedKbps} kbps applies on the next session`,
@@ -729,6 +730,7 @@ export class GfnWebRtcClient {
         `Video sender rejected the live bitrate update (non-fatal): ${String(result.error)}`,
       );
     }
+    return false;
   }
 
   /**

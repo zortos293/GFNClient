@@ -43,6 +43,7 @@ export interface HomePageProps {
   isLoading: boolean;
   selectedGameId: string;
   onSelectGame: (id: string) => void;
+  onOpenDetails: (game: GameInfo) => void;
   selectedVariantByGameId: Record<string, string>;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
   filterGroups: CatalogFilterGroup[];
@@ -235,6 +236,7 @@ export const HomePage = memo(function HomePage({
   isLoading,
   selectedGameId,
   onSelectGame,
+  onOpenDetails,
   selectedVariantByGameId,
   onSelectGameVariant,
   filterGroups,
@@ -261,6 +263,7 @@ export const HomePage = memo(function HomePage({
     onPlayGame,
     onSelectGame,
     onSelectGameVariant,
+    onOpenDetails,
   });
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [focusedRowIndex, setFocusedRowIndex] = useState(0);

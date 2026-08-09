@@ -1,11 +1,11 @@
-import { Play, Monitor } from "lucide-react";
+import { Eye, Play, Monitor } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { JSX } from "react";
 import { m } from "motion/react";
 import { normalizeGameStore } from "@shared/gfn";
 import type { GameInfo } from "@shared/gfn";
 import { getActiveGameAvailabilityBadge } from "../lib/gameCardStatus";
-import { getStoreOptions as getGameCardStoreOptions } from "../lib/gameCardStores";
+import { getActiveStoreOption, getStoreOptions as getGameCardStoreOptions } from "../lib/gameCardStores";
 import { useTranslation } from "../i18n";
 
 interface GameCardProps {
@@ -169,7 +169,7 @@ export const GameCard = memo(function GameCard({
     })),
     [game, selectedVariantId],
   );
-  const activeStoreOption = storeOptions.find((option) => option.isActive) ?? storeOptions[0];
+  const activeStoreOption = getActiveStoreOption(storeOptions);
   const availabilityBadge = useMemo(
     () => getActiveGameAvailabilityBadge(game, selectedVariantId),
     [game, selectedVariantId],
@@ -177,16 +177,25 @@ export const GameCard = memo(function GameCard({
 
   const fallbackAspectPct = GAME_CARD_FALLBACK_ASPECT[surface];
   const [aspectPct, setAspectPct] = useState(
-    () => (game.imageUrl ? gameCardAspectByImageUrl.get(game.imageUrl) : undefined) ?? fallbackAspectPct,
+    () => (
+      surface === "library" && game.imageUrl
+        ? gameCardAspectByImageUrl.get(game.imageUrl)
+        : undefined
+    ) ?? fallbackAspectPct,
   );
 
   useEffect(() => {
     setAspectPct(
-      (game.imageUrl ? gameCardAspectByImageUrl.get(game.imageUrl) : undefined) ?? fallbackAspectPct,
+      (
+        surface === "library" && game.imageUrl
+          ? gameCardAspectByImageUrl.get(game.imageUrl)
+          : undefined
+      ) ?? fallbackAspectPct,
     );
-  }, [fallbackAspectPct, game.imageUrl]);
+  }, [fallbackAspectPct, game.imageUrl, surface]);
 
   const handleImageLoad = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    if (surface !== "library") return;
     const img = event.currentTarget;
     const w = img.naturalWidth;
     const h = img.naturalHeight;
@@ -197,7 +206,7 @@ export const GameCard = memo(function GameCard({
       }
       setAspectPct(measuredAspectPct);
     }
-  }, [game.imageUrl]);
+  }, [game.imageUrl, surface]);
 
   const handlePlayClick = (event: React.MouseEvent): void => {
     event.stopPropagation();
@@ -210,24 +219,17 @@ export const GameCard = memo(function GameCard({
   };
 
   return (
-    <m.div
+    <m.article
       className={`game-card ${isSelected ? "selected" : ""}`}
       whileHover={{ y: -2, scale: 1.01 }}
       whileTap={{ scale: 0.985 }}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) {
-          return;
-        }
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onPlay();
-        }
-      }}
-      role="button"
-      tabIndex={0}
-      aria-label={t("gameCard.selectGame", { title: game.title })}
     >
+      <button
+        type="button"
+        className="game-card-details-hit-target"
+        onClick={onSelect}
+        aria-label={t("gameCard.viewDetailsFor", { title: game.title })}
+      />
       <div
         className="game-card-image-wrapper"
         style={
@@ -256,7 +258,6 @@ export const GameCard = memo(function GameCard({
             className="game-card-play-button"
             onClick={handlePlayClick}
             aria-label={t("gameCard.playGame", { title: game.title })}
-            tabIndex={-1}
           >
             <Play size={24} fill="currentColor" />
           </button>
@@ -323,6 +324,10 @@ export const GameCard = memo(function GameCard({
           </h3>
         </div>
       </div>
-    </m.div>
+      <span className="game-card-details-label" aria-hidden="true">
+        <Eye size={15} />
+        {t("gameCard.viewDetails")}
+      </span>
+    </m.article>
   );
 }, gameCardPropsAreEqual);

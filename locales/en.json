@@ -32,7 +32,9 @@
       "showInFolder": "Show in folder",
       "sort": "Sort",
       "stop": "Stop",
-      "switch": "Switch"
+      "switch": "Switch",
+      "readMore": "Read more",
+      "showLess": "Show less"
     },
     "status": {
       "checking": "Checking",
@@ -251,6 +253,8 @@
   "gameCard": {
     "selectGame": "Select {{title}}",
     "playGame": "Play {{title}}",
+    "viewDetails": "View details",
+    "viewDetailsFor": "View details for {{title}}",
     "store": "{{store}} store",
     "owned": "Owned",
     "available": "Available",
@@ -259,6 +263,13 @@
       "updating": "Updating",
       "unavailable": "Unavailable"
     }
+  },
+  "gameDetails": {
+    "eyebrow": "Game details",
+    "details": "About this game",
+    "notOwned": "Not owned",
+    "playOn": "Play on {{store}}",
+    "storeOption": "{{store}}, {{ownership}}"
   },
   "streamLoading": {
     "labels": {

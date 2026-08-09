@@ -2,9 +2,31 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { GameInfo, GameVariant } from "@shared/gfn";
-import { getStoreOptions } from "../lib/gameCardStores";
+import { getActiveStoreOption, getStoreOptions } from "../lib/gameCardStores";
+
+const gameCardStyles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+
+function getCssDeclarations(selector: string): Record<string, string> {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rules = [...gameCardStyles.matchAll(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, "gs"))];
+  assert.ok(rules.length > 0, `Missing CSS rule for ${selector}`);
+  return Object.assign({}, ...rules.map((rule) => Object.fromEntries(
+    rule[1]
+      .split(";")
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => {
+        const separatorIndex = declaration.indexOf(":");
+        return [
+          declaration.slice(0, separatorIndex).trim(),
+          declaration.slice(separatorIndex + 1).trim(),
+        ];
+      }),
+  )));
+}
 
 function makeVariant(overrides: Partial<GameVariant> = {}): GameVariant {
   return {
@@ -178,4 +200,36 @@ test("still hides empty and none store placeholders", () => {
       { storeKey: "STEAM", variantId: "steam", isOwned: false },
     ],
   );
+});
+
+test("uses the selected store option for store-specific play actions", () => {
+  const options = getStoreOptions(
+    makeGame([
+      makeVariant({ id: "steam", store: "Steam", libraryStatus: "IN_LIBRARY" }),
+      makeVariant({ id: "epic", store: "Epic", libraryStatus: "NOT_OWNED" }),
+    ]),
+    "epic",
+  );
+
+  assert.equal(getActiveStoreOption(options)?.variantId, "epic");
+  assert.equal(getActiveStoreOption(options)?.storeKey, "EPIC_GAMES_STORE");
+});
+
+test("places the card content stacking context above Details while preserving control hit testing", () => {
+  const detailsTarget = getCssDeclarations(".game-card-details-hit-target");
+  const cardContent = getCssDeclarations(".game-card-image-wrapper");
+  const detailsLabel = getCssDeclarations(".game-card-details-label");
+  const storeControls = getCssDeclarations(".game-card-info .game-card-stores");
+  const hoveredPlay = getCssDeclarations(".game-card:hover .game-card-play-button");
+  const focusedPlay = getCssDeclarations(".game-card:focus-within .game-card-play-button");
+
+  assert.ok(
+    Number(cardContent["z-index"]) > Number(detailsTarget["z-index"]),
+    "card content must establish a stacking context above the full-card Details target",
+  );
+  assert.equal(cardContent["pointer-events"], "none");
+  assert.equal(detailsLabel["pointer-events"], "none");
+  assert.equal(storeControls["pointer-events"], "auto");
+  assert.equal(hoveredPlay["pointer-events"], "auto");
+  assert.equal(focusedPlay["pointer-events"], "auto");
 });

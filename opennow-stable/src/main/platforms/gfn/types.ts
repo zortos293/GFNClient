@@ -67,6 +67,11 @@ export interface CloudMatchRequest {
       hudStreamingMode?: number;
       sdrColorSpace?: number;
       hdrColorSpace?: number;
+      maxBitrateKbps?: number;
+      codec?: number;
+      vsync?: boolean;
+      dynamicStreamingMode?: number;
+      audioChannelCount?: number;
     };
   };
 }

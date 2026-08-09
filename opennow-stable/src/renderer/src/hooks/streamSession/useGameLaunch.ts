@@ -12,6 +12,10 @@ import type {
 import { isSessionAdsRequired } from "@shared/gfn";
 import { discordGameImageUrl } from "@shared/discord";
 
+import {
+  getOrRunCodecSupport,
+  resolveSupportedStreamCodecs,
+} from "../../lib/codecDiagnostics";
 import { chooseAccountLinked, getEpicOwnershipLaunchError } from "../../lib/launchOwnership";
 import {
   defaultVariantId,
@@ -260,6 +264,7 @@ export function useGameLaunch({
       }
 
       const sessionProxyUrl = activeSessionProxyUrl;
+      const supportedCodecs = resolveSupportedStreamCodecs(await getOrRunCodecSupport());
 
       // Create new session
       const newSession = await window.openNow.createSession({
@@ -275,6 +280,7 @@ export function useGameLaunch({
         proxyUrl: sessionProxyUrl,
         zone: "prod",
         settings: streamSettings,
+        supportedCodecs,
       });
 
       setSession(newSession);

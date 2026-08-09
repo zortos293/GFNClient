@@ -35,7 +35,7 @@ export function buildVideoAccelerationCommandLine(
 
   if (platform === "win32") {
     if (preferences.decoderPreference !== "software") {
-      enableFeatures.push("D3D11VideoDecoder");
+      enableFeatures.push("D3D11VideoDecoder", "PlatformHEVCDecoderSupport");
     }
     if (preferences.decoderPreference !== "software" || preferences.encoderPreference !== "software") {
       enableFeatures.push("MediaFoundationD3D11VideoCapture");

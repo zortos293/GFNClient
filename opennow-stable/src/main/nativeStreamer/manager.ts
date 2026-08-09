@@ -5,6 +5,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import {
   createUnsupportedNativeStreamerStatus,
+  extractNegotiatedVideoCodec,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   type IceCandidatePayload,
@@ -191,6 +192,11 @@ export class NativeStreamerManager {
         throw new Error(`Native streamer returned ${response.type} instead of answer.`);
       }
 
+      const negotiatedCodec = extractNegotiatedVideoCodec(response.answer.sdp);
+      if (!negotiatedCodec) {
+        throw new Error("Native streamer answer rejected the video m-line.");
+      }
+      console.log(`[NativeStreamer] Answer negotiated video codec: ${negotiatedCodec}`);
       await this.options.sendAnswer(response.answer);
       this.answerInFlight = false;
       await this.flushQueuedLocalIce();

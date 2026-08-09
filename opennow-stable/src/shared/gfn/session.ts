@@ -67,6 +67,7 @@ export interface SessionCreateRequest {
   existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
+  supportedCodecs?: readonly VideoCodec[];
   proxyUrl?: string;
 }
 

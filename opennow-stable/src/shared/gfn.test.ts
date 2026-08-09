@@ -19,6 +19,8 @@ import {
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   getDefaultStreamPreferences,
+  normalizeCodecPreference,
+  normalizeFallbackCodecPreference,
   normalizeGameStore,
   normalizeNativeExternalRendererForPlatform,
   normalizeTransportModeForPlatform,
@@ -197,9 +199,10 @@ test("keeps native stream client mode on supported desktop platforms", () => {
   assert.equal(normalizeStreamClientModeForPlatform("native", "android"), "web");
 });
 
-test("defaults H264 streaming to 8-bit SDR-compatible color quality", () => {
+test("defaults codec selection and fallback to automatic negotiation", () => {
   assert.deepEqual(getDefaultStreamPreferences(), {
-    codec: "H264",
+    codec: "auto",
+    fallbackCodec: "auto",
     colorQuality: "8bit_420",
   });
 });
@@ -215,6 +218,16 @@ test("normalizes H264 stream preferences away from high bit-depth modes", () => 
     colorQuality: "10bit_420",
     migrated: false,
   });
+});
+
+test("normalizes legacy and invalid saved codec preferences", () => {
+  assert.equal(normalizeCodecPreference("H265"), "H265");
+  assert.equal(normalizeCodecPreference("auto"), "auto");
+  assert.equal(normalizeCodecPreference("VP9"), "auto");
+  assert.equal(normalizeCodecPreference(undefined), "auto");
+  assert.equal(normalizeFallbackCodecPreference("AV1"), "AV1");
+  assert.equal(normalizeFallbackCodecPreference("invalid"), "auto");
+  assert.equal(normalizeFallbackCodecPreference(null), "auto");
 });
 
 test("reports unsupported native streamer status on unknown platforms only", () => {

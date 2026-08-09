@@ -11,6 +11,7 @@ export interface StreamDiagnostics {
   // Video stats
   resolution: string;
   codec: string;
+  requestedCodec: string;
   hardwareAcceleration: string;
   colorCodec: string;
   isHdr: boolean;

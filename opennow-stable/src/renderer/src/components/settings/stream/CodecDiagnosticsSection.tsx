@@ -1,8 +1,11 @@
 import { Cpu, SlidersHorizontal, Zap } from "lucide-react";
-import { useState, type JSX } from "react";
-import type { Settings } from "@shared/gfn";
+import { useEffect, useState, type JSX } from "react";
+import type { GpuBackendInfo, Settings } from "@shared/gfn";
 import {
+  getGpuBackendInfo,
+  getGpuDriverSubtitle,
   shouldShowLinuxHardwareCodecHint,
+  shouldShowQuickSyncDriverHint,
   type CodecTestResult,
 } from "../../../lib/codecDiagnostics";
 import { useTranslation } from "../../../i18n";
@@ -34,6 +37,23 @@ export function CodecDiagnosticsSection({
   const { t } = useTranslation();
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const codecTestOpen = codecResults !== null || codecTesting;
+  const [gpuSubtitle, setGpuSubtitle] = useState<{ name: string; version: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!codecTestOpen) {
+      setGpuSubtitle(null);
+      return;
+    }
+    let cancelled = false;
+    void getGpuBackendInfo().then((gpuInfo: GpuBackendInfo | null) => {
+      if (!cancelled) {
+        setGpuSubtitle(getGpuDriverSubtitle(gpuInfo));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [codecTestOpen]);
 
   if (!showStreamVideo && !showStreamCodecDiagnostics) return null;
 
@@ -151,9 +171,24 @@ export function CodecDiagnosticsSection({
                 </div>
                 {codecTestOpen && codecResults && (
                   <div className="codec-results">
+                    {gpuSubtitle && (
+                      <div className="codec-result-hint">
+                        {gpuSubtitle.version
+                          ? t("settings.codecDiagnostics.gpuDriverLine", {
+                              gpu: gpuSubtitle.name,
+                              version: gpuSubtitle.version,
+                            })
+                          : gpuSubtitle.name}
+                      </div>
+                    )}
                     {shouldShowLinuxHardwareCodecHint(codecResults) ? (
                       <div className="codec-result-hint">
                         {t("settings.codecDiagnostics.linuxHardwareHint")}
+                      </div>
+                    ) : null}
+                    {shouldShowQuickSyncDriverHint(codecResults) ? (
+                      <div className="codec-result-hint">
+                        {t("settings.codecDiagnostics.quickSyncHint")}
                       </div>
                     ) : null}
                     {codecResults.map((result) => (

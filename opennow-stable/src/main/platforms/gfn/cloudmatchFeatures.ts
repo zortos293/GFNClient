@@ -1,4 +1,9 @@
-import type { AppLaunchMode, SessionCreateRequest, StreamSettings } from "@shared/gfn";
+import type {
+  AppLaunchMode,
+  SessionCreateRequest,
+  StreamSettings,
+  VideoCodec,
+} from "@shared/gfn";
 import { DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR } from "@shared/cloudGsync";
 
 import type { CloudMatchRequest } from "./types";
@@ -36,7 +41,25 @@ export function buildRequestedStreamingFeatures(
     prefilterSharpness: 0,
     prefilterNoiseReduction: 0,
     hudStreamingMode: 0,
+    maxBitrateKbps: Math.round(settings.maxBitrateMbps * 1000),
+    codec: codecWireValue(settings.codec),
+    vsync: false,
+    dynamicStreamingMode: 3,
+    audioChannelCount: 2,
   };
+}
+
+export function codecWireValue(codec: VideoCodec): number {
+  switch (codec) {
+    case "H264":
+      return 1;
+    case "H265":
+      return 2;
+    case "AV1":
+      return 3;
+    default:
+      return 0;
+  }
 }
 
 export function shouldRequestReflex(settings: StreamSettings): boolean {

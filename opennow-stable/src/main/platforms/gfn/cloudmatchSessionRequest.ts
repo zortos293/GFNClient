@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { createHash } from "node:crypto";
 
 import type { SessionCreateRequest, StreamSettings } from "@shared/gfn";
 import {
@@ -8,7 +7,6 @@ import {
 } from "@shared/gfn";
 
 import type { CloudMatchRequest } from "./types";
-import { buildGfnCloudMatchHeaders } from "./clientHeaders";
 import { resolveGfnDeviceIdentity } from "./deviceIdentity";
 import { getStableDeviceId } from "./deviceId";
 import {
@@ -16,40 +14,6 @@ import {
   buildRequestedStreamingFeatures,
   shouldEnableInGameSettingsPersistence,
 } from "./cloudmatchFeatures";
-import {
-  fetchCloudMatch,
-  formatErrorForLog,
-} from "./cloudmatchTransport";
-
-const NETWORK_TEST_SESSION_TIMEOUT_MS = 8_000;
-const NETWORK_TEST_SESSION_CACHE_TTL_MS = 30 * 60 * 1000;
-
-const networkTestSessionCache = new Map<string, { sessionId: string; expiresAt: number }>();
-
-interface NetworkTestSessionResponse {
-  requestStatus?: {
-    statusCode?: number;
-    statusDescription?: string;
-    serverId?: string;
-  };
-  netTestSession?: {
-    sessionId?: string;
-    connectionInfo?: Array<{
-      ip?: string;
-      port?: number;
-      appLevelProtocol?: number;
-    }>;
-    netTestThresholds?: {
-      recommendedBandwidthMBPS?: number;
-      requiredBandwidthMBPS?: number;
-      recommendedLatencyMS?: number;
-      requiredLatencyMS?: number;
-      recommendedPacketLossPct?: number;
-      requiredPacketLossPct?: number;
-    };
-    serverId?: string;
-  };
-}
 
 export function parseResolution(input: string): { width: number; height: number } {
   const [rawWidth, rawHeight] = input.split("x");
@@ -61,115 +25,6 @@ export function parseResolution(input: string): { width: number; height: number 
   }
 
   return { width, height };
-}
-
-function networkTestSessionCacheKey(base: string, settings: StreamSettings, token: string, proxyUrl?: string): string {
-  const { width, height } = parseResolution(settings.resolution);
-  const identityHash = createHash("sha256")
-    .update(token)
-    .update("\0")
-    .update(proxyUrl ?? "")
-    .digest("hex")
-    .slice(0, 16);
-  return `${base}\0${width}x${height}@${settings.fps}\0${identityHash}`;
-}
-
-export function getCachedNetworkTestSessionId(base: string, settings: StreamSettings, token: string, proxyUrl?: string): string | null {
-  const cacheKey = networkTestSessionCacheKey(base, settings, token, proxyUrl);
-  const cached = networkTestSessionCache.get(cacheKey);
-  if (!cached) {
-    return null;
-  }
-
-  if (cached.expiresAt <= Date.now()) {
-    networkTestSessionCache.delete(cacheKey);
-    return null;
-  }
-
-  return cached.sessionId;
-}
-
-export function cacheNetworkTestSessionId(
-  base: string,
-  settings: StreamSettings,
-  token: string,
-  sessionId: string,
-  proxyUrl?: string,
-): void {
-  networkTestSessionCache.set(networkTestSessionCacheKey(base, settings, token, proxyUrl), {
-    sessionId,
-    expiresAt: Date.now() + NETWORK_TEST_SESSION_CACHE_TTL_MS,
-  });
-}
-
-export async function createNetworkTestSession(input: {
-  base: string;
-  token: string;
-  clientId: string;
-  deviceId: string;
-  settings: StreamSettings;
-  proxyUrl?: string;
-}): Promise<string | null> {
-  const cached = getCachedNetworkTestSessionId(input.base, input.settings, input.token, input.proxyUrl);
-  if (cached) {
-    return cached;
-  }
-
-  const { width, height } = parseResolution(input.settings.resolution);
-  const { clientPlatformName } = resolveGfnDeviceIdentity();
-  const body = {
-    netTestRequestData: {
-      clientPlatformName,
-      netTestProfile: {
-        widthInPixels: width,
-        heightInPixels: height,
-        framesPerSecond: input.settings.fps,
-      },
-    },
-  };
-
-  try {
-    const response = await fetchCloudMatch(`${input.base}/v2/nettestsession`, {
-      method: "POST",
-      headers: buildGfnCloudMatchHeaders({
-        token: input.token,
-        clientId: input.clientId,
-        deviceId: input.deviceId,
-        includeOrigin: true,
-      }),
-      body: JSON.stringify(body),
-    }, {
-      proxyUrl: input.proxyUrl,
-      timeoutMs: NETWORK_TEST_SESSION_TIMEOUT_MS,
-      retries: 0,
-    });
-
-    if (!response.ok) {
-      console.warn(`[CloudMatch] nettestsession failed HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
-      return null;
-    }
-
-    const payload = (await response.json()) as NetworkTestSessionResponse;
-    if (payload.requestStatus?.statusCode !== 1) {
-      console.warn(
-        `[CloudMatch] nettestsession API error: ${payload.requestStatus?.statusCode ?? "unknown"} ` +
-        `${payload.requestStatus?.statusDescription ?? ""}`.trim(),
-      );
-      return null;
-    }
-
-    const sessionId = payload.netTestSession?.sessionId?.trim();
-    if (!sessionId) {
-      console.warn("[CloudMatch] nettestsession response did not include a sessionId");
-      return null;
-    }
-
-    cacheNetworkTestSessionId(input.base, input.settings, input.token, sessionId, input.proxyUrl);
-    return sessionId;
-  } catch (error) {
-    console.warn(`[CloudMatch] nettestsession creation failed: ${formatErrorForLog(error)}`);
-    return null;
-  }
 }
 
 export function timezoneOffsetMs(): number {

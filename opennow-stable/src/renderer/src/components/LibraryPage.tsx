@@ -38,6 +38,7 @@ export interface LibraryPageProps {
   isLoading: boolean;
   selectedGameId: string;
   onSelectGame: (id: string) => void;
+  onOpenDetails: (game: GameInfo) => void;
   selectedVariantByGameId: Record<string, string>;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
   libraryCount: number;
@@ -63,6 +64,7 @@ export const LibraryPage = memo(function LibraryPage({
   isLoading,
   selectedGameId,
   onSelectGame,
+  onOpenDetails,
   selectedVariantByGameId,
   onSelectGameVariant,
   libraryCount,
@@ -81,6 +83,7 @@ export const LibraryPage = memo(function LibraryPage({
     onPlayGame,
     onSelectGame,
     onSelectGameVariant,
+    onOpenDetails,
   });
   const [controllerHeroIndex, setControllerHeroIndex] = useState(0);
   const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);

@@ -93,6 +93,7 @@ import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { GameDetailModal } from "./components/GameDetailModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
 import { ErrorReportingConsentModal } from "./components/ErrorReportingConsentModal";
 import { FeedbackModal } from "./components/FeedbackModal";
@@ -1866,8 +1867,19 @@ export function App(): JSX.Element {
     variantByGameId,
   ]);
 
+  const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
+  const [detailsSurfacePresent, setDetailsSurfacePresent] = useState(false);
+  const queueModalVariantIdRef = useRef<string | undefined>(undefined);
+  const handleOpenDetails = useCallback((game: GameInfo): void => {
+    setDetailsSurfacePresent(true);
+    setDetailsGame(game);
+  }, []);
+  const handleCloseDetails = useCallback((): void => {
+    setDetailsGame(null);
+  }, []);
+
   // Gate handler: shows queue server modal for FREE-tier users before launching
-  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+  const handleInitiatePlay = useCallback(async (game: GameInfo, variantId?: string) => {
     const effectiveTier = normalizeMembershipTier(
       subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
     );
@@ -1877,12 +1889,14 @@ export function App(): JSX.Element {
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (!isNvidiaAccount || isAllianceServer) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      queueModalVariantIdRef.current = undefined;
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (settings.hideServerSelector) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      queueModalVariantIdRef.current = undefined;
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
@@ -1901,14 +1915,16 @@ export function App(): JSX.Element {
             },
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         const queueData = queueResult.value;
         if (!queueData || Object.keys(queueData).length === 0) {
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
@@ -1917,32 +1933,39 @@ export function App(): JSX.Element {
             "[QueueServerSelect] No eligible non-nuked PrintedWaste zones available, skipping queue checks.",
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         setQueueModalData(queueData);
+        queueModalVariantIdRef.current = variantId;
         setQueueModalGame(game);
       } catch (error) {
         console.warn("[QueueServerSelect] PrintedWaste queue checks failed, launching without modal.", error);
         setQueueModalData(null);
-        void handlePlayGame(game);
+        queueModalVariantIdRef.current = undefined;
+        void handlePlayGame(game, { variantId });
       }
       return;
     }
-    void handlePlayGame(game);
+    queueModalVariantIdRef.current = undefined;
+    void handlePlayGame(game, { variantId });
   }, [subscriptionInfo, authSession, selectedProvider, settings.hideServerSelector, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
+    const variantId = queueModalVariantIdRef.current;
+    queueModalVariantIdRef.current = undefined;
     setQueueModalGame(null);
     setQueueModalData(null);
     if (game) {
-      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
+      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined, variantId });
     }
   }, [queueModalGame, handlePlayGame]);
 
   const handleQueueModalCancel = useCallback(() => {
+    queueModalVariantIdRef.current = undefined;
     setQueueModalGame(null);
     setQueueModalData(null);
   }, []);
@@ -2509,6 +2532,8 @@ export function App(): JSX.Element {
     || currentPage === "settings"
     || settingsSurfacePresent
     || navbarOverlayBlocking
+    || detailsGame !== null
+    || detailsSurfacePresent
     || queueModalGame !== null
     || releaseHighlightsPayload !== null
     || releaseHighlightsSurfacePresent
@@ -2609,6 +2634,7 @@ export function App(): JSX.Element {
                 isLoading={effectiveControllerMode ? isLoadingStorePanels : isLoadingCatalog}
                 selectedGameId={selectedGameId}
                 onSelectGame={setSelectedGameId}
+                onOpenDetails={handleOpenDetails}
                 selectedVariantByGameId={variantByGameId}
                 onSelectGameVariant={handleSelectGameVariant}
                 filterGroups={catalogFilterGroups}
@@ -2644,6 +2670,7 @@ export function App(): JSX.Element {
                   isLoading={isLoadingLibrary}
                   selectedGameId={selectedGameId}
                   onSelectGame={setSelectedGameId}
+                  onOpenDetails={handleOpenDetails}
                   selectedVariantByGameId={variantByGameId}
                   onSelectGameVariant={handleSelectGameVariant}
                   libraryCount={libraryGames.length}
@@ -2832,6 +2859,20 @@ export function App(): JSX.Element {
       </SettingsModalHost>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
+      <GameDetailModal
+        open={detailsGame !== null}
+        game={detailsGame}
+        selectedVariantId={detailsGame ? variantByGameId[detailsGame.id] : undefined}
+        onSelectVariant={(variantId) => {
+          if (detailsGame) handleSelectGameVariant(detailsGame.id, variantId);
+        }}
+        onPlay={(game, variantId) => {
+          handleCloseDetails();
+          void handleInitiatePlay(game, variantId);
+        }}
+        onClose={handleCloseDetails}
+        onExitComplete={() => setDetailsSurfacePresent(false)}
+      />
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}

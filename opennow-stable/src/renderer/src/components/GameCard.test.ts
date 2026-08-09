@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { GameInfo, GameVariant } from "@shared/gfn";
-import { getStoreOptions } from "../lib/gameCardStores";
+import { getActiveStoreOption, getStoreOptions } from "../lib/gameCardStores";
 
 function makeVariant(overrides: Partial<GameVariant> = {}): GameVariant {
   return {
@@ -178,4 +178,17 @@ test("still hides empty and none store placeholders", () => {
       { storeKey: "STEAM", variantId: "steam", isOwned: false },
     ],
   );
+});
+
+test("uses the selected store option for store-specific play actions", () => {
+  const options = getStoreOptions(
+    makeGame([
+      makeVariant({ id: "steam", store: "Steam", libraryStatus: "IN_LIBRARY" }),
+      makeVariant({ id: "epic", store: "Epic", libraryStatus: "NOT_OWNED" }),
+    ]),
+    "epic",
+  );
+
+  assert.equal(getActiveStoreOption(options)?.variantId, "epic");
+  assert.equal(getActiveStoreOption(options)?.storeKey, "EPIC_GAMES_STORE");
 });

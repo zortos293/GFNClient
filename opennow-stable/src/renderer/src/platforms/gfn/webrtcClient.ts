@@ -256,6 +256,20 @@ async function toBytes(data: string | Blob | ArrayBuffer): Promise<Uint8Array> {
   return new Uint8Array(arrayBuffer);
 }
 
+type CodecAttemptMicrophoneManager = Pick<
+  MicrophoneManager,
+  "setPeerConnection" | "attachTrackToPeerConnection"
+>;
+
+export async function attachMicrophoneForCodecAttempt(
+  micManager: CodecAttemptMicrophoneManager | null,
+  pc: RTCPeerConnection,
+): Promise<void> {
+  if (!micManager) return;
+  micManager.setPeerConnection(pc);
+  await micManager.attachTrackToPeerConnection();
+}
+
 export class GfnWebRtcClient {
   private readonly inputEncoder = new InputEncoder();
 
@@ -2120,7 +2134,6 @@ export class GfnWebRtcClient {
 
     this.applyStreamSettingsDiagnostics(settings, effectiveCodec, false);
     this.emitStats();
-    let microphoneAttached = false;
     const negotiation = await negotiatePeerConnectionCodecAnswer(
       pc,
       negotiationCandidates,
@@ -2135,11 +2148,7 @@ export class GfnWebRtcClient {
         }
         this.log(`Remote description set for ${candidate}`);
 
-        if (!microphoneAttached && this.micManager) {
-          this.micManager.setPeerConnection(pc);
-          await this.micManager.attachTrackToPeerConnection();
-          microphoneAttached = true;
-        }
+        await attachMicrophoneForCodecAttempt(this.micManager, pc);
 
         this.applyCodecPreferences(
           pc,

@@ -136,7 +136,10 @@ export function StreamQualityControls({
     }
   }, [handleChange, settings.colorQuality]);
 
-  const autoCodec = useMemo(() => resolveEffectiveCodec("auto"), []);
+  const autoCodec = useMemo(
+    () => resolveEffectiveCodec("auto", codecResults),
+    [codecResults],
+  );
   const codecOptions = useMemo<SelectDropdownOption[]>(
     () => {
       const options = CODEC_PREFERENCE_OPTIONS.map((preference): SelectDropdownOption => {

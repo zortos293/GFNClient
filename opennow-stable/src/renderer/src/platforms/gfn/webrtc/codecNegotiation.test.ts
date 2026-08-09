@@ -6,6 +6,7 @@ import {
   negotiatePeerConnectionCodecAnswer,
   type CodecNegotiationPeerConnection,
 } from "./codecNegotiation";
+import { attachMicrophoneForCodecAttempt } from "../webrtcClient";
 
 function answer(codec: "H264" | "H265" | "AV1", port = 9): string {
   return [
@@ -89,14 +90,28 @@ test("peer connection rolls back the rejected remote offer before running the se
     { type: "answer", sdp: answer("AV1", 0) },
     { type: "answer", sdp: answer("H264") },
   ]);
-  const prepared: string[] = [];
+  const microphoneEvents: string[] = [];
+  const micManager = {
+    setPeerConnection(connection: RTCPeerConnection): void {
+      assert.equal(connection, pc);
+      assert.equal(pc.signalingState, "have-remote-offer");
+      microphoneEvents.push("set");
+    },
+    async attachTrackToPeerConnection(): Promise<void> {
+      microphoneEvents.push("attach");
+    },
+  };
 
   const result = await negotiatePeerConnectionCodecAnswer(
     pc,
     ["AV1", "H264"],
     (codec) => `offer-${codec}`,
-    (codec) => {
-      prepared.push(codec);
+    async (codec) => {
+      microphoneEvents.push(codec);
+      await attachMicrophoneForCodecAttempt(
+        micManager,
+        pc as unknown as RTCPeerConnection,
+      );
     },
   );
 
@@ -105,10 +120,49 @@ test("peer connection rolls back the rejected remote offer before running the se
     { type: "rollback" },
     { type: "offer", sdp: "offer-H264" },
   ]);
-  assert.deepEqual(prepared, ["AV1", "H264"]);
+  assert.deepEqual(microphoneEvents, [
+    "AV1",
+    "set",
+    "attach",
+    "H264",
+    "set",
+    "attach",
+  ]);
   assert.equal(result.attemptedCodec, "H264");
   assert.equal(result.negotiatedCodec, "H264");
   assert.equal(result.attemptCount, 2);
+});
+
+test("peer connection attaches the microphone once for a single codec attempt", async () => {
+  const pc = new FakePeerConnection([
+    { type: "answer", sdp: answer("AV1") },
+  ]);
+  let setPeerConnectionCalls = 0;
+  let attachTrackCalls = 0;
+  const micManager = {
+    setPeerConnection(connection: RTCPeerConnection): void {
+      assert.equal(connection, pc);
+      assert.equal(pc.signalingState, "have-remote-offer");
+      setPeerConnectionCalls += 1;
+    },
+    async attachTrackToPeerConnection(): Promise<void> {
+      attachTrackCalls += 1;
+    },
+  };
+
+  const result = await negotiatePeerConnectionCodecAnswer(
+    pc,
+    ["AV1", "H264"],
+    (codec) => `offer-${codec}`,
+    () => attachMicrophoneForCodecAttempt(
+      micManager,
+      pc as unknown as RTCPeerConnection,
+    ),
+  );
+
+  assert.equal(setPeerConnectionCalls, 1);
+  assert.equal(attachTrackCalls, 1);
+  assert.equal(result.attemptCount, 1);
 });
 
 test("peer connection codec retry fails if remote rollback does not restore stable", async () => {

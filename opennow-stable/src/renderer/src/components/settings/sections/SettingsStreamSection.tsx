@@ -1,7 +1,7 @@
 import { type JSX } from "react";
 import type { EntitledResolution, Settings, StreamRegion } from "@shared/gfn";
 import type { CodecTestResult } from "../../../lib/codecDiagnostics";
-import { CodecDiagnosticsSection } from "../stream/CodecDiagnosticsSection";
+import { BrowserRecordingSection } from "../stream/BrowserRecordingSection";
 import { RegionSelectionSection } from "../stream/RegionSelectionSection";
 import { StreamVideoSection } from "../stream/StreamVideoSection";
 
@@ -11,12 +11,11 @@ export interface SettingsStreamSectionProps {
   showAll: boolean;
   showStreamRegion: boolean;
   showStreamVideo: boolean;
-  showStreamCodecDiagnostics: boolean;
+  showStreamRecording: boolean;
   handleChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   handlePreview: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   codecResults: CodecTestResult[] | null;
   codecTesting: boolean;
-  onRunCodecTest: () => Promise<void>;
   entitledResolutions: EntitledResolution[];
   subscriptionInfoLoaded: boolean;
   subscriptionLoading: boolean;
@@ -29,12 +28,11 @@ export function SettingsStreamSection({
   showAll,
   showStreamRegion,
   showStreamVideo,
-  showStreamCodecDiagnostics,
+  showStreamRecording,
   handleChange,
   handlePreview,
   codecResults,
   codecTesting,
-  onRunCodecTest,
   entitledResolutions,
   subscriptionInfoLoaded,
   subscriptionLoading,
@@ -63,16 +61,14 @@ export function SettingsStreamSection({
           onBlockingOverlayChange={onBlockingOverlayChange}
         />
       )}
-      <CodecDiagnosticsSection
-        settings={settings}
-        showAll={showAll}
-        showStreamVideo={showStreamVideo}
-        showStreamCodecDiagnostics={showStreamCodecDiagnostics}
-        handleChange={handleChange}
-        codecResults={codecResults}
-        codecTesting={codecTesting}
-        onRunCodecTest={onRunCodecTest}
-      />
+      {showStreamRecording && (
+        <BrowserRecordingSection
+          settings={settings}
+          showAll={showAll}
+          handleChange={handleChange}
+          handlePreview={handlePreview}
+        />
+      )}
     </>
   );
 }

@@ -15,12 +15,13 @@ export type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 export type StorageResetState = "idle" | "resetting" | "success" | "error";
 export type GameAccountBusyAction = "link" | "unlink" | "resync";
 
-export type SettingsSectionId = "account" | "stream" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
+export type SettingsSectionId = "account" | "stream" | "diagnostics" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
 export type SettingsSearchScopeId =
   | "account-storage"
   | "stream-region"
   | "stream-video"
-  | "stream-codec-diagnostics"
+  | "stream-recording"
+  | "stream-diagnostics"
   | "native-streamer"
   | "game"
   | "audio"
@@ -79,6 +80,7 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "video",
     "quality",
     "codec",
+    "fallback",
     "fps",
     "resolution",
     "bitrate",
@@ -105,12 +107,36 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "community proxy",
     "zortos",
   ],
-  "stream-codec-diagnostics": [
+  "stream-recording": [
+    "stream",
+    "browser",
+    "recording",
+    "record",
+    "capture",
+    "resolution",
+    "fps",
+    "frame rate",
+    "bitrate",
+    "video",
+    "media",
+  ],
+  "stream-diagnostics": [
     "stream",
     "codec diagnostics",
     "diagnostics",
+    "frame stats",
+    "stats",
+    "hud",
+    "overlay",
+    "position",
+    "session time",
+    "session timer",
+    "elapsed counter",
+    "performance",
     "decode",
+    "decoder",
     "encode",
+    "encoder",
     "gpu",
     "cpu",
     "test codecs",
@@ -125,9 +151,6 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "dx11",
     "dx12",
     "cloud gsync",
-    "diagnostics",
-    "stats",
-    "overlay",
     "experimental",
     "shortcuts",
     "alt-tab",
@@ -178,19 +201,11 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "app language",
     "accent color",
     "theme color",
-    "overlay",
     "library",
     "fullscreen",
     "discord",
     "rich presence",
     "poster",
-    "session timer",
-    "session time left",
-    "session countdown",
-    "free tier time",
-    "priority time",
-    "ultimate time",
-    "counter",
     "controller",
     "gamepad",
     "big picture",

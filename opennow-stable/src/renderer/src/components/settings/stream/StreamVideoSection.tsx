@@ -43,7 +43,7 @@ export function StreamVideoSection({
         <Monitor size={18} />
         <h2>{t("settings.video.title")}</h2>
       </div>
-      <div className="settings-rows">
+      <div className="settings-rows settings-rows--grouped">
         <StreamQualityControls
           settings={settings}
           handleChange={handleChange}
@@ -54,17 +54,33 @@ export function StreamVideoSection({
           subscriptionInfoLoaded={subscriptionInfoLoaded}
           subscriptionLoading={subscriptionLoading}
         />
-        <SessionProxySettings
-          settings={settings}
-          handleChange={handleChange}
-          onBlockingOverlayChange={onBlockingOverlayChange}
-        />
-        <StreamSessionOptions settings={settings} handleChange={handleChange} />
-        <VideoShaderControls
-          settings={settings}
-          handleChange={handleChange}
-          handlePreview={handlePreview}
-        />
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.video.session")}</h3>
+            <p>{t("settings.video.sessionHint")}</p>
+          </div>
+          <div className="settings-group-rows">
+            <SessionProxySettings
+              settings={settings}
+              handleChange={handleChange}
+              onBlockingOverlayChange={onBlockingOverlayChange}
+            />
+            <StreamSessionOptions settings={settings} handleChange={handleChange} />
+          </div>
+        </div>
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.video.processing")}</h3>
+            <p>{t("settings.video.processingHint")}</p>
+          </div>
+          <div className="settings-group-rows">
+            <VideoShaderControls
+              settings={settings}
+              handleChange={handleChange}
+              handlePreview={handlePreview}
+            />
+          </div>
+        </div>
       </div>
     </section>
   );

@@ -9,13 +9,9 @@ import type {
 import {
   CODEC_PREFERENCE_OPTIONS,
   colorQualityRequiresHevc,
-  DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS,
   expandEntitledStreamResolutions,
   FALLBACK_CODEC_PREFERENCE_OPTIONS,
   getSafeFallbackEntitledResolutions,
-  MAX_RECORDING_BITRATE_MBPS,
-  RECORDING_FPS_OPTIONS,
-  RECORDING_RESOLUTION_OPTIONS,
   resolveEntitledStreamProfile,
 } from "@shared/gfn";
 import {
@@ -26,7 +22,10 @@ import {
 } from "../../../lib/codecDiagnostics";
 import { useTranslation } from "../../../i18n";
 import { MotionSpinner } from "../../MotionSpinner";
-import { SelectDropdown, type SelectDropdownOption } from "../../ui/SelectDropdown";
+import {
+  SelectDropdown,
+  type SelectDropdownOption,
+} from "../../ui/SelectDropdown";
 import { SettingRange } from "../SettingRange";
 import {
   colorQualityOptions,
@@ -61,7 +60,8 @@ export function StreamQualityControls({
 }: StreamQualityControlsProps): JSX.Element {
   const { t } = useTranslation();
   const effectiveEntitledResolutions = useMemo(() => {
-    const baseResolutions = entitledResolutions.length > 0
+    const baseResolutions =
+      entitledResolutions.length > 0
       ? entitledResolutions
       : subscriptionInfoLoaded
         ? getSafeFallbackEntitledResolutions()
@@ -70,29 +70,41 @@ export function StreamQualityControls({
   }, [entitledResolutions, subscriptionInfoLoaded]);
   const useEntitledStreamOptions = effectiveEntitledResolutions.length > 0;
   const resolutionGroups = useMemo(
-    () => useEntitledStreamOptions ? groupResolutions(effectiveEntitledResolutions) : [],
+    () =>
+      useEntitledStreamOptions
+        ? groupResolutions(effectiveEntitledResolutions)
+        : [],
     [effectiveEntitledResolutions, useEntitledStreamOptions],
   );
   const dynamicFpsOptions = useMemo(
-    () => useEntitledStreamOptions
+    () =>
+      useEntitledStreamOptions
       ? getFpsForResolution(effectiveEntitledResolutions, settings.resolution)
       : [],
-    [effectiveEntitledResolutions, settings.resolution, useEntitledStreamOptions],
+    [
+      effectiveEntitledResolutions,
+      settings.resolution,
+      useEntitledStreamOptions,
+    ],
   );
   const resolvedEntitledProfile = useMemo(
-    () => resolveEntitledStreamProfile(effectiveEntitledResolutions, {
+    () =>
+      resolveEntitledStreamProfile(effectiveEntitledResolutions, {
       resolution: settings.resolution,
       fps: settings.fps,
     }),
     [effectiveEntitledResolutions, settings.fps, settings.resolution],
   );
   const resolutionOptions = useMemo<SelectDropdownOption[]>(
-    () => useEntitledStreamOptions
-      ? resolutionGroups.flatMap((group) => group.resolutions.map((resolution) => ({
+    () =>
+      useEntitledStreamOptions
+        ? resolutionGroups.flatMap((group) =>
+            group.resolutions.map((resolution) => ({
           value: resolution.value,
           label: resolution.label,
           group: group.category,
-        })))
+            })),
+          )
       : STATIC_RESOLUTION_PRESETS.map((resolution) => ({
           value: resolution.value,
           label: resolution.label,
@@ -100,13 +112,16 @@ export function StreamQualityControls({
     [resolutionGroups, useEntitledStreamOptions],
   );
 
-  const handleResolutionChange = useCallback((resolution: string): void => {
+  const handleResolutionChange = useCallback(
+    (resolution: string): void => {
     handleChange("resolution", resolution);
     const aspectRatio = inferAspectRatioFromResolution(resolution);
     if (settings.aspectRatio !== aspectRatio) {
       handleChange("aspectRatio", aspectRatio);
     }
-  }, [handleChange, settings.aspectRatio]);
+    },
+    [handleChange, settings.aspectRatio],
+  );
 
   useEffect(() => {
     if (!useEntitledStreamOptions || !resolvedEntitledProfile) return;
@@ -126,27 +141,33 @@ export function StreamQualityControls({
     useEntitledStreamOptions,
   ]);
 
-  const handleColorQualityChange = useCallback((colorQuality: ColorQuality): void => {
+  const handleColorQualityChange = useCallback(
+    (colorQuality: ColorQuality): void => {
     if (colorQualityRequiresHevc(colorQuality) && settings.codec === "H264") {
       handleChange("codec", "H265");
     }
     handleChange("colorQuality", colorQuality);
-  }, [handleChange, settings.codec]);
+    },
+    [handleChange, settings.codec],
+  );
 
-  const handleCodecChange = useCallback((codec: CodecPreference): void => {
+  const handleCodecChange = useCallback(
+    (codec: CodecPreference): void => {
     handleChange("codec", codec);
     if (codec === "H264" && settings.colorQuality !== "8bit_420") {
       handleChange("colorQuality", "8bit_420");
     }
-  }, [handleChange, settings.colorQuality]);
+    },
+    [handleChange, settings.colorQuality],
+  );
 
   const autoCodec = useMemo(
     () => resolveEffectiveCodec("auto", codecResults),
     [codecResults],
   );
-  const codecOptions = useMemo<SelectDropdownOption[]>(
-    () => {
-      const options = CODEC_PREFERENCE_OPTIONS.map((preference): SelectDropdownOption => {
+  const codecOptions = useMemo<SelectDropdownOption[]>(() => {
+    const options = CODEC_PREFERENCE_OPTIONS.map(
+      (preference): SelectDropdownOption => {
         if (preference === "auto") {
           return {
             value: preference,
@@ -154,9 +175,15 @@ export function StreamQualityControls({
           };
         }
 
-        const badge = getCodecDecodeBadgeState(preference, codecResults, codecTesting);
-        const usable = !codecResults || isCodecUsableForStream(preference, codecResults);
-        const label = badge === "gpu"
+        const badge = getCodecDecodeBadgeState(
+          preference,
+          codecResults,
+          codecTesting,
+        );
+        const usable =
+          !codecResults || isCodecUsableForStream(preference, codecResults);
+        const label =
+          badge === "gpu"
           ? `${preference} · ${t("settings.video.gpu")}`
           : badge === "cpu"
             ? `${preference} · ${t("settings.video.cpu")}`
@@ -167,43 +194,53 @@ export function StreamQualityControls({
           disabled: !usable,
           group: usable ? undefined : t("settings.video.codecUnsupported"),
         };
-      });
+      },
+    );
       return [
         ...options.filter((option) => !option.disabled),
         ...options.filter((option) => option.disabled),
       ];
-    },
-    [autoCodec, codecResults, codecTesting, t],
-  );
-  const fallbackCodecOptions = useMemo<SelectDropdownOption[]>(
-    () => {
-      const options = FALLBACK_CODEC_PREFERENCE_OPTIONS.map((preference): SelectDropdownOption => {
+  }, [autoCodec, codecResults, codecTesting, t]);
+  const fallbackCodecOptions = useMemo<SelectDropdownOption[]>(() => {
+    const options = FALLBACK_CODEC_PREFERENCE_OPTIONS.map(
+      (preference): SelectDropdownOption => {
         if (preference === "auto") {
           return { value: preference, label: t("app.labels.auto") };
         }
-        const usable = !codecResults || isCodecUsableForStream(preference, codecResults);
+        const usable =
+          !codecResults || isCodecUsableForStream(preference, codecResults);
         return {
           value: preference,
           label: preference,
           disabled: !usable,
           group: usable ? undefined : t("settings.video.codecUnsupported"),
         };
-      });
+      },
+    );
       return [
         ...options.filter((option) => !option.disabled),
         ...options.filter((option) => option.disabled),
       ];
-    },
-    [codecResults, t],
-  );
+  }, [codecResults, t]);
 
   return (
     <>
+      <div className="settings-group">
+        <div className="settings-group-header">
+          <h3>{t("settings.video.profile")}</h3>
+          <p>{t("settings.video.profileHint")}</p>
+        </div>
+        <div className="settings-group-rows">
       <div className="settings-row">
-        <label className="settings-label" htmlFor="settings-stream-resolution">
+            <label
+              className="settings-label"
+              htmlFor="settings-stream-resolution"
+            >
           <span className="settings-label-title">
             {t("settings.video.resolution")}
-            {subscriptionLoading && <MotionSpinner size={12} className="settings-loading-icon" />}
+                {subscriptionLoading && (
+                  <MotionSpinner size={12} className="settings-loading-icon" />
+                )}
           </span>
         </label>
         <div className="settings-row-control">
@@ -240,6 +277,38 @@ export function StreamQualityControls({
         </div>
       </div>
 
+          <div className="settings-row settings-row--column">
+            <div className="settings-row-top">
+              <label
+                className="settings-label"
+                htmlFor="settings-stream-max-bitrate"
+              >
+                {t("settings.video.maxBitrate")}
+              </label>
+              <span className="settings-value-badge">
+                {settings.maxBitrateMbps} Mbps
+              </span>
+            </div>
+            <SettingRange
+              id="settings-stream-max-bitrate"
+              className="settings-slider"
+              min={5}
+              max={150}
+              step={5}
+              value={settings.maxBitrateMbps}
+              onPreview={(value) => handlePreview("maxBitrateMbps", value)}
+              onCommit={(value) => handleChange("maxBitrateMbps", value)}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-header">
+          <h3>{t("settings.video.codecAndColor")}</h3>
+          <p>{t("settings.video.codecAndColorHint")}</p>
+        </div>
+        <div className="settings-group-rows">
       <div className="settings-row">
         <label className="settings-label" htmlFor="settings-stream-codec">
           {t("settings.video.codec")}
@@ -249,7 +318,9 @@ export function StreamQualityControls({
             id="settings-stream-codec"
             value={settings.codec}
             options={codecOptions}
-            onChange={(value) => handleCodecChange(value as CodecPreference)}
+                onChange={(value) =>
+                  handleCodecChange(value as CodecPreference)
+                }
             ariaLabel={t("settings.video.codec")}
             menuClassName="select-dropdown__menu--grouped"
           />
@@ -262,7 +333,10 @@ export function StreamQualityControls({
       </div>
 
       <div className="settings-row">
-        <label className="settings-label" htmlFor="settings-stream-fallback-codec">
+            <label
+              className="settings-label"
+              htmlFor="settings-stream-fallback-codec"
+            >
           {t("settings.video.fallbackCodec")}
         </label>
         <div className="settings-row-control">
@@ -270,7 +344,12 @@ export function StreamQualityControls({
             id="settings-stream-fallback-codec"
             value={settings.fallbackCodec}
             options={fallbackCodecOptions}
-            onChange={(value) => handleChange("fallbackCodec", value as FallbackCodecPreference)}
+                onChange={(value) =>
+                  handleChange(
+                    "fallbackCodec",
+                    value as FallbackCodecPreference,
+                  )
+                }
             ariaLabel={t("settings.video.fallbackCodec")}
             menuClassName="select-dropdown__menu--grouped"
           />
@@ -281,12 +360,15 @@ export function StreamQualityControls({
       </div>
 
       <div className="settings-row">
-        <label className="settings-label">{t("settings.video.colorDepth")}</label>
+            <label className="settings-label">
+              {t("settings.video.colorDepth")}
+            </label>
         <div className="settings-row-control">
           <div className="settings-chip-row">
             {colorQualityOptions.map((option) => {
               const needsHevc = colorQualityRequiresHevc(option.value);
-              const colorDescription = option.value === "8bit_420"
+                  const colorDescription =
+                    option.value === "8bit_420"
                 ? t("settings.colorQuality.mostCompatible")
                 : option.value === "8bit_444"
                   ? t("settings.colorQuality.sharperChroma")
@@ -299,126 +381,28 @@ export function StreamQualityControls({
                   className={`settings-chip ${settings.colorQuality === option.value ? "active" : ""}`}
                   aria-pressed={settings.colorQuality === option.value}
                   onClick={() => handleColorQualityChange(option.value)}
-                  title={needsHevc
+                      title={
+                        needsHevc
                     ? t("settings.colorQuality.requiresH265OrAv1Title", {
                         description: colorDescription,
                       })
-                    : colorDescription}
+                          : colorDescription
+                      }
                 >
                   <span>{option.label}</span>
                 </button>
               );
             })}
           </div>
-          {colorQualityRequiresHevc(settings.colorQuality) && settings.codec === "H264" && (
+              {colorQualityRequiresHevc(settings.colorQuality) &&
+                settings.codec === "H264" && (
             <span className="settings-input-hint">
               {t("settings.video.requiresH265OrAv1")}
             </span>
           )}
         </div>
       </div>
-
-      <div className="settings-row settings-row--column">
-        <div className="settings-row-top">
-          <label className="settings-label" htmlFor="settings-stream-max-bitrate">
-            {t("settings.video.maxBitrate")}
-          </label>
-          <span className="settings-value-badge">{settings.maxBitrateMbps} Mbps</span>
         </div>
-        <SettingRange
-          id="settings-stream-max-bitrate"
-          className="settings-slider"
-          min={5}
-          max={150}
-          step={5}
-          value={settings.maxBitrateMbps}
-          onPreview={(value) => handlePreview("maxBitrateMbps", value)}
-          onCommit={(value) => handleChange("maxBitrateMbps", value)}
-        />
-      </div>
-
-      <div className="settings-row">
-        <label className="settings-label" htmlFor="settings-stream-recording-resolution">
-          {t("settings.video.recordingResolution")}
-        </label>
-        <div className="settings-row-control">
-          <SelectDropdown
-            id="settings-stream-recording-resolution"
-            value={settings.recordingResolution}
-            options={RECORDING_RESOLUTION_OPTIONS.map((value) => ({ value, label: value }))}
-            onChange={(value) => handleChange("recordingResolution", value as Settings["recordingResolution"])}
-            ariaLabel={t("settings.video.recordingResolution")}
-          />
-        </div>
-      </div>
-
-      <div className="settings-row">
-        <label className="settings-label">{t("settings.video.recordingFps")}</label>
-        <div className="settings-row-control">
-          <div className="settings-chip-row">
-            {RECORDING_FPS_OPTIONS.map((fps) => (
-              <button
-                key={fps}
-                type="button"
-                className={`settings-chip ${settings.recordingFps === fps ? "active" : ""}`}
-                aria-pressed={settings.recordingFps === fps}
-                onClick={() => handleChange("recordingFps", fps)}
-              >
-                <span>{fps}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="settings-row settings-row--column">
-        <div className="settings-row-top">
-          <label className="settings-label" htmlFor="settings-stream-recording-bitrate">
-            {t("settings.video.recordingBitrate")}
-          </label>
-          <span className="settings-value-badge">
-            {settings.recordingBitrateMbps === null
-              ? t("app.labels.auto")
-              : `${settings.recordingBitrateMbps} Mbps`}
-          </span>
-        </div>
-        <div className="settings-chip-row">
-          <button
-            type="button"
-            className={`settings-chip ${settings.recordingBitrateMbps === null ? "active" : ""}`}
-            aria-pressed={settings.recordingBitrateMbps === null}
-            onClick={() => handleChange("recordingBitrateMbps", null)}
-          >
-            <span>{t("app.labels.auto")}</span>
-          </button>
-          <button
-            type="button"
-            className={`settings-chip ${settings.recordingBitrateMbps !== null ? "active" : ""}`}
-            aria-pressed={settings.recordingBitrateMbps !== null}
-            onClick={() => {
-              handleChange(
-                "recordingBitrateMbps",
-                settings.recordingBitrateMbps ?? DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS,
-              );
-            }}
-          >
-            <span>{t("settings.video.customBitrate")}</span>
-          </button>
-        </div>
-        <SettingRange
-          id="settings-stream-recording-bitrate"
-          className="settings-slider"
-          min={1}
-          max={MAX_RECORDING_BITRATE_MBPS}
-          step={1}
-          value={settings.recordingBitrateMbps ?? DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS}
-          disabled={settings.recordingBitrateMbps === null}
-          onPreview={(value) => handlePreview("recordingBitrateMbps", value)}
-          onCommit={(value) => handleChange("recordingBitrateMbps", value)}
-        />
-        <span className="settings-subtle-hint">
-          {t("settings.video.recordingBitrateHint")}
-        </span>
       </div>
     </>
   );

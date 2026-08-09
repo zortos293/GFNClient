@@ -30,6 +30,11 @@ export type NativeStreamerShortcutAction =
   | "screenshot"
   | "toggleRecording";
 
+export interface StreamShortcutInterceptionGate {
+  streamActive: boolean;
+  shortcutCaptureActive: boolean;
+}
+
 export interface NativeStreamerShortcutBindings {
   toggleStats: string;
   togglePointerLock: string;
@@ -180,4 +185,3 @@ export interface NativeStreamStats {
   requestedStreamingFeaturesSummary?: string;
   finalizedStreamingFeaturesSummary?: string;
 }
-

@@ -9,7 +9,13 @@ import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import {
+  videoShaderHasVisibleEffect,
+  type MicrophoneMode,
+  type StatsOverlayPosition,
+  type SubscriptionInfo,
+  type VideoShaderSettings,
+} from "@shared/gfn";
 import { VideoShaderPipeline } from "../platforms/gfn/videoShaderPipeline";
 import { formatShortcutForDisplay } from "../shortcuts";
 import { useScreenshotGallery } from "../hooks/useScreenshotGallery";
@@ -27,6 +33,7 @@ import {
 import { StreamQuickMenu } from "./stream/quick-menu/StreamQuickMenu";
 import { MotionSpinner } from "./MotionSpinner";
 import { isStreamPointerLocked } from "../lib/pointerLock";
+import type { StatsOverlayMode } from "../utils/streamStatsHud";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
@@ -35,7 +42,8 @@ interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
   audioRef: React.Ref<HTMLAudioElement>;
   diagnosticsStore: StreamDiagnosticsStore;
-  showStats: boolean;
+  statsMode: StatsOverlayMode;
+  statsPosition: StatsOverlayPosition;
   showNativeStats?: boolean;
   nativeInputCaptureActive?: boolean;
   gstreamerEnabled: boolean;
@@ -107,7 +115,8 @@ export function StreamView({
   videoRef,
   audioRef,
   diagnosticsStore,
-  showStats,
+  statsMode,
+  statsPosition,
   showNativeStats = false,
   nativeInputCaptureActive = false,
   gstreamerEnabled,
@@ -206,7 +215,7 @@ export function StreamView({
   const streamVideoReady = streamHasVideo || videoElementHasFrame;
   const [sessionReadySplashVisible, setSessionReadySplashVisible] = useState(false);
   const sessionReadySplashShownRef = useRef(false);
-  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
+  const showStatsHud = statsMode !== "off" && !nativeRendererActive && !isConnecting;
 
   useEffect(() => {
     if (isConnecting) {
@@ -435,7 +444,7 @@ export function StreamView({
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
-        showStats: showStats || showNativeStats,
+        showStats: statsMode !== "off" || showNativeStats,
         rect: visible
           ? {
               x: Math.round(rect.left * dpr),
@@ -486,7 +495,7 @@ export function StreamView({
         showStats: false,
       });
     };
-  }, [exitPrompt.open, showNativeStats, showSideBar, showStats]);
+  }, [exitPrompt.open, showNativeStats, showSideBar, statsMode]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
@@ -781,10 +790,13 @@ export function StreamView({
           <StreamStatsHud
             key="stream-stats-hud"
             diagnosticsStore={diagnosticsStore}
+            mode={statsMode === "full" ? "full" : "compact"}
+            position={statsPosition}
             gstreamerEnabled={gstreamerEnabled}
             serverRegion={serverRegion}
             sessionTimeRemainingText={showSessionTimeRemainingInStats ? sessionTimeRemainingText : null}
             hintsVisible={showHints}
+            shaderActive={!nativeRendererActive && videoShaderHasVisibleEffect(videoShader)}
           />
         )}
       </AnimatePresence>

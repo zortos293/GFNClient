@@ -14,6 +14,8 @@ import {
 import { captureMainException } from "../telemetry/posthog";
 import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
 import { shouldReportRendererTermination } from "./rendererLifecycle";
+import type { StreamShortcutInterceptionGate } from "@shared/gfn";
+import { resolveStatsShortcutInterception } from "./streamShortcutInterception";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
@@ -45,6 +47,10 @@ export async function createMainWindow(
     : preloadJsPath;
 
   const settings = deps.settingsManager.getAll();
+  let streamShortcutInterceptionGate: StreamShortcutInterceptionGate = {
+    streamActive: false,
+    shortcutCaptureActive: false,
+  };
   let escapeHoldState: EscapeHoldCaptureState = { keyDownCaptured: false, holdFired: false };
   let escapeHoldTimer: NodeJS.Timeout | null = null;
   const clearEscapeHoldTimer = (): void => {
@@ -174,6 +180,23 @@ export async function createMainWindow(
     },
   );
 
+  const handleStreamShortcutInterceptionChange = (
+    event: Electron.IpcMainEvent,
+    gate: StreamShortcutInterceptionGate,
+  ): void => {
+    if (event.sender !== window.webContents) {
+      return;
+    }
+    streamShortcutInterceptionGate = {
+      streamActive: gate?.streamActive === true,
+      shortcutCaptureActive: gate?.shortcutCaptureActive === true,
+    };
+  };
+  ipcMain.on(
+    IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
+    handleStreamShortcutInterceptionChange,
+  );
+
   ipcMain.on(
     IPC_CHANNELS.NATIVE_INPUT_MODE_CHANGE,
     (_ev, active: boolean, rawInputOwnsEscape: boolean) => {
@@ -192,6 +215,22 @@ export async function createMainWindow(
   window.webContents.on("before-input-event", (event, input) => {
     try {
       const mainWindow = deps.getMainWindow();
+      const statsShortcutDecision = resolveStatsShortcutInterception(
+        streamShortcutInterceptionGate,
+        input,
+        deps.settingsManager.get("shortcutToggleStats"),
+      );
+      if (statsShortcutDecision !== "ignore") {
+        event.preventDefault();
+        if (statsShortcutDecision === "dispatch") {
+          mainWindow?.webContents.send(
+            IPC_CHANNELS.STREAM_SHORTCUT_ACTION,
+            "toggleStats",
+          );
+        }
+        return;
+      }
+
       const resolved = resolveEscapeHoldCaptureAction(
         input,
         {
@@ -258,6 +297,10 @@ export async function createMainWindow(
   }
 
   window.on("closed", () => {
+    ipcMain.off(
+      IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
+      handleStreamShortcutInterceptionChange,
+    );
     clearEscapeHoldTimer();
     escapeHoldState = { keyDownCaptured: false, holdFired: false };
     deps.setMainWindow(null);

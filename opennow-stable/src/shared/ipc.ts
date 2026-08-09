@@ -53,6 +53,8 @@ export const IPC_CHANNELS = {
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",
   POINTER_LOCK_CHANGE: "window:pointer-lock-change",
   EXTERNAL_ESCAPE: "app:external-escape",
+  STREAM_SHORTCUT_ACTION: "app:stream-shortcut-action",
+  STREAM_SHORTCUT_INTERCEPTION_CHANGE: "app:stream-shortcut-interception-change",
   OPEN_EXTERNAL_URL: "app:open-external-url",
   DIRECT_LAUNCH_GET_PENDING: "app:direct-launch:get-pending",
   DIRECT_LAUNCH_REQUEST: "app:direct-launch:request",

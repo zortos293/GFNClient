@@ -24,6 +24,7 @@ test("preserves Windows, macOS, and Linux shortcut defaults", () => {
   assert.equal(linux.sidebarToggle, "Ctrl+G");
   assert.deepEqual(macOs.sidebarToggleAliases, ["Meta+G"]);
   assert.equal(macOs.sidebarToggle, "Meta+G");
+  assert.equal(DEFAULT_SHORTCUT_SETTINGS.shortcutToggleStats, "Ctrl+N");
 });
 
 test("resolves main and renderer platform names without environment globals", () => {
@@ -58,6 +59,10 @@ test("creates fresh platform shortcut collections", () => {
   first.bindings.shortcutToggleStats = "F4";
   first.sidebarToggleAliases.push("Alt+G");
 
-  assert.equal(second.bindings.shortcutToggleStats, "F3");
+  assert.equal(second.bindings.shortcutToggleStats, "Ctrl+N");
   assert.deepEqual(second.sidebarToggleAliases, ["Ctrl+G", "Ctrl+Shift+G"]);
+});
+
+test("defaults the stats HUD to the bottom-left anchor", () => {
+  assert.equal(createDefaultSettings("linux").statsOverlayPosition, "bottom-left");
 });

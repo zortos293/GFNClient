@@ -20,6 +20,7 @@ import {
   normalizeVideoShaderSettings,
   normalizeUpdateChannel,
 } from "@shared/gfn";
+import type { StatsOverlayPosition } from "@shared/gfn";
 
 export type { Settings } from "@shared/gfn";
 
@@ -188,6 +189,11 @@ export class SettingsManager {
       }
 
       merged.mouseAcceleration = Math.max(1, Math.min(150, Math.round(merged.mouseAcceleration)));
+      const statsOverlayPositionBefore = merged.statsOverlayPosition;
+      merged.statsOverlayPosition = normalizeStatsOverlayPosition(merged.statsOverlayPosition);
+      if (merged.statsOverlayPosition !== statsOverlayPositionBefore) {
+        migrated = true;
+      }
       const recordingBitrateBefore = merged.recordingBitrateMbps;
       merged.recordingBitrateMbps = normalizeRecordingBitrateMbps(merged.recordingBitrateMbps);
       if (merged.recordingBitrateMbps !== recordingBitrateBefore) {
@@ -416,6 +422,17 @@ export class SettingsManager {
     const defaults = createDefaultSettings(process.platform);
     this.enforceCompatibility(defaults);
     return defaults;
+  }
+}
+
+function normalizeStatsOverlayPosition(value: unknown): StatsOverlayPosition {
+  switch (value) {
+    case "bottom-right":
+    case "top-left":
+    case "top-right":
+      return value;
+    default:
+      return "bottom-left";
   }
 }
 

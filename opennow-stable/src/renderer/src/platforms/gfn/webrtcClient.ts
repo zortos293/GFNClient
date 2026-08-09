@@ -922,7 +922,7 @@ export class GfnWebRtcClient {
     this.diagnostics.isHdr = this.isHdr;
     this.diagnostics.targetBitrateKbps = this.decoderPressureController.targetBitrateKbps;
     this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
-    this.diagnostics.receiveFps = nativeRendererActive ? settings.fps : 0;
+    this.diagnostics.receiveFps = 0;
     this.diagnostics.renderFps = nativeRendererActive ? settings.fps : 0;
     this.domInputController.setFallbackResolution(settings.resolution);
   }

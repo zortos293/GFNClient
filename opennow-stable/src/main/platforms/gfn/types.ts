@@ -140,6 +140,7 @@ export interface CloudMatchResponse {
     };
     errorCode?: number;
     gpuType?: string;
+    serverLocation?: string;
     connectionInfo?: Array<{
       ip?: string;
       port: number;

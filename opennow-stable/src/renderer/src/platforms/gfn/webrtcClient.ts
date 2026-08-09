@@ -54,8 +54,13 @@ import { chooseAdaptiveMouseFlushInterval } from "./webrtc/mouseInput";
 import {
   averageJitterBufferDelayMs,
   codecLabelFromMimeType,
+  computeBitrateDiagnostics,
+  computeIntervalFrameRates,
   detectGpuType,
 } from "./webrtc/streamStatsHelpers";
+import { extractActiveIceTransportStats } from "./webrtc/iceTransportStats";
+import { parseStatsChannelGameFps } from "./webrtc/statsChannel";
+import { deriveStreamSessionDiagnostics } from "./webrtc/sessionDiagnostics";
 import {
   DecoderPressureController,
 } from "./webrtc/decoderPressureController";
@@ -96,6 +101,12 @@ export {
   type DecoderPressureSample,
   type DecoderPressureSignal,
 } from "./webrtc/decoderPressureController";
+export { parseStatsChannelGameFps } from "./webrtc/statsChannel";
+export {
+  extractActiveIceTransportStats,
+  type ActiveIceTransportStats,
+  type IceTransportType,
+} from "./webrtc/iceTransportStats";
 export {
   canUsePartiallyReliableGamepad,
   canUsePartiallyReliableInput,
@@ -322,10 +333,12 @@ export class GfnWebRtcClient {
     framesDropped: number;
     packetsReceived: number;
     packetsLost: number;
+    totalDecodeTime: number;
     atMs: number;
   } | null = null;
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private lastEmittedDiagnostics: StreamDiagnostics | null = null;
+  private statsChannelVersionLogged = false;
 
   private keyboardLayout?: KeyboardLayout;
   private autoFullScreenEnabled = true;
@@ -361,7 +374,11 @@ export class GfnWebRtcClient {
   private currentResolution = "";
   private isHdr = false;
   private videoDecodeStallWarningSent = false;
+  private sessionId = "";
   private serverRegion = "";
+  private serverZone = "";
+  private serverLocation = "";
+  private serverGpuType = "";
   private gpuType = "";
 
   private diagnostics: StreamDiagnostics = {
@@ -377,13 +394,18 @@ export class GfnWebRtcClient {
     isHdr: false,
     bitrateKbps: 0,
     targetBitrateKbps: 0,
+    availableBitrateKbps: 0,
     decodeFps: 0,
+    receiveFps: 0,
     renderFps: 0,
+    gameFps: undefined,
     packetsLost: 0,
     packetsReceived: 0,
     packetLossPercent: 0,
     jitterMs: 0,
     rttMs: 0,
+    transportType: "unknown",
+    localCandidateType: "",
     framesReceived: 0,
     framesDecoded: 0,
     framesDropped: 0,
@@ -405,7 +427,11 @@ export class GfnWebRtcClient {
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
+    serverGpuType: "",
+    sessionId: "",
     serverRegion: "",
+    serverZone: "",
+    serverLocation: "",
     decoderPressureActive: false,
     decoderRecoveryAttempts: 0,
     decoderRecoveryAction: "none",
@@ -791,6 +817,7 @@ export class GfnWebRtcClient {
     this.currentResolution = "";
     this.isHdr = false;
     this.videoDecodeStallWarningSent = false;
+    this.statsChannelVersionLogged = false;
     this.decoderPressureController.reset();
     const mouseDiagnostics = this.domInputController.getMouseDiagnostics();
     this.diagnostics = {
@@ -806,13 +833,18 @@ export class GfnWebRtcClient {
       isHdr: false,
       bitrateKbps: 0,
       targetBitrateKbps: 0,
+      availableBitrateKbps: 0,
       decodeFps: 0,
+      receiveFps: 0,
       renderFps: 0,
+      gameFps: undefined,
       packetsLost: 0,
       packetsReceived: 0,
       packetLossPercent: 0,
       jitterMs: 0,
       rttMs: 0,
+      transportType: "unknown",
+      localCandidateType: "",
       framesReceived: 0,
       framesDecoded: 0,
       framesDropped: 0,
@@ -834,7 +866,11 @@ export class GfnWebRtcClient {
       lagReason: "unknown",
       lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
+      serverGpuType: this.serverGpuType,
+      sessionId: this.sessionId,
       serverRegion: this.serverRegion,
+      serverZone: this.serverZone,
+      serverLocation: this.serverLocation,
       decoderPressureActive: false,
       decoderRecoveryAttempts: 0,
       decoderRecoveryAction: "none",
@@ -885,8 +921,9 @@ export class GfnWebRtcClient {
     this.diagnostics.colorCodec = describeColorQuality(settings.colorQuality);
     this.diagnostics.isHdr = this.isHdr;
     this.diagnostics.targetBitrateKbps = this.decoderPressureController.targetBitrateKbps;
-    this.diagnostics.decodeFps = settings.fps;
-    this.diagnostics.renderFps = settings.fps;
+    this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
+    this.diagnostics.receiveFps = nativeRendererActive ? settings.fps : 0;
+    this.diagnostics.renderFps = nativeRendererActive ? settings.fps : 0;
     this.domInputController.setFallbackResolution(settings.resolution);
   }
 
@@ -942,7 +979,7 @@ export class GfnWebRtcClient {
       void this.collectStats().finally(() => {
         this.statsPollInFlight = false;
       });
-    }, 500);
+    }, 1000);
   }
 
   private updateRenderFps(): void {
@@ -969,6 +1006,7 @@ export class GfnWebRtcClient {
     let inboundVideo: Record<string, unknown> | null = null;
     let activePair: Record<string, unknown> | null = null;
     const codecs = new Map<string, Record<string, unknown>>();
+    const statsEntries: Record<string, unknown>[] = [];
     let framesReceived = 0;
     let framesDecoded = 0;
     let framesDropped = 0;
@@ -981,15 +1019,10 @@ export class GfnWebRtcClient {
 
     for (const entry of report.values()) {
       const stats = entry as unknown as Record<string, unknown>;
+      statsEntries.push(stats);
 
       if (entry.type === "inbound-rtp" && stats.kind === "video") {
         inboundVideo = stats;
-      }
-
-      if (entry.type === "candidate-pair") {
-        if (stats.state === "succeeded" && stats.nominated === true) {
-          activePair = stats;
-        }
       }
 
       // Collect codec information
@@ -999,6 +1032,11 @@ export class GfnWebRtcClient {
       }
     }
 
+    const iceTransport = extractActiveIceTransportStats(statsEntries);
+    activePair = iceTransport.activePair;
+    this.diagnostics.transportType = iceTransport.transportType;
+    this.diagnostics.localCandidateType = iceTransport.localCandidateType;
+
     // Process video track stats
     if (inboundVideo) {
       const bytes = Number(inboundVideo.bytesReceived ?? 0);
@@ -1007,6 +1045,7 @@ export class GfnWebRtcClient {
       framesDropped = Number(inboundVideo.framesDropped ?? 0);
       const packetsReceived = Number(inboundVideo.packetsReceived ?? 0);
       const packetsLost = Number(inboundVideo.packetsLost ?? 0);
+      const totalDecodeTime = Number(inboundVideo.totalDecodeTime ?? 0);
       const prevSample = this.lastStatsSample;
 
       // Calculate bitrate
@@ -1017,6 +1056,22 @@ export class GfnWebRtcClient {
           const kbps = (bytesDelta * 8) / (timeDeltaMs / 1000) / 1000;
           this.diagnostics.bitrateKbps = Math.max(0, Math.round(kbps));
         }
+
+        const frameRates = computeIntervalFrameRates({
+          framesReceived,
+          framesDecoded,
+          totalDecodeTime,
+          prevFramesReceived: prevSample.framesReceived,
+          prevFramesDecoded: prevSample.framesDecoded,
+          prevTotalDecodeTime: prevSample.totalDecodeTime,
+          timeDeltaMs,
+          prevReceiveFps: this.diagnostics.receiveFps,
+          prevDecodeFps: this.diagnostics.decodeFps,
+          prevDecodeTimeMs: this.diagnostics.decodeTimeMs,
+        });
+        this.diagnostics.receiveFps = frameRates.receiveFps;
+        this.diagnostics.decodeFps = frameRates.decodeFps;
+        this.diagnostics.decodeTimeMs = frameRates.decodeTimeMs;
 
         // Calculate packet loss percentage over the interval
         const packetsDelta = packetsReceived - prevSample.packetsReceived;
@@ -1037,6 +1092,7 @@ export class GfnWebRtcClient {
         framesDropped,
         packetsReceived,
         packetsLost,
+        totalDecodeTime,
         atMs: now,
       };
 
@@ -1053,9 +1109,6 @@ export class GfnWebRtcClient {
         this.videoDecodeStallWarningSent = true;
         this.log("Warning: inbound video packets received but 0 frames decoded (decoder stall)");
       }
-
-      // Decode FPS
-      this.diagnostics.decodeFps = Math.round(Number(inboundVideo.framesPerSecond ?? 0));
 
       // Cumulative packet stats
       this.diagnostics.packetsLost = packetsLost;
@@ -1103,11 +1156,15 @@ export class GfnWebRtcClient {
       }
 
       // Get decode timing if available
-      const totalDecodeTime = Number(inboundVideo.totalDecodeTime ?? 0);
       const totalInterFrameDelay = Number(inboundVideo.totalInterFrameDelay ?? 0);
       const framesDecodedForTiming = Number(inboundVideo.framesDecoded ?? 1);
 
-      if (framesDecodedForTiming > 0) {
+      if (
+        !prevSample &&
+        framesDecodedForTiming > 0 &&
+        Number.isFinite(totalDecodeTime) &&
+        totalDecodeTime >= 0
+      ) {
         this.diagnostics.decodeTimeMs = Math.round((totalDecodeTime / framesDecodedForTiming) * 1000 * 10) / 10;
       }
 
@@ -1127,6 +1184,13 @@ export class GfnWebRtcClient {
       });
       await this.decoderPressureController.recover(pressureSignal);
     }
+
+    const bitrateDiagnostics = computeBitrateDiagnostics(
+      this.decoderPressureController.targetBitrateKbps,
+      activePair,
+    );
+    this.diagnostics.targetBitrateKbps = bitrateDiagnostics.targetBitrateKbps;
+    this.diagnostics.availableBitrateKbps = bitrateDiagnostics.availableBitrateKbps;
 
     // RTT from active candidate pair
     if (activePair?.currentRoundTripTime !== undefined) {
@@ -1489,7 +1553,32 @@ export class GfnWebRtcClient {
     }
   }
 
+  private handleStatsChannelMessage(buffer: ArrayBuffer): void {
+    const parsed = parseStatsChannelGameFps(buffer);
+    if (!parsed) {
+      return;
+    }
+
+    if (!this.statsChannelVersionLogged) {
+      this.statsChannelVersionLogged = true;
+      this.log(`Stats channel: protocol version ${parsed.version}, gameFps=${parsed.fps}`);
+    }
+    this.diagnostics.gameFps = parsed.fps;
+    this.emitStats();
+  }
+
   private createDataChannels(pc: RTCPeerConnection): void {
+    const statsChannel = pc.createDataChannel("stats_channel", {
+      ordered: false,
+      maxRetransmits: 0,
+    });
+    statsChannel.binaryType = "arraybuffer";
+    statsChannel.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        this.handleStatsChannelMessage(event.data);
+      }
+    };
+
     this.reliableInputChannel = pc.createDataChannel("input_channel_v1", {
       ordered: true,
     });
@@ -1915,17 +2004,12 @@ export class GfnWebRtcClient {
       `Input channel policy: partial reliable threshold=${this.partialReliableThresholdMs}ms${negotiatedPartialReliable === null ? " (fallback)" : ""}, hidMask=0x${this.riInputCapabilities.hidDeviceMask.toString(16)}, prGamepadMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferGamepad.toString(16)}, prHidMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferHid.toString(16)}`,
     );
 
-    // Extract server region from session
-    this.serverRegion = session.signalingServer || session.streamingBaseUrl || "";
-    // Clean up the region string (extract hostname or region name)
-    if (this.serverRegion) {
-      try {
-        const url = new URL(this.serverRegion);
-        this.serverRegion = url.hostname;
-      } catch {
-        // Keep as-is if not a valid URL
-      }
-    }
+    const sessionDiagnostics = deriveStreamSessionDiagnostics(session);
+    this.sessionId = sessionDiagnostics.sessionId;
+    this.serverZone = sessionDiagnostics.serverZone;
+    this.serverLocation = sessionDiagnostics.serverLocation;
+    this.serverGpuType = sessionDiagnostics.serverGpuType;
+    this.serverRegion = sessionDiagnostics.serverRegion;
 
     const rtcConfig: RTCConfiguration = {
       iceServers: toRtcIceServers(session.iceServers),
@@ -1935,13 +2019,10 @@ export class GfnWebRtcClient {
 
     const pc = new RTCPeerConnection(rtcConfig);
     this.pc = pc;
-    this.diagnostics.connectionState = pc.connectionState;
-    this.diagnostics.serverRegion = this.serverRegion;
-    this.diagnostics.gpuType = this.gpuType;
-    this.emitStats();
-
     this.resetInputState();
     this.resetDiagnostics();
+    this.diagnostics.connectionState = pc.connectionState;
+    this.emitStats();
     this.createDataChannels(pc);
     this.domInputController.install(this.options.videoElement);
     this.setupStatsPolling();
@@ -1988,6 +2069,17 @@ export class GfnWebRtcClient {
     pc.ondatachannel = (event) => {
       const channel = event.channel;
       this.log(`Remote data channel received: label=${channel.label}, ordered=${channel.ordered}`);
+
+      if (channel.label === "stats" || channel.label === "stats_channel") {
+        channel.binaryType = "arraybuffer";
+        channel.onmessage = (msgEvent) => {
+          if (msgEvent.data instanceof ArrayBuffer) {
+            this.handleStatsChannelMessage(msgEvent.data);
+          }
+        };
+        return;
+      }
+
       if (channel.label !== "control_channel") {
         return;
       }

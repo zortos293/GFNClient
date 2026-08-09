@@ -17,8 +17,11 @@ export interface StreamDiagnostics {
   isHdr: boolean;
   bitrateKbps: number;
   targetBitrateKbps: number;
+  availableBitrateKbps: number;
   decodeFps: number;
+  receiveFps: number;
   renderFps: number;
+  gameFps?: number;
 
   // Network stats
   packetsLost: number;
@@ -26,6 +29,8 @@ export interface StreamDiagnostics {
   packetLossPercent: number;
   jitterMs: number;
   rttMs: number;
+  transportType: "udp" | "tcp" | "unknown";
+  localCandidateType: string;
 
   // Frame counters
   framesReceived: number;
@@ -56,7 +61,11 @@ export interface StreamDiagnostics {
 
   // System info
   gpuType: string;
+  serverGpuType: string;
+  sessionId: string;
   serverRegion: string;
+  serverZone: string;
+  serverLocation: string;
 
   // Decoder recovery status
   decoderPressureActive: boolean;

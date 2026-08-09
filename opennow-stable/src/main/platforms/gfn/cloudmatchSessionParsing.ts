@@ -418,6 +418,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     serverIp: signaling.serverIp,
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,
+    serverLocation: toOptionalString(payload.session.serverLocation),
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     enablePersistingInGameSettings,

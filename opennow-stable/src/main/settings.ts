@@ -19,6 +19,9 @@ import {
   normalizeTransportModeForPlatform,
   normalizeVideoShaderSettings,
   normalizeUpdateChannel,
+  normalizeRecordingBitrateMbps,
+  normalizeRecordingFps,
+  normalizeRecordingResolution,
 } from "@shared/gfn";
 import type { StatsOverlayPosition } from "@shared/gfn";
 
@@ -57,18 +60,6 @@ function normalizeAppAccentColor(raw: unknown): AppAccentColor {
 function normalizeAppTheme(raw: unknown): AppTheme {
   return APP_THEMES.has(raw as AppTheme) ? (raw as AppTheme) : "auto";
 }
-
-function normalizeRecordingBitrateMbps(raw: unknown): number | null {
-  if (raw === null || raw === undefined) {
-    return null;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    return null;
-  }
-  return Math.max(1, Math.min(200, Math.round(value)));
-}
-
 
 const ERROR_REPORTING_CONSENTS = new Set<ErrorReportingConsent>(["unset", "granted", "denied"]);
 
@@ -199,6 +190,16 @@ export class SettingsManager {
       if (merged.recordingBitrateMbps !== recordingBitrateBefore) {
         migrated = true;
       }
+      const recordingResolutionBefore = merged.recordingResolution;
+      merged.recordingResolution = normalizeRecordingResolution(merged.recordingResolution);
+      if (merged.recordingResolution !== recordingResolutionBefore) {
+        migrated = true;
+      }
+      const recordingFpsBefore = merged.recordingFps;
+      merged.recordingFps = normalizeRecordingFps(merged.recordingFps);
+      if (merged.recordingFps !== recordingFpsBefore) {
+        migrated = true;
+      }
       if (migrated) {
         writeFileSync(this.settingsPath, JSON.stringify(merged, null, 2), "utf-8");
       }
@@ -289,6 +290,16 @@ export class SettingsManager {
     const recordingBitrate = normalizeRecordingBitrateMbps(settings.recordingBitrateMbps);
     if (settings.recordingBitrateMbps !== recordingBitrate) {
       settings.recordingBitrateMbps = recordingBitrate;
+      migrated = true;
+    }
+    const recordingResolution = normalizeRecordingResolution(settings.recordingResolution);
+    if (settings.recordingResolution !== recordingResolution) {
+      settings.recordingResolution = recordingResolution;
+      migrated = true;
+    }
+    const recordingFps = normalizeRecordingFps(settings.recordingFps);
+    if (settings.recordingFps !== recordingFps) {
+      settings.recordingFps = recordingFps;
       migrated = true;
     }
 

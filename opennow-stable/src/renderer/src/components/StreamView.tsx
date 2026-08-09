@@ -12,6 +12,8 @@ import { SessionElapsedIndicator } from "./ElapsedSessionIndicators";
 import {
   videoShaderHasVisibleEffect,
   type MicrophoneMode,
+  type RecordingFps,
+  type RecordingResolution,
   type StatsOverlayPosition,
   type SubscriptionInfo,
   type VideoShaderSettings,
@@ -85,6 +87,8 @@ interface StreamViewProps {
   streamRevealComplete: boolean;
   gameTitle: string;
   recordingBitrateMbps: number | null;
+  recordingResolution: RecordingResolution;
+  recordingFps: RecordingFps;
   platformStore?: string;
   onToggleFullscreen: () => void;
   onConfirmExit: () => void;
@@ -102,6 +106,9 @@ interface StreamViewProps {
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
   onRecordingShortcutChange: (value: string) => void;
+  onRecordingResolutionChange: (value: RecordingResolution) => void;
+  onRecordingFpsChange: (value: RecordingFps) => void;
+  onRecordingBitrateMbpsChange: (value: number | null) => void;
   onShowSessionTimeRemainingInStatsOverlayChange: (value: boolean) => void;
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
@@ -140,6 +147,8 @@ export function StreamView({
   streamRevealComplete,
   gameTitle,
   recordingBitrateMbps,
+  recordingResolution,
+  recordingFps,
   platformStore,
   onToggleFullscreen,
   onConfirmExit,
@@ -157,6 +166,9 @@ export function StreamView({
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
   onRecordingShortcutChange,
+  onRecordingResolutionChange,
+  onRecordingFpsChange,
+  onRecordingBitrateMbpsChange,
   onShowSessionTimeRemainingInStatsOverlayChange,
   subscriptionInfo,
   micTrack,
@@ -353,6 +365,8 @@ export function StreamView({
     gameTitle,
     micTrack: micTrack ?? null,
     recordingBitrateMbps,
+    recordingResolution,
+    recordingFps,
   });
   const releasePointerLockForMenu = useCallback(() => {
     if (document.pointerLockElement) {
@@ -724,6 +738,11 @@ export function StreamView({
         screenshotGallery={screenshotGallery}
         streamRecorder={streamRecorder}
         recordingBitrateMbps={recordingBitrateMbps}
+        recordingResolution={recordingResolution}
+        recordingFps={recordingFps}
+        onRecordingResolutionChange={onRecordingResolutionChange}
+        onRecordingFpsChange={onRecordingFpsChange}
+        onRecordingBitrateMbpsChange={onRecordingBitrateMbpsChange}
       />
 
       {/* Gradient background when no video */}

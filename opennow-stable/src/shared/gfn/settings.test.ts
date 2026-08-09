@@ -7,6 +7,9 @@ import {
   DEFAULT_SHORTCUT_SETTINGS,
   createDefaultSettings,
   createPlatformShortcutDefaults,
+  normalizeRecordingBitrateMbps,
+  normalizeRecordingFps,
+  normalizeRecordingResolution,
   resolveRuntimePlatform,
 } from "./settings";
 
@@ -65,4 +68,29 @@ test("creates fresh platform shortcut collections", () => {
 
 test("defaults the stats HUD to the bottom-left anchor", () => {
   assert.equal(createDefaultSettings("linux").statsOverlayPosition, "bottom-left");
+});
+
+test("uses recording defaults that preserve live stream performance", () => {
+  const settings = createDefaultSettings("linux");
+
+  assert.equal(settings.recordingResolution, "720p");
+  assert.equal(settings.recordingFps, 30);
+  assert.equal(settings.recordingBitrateMbps, null);
+});
+
+test("normalizes recording settings to supported performance bounds", () => {
+  assert.equal(normalizeRecordingResolution("1080p"), "1080p");
+  assert.equal(normalizeRecordingResolution("2160p"), "720p");
+  assert.equal(normalizeRecordingResolution(null), "720p");
+
+  assert.equal(normalizeRecordingFps(60), 60);
+  assert.equal(normalizeRecordingFps("59"), 60);
+  assert.equal(normalizeRecordingFps(45), 30);
+  assert.equal(normalizeRecordingFps(Number.NaN), 30);
+
+  assert.equal(normalizeRecordingBitrateMbps(null), null);
+  assert.equal(normalizeRecordingBitrateMbps("auto"), null);
+  assert.equal(normalizeRecordingBitrateMbps(0), 1);
+  assert.equal(normalizeRecordingBitrateMbps(8.4), 8);
+  assert.equal(normalizeRecordingBitrateMbps(200), 12);
 });

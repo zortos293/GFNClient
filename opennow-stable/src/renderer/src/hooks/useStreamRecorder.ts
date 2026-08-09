@@ -11,7 +11,10 @@ import {
   createRecordingVideoCapture,
   type RecordingVideoCapture,
 } from "../lib/recordingCapture";
-import { RecordingChunkQueue } from "../lib/recordingChunkQueue";
+import {
+  finishRecordingAfterQueuedChunks,
+  RecordingChunkQueue,
+} from "../lib/recordingChunkQueue";
 
 export type RecordingStatus = "idle" | "starting" | "recording" | "stopping" | "error";
 
@@ -48,6 +51,7 @@ export function useStreamRecorder({
   const recordingCaptureRef = useRef<RecordingVideoCapture | null>(null);
   const ownedAudioTracksRef = useRef<MediaStreamTrack[]>([]);
   const chunkQueueRef = useRef<RecordingChunkQueue | null>(null);
+  const finalizationInFlightRef = useRef(false);
   const thumbnailDataUrlRef = useRef<string | null>(null);
   const recCarouselRef = useRef<HTMLDivElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -218,6 +222,10 @@ export function useStreamRecorder({
       const settleRecording = async (save: boolean, errorMessage?: string): Promise<void> => {
         if (terminalEventHandled) return;
         terminalEventHandled = true;
+        const settledRecordingId = recordingIdRef.current ?? recordingId;
+        const settledChunkQueue = chunkQueueRef.current;
+        const settledThumbnailDataUrl = thumbnailDataUrlRef.current;
+        finalizationInFlightRef.current = true;
         recorder!.ondataavailable = null;
         recorder!.onstop = null;
         recorder!.onerror = null;
@@ -230,12 +238,22 @@ export function useStreamRecorder({
           mediaRecorderRef.current = null;
         }
         recordingIdRef.current = null;
+        chunkQueueRef.current = null;
+        thumbnailDataUrlRef.current = null;
         cleanupRecordingResources();
 
+        if (!settledRecordingId) {
+          finalizationInFlightRef.current = false;
+          if (mountedRef.current) {
+            setRecordingError(errorMessage ?? "Recording encountered an error.");
+            updateRecordingStatus("error");
+          }
+          return;
+        }
+
         if (!save) {
-          chunkQueueRef.current = null;
-          thumbnailDataUrlRef.current = null;
-          await window.openNow.abortRecording({ recordingId: recordingId! }).catch(() => undefined);
+          await window.openNow.abortRecording({ recordingId: settledRecordingId }).catch(() => undefined);
+          finalizationInFlightRef.current = false;
           if (mountedRef.current) {
             setRecordingError(errorMessage ?? "Recording encountered an error.");
             updateRecordingStatus("error");
@@ -244,15 +262,18 @@ export function useStreamRecorder({
         }
 
         try {
-          await chunkQueueRef.current?.flush();
-          const entry = await window.openNow.finishRecording({
-            recordingId: recordingId!,
-            durationMs: Date.now() - recordingStartTimeRef.current,
-            gameTitle,
-            thumbnailDataUrl: thumbnailDataUrlRef.current ?? undefined,
-          });
-          chunkQueueRef.current = null;
-          thumbnailDataUrlRef.current = null;
+          if (!settledChunkQueue) {
+            throw new Error("Recording chunk queue is unavailable during finalization");
+          }
+          const entry = await finishRecordingAfterQueuedChunks(
+            settledChunkQueue,
+            () => window.openNow.finishRecording({
+              recordingId: settledRecordingId,
+              durationMs: Date.now() - recordingStartTimeRef.current,
+              gameTitle,
+              thumbnailDataUrl: settledThumbnailDataUrl ?? undefined,
+            }),
+          );
           if (mountedRef.current) {
             setRecordings((prev) => [entry, ...prev].slice(0, 20));
             setRecordingDurationMs(0);
@@ -260,13 +281,13 @@ export function useStreamRecorder({
           }
         } catch (error) {
           console.error("[StreamView] Failed to finish recording:", error);
-          chunkQueueRef.current = null;
-          thumbnailDataUrlRef.current = null;
-          await window.openNow.abortRecording({ recordingId: recordingId! }).catch(() => undefined);
+          await window.openNow.abortRecording({ recordingId: settledRecordingId }).catch(() => undefined);
           if (mountedRef.current) {
             setRecordingError("Recording could not be saved.");
             updateRecordingStatus("error");
           }
+        } finally {
+          finalizationInFlightRef.current = false;
         }
       };
 
@@ -369,9 +390,13 @@ export function useStreamRecorder({
         }
       }
       const id = recordingIdRef.current;
+      cleanupRecordingResources();
+      if (finalizationInFlightRef.current) {
+        return;
+      }
       recordingIdRef.current = null;
       chunkQueueRef.current = null;
-      cleanupRecordingResources();
+      thumbnailDataUrlRef.current = null;
       if (id) {
         window.openNow.abortRecording({ recordingId: id }).catch(() => undefined);
       }

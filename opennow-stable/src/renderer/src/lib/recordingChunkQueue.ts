@@ -24,3 +24,11 @@ export class RecordingChunkQueue {
     }
   }
 }
+
+export async function finishRecordingAfterQueuedChunks<T>(
+  queue: RecordingChunkQueue,
+  finish: () => Promise<T>,
+): Promise<T> {
+  await queue.flush();
+  return finish();
+}

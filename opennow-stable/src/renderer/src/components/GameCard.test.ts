@@ -2,9 +2,12 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import type { GameInfo, GameVariant } from "@shared/gfn";
 import { getActiveStoreOption, getStoreOptions } from "../lib/gameCardStores";
+
+const gameCardStyles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 
 function makeVariant(overrides: Partial<GameVariant> = {}): GameVariant {
   return {
@@ -191,4 +194,23 @@ test("uses the selected store option for store-specific play actions", () => {
 
   assert.equal(getActiveStoreOption(options)?.variantId, "epic");
   assert.equal(getActiveStoreOption(options)?.storeKey, "EPIC_GAMES_STORE");
+});
+
+test("keeps the full-card details target below Play and store controls", () => {
+  assert.match(
+    gameCardStyles,
+    /\.game-card-details-hit-target\s*\{[^}]*z-index:\s*2;/s,
+  );
+  assert.match(
+    gameCardStyles,
+    /\.game-card-info\s*\{[^}]*z-index:\s*4;/s,
+  );
+  assert.match(
+    gameCardStyles,
+    /\.game-card-play-button\s*\{[^}]*z-index:\s*5;/s,
+  );
+  assert.match(
+    gameCardStyles,
+    /\.game-card:focus-within \.game-card-play-button\s*\{[^}]*pointer-events:\s*auto;/s,
+  );
 });

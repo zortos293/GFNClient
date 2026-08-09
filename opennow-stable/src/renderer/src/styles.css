@@ -3833,7 +3833,7 @@ button.controller-hint {
 .game-card-details-hit-target {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 2;
   padding: 0;
   border: 0;
   background: transparent;
@@ -3885,6 +3885,10 @@ button.controller-hint {
 .game-card:focus-within .game-card-gradient,
 .game-card:focus-within .game-card-play-button {
   opacity: 1;
+}
+
+.game-card:focus-within .game-card-play-button {
+  pointer-events: auto;
 }
 
 .game-card-gradient {

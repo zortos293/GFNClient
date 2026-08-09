@@ -9,6 +9,25 @@ import { getActiveStoreOption, getStoreOptions } from "../lib/gameCardStores";
 
 const gameCardStyles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 
+function getCssDeclarations(selector: string): Record<string, string> {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rules = [...gameCardStyles.matchAll(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`, "gs"))];
+  assert.ok(rules.length > 0, `Missing CSS rule for ${selector}`);
+  return Object.assign({}, ...rules.map((rule) => Object.fromEntries(
+    rule[1]
+      .split(";")
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => {
+        const separatorIndex = declaration.indexOf(":");
+        return [
+          declaration.slice(0, separatorIndex).trim(),
+          declaration.slice(separatorIndex + 1).trim(),
+        ];
+      }),
+  )));
+}
+
 function makeVariant(overrides: Partial<GameVariant> = {}): GameVariant {
   return {
     id: overrides.id ?? "variant-1",
@@ -196,21 +215,21 @@ test("uses the selected store option for store-specific play actions", () => {
   assert.equal(getActiveStoreOption(options)?.storeKey, "EPIC_GAMES_STORE");
 });
 
-test("keeps the full-card details target below Play and store controls", () => {
-  assert.match(
-    gameCardStyles,
-    /\.game-card-details-hit-target\s*\{[^}]*z-index:\s*2;/s,
+test("places the card content stacking context above Details while preserving control hit testing", () => {
+  const detailsTarget = getCssDeclarations(".game-card-details-hit-target");
+  const cardContent = getCssDeclarations(".game-card-image-wrapper");
+  const detailsLabel = getCssDeclarations(".game-card-details-label");
+  const storeControls = getCssDeclarations(".game-card-info .game-card-stores");
+  const hoveredPlay = getCssDeclarations(".game-card:hover .game-card-play-button");
+  const focusedPlay = getCssDeclarations(".game-card:focus-within .game-card-play-button");
+
+  assert.ok(
+    Number(cardContent["z-index"]) > Number(detailsTarget["z-index"]),
+    "card content must establish a stacking context above the full-card Details target",
   );
-  assert.match(
-    gameCardStyles,
-    /\.game-card-info\s*\{[^}]*z-index:\s*4;/s,
-  );
-  assert.match(
-    gameCardStyles,
-    /\.game-card-play-button\s*\{[^}]*z-index:\s*5;/s,
-  );
-  assert.match(
-    gameCardStyles,
-    /\.game-card:focus-within \.game-card-play-button\s*\{[^}]*pointer-events:\s*auto;/s,
-  );
+  assert.equal(cardContent["pointer-events"], "none");
+  assert.equal(detailsLabel["pointer-events"], "none");
+  assert.equal(storeControls["pointer-events"], "auto");
+  assert.equal(hoveredPlay["pointer-events"], "auto");
+  assert.equal(focusedPlay["pointer-events"], "auto");
 });

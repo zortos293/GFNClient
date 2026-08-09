@@ -229,12 +229,7 @@ export const GameCard = memo(function GameCard({
         className="game-card-details-hit-target"
         onClick={onSelect}
         aria-label={t("gameCard.viewDetailsFor", { title: game.title })}
-      >
-        <span className="game-card-details-label">
-          <Eye size={15} />
-          {t("gameCard.viewDetails")}
-        </span>
-      </button>
+      />
       <div
         className="game-card-image-wrapper"
         style={
@@ -329,6 +324,10 @@ export const GameCard = memo(function GameCard({
           </h3>
         </div>
       </div>
+      <span className="game-card-details-label" aria-hidden="true">
+        <Eye size={15} />
+        {t("gameCard.viewDetails")}
+      </span>
     </m.article>
   );
 }, gameCardPropsAreEqual);

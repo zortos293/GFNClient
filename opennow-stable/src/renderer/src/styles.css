@@ -3782,11 +3782,13 @@ button.controller-hint {
 /* Image wrapper — portrait poster art */
 .game-card-image-wrapper {
   position: relative;
+  z-index: 3;
   width: 100%;
   padding-top: var(--game-aspect);
   overflow: hidden;
   background: var(--bg-c);
   flex: 1;
+  pointer-events: none;
 }
 
 .home-page .game-card-image-wrapper {
@@ -3847,6 +3849,7 @@ button.controller-hint {
 
 .game-card-details-label {
   position: absolute;
+  z-index: 6;
   left: 50%;
   top: 50%;
   display: inline-flex;
@@ -3862,6 +3865,7 @@ button.controller-hint {
   font-size: 0.75rem;
   font-weight: 750;
   white-space: nowrap;
+  pointer-events: none;
   opacity: 0;
   transform: translate(-50%, calc(-50% + 8px));
   transition: opacity var(--t-normal), transform var(--t-normal), background var(--t-fast);

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, type JSX } from "react";
-import type { AppAccentColor, Settings } from "@shared/gfn";
+import type { AppAccentColor, Settings, StatsOverlayPosition } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
 import { SettingRange } from "../SettingRange";
@@ -168,6 +168,26 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
               </label>
             </div>
             <span className="settings-subtle-hint">{t("settings.interface.showStatsOnStreamLaunchHint")}</span>
+          </div>
+
+          <div className="settings-row">
+            <label className="settings-label" htmlFor="settings-interface-stats-position">
+              {t("settings.interface.statsOverlayPosition")}
+              <span className="settings-hint">{t("settings.interface.statsOverlayPositionHint")}</span>
+            </label>
+            <div className="settings-row-control">
+              <SelectDropdown
+                id="settings-interface-stats-position"
+                value={settings.statsOverlayPosition}
+                options={[
+                  { value: "bottom-left", label: t("settings.interface.posBottomLeft") },
+                  { value: "bottom-right", label: t("settings.interface.posBottomRight") },
+                  { value: "top-left", label: t("settings.interface.posTopLeft") },
+                  { value: "top-right", label: t("settings.interface.posTopRight") },
+                ]}
+                onChange={(value) => handleChange("statsOverlayPosition", value as StatsOverlayPosition)}
+              />
+            </div>
           </div>
 
           <div className="settings-row settings-row--column">

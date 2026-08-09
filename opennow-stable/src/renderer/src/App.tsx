@@ -46,6 +46,7 @@ import {
 import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
+import { nextStatsOverlayMode } from "./utils/streamStatsHud";
 import type { StreamStatus } from "./lib/appTypes";
 import {
   getCodecToMigrateToAuto,
@@ -173,7 +174,7 @@ export function App(): JSX.Element {
   const {
     session, setSession,
     streamStatus, setStreamStatus,
-    showStatsOverlay, setShowStatsOverlay,
+    statsMode, setStatsMode,
     antiAfkEnabled, setAntiAfkEnabled,
     antiAfkAckNonce, setAntiAfkAckNonce,
     nativeInputCaptureActive, setNativeInputCaptureActive,
@@ -244,7 +245,7 @@ export function App(): JSX.Element {
   }, [streamingGame]);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
-    setShowStatsOverlay(settings.showStatsOnLaunch);
+    setStatsMode(settings.showStatsOnLaunch ? "compact" : "off");
   }, [settings.showStatsOnLaunch]);
 
   const runCodecTest = useCallback(async (): Promise<void> => {
@@ -392,7 +393,7 @@ export function App(): JSX.Element {
 
   const onBootstrapSettings = useCallback((loadedSettings: Settings, _sessionProxyUrl: string | undefined) => {
     setSettings(loadedSettings);
-    setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
+    setStatsMode(loadedSettings.showStatsOnLaunch ? "compact" : "off");
     setSettingsLoaded(true);
   }, []);
 
@@ -2242,7 +2243,7 @@ export function App(): JSX.Element {
   const handleStreamShortcutAction = useCallback((action: NativeStreamerShortcutAction): void => {
     switch (action) {
       case "toggleStats":
-        setShowStatsOverlay((prev) => !prev);
+        setStatsMode(nextStatsOverlayMode);
         return;
       case "togglePointerLock":
         if (nativeStreamingRef.current) {
@@ -2291,6 +2292,10 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     handleStreamShortcutActionRef.current = handleStreamShortcutAction;
+  }, [handleStreamShortcutAction]);
+
+  useEffect(() => {
+    return window.openNow.onStreamShortcutAction(handleStreamShortcutAction);
   }, [handleStreamShortcutAction]);
 
   // Keyboard shortcuts
@@ -2737,7 +2742,8 @@ export function App(): JSX.Element {
               videoRef={videoRef}
               audioRef={audioRef}
               diagnosticsStore={diagnosticsStore}
-              showStats={showStatsOverlay}
+              statsMode={statsMode}
+              statsPosition={settings.statsOverlayPosition}
               showNativeStats={settings.showNativeStreamerStats}
               nativeInputCaptureActive={nativeInputCaptureActive}
               gstreamerEnabled={settings.streamClientMode === "native"}

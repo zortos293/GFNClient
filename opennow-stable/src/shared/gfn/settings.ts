@@ -20,6 +20,7 @@ import { normalizeFallbackCodecPreference, normalizeStreamPreferences } from "./
 export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
 export type AppTheme = "light" | "dark" | "auto";
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
+export type StatsOverlayPosition = "bottom-left" | "bottom-right" | "top-left" | "top-right";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type ErrorReportingConsent = "unset" | "granted" | "denied";
 export type RuntimePlatform =
@@ -94,6 +95,7 @@ export interface Settings {
   hideStreamButtons: boolean;
   showAntiAfkIndicator: boolean;
   showStatsOnLaunch: boolean;
+  statsOverlayPosition: StatsOverlayPosition;
   /** Skip the free-tier queue server selection modal and launch with default routing */
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
@@ -168,7 +170,7 @@ export type ShortcutSettingKey = typeof SHORTCUT_SETTING_KEYS[number];
 export type ShortcutSettings = Pick<Settings, ShortcutSettingKey>;
 
 export const DEFAULT_SHORTCUT_SETTINGS: Readonly<ShortcutSettings> = Object.freeze({
-  shortcutToggleStats: "F3",
+  shortcutToggleStats: "Ctrl+N",
   shortcutTogglePointerLock: "F8",
   shortcutToggleFullscreen: "F10",
   shortcutStopStream: "Ctrl+Shift+Q",
@@ -256,6 +258,7 @@ export function createDefaultSettings(platform: string): Settings {
     hideStreamButtons: false,
     showAntiAfkIndicator: true,
     showStatsOnLaunch: false,
+    statsOverlayPosition: "bottom-left",
     hideServerSelector: false,
     appAccentColor: "green",
     appTheme: "auto",

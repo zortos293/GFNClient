@@ -14,6 +14,7 @@ import {
 import { captureMainException } from "../telemetry/posthog";
 import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
 import { shouldReportRendererTermination } from "./rendererLifecycle";
+import { isShortcutMatch, normalizeShortcut } from "@shared/shortcut";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
@@ -192,6 +193,32 @@ export async function createMainWindow(
   window.webContents.on("before-input-event", (event, input) => {
     try {
       const mainWindow = deps.getMainWindow();
+      const statsShortcut = normalizeShortcut(
+        deps.settingsManager.get("shortcutToggleStats"),
+      );
+      const statsShortcutMatched = isShortcutMatch(
+        {
+          key: input.key,
+          code: input.code,
+          ctrlKey: input.control,
+          altKey: input.alt,
+          shiftKey: input.shift,
+          metaKey: input.meta,
+          repeat: input.isAutoRepeat,
+        },
+        statsShortcut,
+      );
+      if (statsShortcutMatched) {
+        event.preventDefault();
+        if (input.type === "keyDown" && !input.isAutoRepeat) {
+          mainWindow?.webContents.send(
+            IPC_CHANNELS.STREAM_SHORTCUT_ACTION,
+            "toggleStats",
+          );
+        }
+        return;
+      }
+
       const resolved = resolveEscapeHoldCaptureAction(
         input,
         {

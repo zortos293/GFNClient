@@ -8,7 +8,7 @@ export interface StreamSessionDiagnostics {
   serverGpuType: string;
 }
 
-function normalizeServerRegion(value: string): string {
+export function normalizeServerRegion(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
     return "";
@@ -20,6 +20,19 @@ function normalizeServerRegion(value: string): string {
   } catch {
     return trimmed;
   }
+}
+
+export function getStreamServerLocationLabel(
+  diagnostics: Pick<StreamSessionDiagnostics, "serverLocation" | "serverRegion" | "serverZone">,
+  fallbackRegion = "",
+): string {
+  return (
+    diagnostics.serverLocation.trim()
+    || normalizeServerRegion(diagnostics.serverRegion)
+    || normalizeServerRegion(fallbackRegion)
+    || diagnostics.serverZone.trim()
+    || "--"
+  );
 }
 
 export function deriveStreamSessionDiagnostics(

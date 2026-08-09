@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // Screenshot keybind - configurable, handled in renderer
-// F3  - Toggle stats overlay (handled in renderer)
+// Ctrl+N - Cycle stats overlay (handled in renderer)
 // Ctrl+Shift+Q - Stop streaming (handled in renderer)
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 

@@ -221,6 +221,14 @@ const api: OpenNowApi = {
     ipcRenderer.on(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
     return () => ipcRenderer.off(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
   },
+  onStreamShortcutAction: (listener) => {
+    const wrapped = (
+      _event: Electron.IpcRendererEvent,
+      action: import("@shared/gfn").NativeStreamerShortcutAction,
+    ) => listener(action);
+    ipcRenderer.on(IPC_CHANNELS.STREAM_SHORTCUT_ACTION, wrapped);
+    return () => ipcRenderer.off(IPC_CHANNELS.STREAM_SHORTCUT_ACTION, wrapped);
+  },
   openExternalUrl: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, url),
   getMicrophonePermission: () => ipcRenderer.invoke(IPC_CHANNELS.MICROPHONE_PERMISSION_GET),
   readClipboardText: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_READ_TEXT),

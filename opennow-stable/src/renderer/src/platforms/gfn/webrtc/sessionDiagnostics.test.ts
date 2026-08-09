@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveStreamSessionDiagnostics } from "./sessionDiagnostics";
+import {
+  deriveStreamSessionDiagnostics,
+  getStreamServerLocationLabel,
+} from "./sessionDiagnostics";
 
 const baseSession = {
   sessionId: "session-123",
@@ -52,5 +55,24 @@ test("falls back through signaling, streaming, and server IP location fields", (
       streamingBaseUrl: "",
     }).serverRegion,
     "203.0.113.10",
+  );
+});
+
+test("prefers parsed location metadata over a raw CloudMatch zone URL", () => {
+  assert.equal(
+    getStreamServerLocationLabel({
+      serverLocation: "Amsterdam",
+      serverRegion: "https://np-ams-06.cloudmatchbeta.nvidiagrid.net/",
+      serverZone: "https://prod.cloudmatchbeta.nvidiagrid.net/",
+    }),
+    "Amsterdam",
+  );
+  assert.equal(
+    getStreamServerLocationLabel({
+      serverLocation: "",
+      serverRegion: "https://np-ams-06.cloudmatchbeta.nvidiagrid.net/",
+      serverZone: "https://prod.cloudmatchbeta.nvidiagrid.net/",
+    }),
+    "np-ams-06.cloudmatchbeta.nvidiagrid.net",
   );
 });

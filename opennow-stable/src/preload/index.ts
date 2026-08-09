@@ -229,6 +229,9 @@ const api: OpenNowApi = {
     ipcRenderer.on(IPC_CHANNELS.STREAM_SHORTCUT_ACTION, wrapped);
     return () => ipcRenderer.off(IPC_CHANNELS.STREAM_SHORTCUT_ACTION, wrapped);
   },
+  setStreamShortcutInterceptionGate: (gate) => {
+    ipcRenderer.send(IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE, gate);
+  },
   openExternalUrl: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, url),
   getMicrophonePermission: () => ipcRenderer.invoke(IPC_CHANNELS.MICROPHONE_PERMISSION_GET),
   readClipboardText: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_READ_TEXT),

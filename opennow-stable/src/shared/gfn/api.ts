@@ -52,6 +52,7 @@ import type {
   MainToRendererSignalingEvent,
   NativeInputPacket,
   NativeRenderSurfaceUpdate,
+  StreamShortcutInterceptionGate,
   NativeStreamerShortcutAction,
   NativeStreamerShortcutBindings,
   SendAnswerRequest,
@@ -191,6 +192,7 @@ export interface OpenNowApi {
 
   /** Listen for stream shortcuts captured before Chromium handles reserved combinations. */
   onStreamShortcutAction(listener: (action: NativeStreamerShortcutAction) => void): () => void;
+  setStreamShortcutInterceptionGate(gate: StreamShortcutInterceptionGate): void;
 
   /** Open a trusted external URL in the OS default browser */
   openExternalUrl(url: string): Promise<void>;

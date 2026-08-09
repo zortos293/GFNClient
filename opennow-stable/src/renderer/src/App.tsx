@@ -47,6 +47,7 @@ import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
 import { nextStatsOverlayMode } from "./utils/streamStatsHud";
+import { isShortcutCaptureTarget } from "./utils/shortcutCaptureFocus";
 import type { StreamStatus } from "./lib/appTypes";
 import {
   getCodecToMigrateToAuto,
@@ -234,6 +235,7 @@ export function App(): JSX.Element {
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
+  const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   // freeTier/session-limit derived state is computed after auth/catalog hooks
 
 
@@ -243,6 +245,34 @@ export function App(): JSX.Element {
   useEffect(() => {
     streamingGameRef.current = streamingGame;
   }, [streamingGame]);
+
+  useEffect(() => {
+    let active = true;
+    const syncShortcutCaptureFocus = (): void => {
+      if (active) {
+        setShortcutCaptureActive(isShortcutCaptureTarget(document.activeElement));
+      }
+    };
+    const scheduleShortcutCaptureFocusSync = (): void => {
+      queueMicrotask(syncShortcutCaptureFocus);
+    };
+
+    document.addEventListener("focusin", scheduleShortcutCaptureFocusSync);
+    document.addEventListener("focusout", scheduleShortcutCaptureFocusSync);
+    syncShortcutCaptureFocus();
+    return () => {
+      active = false;
+      document.removeEventListener("focusin", scheduleShortcutCaptureFocusSync);
+      document.removeEventListener("focusout", scheduleShortcutCaptureFocusSync);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.openNow.setStreamShortcutInterceptionGate({
+      streamActive: isStreaming,
+      shortcutCaptureActive,
+    });
+  }, [isStreaming, shortcutCaptureActive]);
 
   const resetStatsOverlayToPreference = useCallback((): void => {
     setStatsMode(settings.showStatsOnLaunch ? "compact" : "off");

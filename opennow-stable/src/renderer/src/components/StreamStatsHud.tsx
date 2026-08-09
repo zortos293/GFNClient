@@ -25,20 +25,20 @@ import {
 } from "./MotionProvider";
 import { useTranslation } from "../i18n";
 
-function getLagReasonLabel(reason: StreamLagReason): string {
+function getLagReasonTranslationKey(reason: StreamLagReason): string {
   switch (reason) {
     case "network":
-      return "Network";
+      return "stream.stats.lagReasonNetwork";
     case "decoder":
-      return "Decode";
+      return "stream.stats.lagReasonDecode";
     case "input_backpressure":
-      return "Input";
+      return "stream.stats.lagReasonInput";
     case "render":
-      return "Render";
+      return "stream.stats.lagReasonRender";
     case "stable":
-      return "Stable";
+      return "stream.stats.lagReasonStable";
     default:
-      return "Unknown";
+      return "stream.stats.lagReasonUnknown";
   }
 }
 
@@ -121,15 +121,19 @@ export function StreamStatsHud({
   // 16.7ms 60fps budget) means the local decoder is the bottleneck — the
   // server and network are fine.
   const receiveFpsText = !stats.nativeRendererActive && stats.receiveFps > 0
-    ? `${stats.receiveFps} fps`
+    ? t("stream.stats.fpsValue", { value: stats.receiveFps })
     : "--";
   // "0 fps" only when the server is sending but nothing is being decoded — that
   // is the decoder-stall signal this section exists to surface. Plain "--" is
   // reserved for "no data yet" (both rates zero at stream start).
   const decodeFpsText = stats.decodeFps > 0
-    ? `${stats.decodeFps} fps`
-    : (!stats.nativeRendererActive && stats.receiveFps > 0 ? "0 fps" : "--");
-  const decodeTimeText = stats.decodeTimeMs > 0 ? `${stats.decodeTimeMs.toFixed(1)} ms` : "--";
+    ? t("stream.stats.fpsValue", { value: stats.decodeFps })
+    : (!stats.nativeRendererActive && stats.receiveFps > 0
+      ? t("stream.stats.fpsValue", { value: 0 })
+      : "--");
+  const decodeTimeText = stats.decodeTimeMs > 0
+    ? t("stream.stats.millisecondsValue", { value: stats.decodeTimeMs.toFixed(1) })
+    : "--";
   // Decode lagging the RX rate by >3fps, or decodeFps 0 while frames still
   // arrive (stall): the local decoder is the bottleneck. The `decodeFps > 0`
   // guard is intentionally absent so the stall case (0 < rx - 3) warns too.
@@ -177,7 +181,7 @@ export function StreamStatsHud({
   // ── Stream section ──
   const resolutionText = stats.resolution && stats.resolution !== ""
     ? stats.resolution
-    : (stats.nativeRendererActive ? "Native renderer" : "--");
+    : (stats.nativeRendererActive ? t("stream.stats.nativeRenderer") : "--");
   const codecText = [stats.codec, stats.colorCodec].filter((v) => v && v !== "").join(", ") || "--";
   // True when the live stream negotiated a different codec than the one
   // requested in settings (e.g. AV1 requested but it couldn't be negotiated, so
@@ -221,47 +225,103 @@ export function StreamStatsHud({
   const advancedLines = useMemo(() => {
     const lines: string[] = [];
     lines.push(
-      `Decode ${stats.decodeTimeMs.toFixed(1)}ms · Render ${stats.renderTimeMs.toFixed(1)}ms · JitterBuf ${stats.jitterBufferDelayMs.toFixed(1)}ms · Jitter ${stats.jitterMs.toFixed(1)}ms`,
+      t("stream.stats.advancedTiming", {
+        decode: stats.decodeTimeMs.toFixed(1),
+        render: stats.renderTimeMs.toFixed(1),
+        jitterBuffer: stats.jitterBufferDelayMs.toFixed(1),
+        jitter: stats.jitterMs.toFixed(1),
+      }),
     );
     lines.push(
-      `Input queue ${(stats.inputQueueBufferedBytes / 1024).toFixed(1)}KB · peak ${(stats.inputQueuePeakBufferedBytes / 1024).toFixed(1)}KB · drops ${stats.inputQueueDropCount} · sched ${stats.inputQueueMaxSchedulingDelayMs.toFixed(1)}ms · residual ${stats.mouseResidualMagnitude.toFixed(2)}px`,
+      t("stream.stats.advancedInputQueue", {
+        buffered: (stats.inputQueueBufferedBytes / 1024).toFixed(1),
+        peak: (stats.inputQueuePeakBufferedBytes / 1024).toFixed(1),
+        drops: stats.inputQueueDropCount,
+        scheduling: stats.inputQueueMaxSchedulingDelayMs.toFixed(1),
+        residual: stats.mouseResidualMagnitude.toFixed(2),
+      }),
     );
+    const partiallyReliable = stats.partiallyReliableInputOpen
+      ? `${stats.mouseMoveTransport} · ${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB`
+      : t("stream.stats.offValue");
     lines.push(
-      `Mouse flush ${stats.mouseFlushIntervalMs.toFixed(0)}ms · ${stats.mousePacketsPerSecond}/s · PR ${stats.partiallyReliableInputOpen ? `${stats.mouseMoveTransport} · ${(stats.partiallyReliableInputQueueBufferedBytes / 1024).toFixed(1)}KB` : "off"}`,
+      t("stream.stats.advancedMouseFlush", {
+        interval: stats.mouseFlushIntervalMs.toFixed(0),
+        rate: stats.mousePacketsPerSecond,
+        partiallyReliable,
+      }),
     );
     lines.push(
       gstreamerEnabled
-        ? `GStreamer enabled · ${stats.nativeRendererActive ? "in use" : "not active"}`
-        : "GStreamer disabled · Chromium WebRTC",
+        ? t("stream.stats.advancedGstreamerEnabled", {
+            state: stats.nativeRendererActive
+              ? t("stream.stats.inUseValue")
+              : t("stream.stats.notActiveValue"),
+          })
+        : t("stream.stats.advancedGstreamerDisabled"),
     );
     if (!stats.nativeRendererActive && stats.transportType !== "unknown") {
-      lines.push(`ICE ${transportText} candidate`);
+      lines.push(t("stream.stats.advancedIceCandidate", { transport: transportText }));
     }
     const hwLine = [stats.hardwareAcceleration, stats.gpuType].filter(Boolean).join(" · ");
     if (hwLine) lines.push(hwLine);
     if (shaderActive) {
-      lines.push("Shader FX active (WebGL post-processing)");
+      lines.push(t("stream.stats.advancedShaderActive"));
     }
     if (stats.decoderPressureActive || stats.decoderRecoveryAttempts > 0) {
       lines.push(
-        `Decoder recovery ${stats.decoderPressureActive ? "active" : "idle"} · attempts ${stats.decoderRecoveryAttempts} · action ${stats.decoderRecoveryAction}`,
+        t("stream.stats.advancedDecoderRecovery", {
+          state: stats.decoderPressureActive
+            ? t("stream.stats.activeValue")
+            : t("stream.stats.idleValue"),
+          attempts: stats.decoderRecoveryAttempts,
+          action: stats.decoderRecoveryAction,
+        }),
       );
     }
     if (stats.nativeTransitionSummary || stats.nativeQueueMode || stats.nativeCapsFramerate) {
+      const requested = typeof stats.nativeRequestedFps === "number"
+        ? t("stream.stats.advancedRequestedFps", { value: stats.nativeRequestedFps })
+        : "";
+      const pending = typeof stats.nativeFramesPendingToPresent === "number"
+        ? t("stream.stats.advancedPendingFrames", { value: stats.nativeFramesPendingToPresent })
+        : "";
+      const flush = typeof stats.nativePartialFlushCount === "number"
+        || typeof stats.nativeCompleteFlushCount === "number"
+        ? t("stream.stats.advancedFlushCounts", {
+            partial: stats.nativePartialFlushCount ?? 0,
+            complete: stats.nativeCompleteFlushCount ?? 0,
+          })
+        : "";
       lines.push(
-        `Native transition ${stats.nativeTransitionSummary ?? "none"} · queue ${stats.nativeQueueMode ?? "unknown"} · caps ${stats.nativeCapsFramerate ?? "unknown"}${typeof stats.nativeRequestedFps === "number" ? ` · requested ${stats.nativeRequestedFps}fps` : ""}${typeof stats.nativeFramesPendingToPresent === "number" ? ` · pending ${stats.nativeFramesPendingToPresent}` : ""}${typeof stats.nativePartialFlushCount === "number" || typeof stats.nativeCompleteFlushCount === "number" ? ` · flush ${stats.nativePartialFlushCount ?? 0}/${stats.nativeCompleteFlushCount ?? 0}` : ""}`,
+        t("stream.stats.advancedNativeTransition", {
+          transition: stats.nativeTransitionSummary ?? t("stream.stats.noneValue"),
+          queue: stats.nativeQueueMode ?? t("stream.stats.unknownValue"),
+          caps: stats.nativeCapsFramerate ?? t("stream.stats.unknownValue"),
+          requested,
+          pending,
+          flush,
+        }),
       );
     }
     if (stats.nativeRequestedStreamingFeaturesSummary || stats.nativeFinalizedStreamingFeaturesSummary) {
       lines.push(
-        `Stream features requested ${stats.nativeRequestedStreamingFeaturesSummary ?? "none"} · finalized ${stats.nativeFinalizedStreamingFeaturesSummary ?? "none"}`,
+        t("stream.stats.advancedStreamFeatures", {
+          requested: stats.nativeRequestedStreamingFeaturesSummary ?? t("stream.stats.noneValue"),
+          finalized: stats.nativeFinalizedStreamingFeaturesSummary ?? t("stream.stats.noneValue"),
+        }),
       );
     }
     if (hasLagIssue) {
-      lines.push(`Lag source ${getLagReasonLabel(stats.lagReason).toLowerCase()} · ${stats.lagReasonDetail}`);
+      lines.push(
+        t("stream.stats.advancedLagSource", {
+          source: t(getLagReasonTranslationKey(stats.lagReason)).toLowerCase(),
+          detail: stats.lagReasonDetail,
+        }),
+      );
     }
     return lines;
-  }, [gstreamerEnabled, hasLagIssue, shaderActive, stats, transportText]);
+  }, [gstreamerEnabled, hasLagIssue, shaderActive, stats, t, transportText]);
 
   const kpiRow = (
     <div className="sv-stats-kpis">
@@ -332,12 +392,16 @@ export function StreamStatsHud({
           >
             <AlertTriangle size={12} aria-hidden />
             <span>
-              {rttSpikeActive && `RTT spike ${rttSpikeValueMs}ms`}
+              {rttSpikeActive && t("stream.stats.rttSpikeAlert", { value: rttSpikeValueMs })}
               {rttSpikeActive && bannerPacketLoss && " · "}
               {bannerPacketLoss && (
                 stats.nativeRendererActive
-                  ? `${effectivePacketLossPercent.toFixed(2)}% frame loss`
-                  : `${effectivePacketLossPercent.toFixed(2)}% packet loss`
+                  ? t("stream.stats.frameLossAlert", {
+                      value: effectivePacketLossPercent.toFixed(2),
+                    })
+                  : t("stream.stats.packetLossAlert", {
+                      value: effectivePacketLossPercent.toFixed(2),
+                    })
               )}
             </span>
           </m.div>
@@ -359,9 +423,9 @@ export function StreamStatsHud({
           {shaderActive && (
             <div
               className="sv-stats-serverbar sv-stats-serverbar--shader"
-              title="Client-side WebGL post-processing is applying a visible effect to the stream frames"
+              title={t("stream.stats.shaderActiveHint")}
             >
-              Shader FX on
+              {t("stream.stats.shaderActiveCompact")}
             </div>
           )}
         </>

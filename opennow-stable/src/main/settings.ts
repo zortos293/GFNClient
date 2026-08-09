@@ -13,6 +13,7 @@ import {
   createPlatformShortcutDefaults,
   SHORTCUT_SETTING_KEYS,
   normalizeNativeExternalRendererForPlatform,
+  normalizeFallbackCodecPreference,
   normalizeStreamClientModeForPlatform,
   normalizeStreamPreferences,
   normalizeTransportModeForPlatform,
@@ -214,6 +215,12 @@ export class SettingsManager {
       );
       settings.codec = normalized.codec;
       settings.colorQuality = normalized.colorQuality;
+      migrated = true;
+    }
+
+    const fallbackCodec = normalizeFallbackCodecPreference(settings.fallbackCodec);
+    if (settings.fallbackCodec !== fallbackCodec) {
+      settings.fallbackCodec = fallbackCodec;
       migrated = true;
     }
 

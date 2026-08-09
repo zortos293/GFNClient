@@ -14,6 +14,7 @@ import { streamStatusToLoadingStage } from "../../lib/sessionState";
 import { mergeNativeStreamStats } from "../../lib/streamDiagnostics";
 import { decideSignalingDisconnect } from "../../lib/streamRecoveryDecisions";
 import { warningMessage, warningTone } from "../../lib/sessionWarnings";
+import { resolveStreamProfileCodec } from "../../lib/codecDiagnostics";
 import { GfnWebRtcClient } from "../../platforms/gfn/webrtcClient";
 import type { StreamDiagnosticsStore } from "../../utils/streamDiagnosticsStore";
 import type { StreamRuntimeState } from "./useStreamRuntimeState";
@@ -174,6 +175,10 @@ export function useSignalingEvents({
         console.warn("[App] Native stream event received before media elements were ready");
         return;
       }
+      const nativeCodecProfile = resolveStreamProfileCodec(
+        activeSession.negotiatedStreamProfile?.codec ?? settings.codec,
+        settings.colorQuality,
+      );
 
       nativeStreamingRef.current = true;
       pendingControlledDisconnectsRef.current = 0;
@@ -184,8 +189,8 @@ export function useSignalingEvents({
       client.activateNativeInput(
         protocolVersion,
         {
-          codec: settings.codec,
-          colorQuality: settings.colorQuality,
+          codec: nativeCodecProfile.codec,
+          colorQuality: nativeCodecProfile.colorQuality,
           resolution: settings.resolution,
           fps: settings.fps,
           maxBitrateKbps: settings.maxBitrateMbps * 1000,
@@ -265,12 +270,17 @@ export function useSignalingEvents({
           const client = ensureWebRtcClient();
 
           if (client) {
+            const codecProfile = resolveStreamProfileCodec(
+              activeSession.negotiatedStreamProfile?.codec ?? settings.codec,
+              activeSession.negotiatedStreamProfile?.colorQuality ?? settings.colorQuality,
+            );
             await client.handleOffer(event.sdp, activeSession, {
-              codec: settings.codec,
-              colorQuality: settings.colorQuality,
+              codec: codecProfile.codec,
+              colorQuality: codecProfile.colorQuality,
               resolution: settings.resolution,
               fps: settings.fps,
               maxBitrateKbps: settings.maxBitrateMbps * 1000,
+              fallbackCodec: settings.fallbackCodec,
               nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
             });
             setLaunchError(null);

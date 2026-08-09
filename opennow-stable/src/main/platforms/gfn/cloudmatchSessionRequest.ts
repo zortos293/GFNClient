@@ -124,6 +124,7 @@ export function buildSessionRequestBody(
         bitDepth,
         chromaFormat,
         hdrEnabled,
+        input.supportedCodecs,
       ),
     },
   };

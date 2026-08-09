@@ -105,6 +105,7 @@ export const IPC_CHANNELS = {
   RELEASE_HIGHLIGHTS_GET: "release-highlights:get",
   RELEASE_HIGHLIGHTS_ACK: "release-highlights:ack",
   RELEASE_HIGHLIGHTS_SHOW: "release-highlights:show",
+  GPU_GET_INFO: "gpu:get-info",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

@@ -1,23 +1,30 @@
 import { useCallback, useEffect, useMemo, type JSX } from "react";
 import type {
+  CodecPreference,
   ColorQuality,
   EntitledResolution,
+  FallbackCodecPreference,
   Settings,
-  VideoCodec,
 } from "@shared/gfn";
 import {
+  CODEC_PREFERENCE_OPTIONS,
   colorQualityRequiresHevc,
   expandEntitledStreamResolutions,
+  FALLBACK_CODEC_PREFERENCE_OPTIONS,
   getSafeFallbackEntitledResolutions,
   resolveEntitledStreamProfile,
 } from "@shared/gfn";
-import { getCodecDecodeBadgeState, type CodecTestResult } from "../../../lib/codecDiagnostics";
+import {
+  getCodecDecodeBadgeState,
+  isCodecUsableForStream,
+  resolveEffectiveCodec,
+  type CodecTestResult,
+} from "../../../lib/codecDiagnostics";
 import { useTranslation } from "../../../i18n";
 import { MotionSpinner } from "../../MotionSpinner";
 import { SelectDropdown, type SelectDropdownOption } from "../../ui/SelectDropdown";
 import { SettingRange } from "../SettingRange";
 import {
-  codecOptions,
   colorQualityOptions,
   getFpsForResolution,
   groupResolutions,
@@ -122,12 +129,69 @@ export function StreamQualityControls({
     handleChange("colorQuality", colorQuality);
   }, [handleChange, settings.codec]);
 
-  const handleCodecChange = useCallback((codec: VideoCodec): void => {
+  const handleCodecChange = useCallback((codec: CodecPreference): void => {
     handleChange("codec", codec);
     if (codec === "H264" && settings.colorQuality !== "8bit_420") {
       handleChange("colorQuality", "8bit_420");
     }
   }, [handleChange, settings.colorQuality]);
+
+  const autoCodec = useMemo(
+    () => resolveEffectiveCodec("auto", codecResults),
+    [codecResults],
+  );
+  const codecOptions = useMemo<SelectDropdownOption[]>(
+    () => {
+      const options = CODEC_PREFERENCE_OPTIONS.map((preference): SelectDropdownOption => {
+        if (preference === "auto") {
+          return {
+            value: preference,
+            label: t("settings.video.codecAutoPick", { codec: autoCodec }),
+          };
+        }
+
+        const badge = getCodecDecodeBadgeState(preference, codecResults, codecTesting);
+        const usable = !codecResults || isCodecUsableForStream(preference, codecResults);
+        const label = badge === "gpu"
+          ? `${preference} · ${t("settings.video.gpu")}`
+          : badge === "cpu"
+            ? `${preference} · ${t("settings.video.cpu")}`
+            : preference;
+        return {
+          value: preference,
+          label,
+          disabled: !usable,
+          group: usable ? undefined : t("settings.video.codecUnsupported"),
+        };
+      });
+      return [
+        ...options.filter((option) => !option.disabled),
+        ...options.filter((option) => option.disabled),
+      ];
+    },
+    [autoCodec, codecResults, codecTesting, t],
+  );
+  const fallbackCodecOptions = useMemo<SelectDropdownOption[]>(
+    () => {
+      const options = FALLBACK_CODEC_PREFERENCE_OPTIONS.map((preference): SelectDropdownOption => {
+        if (preference === "auto") {
+          return { value: preference, label: t("app.labels.auto") };
+        }
+        const usable = !codecResults || isCodecUsableForStream(preference, codecResults);
+        return {
+          value: preference,
+          label: preference,
+          disabled: !usable,
+          group: usable ? undefined : t("settings.video.codecUnsupported"),
+        };
+      });
+      return [
+        ...options.filter((option) => !option.disabled),
+        ...options.filter((option) => option.disabled),
+      ];
+    },
+    [codecResults, t],
+  );
 
   return (
     <>
@@ -173,32 +237,42 @@ export function StreamQualityControls({
       </div>
 
       <div className="settings-row">
-        <label className="settings-label">{t("settings.video.codec")}</label>
+        <label className="settings-label" htmlFor="settings-stream-codec">
+          {t("settings.video.codec")}
+        </label>
         <div className="settings-row-control">
-          <div className="settings-chip-row">
-            {codecOptions.map((codec) => {
-              const badgeState = getCodecDecodeBadgeState(codec, codecResults, codecTesting);
-              return (
-                <button
-                  key={codec}
-                  className={`settings-chip settings-chip--codec ${settings.codec === codec ? "active" : ""}`}
-                  aria-pressed={settings.codec === codec}
-                  onClick={() => handleCodecChange(codec)}
-                >
-                  <span>{codec}</span>
-                  {badgeState && (
-                    <span className={`settings-inline-badge settings-inline-badge--codec settings-inline-badge--codec-${badgeState}`}>
-                      {badgeState === "gpu"
-                        ? t("settings.video.gpu")
-                        : badgeState === "cpu"
-                          ? t("settings.video.cpu")
-                          : t("settings.video.testing")}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          <SelectDropdown
+            id="settings-stream-codec"
+            value={settings.codec}
+            options={codecOptions}
+            onChange={(value) => handleCodecChange(value as CodecPreference)}
+            ariaLabel={t("settings.video.codec")}
+            menuClassName="select-dropdown__menu--grouped"
+          />
+          <span className="settings-subtle-hint">
+            {settings.codec === "auto"
+              ? t("settings.video.codecAutoHint")
+              : t("settings.video.codecManualHint")}
+          </span>
+        </div>
+      </div>
+
+      <div className="settings-row">
+        <label className="settings-label" htmlFor="settings-stream-fallback-codec">
+          {t("settings.video.fallbackCodec")}
+        </label>
+        <div className="settings-row-control">
+          <SelectDropdown
+            id="settings-stream-fallback-codec"
+            value={settings.fallbackCodec}
+            options={fallbackCodecOptions}
+            onChange={(value) => handleChange("fallbackCodec", value as FallbackCodecPreference)}
+            ariaLabel={t("settings.video.fallbackCodec")}
+            menuClassName="select-dropdown__menu--grouped"
+          />
+          <span className="settings-subtle-hint">
+            {t("settings.video.fallbackCodecHint")}
+          </span>
         </div>
       </div>
 

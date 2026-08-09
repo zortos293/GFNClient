@@ -95,6 +95,11 @@ export function StreamStatsHud({
     ? `${stats.resolution || "Native renderer"}${displayFps > 0 ? ` · ${displayFps}fps` : ""}`
     : t("stream.stats.connecting");
   const hasCodec = Boolean(stats.codec && stats.codec !== "");
+  const codecFallbackActive = Boolean(
+    stats.requestedCodec
+    && stats.codec
+    && stats.requestedCodec !== stats.codec,
+  );
   const regionLabel = stats.serverRegion || serverRegion || "";
   const decodeColor = getTimingColor(stats.decodeTimeMs, 8, 16);
   const renderColor = getTimingColor(stats.renderTimeMs, 12, 22);
@@ -262,6 +267,14 @@ export function StreamStatsHud({
               <div className="sv-stats-sub">
                 <span className="sv-stats-sub-left">
                   {hasCodec ? stats.codec : "N/A"}
+                  {codecFallbackActive && (
+                    <span
+                      className="sv-stats-hdr"
+                      title={t("stream.stats.codecFallbackFrom", { codec: stats.requestedCodec })}
+                    >
+                      {t("stream.stats.codecRequestedShort", { codec: stats.requestedCodec })}
+                    </span>
+                  )}
                   {stats.isHdr && <span className="sv-stats-hdr">HDR</span>}
                 </span>
                 {sessionTimeRemainingText && (

@@ -410,7 +410,9 @@
       "timeRemainingShort": "Left",
       "inputQueuePressure": "Input queue pressure (buffered bytes and delayed flush)",
       "inputChannelState": "Partially reliable input channel state and queued bytes",
-      "mouseFlushCadence": "Mouse flush cadence and packet rate"
+      "mouseFlushCadence": "Mouse flush cadence and packet rate",
+      "codecFallbackFrom": "Negotiated fallback codec; requested {{codec}}",
+      "codecRequestedShort": "requested {{codec}}"
     },
     "controls": {
       "antiAfkEnabled": "Anti-AFK is enabled",
@@ -572,6 +574,12 @@
       "resolution": "Resolution",
       "fps": "FPS",
       "codec": "Codec",
+      "codecAutoPick": "Auto ({{codec}})",
+      "codecAutoHint": "Chooses the best codec available for WebRTC decode on this device.",
+      "codecManualHint": "Manual choices are used when supported; negotiation can fall back safely.",
+      "codecUnsupported": "Unavailable on this device",
+      "fallbackCodec": "Fallback Codec",
+      "fallbackCodecHint": "Used if the requested codec is rejected. Auto keeps all supported codecs available.",
       "decoder": "Decoder",
       "encoder": "Encoder",
       "colorDepth": "Color Depth",
@@ -630,7 +638,9 @@
       "decode": "Decode",
       "encode": "Encode",
       "profiles": "Profiles:",
-      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's WebRTC/MediaCapabilities report. Hardware decode depends on the Chromium build plus your distro GPU/video stack: x64 systems may need VA-API/NVIDIA VA-API drivers, while ARM V4L2 support depends on Chromium/Electron exposing that decoder."
+      "linuxHardwareHint": "Linux AppImage diagnostics use Chromium's WebRTC/MediaCapabilities report. Hardware decode depends on the Chromium build plus your distro GPU/video stack: x64 systems may need VA-API/NVIDIA VA-API drivers, while ARM V4L2 support depends on Chromium/Electron exposing that decoder.",
+      "gpuDriverLine": "{{gpu}} · driver {{version}}",
+      "quickSyncHint": "GPU decode is active, but H.264 encode is using the CPU. Installing the full graphics driver may restore the hardware Media Foundation encoder."
     },
     "colorQuality": {
       "mostCompatible": "Most compatible",

@@ -1,4 +1,7 @@
 import type { VideoCodec } from "@shared/gfn";
+// Canonical implementation lives in @shared/gfn/sdpValidation so the
+// main-process native streamer path can validate answers with the same logic.
+export { extractNegotiatedVideoCodec } from "@shared/gfn/sdpValidation";
 
 function normalizeCodec(name: string): string {
   const upper = name.toUpperCase();
@@ -138,6 +141,61 @@ export function rewriteH265LevelIdByProfile(
 
 interface PreferCodecOptions {
   preferHevcProfileId?: 1 | 2;
+  /**
+   * Soft filtering: keep every payload type in the video m-line and only
+   * reorder so the preferred codec comes first. When false (default) the
+   * m-line is stripped down to the preferred codec (+ its RTX).
+   *
+   * Soft mode is the GFN-web behavior and is required when the requested
+   * codec may not be receivable on this device: with a hard filter the
+   * answer would reject the whole video m-line (port 0, dropped from the
+   * BUNDLE group) and the session would hang on "Waiting for game video..."
+   * instead of falling back to a codec the browser can actually decode.
+   */
+  keepFallbacks?: boolean;
+  /**
+   * User-pinned fallback codec (web mode). When `keepFallbacks` is set, this
+   * codec's payload types are ordered directly after the preferred codec's so
+   * the answer prefers it whenever the requested codec cannot be negotiated.
+   * Ignored when equal to the preferred codec or when `keepFallbacks` is
+   * false (the m-line then only carries the preferred codec anyway).
+   */
+  fallbackCodec?: VideoCodec;
+}
+
+/**
+ * Ordered list of codecs to attempt during answer negotiation, primary first.
+ * The user-pinned fallback (when concrete) comes right after the primary, then
+ * the GFN-web fallback order (H264 → H265 → AV1) as a safety net. When the
+ * browser reports a non-empty receiver-capability list, codecs it cannot
+ * decode are skipped entirely — createAnswer would reject their payloads and
+ * drop the whole video m-line (the "Waiting for game video..." hang).
+ */
+export function resolveNegotiationCandidates(
+  effectiveCodec: VideoCodec,
+  fallbackCodec?: VideoCodec,
+  supported: readonly string[] = [],
+): VideoCodec[] {
+  const candidates: VideoCodec[] = [];
+  const push = (codec: VideoCodec): void => {
+    if (!candidates.includes(codec)) {
+      candidates.push(codec);
+    }
+  };
+
+  push(effectiveCodec);
+  if (fallbackCodec) {
+    push(fallbackCodec);
+  }
+  push("H264");
+  push("H265");
+  push("AV1");
+
+  if (supported.length > 0) {
+    const supportedSet = new Set(supported.map((c) => c.toUpperCase() as VideoCodec));
+    return candidates.filter((c) => supportedSet.has(c));
+  }
+  return candidates;
 }
 
 export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCodecOptions): string {
@@ -235,6 +293,26 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
 
   const preferred = new Set(orderedPreferredPayloads);
 
+  // Pinned fallback payloads, ordered right after the preferred ones. When the
+  // fallback is H265, prefer the requested HEVC profile first (widest decoder
+  // compatibility) just like the primary ordering above.
+  const orderedFallbackPayloads =
+    options?.keepFallbacks && options.fallbackCodec && options.fallbackCodec !== codec
+      ? (options.fallbackCodec === "H265" && options.preferHevcProfileId
+        ? [...(payloadTypesByCodec.get("H265") ?? [])].sort((a, b) => {
+          const pa = fmtpByPayloadType.get(a) ?? "";
+          const pb = fmtpByPayloadType.get(b) ?? "";
+          const score = (fmtp: string): number => {
+            const profile = fmtp.match(/(?:^|;)\s*profile-id=(\d+)/i)?.[1];
+            if (profile === String(options.preferHevcProfileId)) return 0;
+            if (!profile) return 1;
+            return 2;
+          };
+          return score(pa) - score(pb);
+        })
+        : (payloadTypesByCodec.get(options.fallbackCodec) ?? []))
+      : [];
+
   const allowed = new Set<string>(preferred);
 
   // Keep RTX payloads linked to preferred payloads (apt mapping)
@@ -247,9 +325,18 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
   // Do NOT keep FLEXFEC/RED/ULPFEC during hard codec filtering.
   // Chromium can otherwise negotiate a "video" m-line with only FEC payloads
   // when primary codec intersection fails, causing black video with live audio.
+  // Soft mode (keepFallbacks) intentionally keeps them: primary codecs stay in
+  // the m-line too, so the intersection can never collapse to FEC-only.
+  if (options?.keepFallbacks) {
+    for (const pts of payloadTypesByCodec.values()) {
+      for (const pt of pts) {
+        allowed.add(pt);
+      }
+    }
+  }
 
   console.log(`[SDP] preferCodec: preferred ordered payloads [${orderedPreferredPayloads.join(", ")}] for ${codec}`);
-  console.log(`[SDP] preferCodec: keeping payload types [${Array.from(allowed).join(", ")}] for ${codec}`);
+  console.log(`[SDP] preferCodec: keeping payload types [${Array.from(allowed).join(", ")}] for ${codec}${options?.keepFallbacks ? " (keepFallbacks: reorder only)" : ""}`);
 
   const filtered: string[] = [];
   inVideoSection = false;
@@ -259,7 +346,9 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
       inVideoSection = true;
       const parts = line.split(/\s+/);
       const header = parts.slice(0, 3);
-      const available = parts.slice(3).filter((pt) => allowed.has(pt));
+      const available = options?.keepFallbacks
+        ? parts.slice(3)
+        : parts.slice(3).filter((pt) => allowed.has(pt));
       const ordered: string[] = [];
 
       for (const pt of orderedPreferredPayloads) {
@@ -267,8 +356,14 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
           ordered.push(pt);
         }
       }
+      const fallbackPayloads = orderedFallbackPayloads;
+      for (const pt of fallbackPayloads) {
+        if (!preferred.has(pt) && available.includes(pt) && !ordered.includes(pt)) {
+          ordered.push(pt);
+        }
+      }
       for (const pt of available) {
-        if (!preferred.has(pt)) {
+        if (!preferred.has(pt) && !ordered.includes(pt)) {
           ordered.push(pt);
         }
       }
@@ -287,6 +382,12 @@ export function preferCodec(sdp: string, codec: VideoCodec, options?: PreferCode
         line.startsWith("a=fmtp:") ||
         line.startsWith("a=rtcp-fb:")
       ) {
+        if (options?.keepFallbacks) {
+          // Soft mode: every payload remains in the m-line, so keep every
+          // associated attribute untouched.
+          filtered.push(line);
+          continue;
+        }
         const [, rest = ""] = line.split(":", 2);
         const [pt = ""] = rest.split(/\s+/, 1);
         if (pt && !allowed.has(pt)) {

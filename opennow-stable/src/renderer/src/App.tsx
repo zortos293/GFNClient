@@ -47,7 +47,14 @@ import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
 import type { StreamStatus } from "./lib/appTypes";
-import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
+import {
+  getCodecToMigrateToAuto,
+  loadStoredCodecResults,
+  resolveStreamProfileCodec,
+  saveStoredCodecResults,
+  testCodecSupport,
+  type CodecTestResult,
+} from "./lib/codecDiagnostics";
 import {
   createSyntheticDirectLaunchGame,
   findDirectLaunchTarget,
@@ -640,13 +647,18 @@ export function App(): JSX.Element {
       fps: settings.fps,
     });
     const streamProfile = entitledProfile ?? SAFE_FALLBACK_STREAM_PROFILE;
+    const codecProfile = resolveStreamProfileCodec(
+      settings.codec,
+      settings.colorQuality,
+      codecResults,
+    );
 
     return {
       resolution: streamProfile.resolution,
       fps: streamProfile.fps,
       maxBitrateMbps: settings.maxBitrateMbps,
-      codec: settings.codec,
-      colorQuality: settings.colorQuality,
+      codec: codecProfile.codec,
+      colorQuality: codecProfile.colorQuality,
       keyboardLayout: settings.keyboardLayout,
       gameLanguage: settings.gameLanguage,
       enableL4S: settings.enableL4S,
@@ -664,6 +676,7 @@ export function App(): JSX.Element {
   }, [
     settings.codec,
     settings.colorQuality,
+    codecResults,
     settings.controllerMode,
     directLaunchConsoleMode,
     settings.enableCloudGsync,
@@ -1290,7 +1303,7 @@ export function App(): JSX.Element {
     }
     if (key === "maxBitrateMbps") {
       try {
-        void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
+        void clientRef.current?.setMaxBitrateKbps((value as number) * 1000);
       } catch {
         // ignore
       }
@@ -1310,6 +1323,20 @@ export function App(): JSX.Element {
       }
     }
   }, [authSession, loadSubscriptionInfo, previewSetting, settingsLoaded]);
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return;
+    }
+    const unsupportedCodec = getCodecToMigrateToAuto(settings.codec, codecResults);
+    if (!unsupportedCodec) {
+      return;
+    }
+    console.warn(
+      `[Codec] Saved codec "${unsupportedCodec}" is unavailable for WebRTC decode; migrating to auto`,
+    );
+    void updateSetting("codec", "auto");
+  }, [codecResults, settings.codec, settingsLoaded, updateSetting]);
 
   useEffect(() => {
     if (!settingsLoaded || !subscriptionInfo) {

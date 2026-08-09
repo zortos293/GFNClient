@@ -17,7 +17,9 @@ import {
   createSession,
   extractServerInfoRegionBases,
   getActiveSessions,
+  resolveRequestedCodecWireValue,
 } from "./cloudmatch";
+import { buildSessionRequestBody } from "./cloudmatchSessionRequest";
 
 function makeSettings(overrides: Partial<StreamSettings> = {}): StreamSettings {
   return {
@@ -124,6 +126,69 @@ test("CloudMatch uses official streaming feature enum values", () => {
     dynamicStreamingMode: 3,
     audioChannelCount: 2,
   });
+});
+
+test("CloudMatch resolves codec preferences down the official capability ladder", () => {
+  assert.equal(resolveRequestedCodecWireValue(3, [3, 2, 1]), 3);
+  assert.equal(resolveRequestedCodecWireValue(3, [2, 1]), 2);
+  assert.equal(resolveRequestedCodecWireValue(3, [1]), 1);
+  assert.equal(resolveRequestedCodecWireValue(2, [2, 1]), 2);
+  assert.equal(resolveRequestedCodecWireValue(2, [1]), 1);
+  assert.equal(resolveRequestedCodecWireValue(1, [3, 2]), 1);
+  assert.equal(resolveRequestedCodecWireValue(0, [3, 2, 1]), 0);
+  assert.equal(resolveRequestedCodecWireValue(3, []), 3);
+});
+
+test("CloudMatch streaming features use the supported codec capability list", () => {
+  assert.equal(
+    buildRequestedStreamingFeatures(
+      makeSettings({ codec: "AV1" }),
+      0,
+      0,
+      false,
+      ["AV1", "H265", "H264"],
+    ).codec,
+    3,
+  );
+  assert.equal(
+    buildRequestedStreamingFeatures(
+      makeSettings({ codec: "AV1" }),
+      0,
+      0,
+      false,
+      ["H265", "H264"],
+    ).codec,
+    2,
+  );
+  assert.equal(
+    buildRequestedStreamingFeatures(
+      makeSettings({ codec: "H265" }),
+      0,
+      0,
+      false,
+      ["H264"],
+    ).codec,
+    1,
+  );
+  assert.equal(
+    buildRequestedStreamingFeatures(makeSettings({ codec: "AV1" }), 0, 0, false).codec,
+    3,
+  );
+});
+
+test("CloudMatch session request body carries supported codecs into the wire codec", () => {
+  const body = buildSessionRequestBody(
+    {
+      appId: "1001",
+      internalTitle: "Test Game",
+      zone: "prod",
+      settings: makeSettings({ codec: "AV1" }),
+      supportedCodecs: ["H265", "H264"],
+    },
+    "device-id",
+  );
+
+  assert.equal(body.sessionRequestData.requestedStreamingFeatures.codec, 2);
 });
 
 test("CloudMatch extracts local serverInfo region before fallback regions", () => {

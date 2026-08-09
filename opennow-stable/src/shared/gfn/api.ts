@@ -77,6 +77,16 @@ import type {
 } from "./media";
 import type { PrintedWasteQueueData, PrintedWasteServerMapping } from "./printedWaste";
 
+export interface GpuBackendInfo {
+  gpuName: string | null;
+  vendorName: string | null;
+  driverVersion: string | null;
+  decodeAccelerated: boolean | null;
+  encodeAccelerated: boolean | null;
+  hardwareDecodeCodecs: string[];
+  hardwareEncodeCodecs: string[];
+}
+
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
   getLoginProviders(): Promise<LoginProvider[]>;
@@ -151,6 +161,7 @@ export interface OpenNowApi {
   readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
+  getGpuInfo(): Promise<GpuBackendInfo>;
   resetSettings(): Promise<Settings>;
   selectNativeStreamerExecutable(): Promise<string | null>;
   getMicrophonePermission(): Promise<MicrophonePermissionResult>;

@@ -63,6 +63,7 @@ import {
 export {
   appLaunchModeWireValue,
   buildRequestedStreamingFeatures,
+  resolveRequestedCodecWireValue,
   shouldEnableInGameSettingsPersistence,
   shouldRequestReflex,
 } from "./cloudmatchFeatures";

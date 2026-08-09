@@ -19,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +56,8 @@ private const val DEBUG_PAYLOAD_BODY_LIMIT = 8_000
 private const val LOGIN_PHASE_GETTING_TOKENS = "Getting sign-in tokens"
 private const val STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS = 30_000L
 private const val SESSION_REPORT_NETWORK_SAMPLE_INTERVAL_MS = 5_000L
+private const val ACTIVE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 10_000L
+private const val IDLE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 60_000L
 
 private data class DebugLogEvent(
     val timestampMs: Long,
@@ -202,6 +205,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val appUpdater = AndroidAppUpdater(application, http)
     private val androidUpdateNoticeStore = AndroidUpdateNoticeStore(application)
     private val localTvConnector = openNowApplication.localTvConnector
+    private val diagnosticHistoryStore = openNowApplication.diagnosticHistoryStore
     private val queueAdReportMutex = Mutex()
     private val accountConnectorRefreshMutex = Mutex()
     private val runtimeResolutionNoticeKeys = mutableSetOf<String>()
@@ -339,7 +343,44 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         if (appUpdater.state.value.updateChecksSupported) {
             startAndroidUpdateAutoChecks()
         }
+        startDiagnosticSnapshotPersistence()
         initialize()
+    }
+
+    private fun startDiagnosticSnapshotPersistence() {
+        viewModelScope.launch {
+            state
+                .map { snapshot ->
+                    snapshot.streamStatus != "idle" ||
+                        snapshot.streamSession != null ||
+                        snapshot.activeStreamSettings != null
+                }
+                .distinctUntilChanged()
+                .collectLatest { streamActive ->
+                    persistCurrentDiagnosticSnapshot()
+                    val intervalMs = if (streamActive) {
+                        ACTIVE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS
+                    } else {
+                        IDLE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS
+                    }
+                    while (true) {
+                        delay(intervalMs)
+                        persistCurrentDiagnosticSnapshot()
+                    }
+                }
+        }
+    }
+
+    private suspend fun persistCurrentDiagnosticSnapshot() {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val current = sanitizeDiagnosticExport(currentDebugLogText())
+                diagnosticHistoryStore.saveCurrent(current)
+            }
+                .onFailure { error ->
+                    Log.w(OPENNOW_DEBUG_LOG_TAG, "Could not persist diagnostic history", error)
+                }
+        }
     }
 
     private fun recordDebugEvent(category: String, message: String) {
@@ -2783,7 +2824,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         return if (selectedIndex >= 0) copy(selectedVariantIndex = selectedIndex) else this
     }
 
-    fun debugLogText(): String {
+    private fun currentDebugLogText(): String {
         val snapshot = state.value
         val session = snapshot.streamSession
         val codecReport = snapshot.codecReport
@@ -2844,6 +2885,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
+
+    fun debugLogText(): String = appendPreviousDiagnosticSnapshot(
+        current = currentDebugLogText(),
+        previous = diagnosticHistoryStore.previousSnapshot(),
+    )
 
     fun sanitizedDebugLogText(): String = sanitizeDiagnosticExport(debugLogText())
 

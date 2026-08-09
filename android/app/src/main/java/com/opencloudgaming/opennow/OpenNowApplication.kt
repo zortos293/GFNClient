@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import android.app.Application
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -18,9 +19,14 @@ class OpenNowApplication : Application() {
     internal val authStore by lazy { AuthStore(this) }
     internal val authRepository by lazy { GfnAuthRepository(this, authStore, httpClient) }
     internal val localTvConnector by lazy { LocalTvConnector() }
+    internal val diagnosticHistoryStore by lazy { DiagnosticHistoryStore(filesDir) }
 
     override fun onCreate() {
         super.onCreate()
+        runCatching { diagnosticHistoryStore.beginAppRun() }
+            .onFailure { error ->
+                Log.w(OPENNOW_DEBUG_LOG_TAG, "Could not rotate diagnostic history", error)
+            }
 
         startupScope.launch {
             val settings = runCatching {

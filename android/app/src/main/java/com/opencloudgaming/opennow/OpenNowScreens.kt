@@ -215,7 +215,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -364,7 +363,7 @@ fun OpenNowTheme(settings: AppSettings, content: @Composable () -> Unit) {
         fallbackScheme
     }
     // Honour both the system-wide animation switch and the in-app toggle. Infinite transitions
-    // (shimmer, focus pulse, carousel auto-advance) read this and stop entirely.
+    // (shimmer, focus energy, carousel auto-advance) read this and stop entirely.
     val reduceMotion = remember(settings.controllerBackgroundAnimations, context) {
         val systemScale = runCatching {
             Settings.Global.getFloat(
@@ -3631,9 +3630,10 @@ private fun GameGridSkeleton(
     val compact = settings.compactGameCards
     val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val physicalControllerConnected = rememberPhysicalControllerConnected(enabled = landscapeLayout && !tvProfile)
+    val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(
         tvProfile = tvProfile,
-        controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected,
+        controllerActionMode = controllerActionMode,
     )
 
     val shimmerOffset: State<Float>?
@@ -3698,7 +3698,7 @@ private fun GameGridSkeleton(
                 gridItems(placeholderItems, key = { it }) {
                     GameCardSkeleton(
                         squareCard = gridSpec.squareCards,
-                        thumbnailFavoriteOverlay = true,
+                        thumbnailFavoriteOverlay = shouldShowCatalogCardActions(tvProfile, controllerActionMode),
                         showStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -3962,7 +3962,6 @@ private fun GameGrid(
                         favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
-                        controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
                         showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -4081,7 +4080,6 @@ private fun StoreGameGrid(
                         favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
-                        controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
                         showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -4291,123 +4289,127 @@ private fun StoreComingNextCarousel(
         ) { targetPage ->
             val featured = games[targetPage.coerceIn(games.indices)]
             val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
-            Surface(
-                modifier = Modifier
+            Box(
+                Modifier
                     .fillMaxWidth()
                     // Aspect ratio rather than a fixed height, so the hero scales with the screen
                     // instead of dominating a small phone and looking stunted on a tablet.
-                    .aspectRatio(heroAspectRatio(tvProfile, landscape))
-                    .onFocusChanged { focused = it.isFocused || it.hasFocus }
-                    .border(
-                        width = if (focused) 3.dp else 1.dp,
-                        color = when {
-                            enhancedControllerFocus -> Color.Transparent
-                            focused -> Color.White
-                            else -> Color.White.copy(alpha = 0.08f)
-                        },
-                        shape = shape,
-                    )
-                    .onPreviewKeyEvent { event ->
-                        if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
-                        when {
-                            controllerActionMode && event.key == Key.DirectionLeft && games.size > 1 -> {
-                                page = (page - 1 + games.size) % games.size
-                                true
+                    .aspectRatio(heroAspectRatio(tvProfile, landscape)),
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                        .border(
+                            width = if (focused) 3.dp else 1.dp,
+                            color = when {
+                                enhancedControllerFocus -> Color.Transparent
+                                focused -> Color.White
+                                else -> Color.White.copy(alpha = 0.08f)
+                            },
+                            shape = shape,
+                        )
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
+                            when {
+                                controllerActionMode && event.key == Key.DirectionLeft && games.size > 1 -> {
+                                    page = (page - 1 + games.size) % games.size
+                                    true
+                                }
+                                controllerActionMode && event.key == Key.DirectionRight && games.size > 1 -> {
+                                    page = (page + 1) % games.size
+                                    true
+                                }
+                                !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                                    event = event,
+                                    onFavorite = { onFavorite(featured.id) },
+                                    onPlay = { onPlay(featured) },
+                                ) -> true
+                                isTvActivateKey(event) -> {
+                                    onSelect(featured)
+                                    true
+                                }
+                                else -> false
                             }
-                            controllerActionMode && event.key == Key.DirectionRight && games.size > 1 -> {
-                                page = (page + 1) % games.size
-                                true
-                            }
-                            !tvProfile && controllerActionMode && handleCatalogControllerAction(
-                                event = event,
-                                onFavorite = { onFavorite(featured.id) },
-                                onPlay = { onPlay(featured) },
-                            ) -> true
-                            isTvActivateKey(event) -> {
-                                onSelect(featured)
-                                true
-                            }
-                            else -> false
+                        }
+                        .focusable()
+                        .combinedClickable(
+                            onClick = { onSelect(featured) },
+                            onLongClick = { onChooseStore(featured) },
+                            onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                        ),
+                    shape = shape,
+                    color = Panel,
+                    tonalElevation = if (focused) 5.dp else 0.dp,
+                    shadowElevation = if (focused) 9.dp else 1.dp,
+                ) {
+                    Box(Modifier.fillMaxSize()) {
+                        UrlImage(gameHeroImageUrl(context, featured), Modifier.fillMaxSize())
+                        // Horizontal scrim carries the title block; the vertical one settles the art
+                        // into the surface below so the hero reads as part of the page, not a sticker.
+                        Box(
+                            Modifier
+                                .matchParentSize()
+                                .background(
+                                    Brush.horizontalGradient(
+                                        listOf(Color.Black.copy(alpha = 0.88f), Color.Black.copy(alpha = 0.3f), Color.Transparent),
+                                    ),
+                                ),
+                        )
+                        Box(
+                            Modifier
+                                .matchParentSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        0.45f to Color.Transparent,
+                                        1f to Background.copy(alpha = 0.85f),
+                                    ),
+                                ),
+                        )
+                        Column(
+                            Modifier
+                                .align(Alignment.BottomStart)
+                                .fillMaxWidth(0.66f)
+                                .padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                featured.title,
+                                color = Color.White,
+                                style = when {
+                                    // Across a room the hero title is the only thing readable at a
+                                    // glance, so TV gets the display scale.
+                                    tvProfile -> MaterialTheme.typography.displaySmall
+                                    landscape -> MaterialTheme.typography.headlineSmall
+                                    else -> MaterialTheme.typography.headlineMedium
+                                },
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                listOfNotNull(featured.publisherName, displayStoresForGame(featured).takeIf { it.isNotBlank() })
+                                    .distinct()
+                                    .joinToString("  •  "),
+                                color = Color.White.copy(alpha = 0.72f),
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                            FavoriteIconButton(
+                                favorite = featured.id in favoriteIds,
+                                onClick = { onFavorite(featured.id) },
+                                modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
+                                size = 38.dp,
+                            )
                         }
                     }
-                    .focusable()
-                    .combinedClickable(
-                        onClick = { onSelect(featured) },
-                        onLongClick = { onChooseStore(featured) },
-                        onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
-                    ),
-                shape = shape,
-                color = Panel,
-                tonalElevation = if (focused) 5.dp else 0.dp,
-                shadowElevation = if (focused) 9.dp else 1.dp,
-            ) {
-                Box(Modifier.fillMaxSize()) {
-                    UrlImage(gameHeroImageUrl(context, featured), Modifier.fillMaxSize())
-                    // Horizontal scrim carries the title block; the vertical one settles the art
-                    // into the surface below so the hero reads as part of the page, not a sticker.
-                    Box(
-                        Modifier
-                            .matchParentSize()
-                            .background(
-                                Brush.horizontalGradient(
-                                    listOf(Color.Black.copy(alpha = 0.88f), Color.Black.copy(alpha = 0.3f), Color.Transparent),
-                                ),
-                            ),
-                    )
-                    Box(
-                        Modifier
-                            .matchParentSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    0.45f to Color.Transparent,
-                                    1f to Background.copy(alpha = 0.85f),
-                                ),
-                            ),
-                    )
-                    Column(
-                        Modifier
-                            .align(Alignment.BottomStart)
-                            .fillMaxWidth(0.66f)
-                            .padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Text(
-                            featured.title,
-                            color = Color.White,
-                            style = when {
-                                // Across a room the hero title is the only thing readable at a
-                                // glance, so TV gets the display scale.
-                                tvProfile -> MaterialTheme.typography.displaySmall
-                                landscape -> MaterialTheme.typography.headlineSmall
-                                else -> MaterialTheme.typography.headlineMedium
-                            },
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            listOfNotNull(featured.publisherName, displayStoresForGame(featured).takeIf { it.isNotBlank() })
-                                .distinct()
-                                .joinToString("  •  "),
-                            color = Color.White.copy(alpha = 0.72f),
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
-                        FavoriteIconButton(
-                            favorite = featured.id in favoriteIds,
-                            onClick = { onFavorite(featured.id) },
-                            modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
-                            size = 38.dp,
-                        )
-                    }
-                    ControllerFocusFrame(
-                        visible = enhancedControllerFocus,
-                        animate = settings.controllerBackgroundAnimations,
-                        cornerRadius = if (settings.expressiveUi) 24.dp else 16.dp,
-                    )
                 }
+                ControllerFocusFrame(
+                    visible = enhancedControllerFocus,
+                    cornerRadius = if (settings.expressiveUi) 24.dp else 16.dp,
+                )
             }
         }
     }
@@ -4458,7 +4460,6 @@ private fun StoreRailSection(
                             favorite = game.id in favoriteIds,
                             tvProfile = tvProfile,
                             expressiveUi = settings.expressiveUi,
-                            controllerBackgroundAnimations = settings.controllerBackgroundAnimations,
                             width = cardWidth,
                             controllerActionMode = controllerActionMode,
                             onSelect = onSelect,
@@ -4480,7 +4481,6 @@ private fun StoreRailGameCard(
     favorite: Boolean,
     tvProfile: Boolean,
     expressiveUi: Boolean,
-    controllerBackgroundAnimations: Boolean,
     width: Dp,
     controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
@@ -4518,8 +4518,8 @@ private fun StoreRailGameCard(
         label = "rail-card-scale",
     )
     val dimAlpha = rememberCatalogCardAlpha(focused = focused, tvProfile = tvProfile)
-    Surface(
-        modifier = Modifier
+    Box(
+        Modifier
             .width(width)
             .padding(vertical = if (tvProfile) CATALOG_CONTROLLER_FOCUS_INSET else 0.dp)
             .aspectRatio(if (tvProfile) 1f else GAME_BOX_ART_ASPECT_RATIO)
@@ -4531,70 +4531,74 @@ private fun StoreRailGameCard(
             .semantics(mergeDescendants = true) {
                 contentDescription = game.title
                 role = Role.Button
-            }
-            .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .border(
-                width = if (focused) 3.dp else 1.dp,
-                color = when {
-                    enhancedControllerFocus -> Color.Transparent
-                    focused -> MaterialTheme.colorScheme.primary
-                    else -> Color.White.copy(alpha = 0.08f)
-                },
-                shape = shape,
-            )
-            .onPreviewKeyEvent { event ->
-                when {
-                    !tvProfile && controllerActionMode && handleCatalogControllerAction(
-                        event = event,
-                        onFavorite = { onFavorite(game.id) },
-                        onPlay = { onPlay(game) },
-                    ) -> true
-                    isTvActivateKey(event) -> {
-                        onSelect(game)
-                        true
+            },
+    ) {
+        Surface(
+            modifier = Modifier
+                .matchParentSize()
+                .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                .border(
+                    width = if (focused) 3.dp else 1.dp,
+                    color = when {
+                        enhancedControllerFocus -> Color.Transparent
+                        focused -> MaterialTheme.colorScheme.primary
+                        else -> Color.White.copy(alpha = 0.08f)
+                    },
+                    shape = shape,
+                )
+                .onPreviewKeyEvent { event ->
+                    when {
+                        !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                            event = event,
+                            onFavorite = { onFavorite(game.id) },
+                            onPlay = { onPlay(game) },
+                        ) -> true
+                        isTvActivateKey(event) -> {
+                            onSelect(game)
+                            true
+                        }
+                        else -> handleDpadFocusMove(event, focusManager)
                     }
-                    else -> handleDpadFocusMove(event, focusManager)
+                }
+                .focusable(interactionSource = interaction)
+                .combinedClickable(
+                    interactionSource = interaction,
+                    indication = null,
+                    onClick = { onSelect(game) },
+                    onLongClick = { onChooseStore(game) },
+                    onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                ),
+            shape = shape,
+            color = OpenNowPalette.ImagePlaceholder,
+            tonalElevation = if (focused) 4.dp else 0.dp,
+            shadowElevation = if (focused) 8.dp else 1.dp,
+        ) {
+            Box(Modifier.fillMaxSize().clip(shape)) {
+                UrlImage(
+                    catalogCardImageUrl(game, tvProfile),
+                    Modifier.fillMaxSize(),
+                    // Crop everywhere — see the note in GameCard.
+                    contentScale = ContentScale.Crop,
+                )
+                if (shouldOverlayCatalogCardTitle(tvProfile)) {
+                    GameCardTitleOverlay(game.title)
+                }
+                if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                    FavoriteIconButton(
+                        favorite = favorite,
+                        onClick = { onFavorite(game.id) },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp),
+                        size = actionButtonSize,
+                    )
                 }
             }
-            .focusable(interactionSource = interaction)
-            .combinedClickable(
-                interactionSource = interaction,
-                indication = null,
-                onClick = { onSelect(game) },
-                onLongClick = { onChooseStore(game) },
-                onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
-            ),
-        shape = shape,
-        color = OpenNowPalette.ImagePlaceholder,
-        tonalElevation = if (focused) 4.dp else 0.dp,
-        shadowElevation = if (focused) 8.dp else 1.dp,
-    ) {
-        Box(Modifier.fillMaxSize().clip(shape)) {
-            UrlImage(
-                catalogCardImageUrl(game, tvProfile),
-                Modifier.fillMaxSize(),
-                // Crop everywhere — see the note in GameCard.
-                contentScale = ContentScale.Crop,
-            )
-            if (shouldOverlayCatalogCardTitle(tvProfile)) {
-                GameCardTitleOverlay(game.title)
-            }
-            if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
-                FavoriteIconButton(
-                    favorite = favorite,
-                    onClick = { onFavorite(game.id) },
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp),
-                    size = actionButtonSize,
-                )
-            }
-            ControllerFocusFrame(
-                visible = enhancedControllerFocus,
-                animate = controllerBackgroundAnimations,
-                cornerRadius = if (expressiveUi) 12.dp else 8.dp,
-            )
         }
+        ControllerFocusFrame(
+            visible = enhancedControllerFocus,
+            cornerRadius = if (expressiveUi) 12.dp else 8.dp,
+        )
     }
 }
 
@@ -4702,24 +4706,7 @@ private fun heroAspectRatio(tvProfile: Boolean, landscape: Boolean): Float = whe
 }
 private const val GAME_BOX_ART_ASPECT_RATIO = 628f / 888f
 
-internal fun shouldShowEnhancedControllerFocus(
-    focused: Boolean,
-    tvProfile: Boolean,
-    controllerActionMode: Boolean,
-): Boolean = focused && (tvProfile || controllerActionMode)
-
 internal fun shouldInitiallyFocusGameDetailsPlay(tvProfile: Boolean): Boolean = tvProfile
-
-internal fun controllerFocusPulseStrokeWidthDp(progress: Float): Float =
-    4f + (9f * progress.coerceIn(0f, 1f))
-
-internal fun controllerFocusPulseAlpha(progress: Float): Float {
-    val remaining = 1f - progress.coerceIn(0f, 1f)
-    return 0.58f * remaining * remaining
-}
-
-internal fun controllerFocusDashPhaseDp(progress: Float): Float =
-    30f * progress.coerceIn(0f, 1f)
 
 private data class GameGridSpec(
     val cells: GridCells,
@@ -4809,89 +4796,6 @@ private fun storeRailCardWidth(tvProfile: Boolean, landscapeLayout: Boolean): Dp
         else -> 142.dp
     }
 
-@Composable
-private fun BoxScope.ControllerFocusFrame(
-    visible: Boolean,
-    animate: Boolean,
-    cornerRadius: Dp,
-) {
-    if (!visible) return
-    val accent = MaterialTheme.colorScheme.primary
-    if (animate) {
-        val transition = rememberInfiniteTransition(label = "controller-focus-pulse")
-        val pulseProgress by transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1_100, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = "controller-focus-pulse-progress",
-        )
-        ControllerFocusFrameCanvas(
-            accent = accent,
-            cornerRadius = cornerRadius,
-            pulseProgress = pulseProgress,
-        )
-    } else {
-        ControllerFocusFrameCanvas(
-            accent = accent,
-            cornerRadius = cornerRadius,
-            pulseProgress = null,
-        )
-    }
-}
-
-@Composable
-private fun BoxScope.ControllerFocusFrameCanvas(
-    accent: Color,
-    cornerRadius: Dp,
-    pulseProgress: Float?,
-) {
-    Canvas(Modifier.matchParentSize().padding(2.dp)) {
-        val outerRadius = (cornerRadius - 2.dp).toPx().coerceAtLeast(0f)
-        val innerInset = 3.dp.toPx()
-        val innerRadius = (outerRadius - innerInset).coerceAtLeast(0f)
-
-        // A broad accent stroke supplies the glow, a spaced accent stroke travels around the
-        // perimeter, and a crisp inset white stroke keeps focus readable on bright artwork.
-        // Everything stays on the card edge so focus never obscures the poster itself.
-        drawRoundRect(
-            color = accent.copy(alpha = 0.18f),
-            cornerRadius = CornerRadius(outerRadius, outerRadius),
-            style = Stroke(width = 8.dp.toPx()),
-        )
-        pulseProgress?.let { progress ->
-            drawRoundRect(
-                color = accent.copy(alpha = controllerFocusPulseAlpha(progress)),
-                cornerRadius = CornerRadius(outerRadius, outerRadius),
-                style = Stroke(width = controllerFocusPulseStrokeWidthDp(progress).dp.toPx()),
-            )
-        }
-        drawRoundRect(
-            color = accent.copy(alpha = 0.98f),
-            cornerRadius = CornerRadius(outerRadius, outerRadius),
-            style = Stroke(
-                width = 3.dp.toPx(),
-                pathEffect = PathEffect.dashPathEffect(
-                    intervals = floatArrayOf(18.dp.toPx(), 12.dp.toPx()),
-                    phase = controllerFocusDashPhaseDp(pulseProgress ?: 0f).dp.toPx(),
-                ),
-            ),
-        )
-        drawRoundRect(
-            color = Color.White.copy(alpha = 0.98f),
-            topLeft = Offset(innerInset, innerInset),
-            size = Size(
-                width = (size.width - innerInset * 2f).coerceAtLeast(0f),
-                height = (size.height - innerInset * 2f).coerceAtLeast(0f),
-            ),
-            cornerRadius = CornerRadius(innerRadius, innerRadius),
-            style = Stroke(width = 2.dp.toPx()),
-        )
-    }
-}
-
 /**
  * Cell widths the grid aims for at `posterSizeScale == 1`. These are minimums fed to
  * [GridCells.Adaptive], not column counts: the grid fits as many as will hold and shares the
@@ -4974,7 +4878,6 @@ private fun GameCard(
     favorite: Boolean,
     tvProfile: Boolean,
     expressiveUi: Boolean,
-    controllerBackgroundAnimations: Boolean,
     showGameStoreLabels: Boolean,
     showCardTitles: Boolean,
     squareCard: Boolean,
@@ -5040,82 +4943,86 @@ private fun GameCard(
                 role = Role.Button
             },
     ) {
-        Card(
-            modifier = Modifier
+        Box(
+            Modifier
                 .fillMaxWidth()
                 .then(
                     if (squareCard) Modifier.aspectRatio(1f)
                     else Modifier.aspectRatio(GAME_BOX_ART_ASPECT_RATIO),
-                )
-                .onFocusChanged { focused = it.isFocused || it.hasFocus }
-                .border(
-                    width = if (focused) 3.dp else 1.dp,
-                    color = when {
-                        enhancedControllerFocus -> Color.Transparent
-                        focused -> MaterialTheme.colorScheme.primary
-                        else -> Color.Transparent
-                    },
-                    shape = cardShape,
-                )
-                .onPreviewKeyEvent { event ->
-                    when {
-                        !tvProfile && controllerActionMode && handleCatalogControllerAction(
-                            event = event,
-                            onFavorite = { onFavorite(game.id) },
-                            onPlay = { onPlay(game) },
-                        ) -> true
-                        isTvActivateKey(event) -> {
-                            onSelect(game)
-                            true
+                ),
+        ) {
+            Card(
+                modifier = Modifier
+                    .matchParentSize()
+                    .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                    .border(
+                        width = if (focused) 3.dp else 1.dp,
+                        color = when {
+                            enhancedControllerFocus -> Color.Transparent
+                            focused -> MaterialTheme.colorScheme.primary
+                            else -> Color.Transparent
+                        },
+                        shape = cardShape,
+                    )
+                    .onPreviewKeyEvent { event ->
+                        when {
+                            !tvProfile && controllerActionMode && handleCatalogControllerAction(
+                                event = event,
+                                onFavorite = { onFavorite(game.id) },
+                                onPlay = { onPlay(game) },
+                            ) -> true
+                            isTvActivateKey(event) -> {
+                                onSelect(game)
+                                true
+                            }
+                            else -> handleDpadFocusMove(event, focusManager)
                         }
-                        else -> handleDpadFocusMove(event, focusManager)
+                    }
+                    .focusable(interactionSource = interaction),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = if (focused) 8.dp else 0.dp),
+                shape = cardShape,
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .combinedClickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            onClick = { onSelect(game) },
+                            onLongClick = { onChooseStore(game) },
+                            onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
+                        ),
+                ) {
+                    UrlImage(
+                        catalogCardImageUrl(game, tvProfile),
+                        Modifier.fillMaxSize(),
+                        // Always Crop. The card is already locked to NVIDIA's box-art ratio, so for
+                        // correctly-cut art this is identical to Fit; when the CDN returns something
+                        // off-ratio, Fit pillarboxed it against a flat swatch and Crop simply trims.
+                        contentScale = ContentScale.Crop,
+                    )
+                    if (shouldOverlayCatalogCardTitle(tvProfile)) {
+                        GameCardTitleOverlay(game.title)
+                    }
+                    if (thumbnailFavoriteOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                        FavoriteIconButton(
+                            favorite = favorite,
+                            onClick = { onFavorite(game.id) },
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(overlayActionPadding),
+                            size = overlayActionSize,
+                        )
                     }
                 }
-                .focusable(interactionSource = interaction),
-            colors = CardDefaults.cardColors(
-                containerColor = if (expressiveUi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f) else Panel,
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = if (focused) 8.dp else 0.dp),
-            shape = cardShape,
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .combinedClickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        onClick = { onSelect(game) },
-                        onLongClick = { onChooseStore(game) },
-                        onLongClickLabel = stringResource(R.string.store_selector_play_long_press),
-                    ),
-            ) {
-                UrlImage(
-                    catalogCardImageUrl(game, tvProfile),
-                    Modifier.fillMaxSize(),
-                    // Always Crop. The card is already locked to NVIDIA's box-art ratio, so for
-                    // correctly-cut art this is identical to Fit; when the CDN returns something
-                    // off-ratio, Fit pillarboxed it against a flat swatch and Crop simply trims.
-                    contentScale = ContentScale.Crop,
-                )
-                if (shouldOverlayCatalogCardTitle(tvProfile)) {
-                    GameCardTitleOverlay(game.title)
-                }
-                if (thumbnailFavoriteOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
-                    FavoriteIconButton(
-                        favorite = favorite,
-                        onClick = { onFavorite(game.id) },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(overlayActionPadding),
-                        size = overlayActionSize,
-                    )
-                }
-                ControllerFocusFrame(
-                    visible = enhancedControllerFocus,
-                    animate = controllerBackgroundAnimations && !reduceMotion,
-                    cornerRadius = if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm,
-                )
             }
+            ControllerFocusFrame(
+                visible = enhancedControllerFocus,
+                cornerRadius = if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm,
+            )
         }
         if (showCaption) {
             Column(
@@ -5167,8 +5074,8 @@ internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = false
 internal fun shouldUseArtworkOnlyCatalogCards(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
     tvProfile || controllerActionMode
 
-@Suppress("UNUSED_PARAMETER")
-internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean = true
+internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
+    tvProfile || controllerActionMode
 
 internal fun shouldShowGameStoreLabels(tvProfile: Boolean, enabled: Boolean): Boolean =
     enabled && !tvProfile

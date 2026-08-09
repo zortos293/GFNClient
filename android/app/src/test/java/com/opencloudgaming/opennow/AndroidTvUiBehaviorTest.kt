@@ -64,7 +64,6 @@ class AndroidTvUiBehaviorTest {
 
         assertEquals(gameBoxArt, catalogCardImageUrl(game, tvProfile = false))
         assertFalse(shouldOverlayCatalogCardTitle(tvProfile = false))
-        assertTrue(shouldShowCatalogCardActions(tvProfile = false, controllerActionMode = false))
     }
 
     @Test
@@ -92,51 +91,13 @@ class AndroidTvUiBehaviorTest {
             catalogCardImageUrl(game, tvProfile = true),
         )
         assertFalse(shouldOverlayCatalogCardTitle(tvProfile = true))
+    }
+
+    @Test
+    fun catalogCardActionsStayHiddenOnTouchOnlyMobile() {
+        assertFalse(shouldShowCatalogCardActions(tvProfile = false, controllerActionMode = false))
         assertTrue(shouldShowCatalogCardActions(tvProfile = true, controllerActionMode = false))
         assertTrue(shouldShowCatalogCardActions(tvProfile = false, controllerActionMode = true))
-    }
-
-    @Test
-    fun tvAndPhysicalControllerCardsUseEnhancedFocusFrame() {
-        assertTrue(
-            shouldShowEnhancedControllerFocus(
-                focused = true,
-                tvProfile = true,
-                controllerActionMode = false,
-            ),
-        )
-        assertTrue(
-            shouldShowEnhancedControllerFocus(
-                focused = true,
-                tvProfile = false,
-                controllerActionMode = true,
-            ),
-        )
-        assertFalse(
-            shouldShowEnhancedControllerFocus(
-                focused = true,
-                tvProfile = false,
-                controllerActionMode = false,
-            ),
-        )
-        assertFalse(
-            shouldShowEnhancedControllerFocus(
-                focused = false,
-                tvProfile = true,
-                controllerActionMode = false,
-            ),
-        )
-    }
-
-    @Test
-    fun controllerFocusPulseExpandsAndFadesOnlyAtTheOuterEdge() {
-        assertEquals(4f, controllerFocusPulseStrokeWidthDp(0f), 0f)
-        assertEquals(13f, controllerFocusPulseStrokeWidthDp(1f), 0f)
-        assertTrue(controllerFocusPulseAlpha(0f) > controllerFocusPulseAlpha(0.5f))
-        assertEquals(0f, controllerFocusPulseAlpha(1f), 0f)
-        assertEquals(0f, controllerFocusDashPhaseDp(0f), 0f)
-        assertEquals(15f, controllerFocusDashPhaseDp(0.5f), 0f)
-        assertEquals(30f, controllerFocusDashPhaseDp(1f), 0f)
     }
 
     @Test

@@ -16,6 +16,7 @@
       "continue": "Продолжить",
       "delete": "Удалить",
       "done": "Готово",
+      "exit": "Exit OpenNOW",
       "open": "Открыть",
       "play": "Играть",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Реклама в разработке",
       "mediaWillAppear": "Рекламные носители появятся здесь, как только они станут доступны.",
       "advertisement": "Реклама",
-      "titledAdvertisement": "Реклама {{title}}"
+      "titledAdvertisement": "Реклама {{title}}",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Отменить загрузку"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Пропустите диалоговое окно выбора сервера бесплатного уровня и всегда запускайте с маршрутизацией по умолчанию OpenNOW.",
       "showAntiAfkIndicator": "Показать индикатор Anti-AFK",
       "showAntiAfkIndicatorHint": "Показывать значок ANTI-AFK ON, когда функция Anti-AFK включена во время потоковой передачи.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Автоматический полноэкранный режим",
       "autoFullScreenHint": "Автоматический переход в полноэкранный режим при подключении или запуске сеанса.",
       "controllerMode": "Controller Mode",

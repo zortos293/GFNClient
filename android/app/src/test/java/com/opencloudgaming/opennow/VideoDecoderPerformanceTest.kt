@@ -55,6 +55,18 @@ class VideoDecoderPerformanceTest {
     }
 
     @Test
+    fun pixel6aExynosFallbackIsNotWrappedAtSixtyFps() {
+        assertFalse(
+            shouldUseMediaCodecDecoderTuning(
+                selectedDecoder = fakeDecoder("c2.exynos.h264.decoder"),
+                approvedHardwareDecoder = null,
+                requestedFps = 60,
+                lowLatencyEnabled = false,
+            ),
+        )
+    }
+
+    @Test
     fun nativeFallbackIsNotWrappedForLowLatencyTuning() {
         assertFalse(
             shouldUseMediaCodecDecoderTuning(
@@ -66,7 +78,7 @@ class VideoDecoderPerformanceTest {
         )
     }
 
-    private fun fakeDecoder(): VideoDecoder =
+    private fun fakeDecoder(implementationName: String = "test"): VideoDecoder =
         object : VideoDecoder {
             override fun initDecode(
                 settings: VideoDecoder.Settings?,
@@ -80,6 +92,6 @@ class VideoDecoderPerformanceTest {
                 info: VideoDecoder.DecodeInfo?,
             ): VideoCodecStatus = error("unused")
 
-            override fun getImplementationName(): String = "test"
+            override fun getImplementationName(): String = implementationName
         }
 }

@@ -68,8 +68,12 @@ function installMouseHarness(options: {
 }): {
   controller: DomInputCaptureController;
   dispatchMouseMove: (movementX: number, timeStamp: number) => void;
+  dispatchMouseDown: (clientX: number, clientY: number, timeStamp: number) => void;
+  setPointerLocked: (locked: boolean) => void;
   pendingTimerCount: () => number;
   runNextTimer: (nowMs: number) => void;
+  reliablePayloads: Uint8Array[];
+  reliableSinglePayloads: Uint8Array[];
   sentInputTypes: number[];
   restoreGlobals: () => void;
 } {
@@ -114,6 +118,8 @@ function installMouseHarness(options: {
     value: { now: () => nowMs },
   });
 
+  const reliablePayloads: Uint8Array[] = [];
+  const reliableSinglePayloads: Uint8Array[] = [];
   const sentInputTypes: number[] = [];
   const controller = new DomInputCaptureController(
     {
@@ -130,8 +136,8 @@ function installMouseHarness(options: {
       setWindowInputPaused: () => {},
       recordSchedulingDelay: () => {},
       refreshClipboardAvailability: async () => false,
-      sendReliableSingleInput: () => {},
-      sendReliable: () => {},
+      sendReliableSingleInput: (payload) => reliableSinglePayloads.push(payload),
+      sendReliable: (payload) => reliablePayloads.push(payload),
       sendInputPacket: (_payload, inputType) => {
         sentInputTypes.push(inputType);
       },
@@ -158,6 +164,21 @@ function installMouseHarness(options: {
         timeStamp,
       });
     },
+    dispatchMouseDown: (clientX, clientY, timeStamp) => {
+      pointerLockTarget.dispatch("mousedown", {
+        button: 0,
+        clientX,
+        clientY,
+        timeStamp,
+        preventDefault: () => {},
+      });
+    },
+    setPointerLocked: (locked) => {
+      (fakeDocument as { pointerLockElement: FakeEventTarget | null }).pointerLockElement = locked
+        ? pointerLockTarget
+        : null;
+      documentTarget.dispatch("pointerlockchange", {});
+    },
     pendingTimerCount: () => timers.size,
     runNextTimer: (timerNowMs) => {
       const entry = timers.entries().next().value;
@@ -167,6 +188,8 @@ function installMouseHarness(options: {
       nowMs = timerNowMs;
       callback();
     },
+    reliablePayloads,
+    reliableSinglePayloads,
     sentInputTypes,
     restoreGlobals: () => {
       for (const [key, descriptor] of [
@@ -216,6 +239,20 @@ test("scaled-to-zero residual parks without synchronous recursion and resumes on
     harness.dispatchMouseMove(3, 2);
     assert.deepEqual(harness.sentInputTypes, [INPUT_MOUSE_REL]);
     assert.equal(harness.controller.getMouseDiagnostics().residualMagnitude, 0);
+  } finally {
+    harness.restoreGlobals();
+  }
+});
+
+test("Escape pointer-lock loss keeps the first in-game click immediately usable", () => {
+  const harness = installMouseHarness({ mouseSensitivity: 1, resolution: "1920x1080" });
+  try {
+    harness.setPointerLocked(false);
+    harness.dispatchMouseDown(2, 3, 10);
+
+    assert.equal(harness.reliablePayloads.length, 1, "absolute cursor pin precedes the click");
+    assert.equal(harness.reliableSinglePayloads.length, 1, "the click is forwarded without recapture");
+    assert.deepEqual(harness.sentInputTypes, [], "the cursor pin stays ordered on the reliable channel");
   } finally {
     harness.restoreGlobals();
   }

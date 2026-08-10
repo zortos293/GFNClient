@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, globalShortcut, ipcMain } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { IPC_CHANNELS } from "@shared/ipc";
@@ -16,6 +16,7 @@ import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
 import { shouldReportRendererTermination } from "./rendererLifecycle";
 import type { StreamShortcutInterceptionGate } from "@shared/gfn";
 import { resolveStatsShortcutInterception } from "./streamShortcutInterception";
+import { StreamEscapeShortcutController } from "./streamEscapeShortcut";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
@@ -59,6 +60,20 @@ export async function createMainWindow(
       escapeHoldTimer = null;
     }
   };
+
+  const escapeShortcut = new StreamEscapeShortcutController(globalShortcut, () => {
+    const mainWindow = deps.getMainWindow();
+    if (
+      !deps.getPointerLockActive()
+      || deps.settingsManager.get("allowEscapeToExitFullscreen")
+      || !mainWindow
+      || mainWindow.isDestroyed()
+      || !mainWindow.isFocused()
+    ) {
+      return;
+    }
+    mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+  });
 
   // Console mode (big picture): mirror GeForce NOW's TV mode by launching
   // fullscreen with the controller-oriented shell enabled.
@@ -170,6 +185,10 @@ export async function createMainWindow(
     (_ev, active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
       const pointerLockActive = Boolean(active);
       deps.setPointerLockActive(pointerLockActive);
+      escapeShortcut.setCaptureActive(
+        pointerLockActive
+        && !deps.settingsManager.get("allowEscapeToExitFullscreen"),
+      );
       deps.setPointerLockEscapeCaptureUntilMs(
         nextPointerLockEscapeCaptureUntilMs(
           pointerLockActive,
@@ -291,6 +310,7 @@ export async function createMainWindow(
   } else {
     await window.loadFile(join(deps.mainDir, "../../dist/index.html"));
   }
+  window.on("blur", () => escapeShortcut.dispose());
   const pendingDirectLaunchRequest = deps.getPendingDirectLaunchRequest();
   if (pendingDirectLaunchRequest) {
     deps.emitDirectLaunchRequest(pendingDirectLaunchRequest);
@@ -302,6 +322,7 @@ export async function createMainWindow(
       handleStreamShortcutInterceptionChange,
     );
     clearEscapeHoldTimer();
+    escapeShortcut.dispose();
     escapeHoldState = { keyDownCaptured: false, holdFired: false };
     deps.setMainWindow(null);
     deps.setRendererControlledFullscreen(false);

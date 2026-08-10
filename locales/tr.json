@@ -16,6 +16,7 @@
       "continue": "Devam et",
       "delete": "Sil",
       "done": "Bitti",
+      "exit": "Exit OpenNOW",
       "open": "Açık",
       "play": "Oyna",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Reklam devam ediyor",
       "mediaWillAppear": "Reklam medyası mevcut olur olmaz burada görünecektir.",
       "advertisement": "Reklam",
-      "titledAdvertisement": "{{title}} reklamı"
+      "titledAdvertisement": "{{title}} reklamı",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Yüklemeyi iptal et"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Ücretsiz katmanlı sunucu seçimi iletişim kutusunu atlayın ve her zaman OpenNOW'in varsayılan yönlendirmesiyle başlatın.",
       "showAntiAfkIndicator": "Anti-AFK Göstergesini Göster",
       "showAntiAfkIndicatorHint": "Yayın sırasında Anti-AFK etkinken ANTI-AFK ON işaretini gösterin.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Otomatik Tam Ekran",
       "autoFullScreenHint": "Bir oturuma bağlanırken veya bir oturum başlatırken otomatik olarak tam ekrana geçin.",
       "controllerMode": "Controller Mode",

@@ -2663,6 +2663,7 @@ export function App(): JSX.Element {
           accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
           handleLogout();
         }}
+        onExitApp={handleExitApp}
         onOpenFeedback={() => setFeedbackOpen(true)}
         onBlockingOverlayChange={setNavbarOverlayBlocking}
         controllerMode={effectiveControllerMode}

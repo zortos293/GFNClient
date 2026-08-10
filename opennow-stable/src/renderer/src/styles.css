@@ -804,7 +804,8 @@ body,
 }
 
 .navbar-account-add,
-.navbar-account-signout-all {
+.navbar-account-signout-all,
+.navbar-account-exit {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -827,12 +828,17 @@ body,
 }
 
 .navbar-account-signout-all {
-  margin-bottom: 8px;
+  margin-bottom: 2px;
 }
 
-.navbar-account-signout-all:hover {
+.navbar-account-signout-all:hover,
+.navbar-account-exit:hover {
   background: color-mix(in srgb, var(--error) 14%, transparent);
   color: var(--error);
+}
+
+.navbar-account-exit {
+  margin-bottom: 8px;
 }
 
 .navbar-logout {

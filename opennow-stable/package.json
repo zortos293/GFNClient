@@ -1,5 +1,6 @@
 {
   "name": "opennow-stable",
+  "desktopName": "com.zortos.opennow.stable.desktop",
   "version": "0.5.2",
   "description": "Electron-based OpenNOW stable client",
   "author": {
@@ -111,6 +112,10 @@
     ],
     "extraResources": [
       {
+        "from": "../logo.png",
+        "to": "app-icon.png"
+      },
+      {
         "from": "../native/opennow-streamer/bin",
         "to": "native/opennow-streamer",
         "filter": [
@@ -140,6 +145,7 @@
       "artifactName": "OpenNOW-v${version}-mac-${arch}.${ext}"
     },
     "linux": {
+      "syncDesktopName": true,
       "target": [
         "AppImage",
         "deb"

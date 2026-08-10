@@ -12,6 +12,7 @@ import {
   TOKEN_ENDPOINT,
 } from "./constants";
 import { buildAuthHeadersForClient, generateDeviceId, toExpiresAt } from "./helpers";
+import { isSecondaryInstance, orderPortsForAppInstance } from "../../../appInstance";
 
 interface TokenResponse {
   access_token: string;
@@ -70,7 +71,11 @@ async function isPortAvailable(port: number): Promise<boolean> {
 }
 
 export async function findAvailablePort(): Promise<number> {
-  for (const port of REDIRECT_PORTS) {
+  const candidatePorts = orderPortsForAppInstance(
+    REDIRECT_PORTS,
+    isSecondaryInstance(process.argv),
+  );
+  for (const port of candidatePorts) {
     if (await isPortAvailable(port)) {
       return port;
     }

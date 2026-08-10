@@ -11,6 +11,7 @@ import type {
   GameAccountOperationResult,
 } from "@shared/gfn";
 import { invalidateAccountGameCaches as invalidateGameCachesForAccount } from "./games";
+import { isSecondaryInstance, orderPortsForAppInstance } from "../../appInstance";
 import { buildGfnGraphQlHeaders, GFN_PLAY_ORIGIN, GFN_PLAY_REFERER, GFN_USER_AGENT } from "./clientHeaders";
 import { LCARS_GRAPHQL_URL, throwGraphQlErrors } from "./lcarsGraphql";
 
@@ -628,7 +629,10 @@ export async function linkGameAccount(session: AuthSession, provider: string, pr
   }
 
   const token = getSessionIdToken(session);
-  const port = await findAvailablePort(REDIRECT_PORTS);
+  const port = await findAvailablePort(orderPortsForAppInstance(
+    REDIRECT_PORTS,
+    isSecondaryInstance(process.argv),
+  ));
   const callback = startAccountLinkCallbackServer(port, normalizedProvider);
   let loginResult: AccountLinkLoginResult;
   try {

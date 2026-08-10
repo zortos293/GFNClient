@@ -77,9 +77,19 @@ import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaun
 import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./releaseHighlights";
 import { shutdownMainTelemetry, syncMainTelemetry } from "./telemetry/posthog";
 import { createMainWindow } from "./window/mainWindow";
+import { resolveAppInstanceProfile } from "./appInstance";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+const appInstanceProfile = resolveAppInstanceProfile(
+  process.argv,
+  app.getPath("userData"),
+);
+if (appInstanceProfile.isSecondary) {
+  app.setPath("userData", appInstanceProfile.userDataPath);
+  app.setPath("sessionData", appInstanceProfile.userDataPath);
+}
 
 // Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
@@ -135,7 +145,10 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
 if (!app.isPackaged && process.env.OPENNOW_REMOTE_DEBUG === "1") {
-  app.commandLine.appendSwitch("remote-debugging-port", "9222");
+  app.commandLine.appendSwitch(
+    "remote-debugging-port",
+    appInstanceProfile.isSecondary ? "9223" : "9222",
+  );
 }
 
 // file:// in &lt;video&gt; is blocked by Chromium for renderer pages; use a privileged custom scheme.
@@ -400,6 +413,7 @@ function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
 function createMainWindowDeps() {
   return {
     mainDir: __dirname,
+    windowTitle: appInstanceProfile.windowTitle,
     settingsManager,
     getMainWindow: () => mainWindow,
     setMainWindow: (window: BrowserWindow | null) => {
@@ -511,6 +525,9 @@ if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
   // Initialize log capture first to capture all console output
   initLogCapture("main");
+  if (appInstanceProfile.isSecondary) {
+    console.log(`[Main] Secondary instance profile: ${appInstanceProfile.userDataPath}`);
+  }
   initSessionProxyAuth();
 
   await cacheManager.initialize();
@@ -526,6 +543,9 @@ app.whenReady().then(async () => {
     onStateChanged: emitUpdaterStateToRenderer,
     automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
     updateChannel: settingsManager.get("updateChannel"),
+    disabledReason: appInstanceProfile.isSecondary
+      ? "Updates are managed by the primary OpenNOW instance."
+      : undefined,
     onBeforeQuitAndInstall: () => {
       isUpdaterInstallQuitInProgress = true;
       clearExplicitShutdownFallback();

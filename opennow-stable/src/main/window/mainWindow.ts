@@ -20,6 +20,7 @@ import { StreamEscapeShortcutController } from "./streamEscapeShortcut";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
+  windowTitle?: string;
   settingsManager: SettingsManager;
   getMainWindow(): BrowserWindow | null;
   setMainWindow(window: BrowserWindow | null): void;
@@ -41,6 +42,7 @@ export interface CreateMainWindowDeps {
 export async function createMainWindow(
   deps: CreateMainWindowDeps,
 ): Promise<void> {
+  const windowTitle = deps.windowTitle;
   const preloadMjsPath = join(deps.mainDir, "../preload/index.mjs");
   const preloadJsPath = join(deps.mainDir, "../preload/index.js");
   const preloadPath = existsSync(preloadMjsPath)
@@ -93,6 +95,7 @@ export async function createMainWindow(
     : undefined;
 
   const window = new BrowserWindow({
+    ...(windowTitle ? { title: windowTitle } : {}),
     width: settings.windowWidth || 1400,
     height: settings.windowHeight || 900,
     minWidth: 1024,
@@ -109,6 +112,12 @@ export async function createMainWindow(
     },
   });
   deps.setMainWindow(window);
+  if (windowTitle) {
+    window.on("page-title-updated", (event) => {
+      event.preventDefault();
+      window.setTitle(windowTitle);
+    });
+  }
 
   window.webContents.on("render-process-gone", (_event, details) => {
     if (

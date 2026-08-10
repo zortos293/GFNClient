@@ -1783,8 +1783,8 @@ internal fun StreamSettings.adjustedForDevice(report: RuntimeCodecReport?): Stre
     val knownAv1Failure = report?.androidTvProfile == true &&
         capability?.hasKnownHighResolutionAv1Failure(this) == true
     val effectiveCodec = when {
-        knownAv1Failure -> report.bestCodecForKnownHighResolutionAv1Failure(this)
-        !codecSupported -> report.bestStreamingFallbackCodec()
+        knownAv1Failure -> requireNotNull(report).bestCodecForKnownHighResolutionAv1Failure(this)
+        !codecSupported -> requireNotNull(report).bestStreamingFallbackCodec()
         capability.supportsStreamResolution(this) != false -> codec
         else -> report?.bestStreamingCodecForResolution(this) ?: codec
     }

@@ -106,6 +106,7 @@ class InputEncoderGamepadTest {
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "SEMICO USB Keyboard System Control"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "BT5.2 Mouse"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Gaming KB Gaming KB Keyboard"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-goodix"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-fpc"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Fingerprint Sensor"))
         assertTrue(AndroidControllerInput.isControllerDevice(misleadingSources, "Xbox Wireless Controller"))

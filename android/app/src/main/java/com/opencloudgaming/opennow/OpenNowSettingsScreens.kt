@@ -1228,7 +1228,7 @@ private fun CatalogBackgroundImageSetting(settings: AppSettings, viewModel: Open
                     OutlinedButton(
                         onClick = {
                             viewModel.updateSettings(settings.copy(nerdCatalogBackgroundUri = null))
-                            releasePersistableImageReadPermission(context, customBackgroundUri)
+                            customBackgroundUri?.let { releasePersistableImageReadPermission(context, it) }
                             pruneStoredCatalogBackgroundImages(appContext)
                         },
                         modifier = Modifier.weight(1f),

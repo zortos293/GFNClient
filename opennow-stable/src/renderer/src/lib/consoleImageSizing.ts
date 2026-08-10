@@ -34,7 +34,14 @@ export function snapImageWidth(px: number): number {
 export function withImageWidth(url: string | undefined, px: number): string | undefined {
   if (!url) return url;
 
-  const isResizable = url.includes(RESIZABLE_HOST) || /;w=\d+/.test(url);
+  let hasResizableHost = false;
+  try {
+    hasResizableHost = new URL(url).hostname.toLowerCase() === RESIZABLE_HOST;
+  } catch {
+    hasResizableHost = false;
+  }
+
+  const isResizable = hasResizableHost || /;w=\d+/.test(url);
   if (!isResizable) return url;
 
   const width = snapImageWidth(px);

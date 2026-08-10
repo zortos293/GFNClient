@@ -9757,6 +9757,32 @@ button.game-card-store-chip.owned.active:hover {
   background: var(--chip);
 }
 
+.sidebar-button:disabled,
+.sidebar-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.recording-action--recording,
+.recording-action--stopping {
+  border-color: color-mix(in srgb, #fb7185 55%, var(--panel-border));
+  background: color-mix(in srgb, #fb7185 12%, var(--card));
+}
+
+.recording-action--error {
+  border-color: color-mix(in srgb, #fda4af 45%, var(--panel-border));
+}
+
+.recording-action-spinner {
+  animation: recording-action-spin 0.8s linear infinite;
+}
+
+@keyframes recording-action-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .sidebar-screenshot-button {
   display: inline-flex;
   align-items: center;

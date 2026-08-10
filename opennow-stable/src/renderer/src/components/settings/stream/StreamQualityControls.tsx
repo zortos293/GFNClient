@@ -9,9 +9,13 @@ import type {
 import {
   CODEC_PREFERENCE_OPTIONS,
   colorQualityRequiresHevc,
+  DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS,
   expandEntitledStreamResolutions,
   FALLBACK_CODEC_PREFERENCE_OPTIONS,
   getSafeFallbackEntitledResolutions,
+  MAX_RECORDING_BITRATE_MBPS,
+  RECORDING_FPS_OPTIONS,
+  RECORDING_RESOLUTION_OPTIONS,
   resolveEntitledStreamProfile,
 } from "@shared/gfn";
 import {
@@ -333,6 +337,40 @@ export function StreamQualityControls({
         />
       </div>
 
+      <div className="settings-row">
+        <label className="settings-label" htmlFor="settings-stream-recording-resolution">
+          {t("settings.video.recordingResolution")}
+        </label>
+        <div className="settings-row-control">
+          <SelectDropdown
+            id="settings-stream-recording-resolution"
+            value={settings.recordingResolution}
+            options={RECORDING_RESOLUTION_OPTIONS.map((value) => ({ value, label: value }))}
+            onChange={(value) => handleChange("recordingResolution", value as Settings["recordingResolution"])}
+            ariaLabel={t("settings.video.recordingResolution")}
+          />
+        </div>
+      </div>
+
+      <div className="settings-row">
+        <label className="settings-label">{t("settings.video.recordingFps")}</label>
+        <div className="settings-row-control">
+          <div className="settings-chip-row">
+            {RECORDING_FPS_OPTIONS.map((fps) => (
+              <button
+                key={fps}
+                type="button"
+                className={`settings-chip ${settings.recordingFps === fps ? "active" : ""}`}
+                aria-pressed={settings.recordingFps === fps}
+                onClick={() => handleChange("recordingFps", fps)}
+              >
+                <span>{fps}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="settings-row settings-row--column">
         <div className="settings-row-top">
           <label className="settings-label" htmlFor="settings-stream-recording-bitrate">
@@ -358,7 +396,10 @@ export function StreamQualityControls({
             className={`settings-chip ${settings.recordingBitrateMbps !== null ? "active" : ""}`}
             aria-pressed={settings.recordingBitrateMbps !== null}
             onClick={() => {
-              handleChange("recordingBitrateMbps", settings.recordingBitrateMbps ?? 75);
+              handleChange(
+                "recordingBitrateMbps",
+                settings.recordingBitrateMbps ?? DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS,
+              );
             }}
           >
             <span>{t("settings.video.customBitrate")}</span>
@@ -367,10 +408,10 @@ export function StreamQualityControls({
         <SettingRange
           id="settings-stream-recording-bitrate"
           className="settings-slider"
-          min={5}
-          max={200}
-          step={5}
-          value={settings.recordingBitrateMbps ?? 75}
+          min={1}
+          max={MAX_RECORDING_BITRATE_MBPS}
+          step={1}
+          value={settings.recordingBitrateMbps ?? DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS}
           disabled={settings.recordingBitrateMbps === null}
           onPreview={(value) => handlePreview("recordingBitrateMbps", value)}
           onCommit={(value) => handleChange("recordingBitrateMbps", value)}

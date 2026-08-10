@@ -2806,6 +2806,17 @@ export function App(): JSX.Element {
               streamRevealComplete={streamRevealComplete}
               isStreaming={isStreaming}
               recordingBitrateMbps={settings.recordingBitrateMbps}
+              recordingResolution={settings.recordingResolution}
+              recordingFps={settings.recordingFps}
+              onRecordingResolutionChange={(value) => {
+                void updateSetting("recordingResolution", value);
+              }}
+              onRecordingFpsChange={(value) => {
+                void updateSetting("recordingFps", value);
+              }}
+              onRecordingBitrateMbpsChange={(value) => {
+                void updateSetting("recordingBitrateMbps", value);
+              }}
               gameTitle={streamingGame?.title ?? t("app.labels.game")}
               platformStore={streamingStore ?? undefined}
               onToggleFullscreen={() => {

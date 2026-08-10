@@ -23,6 +23,14 @@ export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
 export type StatsOverlayPosition = "bottom-left" | "bottom-right" | "top-left" | "top-right";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type ErrorReportingConsent = "unset" | "granted" | "denied";
+export const RECORDING_RESOLUTION_OPTIONS = ["720p", "1080p", "1440p"] as const;
+export type RecordingResolution = typeof RECORDING_RESOLUTION_OPTIONS[number];
+export const RECORDING_FPS_OPTIONS = [30, 60] as const;
+export type RecordingFps = typeof RECORDING_FPS_OPTIONS[number];
+export const DEFAULT_RECORDING_RESOLUTION: RecordingResolution = "720p";
+export const DEFAULT_RECORDING_FPS: RecordingFps = 30;
+export const DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS = 8;
+export const MAX_RECORDING_BITRATE_MBPS = 12;
 export type RuntimePlatform =
   | "aix"
   | "android"
@@ -56,6 +64,8 @@ export interface Settings {
   maxBitrateMbps: number;
   /** Recording video bitrate in Mbps; null means let MediaRecorder choose automatically */
   recordingBitrateMbps: number | null;
+  recordingResolution: RecordingResolution;
+  recordingFps: RecordingFps;
   streamClientMode: StreamClientMode;
   nativeStreamerBackend: NativeStreamerBackendPreference;
   nativeVideoBackend: NativeVideoBackendPreference;
@@ -210,6 +220,31 @@ export function resolveRuntimePlatform(platform: string): RuntimePlatform {
   return "unknown";
 }
 
+export function normalizeRecordingResolution(raw: unknown): RecordingResolution {
+  return RECORDING_RESOLUTION_OPTIONS.includes(raw as RecordingResolution)
+    ? raw as RecordingResolution
+    : DEFAULT_RECORDING_RESOLUTION;
+}
+
+export function normalizeRecordingFps(raw: unknown): RecordingFps {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return DEFAULT_RECORDING_FPS;
+  }
+  return value > 45 ? 60 : 30;
+}
+
+export function normalizeRecordingBitrateMbps(raw: unknown): number | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(1, Math.min(MAX_RECORDING_BITRATE_MBPS, Math.round(value)));
+}
+
 export function createPlatformShortcutDefaults(platform: string): PlatformShortcutDefaults {
   const isMacOs = resolveRuntimePlatform(platform) === "darwin";
   const sidebarToggle = isMacOs ? "Meta+G" : "Ctrl+G";
@@ -229,6 +264,8 @@ export function createDefaultSettings(platform: string): Settings {
     fps: 60,
     maxBitrateMbps: 75,
     recordingBitrateMbps: null,
+    recordingResolution: DEFAULT_RECORDING_RESOLUTION,
+    recordingFps: DEFAULT_RECORDING_FPS,
     streamClientMode: "web",
     nativeStreamerBackend: "gstreamer",
     nativeVideoBackend: "auto",

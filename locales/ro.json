@@ -16,6 +16,7 @@
       "continue": "Continuă",
       "delete": "Ștergeți",
       "done": "Gata",
+      "exit": "Exit OpenNOW",
       "open": "Deschide",
       "play": "Joacă",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Publicitate în curs",
       "mediaWillAppear": "Suportul publicitar va apărea aici de îndată ce este disponibil.",
       "advertisement": "Reclamă",
-      "titledAdvertisement": "reclamă {{title}}"
+      "titledAdvertisement": "reclamă {{title}}",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Anulează încărcarea"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Omite dialogul de selectare a serverului de nivel gratuit și lansează întotdeauna cu rutarea implicită a OpenNOW.",
       "showAntiAfkIndicator": "Afișați indicatorul anti-AFK",
       "showAntiAfkIndicatorHint": "Afișați insigna ANTI-AFK ON în timp ce Anti-AFK este activat în timpul streamingului.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Ecran complet automat",
       "autoFullScreenHint": "Introduceți automat ecranul complet când vă conectați la sau porniți o sesiune.",
       "controllerMode": "Controller Mode",

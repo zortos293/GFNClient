@@ -552,10 +552,12 @@
     "title": "Ayarlar",
     "saved": "Kaydedildi",
     "searchPlaceholder": "Arama ayarları...",
+    "clearSearch": "Clear settings search",
     "noMatches": "\"{{query}}\" ile eşleşen ayar yok.",
     "sections": {
       "account": "Account",
       "stream": "Akış",
+      "diagnostics": "Diagnostics",
       "nativeStreamer": "Yerel Yayıncı",
       "game": "Oyun",
       "audio": "Ses",
@@ -647,7 +649,11 @@
       "recently": "recently"
     },
     "video": {
-      "title": "video",
+      "title": "Stream Quality",
+      "profile": "Quality Profile",
+      "profileHint": "Set the stream resolution, frame rate, and bandwidth ceiling.",
+      "codecAndColor": "Codec & Color",
+      "codecAndColorHint": "Choose the preferred decoder format, safe fallback, and color format.",
       "aspectRatio": "En Boy Oranı",
       "resolution": "Çözünürlük",
       "fps": "FPS",
@@ -675,6 +681,10 @@
       "softwareCpu": "Yazılım (CPU)",
       "sessionProxy": "Oturum proxy'si",
       "sessionProxyHint": "Yalnızca Nvidia oturumu oluşturma ve kuyruk yoklaması için kullanılır. Akış/sinyal trafiğine proxy uygulanmaz. Zortos, GitHub Sponsorları/destekçileri için bir vekil sağlar.",
+      "session": "Session & Compatibility",
+      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "processing": "Video Processing",
+      "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
         "useButton": "Use Zortos community proxy",
         "enabledBadge": "Using Zortos community proxy",
@@ -694,6 +704,18 @@
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
       "launchInConsoleMode": "Console Mode (TV / Big Picture)",
       "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+    },
+    "recording": {
+      "title": "Browser Recording",
+      "description": "Local browser recording controls. Changes apply to the next recording and do not affect the native streamer."
+    },
+    "diagnostics": {
+      "title": "Diagnostics",
+      "description": "Frame Stats overlay preferences and browser codec hardware checks.",
+      "frameStats": "Frame Stats Overlay",
+      "frameStatsHint": "Choose when the in-stream performance HUD appears and what session timing it includes.",
+      "codecHardware": "Codec & Hardware",
+      "codecHardwareHint": "Control browser acceleration preferences and test local WebRTC codec support."
     },
     "videoFilters": {
       "title": "Video Filters",

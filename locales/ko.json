@@ -552,10 +552,12 @@
     "title": "설정",
     "saved": "저장됨",
     "searchPlaceholder": "검색 설정...",
+    "clearSearch": "Clear settings search",
     "noMatches": "\"{{query}}\"와 일치하는 설정이 없습니다.",
     "sections": {
       "account": "Account",
       "stream": "스트림",
+      "diagnostics": "Diagnostics",
       "nativeStreamer": "네이티브 스트리머",
       "game": "게임",
       "audio": "오디오",
@@ -647,7 +649,11 @@
       "recently": "최근"
     },
     "video": {
-      "title": "비디오",
+      "title": "Stream Quality",
+      "profile": "Quality Profile",
+      "profileHint": "Set the stream resolution, frame rate, and bandwidth ceiling.",
+      "codecAndColor": "Codec & Color",
+      "codecAndColorHint": "Choose the preferred decoder format, safe fallback, and color format.",
       "aspectRatio": "종횡비",
       "resolution": "해상도",
       "fps": "FPS",
@@ -675,6 +681,10 @@
       "softwareCpu": "소프트웨어(CPU)",
       "sessionProxy": "세션 프록시",
       "sessionProxyHint": "Nvidia 세션 생성 및 대기열 폴링에만 사용됩니다. 스트리밍/시그널링 트래픽은 프록시되지 않습니다. Zortos는 GitHub 후원자/서포터를 위한 프록시를 제공합니다.",
+      "session": "Session & Compatibility",
+      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "processing": "Video Processing",
+      "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
         "useButton": "Use Zortos community proxy",
         "enabledBadge": "Using Zortos community proxy",
@@ -694,6 +704,18 @@
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
       "launchInConsoleMode": "Console Mode (TV / Big Picture)",
       "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+    },
+    "recording": {
+      "title": "Browser Recording",
+      "description": "Local browser recording controls. Changes apply to the next recording and do not affect the native streamer."
+    },
+    "diagnostics": {
+      "title": "Diagnostics",
+      "description": "Frame Stats overlay preferences and browser codec hardware checks.",
+      "frameStats": "Frame Stats Overlay",
+      "frameStatsHint": "Choose when the in-stream performance HUD appears and what session timing it includes.",
+      "codecHardware": "Codec & Hardware",
+      "codecHardwareHint": "Control browser acceleration preferences and test local WebRTC codec support."
     },
     "videoFilters": {
       "title": "Video Filters",

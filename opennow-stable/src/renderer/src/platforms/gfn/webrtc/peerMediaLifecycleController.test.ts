@@ -97,7 +97,18 @@ interface AudioElementFake {
   pause: () => void;
 }
 
-function createHarness(contexts: FakeAudioContext[]) {
+interface VideoElementFake {
+  srcObject: MediaProvider | null;
+  paused: boolean;
+  readyState: number;
+  videoWidth: number;
+  videoHeight: number;
+  play: () => Promise<void>;
+  requestVideoFrameCallback: (callback: VideoFrameRequestCallback) => number;
+  cancelVideoFrameCallback: (id: number) => void;
+}
+
+function createHarness(contexts: FakeAudioContext[], onRenderFrame = () => {}) {
   const logs: string[] = [];
   const audioElement: AudioElementFake = {
     muted: false,
@@ -112,20 +123,33 @@ function createHarness(contexts: FakeAudioContext[]) {
       audioElement.pauseCalls++;
     },
   };
-  const videoElement = { srcObject: null };
+  const videoElement: VideoElementFake = {
+    srcObject: null,
+    paused: true,
+    readyState: 0,
+    videoWidth: 0,
+    videoHeight: 0,
+    play: async () => {},
+    requestVideoFrameCallback: () => 0,
+    cancelVideoFrameCallback: () => {},
+  };
   let contextIndex = 0;
   const controller = new PeerMediaLifecycleController({
     videoElement: videoElement as unknown as HTMLVideoElement,
     audioElement: audioElement as unknown as HTMLAudioElement,
-    onRenderFrame: () => {},
+    onRenderFrame,
     log: (message) => logs.push(message),
     createAudioContext: () => contexts[contextIndex++] as unknown as AudioContext,
   });
-  return { audioElement, controller, logs };
+  return { audioElement, controller, logs, videoElement };
 }
 
 function audioTrack(id: string): MediaStreamTrack {
   return { id, kind: "audio" } as MediaStreamTrack;
+}
+
+function videoTrack(id: string): MediaStreamTrack {
+  return { id, kind: "video" } as MediaStreamTrack;
 }
 
 function installMediaStreamFake(): () => void {
@@ -261,6 +285,62 @@ test("reset invalidates pending resume fallback and leaves direct audio stopped"
     assert.equal(audioElement.muted, true);
     assert.equal(audioElement.playCalls, 0);
   } finally {
+    restoreMediaStream();
+  }
+});
+
+test("video track replacement leaves exactly one active frame callback", () => {
+  const restoreMediaStream = installMediaStreamFake();
+  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { setTimeout: () => 0 },
+  });
+  try {
+    const callbacks = new Map<number, VideoFrameRequestCallback>();
+    const cancelled: number[] = [];
+    let nextCallbackId = 1;
+    let renderedFrames = 0;
+    const { controller, videoElement } = createHarness([], () => {
+      renderedFrames++;
+    });
+    videoElement.requestVideoFrameCallback = (callback) => {
+      const id = nextCallbackId++;
+      callbacks.set(id, callback);
+      return id;
+    };
+    videoElement.cancelVideoFrameCallback = (id) => {
+      cancelled.push(id);
+      callbacks.delete(id);
+    };
+
+    controller.attachTrack(videoTrack("old"));
+    const staleCallback = callbacks.get(1);
+    assert.ok(staleCallback);
+
+    controller.attachTrack(videoTrack("current"));
+    assert.deepEqual(cancelled, [1]);
+    assert.deepEqual([...callbacks.keys()], [2]);
+
+    staleCallback(0, {} as VideoFrameCallbackMetadata);
+    assert.equal(renderedFrames, 0);
+    assert.deepEqual([...callbacks.keys()], [2]);
+
+    const currentCallback = callbacks.get(2);
+    assert.ok(currentCallback);
+    callbacks.delete(2);
+    currentCallback(0, {} as VideoFrameCallbackMetadata);
+    assert.equal(renderedFrames, 1);
+    assert.deepEqual([...callbacks.keys()], [3]);
+
+    controller.clearTracks();
+    assert.deepEqual(cancelled, [1, 3]);
+  } finally {
+    if (windowDescriptor) {
+      Object.defineProperty(globalThis, "window", windowDescriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
     restoreMediaStream();
   }
 });

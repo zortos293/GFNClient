@@ -73,6 +73,7 @@ async function appendGitHubSummary({ tests, output, exitCode }) {
 const tests = (await discoverTests("src"))
   .map((path) => path.split(sep).join("/"))
   .sort();
+tests.push("scripts/after-sign-mac.test.mjs", "scripts/windows-pe-imports.test.mjs");
 
 if (tests.length === 0) {
   console.error("No test files found under src/**/*.test.ts");
@@ -83,7 +84,7 @@ const tsxPackagePath = require.resolve("tsx/package.json");
 const tsxCliPath = join(dirname(tsxPackagePath), "dist", "cli.mjs");
 
 let output = "";
-const child = spawn(process.execPath, [tsxCliPath, "--test", ...tests], {
+const child = spawn(process.execPath, [tsxCliPath, "--test", ...process.argv.slice(2), ...tests], {
   stdio: ["inherit", "pipe", "pipe"],
 });
 

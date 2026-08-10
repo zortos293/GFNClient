@@ -447,7 +447,6 @@ export function App(): JSX.Element {
     isLoggingIn,
     activeLoginMode,
     loginError,
-    setLoginError,
     qrLoginChallenge,
     isInitializing,
     startupStatusMessage,
@@ -523,7 +522,6 @@ export function App(): JSX.Element {
     setRegions,
     subscriptionInfo,
     setSubscriptionInfo,
-    storePanelGames,
     allKnownGames,
     resetStorePanels,
     hydrateCatalogSnapshot,
@@ -1397,13 +1395,6 @@ export function App(): JSX.Element {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
 
-  const handleToggleFavoriteGame = useCallback((gameId: string): void => {
-    const favorites = settings.favoriteGameIds;
-    const exists = favorites.includes(gameId);
-    const next = exists ? favorites.filter((id) => id !== gameId) : [...favorites, gameId];
-    void updateSetting("favoriteGameIds", next);
-  }, [settings.favoriteGameIds, updateSetting]);
-
   const handleMouseAccelerationChange = useCallback((value: number) => {
     void updateSetting("mouseAcceleration", value);
   }, [updateSetting]);
@@ -1819,6 +1810,7 @@ export function App(): JSX.Element {
     resolveSubscriptionInfoForLaunch,
     settings,
     startPlaytimeSession,
+    stopSessionByTarget,
     subscriptionInfo,
     t,
     variantByGameId,

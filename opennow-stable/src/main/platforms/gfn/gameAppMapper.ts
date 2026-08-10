@@ -504,8 +504,8 @@ export function dedupeGames(games: GameInfo[]): GameInfo[] {
       screenshotUrl: existing.screenshotUrl ?? game.screenshotUrl,
       screenshotUrls: [...new Set([...(existing.screenshotUrls ?? []), ...(game.screenshotUrls ?? [])])],
       imageUrlsByType: {
-        ...(game.imageUrlsByType ?? {}),
-        ...(existing.imageUrlsByType ?? {}),
+        ...game.imageUrlsByType,
+        ...existing.imageUrlsByType,
       },
       playType: existing.playType ?? game.playType,
       membershipTierLabel: existing.membershipTierLabel ?? game.membershipTierLabel,

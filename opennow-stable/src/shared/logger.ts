@@ -41,19 +41,19 @@ const SENSITIVE_PATTERNS = [
   // Email addresses
   { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replacement: "[Redacted for privacy]" },
   // Authorization tokens (GFNJWT, Bearer, etc.)
-  { pattern: /Authorization["']?\s*[:=]\s*["']?[a-zA-Z0-9_\-]+\s+[a-zA-Z0-9_\-]+/gi, replacement: 'Authorization: [Redacted for privacy]' },
+  { pattern: /Authorization["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]+\s+[a-zA-Z0-9_-]+/gi, replacement: 'Authorization: [Redacted for privacy]' },
   // JWT tokens (three base64url parts separated by dots)
-  { pattern: /[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}/g, replacement: "[Redacted for privacy]" },
+  { pattern: /[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g, replacement: "[Redacted for privacy]" },
   // Client tokens, access tokens
-  { pattern: /client[_-]?token["']?\s*[:=]\s*["']?[a-zA-Z0-9_\-]{20,}/gi, replacement: 'client_token: [Redacted for privacy]' },
-  { pattern: /access[_-]?token["']?\s*[:=]\s*["']?[a-zA-Z0-9_\-]{20,}/gi, replacement: 'access_token: [Redacted for privacy]' },
-  { pattern: /refresh[_-]?token["']?\s*[:=]\s*["']?[a-zA-Z0-9_\-]{20,}/gi, replacement: 'refresh_token: [Redacted for privacy]' },
+  { pattern: /client[_-]?token["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/gi, replacement: 'client_token: [Redacted for privacy]' },
+  { pattern: /access[_-]?token["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/gi, replacement: 'access_token: [Redacted for privacy]' },
+  { pattern: /refresh[_-]?token["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/gi, replacement: 'refresh_token: [Redacted for privacy]' },
   // Session IDs (UUID-like)
   { pattern: /session[_-]?id["']?\s*[:=]\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, replacement: 'session_id: [Redacted for privacy]' },
   // Passwords
   { pattern: /password["']?\s*[:=]\s*["']?[^\s"']{4,}/gi, replacement: 'password: [Redacted for privacy]' },
   // API keys
-  { pattern: /api[_-]?key["']?\s*[:=]\s*["']?[a-zA-Z0-9_\-]{16,}/gi, replacement: 'api_key: [Redacted for privacy]' },
+  { pattern: /api[_-]?key["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]{16,}/gi, replacement: 'api_key: [Redacted for privacy]' },
   // Credential/secret
   { pattern: /credential["']?\s*[:=]\s*["']?[^\s"']{8,}/gi, replacement: 'credential: [Redacted for privacy]' },
   { pattern: /secret["']?\s*[:=]\s*["']?[^\s"']{8,}/gi, replacement: 'secret: [Redacted for privacy]' },
@@ -65,7 +65,7 @@ const SENSITIVE_PATTERNS = [
   // User IDs that look like UUIDs
   { pattern: /user[_-]?id["']?\s*[:=]\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, replacement: 'user_id: [Redacted for privacy]' },
   // OAuth codes
-  { pattern: /code["']?\s*[:=]\s*["']?[a-zA-Z0-9_\-]{20,}/gi, replacement: 'code: [Redacted for privacy]' },
+  { pattern: /code["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/gi, replacement: 'code: [Redacted for privacy]' },
   // Peer names/IDs in signaling
   { pattern: /peer[_-]?name["']?\s*[:=]\s*["']?peer-\d+/gi, replacement: 'peer_name: [Redacted for privacy]' },
 ];

@@ -16,6 +16,7 @@
       "continue": "Kontynuuj",
       "delete": "Usuń",
       "done": "Gotowe",
+      "exit": "Exit OpenNOW",
       "open": "Otwórz",
       "play": "Graj",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Reklama w toku",
       "mediaWillAppear": "Reklamy pokażą się tutaj, kiedy będą dostępne.",
       "advertisement": "Reklama",
-      "titledAdvertisement": "Reklama {{title}}"
+      "titledAdvertisement": "Reklama {{title}}",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Anuluj ładowanie"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Pomiń dialog wyboru serwera tieru darmowego i zawsze uruchamiaj używając domyślnego wyboru OpenNOW.",
       "showAntiAfkIndicator": "Pokaż wskaźnik Anti-AFK",
       "showAntiAfkIndicatorHint": "Pokaż odznakę \"Anty-AFK włączone\" kiedy Anty-AFK jest włączone podczas streamu.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Automatyczny pełny ekran",
       "autoFullScreenHint": "Automatycznie przechodź w tryb pełnoekranowy po połączeniu lub rozpoczęciu sesji.",
       "controllerMode": "Controller Mode",

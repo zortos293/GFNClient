@@ -36,6 +36,7 @@ import { StreamQuickMenu } from "./stream/quick-menu/StreamQuickMenu";
 import { MotionSpinner } from "./MotionSpinner";
 import { isStreamPointerLocked } from "../lib/pointerLock";
 import type { StatsOverlayMode } from "../utils/streamStatsHud";
+import { RecurringReminderScheduler, shouldScheduleAntiAfkReminder } from "./stream/antiAfkReminder";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
@@ -65,6 +66,8 @@ interface StreamViewProps {
   antiAfkEnabled: boolean;
   antiAfkAckNonce: number;
   showAntiAfkIndicator: boolean;
+  antiAfkReminderEveryMinutes: number;
+  antiAfkReminderDurationSeconds: number;
   exitPrompt: {
     open: boolean;
     gameTitle: string;
@@ -133,6 +136,8 @@ export function StreamView({
   antiAfkEnabled,
   antiAfkAckNonce,
   showAntiAfkIndicator,
+  antiAfkReminderEveryMinutes,
+  antiAfkReminderDurationSeconds,
   exitPrompt,
   sessionStartedAtMs,
   isStreaming,
@@ -181,6 +186,7 @@ export function StreamView({
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [antiAfkToggleAck, setAntiAfkToggleAck] = useState<"on" | "off" | null>(null);
+  const [antiAfkReminderVisible, setAntiAfkReminderVisible] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [pointerLockHintVisible, setPointerLockHintVisible] = useState(false);
   const pointerLockHintTimerRef = useRef<number | null>(null);
@@ -344,6 +350,32 @@ export function StreamView({
       window.clearTimeout(hideTimer);
     };
   }, [antiAfkAckNonce, antiAfkEnabled, showAntiAfkIndicator, isConnecting]);
+
+  useEffect(() => {
+    const intervalMs = Math.max(0, Math.floor(antiAfkReminderEveryMinutes || 0)) * 60 * 1000;
+    const durationMs = Math.max(1, Math.floor(antiAfkReminderDurationSeconds || 1)) * 1000;
+    const scheduler = new RecurringReminderScheduler(window, setAntiAfkReminderVisible);
+    scheduler.start(
+      shouldScheduleAntiAfkReminder({
+        antiAfkEnabled,
+        isStreaming,
+        isConnecting,
+        showPersistentIndicator: showAntiAfkIndicator,
+        intervalMs,
+      }),
+      intervalMs,
+      durationMs,
+    );
+
+    return () => scheduler.stop();
+  }, [
+    antiAfkEnabled,
+    antiAfkReminderDurationSeconds,
+    antiAfkReminderEveryMinutes,
+    isConnecting,
+    isStreaming,
+    showAntiAfkIndicator,
+  ]);
 
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const sessionTimeRemainingText = formatSessionTimeRemaining(sessionTimeRemainingSeconds);
@@ -791,10 +823,10 @@ export function StreamView({
         </div>
       )}
 
-      {antiAfkToggleAck && !isConnecting && (
-        <div className={`sv-afk-ack sv-afk-ack--${antiAfkToggleAck}`} role="status" aria-live="polite">
+      {(antiAfkToggleAck || antiAfkReminderVisible) && !isConnecting && (
+        <div className={`sv-afk-ack sv-afk-ack--${antiAfkToggleAck ?? "on"}`} role="status" aria-live="polite">
           <span className="sv-afk-ack-dot" aria-hidden />
-          <span>{antiAfkToggleAck === "on" ? "Anti-AFK on" : "Anti-AFK off"}</span>
+          <span>{antiAfkToggleAck === "off" ? "Anti-AFK off" : "Anti-AFK on"}</span>
         </div>
       )}
 

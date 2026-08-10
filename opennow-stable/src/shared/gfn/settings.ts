@@ -104,6 +104,8 @@ export interface Settings {
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
   showAntiAfkIndicator: boolean;
+  antiAfkReminderEveryMinutes: number;
+  antiAfkReminderDurationSeconds: number;
   showStatsOnLaunch: boolean;
   statsOverlayPosition: StatsOverlayPosition;
   /** Skip the free-tier queue server selection modal and launch with default routing */
@@ -294,6 +296,8 @@ export function createDefaultSettings(platform: string): Settings {
     microphoneDeviceId: "",
     hideStreamButtons: false,
     showAntiAfkIndicator: true,
+    antiAfkReminderEveryMinutes: 15,
+    antiAfkReminderDurationSeconds: 5,
     showStatsOnLaunch: false,
     statsOverlayPosition: "bottom-left",
     hideServerSelector: false,

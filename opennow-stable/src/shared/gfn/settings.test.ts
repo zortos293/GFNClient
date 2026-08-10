@@ -53,6 +53,13 @@ test("creates fresh mutable nested settings defaults", () => {
   assert.equal(second.videoShader.sharpen, 40);
 });
 
+test("uses brief recurring Anti-AFK reminder defaults", () => {
+  const settings = createDefaultSettings("win32");
+
+  assert.equal(settings.antiAfkReminderEveryMinutes, 15);
+  assert.equal(settings.antiAfkReminderDurationSeconds, 5);
+});
+
 test("creates fresh platform shortcut collections", () => {
   const first = createPlatformShortcutDefaults("linux");
   const second = createPlatformShortcutDefaults("linux");

@@ -189,6 +189,54 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
           </div>
 
           <div className="settings-row settings-row--column">
+            <div className="settings-row-top">
+              <label className="settings-label" htmlFor="settings-interface-anti-afk-reminder-interval">
+                {t("settings.interface.antiAfkReminderInterval")}
+              </label>
+              <span className="settings-value-badge">
+                {settings.antiAfkReminderEveryMinutes === 0
+                  ? t("settings.interface.off")
+                  : t("settings.interface.everyMinutes", { count: settings.antiAfkReminderEveryMinutes })}
+              </span>
+            </div>
+            <SettingRange
+              id="settings-interface-anti-afk-reminder-interval"
+              className="settings-slider"
+              min={0}
+              max={120}
+              step={5}
+              value={settings.antiAfkReminderEveryMinutes}
+              onPreview={(value) => handlePreview("antiAfkReminderEveryMinutes", value)}
+              onCommit={(value) => handleChange("antiAfkReminderEveryMinutes", value)}
+            />
+            <span className="settings-subtle-hint">{t("settings.interface.antiAfkReminderIntervalHint")}</span>
+          </div>
+
+          {settings.antiAfkReminderEveryMinutes > 0 && (
+            <div className="settings-row settings-row--column">
+              <div className="settings-row-top">
+                <label className="settings-label" htmlFor="settings-interface-anti-afk-reminder-duration">
+                  {t("settings.interface.antiAfkReminderDuration")}
+                </label>
+                <span className="settings-value-badge">
+                  {t("app.units.seconds", { value: settings.antiAfkReminderDurationSeconds })}
+                </span>
+              </div>
+              <SettingRange
+                id="settings-interface-anti-afk-reminder-duration"
+                className="settings-slider"
+                min={5}
+                max={120}
+                step={5}
+                value={settings.antiAfkReminderDurationSeconds}
+                onPreview={(value) => handlePreview("antiAfkReminderDurationSeconds", value)}
+                onCommit={(value) => handleChange("antiAfkReminderDurationSeconds", value)}
+              />
+              <span className="settings-subtle-hint">{t("settings.interface.antiAfkReminderDurationHint")}</span>
+            </div>
+          )}
+
+          <div className="settings-row settings-row--column">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-auto-fullscreen">
                 <span className="settings-label-title">{t("settings.interface.autoFullScreen")}</span>

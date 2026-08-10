@@ -2785,6 +2785,8 @@ export function App(): JSX.Element {
               antiAfkEnabled={antiAfkEnabled}
               antiAfkAckNonce={antiAfkAckNonce}
               showAntiAfkIndicator={settings.showAntiAfkIndicator}
+              antiAfkReminderEveryMinutes={settings.antiAfkReminderEveryMinutes}
+              antiAfkReminderDurationSeconds={settings.antiAfkReminderDurationSeconds}
               exitPrompt={exitPrompt}
               sessionStartedAtMs={sessionStartedAtMs}
               sessionCounterEnabled={settings.sessionCounterEnabled}

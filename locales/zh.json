@@ -16,6 +16,7 @@
       "continue": "继续",
       "delete": "删除",
       "done": "完成",
+      "exit": "Exit OpenNOW",
       "open": "打开",
       "play": "玩",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "广告进行中",
       "mediaWillAppear": "广告媒体一旦可用就会出现在此处。",
       "advertisement": "广告",
-      "titledAdvertisement": "{{title}} 广告"
+      "titledAdvertisement": "{{title}} 广告",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "取消加载"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "跳过免费层服务器选择对话框并始终使用 OpenNOW 的默认路由启动。",
       "showAntiAfkIndicator": "显示防AFK指示器",
       "showAntiAfkIndicatorHint": "在直播期间启用防AFK 时，显示ANTI-AFK ON 徽章。",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "自动全屏",
       "autoFullScreenHint": "连接或启动会话时自动进入全屏。",
       "controllerMode": "Controller Mode",

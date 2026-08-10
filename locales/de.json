@@ -16,6 +16,7 @@
       "continue": "Weiter",
       "delete": "Löschen",
       "done": "Fertig",
+      "exit": "Exit OpenNOW",
       "open": "Offen",
       "play": "Spielen",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Anzeige in Bearbeitung",
       "mediaWillAppear": "Das Werbemittel erscheint hier, sobald es verfügbar ist.",
       "advertisement": "Werbung",
-      "titledAdvertisement": "{{title}}-Werbung"
+      "titledAdvertisement": "{{title}}-Werbung",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Laden abbrechen"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Überspringen Sie das Dialogfeld zur Auswahl des Free-Tier-Servers und starten Sie immer mit dem Standardrouting von OpenNOW.",
       "showAntiAfkIndicator": "Anti-AFK-Indikator anzeigen",
       "showAntiAfkIndicatorHint": "Zeigen Sie beim Streaming das Abzeichen „ANTI-AFK EIN“ an, während Anti-AFK aktiviert ist.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Automatischer Vollbildmodus",
       "autoFullScreenHint": "Wechseln Sie automatisch in den Vollbildmodus, wenn Sie eine Verbindung herstellen oder eine Sitzung starten.",
       "controllerMode": "Controller Mode",

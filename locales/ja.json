@@ -16,6 +16,7 @@
       "continue": "続ける",
       "delete": "削除",
       "done": "完了",
+      "exit": "Exit OpenNOW",
       "open": "開く",
       "play": "プレイ",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "広告掲載中",
       "mediaWillAppear": "Ad media will appear here as soon as it is available.",
       "advertisement": "Advertisement",
-      "titledAdvertisement": "{{title}} 広告"
+      "titledAdvertisement": "{{title}} 広告",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Cancel loading"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "フリーティアのサーバー選択ダイアログをスキップし、常にOpenNOWのデフォルトのルーティングで起動します。",
       "showAntiAfkIndicator": "Anti-AFKインジケーターを表示",
       "showAntiAfkIndicatorHint": "ストリーミング中に Anti-AFK が有効になっている間は、ANTI-AFK ON バッジを表示します。",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "自動フルスクリーン",
       "autoFullScreenHint": "セッションへの接続または開始時に自動的にフルスクリーンを入力します。",
       "controllerMode": "Controller Mode",

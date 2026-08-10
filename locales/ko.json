@@ -16,6 +16,7 @@
       "continue": "계속",
       "delete": "삭제",
       "done": "완료",
+      "exit": "Exit OpenNOW",
       "open": "열기",
       "play": "플레이",
       "buy": "구매",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "광고 진행 중",
       "mediaWillAppear": "광고 미디어가 출시되는 대로 여기에 표시됩니다.",
       "advertisement": "광고",
-      "titledAdvertisement": "{{title}} 광고"
+      "titledAdvertisement": "{{title}} 광고",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "로드 취소"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "무료 계층 서버 선택 대화 상자를 건너뛰고 항상 OpenNOW의 기본 라우팅으로 실행하세요.",
       "showAntiAfkIndicator": "AFK 방지 표시기 표시",
       "showAntiAfkIndicatorHint": "스트리밍 중에 Anti-AFK가 활성화된 동안 ANTI-AFK ON 배지를 표시합니다.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "자동 전체 화면",
       "autoFullScreenHint": "세션에 연결하거나 시작할 때 자동으로 전체 화면으로 전환됩니다.",
       "controllerMode": "Controller Mode",

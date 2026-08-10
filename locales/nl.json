@@ -16,6 +16,7 @@
       "continue": "Ga door",
       "delete": "Verwijderen",
       "done": "Klaar",
+      "exit": "Exit OpenNOW",
       "open": "Openen",
       "play": "Spelen",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Advertentie in behandeling",
       "mediaWillAppear": "Advertentiemedia verschijnen hier zodra deze beschikbaar zijn.",
       "advertisement": "Advertentie",
-      "titledAdvertisement": "{{title}}-advertentie"
+      "titledAdvertisement": "{{title}}-advertentie",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Annuleer het laden"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Sla het free-tier serverselectiedialoogvenster over en start altijd met de standaardroutering van OpenNOW.",
       "showAntiAfkIndicator": "Toon anti-AFK-indicator",
       "showAntiAfkIndicatorHint": "Toon de ANTI-AFK ON-badge terwijl Anti-AFK is ingeschakeld tijdens het streamen.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Automatisch volledig scherm",
       "autoFullScreenHint": "Ga automatisch naar volledig scherm wanneer u verbinding maakt of een sessie start.",
       "controllerMode": "Controller Mode",

@@ -1,5 +1,5 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon, MessageSquareText } from "lucide-react";
+import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon, MessageSquareText, Power } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 import { useTranslation } from "../i18n";
 import { OpenNowLogoMark } from "./OpenNowLogoMark";
@@ -22,6 +22,7 @@ interface NavbarProps {
   onRemoveAccount: (userId: string, restoreFocusTarget?: HTMLElement) => void;
   onAddAccount: () => void;
   onLogoutAll: (restoreFocusTarget?: HTMLElement) => void;
+  onExitApp: () => void;
   onOpenFeedback?: () => void;
   onBlockingOverlayChange?: (blocking: boolean) => void;
   controllerMode?: boolean;
@@ -52,6 +53,7 @@ export function Navbar({
   onRemoveAccount,
   onAddAccount,
   onLogoutAll,
+  onExitApp,
   onOpenFeedback,
   onBlockingOverlayChange,
   controllerMode = false,
@@ -534,6 +536,19 @@ export function Navbar({
                     }}
                   >
                     {t("auth.accounts.signOutAllAccounts")}
+                  </button>
+                  <div className="navbar-account-divider" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="navbar-account-exit"
+                    role="menuitem"
+                    onClick={() => {
+                      setAccountDropdownOpen(false);
+                      onExitApp();
+                    }}
+                  >
+                    <Power size={14} />
+                    <span>{t("app.actions.exit")}</span>
                   </button>
                 </div>
               )}

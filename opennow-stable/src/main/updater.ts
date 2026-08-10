@@ -29,6 +29,7 @@ interface AppUpdaterControllerOptions {
   onStateChanged: (state: AppUpdaterState) => void;
   automaticChecksEnabled: boolean;
   updateChannel: UpdateChannel;
+  disabledReason?: string;
   onBeforeQuitAndInstall?: () => void;
   onQuitAndInstallError?: () => void;
 }
@@ -80,8 +81,10 @@ function createDisabledState(buildInfo: ReturnType<typeof getAppBuildInfo>, mess
 export function createAppUpdaterController(options: AppUpdaterControllerOptions): AppUpdaterController {
   const buildInfo = getAppBuildInfo();
   const currentVersion = buildInfo.version;
-  if (!app.isPackaged) {
-    const disabledState = createDisabledState(buildInfo, "Auto-updates are only available in packaged builds.");
+  const disabledReason = options.disabledReason
+    ?? (!app.isPackaged ? "Auto-updates are only available in packaged builds." : undefined);
+  if (disabledReason) {
+    const disabledState = createDisabledState(buildInfo, disabledReason);
     return {
       initialize() {
         options.onStateChanged(disabledState);

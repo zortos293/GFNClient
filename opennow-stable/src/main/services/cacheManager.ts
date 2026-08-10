@@ -19,15 +19,12 @@ const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const THUMBNAILS_DIRECTORY = "media-thumbs";
 
 class CacheManager {
-  private cacheDir: string;
+  private cacheDir = "";
   private initialized: boolean = false;
-
-  constructor() {
-    this.cacheDir = join(app.getPath("userData"), CACHE_DIRECTORY);
-  }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    this.cacheDir = join(app.getPath("userData"), CACHE_DIRECTORY);
     try {
       await mkdir(this.cacheDir, { recursive: true });
       this.initialized = true;

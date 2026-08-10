@@ -1,6 +1,6 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
 import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon, MessageSquareText, Power } from "lucide-react";
-import { useEffect, useRef, useState, type JSX } from "react";
+import { memo, useEffect, useRef, useState, type JSX } from "react";
 import { useTranslation } from "../i18n";
 import { OpenNowLogoMark } from "./OpenNowLogoMark";
 import { MotionSpinner } from "./MotionSpinner";
@@ -37,7 +37,7 @@ function getTierDisplay(tier: string): { labelKey: string; className: string } {
   return { labelKey: "app.labels.free", className: "tier-free" };
 }
 
-export function Navbar({
+export const Navbar = memo(function Navbar({
   currentPage,
   onNavigate,
   user,
@@ -564,4 +564,4 @@ export function Navbar({
       {modal}
     </nav>
   );
-}
+});

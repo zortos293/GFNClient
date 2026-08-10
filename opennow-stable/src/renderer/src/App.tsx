@@ -420,6 +420,7 @@ export function App(): JSX.Element {
   });
   const resetLaunchRuntimeRef = useRef<(options?: { keepLaunchError?: boolean; keepStreamingContext?: boolean }) => void>(() => {});
   const refreshNavbarActiveSessionRef = useRef<(sessionOverride?: AuthSession) => Promise<void>>(async () => {});
+  const navbarActiveSessionRefreshIdRef = useRef(0);
 
   const onBootstrapSettings = useCallback((loadedSettings: Settings, _sessionProxyUrl: string | undefined) => {
     setSettings(loadedSettings);
@@ -829,6 +830,7 @@ export function App(): JSX.Element {
     sessionOverride?: AuthSession,
     streamingBaseUrlOverride?: string,
   ): Promise<void> => {
+    const refreshId = ++navbarActiveSessionRefreshIdRef.current;
     const session = sessionOverride ?? authSession;
     if (!session) {
       setNavbarActiveSession(null);
@@ -843,6 +845,7 @@ export function App(): JSX.Element {
     }
     try {
       const activeSessions = await window.openNow.getActiveSessions(token, streamingBaseUrl);
+      if (navbarActiveSessionRefreshIdRef.current !== refreshId) return;
       const snapshot = runtimeSnapshotRef.current;
       const resumableSessions = activeSessions.filter((entry) => entry.status === 3 || entry.status === 2);
       const candidate =
@@ -856,7 +859,9 @@ export function App(): JSX.Element {
         null;
       setNavbarActiveSession(candidate);
     } catch (error) {
-      console.warn("Failed to refresh active sessions:", error);
+      if (navbarActiveSessionRefreshIdRef.current === refreshId) {
+        console.warn("Failed to refresh active sessions:", error);
+      }
     }
   }, [authSession, effectiveStreamingBaseUrl, settings.region]);
 
@@ -918,11 +923,31 @@ export function App(): JSX.Element {
     if (!authSession || streamStatus !== "idle") {
       return;
     }
-    void refreshNavbarActiveSession();
+    let inFlight = false;
+    const refresh = async (): Promise<void> => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        await refreshNavbarActiveSession();
+      } finally {
+        inFlight = false;
+      }
+    };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState !== "hidden") {
+        void refresh();
+      }
+    };
+    void refresh();
     const timer = window.setInterval(() => {
-      void refreshNavbarActiveSession();
+      void refresh();
     }, 10000);
-    return () => window.clearInterval(timer);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      navbarActiveSessionRefreshIdRef.current += 1;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
 
   useEffect(() => {
@@ -935,7 +960,16 @@ export function App(): JSX.Element {
       return;
     }
     codecStartupTestAttemptedRef.current = true;
-    void runCodecTest();
+    if (typeof window.requestIdleCallback === "function") {
+      const idleCallbackId = window.requestIdleCallback(() => {
+        void runCodecTest();
+      }, { timeout: 4000 });
+      return () => window.cancelIdleCallback(idleCallbackId);
+    }
+    const timer = window.setTimeout(() => {
+      void runCodecTest();
+    }, 1500);
+    return () => window.clearTimeout(timer);
   }, [codecResults, codecTesting, runCodecTest]);
 
   const shortcuts = useMemo(() => {
@@ -2445,6 +2479,10 @@ export function App(): JSX.Element {
       playtime,
     );
   }, [libraryGames, searchQuery, catalogSelectedSortId, playtime]);
+  const librarySortOptions = useMemo(
+    () => catalogSortOptions.filter((option) => option.id !== "relevance"),
+    [catalogSortOptions],
+  );
 
   const activeSessionAppIds = useMemo(
     () => (navbarActiveSession ? [navbarActiveSession.appId] : []),
@@ -2473,6 +2511,12 @@ export function App(): JSX.Element {
     }
     setCurrentPage(nextPage);
   }, [currentPage]);
+  const navigateToPreviousControllerPage = useCallback((): void => {
+    navigateControllerPage(-1);
+  }, [navigateControllerPage]);
+  const navigateToNextControllerPage = useCallback((): void => {
+    navigateControllerPage(1);
+  }, [navigateControllerPage]);
 
   const handleNavigate = useCallback((page: AppPage): void => {
     if (page === "settings" && currentPage !== "settings") {
@@ -2507,6 +2551,24 @@ export function App(): JSX.Element {
     setReleaseHighlightsPayload(null);
     setReleaseHighlightsIsAuto(false);
   }, [releaseHighlightsIsAuto]);
+
+  const handleNavbarResumeSession = useCallback((): void => {
+    void handleResumeFromNavbar();
+  }, [handleResumeFromNavbar]);
+  const handleNavbarTerminateSession = useCallback((): void => {
+    void handleTerminateNavbarSession();
+  }, [handleTerminateNavbarSession]);
+  const handleNavbarRemoveAccount = useCallback((userId: string, restoreFocusTarget?: HTMLElement): void => {
+    accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
+    void handleRemoveAccount(userId);
+  }, [handleRemoveAccount]);
+  const handleNavbarLogoutAll = useCallback((restoreFocusTarget?: HTMLElement): void => {
+    accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
+    handleLogout();
+  }, [handleLogout]);
+  const handleOpenFeedback = useCallback((): void => {
+    setFeedbackOpen(true);
+  }, []);
 
   const handleErrorReportingConsent = useCallback(async (granted: boolean): Promise<void> => {
     await updateSetting("errorReportingConsent", granted ? "granted" : "denied");
@@ -2646,25 +2708,15 @@ export function App(): JSX.Element {
         activeSessionGameTitle={activeSessionGameTitle}
         isResumingSession={isResumingNavbarSession}
         isTerminatingSession={isTerminatingNavbarSession}
-        onResumeSession={() => {
-          void handleResumeFromNavbar();
-        }}
-        onTerminateSession={() => {
-          void handleTerminateNavbarSession();
-        }}
+        onResumeSession={handleNavbarResumeSession}
+        onTerminateSession={handleNavbarTerminateSession}
         savedAccounts={savedAccounts}
         onSwitchAccount={handleSwitchAccount}
-        onRemoveAccount={(userId, restoreFocusTarget) => {
-          accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
-          void handleRemoveAccount(userId);
-        }}
+        onRemoveAccount={handleNavbarRemoveAccount}
         onAddAccount={handleAddAccount}
-        onLogoutAll={(restoreFocusTarget) => {
-          accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
-          handleLogout();
-        }}
+        onLogoutAll={handleNavbarLogoutAll}
         onExitApp={handleExitApp}
-        onOpenFeedback={() => setFeedbackOpen(true)}
+        onOpenFeedback={handleOpenFeedback}
         onBlockingOverlayChange={setNavbarOverlayBlocking}
         controllerMode={effectiveControllerMode}
       />
@@ -2708,8 +2760,8 @@ export function App(): JSX.Element {
                 onBuyGame={handleBuyGame}
                 onMarkGameOwned={handleMarkGameOwned}
                 markOwnedInFlightByVariantId={markOwnedInFlightByVariantId}
-                onPreviousControllerPage={() => navigateControllerPage(-1)}
-                onNextControllerPage={() => navigateControllerPage(1)}
+                onPreviousControllerPage={navigateToPreviousControllerPage}
+                onNextControllerPage={navigateToNextControllerPage}
               />
             )}
 
@@ -2729,7 +2781,7 @@ export function App(): JSX.Element {
                   selectedVariantByGameId={variantByGameId}
                   onSelectGameVariant={handleSelectGameVariant}
                   libraryCount={libraryGames.length}
-                  sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
+                  sortOptions={librarySortOptions}
                   selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
                   onSortChange={setCatalogSelectedSortId}
                   controllerMode={effectiveControllerMode}
@@ -2737,8 +2789,8 @@ export function App(): JSX.Element {
                   featuredGames={featuredGames.length > 0 ? featuredGames : games}
                   activeSessionAppIds={activeSessionAppIds}
                   onBuyGame={handleBuyGame}
-                  onPreviousControllerPage={() => navigateControllerPage(-1)}
-                  onNextControllerPage={() => navigateControllerPage(1)}
+                  onPreviousControllerPage={navigateToPreviousControllerPage}
+                  onNextControllerPage={navigateToNextControllerPage}
                 />
               </PageErrorBoundary>
             )}

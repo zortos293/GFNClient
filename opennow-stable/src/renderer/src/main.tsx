@@ -1,6 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { scan } from "react-scan";
 
 import { initLogCapture } from "@shared/logger";
 import { App } from "./App";
@@ -13,7 +12,7 @@ initLogCapture("renderer");
 void initializeLocale();
 
 if (import.meta.env.DEV) {
-  scan();
+  void import("react-scan").then(({ scan }) => scan());
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

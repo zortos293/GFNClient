@@ -140,6 +140,7 @@ export function useCatalogData({
   const storePanelsLoadedContextRef = useRef("");
   const storePanelsLoadIdRef = useRef(0);
   const runtimeDataLoadIdRef = useRef(0);
+  const gamesLoadIdRef = useRef({ main: 0, library: 0 });
   const lastCatalogQueryRef = useRef<string | null>(null);
   const lastCatalogProxyUrlRef = useRef<string | undefined>(undefined);
 
@@ -337,6 +338,8 @@ export function useCatalogData({
 
   const clearSessionCatalog = useCallback((mode: CatalogClearMode, options?: ClearSessionCatalogOptions): void => {
     runtimeDataLoadIdRef.current += 1;
+    gamesLoadIdRef.current.main += 1;
+    gamesLoadIdRef.current.library += 1;
     resetStorePanels();
     setGames([]);
     setLibraryGames([]);
@@ -380,6 +383,8 @@ export function useCatalogData({
     targetSource: "main" | "library",
     options?: { background?: boolean },
   ) => {
+    const loadId = ++gamesLoadIdRef.current[targetSource];
+    const isCurrentLoad = (): boolean => gamesLoadIdRef.current[targetSource] === loadId;
     const setLoading = targetSource === "main" ? setIsLoadingCatalog : setIsLoadingLibrary;
     if (!options?.background) {
       setLoading(true);
@@ -403,10 +408,11 @@ export function useCatalogData({
           sortId: catalogSelectedSortId,
           filterIds: catalogSelectedFilterIds,
         });
+        if (!isCurrentLoad()) return;
         applyCatalogBrowseResult(catalogResult);
         if (featuredGames.length === 0) {
           void window.openNow.fetchFeaturedGames({ token, userId, providerStreamingBaseUrl: baseUrl, proxyUrl }).then((featured) => {
-            if (featured.length > 0) setFeaturedGames(featured);
+            if (isCurrentLoad() && featured.length > 0) setFeaturedGames(featured);
           }).catch((error) => {
             console.warn("Featured games refresh failed:", error);
           });
@@ -415,13 +421,16 @@ export function useCatalogData({
       }
 
       const result = await window.openNow.fetchLibraryGames({ token, userId, providerStreamingBaseUrl: baseUrl, proxyUrl });
+      if (!isCurrentLoad()) return;
       setLibraryGames(result);
       setSelectedGameId((previous) => result.some((game) => game.id === previous) ? previous : (result[0]?.id ?? ""));
       applyVariantSelections(result);
     } catch (error) {
-      console.error("Failed to load games:", error);
+      if (isCurrentLoad()) {
+        console.error("Failed to load games:", error);
+      }
     } finally {
-      if (!options?.background) {
+      if (isCurrentLoad() && !options?.background) {
         setLoading(false);
       }
     }

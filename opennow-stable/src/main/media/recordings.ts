@@ -29,6 +29,8 @@ interface ActiveRecording {
 
 const activeRecordings = new Map<string, ActiveRecording>();
 
+type RecordingMetadata = Omit<RecordingEntry, "thumbnailDataUrl">;
+
 export function getRecordingsDirectory(): string {
   return join(app.getPath("pictures"), "OpenNOW", "Recordings");
 }
@@ -47,8 +49,7 @@ export function extFromMimeType(mimeType: string): ".mp4" | ".webm" {
   return mimeType.startsWith("video/mp4") ? ".mp4" : ".webm";
 }
 
-export async function listRecordings(): Promise<RecordingEntry[]> {
-  const dir = await ensureRecordingsDirectory();
+async function listRecordingMetadata(dir: string): Promise<RecordingMetadata[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const webmFiles = entries
     .filter((e) => e.isFile())
@@ -56,27 +57,12 @@ export async function listRecordings(): Promise<RecordingEntry[]> {
     .filter((name) => /\.(mp4|webm)$/i.test(name));
 
   const loaded = await Promise.all(
-    webmFiles.map(async (fileName): Promise<RecordingEntry | null> => {
+    webmFiles.map(async (fileName): Promise<RecordingMetadata | null> => {
       const filePath = join(dir, fileName);
       try {
         const fileStats = await stat(filePath);
-        const stem = fileName.replace(/\.(mp4|webm)$/i, "");
-        const thumbName = `${stem}-thumb.jpg`;
-        const thumbPath = join(dir, thumbName);
-
-        let thumbnailDataUrl: string | undefined;
-        try {
-          const thumbBuf = await readFile(thumbPath);
-          thumbnailDataUrl = `data:image/jpeg;base64,${thumbBuf.toString("base64")}`;
-        } catch {
-          // No thumbnail for this recording — that's fine
-        }
-
-        // Parse durationMs encoded in filename as last numeric segment before extension
         const durMatch = /-dur(\d+)\.(mp4|webm)$/i.exec(fileName);
         const durationMs = durMatch ? Number(durMatch[1]) : 0;
-
-        // Parse game title from filename: {stamp}-{title}-{rand}[-dur{ms}].{ext}
         const titleMatch =
           /^[^-]+-[^-]+-([^-]+(?:-[^-]+)*?)-[a-f0-9]{6}(?:-dur\d+)?\.(mp4|webm)$/i.exec(
             fileName,
@@ -93,7 +79,6 @@ export async function listRecordings(): Promise<RecordingEntry[]> {
           sizeBytes: fileStats.size,
           durationMs,
           gameTitle,
-          thumbnailDataUrl,
         };
       } catch {
         return null;
@@ -102,9 +87,26 @@ export async function listRecordings(): Promise<RecordingEntry[]> {
   );
 
   return loaded
-    .filter((item): item is RecordingEntry => item !== null)
-    .sort((a, b) => b.createdAtMs - a.createdAtMs)
-    .slice(0, RECORDING_LIMIT);
+    .filter((item): item is RecordingMetadata => item !== null)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs);
+}
+
+export async function listRecordings(): Promise<RecordingEntry[]> {
+  const dir = await ensureRecordingsDirectory();
+  const newest = (await listRecordingMetadata(dir)).slice(0, RECORDING_LIMIT);
+
+  return Promise.all(newest.map(async (entry): Promise<RecordingEntry> => {
+    const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
+    try {
+      const thumbBuf = await readFile(join(dir, `${stem}-thumb.jpg`));
+      return {
+        ...entry,
+        thumbnailDataUrl: `data:image/jpeg;base64,${thumbBuf.toString("base64")}`,
+      };
+    } catch {
+      return entry;
+    }
+  }));
 }
 
 export async function beginRecording(
@@ -181,7 +183,7 @@ export async function finishRecording(
   }
 
   // Enforce recording limit: delete oldest entries beyond RECORDING_LIMIT
-  const all = await listRecordings();
+  const all = await listRecordingMetadata(dir);
   if (all.length > RECORDING_LIMIT) {
     const toDelete = all.slice(RECORDING_LIMIT);
     await Promise.all(

@@ -49,22 +49,19 @@ export async function listScreenshots(): Promise<ScreenshotEntry[]> {
     .map((entry) => entry.name)
     .filter((name) => /\.(png|jpg|jpeg|webp)$/i.test(name));
 
-  const loaded = await Promise.all(
-    screenshotFiles.map(async (fileName): Promise<ScreenshotEntry | null> => {
+  const metadata = await Promise.all(
+    screenshotFiles.map(async (fileName) => {
       const filePath = join(dir, fileName);
       try {
         const fileStats = await stat(filePath);
-        const fileBuffer = await readFile(filePath);
         const extMatch = /\.([^.]+)$/.exec(fileName);
         const ext = (extMatch?.[1] ?? "png").toLowerCase();
-
         return {
-          id: fileName,
           fileName,
           filePath,
           createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
           sizeBytes: fileStats.size,
-          dataUrl: buildScreenshotDataUrl(ext, fileBuffer),
+          ext,
         };
       } catch {
         return null;
@@ -72,10 +69,28 @@ export async function listScreenshots(): Promise<ScreenshotEntry[]> {
     }),
   );
 
-  return loaded
-    .filter((item): item is ScreenshotEntry => item !== null)
+  const newest = metadata
+    .filter((item): item is NonNullable<typeof item> => item !== null)
     .sort((a, b) => b.createdAtMs - a.createdAtMs)
     .slice(0, SCREENSHOT_LIMIT);
+
+  const loaded = await Promise.all(newest.map(async (item): Promise<ScreenshotEntry | null> => {
+    try {
+      const fileBuffer = await readFile(item.filePath);
+      return {
+        id: item.fileName,
+        fileName: item.fileName,
+        filePath: item.filePath,
+        createdAtMs: item.createdAtMs,
+        sizeBytes: item.sizeBytes,
+        dataUrl: buildScreenshotDataUrl(item.ext, fileBuffer),
+      };
+    } catch {
+      return null;
+    }
+  }));
+
+  return loaded.filter((item): item is ScreenshotEntry => item !== null);
 }
 
 export async function saveScreenshot(

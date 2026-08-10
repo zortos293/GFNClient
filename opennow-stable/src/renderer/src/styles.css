@@ -7,11 +7,13 @@
   --bg-a: #101014;
   --bg-b: #141418;
   --bg-c: #19191e;
+  --bg-e: var(--bg-c);
 
   /* Panels & cards */
   --panel: #131316;
   --panel-border: color-mix(in srgb, var(--ink) 6%, transparent);
   --panel-border-solid: #2a2a30;
+  --border: var(--panel-border-solid);
   --card: #151518;
   --card-hover: #1c1c20;
   --card-selected: #1a2a22;
@@ -21,6 +23,10 @@
   --ink: #ececef;
   --ink-soft: #9a9aa3;
   --ink-muted: #5c5c66;
+  --ink-dim: var(--ink-muted);
+  --text-secondary: var(--ink-soft);
+  --text-base: 1rem;
+  --text-sm: 0.875rem;
 
   /* Accent — green */
   --accent-rgb: 88, 217, 138;
@@ -85,6 +91,15 @@
   --ink: #0f172a;
   --ink-soft: #334155;
   --ink-muted: #64748b;
+  --error: #dc2626;
+  --error-bg: rgba(220, 38, 38, 0.08);
+  --error-border: rgba(220, 38, 38, 0.22);
+  --warning: #a16207;
+  --info: #2563eb;
+  --success: #15803d;
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.1);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.14);
+  --shadow-lg: 0 20px 60px rgba(15, 23, 42, 0.2);
 }
 
 /* ---------- Reset & Base ---------- */
@@ -101,7 +116,7 @@ body,
 #root {
   width: 100%;
   height: 100%;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.5;
   color: var(--ink);
@@ -163,6 +178,33 @@ body,
   position: fixed;
   inset: 0;
   z-index: 1080;
+}
+
+.app-container--controller .app-shell,
+.stream-view-layer,
+.game-card-image-wrapper {
+  --bg-a: #101014;
+  --bg-b: #141418;
+  --bg-c: #19191e;
+  --bg-e: #19191e;
+  --panel: #131316;
+  --panel-border: rgba(255, 255, 255, 0.09);
+  --panel-border-solid: #2a2a30;
+  --border: #2a2a30;
+  --card: #151518;
+  --card-hover: #1c1c20;
+  --card-selected: #1a2a22;
+  --chip: #1e1e23;
+  --ink: #f4f4f5;
+  --ink-soft: #c3c7cc;
+  --ink-muted: #858c94;
+  --ink-dim: #858c94;
+  --text-secondary: #c3c7cc;
+  --error: #f87171;
+  --warning: #fbbf24;
+  --info: #60a5fa;
+  --success: #4ade80;
+  color-scheme: dark;
 }
 
 .app-container--controller {
@@ -1576,7 +1618,7 @@ body,
   width: 100%;
   max-width: 380px;
   padding: 32px;
-  background: rgba(21, 21, 24, 0.92);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--panel-border);
   border-radius: var(--r-xl);
   box-shadow: var(--shadow-lg);
@@ -1632,7 +1674,7 @@ body,
   background: rgba(96, 165, 250, 0.08);
   border: 1px solid rgba(96, 165, 250, 0.2);
   border-radius: var(--r-sm);
-  color: #93c5fd;
+  color: var(--info);
   font-size: 0.8rem;
   font-weight: 500;
 }
@@ -1681,7 +1723,7 @@ body,
 }
 
 .login-select:hover:not(:disabled) {
-  border-color: #444;
+  border-color: color-mix(in srgb, var(--ink) 28%, transparent);
 }
 
 .login-select:focus {
@@ -1765,7 +1807,7 @@ body,
   align-items: center;
   margin: 0 0 18px;
   padding: 14px;
-  background: rgba(21, 21, 24, 0.92);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--panel-border-solid);
   border-radius: var(--r-md);
 }
@@ -3750,6 +3792,12 @@ button.controller-hint {
   cursor: pointer;
   transition: border-color var(--t-normal), box-shadow var(--t-normal);
   contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 200px;
+}
+
+.library-page .game-card {
+  contain-intrinsic-block-size: auto 320px;
 }
 
 .game-card:focus-within {
@@ -4166,7 +4214,7 @@ button.game-card-store-chip.owned.active:hover {
   inset: 0;
   background:
     linear-gradient(90deg, rgba(4, 6, 8, 0.34), transparent 58%),
-    linear-gradient(to bottom, rgba(4, 6, 8, 0.04) 18%, rgba(4, 6, 8, 0.58) 68%, var(--panel) 100%);
+    linear-gradient(to bottom, rgba(4, 6, 8, 0.04) 18%, rgba(4, 6, 8, 0.58) 68%, rgba(4, 6, 8, 0.92) 100%);
 }
 
 .game-detail-close {

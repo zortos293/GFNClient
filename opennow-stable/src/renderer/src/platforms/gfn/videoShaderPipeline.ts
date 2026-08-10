@@ -403,8 +403,6 @@ export class VideoShaderPipeline {
       return;
     }
 
-    this.syncCanvasSize();
-
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     try {

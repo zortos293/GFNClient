@@ -326,7 +326,11 @@
       "advertisementInProgress": "Advertisement in progress",
       "mediaWillAppear": "Ad media will appear here as soon as it is available.",
       "advertisement": "Advertisement",
-      "titledAdvertisement": "{{title}} advertisement"
+      "titledAdvertisement": "{{title}} advertisement",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Cancel loading"

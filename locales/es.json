@@ -16,6 +16,7 @@
       "continue": "Continuar",
       "delete": "Eliminar",
       "done": "hecho",
+      "exit": "Exit OpenNOW",
       "open": "Abierto",
       "play": "Jugar",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Anuncio en progreso",
       "mediaWillAppear": "Los medios publicitarios aparecerán aquí tan pronto como estén disponibles.",
       "advertisement": "anuncio",
-      "titledAdvertisement": "Publicidad {{title}}"
+      "titledAdvertisement": "Publicidad {{title}}",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Cancelar carga"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Omita el cuadro de diálogo de selección de servidor de nivel gratuito y ejecútelo siempre con el enrutamiento predeterminado de OpenNOW.",
       "showAntiAfkIndicator": "Mostrar indicador Anti-AFK",
       "showAntiAfkIndicatorHint": "Muestra la insignia ANTI-AFK ON mientras Anti-AFK esté habilitado durante la transmisión.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Pantalla completa automática",
       "autoFullScreenHint": "Ingrese automáticamente a pantalla completa al conectarse o iniciar una sesión.",
       "controllerMode": "Controller Mode",

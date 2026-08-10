@@ -22,6 +22,7 @@ import {
   normalizeRecordingBitrateMbps,
   normalizeRecordingFps,
   normalizeRecordingResolution,
+  normalizeGameStreamProfiles,
 } from "@shared/gfn";
 import type { StatsOverlayPosition } from "@shared/gfn";
 
@@ -303,6 +304,12 @@ export class SettingsManager {
       migrated = true;
     }
 
+    const gameStreamProfiles = normalizeGameStreamProfiles(settings.gameStreamProfiles);
+    if (JSON.stringify(settings.gameStreamProfiles) !== JSON.stringify(gameStreamProfiles)) {
+      settings.gameStreamProfiles = gameStreamProfiles;
+      migrated = true;
+    }
+
     if (typeof settings.steamControllerCompatibilityMode !== "boolean") {
       settings.steamControllerCompatibilityMode = false;
       migrated = true;
@@ -385,7 +392,15 @@ export class SettingsManager {
    * Get all current settings
    */
   getAll(): Settings {
-    return { ...this.settings };
+    return {
+      ...this.settings,
+      gameStreamProfiles: Object.fromEntries(
+        Object.entries(this.settings.gameStreamProfiles).map(([gameId, profile]) => [
+          gameId,
+          { ...profile },
+        ]),
+      ),
+    };
   }
 
   /**

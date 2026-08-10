@@ -6,12 +6,13 @@ import {
   useState,
   type JSX,
 } from "react";
-import type { GameInfo } from "@shared/gfn";
+import type { EntitledResolution, GameInfo, GameStreamProfiles, Settings } from "@shared/gfn";
 import { getControllerHeroBackgroundCandidates, getPlayerSummary } from "../lib/controllerCatalogUi";
 import { getActiveStoreOption, getStoreOptions } from "../lib/gameCardStores";
 import { useTranslation } from "../i18n";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { ModalSurface } from "./ui/ModalSurface";
+import { GameStreamProfileSection } from "./GameStreamProfileSection";
 
 export interface GameDetailModalProps {
   open: boolean;
@@ -21,6 +22,10 @@ export interface GameDetailModalProps {
   onExitComplete?: () => void;
   onPlay: (game: GameInfo, variantId?: string) => void;
   onSelectVariant: (variantId: string) => void;
+  settings: Settings;
+  entitledResolutions: EntitledResolution[];
+  onGameStreamProfilesPreview: (profiles: GameStreamProfiles) => void;
+  onGameStreamProfilesChange: (profiles: GameStreamProfiles) => void;
 }
 
 function GameDetailHero({ game }: { game: GameInfo }): JSX.Element {
@@ -102,6 +107,10 @@ export function GameDetailModal({
   onExitComplete,
   onPlay,
   onSelectVariant,
+  settings,
+  entitledResolutions,
+  onGameStreamProfilesPreview,
+  onGameStreamProfilesChange,
 }: GameDetailModalProps): JSX.Element {
   const { t } = useTranslation();
   const generatedId = useId();
@@ -235,6 +244,14 @@ export function GameDetailModal({
             </div>
           </section>
         )}
+
+        <GameStreamProfileSection
+          game={game}
+          settings={settings}
+          entitledResolutions={entitledResolutions}
+          onPreview={onGameStreamProfilesPreview}
+          onChange={onGameStreamProfilesChange}
+        />
       </div>
 
       <footer className="game-detail-actions">

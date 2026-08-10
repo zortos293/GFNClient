@@ -329,7 +329,15 @@
     "details": "About this game",
     "notOwned": "Not owned",
     "playOn": "Play on {{store}}",
-    "storeOption": "{{store}}, {{ownership}}"
+    "storeOption": "{{store}}, {{ownership}}",
+    "streamProfile": {
+      "title": "Stream quality for this game",
+      "description": "Automatically use this profile whenever you launch this game.",
+      "custom": "Custom",
+      "global": "Global default",
+      "useCustom": "Use custom quality",
+      "useCustomHint": "Keep the global stream settings for every other game."
+    }
   },
   "streamLoading": {
     "labels": {

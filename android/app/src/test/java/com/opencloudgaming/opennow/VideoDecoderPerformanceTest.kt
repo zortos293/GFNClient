@@ -43,6 +43,74 @@ class VideoDecoderPerformanceTest {
     }
 
     @Test
+    fun qualcommH264SixtyFpsBypassesPerformanceWrapper() {
+        val hardwareDecoder = fakeDecoder()
+
+        assertFalse(
+            shouldUseMediaCodecDecoderTuning(
+                selectedDecoder = hardwareDecoder,
+                approvedHardwareDecoder = hardwareDecoder,
+                requestedFps = 60,
+                lowLatencyEnabled = false,
+                codec = VideoCodec.H264,
+                decoderImplementationName = "c2.qti.avc.decoder",
+            ),
+        )
+    }
+
+    @Test
+    fun qualcommGuardDoesNotDisableOtherPerformanceTuning() {
+        val hardwareDecoder = fakeDecoder()
+
+        assertTrue(
+            shouldUseMediaCodecDecoderTuning(
+                selectedDecoder = hardwareDecoder,
+                approvedHardwareDecoder = hardwareDecoder,
+                requestedFps = 120,
+                lowLatencyEnabled = false,
+                codec = VideoCodec.H264,
+                decoderImplementationName = "c2.qti.avc.decoder",
+            ),
+        )
+        assertTrue(
+            shouldUseMediaCodecDecoderTuning(
+                selectedDecoder = hardwareDecoder,
+                approvedHardwareDecoder = hardwareDecoder,
+                requestedFps = 60,
+                lowLatencyEnabled = false,
+                codec = VideoCodec.H265,
+                decoderImplementationName = "c2.qti.hevc.decoder",
+            ),
+        )
+        assertTrue(
+            shouldUseMediaCodecDecoderTuning(
+                selectedDecoder = hardwareDecoder,
+                approvedHardwareDecoder = hardwareDecoder,
+                requestedFps = 60,
+                lowLatencyEnabled = false,
+                codec = VideoCodec.H264,
+                decoderImplementationName = "c2.mtk.avc.decoder",
+            ),
+        )
+    }
+
+    @Test
+    fun explicitLowLatencyStillUsesQualcommWrapper() {
+        val hardwareDecoder = fakeDecoder()
+
+        assertTrue(
+            shouldUseMediaCodecDecoderTuning(
+                selectedDecoder = hardwareDecoder,
+                approvedHardwareDecoder = hardwareDecoder,
+                requestedFps = 60,
+                lowLatencyEnabled = true,
+                codec = VideoCodec.H264,
+                decoderImplementationName = "OMX.qcom.video.decoder.avc",
+            ),
+        )
+    }
+
+    @Test
     fun nativeFallbackIsNotWrappedForPerformanceTuning() {
         assertFalse(
             shouldUseMediaCodecDecoderTuning(

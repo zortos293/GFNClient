@@ -508,7 +508,7 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
             val selected = account.userId == currentUserId
             val membershipTier = if (selected) {
                 state.subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() }
-                    ?: currentSession.user.membershipTier.takeIf { it.isNotBlank() }
+                    ?: currentSession?.user?.membershipTier?.takeIf { it.isNotBlank() }
                     ?: account.membershipTier
             } else {
                 account.membershipTier

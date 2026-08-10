@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import java.text.SimpleDateFormat
 import java.text.DateFormat
@@ -58,6 +59,33 @@ private const val STREAM_RUNTIME_STATS_EVENT_INTERVAL_MS = 30_000L
 private const val SESSION_REPORT_NETWORK_SAMPLE_INTERVAL_MS = 5_000L
 private const val ACTIVE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 10_000L
 private const val IDLE_DIAGNOSTIC_SNAPSHOT_INTERVAL_MS = 60_000L
+
+internal class StreamSessionRecoveryTracker {
+    private var sessionId: String? = null
+    private var attempts: Int = 0
+
+    fun nextAttempt(currentSessionId: String): Int {
+        if (sessionId != currentSessionId) {
+            sessionId = currentSessionId
+            attempts = 0
+        }
+        attempts += 1
+        return attempts
+    }
+
+    fun reset() {
+        sessionId = null
+        attempts = 0
+    }
+}
+
+internal fun isLikelyDirectSessionServerUrl(value: String): Boolean {
+    val host = value.toHttpUrlOrNull()?.host ?: return false
+    fun isIpv4Parts(parts: List<String>): Boolean =
+        parts.size == 4 && parts.all { part -> part.toIntOrNull() in 0..255 }
+
+    return isIpv4Parts(host.split('.')) || isIpv4Parts(host.substringBefore('.').split('-'))
+}
 
 private data class DebugLogEvent(
     val timestampMs: Long,
@@ -224,6 +252,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private var deviceRecommendation: AndroidDeviceRecommendation? = null
     private val settingsDiagnosticTapTracker = RapidTapTracker()
     private val loginIconTapTracker = RapidTapTracker()
+    private val streamSessionRecoveryTracker = StreamSessionRecoveryTracker()
 
     private val initialAuthSession = authStore.activeSession()
     private val androidTvProfile = isAndroidTvProfile(application)
@@ -1944,6 +1973,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
 
     fun stopStream() {
         val beforeStop = state.value
+        streamSessionRecoveryTracker.reset()
         val completedSessionReport = finishSessionReport()
         val shouldShowCompletedSessionReport = beforeStop.settings.showSessionReportAfterStream
         recordDebugEvent(
@@ -2368,8 +2398,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun String.isLikelyDirectServerUrl(): Boolean {
-        val host = runCatching { Uri.parse(this).host.orEmpty() }.getOrDefault("")
-        return Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(host)
+        return isLikelyDirectSessionServerUrl(this)
     }
 
     fun dismissPrintedWasteSelector() {
@@ -2661,7 +2690,12 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         val currentSettings = initial.activeStreamSettings ?: effectiveStreamSettings()
-        recordDebugEvent("recovery", "Recovery requested reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} session=${initialSession.debugSummary()} settings=${currentSettings.debugSummary()}")
+        val recoveryAttempt = streamSessionRecoveryTracker.nextAttempt(initialSession.sessionId)
+        recordDebugEvent(
+            "recovery",
+            "Recovery requested attempt=$recoveryAttempt reason=${reason.take(DEBUG_EVENT_MESSAGE_LIMIT)} " +
+                "session=${initialSession.debugSummary()} settings=${currentSettings.debugSummary()}",
+        )
         launchJob = viewModelScope.launch {
             val token = auth.tokens.idToken ?: auth.tokens.accessToken
             val snapshot = state.value
@@ -2691,20 +2725,70 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
 
             runCatching {
-                val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, currentSettings)
-                recordDebugEvent("recovery", "Recovery active sessions count=${activeSessions.size} base=${hostForDebug(baseUrl)}")
                 val resolvedAppId = runCatching {
                     resolveFallbackLaunchAppId(
                         token = token,
                         game = game,
                         active = active,
                         baseUrl = baseUrl,
-                    ).toIntOrNull()
+                    )
                 }.getOrNull()
+                if (recoveryAttempt >= 2) {
+                    val launchAppId = resolvedAppId
+                        ?: error("Could not resolve appId for fresh stream recovery.")
+                    val selectedVariant = game?.variants?.getOrNull(game.selectedVariantIndex)
+                        ?: game?.variants?.firstOrNull()
+                    val accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true
+                    val normalizedZone = previousSession.zone.trim().lowercase(Locale.US).takeIf { zone ->
+                        zone.isNotBlank() &&
+                            !zone.startsWith(".") &&
+                            !zone.contains('/') &&
+                            !zone.contains(':')
+                    }
+                    val reusableProviderBase = listOfNotNull(
+                        previousSession.streamingBaseUrl,
+                        active?.streamingBaseUrl,
+                    ).firstOrNull { !it.isLikelyDirectServerUrl() }
+                    val creationBase = reusableProviderBase
+                        ?: effectiveStreamingBaseUrl(auth).takeIf { normalizedZone == null }
+
+                    recordDebugEvent(
+                        "recovery",
+                        "Escalating repeated recovery to fresh cloud session old=${previousSession.shortDebugId()} " +
+                            "zone=${normalizedZone.orEmpty()} base=${hostForDebug(creationBase)}",
+                    )
+                    runCatching {
+                        sessionRepository.stopSession(token, previousSession, currentSettings)
+                    }.onSuccess {
+                        sessionTimerAnchorStore.clear(previousSession.sessionId)
+                        recordDebugEvent("recovery", "Stopped stalled session before fresh recovery ${previousSession.shortDebugId()}")
+                    }.onFailure { error ->
+                        recordDebugEvent(
+                            "recovery",
+                            "Failed to stop stalled session before fresh recovery ${previousSession.shortDebugId()} error=${error.debugMessage()}",
+                        )
+                    }.getOrThrow()
+
+                    _state.update { it.copy(activeSession = null, launchPhase = "Creating fresh stream session") }
+                    val created = sessionRepository.createSession(
+                        token = token,
+                        streamingBaseUrl = creationBase,
+                        appId = launchAppId,
+                        internalTitle = game?.title.orEmpty(),
+                        zone = normalizedZone ?: "prod",
+                        settings = currentSettings,
+                        accountLinked = accountLinked,
+                        appLaunchMode = appLaunchModeFor(game, currentSettings),
+                    )
+                    recordDebugEvent("recovery", "Created fresh recovery session ${created.debugSummary()}")
+                    return@runCatching pollUntilReady(token, created, currentSettings)
+                }
+                val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, currentSettings)
+                recordDebugEvent("recovery", "Recovery active sessions count=${activeSessions.size} base=${hostForDebug(baseUrl)}")
                 val readyCandidate = activeSessionRecoveryCandidate(
                     sessions = activeSessions,
                     previousSessionId = previousSession.sessionId,
-                    launchAppId = resolvedAppId,
+                    launchAppId = resolvedAppId?.toIntOrNull(),
                     settings = currentSettings,
                 )
                 if (readyCandidate?.sessionId == previousSession.sessionId && !readyCandidate.matchesStreamSettings(currentSettings)) {
@@ -2718,7 +2802,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val fallbackCandidate = readyCandidate
                     ?: previousSession.toRecoveryActiveSession(
-                        appId = resolvedAppId ?: active?.appId ?: 0,
+                        appId = resolvedAppId?.toIntOrNull() ?: active?.appId ?: 0,
                         fallbackActive = cachedCurrentSession,
                     )?.takeIf { it.matchesStreamGeometry(currentSettings) }
                     ?: error("The running session could not be found anymore, so recovery was not possible.")

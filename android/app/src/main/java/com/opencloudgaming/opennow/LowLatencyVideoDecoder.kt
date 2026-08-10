@@ -292,7 +292,7 @@ class LowLatencyVideoDecoder(
         }
 
         private fun isQualcommDecoder(codecName: String): Boolean {
-            return codecName.contains("qcom") || codecName.contains("qti")
+            return isQualcommMediaCodecDecoder(codecName)
         }
 
         private fun isHiSiliconDecoder(codecName: String): Boolean {
@@ -404,12 +404,36 @@ class LowLatencyVideoDecoder(
 internal fun mediaCodecPerformanceTargetFps(requestedFps: Int): Int? =
     requestedFps.takeIf { it >= 60 }
 
+internal fun isQualcommMediaCodecDecoder(codecName: String?): Boolean {
+    val normalized = codecName?.lowercase(Locale.US).orEmpty()
+    return normalized.contains("qcom") || normalized.contains("qti")
+}
+
+internal fun shouldBypassMediaCodecPerformanceTuning(
+    codec: VideoCodec?,
+    decoderImplementationName: String?,
+    requestedFps: Int,
+    lowLatencyEnabled: Boolean,
+): Boolean =
+    !lowLatencyEnabled &&
+        codec == VideoCodec.H264 &&
+        requestedFps == 60 &&
+        isQualcommMediaCodecDecoder(decoderImplementationName)
+
 internal fun shouldUseMediaCodecDecoderTuning(
     selectedDecoder: VideoDecoder?,
     approvedHardwareDecoder: VideoDecoder?,
     requestedFps: Int,
     lowLatencyEnabled: Boolean,
+    codec: VideoCodec? = null,
+    decoderImplementationName: String? = null,
 ): Boolean =
     selectedDecoder != null &&
         selectedDecoder === approvedHardwareDecoder &&
-        (lowLatencyEnabled || mediaCodecPerformanceTargetFps(requestedFps) != null)
+        (lowLatencyEnabled || mediaCodecPerformanceTargetFps(requestedFps) != null) &&
+        !shouldBypassMediaCodecPerformanceTuning(
+            codec = codec,
+            decoderImplementationName = decoderImplementationName,
+            requestedFps = requestedFps,
+            lowLatencyEnabled = lowLatencyEnabled,
+        )

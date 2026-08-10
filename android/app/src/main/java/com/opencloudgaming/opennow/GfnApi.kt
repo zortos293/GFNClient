@@ -2769,7 +2769,7 @@ class GfnSessionRepository(
                 streamingServerIp(OpenNowJson.parseToJsonElement(text).jsonObject)?.let { effectiveServerIp = it }
             }
         }
-        val sessionBase = if (useProviderBaseForSessionOps) providerBase else "https://$effectiveServerIp"
+        val sessionBase = if (useProviderBaseForSessionOps) requireNotNull(providerBase) else "https://$effectiveServerIp"
         val validationUrl = "$sessionBase/v2/session/${active.sessionId}"
         val validationRequest = Request.Builder()
             .url(validationUrl)

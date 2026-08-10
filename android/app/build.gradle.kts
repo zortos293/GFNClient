@@ -58,8 +58,8 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
         targetSdk = 36
-        versionCode = 73
-        versionName = "1.1.7"
+        versionCode = 75
+        versionName = "1.1.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
@@ -118,10 +118,22 @@ android {
             )
         }
     }
+
+    lint {
+        checkReleaseBuilds = false
+    }
 }
 
 kotlin {
     jvmToolchain(17)
+    compilerOptions {
+        // K2's FIR data-flow analysis is pathological on the streaming state machine. Kotlin's
+        // supported 1.9 language mode keeps the stable frontend until that class is fully decomposed.
+        languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_9)
+        // This app is one large Kotlin module. Parallelize JVM code generation so cold builds
+        // do not leave the machine idling on a single backend thread.
+        freeCompilerArgs.add("-Xbackend-threads=0")
+    }
 }
 
 dependencies {

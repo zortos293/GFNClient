@@ -4976,6 +4976,26 @@ button.game-card-store-chip.owned.active:hover {
   transition: color var(--t-fast);
 }
 
+.settings-nav-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-nav-badge {
+  flex: none;
+  padding: 2px 4px;
+  border: 1px solid color-mix(in srgb, var(--warning, #fbbf24) 32%, transparent);
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--warning, #fbbf24) 78%, var(--ink));
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .settings-nav-item:hover {
   background: color-mix(in srgb, var(--ink) 4%, transparent);
   color: var(--ink);
@@ -5134,12 +5154,63 @@ button.game-card-store-chip.owned.active:hover {
   min-width: 0;
 }
 
+.settings-section-description {
+  max-width: 42rem;
+  margin: 4px 0 0;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
 /* Rows */
 .settings-rows {
   display: flex;
   flex-direction: column;
   gap: 0;
   padding: 0 18px 16px;
+}
+
+.settings-rows--grouped {
+  gap: 18px;
+}
+
+.settings-group {
+  min-width: 0;
+}
+
+.settings-group + .settings-group {
+  padding-top: 18px;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.settings-group-header {
+  display: grid;
+  grid-template-columns: minmax(8rem, 13.5rem) minmax(0, 1fr);
+  gap: 16px;
+  padding: 0 0 8px;
+}
+
+.settings-group-header h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.settings-group-header p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.settings-group-rows {
+  min-width: 0;
+}
+
+.settings-group-rows > .settings-row:last-child {
+  border-bottom: none;
 }
 
 .settings-row {
@@ -5259,6 +5330,44 @@ button.game-card-store-chip.owned.active:hover {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
+}
+
+@media (max-width: 760px) {
+  .settings-modal {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 32px);
+    max-height: calc(100vh - 32px);
+  }
+
+  .settings-sidebar {
+    width: 184px;
+    padding-inline: 8px;
+  }
+
+  .settings-content {
+    padding: 16px 14px 22px;
+  }
+
+  .settings-row:not(.settings-row--column),
+  .settings-group-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-row:not(.settings-row--column) > .settings-label,
+  .settings-row:not(.settings-row--column) > .settings-row-control,
+  .settings-row:not(.settings-row--column) > .settings-chip-row,
+  .settings-row:not(.settings-row--column) > .select-dropdown,
+  .settings-row:not(.settings-row--column) > .codec-test-btn {
+    grid-column: 1;
+  }
+
+  .settings-row:not(.settings-row--column) > .codec-test-btn {
+    justify-self: start;
+  }
+
+  .settings-group-header {
+    gap: 3px;
+  }
 }
 
 .settings-row--column > .settings-label,

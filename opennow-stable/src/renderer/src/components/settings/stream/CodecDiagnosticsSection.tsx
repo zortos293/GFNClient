@@ -1,4 +1,4 @@
-import { Cpu, SlidersHorizontal, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 import { useEffect, useState, type JSX } from "react";
 import type { GpuBackendInfo, Settings } from "@shared/gfn";
 import {
@@ -15,9 +15,6 @@ import type { SettingsChangeHandler } from "./streamSettingsTypes";
 
 interface CodecDiagnosticsSectionProps {
   settings: Settings;
-  showAll: boolean;
-  showStreamVideo: boolean;
-  showStreamCodecDiagnostics: boolean;
   handleChange: SettingsChangeHandler;
   codecResults: CodecTestResult[] | null;
   codecTesting: boolean;
@@ -26,18 +23,17 @@ interface CodecDiagnosticsSectionProps {
 
 export function CodecDiagnosticsSection({
   settings,
-  showAll,
-  showStreamVideo,
-  showStreamCodecDiagnostics,
   handleChange,
   codecResults,
   codecTesting,
   onRunCodecTest,
 }: CodecDiagnosticsSectionProps): JSX.Element | null {
   const { t } = useTranslation();
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const codecTestOpen = codecResults !== null || codecTesting;
-  const [gpuSubtitle, setGpuSubtitle] = useState<{ name: string; version: string | null } | null>(null);
+  const [gpuSubtitle, setGpuSubtitle] = useState<{
+    name: string;
+    version: string | null;
+  } | null>(null);
 
   useEffect(() => {
     if (!codecTestOpen) {
@@ -55,41 +51,17 @@ export function CodecDiagnosticsSection({
     };
   }, [codecTestOpen]);
 
-  if (!showStreamVideo && !showStreamCodecDiagnostics) return null;
-
   return (
-    <div className="settings-advanced-wrap">
-      <button
-        type="button"
-        className="settings-advanced-toggle"
-        onClick={() => setAdvancedOpen((open) => !open)}
-      >
-        <SlidersHorizontal size={14} />
-        Advanced
-        <svg
-          viewBox="0 0 16 16"
-          width="12"
-          height="12"
-          fill="currentColor"
-          className={`settings-advanced-chevron ${advancedOpen ? "flipped" : ""}`}
-        >
-          <path d="M4.47 5.97a.75.75 0 0 1 1.06 0L8 8.44l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06Z" />
-        </svg>
-      </button>
-      {advancedOpen && (
-        <section className="settings-section">
-          {showAll && (
-            <div className="settings-section-context">{t("settings.sections.stream")}</div>
-          )}
-          <div className="settings-section-header">
-            <Cpu size={18} />
-            <h2>Advanced</h2>
+    <div className="settings-group">
+      <div className="settings-group-header">
+        <h3>{t("settings.diagnostics.codecHardware")}</h3>
+        <p>{t("settings.diagnostics.codecHardwareHint")}</p>
           </div>
-          <div className="settings-rows">
-            {showStreamVideo && (
-              <>
+      <div className="settings-group-rows">
                 <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.decoder")}</label>
+          <label className="settings-label">
+            {t("settings.video.decoder")}
+          </label>
                   <div className="settings-row-control">
                     <div className="settings-chip-row">
                       {accelerationOptions.map((option) => (
@@ -97,7 +69,9 @@ export function CodecDiagnosticsSection({
                           key={`decoder-${option.value}`}
                           className={`settings-chip ${settings.decoderPreference === option.value ? "active" : ""}`}
                           aria-pressed={settings.decoderPreference === option.value}
-                          onClick={() => handleChange("decoderPreference", option.value)}
+                  onClick={() =>
+                    handleChange("decoderPreference", option.value)
+                  }
                         >
                           {option.value === "auto"
                             ? t("app.labels.auto")
@@ -114,7 +88,9 @@ export function CodecDiagnosticsSection({
                 </div>
 
                 <div className="settings-row">
-                  <label className="settings-label">{t("settings.video.encoder")}</label>
+          <label className="settings-label">
+            {t("settings.video.encoder")}
+          </label>
                   <div className="settings-row-control">
                     <div className="settings-chip-row">
                       {accelerationOptions.map((option) => (
@@ -122,7 +98,9 @@ export function CodecDiagnosticsSection({
                           key={`encoder-${option.value}`}
                           className={`settings-chip ${settings.encoderPreference === option.value ? "active" : ""}`}
                           aria-pressed={settings.encoderPreference === option.value}
-                          onClick={() => handleChange("encoderPreference", option.value)}
+                  onClick={() =>
+                    handleChange("encoderPreference", option.value)
+                  }
                         >
                           {option.value === "auto"
                             ? t("app.labels.auto")
@@ -137,11 +115,6 @@ export function CodecDiagnosticsSection({
                     </span>
                   </div>
                 </div>
-              </>
-            )}
-
-            {showStreamCodecDiagnostics && (
-              <>
                 <div className="settings-row codec-test-row">
                   <label className="settings-label codec-test-description">
                     {t("settings.codecDiagnostics.description")}
@@ -195,7 +168,9 @@ export function CodecDiagnosticsSection({
                       <div key={result.codec} className="codec-result-card">
                         <div className="codec-result-header">
                           <span className="codec-result-name">{result.codec}</span>
-                          <span className={`codec-result-badge ${result.webrtcSupported ? "supported" : "unsupported"}`}>
+                  <span
+                    className={`codec-result-badge ${result.webrtcSupported ? "supported" : "unsupported"}`}
+                  >
                             {result.webrtcSupported
                               ? t("settings.codecDiagnostics.webrtcReady")
                               : t("settings.codecDiagnostics.notInWebrtc")}
@@ -206,7 +181,9 @@ export function CodecDiagnosticsSection({
                             <span className="codec-result-direction">
                               {t("settings.codecDiagnostics.decode")}
                             </span>
-                            <span className={`codec-result-status ${result.decodeSupported ? (result.hwAccelerated ? "hw" : "sw") : "none"}`}>
+                    <span
+                      className={`codec-result-status ${result.decodeSupported ? (result.hwAccelerated ? "hw" : "sw") : "none"}`}
+                    >
                               {result.decodeSupported
                                 ? result.hwAccelerated
                                   ? t("settings.video.gpu")
@@ -219,7 +196,9 @@ export function CodecDiagnosticsSection({
                             <span className="codec-result-direction">
                               {t("settings.codecDiagnostics.encode")}
                             </span>
-                            <span className={`codec-result-status ${result.encodeSupported ? (result.encodeHwAccelerated ? "hw" : "sw") : "none"}`}>
+                    <span
+                      className={`codec-result-status ${result.encodeSupported ? (result.encodeHwAccelerated ? "hw" : "sw") : "none"}`}
+                    >
                               {result.encodeSupported
                                 ? result.encodeHwAccelerated
                                   ? t("settings.video.gpu")
@@ -247,11 +226,7 @@ export function CodecDiagnosticsSection({
                     ))}
                   </div>
                 )}
-              </>
-            )}
           </div>
-        </section>
-      )}
     </div>
   );
 }

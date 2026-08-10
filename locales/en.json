@@ -16,6 +16,7 @@
       "continue": "Continue",
       "delete": "Delete",
       "done": "Done",
+      "exit": "Exit OpenNOW",
       "open": "Open",
       "play": "Play",
       "buy": "Buy",
@@ -326,7 +327,11 @@
       "advertisementInProgress": "Advertisement in progress",
       "mediaWillAppear": "Ad media will appear here as soon as it is available.",
       "advertisement": "Advertisement",
-      "titledAdvertisement": "{{title}} advertisement"
+      "titledAdvertisement": "{{title}} advertisement",
+      "mute": "Mute",
+      "unmute": "Unmute",
+      "muteAdvertisement": "Mute advertisement",
+      "unmuteAdvertisement": "Unmute advertisement"
     },
     "actions": {
       "cancelLoading": "Cancel loading"
@@ -839,6 +844,10 @@
       "hideServerSelectorHint": "Skip the free-tier server selection dialog and always launch with OpenNOW's default routing.",
       "showAntiAfkIndicator": "Show Anti-AFK Indicator",
       "showAntiAfkIndicatorHint": "Show the ANTI-AFK ON badge while Anti-AFK is enabled during streaming.",
+      "antiAfkReminderInterval": "Anti-AFK Reminder Interval",
+      "antiAfkReminderIntervalHint": "Show a brief Anti-AFK activation reminder at this interval when the persistent indicator is hidden (0 disables reminders).",
+      "antiAfkReminderDuration": "Anti-AFK Reminder Visible Time",
+      "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Auto Full Screen",
       "autoFullScreenHint": "Automatically enter fullscreen when connecting to or starting a session.",
       "controllerMode": "Controller Mode",

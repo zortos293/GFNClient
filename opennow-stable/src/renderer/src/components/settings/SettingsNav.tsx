@@ -1,4 +1,4 @@
-import { Search, X, Users, Wifi, Cpu, Globe, Mic, Keyboard, Monitor, Info, Heart } from "lucide-react";
+import { Activity, Search, X, Users, Wifi, Cpu, Globe, Mic, Keyboard, Monitor, Info, Heart } from "lucide-react";
 import { useMemo, type JSX } from "react";
 import { useTranslation } from "../../i18n";
 import type { SettingsNavGroup, SettingsSectionId } from "./settingsTypes";
@@ -31,6 +31,7 @@ export function SettingsNav({
       label: "Streaming",
       items: [
         { id: "stream", label: t("settings.sections.stream"), icon: <Wifi size={15} /> },
+        { id: "diagnostics", label: t("settings.sections.diagnostics"), icon: <Activity size={15} /> },
         { id: "native-streamer", label: t("settings.sections.nativeStreamer"), icon: <Cpu size={15} /> },
       ],
     },
@@ -60,11 +61,17 @@ export function SettingsNav({
           type="text"
           className="settings-search-input"
           placeholder={t("settings.searchPlaceholder")}
+          aria-label={t("settings.searchPlaceholder")}
           value={settingsSearch}
           onChange={(e) => onSearchChange(e.target.value)}
         />
         {settingsSearch && (
-          <button type="button" className="settings-search-clear" onClick={() => onSearchChange("")}>
+          <button
+            type="button"
+            className="settings-search-clear"
+            onClick={() => onSearchChange("")}
+            aria-label={t("settings.clearSearch")}
+          >
             <X size={11} />
           </button>
         )}
@@ -79,9 +86,13 @@ export function SettingsNav({
                 type="button"
                 className={`settings-nav-item ${!showAll && activeSection === item.id ? "active" : ""}`}
                 onClick={() => { onSectionChange(item.id); onSearchChange(""); }}
+                aria-current={!showAll && activeSection === item.id ? "page" : undefined}
               >
                 {item.icon}
-                {item.label}
+                <span className="settings-nav-item-label">{item.label}</span>
+                {item.id === "native-streamer" && (
+                  <span className="settings-nav-badge">{t("app.labels.experimental")}</span>
+                )}
               </button>
             ))}
           </div>

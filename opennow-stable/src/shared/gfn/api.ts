@@ -58,6 +58,8 @@ import type {
   MainToRendererSignalingEvent,
   NativeInputPacket,
   NativeRenderSurfaceUpdate,
+  StreamShortcutInterceptionGate,
+  NativeStreamerShortcutAction,
   NativeStreamerShortcutBindings,
   SendAnswerRequest,
   SignalingConnectRequest,
@@ -82,6 +84,16 @@ import type {
   ScreenshotSaveRequest,
 } from "./media";
 import type { PrintedWasteQueueData, PrintedWasteServerMapping } from "./printedWaste";
+
+export interface GpuBackendInfo {
+  gpuName: string | null;
+  vendorName: string | null;
+  driverVersion: string | null;
+  decodeAccelerated: boolean | null;
+  encodeAccelerated: boolean | null;
+  hardwareDecodeCodecs: string[];
+  hardwareEncodeCodecs: string[];
+}
 
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
@@ -161,6 +173,7 @@ export interface OpenNowApi {
   readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
+  getGpuInfo(): Promise<GpuBackendInfo>;
   resetSettings(): Promise<Settings>;
   selectNativeStreamerExecutable(): Promise<string | null>;
   getMicrophonePermission(): Promise<MicrophonePermissionResult>;
@@ -186,6 +199,10 @@ export interface OpenNowApi {
 
   /** Listen for external Escape events forwarded by the main process */
   onExternalEscape(listener: () => void): () => void;
+
+  /** Listen for stream shortcuts captured before Chromium handles reserved combinations. */
+  onStreamShortcutAction(listener: (action: NativeStreamerShortcutAction) => void): () => void;
+  setStreamShortcutInterceptionGate(gate: StreamShortcutInterceptionGate): void;
 
   /** Open a trusted external URL in the OS default browser */
   openExternalUrl(url: string): Promise<void>;

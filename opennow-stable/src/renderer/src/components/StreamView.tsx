@@ -9,7 +9,15 @@ import type { StreamDiagnosticsStore } from "../utils/streamDiagnosticsStore";
 import { useStreamDiagnosticsSelector } from "../utils/streamDiagnosticsStore";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { SessionElapsedIndicator } from "./ElapsedSessionIndicators";
-import type { MicrophoneMode, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import {
+  videoShaderHasVisibleEffect,
+  type MicrophoneMode,
+  type RecordingFps,
+  type RecordingResolution,
+  type StatsOverlayPosition,
+  type SubscriptionInfo,
+  type VideoShaderSettings,
+} from "@shared/gfn";
 import { VideoShaderPipeline } from "../platforms/gfn/videoShaderPipeline";
 import { formatShortcutForDisplay } from "../shortcuts";
 import { useScreenshotGallery } from "../hooks/useScreenshotGallery";
@@ -26,6 +34,9 @@ import {
 } from "./stream/StreamEmptyStates";
 import { StreamQuickMenu } from "./stream/quick-menu/StreamQuickMenu";
 import { MotionSpinner } from "./MotionSpinner";
+import { isStreamPointerLocked } from "../lib/pointerLock";
+import type { StatsOverlayMode } from "../utils/streamStatsHud";
+import { RecurringReminderScheduler, shouldScheduleAntiAfkReminder } from "./stream/antiAfkReminder";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
@@ -34,7 +45,8 @@ interface StreamViewProps {
   videoRef: React.Ref<HTMLVideoElement>;
   audioRef: React.Ref<HTMLAudioElement>;
   diagnosticsStore: StreamDiagnosticsStore;
-  showStats: boolean;
+  statsMode: StatsOverlayMode;
+  statsPosition: StatsOverlayPosition;
   showNativeStats?: boolean;
   nativeInputCaptureActive?: boolean;
   gstreamerEnabled: boolean;
@@ -54,6 +66,8 @@ interface StreamViewProps {
   antiAfkEnabled: boolean;
   antiAfkAckNonce: number;
   showAntiAfkIndicator: boolean;
+  antiAfkReminderEveryMinutes: number;
+  antiAfkReminderDurationSeconds: number;
   exitPrompt: {
     open: boolean;
     gameTitle: string;
@@ -76,6 +90,8 @@ interface StreamViewProps {
   streamRevealComplete: boolean;
   gameTitle: string;
   recordingBitrateMbps: number | null;
+  recordingResolution: RecordingResolution;
+  recordingFps: RecordingFps;
   platformStore?: string;
   onToggleFullscreen: () => void;
   onConfirmExit: () => void;
@@ -93,6 +109,9 @@ interface StreamViewProps {
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   onScreenshotShortcutChange: (value: string) => void;
   onRecordingShortcutChange: (value: string) => void;
+  onRecordingResolutionChange: (value: RecordingResolution) => void;
+  onRecordingFpsChange: (value: RecordingFps) => void;
+  onRecordingBitrateMbpsChange: (value: number | null) => void;
   onShowSessionTimeRemainingInStatsOverlayChange: (value: boolean) => void;
   subscriptionInfo: SubscriptionInfo | null;
   micTrack?: MediaStreamTrack | null;
@@ -106,7 +125,8 @@ export function StreamView({
   videoRef,
   audioRef,
   diagnosticsStore,
-  showStats,
+  statsMode,
+  statsPosition,
   showNativeStats = false,
   nativeInputCaptureActive = false,
   gstreamerEnabled,
@@ -116,6 +136,8 @@ export function StreamView({
   antiAfkEnabled,
   antiAfkAckNonce,
   showAntiAfkIndicator,
+  antiAfkReminderEveryMinutes,
+  antiAfkReminderDurationSeconds,
   exitPrompt,
   sessionStartedAtMs,
   isStreaming,
@@ -130,6 +152,8 @@ export function StreamView({
   streamRevealComplete,
   gameTitle,
   recordingBitrateMbps,
+  recordingResolution,
+  recordingFps,
   platformStore,
   onToggleFullscreen,
   onConfirmExit,
@@ -147,6 +171,9 @@ export function StreamView({
   onMicrophoneModeChange,
   onScreenshotShortcutChange,
   onRecordingShortcutChange,
+  onRecordingResolutionChange,
+  onRecordingFpsChange,
+  onRecordingBitrateMbpsChange,
   onShowSessionTimeRemainingInStatsOverlayChange,
   subscriptionInfo,
   micTrack,
@@ -159,6 +186,7 @@ export function StreamView({
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
   const [antiAfkToggleAck, setAntiAfkToggleAck] = useState<"on" | "off" | null>(null);
+  const [antiAfkReminderVisible, setAntiAfkReminderVisible] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [pointerLockHintVisible, setPointerLockHintVisible] = useState(false);
   const pointerLockHintTimerRef = useRef<number | null>(null);
@@ -205,7 +233,7 @@ export function StreamView({
   const streamVideoReady = streamHasVideo || videoElementHasFrame;
   const [sessionReadySplashVisible, setSessionReadySplashVisible] = useState(false);
   const sessionReadySplashShownRef = useRef(false);
-  const showStatsHud = showStats && !nativeRendererActive && !isConnecting;
+  const showStatsHud = statsMode !== "off" && !nativeRendererActive && !isConnecting;
 
   useEffect(() => {
     if (isConnecting) {
@@ -323,6 +351,32 @@ export function StreamView({
     };
   }, [antiAfkAckNonce, antiAfkEnabled, showAntiAfkIndicator, isConnecting]);
 
+  useEffect(() => {
+    const intervalMs = Math.max(0, Math.floor(antiAfkReminderEveryMinutes || 0)) * 60 * 1000;
+    const durationMs = Math.max(1, Math.floor(antiAfkReminderDurationSeconds || 1)) * 1000;
+    const scheduler = new RecurringReminderScheduler(window, setAntiAfkReminderVisible);
+    scheduler.start(
+      shouldScheduleAntiAfkReminder({
+        antiAfkEnabled,
+        isStreaming,
+        isConnecting,
+        showPersistentIndicator: showAntiAfkIndicator,
+        intervalMs,
+      }),
+      intervalMs,
+      durationMs,
+    );
+
+    return () => scheduler.stop();
+  }, [
+    antiAfkEnabled,
+    antiAfkReminderDurationSeconds,
+    antiAfkReminderEveryMinutes,
+    isConnecting,
+    isStreaming,
+    showAntiAfkIndicator,
+  ]);
+
   const warningSeconds = formatWarningSeconds(streamWarning?.secondsLeft);
   const sessionTimeRemainingText = formatSessionTimeRemaining(sessionTimeRemainingSeconds);
   const showSessionTimeRemainingInStats =
@@ -343,6 +397,8 @@ export function StreamView({
     gameTitle,
     micTrack: micTrack ?? null,
     recordingBitrateMbps,
+    recordingResolution,
+    recordingFps,
   });
   const releasePointerLockForMenu = useCallback(() => {
     if (document.pointerLockElement) {
@@ -434,7 +490,7 @@ export function StreamView({
       updateSurface({
         deviceScaleFactor: dpr,
         visible,
-        showStats: showStats || showNativeStats,
+        showStats: statsMode !== "off" || showNativeStats,
         rect: visible
           ? {
               x: Math.round(rect.left * dpr),
@@ -485,12 +541,13 @@ export function StreamView({
         showStats: false,
       });
     };
-  }, [exitPrompt.open, showNativeStats, showSideBar, showStats]);
+  }, [exitPrompt.open, showNativeStats, showSideBar, statsMode]);
 
   useEffect(() => {
     const handlePointerLockChange = () => {
       setIsPointerLocked(
-        document.pointerLockElement === localVideoRef.current || nativeInputCaptureActive,
+        (localVideoRef.current !== null && isStreamPointerLocked(localVideoRef.current))
+          || nativeInputCaptureActive,
       );
     };
     handlePointerLockChange();
@@ -713,6 +770,11 @@ export function StreamView({
         screenshotGallery={screenshotGallery}
         streamRecorder={streamRecorder}
         recordingBitrateMbps={recordingBitrateMbps}
+        recordingResolution={recordingResolution}
+        recordingFps={recordingFps}
+        onRecordingResolutionChange={onRecordingResolutionChange}
+        onRecordingFpsChange={onRecordingFpsChange}
+        onRecordingBitrateMbpsChange={onRecordingBitrateMbpsChange}
       />
 
       {/* Gradient background when no video */}
@@ -761,10 +823,10 @@ export function StreamView({
         </div>
       )}
 
-      {antiAfkToggleAck && !isConnecting && (
-        <div className={`sv-afk-ack sv-afk-ack--${antiAfkToggleAck}`} role="status" aria-live="polite">
+      {(antiAfkToggleAck || antiAfkReminderVisible) && !isConnecting && (
+        <div className={`sv-afk-ack sv-afk-ack--${antiAfkToggleAck ?? "on"}`} role="status" aria-live="polite">
           <span className="sv-afk-ack-dot" aria-hidden />
-          <span>{antiAfkToggleAck === "on" ? "Anti-AFK on" : "Anti-AFK off"}</span>
+          <span>{antiAfkToggleAck === "off" ? "Anti-AFK off" : "Anti-AFK on"}</span>
         </div>
       )}
 
@@ -779,10 +841,13 @@ export function StreamView({
           <StreamStatsHud
             key="stream-stats-hud"
             diagnosticsStore={diagnosticsStore}
+            mode={statsMode === "full" ? "full" : "compact"}
+            position={statsPosition}
             gstreamerEnabled={gstreamerEnabled}
             serverRegion={serverRegion}
             sessionTimeRemainingText={showSessionTimeRemainingInStats ? sessionTimeRemainingText : null}
             hintsVisible={showHints}
+            shaderActive={!nativeRendererActive && videoShaderHasVisibleEffect(videoShader)}
           />
         )}
       </AnimatePresence>

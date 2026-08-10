@@ -134,7 +134,6 @@ export class GfnSignalingClient {
       const urlHost = url.replace(/^wss?:\/\//, "").split("/")[0];
 
       const ws = new WebSocket(url, protocol, {
-        rejectUnauthorized: false,
         headers: {
           Host: urlHost,
           Origin: GFN_PLAY_ORIGIN,

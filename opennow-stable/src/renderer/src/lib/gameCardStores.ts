@@ -37,6 +37,10 @@ export interface StoreOption {
   isActive: boolean;
 }
 
+export function getActiveStoreOption<T extends StoreOption>(options: T[]): T | undefined {
+  return options.find((option) => option.isActive) ?? options[0];
+}
+
 function normalizeStoreOptionKey(store: string): string | null {
   const trimmed = store.trim();
   if (!trimmed) {

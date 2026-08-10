@@ -14,6 +14,12 @@ import {
 import { FULLSCREEN_KEYBOARD_LOCK_CODES } from "../keyboardLock";
 import { GfnCursorOverlayController } from "../cursorChannel";
 import {
+  canForwardStreamPointerInput,
+  didStreamPointerLockExit,
+  getStreamPointerLockTarget,
+  isStreamPointerLocked,
+} from "../../../lib/pointerLock";
+import {
   MouseDeltaFilter,
   quantizeMouseDeltaWithResidual,
   subsampleCoalescedPointerEvents,
@@ -426,7 +432,7 @@ export class DomInputCaptureController {
   install(videoElement: HTMLVideoElement): void {
     this.detach();
 
-    const pointerLockTarget = (videoElement.parentElement as HTMLElement | null) ?? videoElement;
+    const pointerLockTarget = getStreamPointerLockTarget(videoElement);
     const originalPointerLockTargetTabIndex = pointerLockTarget.getAttribute("tabindex");
     if (this.isNativeCursorOverlayEnabled()) {
       this.cursorOverlay = new GfnCursorOverlayController(videoElement);
@@ -445,10 +451,10 @@ export class DomInputCaptureController {
       }
     };
     const isPointerLockActive = (): boolean => {
-      const lockElement = document.pointerLockElement;
-      return lockElement === pointerLockTarget || lockElement === videoElement;
+      return isStreamPointerLocked(videoElement);
     };
-    this.cursorOverlay?.setPointerLocked(isPointerLockActive());
+    let pointerLockWasActive = isPointerLockActive();
+    this.cursorOverlay?.setPointerLocked(pointerLockWasActive);
 
     // Mirror mode: tracks whether the HW cursor is over the stream viewport.
     // Dual-source: coarse window focus/blur sets the initial state and handles
@@ -460,6 +466,7 @@ export class DomInputCaptureController {
     let lastAbsY: number | null = null;
     // Prevent repeated auto-lock attempts within the same focus session.
     let autoLockPending = false;
+    let escapePointerFallbackActive = false;
 
     // Track an approximate server-side absolute pointer position (in server
     // pixels — the remote stream's resolution) so we can align the server cursor
@@ -699,9 +706,6 @@ export class DomInputCaptureController {
       const elapsed = now - this.mouseFlushLastSendMs;
       if (this.mouseFlushIntervalMs <= 0 || elapsed >= this.mouseFlushIntervalMs) {
         flushMouse();
-        if (hasPendingMouseMovement()) {
-          scheduleMouseBatchFlush();
-        }
         return;
       }
 
@@ -711,15 +715,11 @@ export class DomInputCaptureController {
           flushMouse();
         } catch (err) {
           this.dependencies.log(`Mouse flush tick failed (non-fatal): ${String(err)}`);
-        } finally {
-          if (hasPendingMouseMovement()) {
-            scheduleMouseBatchFlush();
-          }
         }
       }, Math.max(0, this.mouseFlushIntervalMs - elapsed));
     };
 
-    /** Official GFN Cp(): after wm(), flush when the mouse batch transitions empty -> non-empty. */
+    /** Official GFN Cp(): flush on empty -> non-empty, or when new input makes a parked residual sendable. */
     const afterPointerMovement = (): void => {
       if (!hasPendingMouseMovement()) {
         return;
@@ -727,11 +727,30 @@ export class DomInputCaptureController {
       const elapsed = performance.now() - this.mouseFlushLastSendMs;
       if (this.mouseFlushIntervalMs <= 0 || elapsed >= this.mouseFlushIntervalMs) {
         flushMouse();
-        if (hasPendingMouseMovement()) {
-          scheduleMouseBatchFlush();
-        }
       } else {
         scheduleMouseBatchFlush();
+      }
+    };
+
+    const queueUnlockedAbsolutePointer = (
+      event: MouseEvent | PointerEvent,
+      flushAfterQueue = true,
+    ): void => {
+      const rect = pointerLockTarget.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+
+      const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+      this.cursorOverlay?.setClientPosition(rect.left + x, rect.top + y);
+      this.pendingMouseAbs = this.cursorOverlay?.isCursorVisible()
+        ? this.cursorOverlay.getAbsolutePosition()
+        : { x, y, width: rect.width, height: rect.height };
+      this.pendingMouseTimestampUs = timestampUs(event.timeStamp);
+      this.mouseCoalescedBatchEntries += 1;
+      if (flushAfterQueue) {
+        afterPointerMovement();
       }
     };
 
@@ -892,7 +911,10 @@ export class DomInputCaptureController {
       for (const sample of events) {
         queueMouseMovement(sample.movementX, sample.movementY, sample.timeStamp);
       }
-      if (!hadBatch && hasPendingMouseMovement()) {
+      if (
+        hasPendingMouseMovement()
+        && (!hadBatch || this.mouseFlushTimer === null)
+      ) {
         afterPointerMovement();
       }
     };
@@ -930,13 +952,14 @@ export class DomInputCaptureController {
         }
         processRelativePointerSamples([event]);
       } else if (mouseInStreamView) {
-        // Pointer lock disabled: keep local cursor tracking up to date without
-        // forwarding mouse movement into the stream.
         const rect = pointerLockTarget.getBoundingClientRect();
         const absX = event.clientX - rect.left;
         const absY = event.clientY - rect.top;
         lastAbsX = absX;
         lastAbsY = absY;
+        if (escapePointerFallbackActive) {
+          queueUnlockedAbsolutePointer(event);
+        }
       }
     };
 
@@ -948,13 +971,14 @@ export class DomInputCaptureController {
       if (isPointerLockActive()) {
         processRelativePointerSamples([event]);
       } else if (mouseInStreamView) {
-        // Pointer lock disabled: keep local cursor tracking up to date without
-        // forwarding mouse movement into the stream.
         const rect = pointerLockTarget.getBoundingClientRect();
         const absX = event.clientX - rect.left;
         const absY = event.clientY - rect.top;
         lastAbsX = absX;
         lastAbsY = absY;
+        if (escapePointerFallbackActive) {
+          queueUnlockedAbsolutePointer(event);
+        }
       }
     };
 
@@ -1080,10 +1104,18 @@ export class DomInputCaptureController {
       if (!this.dependencies.isInputReady()) {
         return;
       }
-      if (!isPointerLockActive()) {
+      if (!canForwardStreamPointerInput(
+        isPointerLockActive(),
+        escapePointerFallbackActive,
+        mouseInStreamView,
+      )) {
         return;
       }
       event.preventDefault();
+      if (escapePointerFallbackActive && !isPointerLockActive()) {
+        queueUnlockedAbsolutePointer(event, false);
+      }
+      flushMouse(true);
       const payload = this.dependencies.inputEncoder.encodeMouseButtonDown({
         button: toMouseButton(event.button),
         timestampUs: timestampUs(event.timeStamp),
@@ -1097,10 +1129,18 @@ export class DomInputCaptureController {
       if (!this.dependencies.isInputReady()) {
         return;
       }
-      if (!isPointerLockActive()) {
+      if (!canForwardStreamPointerInput(
+        isPointerLockActive(),
+        escapePointerFallbackActive,
+        mouseInStreamView,
+      )) {
         return;
       }
       event.preventDefault();
+      if (escapePointerFallbackActive && !isPointerLockActive()) {
+        queueUnlockedAbsolutePointer(event, false);
+      }
+      flushMouse(true);
       const payload = this.dependencies.inputEncoder.encodeMouseButtonUp({
         button: toMouseButton(event.button),
         timestampUs: timestampUs(event.timeStamp),
@@ -1114,10 +1154,18 @@ export class DomInputCaptureController {
       if (!this.dependencies.isInputReady()) {
         return;
       }
-      if (!isPointerLockActive()) {
+      if (!canForwardStreamPointerInput(
+        isPointerLockActive(),
+        escapePointerFallbackActive,
+        mouseInStreamView,
+      )) {
         return;
       }
       event.preventDefault();
+      if (escapePointerFallbackActive && !isPointerLockActive()) {
+        queueUnlockedAbsolutePointer(event, false);
+      }
+      flushMouse(true);
       // Official GFN client sends negated raw deltaY as int16 (no quantization to ±120).
       // Clamp to int16 range since browser deltaY can exceed it with fast scrolling.
       const delta = Math.max(-32768, Math.min(32767, Math.round(-event.deltaY)));
@@ -1171,7 +1219,10 @@ export class DomInputCaptureController {
     // Handle pointer lock changes — send synthetic Escape when lock is lost by browser
     // (matches official GFN client's "pointerLockEscape" feature)
     const onPointerLockChange = () => {
-      if (isPointerLockActive()) {
+      const pointerLockIsActive = isPointerLockActive();
+      if (pointerLockIsActive) {
+        pointerLockWasActive = true;
+        escapePointerFallbackActive = false;
         this.cursorOverlay?.setPointerLocked(true);
         // Pointer lock gained — cancel any pending synthetic Escape.
         // Reset absolute position tracking since we switch to relative movement.
@@ -1199,6 +1250,11 @@ export class DomInputCaptureController {
         return;
       }
 
+      if (!didStreamPointerLockExit(pointerLockWasActive, pointerLockIsActive)) {
+        return;
+      }
+      pointerLockWasActive = false;
+
       const suppressEscapeFullscreenGrace = this.suppressNextSyntheticEscape;
       this.cursorOverlay?.setPointerLocked(false);
 
@@ -1215,14 +1271,18 @@ export class DomInputCaptureController {
       if (!this.dependencies.isInputReady()) return;
 
       if (this.consumeSyntheticEscapeSuppression()) {
+        escapePointerFallbackActive = false;
         this.releasePressedKeys("pointer lock intentionally released");
         return;
       }
 
       if (!this.shouldSendSyntheticEscapeOnPointerLockLoss()) {
+        escapePointerFallbackActive = false;
         this.releasePressedKeys("pointer lock lost while unfocused");
         return;
       }
+
+      escapePointerFallbackActive = true;
 
       // VK 0x1B = 27 = Escape
       const escapeWasPressed = this.pressedKeys.has(0x1B);
@@ -1281,6 +1341,7 @@ export class DomInputCaptureController {
         return;
       }
       mouseInStreamView = false;
+      escapePointerFallbackActive = false;
       lastAbsX = null;
       lastAbsY = null;
       this.releasePressedKeys("window blur");
@@ -1294,6 +1355,7 @@ export class DomInputCaptureController {
 
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
+        escapePointerFallbackActive = false;
         this.releasePressedKeys(`visibility ${document.visibilityState}`);
         this.dependencies.setWindowInputPaused(true);
         return;

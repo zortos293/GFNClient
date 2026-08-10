@@ -48,6 +48,7 @@ export async function fetchCloudMatch(
     try {
       const response = await fetchWithOptionalProxy(input, {
         ...init,
+        redirect: "error",
         signal: controller.signal,
       }, options.proxyUrl);
       clearTimeout(timeout);
@@ -77,6 +78,25 @@ export function normalizeCloudMatchBaseUrl(url: string): string {
   const trimmed = url.trim();
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   return withProtocol.endsWith("/") ? withProtocol.slice(0, -1) : withProtocol;
+}
+
+export function normalizeTrustedCloudMatchBaseUrl(url: string): string {
+  const parsed = new URL(url.trim());
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    (parsed.port && parsed.port !== "443") ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.pathname !== "/" && parsed.pathname !== "") ||
+    (hostname !== "nvidiagrid.net" && !hostname.endsWith(".nvidiagrid.net"))
+  ) {
+    throw new Error("Untrusted CloudMatch endpoint");
+  }
+  parsed.hostname = hostname;
+  return parsed.origin;
 }
 
 export function extractServerInfoRegionBases(payload: CloudMatchServerInfoResponse): string[] {

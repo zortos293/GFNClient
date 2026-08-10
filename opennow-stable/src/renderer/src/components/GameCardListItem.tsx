@@ -6,6 +6,7 @@ export interface CatalogCardActions {
   onPlayGame: (game: GameInfo) => void;
   onSelectGame: (gameId: string) => void;
   onSelectGameVariant: (gameId: string, variantId: string) => void;
+  onOpenDetails: (game: GameInfo) => void;
 }
 
 export interface GameCardListItemProps {
@@ -38,7 +39,8 @@ export const GameCardListItem = memo(function GameCardListItem({
 }: GameCardListItemProps) {
   const handleSelect = useCallback(() => {
     actionsRef.current?.onSelectGame(game.id);
-  }, [actionsRef, game.id]);
+    actionsRef.current?.onOpenDetails(game);
+  }, [actionsRef, game]);
 
   const handlePlay = useCallback(() => {
     actionsRef.current?.onPlayGame(game);

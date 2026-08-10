@@ -219,6 +219,7 @@ const api: OpenNowApi = {
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value),
+  getGpuInfo: () => ipcRenderer.invoke(IPC_CHANNELS.GPU_GET_INFO),
   resetSettings: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_RESET),
   selectNativeStreamerExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SELECT_NATIVE_STREAMER_EXECUTABLE),
   getNativeStreamerStatus: () => ipcRenderer.invoke(IPC_CHANNELS.NATIVE_STREAMER_STATUS),
@@ -233,6 +234,17 @@ const api: OpenNowApi = {
     const wrapped = () => listener();
     ipcRenderer.on(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
     return () => ipcRenderer.off(IPC_CHANNELS.EXTERNAL_ESCAPE, wrapped);
+  },
+  onStreamShortcutAction: (listener) => {
+    const wrapped = (
+      _event: Electron.IpcRendererEvent,
+      action: import("@shared/gfn").NativeStreamerShortcutAction,
+    ) => listener(action);
+    ipcRenderer.on(IPC_CHANNELS.STREAM_SHORTCUT_ACTION, wrapped);
+    return () => ipcRenderer.off(IPC_CHANNELS.STREAM_SHORTCUT_ACTION, wrapped);
+  },
+  setStreamShortcutInterceptionGate: (gate) => {
+    ipcRenderer.send(IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE, gate);
   },
   openExternalUrl: (url: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL_URL, url),
   getMicrophonePermission: () => ipcRenderer.invoke(IPC_CHANNELS.MICROPHONE_PERMISSION_GET),

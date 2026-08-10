@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { BrowserWindow, globalShortcut, ipcMain } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { IPC_CHANNELS } from "@shared/ipc";
@@ -13,6 +13,10 @@ import {
 } from "../escapeFullscreenGuard";
 import { captureMainException } from "../telemetry/posthog";
 import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
+import { shouldReportRendererTermination } from "./rendererLifecycle";
+import type { StreamShortcutInterceptionGate } from "@shared/gfn";
+import { resolveStatsShortcutInterception } from "./streamShortcutInterception";
+import { StreamEscapeShortcutController } from "./streamEscapeShortcut";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
@@ -31,6 +35,7 @@ export interface CreateMainWindowDeps {
   setStreamInputActive(active: boolean): void;
   getNativeRawInputOwnsEscape(): boolean;
   setNativeRawInputOwnsEscape(ownsEscape: boolean): void;
+  isAppShutdownRequested(): boolean;
 }
 
 export async function createMainWindow(
@@ -43,6 +48,10 @@ export async function createMainWindow(
     : preloadJsPath;
 
   const settings = deps.settingsManager.getAll();
+  let streamShortcutInterceptionGate: StreamShortcutInterceptionGate = {
+    streamActive: false,
+    shortcutCaptureActive: false,
+  };
   let escapeHoldState: EscapeHoldCaptureState = { keyDownCaptured: false, holdFired: false };
   let escapeHoldTimer: NodeJS.Timeout | null = null;
   const clearEscapeHoldTimer = (): void => {
@@ -51,6 +60,20 @@ export async function createMainWindow(
       escapeHoldTimer = null;
     }
   };
+
+  const escapeShortcut = new StreamEscapeShortcutController(globalShortcut, () => {
+    const mainWindow = deps.getMainWindow();
+    if (
+      !deps.getPointerLockActive()
+      || deps.settingsManager.get("allowEscapeToExitFullscreen")
+      || !mainWindow
+      || mainWindow.isDestroyed()
+      || !mainWindow.isFocused()
+    ) {
+      return;
+    }
+    mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+  });
 
   // Console mode (big picture): mirror GeForce NOW's TV mode by launching
   // fullscreen with the controller-oriented shell enabled.
@@ -82,6 +105,15 @@ export async function createMainWindow(
   deps.setMainWindow(window);
 
   window.webContents.on("render-process-gone", (_event, details) => {
+    if (
+      !shouldReportRendererTermination(
+        details.reason,
+        deps.isAppShutdownRequested(),
+      )
+    ) {
+      console.log("[Main] Renderer process exited during shutdown:", details);
+      return;
+    }
     console.error("[Main] Renderer process gone:", details);
     captureMainException(new Error(`Renderer process gone: ${details.reason}`), {
       reason: details.reason,
@@ -153,6 +185,10 @@ export async function createMainWindow(
     (_ev, active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
       const pointerLockActive = Boolean(active);
       deps.setPointerLockActive(pointerLockActive);
+      escapeShortcut.setCaptureActive(
+        pointerLockActive
+        && !deps.settingsManager.get("allowEscapeToExitFullscreen"),
+      );
       deps.setPointerLockEscapeCaptureUntilMs(
         nextPointerLockEscapeCaptureUntilMs(
           pointerLockActive,
@@ -161,6 +197,23 @@ export async function createMainWindow(
         ),
       );
     },
+  );
+
+  const handleStreamShortcutInterceptionChange = (
+    event: Electron.IpcMainEvent,
+    gate: StreamShortcutInterceptionGate,
+  ): void => {
+    if (event.sender !== window.webContents) {
+      return;
+    }
+    streamShortcutInterceptionGate = {
+      streamActive: gate?.streamActive === true,
+      shortcutCaptureActive: gate?.shortcutCaptureActive === true,
+    };
+  };
+  ipcMain.on(
+    IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
+    handleStreamShortcutInterceptionChange,
   );
 
   ipcMain.on(
@@ -181,6 +234,22 @@ export async function createMainWindow(
   window.webContents.on("before-input-event", (event, input) => {
     try {
       const mainWindow = deps.getMainWindow();
+      const statsShortcutDecision = resolveStatsShortcutInterception(
+        streamShortcutInterceptionGate,
+        input,
+        deps.settingsManager.get("shortcutToggleStats"),
+      );
+      if (statsShortcutDecision !== "ignore") {
+        event.preventDefault();
+        if (statsShortcutDecision === "dispatch") {
+          mainWindow?.webContents.send(
+            IPC_CHANNELS.STREAM_SHORTCUT_ACTION,
+            "toggleStats",
+          );
+        }
+        return;
+      }
+
       const resolved = resolveEscapeHoldCaptureAction(
         input,
         {
@@ -241,13 +310,19 @@ export async function createMainWindow(
   } else {
     await window.loadFile(join(deps.mainDir, "../../dist/index.html"));
   }
+  window.on("blur", () => escapeShortcut.dispose());
   const pendingDirectLaunchRequest = deps.getPendingDirectLaunchRequest();
   if (pendingDirectLaunchRequest) {
     deps.emitDirectLaunchRequest(pendingDirectLaunchRequest);
   }
 
   window.on("closed", () => {
+    ipcMain.off(
+      IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
+      handleStreamShortcutInterceptionChange,
+    );
     clearEscapeHoldTimer();
+    escapeShortcut.dispose();
     escapeHoldState = { keyDownCaptured: false, holdFired: false };
     deps.setMainWindow(null);
     deps.setRendererControlledFullscreen(false);

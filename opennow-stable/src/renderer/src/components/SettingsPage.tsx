@@ -14,11 +14,12 @@ import {
   saveCachedEntitledResolutions,
 } from "./settings/settingsFormatters";
 import type { SettingsSectionId, SettingsSearchScopeId } from "./settings/settingsTypes";
-import { SETTINGS_SCOPE_SEARCH_TERMS } from "./settings/settingsTypes";
+import { settingsScopeMatchesSearch } from "./settings/settingsSearch";
 import { SettingsNav } from "./settings/SettingsNav";
 import { SettingsAccountSection } from "./settings/sections/SettingsAccountSection";
 import { SettingsAboutSection } from "./settings/sections/SettingsAboutSection";
 import { SettingsAudioSection } from "./settings/sections/SettingsAudioSection";
+import { SettingsDiagnosticsSection } from "./settings/sections/SettingsDiagnosticsSection";
 import { SettingsGameSection } from "./settings/sections/SettingsGameSection";
 import { SettingsInputSection } from "./settings/sections/SettingsInputSection";
 import { SettingsInterfaceSection } from "./settings/sections/SettingsInterfaceSection";
@@ -215,34 +216,17 @@ export function SettingsPage({
 
   const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
   const showAll = settingsSearchShowsAll;
-  const tokenMatchesWord = (token: string, word: string): boolean => token === word || word.startsWith(token);
   const scopeMatchesSearch = (scopeId: SettingsSearchScopeId): boolean => {
-    if (!showAll) {
-      return true;
-    }
-    const terms = SETTINGS_SCOPE_SEARCH_TERMS[scopeId];
-    const searchTokens = normalizedSettingsSearch.split(/[^a-z0-9]+/).filter((token) => token.length > 0);
-    if (searchTokens.length === 0) {
-      return true;
-    }
-    const searchableWords = Array.from(
-      new Set(
-        terms
-          .join(" ")
-          .toLowerCase()
-          .split(/[^a-z0-9]+/)
-          .filter((word) => word.length > 0),
-      ),
-    );
-    return searchTokens.every((token) => searchableWords.some((word) => tokenMatchesWord(token, word)));
+    return !showAll || settingsScopeMatchesSearch(scopeId, normalizedSettingsSearch);
   };
 
   const showAccountStorage = showAll ? scopeMatchesSearch("account-storage") : activeSection === "account";
   const showAccount = showAccountStorage;
   const showStreamRegion = showAll ? scopeMatchesSearch("stream-region") : activeSection === "stream";
   const showStreamVideo = showAll ? scopeMatchesSearch("stream-video") : activeSection === "stream";
-  const showStreamCodecDiagnostics = showAll ? scopeMatchesSearch("stream-codec-diagnostics") : activeSection === "stream";
-  const showStream = showStreamRegion || showStreamVideo || showStreamCodecDiagnostics;
+  const showStreamRecording = showAll ? scopeMatchesSearch("stream-recording") : activeSection === "stream";
+  const showStream = showStreamRegion || showStreamVideo || showStreamRecording;
+  const showDiagnostics = showAll ? scopeMatchesSearch("stream-diagnostics") : activeSection === "diagnostics";
   const showNativeStreamer = showAll ? scopeMatchesSearch("native-streamer") : activeSection === "native-streamer";
   const showGame = showAll ? scopeMatchesSearch("game") : activeSection === "game";
   const showAudio = showAll ? scopeMatchesSearch("audio") : activeSection === "audio";
@@ -250,7 +234,7 @@ export function SettingsPage({
   const showInterface = showAll ? scopeMatchesSearch("interface") : activeSection === "interface";
   const showAbout = showAll ? scopeMatchesSearch("about") : activeSection === "about";
   const showThanks = showAll ? scopeMatchesSearch("thanks") : activeSection === "thanks";
-  const hasAnySearchMatches = showAccount || showStream || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
+  const hasAnySearchMatches = showAccount || showStream || showDiagnostics || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
   return (
@@ -310,16 +294,26 @@ export function SettingsPage({
                       showAll={showAll}
                       showStreamRegion={showStream && showStreamRegion}
                       showStreamVideo={showStream && showStreamVideo}
-                      showStreamCodecDiagnostics={showStream && showStreamCodecDiagnostics}
+                      showStreamRecording={showStream && showStreamRecording}
+                      handleChange={handleChange}
+                      handlePreview={handlePreview}
+                      codecResults={codecResults}
+                      codecTesting={codecTesting}
+                      entitledResolutions={entitledResolutions}
+                      subscriptionInfoLoaded={subscriptionInfo !== null}
+                      subscriptionLoading={subscriptionLoading}
+                      onBlockingOverlayChange={setStreamOverlayBlocking}
+                    />
+                  )}
+                  {showDiagnostics && (
+                    <SettingsDiagnosticsSection
+                      settings={settings}
+                      showAll={showAll}
                       handleChange={handleChange}
                       handlePreview={handlePreview}
                       codecResults={codecResults}
                       codecTesting={codecTesting}
                       onRunCodecTest={onRunCodecTest}
-                      entitledResolutions={entitledResolutions}
-                      subscriptionInfoLoaded={subscriptionInfo !== null}
-                      subscriptionLoading={subscriptionLoading}
-                      onBlockingOverlayChange={setStreamOverlayBlocking}
                     />
                   )}
                   {(showNativeStreamer || nativeOverlayBlocking) && (

@@ -18,6 +18,7 @@ import type {
   Settings,
   StreamRegion,
   ThankYouDataResult,
+  GpuBackendInfo,
 } from "@shared/gfn";
 import { exportLogs } from "@shared/logger";
 import { provisionZortosCommunityProxy } from "../community/provisionSessionProxy";
@@ -41,7 +42,8 @@ import type { AppUpdaterController } from "../updater";
 import type { SignalingCoordinator } from "../signaling/signalingCoordinator";
 import { fetchThanksData } from "../thanks/fetchThanksData";
 import { applyTelemetrySettingsChange, syncMainTelemetry } from "../telemetry/posthog";
-import { openExternalHttpUrl } from "../window/externalUrl";
+import { openExplicitExternalUrl } from "../window/externalUrl";
+import { EMPTY_GPU_BACKEND_INFO, getGpuBackendInfo } from "../gpuInfo";
 
 type DiscordMonitor = {
   start(): void;
@@ -165,7 +167,7 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
   ipcMain.handle(
     IPC_CHANNELS.OPEN_EXTERNAL_URL,
     async (_event, url: string): Promise<void> => {
-      await openExternalHttpUrl(url);
+      await openExplicitExternalUrl(url);
     },
   );
 
@@ -216,6 +218,15 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
 
   ipcMain.handle(IPC_CHANNELS.CLIPBOARD_READ_TEXT, async (): Promise<string> => {
     return clipboard.readText();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.GPU_GET_INFO, async (): Promise<GpuBackendInfo> => {
+    try {
+      return await getGpuBackendInfo(app);
+    } catch (error) {
+      console.warn("[Main] Failed to collect GPU backend info:", error);
+      return EMPTY_GPU_BACKEND_INFO;
+    }
   });
 
   ipcMain.handle(

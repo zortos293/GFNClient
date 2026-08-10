@@ -13,12 +13,17 @@ import {
   createPlatformShortcutDefaults,
   SHORTCUT_SETTING_KEYS,
   normalizeNativeExternalRendererForPlatform,
+  normalizeFallbackCodecPreference,
   normalizeStreamClientModeForPlatform,
   normalizeStreamPreferences,
   normalizeTransportModeForPlatform,
   normalizeVideoShaderSettings,
   normalizeUpdateChannel,
+  normalizeRecordingBitrateMbps,
+  normalizeRecordingFps,
+  normalizeRecordingResolution,
 } from "@shared/gfn";
+import type { StatsOverlayPosition } from "@shared/gfn";
 
 export type { Settings } from "@shared/gfn";
 
@@ -55,18 +60,6 @@ function normalizeAppAccentColor(raw: unknown): AppAccentColor {
 function normalizeAppTheme(raw: unknown): AppTheme {
   return APP_THEMES.has(raw as AppTheme) ? (raw as AppTheme) : "auto";
 }
-
-function normalizeRecordingBitrateMbps(raw: unknown): number | null {
-  if (raw === null || raw === undefined) {
-    return null;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    return null;
-  }
-  return Math.max(1, Math.min(200, Math.round(value)));
-}
-
 
 const ERROR_REPORTING_CONSENTS = new Set<ErrorReportingConsent>(["unset", "granted", "denied"]);
 
@@ -187,9 +180,24 @@ export class SettingsManager {
       }
 
       merged.mouseAcceleration = Math.max(1, Math.min(150, Math.round(merged.mouseAcceleration)));
+      const statsOverlayPositionBefore = merged.statsOverlayPosition;
+      merged.statsOverlayPosition = normalizeStatsOverlayPosition(merged.statsOverlayPosition);
+      if (merged.statsOverlayPosition !== statsOverlayPositionBefore) {
+        migrated = true;
+      }
       const recordingBitrateBefore = merged.recordingBitrateMbps;
       merged.recordingBitrateMbps = normalizeRecordingBitrateMbps(merged.recordingBitrateMbps);
       if (merged.recordingBitrateMbps !== recordingBitrateBefore) {
+        migrated = true;
+      }
+      const recordingResolutionBefore = merged.recordingResolution;
+      merged.recordingResolution = normalizeRecordingResolution(merged.recordingResolution);
+      if (merged.recordingResolution !== recordingResolutionBefore) {
+        migrated = true;
+      }
+      const recordingFpsBefore = merged.recordingFps;
+      merged.recordingFps = normalizeRecordingFps(merged.recordingFps);
+      if (merged.recordingFps !== recordingFpsBefore) {
         migrated = true;
       }
       if (migrated) {
@@ -214,6 +222,12 @@ export class SettingsManager {
       );
       settings.codec = normalized.codec;
       settings.colorQuality = normalized.colorQuality;
+      migrated = true;
+    }
+
+    const fallbackCodec = normalizeFallbackCodecPreference(settings.fallbackCodec);
+    if (settings.fallbackCodec !== fallbackCodec) {
+      settings.fallbackCodec = fallbackCodec;
       migrated = true;
     }
 
@@ -276,6 +290,16 @@ export class SettingsManager {
     const recordingBitrate = normalizeRecordingBitrateMbps(settings.recordingBitrateMbps);
     if (settings.recordingBitrateMbps !== recordingBitrate) {
       settings.recordingBitrateMbps = recordingBitrate;
+      migrated = true;
+    }
+    const recordingResolution = normalizeRecordingResolution(settings.recordingResolution);
+    if (settings.recordingResolution !== recordingResolution) {
+      settings.recordingResolution = recordingResolution;
+      migrated = true;
+    }
+    const recordingFps = normalizeRecordingFps(settings.recordingFps);
+    if (settings.recordingFps !== recordingFps) {
+      settings.recordingFps = recordingFps;
       migrated = true;
     }
 
@@ -409,6 +433,17 @@ export class SettingsManager {
     const defaults = createDefaultSettings(process.platform);
     this.enforceCompatibility(defaults);
     return defaults;
+  }
+}
+
+function normalizeStatsOverlayPosition(value: unknown): StatsOverlayPosition {
+  switch (value) {
+    case "bottom-right":
+    case "top-left":
+    case "top-right":
+      return value;
+    default:
+      return "bottom-left";
   }
 }
 

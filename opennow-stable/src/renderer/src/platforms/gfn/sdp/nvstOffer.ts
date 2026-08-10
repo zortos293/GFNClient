@@ -9,7 +9,7 @@ import {
 // repair and frame-state assumptions no longer line up.
 const ENABLE_240_FPS_SPLIT_ENCODE = true;
 const ENABLE_DYNAMIC_SPLIT_ENCODE_UPDATES = true;
-const OFFICIAL_MIN_BITRATE_KBPS = 4000;
+export const OFFICIAL_MIN_BITRATE_KBPS = 4000;
 const HIGH_RESOLUTION_PIXEL_COUNT = 2764800; // 2560x1080 / 1920x1440 class
 const HIGH_BITRATE_PACING_THRESHOLD_KBPS = 42000;
 
@@ -34,6 +34,11 @@ interface NvstParams {
   dynamicSplitEncodeUpdatesEnabled?: boolean;
 }
 
+// This builder targets the WEB (Chromium WebRTC) transport and is aligned
+// byte-for-byte with the official play.geforcenow.com SDP where it matters.
+// The NATIVE streamer (native/opennow-streamer/src/sdp.rs) intentionally keeps
+// its own (native-client) attribute set — do NOT sync this file's removals
+// into sdp.rs; native mode works with its current profile.
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
   console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);
@@ -73,34 +78,43 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=vqos.fec.repairMinPercent:5",
     "a=vqos.fec.repairPercent:5",
     "a=vqos.fec.repairMaxPercent:35",
-    // Official dynamicStreamingMode=0 path disables server resolution/FPS switching.
-    "a=vqos.dynamicStreamingMode:0",
-    "a=vqos.drc.enable:0",
-    "a=vqos.calculateAvgVideoStreamingBitrate:1",
+    // Official web client defaults to dynamicStreamingMode=3 (full dynamic
+    // streaming: DRC + DFC + bitrate envelope). The fork previously locked 0
+    // to prevent mid-session SSRC switches, but the renderer now handles track
+    // replacement (peerMediaLifecycleController), so align with the official
+    // default and let the server's BWE drive the bitrate like the web app.
+    "a=vqos.dynamicStreamingMode:3",
+    // Official web client always sends vqos.bllFec.enable:0 (backward-lossless
+    // FEC off). drc.enable / dfc.enable are NOT emitted for 60 FPS sessions —
+    // the official DFC/DRC helper only writes them for high-FPS (see below).
+    // vqos.calculateAvgVideoStreamingBitrate was a fork-only extra (zero hits
+    // in the play.geforcenow.com bundle) and is dropped for parity.
+    "a=vqos.bllFec.enable:0",
   ];
 
   if (isHighFps) {
     lines.push(
+      // Official web client, dynamicStreamingMode=3 + high FPS: drc.enable:0,
+      // dfc.enable:1, decodeFpsAdjPercent:85, targetDownCooldownMs:250,
+      // dfcAlgoVersion 2 (120/240) / 1 (90), minTargetFps 100 (120/240) / 60
+      // (90), resControl.dfc.useClientFpsPerf:0, and dfc.adjustResAndFps:1
+      // (the mode-3 case sets it for high-FPS sessions).
+      "a=vqos.drc.enable:0",
       "a=vqos.dfc.enable:1",
       "a=vqos.dfc.decodeFpsAdjPercent:85",
       "a=vqos.dfc.targetDownCooldownMs:250",
       `a=vqos.dfc.dfcAlgoVersion:${is120Fps || is240Fps ? 2 : 1}`,
-      `a=vqos.dfc.minTargetFps:${is120Fps || is240Fps ? 100 : 60}`,
+      `a=vqos.dfc.minTargetFps:${is90Fps ? 60 : 100}`,
       "a=vqos.resControl.dfc.useClientFpsPerf:0",
-      "a=vqos.dfc.adjustResAndFps:0",
+      "a=vqos.dfc.adjustResAndFps:1",
     );
   } else {
+    // Official web client, 60 FPS + dynamicStreamingMode=3: only drc.enable:1
+    // is emitted (the mode-3 case enables DRC for non-high-FPS sessions).
     lines.push(
-      "a=vqos.dfc.enable:0",
-      "a=vqos.dfc.adjustResAndFps:0",
+      "a=vqos.drc.enable:1",
     );
   }
-
-  // Frame pacing target: ~1/fps with a small headroom (official 240 FPS DESCRIBE used 7936 µs).
-  const minTargetFrameTimeUs = Math.max(
-    1000,
-    Math.floor((1_000_000 * 95) / (Math.max(1, params.fps) * 100)),
-  );
 
   // Video encoder settings
   lines.push(
@@ -108,43 +122,19 @@ export function buildNvstSdp(params: NvstParams): string {
     "a=video.dx9EnableHdr:1",
     "a=vqos.qpg.enable:1",
     "a=vqos.resControl.qp.qpg.featureSetting:7",
-    // Official DESCRIBE adaptive quantization block (HEVC/AV1 sessions).
-    "a=video.adaptiveQuantization.spatialAQSetting:7",
-    "a=video.adaptiveQuantization.temporalAQSetting:0",
-    "a=video.adaptiveQuantization.spatialAQStrength:12",
-    "a=video.adaptiveQuantization.qpThresholdAdjPercent:2",
-    "a=video.adaptiveQuantization.saqAdaptMinQpThresholdPercent:40",
-    "a=video.adaptiveQuantization.saqAdaptMaxQpThresholdPercent:100",
-    "a=video.adaptiveQuantization.saqAdaptDecayStrengthX100:250",
-    "a=video.adaptiveQuantization.perfAdjEnablement:1",
-    "a=video.framePacing.mode:2",
-    `a=video.framePacing.pid.minTargetFrameTimeUs:${minTargetFrameTimeUs}`,
+    // NOTE: the official web client does NOT send video.framePacing.* or
+    // video.adaptiveQuantization.* — those fork additions came from native
+    // client dumps. Dropped to match play.geforcenow.com byte-for-byte.
     "a=bwe.useOwdCongestionControl:1",
     "a=video.enableRtpNack:1",
     "a=vqos.bw.txRxLag.minFeedbackTxDeltaMs:200",
     "a=vqos.drc.bitrateIirFilterFactor:18",
     "a=video.packetSize:1140",
-    // Official packet pacing profile (Nvsc dumps + DESCRIBE enableAccurateSleep).
-    "a=packetPacing.version:3",
-    "a=packetPacing.mode:1",
+    // The official web client only sends packetPacing.minNumPacketsPerGroup
+    // here (version/mode/enableAccurateSleep/etc. are native-client extras,
+    // and vqos.relaxMaxBitrate.* / vqos.qpDelta.* detail attrs are not sent
+    // by play.geforcenow.com at all — dropped to match it byte-for-byte).
     "a=packetPacing.minNumPacketsPerGroup:15",
-    "a=packetPacing.enableAccurateSleep:1",
-    "a=packetPacing.enableSmoothTransition:1",
-    "a=packetPacing.allowFpsBasedToggle:1",
-    // Bitrate headroom / QP delta — present on official DESCRIBE ANNOUNCE path.
-    "a=vqos.relaxMaxBitrate.overrideAvgBitrateThresholdPercent:4",
-    "a=vqos.relaxMaxBitrate.customAvgBitrateThresholdPercent:65",
-    "a=vqos.relaxMaxBitrate.overrideAvgQpThresholdPercent:7",
-    "a=vqos.relaxMaxBitrate.customAvgQpThresholdPercent:51",
-    "a=vqos.relaxMaxBitrate.iirFilterFactor:120",
-    "a=vqos.qpDelta.qpDeltaMaxPercent:10",
-    "a=vqos.qpDelta.qpDeltaSurfaceAdjustmentStrengthPercent:70",
-    "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH264:100",
-    "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentH265:100",
-    "a=vqos.qpDelta.qpDeltaVbvUsageFactorPercentAv1:100",
-    "a=vqos.qpDelta.qpDeltaMinPercent:60",
-    "a=vqos.qpDelta.qpDeltaIirFactor:60",
-    "a=vqos.qpDelta.qpDeltaThrottlePercent:100",
   );
 
   // High FPS optimizations
@@ -157,10 +147,14 @@ export function buildNvstSdp(params: NvstParams): string {
       `a=vqos.resControl.cpmRtc.decodeTimeThresholdMs:${is90Fps ? 11 : 9}`,
       `a=video.fbcDynamicFpsGrabTimeoutMs:${is90Fps ? 9 : is120Fps ? 6 : 18}`,
       `a=vqos.resControl.cpmRtc.serverResolutionUpdateCoolDownCount:${is120Fps ? 6000 : 12000}`,
+      // Official client sends the 120 FPS encoder-rate hint for 120/240 sessions.
+      ...(is120Fps || is240Fps ? ["a=video.fakeEncodeFps:120"] : []),
     );
   }
 
   // 240+ FPS optimizations
+  // NOTE: vqos.rtcPreemptiveIdrSettings.* (older web-client extras) are not
+  // sent — the official play.geforcenow.com bundle doesn't include them.
   if (is240Fps) {
     lines.push(
       "a=video.enableNextCaptureMode:1",
@@ -171,24 +165,21 @@ export function buildNvstSdp(params: NvstParams): string {
       lines.push(
         "a=video.videoSplitEncodeStripsPerFrame:63",
         `a=video.updateSplitEncodeStateDynamically:${dynamicSplitEncodeUpdatesEnabled ? 1 : 0}`,
-        "a=vqos.rtcPreemptiveIdrSettings.minBurstNackSize:65535",
-        "a=vqos.rtcPreemptiveIdrSettings.minNackPacketCaptureAgeMs:65535",
       );
     }
   }
 
-  // Out-of-focus handling + disable CPM-based resolution changes
+  // Out-of-focus handling + CPM resolution control (official web client).
+  // The official bundle emits cpmRtc.featureMask:3 when the CPM path is
+  // enabled (web default) and never sends cpmRtc.enable / minResolutionPercent
+  // / resolutionChangeHoldonMs — those fork-only locks disabled the server's
+  // CPM resolution control, which fights dynamicStreamingMode:3 and pins the
+  // BWE to the 4000 kbps floor (~5 Mbps) instead of ramping to the ceiling.
   lines.push(
     "a=vqos.adjustStreamingFpsDuringOutOfFocus:1",
     "a=vqos.resControl.cpmRtc.ignoreOutOfFocusWindowState:1",
     "a=vqos.resControl.perfHistory.rtcIgnoreOutOfFocusWindowState:1",
-    // Disable CPM-based resolution changes (prevents SSRC switches)
-    "a=vqos.resControl.cpmRtc.featureMask:0",
-    "a=vqos.resControl.cpmRtc.enable:0",
-    // Never scale down resolution
-    "a=vqos.resControl.cpmRtc.minResolutionPercent:100",
-    // Infinite cooldown to prevent resolution changes
-    "a=vqos.resControl.cpmRtc.resolutionChangeHoldonMs:999999",
+    "a=vqos.resControl.cpmRtc.featureMask:3",
   );
 
   // Packet pacing group/delay + NACK queues (official Nvsc defaults).
@@ -250,50 +241,65 @@ export function buildNvstSdp(params: NvstParams): string {
   lines.push(
     `a=video.clientViewportWd:${params.width}`,
     `a=video.clientViewportHt:${params.height}`,
+    // Official web client sends the session FPS from settings (previously the
+    // fork forced maxFPS:120 — reverted as part of full alignment with the
+    // official bundle dump; revert this line again if GFN ignores low FPS).
     `a=video.maxFPS:${params.fps}`,
+    // Bitrate attributes mirror the official GFN web client exactly (verified
+    // against a dump of play.geforcenow.com's vendor bundle): initial =
+    // initialPeak = max(4000, max/4), minimum fixed at 4000. The official
+    // client does NOT send enableBandwidthEstimation / disableBitrateLimit /
+    // peakBitrateKbps / serverPeakBitrateKbps / grc.maximumBitrateKbps — those
+    // fork additions made the server enable its own throttling BWE, which read
+    // Chromium WebRTC feedback and sat around the 4000 kbps floor (~5 Mbps at
+    // a 35 Mbps cap) instead of ramping to the ceiling.
     `a=video.initialBitrateKbps:${startupBitrate}`,
     `a=video.initialPeakBitrateKbps:${startupBitrate}`,
     `a=vqos.bw.maximumBitrateKbps:${maxBitrate}`,
     `a=vqos.bw.minimumBitrateKbps:${OFFICIAL_MIN_BITRATE_KBPS}`,
-    `a=vqos.bw.peakBitrateKbps:${maxBitrate}`,
-    `a=vqos.bw.serverPeakBitrateKbps:${maxBitrate}`,
-    "a=vqos.bw.enableBandwidthEstimation:1",
-    "a=vqos.bw.disableBitrateLimit:0",
-    // GRC — disabled
-    `a=vqos.grc.maximumBitrateKbps:${maxBitrate}`,
-    "a=vqos.grc.enable:0",
-    // Encoder settings
+    // Encoder settings — encoderCscMode is always 3 on desktop web (the official
+    // bundle computes it as `TIZEN ? 2 : 3`; the fork's old 4 for 10-bit was a
+    // fork-only value the server does not expect). encoderHdrCscMode:4 and
+    // dynamicRangeMode mirror the official client for HDR content.
     "a=video.maxNumReferenceFrames:4",
     "a=video.mapRtpTimestampsToFrames:1",
     "a=video.encoderCscMode:3",
-    "a=video.dynamicRangeMode:0",
+    "a=video.encoderHdrCscMode:4",
+    `a=video.dynamicRangeMode:${bitDepth === 10 ? 1 : 0}`,
     `a=video.bitDepth:${bitDepth}`,
-    // Disable server-side scaling and prefilter (prevents resolution downgrade)
+    // Official web client sets video.minQp:14 only for 10-bit H265 (verified
+    // against the vendor bundle: `10===To && "H265"===tn`); 8-bit H265 sends
+    // no minQp. AV1 pins minQp:25 in its block above.
+    ...(params.codec === "H265" && bitDepth === 10 ? ["a=video.minQp:14"] : []),
+    // Disable server-side scaling and prefilter (prevents resolution downgrade).
+    // Official web client sends the full prefilterParams set — mode OFF,
+    // model 0, denoise 0, sharpness 0 — the fork previously sent only model.
     `a=video.scalingFeature1:${isAv1 ? 1 : 0}`,
+    "a=video.prefilterParams.prefilterMode:0",
     "a=video.prefilterParams.prefilterModel:0",
+    "a=video.prefilterParams.denoiseLevel:0",
+    "a=video.prefilterParams.sharpnessLevel:0",
     // Audio track (receive-only from server)
+    // NOTE: the official web client sends NO aqos.* / audio.* attributes here
+    // (verified against the play.geforcenow.com bundle dump) — the fork's
+    // aqos redundancy + dynamic audio config lines were native-client extras
+    // and are dropped for byte-for-byte alignment.
     "m=audio 0 RTP/AVP",
     "a=msid:audio",
-    // Official aqos redundancy + dynamic audio config (DESCRIBE / Nvsc dumps).
-    "a=aqos.enableRedundancy:1",
-    "a=aqos.redundancyLevel:2",
-    "a=aqos.enableRedundancyForMic:1",
-    "a=aqos.redundancyLevelForMic:3",
-    "a=audio.enableDynamicAudioConfig:1",
-    "a=audio.enableTimestampAudioBuffer:1",
     // Mic track (send to server)
     "m=mic 0 RTP/AVP",
     "a=msid:mic",
     "a=rtpmap:0 PCMU/8000",
     // Input/application track
+    // ri.* values echo the server's offer (partial reliability for input) —
+    // matches the official client, which echoes them from the DESCRIBE
+    // response instead of sending fixed values.
     "m=application 0 RTP/AVP",
     "a=msid:input_1",
     `a=ri.partialReliableThresholdMs:${params.partialReliableThresholdMs}`,
     `a=ri.hidDeviceMask:${hidDeviceMask}`,
     `a=ri.enablePartiallyReliableTransferGamepad:${enablePartiallyReliableTransferGamepad}`,
     `a=ri.enablePartiallyReliableTransferHid:${enablePartiallyReliableTransferHid}`,
-    "a=ri.timestampsEnabled:1",
-    "a=ri.useMultipleGamepads:1",
     "",
   );
 

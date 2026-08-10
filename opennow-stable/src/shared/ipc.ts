@@ -57,6 +57,8 @@ export const IPC_CHANNELS = {
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",
   POINTER_LOCK_CHANGE: "window:pointer-lock-change",
   EXTERNAL_ESCAPE: "app:external-escape",
+  STREAM_SHORTCUT_ACTION: "app:stream-shortcut-action",
+  STREAM_SHORTCUT_INTERCEPTION_CHANGE: "app:stream-shortcut-interception-change",
   OPEN_EXTERNAL_URL: "app:open-external-url",
   DIRECT_LAUNCH_GET_PENDING: "app:direct-launch:get-pending",
   DIRECT_LAUNCH_REQUEST: "app:direct-launch:request",
@@ -109,6 +111,7 @@ export const IPC_CHANNELS = {
   RELEASE_HIGHLIGHTS_GET: "release-highlights:get",
   RELEASE_HIGHLIGHTS_ACK: "release-highlights:ack",
   RELEASE_HIGHLIGHTS_SHOW: "release-highlights:show",
+  GPU_GET_INFO: "gpu:get-info",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

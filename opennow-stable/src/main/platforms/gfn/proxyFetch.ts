@@ -105,7 +105,7 @@ export async function fetchWithOptionalProxy(
   if (protocol === "http:" || protocol === "https:") {
     const agent = getHttpProxyAgent(normalizedProxyUrl);
     return undiciFetch(input, {
-      ...(init ?? {}),
+      ...init,
       dispatcher: agent,
     } as Parameters<typeof undiciFetch>[1]) as unknown as Response;
   }

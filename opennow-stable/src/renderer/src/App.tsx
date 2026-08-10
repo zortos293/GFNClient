@@ -46,8 +46,17 @@ import {
 import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
+import { nextStatsOverlayMode } from "./utils/streamStatsHud";
+import { isShortcutCaptureTarget } from "./utils/shortcutCaptureFocus";
 import type { StreamStatus } from "./lib/appTypes";
-import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
+import {
+  getCodecToMigrateToAuto,
+  loadStoredCodecResults,
+  resolveStreamProfileCodec,
+  saveStoredCodecResults,
+  testCodecSupport,
+  type CodecTestResult,
+} from "./lib/codecDiagnostics";
 import {
   createSyntheticDirectLaunchGame,
   findDirectLaunchTarget,
@@ -63,6 +72,7 @@ import {
 } from "./lib/gameCatalog";
 import { resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
 import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
+import { getStreamPointerLockTarget, isStreamPointerLocked } from "./lib/pointerLock";
 import { normalizeMembershipTier } from "./lib/queueAds";
 import { clearRuntimeSnapshot, type RuntimeSnapshot } from "./lib/runtimeSnapshot";
 import { getEnabledSessionProxyUrl } from "./lib/sessionProxy";
@@ -92,6 +102,7 @@ import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { GameDetailModal } from "./components/GameDetailModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
 import { ErrorReportingConsentModal } from "./components/ErrorReportingConsentModal";
 import { FeedbackModal } from "./components/FeedbackModal";
@@ -166,7 +177,7 @@ export function App(): JSX.Element {
   const {
     session, setSession,
     streamStatus, setStreamStatus,
-    showStatsOverlay, setShowStatsOverlay,
+    statsMode, setStatsMode,
     antiAfkEnabled, setAntiAfkEnabled,
     antiAfkAckNonce, setAntiAfkAckNonce,
     nativeInputCaptureActive, setNativeInputCaptureActive,
@@ -226,6 +237,7 @@ export function App(): JSX.Element {
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
+  const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   // freeTier/session-limit derived state is computed after auth/catalog hooks
 
 
@@ -236,8 +248,36 @@ export function App(): JSX.Element {
     streamingGameRef.current = streamingGame;
   }, [streamingGame]);
 
+  useEffect(() => {
+    let active = true;
+    const syncShortcutCaptureFocus = (): void => {
+      if (active) {
+        setShortcutCaptureActive(isShortcutCaptureTarget(document.activeElement));
+      }
+    };
+    const scheduleShortcutCaptureFocusSync = (): void => {
+      queueMicrotask(syncShortcutCaptureFocus);
+    };
+
+    document.addEventListener("focusin", scheduleShortcutCaptureFocusSync);
+    document.addEventListener("focusout", scheduleShortcutCaptureFocusSync);
+    syncShortcutCaptureFocus();
+    return () => {
+      active = false;
+      document.removeEventListener("focusin", scheduleShortcutCaptureFocusSync);
+      document.removeEventListener("focusout", scheduleShortcutCaptureFocusSync);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.openNow.setStreamShortcutInterceptionGate({
+      streamActive: isStreaming,
+      shortcutCaptureActive,
+    });
+  }, [isStreaming, shortcutCaptureActive]);
+
   const resetStatsOverlayToPreference = useCallback((): void => {
-    setShowStatsOverlay(settings.showStatsOnLaunch);
+    setStatsMode(settings.showStatsOnLaunch ? "compact" : "off");
   }, [settings.showStatsOnLaunch]);
 
   const runCodecTest = useCallback(async (): Promise<void> => {
@@ -385,7 +425,7 @@ export function App(): JSX.Element {
 
   const onBootstrapSettings = useCallback((loadedSettings: Settings, _sessionProxyUrl: string | undefined) => {
     setSettings(loadedSettings);
-    setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
+    setStatsMode(loadedSettings.showStatsOnLaunch ? "compact" : "off");
     setSettingsLoaded(true);
   }, []);
 
@@ -409,7 +449,6 @@ export function App(): JSX.Element {
     isLoggingIn,
     activeLoginMode,
     loginError,
-    setLoginError,
     qrLoginChallenge,
     isInitializing,
     startupStatusMessage,
@@ -460,7 +499,7 @@ export function App(): JSX.Element {
     : (selectedProvider?.streamingServiceUrl ?? "");
 
   const {
-    games,
+    games,
     storePanels,
     libraryGames,
     searchQuery,
@@ -485,7 +524,6 @@ export function App(): JSX.Element {
     setRegions,
     subscriptionInfo,
     setSubscriptionInfo,
-    storePanelGames,
     allKnownGames,
     resetStorePanels,
     hydrateCatalogSnapshot,
@@ -656,13 +694,18 @@ export function App(): JSX.Element {
       fps: settings.fps,
     });
     const streamProfile = entitledProfile ?? SAFE_FALLBACK_STREAM_PROFILE;
+    const codecProfile = resolveStreamProfileCodec(
+      settings.codec,
+      settings.colorQuality,
+      codecResults,
+    );
 
     return {
       resolution: streamProfile.resolution,
       fps: streamProfile.fps,
       maxBitrateMbps: settings.maxBitrateMbps,
-      codec: settings.codec,
-      colorQuality: settings.colorQuality,
+      codec: codecProfile.codec,
+      colorQuality: codecProfile.colorQuality,
       keyboardLayout: settings.keyboardLayout,
       gameLanguage: settings.gameLanguage,
       enableL4S: settings.enableL4S,
@@ -680,6 +723,7 @@ export function App(): JSX.Element {
   }, [
     settings.codec,
     settings.colorQuality,
+    codecResults,
     settings.controllerMode,
     directLaunchConsoleMode,
     settings.enableCloudGsync,
@@ -1014,7 +1058,7 @@ export function App(): JSX.Element {
   }, []);
 
   const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement) => {
-    const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
+    const lockTarget = getStreamPointerLockTarget(target);
     const requestPointerLockCompat = async (
       options?: { unadjustedMovement?: boolean },
     ): Promise<void> => {
@@ -1306,7 +1350,7 @@ export function App(): JSX.Element {
     }
     if (key === "maxBitrateMbps") {
       try {
-        void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
+        void clientRef.current?.setMaxBitrateKbps((value as number) * 1000);
       } catch {
         // ignore
       }
@@ -1326,6 +1370,20 @@ export function App(): JSX.Element {
       }
     }
   }, [authSession, loadSubscriptionInfo, previewSetting, settingsLoaded]);
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return;
+    }
+    const unsupportedCodec = getCodecToMigrateToAuto(settings.codec, codecResults);
+    if (!unsupportedCodec) {
+      return;
+    }
+    console.warn(
+      `[Codec] Saved codec "${unsupportedCodec}" is unavailable for WebRTC decode; migrating to auto`,
+    );
+    void updateSetting("codec", "auto");
+  }, [codecResults, settings.codec, settingsLoaded, updateSetting]);
 
   useEffect(() => {
     if (!settingsLoaded || !subscriptionInfo) {
@@ -1354,13 +1412,6 @@ export function App(): JSX.Element {
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
-
-  const handleToggleFavoriteGame = useCallback((gameId: string): void => {
-    const favorites = settings.favoriteGameIds;
-    const exists = favorites.includes(gameId);
-    const next = exists ? favorites.filter((id) => id !== gameId) : [...favorites, gameId];
-    void updateSetting("favoriteGameIds", next);
-  }, [settings.favoriteGameIds, updateSetting]);
 
   const handleMouseAccelerationChange = useCallback((value: number) => {
     void updateSetting("mouseAcceleration", value);
@@ -1777,6 +1828,7 @@ export function App(): JSX.Element {
     resolveSubscriptionInfoForLaunch,
     settings,
     startPlaytimeSession,
+    stopSessionByTarget,
     subscriptionInfo,
     t,
     variantByGameId,
@@ -1883,8 +1935,19 @@ export function App(): JSX.Element {
     variantByGameId,
   ]);
 
+  const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
+  const [detailsSurfacePresent, setDetailsSurfacePresent] = useState(false);
+  const queueModalVariantIdRef = useRef<string | undefined>(undefined);
+  const handleOpenDetails = useCallback((game: GameInfo): void => {
+    setDetailsSurfacePresent(true);
+    setDetailsGame(game);
+  }, []);
+  const handleCloseDetails = useCallback((): void => {
+    setDetailsGame(null);
+  }, []);
+
   // Gate handler: shows queue server modal for FREE-tier users before launching
-  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+  const handleInitiatePlay = useCallback(async (game: GameInfo, variantId?: string) => {
     const effectiveTier = normalizeMembershipTier(
       subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
     );
@@ -1894,12 +1957,14 @@ export function App(): JSX.Element {
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (!isNvidiaAccount || isAllianceServer) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      queueModalVariantIdRef.current = undefined;
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (settings.hideServerSelector) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      queueModalVariantIdRef.current = undefined;
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
@@ -1918,14 +1983,16 @@ export function App(): JSX.Element {
             },
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         const queueData = queueResult.value;
         if (!queueData || Object.keys(queueData).length === 0) {
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
@@ -1934,32 +2001,39 @@ export function App(): JSX.Element {
             "[QueueServerSelect] No eligible non-nuked PrintedWaste zones available, skipping queue checks.",
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         setQueueModalData(queueData);
+        queueModalVariantIdRef.current = variantId;
         setQueueModalGame(game);
       } catch (error) {
         console.warn("[QueueServerSelect] PrintedWaste queue checks failed, launching without modal.", error);
         setQueueModalData(null);
-        void handlePlayGame(game);
+        queueModalVariantIdRef.current = undefined;
+        void handlePlayGame(game, { variantId });
       }
       return;
     }
-    void handlePlayGame(game);
+    queueModalVariantIdRef.current = undefined;
+    void handlePlayGame(game, { variantId });
   }, [subscriptionInfo, authSession, selectedProvider, settings.hideServerSelector, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
+    const variantId = queueModalVariantIdRef.current;
+    queueModalVariantIdRef.current = undefined;
     setQueueModalGame(null);
     setQueueModalData(null);
     if (game) {
-      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
+      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined, variantId });
     }
   }, [queueModalGame, handlePlayGame]);
 
   const handleQueueModalCancel = useCallback(() => {
+    queueModalVariantIdRef.current = undefined;
     setQueueModalGame(null);
     setQueueModalData(null);
   }, []);
@@ -2209,7 +2283,7 @@ export function App(): JSX.Element {
   const handleStreamShortcutAction = useCallback((action: NativeStreamerShortcutAction): void => {
     switch (action) {
       case "toggleStats":
-        setShowStatsOverlay((prev) => !prev);
+        setStatsMode(nextStatsOverlayMode);
         return;
       case "togglePointerLock":
         if (nativeStreamingRef.current) {
@@ -2219,7 +2293,7 @@ export function App(): JSX.Element {
         {
           const targetVideo = videoRef.current;
           if (streamStatus === "streaming" && targetVideo) {
-            if (document.pointerLockElement === targetVideo) {
+            if (isStreamPointerLocked(targetVideo)) {
               clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
               document.exitPointerLock();
             } else {
@@ -2258,6 +2332,10 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     handleStreamShortcutActionRef.current = handleStreamShortcutAction;
+  }, [handleStreamShortcutAction]);
+
+  useEffect(() => {
+    return window.openNow.onStreamShortcutAction(handleStreamShortcutAction);
   }, [handleStreamShortcutAction]);
 
   // Keyboard shortcuts
@@ -2528,6 +2606,8 @@ export function App(): JSX.Element {
     || currentPage === "settings"
     || settingsSurfacePresent
     || navbarOverlayBlocking
+    || detailsGame !== null
+    || detailsSurfacePresent
     || queueModalGame !== null
     || releaseHighlightsPayload !== null
     || releaseHighlightsSurfacePresent
@@ -2618,6 +2698,7 @@ export function App(): JSX.Element {
           accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
           handleLogout();
         }}
+        onExitApp={handleExitApp}
         onOpenFeedback={() => setFeedbackOpen(true)}
         onBlockingOverlayChange={setNavbarOverlayBlocking}
         controllerMode={effectiveControllerMode}
@@ -2643,6 +2724,7 @@ export function App(): JSX.Element {
                 isLoading={effectiveControllerMode ? isLoadingStorePanels : isLoadingCatalog}
                 selectedGameId={selectedGameId}
                 onSelectGame={setSelectedGameId}
+                onOpenDetails={handleOpenDetails}
                 selectedVariantByGameId={variantByGameId}
                 onSelectGameVariant={handleSelectGameVariant}
                 filterGroups={catalogFilterGroups}
@@ -2655,7 +2737,7 @@ export function App(): JSX.Element {
                 supportedCount={catalogSupportedCount}
                 controllerMode={effectiveControllerMode}
                 surfaceActive={catalogSurfaceActive}
-                storePanels={storePanels}
+                storePanels={storePanels}
                 activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}
                 onMarkGameOwned={handleMarkGameOwned}
@@ -2677,6 +2759,7 @@ export function App(): JSX.Element {
                   isLoading={isLoadingLibrary}
                   selectedGameId={selectedGameId}
                   onSelectGame={setSelectedGameId}
+                  onOpenDetails={handleOpenDetails}
                   selectedVariantByGameId={variantByGameId}
                   onSelectGameVariant={handleSelectGameVariant}
                   libraryCount={libraryGames.length}
@@ -2684,7 +2767,7 @@ export function App(): JSX.Element {
                   selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
                   onSortChange={setCatalogSelectedSortId}
                   controllerMode={effectiveControllerMode}
-                  surfaceActive={catalogSurfaceActive}
+                  surfaceActive={catalogSurfaceActive}
                   activeSessionAppIds={activeSessionAppIds}
                   onBuyGame={handleBuyGame}
                   onPreviousControllerPage={() => navigateControllerPage(-1)}
@@ -2715,7 +2798,8 @@ export function App(): JSX.Element {
               videoRef={videoRef}
               audioRef={audioRef}
               diagnosticsStore={diagnosticsStore}
-              showStats={showStatsOverlay}
+              statsMode={statsMode}
+              statsPosition={settings.statsOverlayPosition}
               showNativeStats={settings.showNativeStreamerStats}
               nativeInputCaptureActive={nativeInputCaptureActive}
               gstreamerEnabled={settings.streamClientMode === "native"}
@@ -2735,6 +2819,8 @@ export function App(): JSX.Element {
               antiAfkEnabled={antiAfkEnabled}
               antiAfkAckNonce={antiAfkAckNonce}
               showAntiAfkIndicator={settings.showAntiAfkIndicator}
+              antiAfkReminderEveryMinutes={settings.antiAfkReminderEveryMinutes}
+              antiAfkReminderDurationSeconds={settings.antiAfkReminderDurationSeconds}
               exitPrompt={exitPrompt}
               sessionStartedAtMs={sessionStartedAtMs}
               sessionCounterEnabled={settings.sessionCounterEnabled}
@@ -2748,6 +2834,17 @@ export function App(): JSX.Element {
               streamRevealComplete={streamRevealComplete}
               isStreaming={isStreaming}
               recordingBitrateMbps={settings.recordingBitrateMbps}
+              recordingResolution={settings.recordingResolution}
+              recordingFps={settings.recordingFps}
+              onRecordingResolutionChange={(value) => {
+                void updateSetting("recordingResolution", value);
+              }}
+              onRecordingFpsChange={(value) => {
+                void updateSetting("recordingFps", value);
+              }}
+              onRecordingBitrateMbpsChange={(value) => {
+                void updateSetting("recordingBitrateMbps", value);
+              }}
               gameTitle={streamingGame?.title ?? t("app.labels.game")}
               platformStore={streamingStore ?? undefined}
               onToggleFullscreen={() => {
@@ -2864,6 +2961,20 @@ export function App(): JSX.Element {
       </SettingsModalHost>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
+      <GameDetailModal
+        open={detailsGame !== null}
+        game={detailsGame}
+        selectedVariantId={detailsGame ? variantByGameId[detailsGame.id] : undefined}
+        onSelectVariant={(variantId) => {
+          if (detailsGame) handleSelectGameVariant(detailsGame.id, variantId);
+        }}
+        onPlay={(game, variantId) => {
+          handleCloseDetails();
+          void handleInitiatePlay(game, variantId);
+        }}
+        onClose={handleCloseDetails}
+        onExitComplete={() => setDetailsSurfacePresent(false)}
+      />
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}

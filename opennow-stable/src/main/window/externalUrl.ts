@@ -1,14 +1,10 @@
 import { shell } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-
-export function parseExternalHttpUrl(url: string): URL {
-  const parsed = new URL(url);
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("Only HTTP(S) external URLs can be opened.");
-  }
-  return parsed;
-}
+import {
+  parseExplicitExternalUrl,
+  parseExternalHttpUrl,
+} from "./externalUrlPolicy";
 
 export function isAppNavigationUrl(url: string, mainDir: string): boolean {
   try {
@@ -27,4 +23,8 @@ export function isAppNavigationUrl(url: string, mainDir: string): boolean {
 
 export async function openExternalHttpUrl(url: string): Promise<void> {
   await shell.openExternal(parseExternalHttpUrl(url).toString());
+}
+
+export async function openExplicitExternalUrl(url: string): Promise<void> {
+  await shell.openExternal(parseExplicitExternalUrl(url).toString());
 }

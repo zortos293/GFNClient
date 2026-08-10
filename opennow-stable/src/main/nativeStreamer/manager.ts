@@ -1,10 +1,11 @@
-import { app } from "electron";
+import electron from "electron";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import {
   createUnsupportedNativeStreamerStatus,
+  extractNegotiatedVideoCodec,
   isNativeStreamerSupportedPlatform,
   NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   type IceCandidatePayload,
@@ -28,6 +29,7 @@ import {
   type NativeStreamerMessage,
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
+import { isTerminalBrokenWriteError } from "@shared/logger";
 import type { NativeStreamerShortcutBindings } from "@shared/gfn";
 import {
   createNativeStreamerDetectionFailureStatus,
@@ -42,6 +44,8 @@ import {
 } from "./protocol";
 import { createNativeStreamerRuntimeEnvironment } from "./runtime";
 import { NativeSurfaceUpdateQueue } from "./surfaceUpdateQueue";
+
+const { app } = electron;
 
 interface NativeStreamerCallbacks {
   sendAnswer(payload: SendAnswerRequest): Promise<void>;
@@ -76,6 +80,10 @@ const STOP_TIMEOUT_MS = 1200;
 const MAX_INPUT_STDIN_BUFFER_BYTES = 64 * 1024;
 const MIN_NATIVE_BITRATE_KBPS = 5_000;
 const MAX_NATIVE_BITRATE_KBPS = 150_000;
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
 
 function normalizeBitrateKbps(value: number): number {
   if (!Number.isFinite(value)) {
@@ -184,6 +192,11 @@ export class NativeStreamerManager {
         throw new Error(`Native streamer returned ${response.type} instead of answer.`);
       }
 
+      const negotiatedCodec = extractNegotiatedVideoCodec(response.answer.sdp);
+      if (!negotiatedCodec) {
+        throw new Error("Native streamer answer rejected the video m-line.");
+      }
+      console.log(`[NativeStreamer] Answer negotiated video codec: ${negotiatedCodec}`);
       await this.options.sendAnswer(response.answer);
       this.answerInFlight = false;
       await this.flushQueuedLocalIce();
@@ -248,6 +261,8 @@ export class NativeStreamerManager {
       !child
       || child.killed
       || !child.stdin.writable
+      || child.stdin.destroyed
+      || child.stdin.writableEnded
       || !this.activeSessionId
       || !this.capabilities?.supportsInput
     ) {
@@ -268,12 +283,28 @@ export class NativeStreamerManager {
       input,
     } satisfies NativeStreamerCommand;
 
-    const flushed = child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
-      if (error && !this.inputBackpressureWarned) {
-        this.inputBackpressureWarned = true;
-        console.warn("[NativeStreamer] Failed to write native input:", error);
+    let writeFailed = false;
+    let flushed: boolean;
+    try {
+      flushed = child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
+        if (!error) {
+          return;
+        }
+        writeFailed = true;
+        this.handleStdinFailure(child, error);
+      });
+    } catch (error) {
+      const writeError = toError(error);
+      if (!isTerminalBrokenWriteError(writeError, child.stdin)) {
+        throw error;
       }
-    });
+      this.handleStdinFailure(child, writeError);
+      return;
+    }
+
+    if (writeFailed) {
+      return;
+    }
 
     if (!flushed && !this.inputBackpressureWarned) {
       this.inputBackpressureWarned = true;
@@ -474,6 +505,7 @@ export class NativeStreamerManager {
     this.child = child;
     this.stdoutBuffer = "";
     this.stderrTail = [];
+    this.inputBackpressureWarned = false;
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
@@ -486,15 +518,16 @@ export class NativeStreamerManager {
         }
       }
     });
+    this.installStdinErrorHandler(child);
 
     child.once("error", (error) => {
       this.options.emit({ type: "error", message: `Native streamer failed to start: ${formatError(error)}` });
-      this.handleProcessExit(`spawn error: ${formatError(error)}`);
+      this.handleProcessExit(child, `spawn error: ${formatError(error)}`);
     });
 
     child.once("exit", (code, signal) => {
       const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-      this.handleProcessExit(reason);
+      this.handleProcessExit(child, reason);
     });
 
     const helloTimeoutMs = runtimeStatus.bundled ? BUNDLED_GSTREAMER_HELLO_TIMEOUT_MS : HELLO_TIMEOUT_MS;
@@ -534,7 +567,13 @@ export class NativeStreamerManager {
 
   private request(input: NativeStreamerCommandInput, timeoutMs: number): Promise<NativeStreamerResponse> {
     const child = this.child;
-    if (!child || child.killed || !child.stdin.writable) {
+    if (
+      !child
+      || child.killed
+      || !child.stdin.writable
+      || child.stdin.destroyed
+      || child.stdin.writableEnded
+    ) {
       return Promise.reject(new Error("Native streamer process is not running."));
     }
 
@@ -560,16 +599,20 @@ export class NativeStreamerManager {
         timeout,
       });
 
-      child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
-        if (!error) {
+      try {
+        child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
+          if (error) {
+            this.handleStdinFailure(child, error);
+          }
+        });
+      } catch (error) {
+        const writeError = toError(error);
+        if (isTerminalBrokenWriteError(writeError, child.stdin)) {
+          this.handleStdinFailure(child, writeError);
           return;
         }
-        const pending = this.pending.get(id);
-        if (pending) {
-          this.pending.delete(id);
-          pending.reject(error);
-        }
-      });
+        this.rejectPendingRequest(id, writeError);
+      }
     });
   }
 
@@ -742,8 +785,40 @@ export class NativeStreamerManager {
     }
   }
 
-  private handleProcessExit(reason: string): void {
-    if (!this.child) {
+  private handleStdinFailure(
+    child: ChildProcessWithoutNullStreams,
+    error: Error,
+  ): void {
+    if (this.child !== child) {
+      return;
+    }
+
+    if (!isTerminalBrokenWriteError(error, child.stdin)) {
+      console.error("[NativeStreamer] Streamer stdin failed:", error);
+    }
+
+    this.rejectPending(error);
+    this.handleProcessExit(child, `stdin error: ${formatError(error)}`);
+    if (!child.killed) {
+      try {
+        child.kill();
+      } catch (killError) {
+        console.warn("[NativeStreamer] Failed to terminate process after stdin failure:", killError);
+      }
+    }
+  }
+
+  private installStdinErrorHandler(child: ChildProcessWithoutNullStreams): void {
+    child.stdin.on("error", (error) => {
+      this.handleStdinFailure(child, error);
+    });
+  }
+
+  private handleProcessExit(
+    child: ChildProcessWithoutNullStreams,
+    reason: string,
+  ): void {
+    if (this.child !== child) {
       return;
     }
 
@@ -756,6 +831,7 @@ export class NativeStreamerManager {
     this.stderrTail = [];
     this.activeSessionId = null;
     this.capabilities = null;
+    this.inputBackpressureWarned = false;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
     this.rejectPending(new Error(`Native streamer process ended (${reason}).${tail}`));
@@ -776,11 +852,21 @@ export class NativeStreamerManager {
   }
 
   private rejectPending(error: Error): void {
-    for (const [id, pending] of this.pending.entries()) {
+    const pendingRequests = [...this.pending.values()];
+    this.pending.clear();
+    for (const pending of pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(error);
-      this.pending.delete(id);
     }
+  }
+
+  private rejectPendingRequest(id: string, error: Error): void {
+    const pending = this.pending.get(id);
+    if (!pending) {
+      return;
+    }
+    this.pending.delete(id);
+    pending.reject(error);
   }
 
   private async flushQueuedLocalIce(): Promise<void> {

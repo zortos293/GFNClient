@@ -2692,12 +2692,13 @@ internal class FirstVideoFrameWatchdog(
     }
 }
 
-internal data class TouchMouseDelta(
+internal data class MouseMotionDelta(
     val dx: Int,
     val dy: Int,
 )
 
-internal class TouchMouseMotionAccumulator(
+/** Applies mouse tuning in float space and retains the wire format's subpixel rounding residual. */
+internal class MouseMotionAccumulator(
     private val minimumSendIntervalMs: Long = 8L,
 ) {
     private var pendingDx = 0f
@@ -2717,7 +2718,7 @@ internal class TouchMouseMotionAccumulator(
         sensitivity: Float,
         acceleration: Int,
         force: Boolean = false,
-    ): TouchMouseDelta? {
+    ): MouseMotionDelta? {
         if (!dx.isFinite() || !dy.isFinite() || !sensitivity.isFinite()) {
             reset()
             return null
@@ -2758,7 +2759,7 @@ internal class TouchMouseMotionAccumulator(
         pendingDx -= sendDx
         pendingDy -= sendDy
         lastSendTimeMs = eventTimeMs
-        return TouchMouseDelta(sendDx, sendDy)
+        return MouseMotionDelta(sendDx, sendDy)
     }
 }
 
@@ -3132,7 +3133,7 @@ private class TouchMouseState {
     private var lastTapY = Float.NaN
     private val virtualCursor = VirtualCursor()
     private var twoFingerTapCandidate = false
-    private val motionAccumulator = TouchMouseMotionAccumulator()
+    private val motionAccumulator = MouseMotionAccumulator()
     // 2-finger scroll state
     private var secondPointerId = -1
     private var secondPointerDownY = 0f
@@ -3706,6 +3707,9 @@ class NativeStreamClient(
     private var mouseLastY = 0f
     private var mousePositionValid = false
     private var mouseSuppressNextAbsoluteDelta = false
+    private val externalMouseMotionAccumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
+    private var externalMouseMotionDeviceId = Int.MIN_VALUE
+    private var externalMouseMotionSource = 0
     private var inputDropLogged = false
     private var externalMouseEventLogged = false
     private var externalMouseMoveSentLogged = false
@@ -4178,6 +4182,9 @@ class NativeStreamClient(
         controllerAxisAvailability.clear()
         mousePositionValid = false
         mouseSuppressNextAbsoluteDelta = false
+        externalMouseMotionAccumulator.reset()
+        externalMouseMotionDeviceId = Int.MIN_VALUE
+        externalMouseMotionSource = 0
         inputDropLogged = false
         externalMouseEventLogged = false
         externalMouseMoveSentLogged = false
@@ -4251,9 +4258,9 @@ class NativeStreamClient(
             adjustedDx *= accelFactor
             adjustedDy *= accelFactor
         }
-        // Mouse movement is latency-sensitive. Finger Mouse already has its own frame-sized
-        // accumulator; adding another delayed window here made physical and controller mice feel
-        // sticky after the August input update and postponed every first movement in a burst.
+        // Mouse movement is latency-sensitive. Finger Mouse and external mouse input retain their
+        // own float residuals; delaying controller mouse packets here would postpone every first
+        // movement in a burst.
         return sendInput(
             inputEncoder.encodeMouseMove(adjustedDx.roundToInt(), adjustedDy.roundToInt()),
             partiallyReliable = partiallyReliable,
@@ -4273,40 +4280,35 @@ class NativeStreamClient(
             MotionEvent.ACTION_HOVER_MOVE,
             MotionEvent.ACTION_MOVE,
             -> {
-                val relativeDx = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X) else 0f
-                val relativeDy = if (Build.VERSION.SDK_INT >= 26) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) else 0f
-                if (abs(relativeDx) >= 0.5f || abs(relativeDy) >= 0.5f) {
-                    val sent = sendTouchMouseMove(relativeDx.roundToInt(), relativeDy.roundToInt())
+                if (event.hasRelativeAxisMotion()) {
+                    val sent = sendExternalMouseMotionSamples(event, useRelativeAxes = true)
                     if (sent && !externalMouseMoveSentLogged) {
                         externalMouseMoveSentLogged = true
                         NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relative")
                     }
                     mousePositionValid = false
                 } else if (event.isRelativeMousePointer()) {
-                    val positionDx = event.x
-                    val positionDy = event.y
-                    if (abs(positionDx) >= 0.5f || abs(positionDy) >= 0.5f) {
-                        val sent = sendTouchMouseMove(positionDx.roundToInt(), positionDy.roundToInt())
-                        if (sent && !externalMouseMoveSentLogged) {
-                            externalMouseMoveSentLogged = true
-                            NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relativePosition")
-                        }
+                    val sent = sendExternalMouseMotionSamples(event, useRelativeAxes = false)
+                    if (sent && !externalMouseMoveSentLogged) {
+                        externalMouseMoveSentLogged = true
+                        NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=relativePosition")
                     }
                     mousePositionValid = false
                 } else if (mousePositionValid && mouseLastDeviceId == event.deviceId && mouseLastSource == event.source) {
                     val dx = event.x - mouseLastX
                     val dy = event.y - mouseLastY
-                    if (abs(dx) >= 0.5f || abs(dy) >= 0.5f) {
+                    if (dx != 0f || dy != 0f) {
                         val discontinuous = mouseSuppressNextAbsoluteDelta ||
                             abs(dx) > EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX ||
                             abs(dy) > EXTERNAL_MOUSE_ABSOLUTE_DELTA_LIMIT_PX
                         if (discontinuous) {
+                            externalMouseMotionAccumulator.reset()
                             if (!externalMouseAbsoluteJumpLogged) {
                                 externalMouseAbsoluteJumpLogged = true
                                 NativeInputDiagnostics.add("external mouse absolute delta rebased source=${event.source} device=${event.deviceId} dx=${dx.roundToInt()} dy=${dy.roundToInt()}")
                             }
                         } else {
-                            val sent = sendTouchMouseMove(dx.roundToInt(), dy.roundToInt())
+                            val sent = sendExternalMouseMotion(event, dx, dy)
                             if (sent && !externalMouseMoveSentLogged) {
                                 externalMouseMoveSentLogged = true
                                 NativeInputDiagnostics.add("external mouse move sent source=${event.source} device=${event.deviceId} mode=absoluteDelta")
@@ -4359,6 +4361,82 @@ class NativeStreamClient(
             }
         }
         return true
+    }
+
+    private fun MotionEvent.hasRelativeAxisMotion(): Boolean {
+        if (Build.VERSION.SDK_INT < 26) return false
+        for (historyIndex in 0 until historySize) {
+            if (
+                getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, historyIndex) != 0f ||
+                getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, historyIndex) != 0f
+            ) {
+                return true
+            }
+        }
+        return getAxisValue(MotionEvent.AXIS_RELATIVE_X) != 0f ||
+            getAxisValue(MotionEvent.AXIS_RELATIVE_Y) != 0f
+    }
+
+    private fun sendExternalMouseMotionSamples(event: MotionEvent, useRelativeAxes: Boolean): Boolean {
+        prepareExternalMouseMotion(event)
+        var sendDx = 0
+        var sendDy = 0
+        // Pointer capture may coalesce several raw samples into one MotionEvent. Process every
+        // sample before one packet is sent so neither slow motion nor high-polling-rate input is lost.
+        for (historyIndex in 0 until event.historySize) {
+            val dx = if (useRelativeAxes) {
+                event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, historyIndex)
+            } else {
+                event.getHistoricalX(historyIndex)
+            }
+            val dy = if (useRelativeAxes) {
+                event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, historyIndex)
+            } else {
+                event.getHistoricalY(historyIndex)
+            }
+            externalMouseMotionAccumulator.add(
+                dx = dx,
+                dy = dy,
+                eventTimeMs = event.getHistoricalEventTime(historyIndex),
+                sensitivity = settings.mouseSensitivity,
+                acceleration = settings.mouseAcceleration,
+            )?.let { delta ->
+                sendDx += delta.dx
+                sendDy += delta.dy
+            }
+        }
+        val dx = if (useRelativeAxes) event.getAxisValue(MotionEvent.AXIS_RELATIVE_X) else event.x
+        val dy = if (useRelativeAxes) event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) else event.y
+        externalMouseMotionAccumulator.add(
+            dx = dx,
+            dy = dy,
+            eventTimeMs = event.eventTime,
+            sensitivity = settings.mouseSensitivity,
+            acceleration = settings.mouseAcceleration,
+        )?.let { delta ->
+            sendDx += delta.dx
+            sendDy += delta.dy
+        }
+        return (sendDx != 0 || sendDy != 0) && sendRawMouseMove(sendDx, sendDy)
+    }
+
+    private fun sendExternalMouseMotion(event: MotionEvent, dx: Float, dy: Float): Boolean {
+        prepareExternalMouseMotion(event)
+        val delta = externalMouseMotionAccumulator.add(
+            dx = dx,
+            dy = dy,
+            eventTimeMs = event.eventTime,
+            sensitivity = settings.mouseSensitivity,
+            acceleration = settings.mouseAcceleration,
+        ) ?: return false
+        return sendRawMouseMove(delta.dx, delta.dy)
+    }
+
+    private fun prepareExternalMouseMotion(event: MotionEvent) {
+        if (externalMouseMotionDeviceId == event.deviceId && externalMouseMotionSource == event.source) return
+        externalMouseMotionAccumulator.reset()
+        externalMouseMotionDeviceId = event.deviceId
+        externalMouseMotionSource = event.source
     }
 
     private fun rememberMousePosition(event: MotionEvent) {

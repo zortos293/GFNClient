@@ -106,7 +106,69 @@ class InputEncoderGamepadTest {
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "SEMICO USB Keyboard System Control"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "BT5.2 Mouse"))
         assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Gaming KB Gaming KB Keyboard"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "uinput-fpc"))
+        assertFalse(AndroidControllerInput.isControllerDevice(misleadingSources, "Fingerprint Sensor"))
         assertTrue(AndroidControllerInput.isControllerDevice(misleadingSources, "Xbox Wireless Controller"))
+    }
+
+    @Test
+    fun syntheticControllerEventsReuseTheLiveAndroidDeviceId() {
+        val controllerSlots = linkedMapOf<Int, Int>()
+        val assignment = AndroidControllerSlotRegistry.assign(
+            controllerSlots = controllerSlots,
+            deviceId = -1,
+            connectedDeviceIds = setOf(14),
+            maxControllers = 4,
+        )
+
+        assertEquals(0, assignment.slot)
+        assertEquals(mapOf(14 to 0), controllerSlots)
+        assertTrue(
+            AndroidControllerSlotRegistry.retainConnected(
+                controllerSlots = controllerSlots,
+                connectedDeviceIds = setOf(14),
+            ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun syntheticControllerEventsPreferTheAlreadyAssignedPrimaryController() {
+        val controllerSlots = linkedMapOf(14 to 0, 15 to 1)
+        val assignment = AndroidControllerSlotRegistry.assign(
+            controllerSlots = controllerSlots,
+            deviceId = -1,
+            connectedDeviceIds = setOf(14, 15),
+            maxControllers = 4,
+        )
+
+        assertEquals(0, assignment.slot)
+        assertTrue(assignment.removedDevices.isEmpty())
+        assertEquals(mapOf(14 to 0, 15 to 1), controllerSlots)
+    }
+
+    @Test
+    fun neutralControllerKeepaliveDoesNotFightFingerMouse() {
+        assertFalse(
+            shouldSendGamepadKeepalive(
+                hasControllerState = true,
+                hasActiveControllerInput = false,
+                touchMouseEnabled = true,
+            ),
+        )
+        assertTrue(
+            shouldSendGamepadKeepalive(
+                hasControllerState = true,
+                hasActiveControllerInput = true,
+                touchMouseEnabled = true,
+            ),
+        )
+        assertTrue(
+            shouldSendGamepadKeepalive(
+                hasControllerState = true,
+                hasActiveControllerInput = false,
+                touchMouseEnabled = false,
+            ),
+        )
     }
 
     @Test

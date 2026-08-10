@@ -233,7 +233,10 @@ class MainActivity : ComponentActivity() {
             super.dispatchGenericMotionEvent(event)
     }
 
-    private fun requestExternalMousePointerCaptureIfNeeded(event: MotionEvent) {
+    private fun requestExternalMousePointerCaptureIfNeeded(event: MotionEvent) =
+        requestExternalMousePointerCaptureIfNeeded(source = event.source, deviceId = event.deviceId)
+
+    private fun requestExternalMousePointerCaptureIfNeeded(source: Int? = null, deviceId: Int? = null) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val decorView = window?.decorView ?: return
         if (
@@ -248,8 +251,11 @@ class MainActivity : ComponentActivity() {
             return
         }
         externalMousePointerCaptureRequestPending = true
-        val source = event.source
-        val deviceId = event.deviceId
+        val requestOrigin = if (source != null && deviceId != null) {
+            "source=$source device=$deviceId"
+        } else {
+            "window-focus"
+        }
         decorView.post {
             externalMousePointerCaptureRequestPending = false
             if (
@@ -270,13 +276,13 @@ class MainActivity : ComponentActivity() {
                 .onSuccess {
                     NativeInputDiagnostics.addRetained(
                         key = "mouse.pointer-capture",
-                        message = "external mouse pointer capture requested source=$source device=$deviceId",
+                        message = "external mouse pointer capture requested origin=$requestOrigin",
                     )
                 }
                 .onFailure { error ->
                     NativeInputDiagnostics.addRetained(
                         key = "mouse.pointer-capture",
-                        message = "external mouse pointer capture retry failed source=$source device=$deviceId error=${error.javaClass.simpleName}",
+                        message = "external mouse pointer capture request failed origin=$requestOrigin error=${error.javaClass.simpleName}",
                     )
                 }
         }
@@ -285,6 +291,10 @@ class MainActivity : ComponentActivity() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         try {
             val decorView = window?.decorView
+            if (streamSystemUiActive && event.isMouseLikePointerEvent()) {
+                enforceStreamSystemUiFromInput()
+                requestExternalMousePointerCaptureIfNeeded(event)
+            }
             if (NativeStreamInputRouter.shouldConsumeUiTransitionTouchBeforeViews(event)) return true
             if (decorView != null && NativeStreamInputRouter.dispatchExternalMouseTouch(event, decorView.width, decorView.height)) return true
             if (decorView != null && NativeStreamInputRouter.shouldForwardTouchBeforeViews(event, decorView.width, decorView.height)) {
@@ -340,7 +350,21 @@ class MainActivity : ComponentActivity() {
         if (hasFocus && streamSystemUiActive) {
             applyStreamSystemUi(true, force = true)
             applyStreamDisplayRefreshRate(streamDisplayRefreshActive, streamDisplayRefreshFps, force = true)
+            requestExternalMousePointerCaptureIfNeeded()
         }
+    }
+
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        if (!streamSystemUiActive && !hasCapture) return
+        val decorView = window?.decorView
+        NativeInputDiagnostics.addRetained(
+            key = "mouse.pointer-capture-state",
+            message = "external mouse pointer capture changed granted=$hasCapture " +
+                "streamActive=$streamSystemUiActive " +
+                "enabled=${NativeStreamInputRouter.isExternalMousePointerCaptureEnabled()} " +
+                "windowFocused=${decorView?.hasWindowFocus() == true}",
+        )
     }
 
     fun enforceStreamSystemUiFromInput() {
@@ -358,9 +382,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         streamSystemUiActive = active
-        applyStreamPointerIcon(active)
+        applyStreamPointerIcon(active && NativeStreamInputRouter.isExternalMousePointerCaptureEnabled())
         applyStreamKeepAwake(active)
         updateStreamSystemUiEnforcer(active)
+
+        if (!active && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching { window.decorView.releasePointerCapture() }
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -470,7 +498,13 @@ class MainActivity : ComponentActivity() {
                 } else {
                     false
                 }
-                if (shouldPeriodicallyEnforceStreamSystemUi(streamSystemUiActive, navigationBarsVisible)) {
+                if (
+                    shouldPeriodicallyEnforceStreamSystemUi(
+                        streamActive = streamSystemUiActive,
+                        navigationBarsVisible = navigationBarsVisible,
+                        pointerLockEnabled = NativeStreamInputRouter.isExternalMousePointerCaptureEnabled(),
+                    )
+                ) {
                     applyStreamSystemUi(true, force = true)
                 }
             }
@@ -689,7 +723,8 @@ class MainActivity : ComponentActivity() {
 internal fun shouldPeriodicallyEnforceStreamSystemUi(
     streamActive: Boolean,
     navigationBarsVisible: Boolean,
-): Boolean = streamActive && !navigationBarsVisible
+    pointerLockEnabled: Boolean,
+): Boolean = streamActive && (pointerLockEnabled || !navigationBarsVisible)
 
 internal fun shouldRequestAndroidMousePointerCapture(
     streamActive: Boolean,

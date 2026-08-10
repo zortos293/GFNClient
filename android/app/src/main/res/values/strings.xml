@@ -232,6 +232,8 @@
     <string name="settings_section_stream_connection">Connection</string>
     <string name="settings_section_audio_keyboard">Audio and keyboard</string>
     <string name="settings_section_pointer_input">Pointer input</string>
+    <string name="settings_mouse_lock">Mouse lock</string>
+    <string name="settings_mouse_lock_desc">Keep an external mouse captured inside the game while streaming. Opening Stream Controls releases it.</string>
     <string name="settings_section_controller_touch">Controller and touch</string>
     <string name="settings_section_appearance">Appearance</string>
     <string name="settings_section_library_navigation">Library and navigation</string>

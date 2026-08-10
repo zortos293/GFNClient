@@ -339,6 +339,8 @@ data class AppSettings(
     val controllerMode: Boolean = false,
     val controllerUiSounds: Boolean = true,
     val controllerMouseEmulation: Boolean = false,
+    /** Capture an external mouse during gameplay so Android system edges cannot steal it. */
+    val externalMousePointerLock: Boolean = true,
     val controllerBackgroundAnimations: Boolean = true,
     val controllerThemeStyle: String = "aurora",
     val controllerThemeColor: ControllerThemeRgb = ControllerThemeRgb(),

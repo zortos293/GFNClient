@@ -6,6 +6,31 @@ import org.junit.Test
 
 class ExternalMousePointerCaptureTest {
     @Test
+    fun enablesCaptureOnlyDuringUnobstructedGameplayWhenMouseLockIsOn() {
+        assertTrue(
+            shouldEnableExternalMousePointerCapture(
+                streamReady = true,
+                streamOverlayOpen = false,
+                pointerLockEnabled = true,
+            ),
+        )
+        assertFalse(
+            shouldEnableExternalMousePointerCapture(
+                streamReady = true,
+                streamOverlayOpen = true,
+                pointerLockEnabled = true,
+            ),
+        )
+        assertFalse(
+            shouldEnableExternalMousePointerCapture(
+                streamReady = true,
+                streamOverlayOpen = false,
+                pointerLockEnabled = false,
+            ),
+        )
+    }
+
+    @Test
     fun retriesCaptureForMouseMotionWhenStreamingWithoutAnOverlay() {
         assertTrue(
             shouldRequestAndroidMousePointerCapture(

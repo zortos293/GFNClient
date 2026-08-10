@@ -1827,10 +1827,10 @@ internal object AndroidControllerInput {
 
     fun isControllerDevice(source: Int, deviceName: String?): Boolean {
         val knownController = isKnownControllerName(deviceName)
-        // Some Bluetooth/USB keyboard and mouse receivers expose stray GAMEPAD or JOYSTICK source
-        // bits. Advertising those idle composite interfaces as an XInput pad makes games switch
-        // away from mouse/keyboard even though no controller exists.
-        if (!knownController && isClearlyKeyboardOrMouse(deviceName)) return false
+        // Some OEM inputs and Bluetooth/USB receivers expose stray GAMEPAD or JOYSTICK source
+        // bits. Advertising those idle interfaces as an XInput pad makes games switch away from
+        // mouse/keyboard even though no controller exists.
+        if (!knownController && isClearlyNotController(deviceName)) return false
         return hasControllerSource(source) ||
             (source.hasSource(InputDevice.SOURCE_DPAD) && knownController)
     }
@@ -1863,12 +1863,14 @@ internal object AndroidControllerInput {
             normalized.contains("gamepad")
     }
 
-    private fun isClearlyKeyboardOrMouse(name: String?): Boolean {
+    private fun isClearlyNotController(name: String?): Boolean {
         val normalized = name.orEmpty().lowercase(Locale.US)
         return normalized.contains("keyboard") ||
             normalized.contains("mouse") ||
             normalized.contains("touchpad") ||
-            normalized.contains("trackpad")
+            normalized.contains("trackpad") ||
+            normalized.contains("fingerprint") ||
+            normalized.contains("uinput-fpc")
     }
 
     fun controllerFamily(device: InputDevice?): AndroidControllerFamily? =
@@ -1923,7 +1925,18 @@ internal object AndroidControllerSlotRegistry {
         connectedDeviceIds: Set<Int>,
         maxControllers: Int,
     ): AndroidControllerSlotAssignment {
-        val stableDeviceId = if (deviceId >= 0) deviceId else 0
+        // Some Android controller stacks deliver synthetic events with deviceId=-1 even though
+        // the real InputDevice remains connected. Bind those events to a live controller ID so
+        // the periodic connection scan does not delete the synthetic slot every second.
+        val stableDeviceId = when {
+            deviceId >= 0 -> deviceId
+            else -> controllerSlots.entries
+                .filter { it.key in connectedDeviceIds }
+                .minByOrNull { it.value }
+                ?.key
+                ?: connectedDeviceIds.minOrNull()
+                ?: deviceId
+        }
         val removedDevices = retainConnected(
             controllerSlots = controllerSlots,
             connectedDeviceIds = connectedDeviceIds + stableDeviceId,
@@ -1943,6 +1956,12 @@ internal data class ControllerMouseDelta(
     val dx: Int,
     val dy: Int,
 )
+
+internal fun shouldSendGamepadKeepalive(
+    hasControllerState: Boolean,
+    hasActiveControllerInput: Boolean,
+    touchMouseEnabled: Boolean,
+): Boolean = hasControllerState && (!touchMouseEnabled || hasActiveControllerInput)
 
 internal object AndroidControllerMouseAssist {
     fun mouseDelta(stickX: Float, stickY: Float): ControllerMouseDelta? {
@@ -3601,9 +3620,8 @@ class NativeStreamClient(
     private val pendingInputSends = AtomicInteger(0)
     private var statsChannel: DataChannel? = null
     private var lastParsedGameFps: Int? = null
-    // Informational only: gamepad packets are full-state snapshots and are always routed over
-    // the ordered reliable channel (see sendCurrentGamepadState), so this mask no longer affects
-    // routing. Kept for the SDP offer diagnostic log.
+    // The host advertises which gamepad slots support its low-latency partially reliable path.
+    // Honor that mask instead of forcing state snapshots behind reliable-channel retransmits.
     private var partiallyReliableGamepadMask = 0
     private var hapticsAdvertised: Boolean? = null
     private var lastHapticsAdvertisementAtMs = 0L
@@ -3655,6 +3673,8 @@ class NativeStreamClient(
     private var virtualRightStickX = 0
     private var virtualRightStickY = 0
     private var virtualControllerVisible = false
+    @Volatile
+    private var touchMouseEnabled = false
     private var physicalControllerConnected = false
     private var physicalControllerActive = false
     private var activeControllerId = 0
@@ -3717,15 +3737,6 @@ class NativeStreamClient(
     private var physicalRightStickX = 0f
     private var physicalRightStickY = 0f
     private var controllerScrollAccumulator = 0f
-    // Mouse-move coalescing: external mice and controller-mouse emulation can emit many small
-    // deltas per second. One packet per window keeps the SCTP packet rate low (fewer chances of
-    // loss and retransmit stalls) at the cost of at most MOUSE_MOVE_COALESCE_MS of extra latency.
-    // The accumulator itself is a pure [MouseMoveCoalescer]; this lock guards it across the UI
-    // and input threads. One flush job is kept per window: a window is dirty exactly until its
-    // flush runs, so the coalescer's own [MouseMoveCoalescer.needsFlush] decides scheduling.
-    private val mouseMoveLock = Any()
-    private val mouseMoveCoalescer = MouseMoveCoalescer()
-    private var mouseMoveFlushJob: Job? = null
 
     private data class RumbleEffectProfile(
         val weakAmplitude: Int,
@@ -3825,9 +3836,10 @@ class NativeStreamClient(
             }
             rendererSharpnessDrawer = sharpnessDrawer
             it.init(eglBase.eglBaseContext, rendererEvents, EglBase.CONFIG_PLAIN, sharpnessDrawer)
-            // A fixed-size surface avoids vendor BufferQueue resize transactions that can
-            // block HardwareRenderer while the decoder is producing frames.
-            it.setEnableHardwareScaler(false)
+            // Let SurfaceViewRenderer keep a fixed native surface sized to the decoded frame.
+            // Using the Compose layout size for the backing surface caused some OEM compositors
+            // to display only the upper-left portion of an otherwise correctly decoded frame.
+            it.setEnableHardwareScaler(true)
             it.setMirror(false)
             // Do not give SurfaceViewRenderer an opaque View background. Its decoded
             // frames are presented by a separate Surface layer, so a normal View
@@ -4239,51 +4251,13 @@ class NativeStreamClient(
             adjustedDx *= accelFactor
             adjustedDy *= accelFactor
         }
-        return queueMouseMove(adjustedDx.roundToInt(), adjustedDy.roundToInt(), partiallyReliable)
-    }
-
-    /**
-     * Queues one mouse delta into the current coalescing window instead of sending it immediately.
-     * External mice can emit 125-500 events per second; sending each as its own SCTP packet makes
-     * the transport carry far more packets than the input needs, which raises the chance of loss
-     * and head-of-line stalls on the reliable channel. Batching into a single packet per window
-     * keeps the packet rate flat while adding at most [MOUSE_MOVE_COALESCE_MS] of latency.
-     *
-     * Returns false only when no input channel is open yet, so callers that log "sent" or rewind
-     * their cursor model (direct click) keep their existing semantics.
-     */
-    private fun queueMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean): Boolean {
-        val channelOpen = openInputChannel(partiallyReliable, fallbackToReliable = true) != null
-        if (!channelOpen) return false
-        if (dx == 0 && dy == 0) return true
-        val scheduleFlush: Boolean
-        synchronized(mouseMoveLock) {
-            scheduleFlush = !mouseMoveCoalescer.needsFlush
-            mouseMoveCoalescer.add(dx, dy, partiallyReliable)
-        }
-        if (scheduleFlush) {
-            mouseMoveFlushJob?.cancel()
-            // Flush on the dedicated input thread, not the main scope: during a mouse/touch flood
-            // the main thread is exactly where the delay would stretch, weakening the window.
-            mouseMoveFlushJob = inputScope.launch {
-                delay(MOUSE_MOVE_COALESCE_MS)
-                flushQueuedMouseMove()
-            }
-        }
-        return true
-    }
-
-    private fun flushQueuedMouseMove() {
-        val batch: MouseMoveBatch?
-        synchronized(mouseMoveLock) {
-            batch = mouseMoveCoalescer.flush()
-        }
-        if (batch != null) {
-            sendInput(
-                inputEncoder.encodeMouseMove(batch.dx, batch.dy),
-                partiallyReliable = batch.partiallyReliable,
-            )
-        }
+        // Mouse movement is latency-sensitive. Finger Mouse already has its own frame-sized
+        // accumulator; adding another delayed window here made physical and controller mice feel
+        // sticky after the August input update and postponed every first movement in a burst.
+        return sendInput(
+            inputEncoder.encodeMouseMove(adjustedDx.roundToInt(), adjustedDy.roundToInt()),
+            partiallyReliable = partiallyReliable,
+        )
     }
 
     private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
@@ -4764,6 +4738,10 @@ class NativeStreamClient(
         if (virtualControllerVisible == visible) return
         virtualControllerVisible = visible
         sendCurrentGamepadState()
+    }
+
+    fun setTouchMouseEnabled(enabled: Boolean) {
+        touchMouseEnabled = enabled
     }
 
     private fun startTransport(session: SessionInfo, settings: StreamSettings, generation: Int) {
@@ -5686,7 +5664,13 @@ class NativeStreamClient(
                     connectedScanCountdown = 10
                     refreshConnectedPhysicalControllers()
                 }
-                if (hasAnyControllerState()) {
+                if (
+                    shouldSendGamepadKeepalive(
+                        hasControllerState = hasAnyControllerState(),
+                        hasActiveControllerInput = hasActiveControllerInput(),
+                        touchMouseEnabled = touchMouseEnabled,
+                    )
+                ) {
                     sendCurrentGamepadState()
                 }
                 updateHapticsAdvertisement()
@@ -6299,13 +6283,10 @@ class NativeStreamClient(
     }
 
     private fun sendCurrentGamepadState(controllerId: Int = activeControllerId): Boolean {
-        // Gamepad state is a full snapshot (buttons + sticks) that must arrive in order. On the
-        // loss-tolerant unordered channel, a dropped or reordered packet can regress a pressed
-        // button combination (A+B arriving as just A), which shows up as "cannot press multiple
-        // buttons simultaneously" on the virtual gamepad. Keep gamepad state on the ordered
-        // reliable channel; packets are small and sent on change plus the 100ms keepalive, so
-        // reliable adds no meaningful latency.
-        val partiallyReliable = false
+        // Gamepad packets are full-state snapshots and the host advertises which slots support
+        // its low-latency path. A newer snapshot repairs any dropped older one, while forcing them
+        // through ordered reliable SCTP makes controls wait behind retransmits on lossy links.
+        val partiallyReliable = canSendGamepadPartiallyReliable(controllerId)
         val buttons =
             physicalSteamOverlayChord.effectiveButtons(physicalButtons) or
                 physicalHatButtons or
@@ -6417,6 +6398,26 @@ class NativeStreamClient(
             lastRightStickY != 0 ||
             virtualLeftStickActive ||
             virtualRightStickActive
+
+    private fun hasActiveControllerInput(): Boolean =
+        physicalButtons != 0 ||
+            physicalHatButtons != 0 ||
+            virtualButtons != 0 ||
+            steamMenuChordButtons != 0 ||
+            lastLeftTrigger != 0 ||
+            lastRightTrigger != 0 ||
+            virtualLeftTrigger != 0 ||
+            virtualRightTrigger != 0 ||
+            effectiveLeftStickX() != 0 ||
+            effectiveLeftStickY() != 0 ||
+            effectiveRightStickX() != 0 ||
+            effectiveRightStickY() != 0
+
+    private fun canSendGamepadPartiallyReliable(controllerId: Int): Boolean {
+        if (partiallyReliableInputState != DataChannel.State.OPEN) return false
+        val mask = 1 shl (controllerId and 0x1f)
+        return (partiallyReliableGamepadMask and mask) != 0
+    }
 
     private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean): Boolean =
         sendInput(bytes, partiallyReliable, fallbackToReliable = true)
@@ -6542,17 +6543,11 @@ class NativeStreamClient(
 
     private fun refreshConnectedPhysicalControllers() {
         controllerAxisAvailability.clear()
-        val availableDeviceIds = InputDevice.getDeviceIds()
-        val connectedDevices = mutableListOf<InputDevice>()
-        availableDeviceIds.forEach { deviceId ->
-            val device = InputDevice.getDevice(deviceId) ?: return@forEach
-            if (AndroidControllerInput.isControllerDevice(device)) {
-                connectedDevices += device
-            }
-        }
+        val connectedDevices = connectedControllerDevices()
+        val connectedDeviceIds = connectedDevices.mapTo(mutableSetOf()) { it.id }
         val removedControllerSlots = AndroidControllerSlotRegistry.retainConnected(
             controllerSlots = controllerSlots,
-            connectedDeviceIds = availableDeviceIds.toSet(),
+            connectedDeviceIds = connectedDeviceIds,
         )
         if (removedControllerSlots.isNotEmpty()) {
             NativeInputDiagnostics.add(
@@ -6817,10 +6812,11 @@ class NativeStreamClient(
     private fun controllerIdFor(event: MotionEvent): Int = controllerIdFor(event.deviceId)
 
     private fun controllerIdFor(deviceId: Int): Int {
+        val connectedDeviceIds = connectedControllerDevices().mapTo(mutableSetOf()) { it.id }
         val assignment = AndroidControllerSlotRegistry.assign(
             controllerSlots = controllerSlots,
             deviceId = deviceId,
-            connectedDeviceIds = InputDevice.getDeviceIds().toSet(),
+            connectedDeviceIds = connectedDeviceIds,
             maxControllers = GAMEPAD_MAX_CONTROLLERS,
         )
         if (physicalControllerActive && activeControllerId in assignment.removedDevices.values) {
@@ -6834,6 +6830,12 @@ class NativeStreamClient(
         }
         return assignment.slot
     }
+
+    private fun connectedControllerDevices(): List<InputDevice> =
+        InputDevice.getDeviceIds()
+            .map(InputDevice::getDevice)
+            .filterNotNull()
+            .filter(AndroidControllerInput::isControllerDevice)
 
     private fun currentGamepadBitmap(controllerId: Int): Int {
         val connected = physicalControllerConnected ||
@@ -6961,7 +6963,6 @@ class NativeStreamClient(
         private const val ANALOG_DIAGNOSTIC_INTERVAL_MS = 250L
         private const val GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS = 1_000L
-        private const val MOUSE_MOVE_COALESCE_MS = 8L
         private const val MAX_PENDING_INPUT_SENDS = 256
         // State inputs are superseded by newer packets, so they are dropped well before the queue
         // can grow into lag; one-shot critical events keep the generous reliable threshold.

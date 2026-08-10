@@ -2845,7 +2845,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             snapshot.activeStreamSettings?.let { active ->
                 appendLine("active.resolution=${active.resolution} fps=${active.fps} codec=${active.codec} bitrate=${active.maxBitrateMbps}")
             }
-            appendLine("input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} touch=${snapshot.settings.androidTouch}")
+            appendLine(
+                "input.keyboardLayout=${snapshot.settings.stream.keyboardLayout} " +
+                    "mouseLock=${snapshot.settings.externalMousePointerLock} touch=${snapshot.settings.androidTouch}",
+            )
             appendLine("codec.native=${codecReport?.nativeRuntimeSummary.orEmpty()} lowPower=${codecReport?.lowPowerGpuProfile} constrained=${codecReport?.constrainedRuntimeProfile} tv=${codecReport?.androidTvProfile}")
             appendLine("device.runtime=${AndroidRuntimeDiagnostics.snapshot(getApplication()).debugSummary()}")
             appendLine("stream.runtime.latest=${latestStreamRuntimeStats?.debugSummary(System.currentTimeMillis()) ?: "empty"}")

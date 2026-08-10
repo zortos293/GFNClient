@@ -14,6 +14,7 @@ class AppSettingsDefaultsTest {
 
         assertTrue(settings.showStatsOnLaunch)
         assertFalse(settings.hideStreamButtons)
+        assertTrue(settings.externalMousePointerLock)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertTrue(metrics.fps)
         assertTrue(metrics.ping)
@@ -35,6 +36,7 @@ class AppSettingsDefaultsTest {
         assertEquals(StreamStatsMetrics(), settings.streamStatsMetrics)
         assertTrue(settings.showStatsOnLaunch)
         assertFalse(settings.hideStreamButtons)
+        assertTrue(settings.externalMousePointerLock)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertEquals(CatalogBackgroundPreset.ColorfulAbstract, settings.catalogBackgroundPreset)
         assertFalse(settings.analyticsConsentAsked)
@@ -73,6 +75,17 @@ class AppSettingsDefaultsTest {
 
         assertFalse(defaulted.stream.streamSharpeningEnabled)
         assertTrue(optedIn.stream.streamSharpeningEnabled)
+    }
+
+    @Test
+    fun mouseLockDefaultsOnAndPreservesExplicitOptOut() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedOut = OpenNowJson.decodeFromString<AppSettings>(
+            """{"externalMousePointerLock":false}""",
+        )
+
+        assertTrue(defaulted.externalMousePointerLock)
+        assertFalse(optedOut.externalMousePointerLock)
     }
 
     @Test

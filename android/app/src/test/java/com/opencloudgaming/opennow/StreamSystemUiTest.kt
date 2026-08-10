@@ -11,6 +11,18 @@ class StreamSystemUiTest {
             shouldPeriodicallyEnforceStreamSystemUi(
                 streamActive = true,
                 navigationBarsVisible = true,
+                pointerLockEnabled = false,
+            ),
+        )
+    }
+
+    @Test
+    fun mouseLockForcesImmersiveModeWhenSystemNavigationAppears() {
+        assertTrue(
+            shouldPeriodicallyEnforceStreamSystemUi(
+                streamActive = true,
+                navigationBarsVisible = true,
+                pointerLockEnabled = true,
             ),
         )
     }
@@ -21,12 +33,14 @@ class StreamSystemUiTest {
             shouldPeriodicallyEnforceStreamSystemUi(
                 streamActive = true,
                 navigationBarsVisible = false,
+                pointerLockEnabled = false,
             ),
         )
         assertFalse(
             shouldPeriodicallyEnforceStreamSystemUi(
                 streamActive = false,
                 navigationBarsVisible = false,
+                pointerLockEnabled = true,
             ),
         )
     }

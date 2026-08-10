@@ -764,7 +764,14 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(hideStreamButtons = !enabled))
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
+                SettingSwitch(
+                    label = stringResource(R.string.settings_mouse_lock),
+                    checked = settings.externalMousePointerLock,
+                    description = stringResource(R.string.settings_mouse_lock_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(externalMousePointerLock = enabled))
+                }
                 NumberSlider("Mouse sensitivity", settings.stream.mouseSensitivity, 0.25f, 3f, 0.05f, valueFormatter = { "%.2fx".format(it) }) {
                     viewModel.updateStreamSettings { s -> s.copy(mouseSensitivity = it) }
                 }

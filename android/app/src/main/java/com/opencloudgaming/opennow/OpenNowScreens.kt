@@ -6733,6 +6733,8 @@ private fun StreamScreen(
         touchControlsEnabled = state.settings.androidTouch.enabled,
         suppressedByPhysicalController = touchControlsSuppressedByPhysicalController,
     ) && !nativeTouchActive
+    val touchMouseActive =
+        streamReady && touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive
     val fallbackSessionStartedAtMs = remember(session?.sessionId) { System.currentTimeMillis() }
     val sessionStartedAtMs = session?.timerStartedAtMs ?: fallbackSessionStartedAtMs
     var timerNowMs by remember(session?.sessionId) { mutableStateOf(System.currentTimeMillis()) }
@@ -6830,7 +6832,11 @@ private fun StreamScreen(
     }
     val streamOverlayOpen = controlsOpen || exitConfirmOpen || keyboardOpen || streamGuideOpen || physicalControllerPromptOpen || touchLayoutEditing
     val streamKeyboardImeVisible = keyboardOpen && WindowInsets.ime.getBottom(density) > 0
-    val externalMousePassthroughActive = streamReady && !streamOverlayOpen
+    val externalMousePointerCaptureActive = shouldEnableExternalMousePointerCapture(
+        streamReady = streamReady,
+        streamOverlayOpen = streamOverlayOpen,
+        pointerLockEnabled = state.settings.externalMousePointerLock,
+    )
     val handleStreamBack = {
         when {
             streamGuideOpen && streamGuideStep == StreamGuideStep.OpenControls -> openControlsForGuide()
@@ -6903,6 +6909,9 @@ private fun StreamScreen(
             NativeStreamInputRouter.setSystemBackHandler(null)
             NativeStreamInputRouter.setAndroidTvProfile(false)
             NativeStreamInputRouter.setStreamUiActive(false)
+            NativeStreamInputRouter.setTouchControllerVisible(false)
+            client.setVirtualControllerVisible(false)
+            client.setTouchMouseEnabled(false)
             NativeStreamInputRouter.detach(client)
             client.release()
         }
@@ -6926,6 +6935,14 @@ private fun StreamScreen(
     LaunchedEffect(client, tvProfile) {
         client.updateAndroidTvProfile(tvProfile)
         client.updateControllerMouseAssistAutoArm(tvProfile)
+    }
+
+    // StreamScreen owns the effective controller/mouse modes even when TouchOverlay is absent.
+    // Re-sync on every session so closeTransport(clearInputState=false) cannot carry stale virtual
+    // controller presence into a Finger Mouse-only session.
+    LaunchedEffect(client, session?.sessionId, touchControlsVisible) {
+        client.setVirtualControllerVisible(touchControlsVisible)
+        NativeStreamInputRouter.setTouchControllerVisible(touchControlsVisible)
     }
 
     LaunchedEffect(streamReady, session?.sessionId, controlsOpen) {
@@ -7000,9 +7017,8 @@ private fun StreamScreen(
     // Also gated on nativeTouchActive: dispatchTouch would take the native branch first anyway, but
     // leaving two input modes both flagged "enabled" is how they end up fighting later.
     LaunchedEffect(streamReady, touchInputEnabled, state.settings.androidTouch.mousePad, nativeTouchActive) {
-        NativeStreamInputRouter.setTouchMouseEnabled(
-            streamReady && touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive,
-        )
+        NativeStreamInputRouter.setTouchMouseEnabled(touchMouseActive)
+        client.setTouchMouseEnabled(touchMouseActive)
     }
     // Gated on touchInputEnabled as well as the setting: finger touches already stop at
     // setTouchMouseEnabled during PiP, but external mouse and touchpad events reach direct click
@@ -7066,6 +7082,8 @@ private fun StreamScreen(
             onMicrophoneCaptureActiveChange(captureMicrophone)
             microphoneEnabled = captureMicrophone
             client.setMicrophoneEnabled(captureMicrophone)
+            client.setVirtualControllerVisible(touchControlsVisible)
+            client.setTouchMouseEnabled(touchMouseActive)
             client.start(
                 session,
                 launchStreamSettings.copy(
@@ -7145,9 +7163,9 @@ private fun StreamScreen(
                 viewportSettings = requestedStreamSettings,
                 decodedResolution = streamStats.resolution,
                 androidTouch = state.settings.androidTouch,
-                hideExternalMousePointer = externalMousePassthroughActive,
+                hideExternalMousePointer = externalMousePointerCaptureActive,
                 touchMouseEnabled =
-                    touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive,
+                    touchMouseActive,
                 pinchZoomEnabled = streamPinchZoomEnabled(
                     touchMouseEnabled =
                         touchInputEnabled && state.settings.androidTouch.mousePad && !nativeTouchActive,
@@ -8039,6 +8057,12 @@ internal fun streamPinchZoomEnabled(
     touchMouseEnabled: Boolean,
     touchControllerVisible: Boolean,
 ): Boolean = touchMouseEnabled && !touchControllerVisible
+
+internal fun shouldEnableExternalMousePointerCapture(
+    streamReady: Boolean,
+    streamOverlayOpen: Boolean,
+    pointerLockEnabled: Boolean,
+): Boolean = streamReady && !streamOverlayOpen && pointerLockEnabled
 
 private fun streamAspectRatioForPixels(pixels: Pair<Int, Int>): Float {
     val (width, height) = pixels
@@ -12845,14 +12869,8 @@ private fun TouchOverlay(
         }
     }
 
-    LaunchedEffect(client, touch.enabled) {
-        client.setVirtualControllerVisible(touch.enabled)
-        NativeStreamInputRouter.setTouchControllerVisible(touch.enabled)
-    }
     DisposableEffect(client) {
         onDispose {
-            client.setVirtualControllerVisible(false)
-            NativeStreamInputRouter.setTouchControllerVisible(false)
             NativeStreamInputRouter.clearTouchControllerPassthroughBounds()
         }
     }

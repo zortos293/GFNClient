@@ -117,11 +117,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
+          cache: npm
+          cache-dependency-path: opennow-stable/package-lock.json
 
       - name: Setup Rust
         if: runner.os == 'Linux'
@@ -150,7 +147,7 @@ jobs:
             gstreamer1.0-x
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: npm ci
 
       - name: Lint
         id: lint
@@ -163,6 +160,10 @@ jobs:
       - name: Test
         id: test
         run: npm test
+
+      - name: Build
+        id: build
+        run: npm run build
 
       - name: Test and build Linux native streamer
         if: runner.os == 'Linux'
@@ -195,7 +196,7 @@ jobs:
             echo "| Typecheck | $(status_icon '${{ steps.typecheck.outcome }}') |"
             echo "| Test | $(status_icon '${{ steps.test.outcome }}') |"
             echo "| Browser Test | ⏭️ skipped/not configured |"
-            echo "| Build | ⏭️ release-only / skipped for PR CI |"
+            echo "| Build | $(status_icon '${{ steps.build.outcome }}') |"
             echo
             echo "Job summary generated at run-time"
           } >> "$GITHUB_STEP_SUMMARY"

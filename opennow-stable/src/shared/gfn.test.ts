@@ -17,7 +17,6 @@ import {
   isOwnedLibraryStatus,
   isOwnedVariant,
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
-  NATIVE_STREAMER_WINDOWS_ONLY_MESSAGE,
   getDefaultStreamPreferences,
   normalizeCodecPreference,
   normalizeFallbackCodecPreference,

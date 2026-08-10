@@ -4,7 +4,6 @@ import type { KeyboardLayout } from "@shared/gfn";
 import {
   scancodeByCode,
   specialVirtualKeyByCode,
-  keyFallbackMap,
   baseCharCodeMap,
   shiftedCharCodeMap,
   germanBaseCharCodeMap,
@@ -29,9 +28,6 @@ export interface TextKeySpec extends KeyMapping {
 
 type KeyLike = Pick<KeyboardEvent, "code" | "key" | "keyCode" | "location">;
 
-const DOM_KEY_LOCATION_STANDARD = 0;
-const DOM_KEY_LOCATION_LEFT = 1;
-const DOM_KEY_LOCATION_RIGHT = 2;
 const DOM_KEY_LOCATION_NUMPAD = 3;
 
 function defaultVirtualKeyFromCode(code: string): number | null {

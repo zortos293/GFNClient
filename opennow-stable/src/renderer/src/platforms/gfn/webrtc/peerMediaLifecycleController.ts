@@ -13,6 +13,8 @@ export class PeerMediaLifecycleController {
   private audioSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioGainNode: GainNode | null = null;
   private audioRoutingGeneration = 0;
+  private videoFrameCallbackId: number | null = null;
+  private videoFrameGeneration = 0;
   private outputVolume = 1;
 
   constructor(private readonly dependencies: PeerMediaLifecycleDependencies) {
@@ -28,15 +30,18 @@ export class PeerMediaLifecycleController {
 
   attachTrack(track: MediaStreamTrack): void {
     if (track.kind === "video") {
+      this.stopVideoFrameCallback();
       this.replaceTrackInStream(this.videoStream, track);
       const video = this.dependencies.videoElement;
+      const generation = this.videoFrameGeneration;
       const frameCallback = () => {
-        this.dependencies.onRenderFrame();
-        if (this.videoStream.active) {
-          video.requestVideoFrameCallback(frameCallback);
+        if (generation !== this.videoFrameGeneration || this.getVideoTrack() !== track) {
+          return;
         }
+        this.dependencies.onRenderFrame();
+        this.videoFrameCallbackId = video.requestVideoFrameCallback(frameCallback);
       };
-      video.requestVideoFrameCallback(frameCallback);
+      this.videoFrameCallbackId = video.requestVideoFrameCallback(frameCallback);
 
       this.dependencies.log(
         `Video element before play: paused=${video.paused}, readyState=${video.readyState}, size=${video.videoWidth}x${video.videoHeight}`,
@@ -139,6 +144,7 @@ export class PeerMediaLifecycleController {
 
   clearTracks(): void {
     this.cleanupAudioRouting();
+    this.stopVideoFrameCallback();
     for (const track of this.videoStream.getTracks()) {
       this.videoStream.removeTrack(track);
     }
@@ -158,6 +164,15 @@ export class PeerMediaLifecycleController {
       stream.removeTrack(existingTrack);
     }
     stream.addTrack(track);
+  }
+
+  private stopVideoFrameCallback(): void {
+    this.videoFrameGeneration++;
+    if (this.videoFrameCallbackId === null) {
+      return;
+    }
+    this.dependencies.videoElement.cancelVideoFrameCallback(this.videoFrameCallbackId);
+    this.videoFrameCallbackId = null;
   }
 
   private cleanupAudioRouting(): void {

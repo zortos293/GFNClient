@@ -29,7 +29,7 @@ import {
   isSessionReadyForConnect,
   toLaunchErrorState,
 } from "../../lib/sessionState";
-import { sleep } from "../../lib/streamSessionHelpers";
+import { disposeSessionCreatedAfterAbort, sleep } from "../../lib/streamSessionHelpers";
 import type { StreamLoadingStatus } from "../../lib/appTypes";
 import type { StreamRuntimeState } from "./useStreamRuntimeState";
 
@@ -66,6 +66,7 @@ export interface GameLaunchOptions {
   resolveSubscriptionInfoForLaunch: () => Promise<SubscriptionInfo | null>;
   settings: Settings;
   startPlaytimeSession: (gameId: string) => void;
+  stopSessionByTarget: (session: SessionInfo) => Promise<boolean>;
   subscriptionInfo: SubscriptionInfo | null;
   t: TranslateFunction;
   variantByGameId: Record<string, string>;
@@ -92,6 +93,7 @@ export function useGameLaunch({
   resolveSubscriptionInfoForLaunch,
   settings,
   startPlaytimeSession,
+  stopSessionByTarget,
   subscriptionInfo,
   t,
   variantByGameId,
@@ -198,6 +200,8 @@ export function useGameLaunch({
         }
       }
 
+      if (launchAbortRef.current) return;
+
       if (!appId) {
         throw new Error("Could not resolve numeric appId for this game");
       }
@@ -214,12 +218,14 @@ export function useGameLaunch({
       setStreamingStore(launchVariant?.store ?? null);
 
       const launchSubscription = await resolveSubscriptionInfoForLaunch();
+      if (launchAbortRef.current) return;
       const streamSettings = buildCurrentStreamSettings(launchSubscription);
       const i2pStorageRegionBaseUrl = await resolveInstallToPlayStreamingBaseUrl(
         matchedGameContext.game,
         launchSubscription,
         token || undefined,
       );
+      if (launchAbortRef.current) return;
       const launchStreamingBaseUrl = i2pStorageRegionBaseUrl ?? options?.streamingBaseUrl ?? effectiveStreamingBaseUrl;
       let existingSessionStrategy: ExistingSessionStrategy | undefined;
 
@@ -227,6 +233,7 @@ export function useGameLaunch({
       if (token) {
         try {
           const activeSessions = await window.openNow.getActiveSessions(token, launchStreamingBaseUrl);
+          if (launchAbortRef.current) return;
           if (activeSessions.length > 0) {
             // Only claim sessions that are already paused/ready (status 2 or 3).
             // Status=1 sessions are still in queue/setup; sending a RESUME claim
@@ -243,6 +250,7 @@ export function useGameLaunch({
 
             if (otherSession) {
               const choice = await window.openNow.showSessionConflictDialog();
+              if (launchAbortRef.current) return;
               if (choice === "cancel") {
                 resetLaunchRuntime();
                 return;
@@ -265,6 +273,7 @@ export function useGameLaunch({
 
       const sessionProxyUrl = activeSessionProxyUrl;
       const supportedCodecs = resolveSupportedStreamCodecs(await getOrRunCodecSupport());
+      if (launchAbortRef.current) return;
 
       // Create new session
       const newSession = await window.openNow.createSession({
@@ -282,6 +291,14 @@ export function useGameLaunch({
         settings: streamSettings,
         supportedCodecs,
       });
+
+      if (await disposeSessionCreatedAfterAbort(
+        launchAbortRef.current,
+        newSession,
+        stopSessionByTarget,
+      )) {
+        return;
+      }
 
       setSession(newSession);
       setQueuePosition(newSession.queuePosition);
@@ -435,6 +452,7 @@ export function useGameLaunch({
     resolveSubscriptionInfoForLaunch,
     canLaunch,
     settings.enablePersistingInGameSettings,
+    stopSessionByTarget,
     streamStatus,
     t,
     variantByGameId,

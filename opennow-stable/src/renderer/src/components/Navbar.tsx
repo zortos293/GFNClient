@@ -489,7 +489,8 @@ export const Navbar = memo(function Navbar({
                             role="menuitem"
                             onClick={() => {
                               if (!isActive) {
-                                void onSwitchAccount(account.userId);
+                                if (account.hasPin) onOpenProfilePicker?.();
+                                else void onSwitchAccount(account.userId);
                               }
                               setAccountDropdownOpen(false);
                             }}

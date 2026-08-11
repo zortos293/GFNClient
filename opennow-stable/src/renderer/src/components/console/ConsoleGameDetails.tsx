@@ -93,6 +93,7 @@ export function ConsoleGameDetails({
                 type="button"
                 className={`console-action console-action--${action.tone ?? "secondary"}${index === focusedActionIndex ? " is-focused" : ""}`}
                 disabled={action.disabled}
+                onFocus={() => onFocusAction(index)}
                 onClick={() => {
                   onFocusAction(index);
                   action.onSelect();

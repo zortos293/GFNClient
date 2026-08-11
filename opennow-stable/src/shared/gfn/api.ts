@@ -107,7 +107,7 @@ export interface OpenNowApi {
   logout(): Promise<void>;
   logoutAll(): Promise<void>;
   getSavedAccounts(): Promise<SavedAccount[]>;
-  switchAccount(userId: string): Promise<AuthSession>;
+  switchAccount(userId: string, pin?: string): Promise<AuthSession>;
   removeAccount(userId: string): Promise<void>;
   getConsolePinStatus(userId: string): Promise<ConsolePinStatus>;
   setConsolePin(input: ConsolePinSetRequest): Promise<ConsolePinMutationResult>;

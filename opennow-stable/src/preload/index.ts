@@ -96,8 +96,8 @@ const api: OpenNowApi = {
   logout: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT),
   logoutAll: () => ipcRenderer.invoke(IPC_CHANNELS.AUTH_LOGOUT_ALL),
   getSavedAccounts: (): Promise<SavedAccount[]> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_GET_SAVED_ACCOUNTS),
-  switchAccount: (userId: string): Promise<AuthSession> =>
-    ipcRenderer.invoke(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, userId),
+  switchAccount: (userId: string, pin?: string): Promise<AuthSession> =>
+    ipcRenderer.invoke(IPC_CHANNELS.AUTH_SWITCH_ACCOUNT, { userId, pin }),
   removeAccount: (userId: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.AUTH_REMOVE_ACCOUNT, userId),
   getConsolePinStatus: (userId: string): Promise<ConsolePinStatus> =>
     ipcRenderer.invoke(IPC_CHANNELS.CONSOLE_PIN_GET_STATUS, userId),

@@ -188,6 +188,7 @@ body,
 }
 
 .app-container--controller .app-shell,
+.console-gate,
 .stream-view-layer,
 .game-card-image-wrapper {
   --bg-a: #101014;

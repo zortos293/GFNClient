@@ -48,6 +48,7 @@ export function ConsoleStorePicker({
                 className={`console-store-choice${index === focusedIndex ? " is-focused" : ""}${choice.isActive ? " is-active" : ""}`}
                 style={{ "--i": index } as CSSProperties}
                 data-console-store-choice={choice.variantId}
+                onFocus={() => onFocus(index)}
                 onClick={() => {
                   onFocus(index);
                   onSelect(choice.variantId);

@@ -4,6 +4,8 @@ import type { JSX } from "react";
 import type { CatalogFilterGroup, CatalogSortOption, GameInfo, GamePanelResult } from "@shared/gfn";
 import { GameCardListItem, useCatalogCardActionsRef } from "./GameCardListItem";
 import { gameNeedsPurchase, getNextVariantId } from "../lib/controllerCatalogUi";
+import { matchesGameSearch } from "../lib/gameCatalog";
+import { isControllerKeyboardActivationTarget } from "../lib/controllerKeyboard";
 import { clampRowFocus, moveRowFocus, type RowFocusDirection } from "../lib/consoleRowFocus";
 import { getConsoleStoreChoices } from "../lib/consoleStoreChoices";
 import { useTranslation } from "../i18n";
@@ -97,13 +99,29 @@ export const HomePage = memo(function HomePage({
   const scrollFocusIntoView = useControllerFocusScroll(controllerSurfaceActive);
 
   const controllerSections = useMemo(
-    () => storePanels.flatMap((panel) => panel.sections).filter((section) => section.games.length > 0),
-    [storePanels],
+    () => storePanels
+      .flatMap((panel) => panel.sections)
+      .map((section) => ({
+        ...section,
+        games: searchQuery.trim()
+          ? section.games.filter((game) => matchesGameSearch(game, searchQuery))
+          : section.games,
+      }))
+      .filter((section) => section.games.length > 0),
+    [searchQuery, storePanels],
   );
   const controllerRowLengths = useMemo(
     () => controllerSections.map((section) => Math.min(section.games.length, CONTROLLER_STORE_ROW_LIMIT)),
     [controllerSections],
   );
+
+  useEffect(() => {
+    if (!detailsGame) return;
+    const currentGame = controllerSections
+      .flatMap((section) => section.games)
+      .find((game) => game.id === detailsGame.id);
+    if (currentGame && currentGame !== detailsGame) setDetailsGame(currentGame);
+  }, [controllerSections, detailsGame]);
 
   const focusTile = (rowIndex: number, columnIndex: number): void => {
     if (!surfaceActive || controllerRowLengths.length === 0) return;
@@ -212,6 +230,7 @@ export const HomePage = memo(function HomePage({
   }, [controllerMode, controllerRowLengths, controllerSections, focusedColumnIndex, focusedRowIndex, onSelectGame, selectedGameId, surfaceActive]);
 
   useControllerKeyDown(controllerSurfaceActive, (event) => {
+    if ((event.key === "Enter" || event.key === " ") && isControllerKeyboardActivationTarget(event.target)) return;
     if (detailsGame && storePickerOpen) {
       const choices = storeChoicesFor(detailsGame);
       if (event.key === "Escape" || event.key.toLowerCase() === "b") {

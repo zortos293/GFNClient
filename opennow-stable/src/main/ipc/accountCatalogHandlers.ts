@@ -179,8 +179,9 @@ export function registerAccountCatalogIpcHandlers(
 
   ipcMain.handle(
     IPC_CHANNELS.AUTH_SWITCH_ACCOUNT,
-    async (_event, userId: string) => {
-      return authService.switchAccount(userId);
+    async (_event, input: string | { userId: string; pin?: string }) => {
+      const { userId, pin } = typeof input === "string" ? { userId: input, pin: undefined } : input;
+      return authService.switchAccount(userId, pin);
     },
   );
 

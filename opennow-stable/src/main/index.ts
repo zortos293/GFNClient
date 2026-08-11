@@ -476,6 +476,7 @@ function registerIpcHandlers(): void {
 
   registerConsolePinIpcHandlers({
     getConsoleProfiles: () => authService.getConsoleProfiles(),
+    isSavedAccount: (userId) => authService.getSavedAccounts().some((account) => account.userId === userId),
   });
 
   registerSessionIpcHandlers({

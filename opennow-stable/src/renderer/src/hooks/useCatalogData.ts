@@ -478,13 +478,7 @@ export function useCatalogData({
       storePanelsLoadedContextRef.current = contextKey;
       setStorePanels(panels);
       setSelectedGameId((previous) => panelGames.some((game) => game.id === previous) ? previous : (panelGames[0]?.id ?? ""));
-      setVariantByGameId((previous) => {
-        const next = { ...previous };
-        for (const game of panelGames) {
-          next[game.id] = defaultVariantId(game);
-        }
-        return next;
-      });
+      setVariantByGameId((previous) => mergeVariantSelections(previous, panelGames));
     } catch (error) {
       if (!isCurrentLoad()) return;
       console.error("Failed to load Store panels:", error);

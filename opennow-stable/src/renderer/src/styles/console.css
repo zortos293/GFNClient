@@ -393,7 +393,8 @@
   padding: calc(var(--console-u) * 0.619) calc(var(--console-u) * 2);
   border-radius: var(--r-md);
   border: 1px solid transparent;
-  font-size: calc(var(--console-u) * 1.05);
+  min-height: 2.75rem;
+  font-size: max(0.8rem, calc(var(--console-u) * 1.05));
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
@@ -433,6 +434,11 @@
 
 .console-action.is-focused {
   transform: scale(1.05);
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.console-action:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -484,14 +490,14 @@
 
 .console-row-title {
   margin: 0;
-  font-size: calc(var(--console-u) * 1.35);
+  font-size: max(0.95rem, calc(var(--console-u) * 1.35));
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--ink);
 }
 
 .console-row-count {
-  font-size: calc(var(--console-u) * 0.85);
+  font-size: max(0.72rem, calc(var(--console-u) * 0.85));
   color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -625,7 +631,7 @@
 }
 
 .console-card-title {
-  font-size: calc(var(--console-u) * 0.82);
+  font-size: max(0.72rem, calc(var(--console-u) * 0.82));
   font-weight: 700;
   line-height: 1.25;
   color: var(--ink);
@@ -661,7 +667,7 @@
   left: calc(var(--console-u) * 0.417);
   padding: 2px calc(var(--console-u) * 0.417);
   border-radius: 999px;
-  font-size: calc(var(--console-u) * 0.6);
+  font-size: max(0.625rem, calc(var(--console-u) * 0.6));
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -717,7 +723,7 @@
   border: none;
   background: none;
   color: var(--ink-soft);
-  font-size: calc(var(--console-u) * 0.82);
+  font-size: max(0.72rem, calc(var(--console-u) * 0.82));
   font-weight: 600;
   cursor: pointer;
   transition: color var(--console-t-focus) var(--console-ease-out);
@@ -731,7 +737,9 @@
   width: calc(var(--console-u) * 1.6);
   height: calc(var(--console-u) * 1.6);
   border-radius: 999px;
-  font-size: calc(var(--console-u) * 0.72);
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  font-size: max(0.625rem, calc(var(--console-u) * 0.72));
   font-weight: 800;
   color: #0b0b0d;
 }
@@ -1402,7 +1410,19 @@
   transition: stroke-dashoffset 120ms linear;
 }
 
+.console-pin-recovery-action {
+  flex: 0 0 auto;
+}
+
 /* ---------- Manage profiles ---------- */
+
+.console-manage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--console-u) * 1.688);
+  width: 100%;
+}
 
 .console-manage-list {
   display: flex;
@@ -1424,7 +1444,8 @@
     transform var(--console-t-focus) var(--console-ease-out);
 }
 
-.console-manage-row.is-focused {
+.console-manage-row.is-focused,
+.console-manage-row:focus-within {
   background: rgba(255, 255, 255, 0.11);
   border-color: var(--accent);
   transform: translate3d(6px, 0, 0);

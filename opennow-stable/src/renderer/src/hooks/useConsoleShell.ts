@@ -18,7 +18,8 @@ export interface UseConsoleShellInput {
   hasAuthSession: boolean;
   savedAccounts: SavedAccount[];
   activeUserId: string | null;
-  onSwitchAccount: (userId: string) => Promise<void> | void;
+  switchFailedMessage: string;
+  onSwitchAccount: (userId: string, pin?: string) => Promise<boolean> | boolean;
   onAddAccount: () => void;
   onRemoveAccount: (userId: string) => Promise<void> | void;
 }
@@ -29,6 +30,7 @@ export interface ConsoleShell {
   pendingAccount: SavedAccount | undefined;
   verifyResult: ConsolePinVerifyResult | null;
   errorMessage: string | null;
+  canClosePicker: boolean;
   openPicker: () => void;
   skipSplash: () => void;
   closeToShell: () => void;
@@ -51,6 +53,7 @@ export function useConsoleShell({
   hasAuthSession,
   savedAccounts,
   activeUserId,
+  switchFailedMessage,
   onSwitchAccount,
   onAddAccount,
   onRemoveAccount,
@@ -59,6 +62,7 @@ export function useConsoleShell({
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
   const [verifyResult, setVerifyResult] = useState<ConsolePinVerifyResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [canClosePicker, setCanClosePicker] = useState(false);
   const bootResolvedRef = useRef(false);
 
   // Resolve the launch stage exactly once, and only from a definitively loaded
@@ -72,13 +76,15 @@ export function useConsoleShell({
     if (isInitializing) return;
     if (!hasAuthSession || savedAccounts.length === 0) return;
     bootResolvedRef.current = true;
-    setStage(resolveInitialConsoleStage({
+    const initialStage = resolveInitialConsoleStage({
       controllerMode,
       directLaunchConsoleMode,
       pickerEnabled,
       hasAuthSession,
       savedAccountCount: savedAccounts.length,
-    }));
+    });
+    setCanClosePicker(initialStage === "shell");
+    setStage(initialStage);
   }, [
     controllerMode,
     directLaunchConsoleMode,
@@ -92,6 +98,7 @@ export function useConsoleShell({
   useEffect(() => {
     if (controllerMode) return;
     bootResolvedRef.current = false;
+    setCanClosePicker(true);
     setStage("shell");
     setPendingUserId(null);
   }, [controllerMode]);
@@ -129,6 +136,7 @@ export function useConsoleShell({
     setErrorMessage(null);
     setPendingUserId(null);
     setVerifyResult(null);
+    setCanClosePicker(true);
     setStage("shell");
   }, []);
 
@@ -140,7 +148,12 @@ export function useConsoleShell({
   const enterAccount = useCallback(async (account: SavedAccount, alreadyActive: boolean) => {
     if (!alreadyActive) {
       try {
-        await onSwitchAccount(account.userId);
+        const switched = await onSwitchAccount(account.userId);
+        if (!switched) {
+          setErrorMessage(switchFailedMessage);
+          setStage("picker");
+          return;
+        }
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : String(error));
         setStage("picker");
@@ -148,7 +161,7 @@ export function useConsoleShell({
       }
     }
     closeToShell();
-  }, [closeToShell, onSwitchAccount]);
+  }, [closeToShell, onSwitchAccount, switchFailedMessage]);
 
   const selectPickerEntry = useCallback(async (index: number) => {
     const entry = pickerEntries[index];
@@ -183,13 +196,27 @@ export function useConsoleShell({
 
   const verifyPin = useCallback(async (pin: string): Promise<boolean> => {
     if (!pendingAccount) return false;
+    if (pendingAccount.userId !== activeUserId) {
+      const switched = await onSwitchAccount(pendingAccount.userId, pin);
+      if (!switched) {
+        const status = await window.openNow.getConsolePinStatus(pendingAccount.userId);
+        setVerifyResult({
+          ok: false,
+          remainingAttempts: status.remainingAttempts,
+          lockedUntilMs: status.lockedUntilMs,
+        });
+        return false;
+      }
+      closeToShell();
+      return true;
+    }
     const result = await window.openNow.verifyConsolePin({ userId: pendingAccount.userId, pin });
     setVerifyResult(result);
     if (!result.ok) return false;
 
     await enterAccount(pendingAccount, pendingAccount.userId === activeUserId);
     return true;
-  }, [activeUserId, enterAccount, pendingAccount]);
+  }, [activeUserId, closeToShell, enterAccount, onSwitchAccount, pendingAccount]);
 
   const cancelPin = useCallback(() => {
     setPendingUserId(null);
@@ -223,6 +250,7 @@ export function useConsoleShell({
     pendingAccount,
     verifyResult,
     errorMessage,
+    canClosePicker,
     openPicker,
     skipSplash,
     closeToShell,

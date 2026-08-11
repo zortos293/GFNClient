@@ -71,10 +71,17 @@ class GfnSignalingClient(
                     )
                     sendPeerInfo()
                     heartbeatJob?.cancel()
+                    NativeInputDiagnostics.retain(
+                        "heartbeat.signaling.lifecycle",
+                        "signaling heartbeat active intervalMs=5000 session=${streamDiagnosticId(session.sessionId)}",
+                    )
                     heartbeatJob = scope.launch {
                         while (true) {
                             delay(5000)
-                            sendJson("""{"hb":1}""")
+                            val sent = sendJson("""{"hb":1}""")
+                            NativeInputDiagnostics.retainResult("heartbeat.signaling.send", sent) {
+                                "client heartbeat session=${streamDiagnosticId(session.sessionId)}"
+                            }
                         }
                     }
                     onEvent(SignalingEvent.Connected)
@@ -85,11 +92,19 @@ class GfnSignalingClient(
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     heartbeatJob?.cancel()
+                    NativeInputDiagnostics.retain(
+                        "heartbeat.signaling.lifecycle",
+                        "signaling heartbeat stopped socketClosed=$code session=${streamDiagnosticId(session.sessionId)}",
+                    )
                     onEvent(SignalingEvent.Disconnected("socket closed code=$code reason=${reason.ifBlank { "none" }}"))
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     heartbeatJob?.cancel()
+                    NativeInputDiagnostics.retain(
+                        "heartbeat.signaling.lifecycle",
+                        "signaling heartbeat stopped failure=${t.javaClass.simpleName} session=${streamDiagnosticId(session.sessionId)}",
+                    )
                     val responseText = response?.let { " http=${it.code} message=${it.message}" }.orEmpty()
                     onEvent(SignalingEvent.Error("${t.javaClass.simpleName}: ${t.message ?: "Signaling failed"}$responseText"))
                 }
@@ -136,6 +151,12 @@ class GfnSignalingClient(
 
     fun disconnect() {
         heartbeatJob?.cancel()
+        if (webSocket != null) {
+            NativeInputDiagnostics.retain(
+                "heartbeat.signaling.lifecycle",
+                "signaling heartbeat stopped clientDisconnect session=${streamDiagnosticId(session.sessionId)}",
+            )
+        }
         webSocket?.close(1000, "closed")
         webSocket = null
     }
@@ -168,7 +189,10 @@ class GfnSignalingClient(
             // Match the desktop client and acknowledge server-driven
             // heartbeats immediately. The periodic client heartbeat remains
             // a separate keepalive when the server does not initiate one.
-            sendJson(reply)
+            val sent = sendJson(reply)
+            NativeInputDiagnostics.retainResult("heartbeat.signaling.reply", sent) {
+                "server heartbeat reply session=${streamDiagnosticId(session.sessionId)}"
+            }
             return
         }
         val peerMsg = parsed["peer_msg"]?.jsonObject ?: return
@@ -210,9 +234,7 @@ class GfnSignalingClient(
         sendJson("""{"peer_msg":{"from":$peerId,"to":$remotePeerId,"msg":"$escaped"},"ackid":${nextAckId()}}""")
     }
 
-    private fun sendJson(text: String) {
-        webSocket?.send(text)
-    }
+    private fun sendJson(text: String): Boolean = webSocket?.send(text) == true
 
     private fun nextAckId(): Int {
         ackCounter += 1
@@ -241,4 +263,3 @@ internal fun signalingWebSocketHttpClient(base: OkHttpClient): OkHttpClient =
  * must not turn that already-owned finger back into a game touch or let its trailing UP activate a
  * control in the newly opened panel.
  */
-

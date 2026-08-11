@@ -43,9 +43,18 @@ internal class InputDiagnosticsBuffer(
         retainAt(key, elapsedRealtime(), message)
 
     fun retainCounted(key: String, message: () -> String): String {
-        val count = (retainedCounts[key] ?: 0L) + 1L
-        retainedCounts[key] = count
-        return retainAt(key, elapsedRealtime(), "count=$count ${message()}")
+        return retainCountedAt(key, elapsedRealtime(), message())
+    }
+
+    fun retainResult(
+        keyPrefix: String,
+        succeeded: Boolean,
+        message: () -> String,
+    ) {
+        val now = elapsedRealtime()
+        val detail = message()
+        retainCountedAt("$keyPrefix.last", now, "success=$succeeded $detail")
+        retainCountedAt("$keyPrefix.${if (succeeded) "success" else "failure"}", now, detail)
     }
 
     fun retainThrottled(
@@ -82,6 +91,12 @@ internal class InputDiagnosticsBuffer(
         val line = formatLine(now, message)
         retainLine(key, now, line)
         return line
+    }
+
+    private fun retainCountedAt(key: String, now: Long, message: String): String {
+        val count = (retainedCounts[key] ?: 0L) + 1L
+        retainedCounts[key] = count
+        return retainAt(key, now, "count=$count $message")
     }
 
     private fun retainLine(key: String, now: Long, line: String) {
@@ -129,6 +144,11 @@ object NativeInputDiagnostics {
     @Synchronized
     fun retainThrottled(key: String, minimumIntervalMs: Long, message: () -> String) {
         buffer.retainThrottled(key, minimumIntervalMs, message)
+    }
+
+    @Synchronized
+    fun retainResult(keyPrefix: String, succeeded: Boolean, message: () -> String) {
+        buffer.retainResult(keyPrefix, succeeded, message)
     }
 
     @Synchronized

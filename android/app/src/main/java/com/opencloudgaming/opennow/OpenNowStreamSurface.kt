@@ -802,6 +802,7 @@ internal fun StreamScreen(
                         buildBugReportPreflightDeck(
                             BugReportPreflightEvidence(
                                 requestedSettings = requestedStreamSettings,
+                                nativeLowLatencyDecoderEnabled = state.settings.nativeLowLatencyDecoder,
                                 runtimeStats = streamStats,
                                 runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
                                 deliveredResolution = activeStreamMode?.displayedResolution

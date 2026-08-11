@@ -723,7 +723,7 @@ private fun SettingsContent(
                     )
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "button", "shortcut", "layout", "language", "clipboard", "paste") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_audio_keyboard), "input", "microphone", "mic", "voice", "audio", "keyboard", "shortcut", "layout", "language", "clipboard", "paste") {
                 SettingSwitch(
                     label = stringResource(R.string.settings_microphone),
                     checked = settings.stream.microphoneMode != MicrophoneMode.Disabled,
@@ -756,13 +756,6 @@ private fun SettingsContent(
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
                 SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
-                SettingSwitch(
-                    label = stringResource(R.string.settings_stream_keyboard_button),
-                    checked = !settings.hideStreamButtons,
-                    description = stringResource(R.string.settings_stream_keyboard_button_desc),
-                ) { enabled ->
-                    viewModel.updateSettings(settings.copy(hideStreamButtons = !enabled))
-                }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
                 SettingSwitch(
@@ -938,8 +931,15 @@ private fun SettingsContent(
                 }
                 SettingSwitch(stringResource(R.string.settings_hide_server_selector), settings.hideServerSelector) { viewModel.updateSettings(settings.copy(hideServerSelector = it)) }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_status_bar), "interface", "stats", "status bar", "position", "fps", "ping", "bitrate") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_status_bar), "interface", "stats", "status bar", "position", "fps", "ping", "bitrate", "keyboard", "button") {
                 SettingSwitch(stringResource(R.string.settings_show_stats), settings.showStatsOnLaunch) { viewModel.updateSettings(settings.copy(showStatsOnLaunch = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_stream_keyboard_button),
+                    checked = !settings.hideStreamButtons,
+                    description = stringResource(R.string.settings_stream_keyboard_button_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(hideStreamButtons = !enabled))
+                }
                 ChoiceRow("Status bar appearance", StreamStatsStyle.entries.map { it.label }, settings.streamStatsStyle.label) { label ->
                     StreamStatsStyle.entries.firstOrNull { it.label == label }?.let { style ->
                         viewModel.updateSettings(settings.copy(streamStatsStyle = style))

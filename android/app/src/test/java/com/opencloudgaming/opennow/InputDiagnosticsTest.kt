@@ -96,4 +96,24 @@ class InputDiagnosticsTest {
         assertTrue(snapshot.contains("touch-route.activity 52 count=3 touch consumed by view"))
         assertFalse(snapshot.contains("input.diagnostics:"))
     }
+
+    @Test
+    fun resultStateRetainsLatestOutcomeAndLastSuccessAndFailure() {
+        var now = 100L
+        val buffer = InputDiagnosticsBuffer(
+            maxRecentLines = 1,
+            maxRetainedLines = 4,
+            elapsedRealtime = { now },
+        )
+
+        buffer.retainResult("heartbeat.input", succeeded = false) { "path=worker" }
+        now = 200L
+        buffer.retainResult("heartbeat.input", succeeded = true) { "path=worker" }
+
+        val snapshot = buffer.snapshot()
+        assertTrue(snapshot.contains("heartbeat.input.last 200 count=2 success=true path=worker"))
+        assertTrue(snapshot.contains("heartbeat.input.failure 100 count=1 path=worker"))
+        assertTrue(snapshot.contains("heartbeat.input.success 200 count=1 path=worker"))
+        assertFalse(snapshot.contains("input.diagnostics:"))
+    }
 }

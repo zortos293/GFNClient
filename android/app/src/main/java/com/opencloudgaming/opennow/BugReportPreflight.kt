@@ -28,6 +28,7 @@ internal data class BugReportPreflightDeck(
 
 internal data class BugReportPreflightEvidence(
     val requestedSettings: StreamSettings,
+    val nativeLowLatencyDecoderEnabled: Boolean = false,
     val runtimeStats: StreamRuntimeStats = StreamRuntimeStats(),
     val runtimeDiagnostics: AndroidRuntimeDiagnosticsSnapshot = AndroidRuntimeDiagnosticsSnapshot(),
     val sessionReport: SessionReport? = null,
@@ -76,28 +77,57 @@ internal fun buildBugReportPreflightDeck(
     val deviceRecommendations = recommendations.filter { it.title in deviceRecommendationTitles }
 
     return BugReportPreflightDeck(
-        cards = listOf(
-            buildConnectionPreflightCard(
-                networkKind = networkKind,
-                wifiBand = wifiBand,
-                signalBars = evidence.runtimeDiagnostics.networkSignalBars,
-                downstreamKbps = downstreamKbps,
-                pingMs = pingMs,
-                packetLossPct = packetLossPct,
-                jitterMs = averageJitterMs,
-                serverZone = evidence.serverZone,
-                recommendations = networkRecommendations,
-            ),
-            buildVideoDevicePreflightCard(
-                evidence = evidence,
-                averageFps = averageFps,
-                averageBitrateKbps = averageBitrateKbps,
-                recommendations = deviceRecommendations,
-            ),
-            buildInputPreflightCard(evidence.inputDiagnostics),
-        ),
+        cards = buildList {
+            if (evidence.nativeLowLatencyDecoderEnabled) {
+                add(buildExperimentalNativeStreamerPreflightCard())
+            }
+            add(
+                buildConnectionPreflightCard(
+                    networkKind = networkKind,
+                    wifiBand = wifiBand,
+                    signalBars = evidence.runtimeDiagnostics.networkSignalBars,
+                    downstreamKbps = downstreamKbps,
+                    pingMs = pingMs,
+                    packetLossPct = packetLossPct,
+                    jitterMs = averageJitterMs,
+                    serverZone = evidence.serverZone,
+                    recommendations = networkRecommendations,
+                ),
+            )
+            add(
+                buildVideoDevicePreflightCard(
+                    evidence = evidence,
+                    averageFps = averageFps,
+                    averageBitrateKbps = averageBitrateKbps,
+                    recommendations = deviceRecommendations,
+                ),
+            )
+            add(buildInputPreflightCard(evidence.inputDiagnostics))
+        },
     )
 }
+
+private fun buildExperimentalNativeStreamerPreflightCard(): BugReportPreflightCard =
+    BugReportPreflightCard(
+        label = "EXPERIMENTAL FEATURE DETECTED",
+        title = "Native streamer is enabled",
+        summary =
+            "Native streamer changes the hardware decoder with experimental vendor settings. " +
+                "Bug reports captured while it is enabled will be ignored.",
+        facts = listOf(
+            "Native streamer (Experimental): On",
+            "Unsupported report configuration",
+        ),
+        recommendations = listOf(
+            SessionReportFinding(
+                title = "Turn it off and reproduce the issue again",
+                detail =
+                    "Disable Native streamer (Experimental), restart the stream, and reproduce the problem before sending a bug report.",
+                kind = SessionReportFindingKind.Warning,
+            ),
+        ),
+        tone = BugReportPreflightTone.Warning,
+    )
 
 private fun buildConnectionPreflightCard(
     networkKind: AndroidNetworkKind,

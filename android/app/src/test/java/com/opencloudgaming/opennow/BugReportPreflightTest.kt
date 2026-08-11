@@ -15,6 +15,34 @@ class BugReportPreflightTest {
     )
 
     @Test
+    fun experimentalNativeStreamerWarningIsFirstAndExplicitlyUnsupported() {
+        val deck = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(
+                requestedSettings = settings,
+                nativeLowLatencyDecoderEnabled = true,
+            ),
+        )
+
+        val warning = deck.cards.first()
+        assertEquals(4, deck.cards.size)
+        assertEquals(BugReportPreflightTone.Warning, warning.tone)
+        assertEquals("EXPERIMENTAL FEATURE DETECTED", warning.label)
+        assertTrue(warning.summary.contains("Bug reports captured while it is enabled will be ignored"))
+        assertTrue(warning.facts.contains("Native streamer (Experimental): On"))
+        assertEquals("Turn it off and reproduce the issue again", warning.recommendations.single().title)
+    }
+
+    @Test
+    fun standardPreflightDoesNotShowExperimentalNativeStreamerWarning() {
+        val deck = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(requestedSettings = settings),
+        )
+
+        assertEquals(3, deck.cards.size)
+        assertFalse(deck.cards.any { it.label == "EXPERIMENTAL FEATURE DETECTED" })
+    }
+
+    @Test
     fun healthySixGhzDoesNotSuggestChangingWifiBand() {
         val deck = buildBugReportPreflightDeck(
             BugReportPreflightEvidence(

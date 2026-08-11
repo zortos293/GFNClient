@@ -20,6 +20,15 @@ import org.junit.Test
 
 class GfnApiTest {
     @Test
+    fun recoveryClaimDoesNotResumeAnAlreadyReadySession() {
+        assertFalse(shouldResumeClaimedSession(status = 1, recoveryMode = false))
+        assertTrue(shouldResumeClaimedSession(status = 2, recoveryMode = false))
+        assertFalse(shouldResumeClaimedSession(status = 2, recoveryMode = true))
+        assertFalse(shouldResumeClaimedSession(status = 3, recoveryMode = true))
+        assertTrue(shouldResumeClaimedSession(status = null, recoveryMode = true))
+    }
+
+    @Test
     fun libraryBrowseSpecUsesPanelSeeMorePaginationMetadata() {
         val payload = buildJsonObject {
             putJsonObject("data") {
@@ -420,6 +429,26 @@ class GfnApiTest {
         val userAgent = headers["User-Agent"].orEmpty()
         assertTrue(userAgent.contains("Android-Generic-TV"))
         assertEquals("https://play.geforcenow.com", headers["Origin"])
+    }
+
+    @Test
+    fun cloudMatchUsesNativeAndroidTvIdentityForHighQualityTvProfile() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+            streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            preferNativeDesktopMode = true,
+            isAndroidTv = true,
+        )
+
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
+        assertEquals("ANDROID", headers["nv-device-os"])
+        assertEquals("DESKTOP", headers["nv-device-type"])
+        assertTrue(headers["User-Agent"].orEmpty().contains("Android-Generic-TV"))
     }
 
     @Test
@@ -852,6 +881,66 @@ class GfnApiTest {
 
         assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals(100, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
+    }
+
+    @Test
+    fun androidTv4kHdrClaimUsesNativeTvAllocationAndPreservesRequestedProfile() {
+        val settings = StreamSettings(
+            resolution = "3840x2160",
+            aspectRatio = "16:9",
+            fps = 60,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+        )
+        val body = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = settings,
+            physicalDisplayResolution = 3840 to 2160,
+            streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            isAndroidTv = true,
+        )
+        val sessionRequestData = body.getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+        val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
+
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals(3840, monitor.getValue("widthInPixels").jsonPrimitive.int)
+        assertEquals(2160, monitor.getValue("heightInPixels").jsonPrimitive.int)
+        assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+        assertEquals(1, monitor.getValue("sdrHdrMode").jsonPrimitive.int)
+        assertEquals(0, monitor.getValue("monitorId").jsonPrimitive.int)
+        assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
+        assertEquals(10, features.getValue("bitDepth").jsonPrimitive.int)
+        assertEquals(true, features.getValue("trueHdr").jsonPrimitive.boolean)
+        assertEquals(4, features.getValue("hdrColorSpace").jsonPrimitive.int)
+    }
+
+    @Test
+    fun androidTv1080pHdrAlsoRequiresNativeTvAllocation() {
+        val settings = StreamSettings(
+            resolution = "1920x1080",
+            fps = 60,
+            codec = VideoCodec.H265,
+            colorQuality = ColorQuality.TenBit420,
+            hdrEnabled = true,
+        )
+
+        assertTrue(settings.requiresNativeDesktopCloudMatchMode())
+
+        val sessionRequestData = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = settings,
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            isAndroidTv = true,
+        ).getValue("sessionRequestData").jsonObject
+
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
         assertEquals(100, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
     }
 

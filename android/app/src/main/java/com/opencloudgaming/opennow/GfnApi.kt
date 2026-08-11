@@ -159,6 +159,21 @@ private val NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     desktopMonitorDescriptor = true,
 )
 
+// High-quality Android TV sessions need a native-TV transport identity. The Browser/PHONE
+// allocation is limited to the browser mode matrix and CloudMatch can silently return 1080p for a
+// 4K request or reject HDR during session creation.
+private val NVIDIA_NATIVE_TV_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
+    platformName = "android",
+    persistGameSettings = false,
+    streamer = "NVIDIA-CLASSIC",
+    clientType = "NATIVE",
+    clientVersion = GFN_CLIENT_VERSION,
+    deviceOs = "ANDROID",
+    deviceType = "DESKTOP",
+    userAgent = GFN_ANDROID_TV_USER_AGENT,
+    desktopMonitorDescriptor = true,
+)
+
 private val ALLIANCE_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     platformName = "windows",
     persistGameSettings = true,
@@ -171,11 +186,11 @@ private val ALLIANCE_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     desktopMonitorDescriptor = true,
 )
 
-// NVIDIA's Browser/WebRTC identity preserves its mobile and native-touch allocation paths, but
-// CloudMatch limits that identity to a 60 FPS fallback on Android even when a higher mode is
-// requested. Use the native identity only for explicit gamepad launches that need the desktop
-// mode matrix. Generic follow-up requests keep the browser identity so they cannot accidentally
-// change the allocation class of an existing native-touch session.
+// NVIDIA's Browser/WebRTC identity preserves the standard mobile allocation, but CloudMatch limits
+// its mode matrix and rejects HDR requests from that client class. Use a native identity only for
+// explicit launches that need the high-quality mode matrix; Android TV keeps an Android-native
+// identity while desktop-class handset launches use the existing Windows-native identity. Generic
+// follow-up requests stay on the browser identity so they cannot change an existing allocation.
 private fun cloudMatchClientIdentity(
     streamingBaseUrl: String?,
     appLaunchMode: Int? = null,
@@ -189,12 +204,13 @@ private fun cloudMatchClientIdentity(
     if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) {
         return NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY
     }
+    val requestedNativeIdentity = when {
+        appLaunchMode == null || !preferNativeDesktopMode -> null
+        isAndroidTv -> NVIDIA_NATIVE_TV_CLOUD_MATCH_IDENTITY
+        else -> NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
+    }
     if (streamingBaseUrl.isNullOrBlank()) {
-        return if (!isAndroidTv && appLaunchMode != null && preferNativeDesktopMode) {
-            NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
-        } else {
-            NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
-        }
+        return requestedNativeIdentity ?: NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
     }
     val host = streamingBaseUrl.toHttpUrlOrNull()?.host?.lowercase(Locale.US)
         ?: return ALLIANCE_CLOUD_MATCH_IDENTITY
@@ -203,11 +219,7 @@ private fun cloudMatchClientIdentity(
         host == "cloudmatch.nvidiagrid.net" ||
         host.endsWith(".cloudmatch.nvidiagrid.net")
     if (!isNvidiaCloudMatch) return ALLIANCE_CLOUD_MATCH_IDENTITY
-    return if (!isAndroidTv && appLaunchMode != null && preferNativeDesktopMode) {
-        NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
-    } else {
-        NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
-    }
+    return requestedNativeIdentity ?: NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
 }
 
 /**
@@ -251,12 +263,19 @@ internal const val TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000L
 internal const val CLIENT_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000L
 private val AUTH_RESTORE_MUTEX = Mutex()
 private val READY_SESSION_STATUSES = setOf(2, 3)
+internal fun shouldResumeClaimedSession(status: Int?, recoveryMode: Boolean): Boolean =
+    status != 1 && !(recoveryMode && status != null && status in READY_SESSION_STATUSES)
 private const val INVALID_SESSION_PROXY_MESSAGE =
     "Invalid session proxy URL. Use http://host:port, https://host:port, socks4://host:port, or socks5://host:port."
 
 internal class SessionClaimNotReadyException(
     val latestSession: SessionInfo?,
 ) : IllegalStateException("Session did not become ready after claiming.")
+
+internal class TerminalSessionStatusException(
+    val status: Int,
+    val latestSession: SessionInfo?,
+) : IllegalStateException("Cloud session entered terminal status $status.")
 
 val OpenNowJson: Json = Json {
     ignoreUnknownKeys = true
@@ -2747,6 +2766,7 @@ class GfnSessionRepository(
         active: ActiveSessionInfo,
         settings: StreamSettings,
         appLaunchMode: Int = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+        recoveryMode: Boolean = false,
     ): SessionInfo {
         val deviceId = authStore.stableDeviceId()
         val clientId = UUID.randomUUID().toString()
@@ -2779,7 +2799,15 @@ class GfnSessionRepository(
         recordDiagnosticResponse("session.claim.validation", validationRequest, validationCode, validationText)
         val validation = runCatching { OpenNowJson.parseToJsonElement(validationText).jsonObject }.getOrNull()
         val status = validation?.obj("session")?.int("status")
-        if (status != 1) {
+        if (status != null && isTerminalSessionStatus(status)) {
+            val latestSession = runCatching {
+                toSessionInfo("", sessionBase, requireNotNull(validation), clientId, deviceId)
+            }.getOrNull()
+            throw TerminalSessionStatusException(status, latestSession)
+        }
+        // A recovery GET can already return a stream-ready session. Repeating RESUME in that case
+        // can rotate signaling hosts and move a healthy session back through transient setup.
+        if (shouldResumeClaimedSession(status, recoveryMode)) {
             val claimBody = buildClaimRequestBody(
                 appId = active.appId.toString(),
                 deviceId = deviceId,
@@ -2822,6 +2850,9 @@ class GfnSessionRepository(
                 val polledSession = toSessionInfo("", sessionBase, payload, clientId, deviceId)
                 latestSession = polledSession
                 if (pollStatus in READY_SESSION_STATUSES) return polledSession
+                if (pollStatus != null && isTerminalSessionStatus(pollStatus)) {
+                    throw TerminalSessionStatusException(pollStatus, polledSession)
+                }
             }
         }
         throw SessionClaimNotReadyException(latestSession)

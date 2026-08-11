@@ -3,7 +3,9 @@ package com.opencloudgaming.opennow
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.io.OutputStream
 import java.io.OutputStreamWriter
+import java.util.zip.Deflater
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
@@ -55,7 +57,9 @@ internal class DiagnosticHistoryStore(
         val stagedCurrent = File(historyDirectory, "$CURRENT_FILE_NAME.stage")
         stagedCurrent.delete()
         val bounded = boundDiagnosticSnapshot(text)
-        GZIPOutputStream(stagedCurrent.outputStream().buffered()).use { compressed ->
+        // This runs periodically during a stream. BEST_SPEED keeps the crash-history feature while
+        // minimizing CPU contention with WebRTC/decoder threads; snapshots are small and rotated.
+        FastGzipOutputStream(stagedCurrent.outputStream().buffered()).use { compressed ->
             OutputStreamWriter(compressed, Charsets.UTF_8).use { writer ->
                 writer.append(nowEpochMs().toString())
                 writer.append('\n')
@@ -114,6 +118,12 @@ internal class DiagnosticHistoryStore(
         const val DIRECTORY_NAME = "diagnostic-history"
         const val CURRENT_FILE_NAME = "current.txt.gz"
         const val PREVIOUS_FILE_NAME = "previous.txt.gz"
+    }
+}
+
+private class FastGzipOutputStream(output: OutputStream) : GZIPOutputStream(output) {
+    init {
+        def.setLevel(Deflater.BEST_SPEED)
     }
 }
 

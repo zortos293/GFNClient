@@ -271,6 +271,9 @@ class NativeStreamClient(
     private var mouseLastY = 0f
     private var mousePositionValid = false
     private var mouseSuppressNextAbsoluteDelta = false
+    private val mouseMoveBurstLock = Any()
+    private val mouseMoveBurstLimiter = MouseMoveBurstLimiter(MOUSE_MOVE_MIN_SEND_INTERVAL_MS)
+    private var mouseMoveBurstFlushJob: Job? = null
     private var inputDropLogged = false
     private var externalMouseEventLogged = false
     private var externalMouseMoveSentLogged = false
@@ -816,14 +819,84 @@ class NativeStreamClient(
             adjustedDx *= accelFactor
             adjustedDy *= accelFactor
         }
-        // Mouse movement is latency-sensitive. Finger Mouse already has its own frame-sized
-        // accumulator; adding another delayed window here made physical and controller mice feel
-        // sticky after the August input update and postponed every first movement in a burst.
-        return sendInput(
-            inputEncoder.encodeMouseMove(adjustedDx.roundToInt(), adjustedDy.roundToInt()),
+        return sendBurstLimitedMouseMove(
+            dx = adjustedDx.roundToInt(),
+            dy = adjustedDy.roundToInt(),
             partiallyReliable = partiallyReliable,
         )
     }
+
+    /**
+     * Sends the leading movement immediately, then combines only the excess events inside the
+     * next short interval. This retains responsive mouse/controller movement while keeping a
+     * 500 Hz device from creating 500 SCTP packets and sender coroutines per second.
+     */
+    private fun sendBurstLimitedMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean): Boolean {
+        if (openInputChannel(partiallyReliable, fallbackToReliable = true) == null) return false
+        if (dx == 0 && dy == 0) return true
+        return synchronized(mouseMoveBurstLock) {
+            val batch = mouseMoveBurstLimiter.offer(
+                dx = dx,
+                dy = dy,
+                partiallyReliable = partiallyReliable,
+                nowMs = SystemClock.elapsedRealtime(),
+            )
+            if (batch == null && mouseMoveBurstFlushJob?.isActive != true) {
+                scheduleMouseMoveBurstFlushLocked()
+            }
+            batch?.let(::sendMouseMoveBatch) ?: true
+        }
+    }
+
+    /** Must be called with [mouseMoveBurstLock] held. */
+    private fun scheduleMouseMoveBurstFlushLocked() {
+        mouseMoveBurstFlushJob = inputScope.launch {
+            while (true) {
+                val waitMs = synchronized(mouseMoveBurstLock) {
+                    mouseMoveBurstLimiter.delayUntilFlushMs(SystemClock.elapsedRealtime())
+                }
+                if (waitMs == null) {
+                    synchronized(mouseMoveBurstLock) { mouseMoveBurstFlushJob = null }
+                    return@launch
+                }
+                if (waitMs > 0L) delay(waitMs)
+
+                val flushed = synchronized(mouseMoveBurstLock) {
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if ((mouseMoveBurstLimiter.delayUntilFlushMs(nowMs) ?: 0L) > 0L) {
+                        false
+                    } else {
+                        mouseMoveBurstLimiter.flush(nowMs)?.let(::sendMouseMoveBatch)
+                        mouseMoveBurstFlushJob = null
+                        true
+                    }
+                }
+                if (flushed) return@launch
+            }
+        }
+    }
+
+    private fun flushPendingMouseMove() {
+        synchronized(mouseMoveBurstLock) {
+            mouseMoveBurstFlushJob?.cancel()
+            mouseMoveBurstFlushJob = null
+            mouseMoveBurstLimiter.flush(SystemClock.elapsedRealtime())?.let(::sendMouseMoveBatch)
+        }
+    }
+
+    private fun resetMouseMoveBurstLimiter() {
+        synchronized(mouseMoveBurstLock) {
+            mouseMoveBurstFlushJob?.cancel()
+            mouseMoveBurstFlushJob = null
+            mouseMoveBurstLimiter.reset()
+        }
+    }
+
+    private fun sendMouseMoveBatch(batch: MouseMoveBatch): Boolean =
+        sendInput(
+            inputEncoder.encodeMouseMove(batch.dx, batch.dy),
+            partiallyReliable = batch.partiallyReliable,
+        )
 
     private fun dispatchMouseLikePointer(event: MotionEvent): Boolean {
         if (!externalMouseEventLogged) {
@@ -889,6 +962,7 @@ class NativeStreamClient(
             MotionEvent.ACTION_DOWN -> {
                 mouseSuppressNextAbsoluteDelta = true
                 rememberMousePosition(event)
+                flushPendingMouseMove()
                 sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.primaryMouseButton()))
             }
             MotionEvent.ACTION_UP,
@@ -896,11 +970,13 @@ class NativeStreamClient(
             -> {
                 mousePositionValid = false
                 mouseSuppressNextAbsoluteDelta = true
+                flushPendingMouseMove()
                 sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.primaryMouseButton()))
             }
             MotionEvent.ACTION_BUTTON_PRESS -> {
                 mouseSuppressNextAbsoluteDelta = true
                 rememberMousePosition(event)
+                flushPendingMouseMove()
                 val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_DOWN, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=press button=${event.actionButton} ${inputChannelStateSummary()}")
@@ -910,6 +986,7 @@ class NativeStreamClient(
             MotionEvent.ACTION_BUTTON_RELEASE -> {
                 mousePositionValid = false
                 mouseSuppressNextAbsoluteDelta = true
+                flushPendingMouseMove()
                 val handled = sendReliableInput(inputEncoder.encodeMouseButton(InputEncoder.INPUT_MOUSE_BUTTON_UP, event.actionButton.toGfnMouseButton()))
                 if (!handled) {
                     NativeInputDiagnostics.add("external mouse button consumed without send action=release button=${event.actionButton} ${inputChannelStateSummary()}")
@@ -919,6 +996,7 @@ class NativeStreamClient(
             MotionEvent.ACTION_SCROLL -> {
                 val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
                 if (abs(vertical) >= 0.01f) {
+                    flushPendingMouseMove()
                     sendReliableInput(inputEncoder.encodeMouseWheel((vertical * 120).roundToInt()))
                 }
             }
@@ -954,6 +1032,7 @@ class NativeStreamClient(
     }
 
     fun sendTouchMouseWheel(delta: Int) {
+        flushPendingMouseMove()
         sendReliableInput(inputEncoder.encodeMouseWheel(delta))
     }
 
@@ -1119,6 +1198,7 @@ class NativeStreamClient(
     }
 
     private fun sendMouseButton(button: Int, pressed: Boolean, source: String): Boolean {
+        flushPendingMouseMove()
         val packet = inputEncoder.encodeMouseButton(
             if (pressed) InputEncoder.INPUT_MOUSE_BUTTON_DOWN else InputEncoder.INPUT_MOUSE_BUTTON_UP,
             button,
@@ -1340,7 +1420,13 @@ class NativeStreamClient(
             iceRecoveryJob?.cancel()
             iceRecoveryJob = null
         }
-        heartbeatJob?.cancel()
+        if (heartbeatJob != null) {
+            NativeInputDiagnostics.retain(
+                "heartbeat.input.lifecycle",
+                "input heartbeat stopped generation=$transportGeneration",
+            )
+            heartbeatJob?.cancel()
+        }
         gamepadKeepaliveJob?.cancel()
         statsJob?.cancel()
         offerTimeoutJob?.cancel()
@@ -1348,6 +1434,7 @@ class NativeStreamClient(
         gamepadKeepaliveJob = null
         statsJob = null
         offerTimeoutJob = null
+        resetMouseMoveBurstLimiter()
         lastStatsSample = null
         packetLossWindow.reset()
         lastIceState = null
@@ -2209,10 +2296,22 @@ class NativeStreamClient(
 
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
+        NativeInputDiagnostics.retain(
+            "heartbeat.input.lifecycle",
+            "input heartbeat active intervalMs=1000 generation=$transportGeneration",
+        )
         heartbeatJob = scope.launch {
             while (true) {
                 delay(1000)
-                sendReliableInput(inputEncoder.encodeHeartbeat())
+                val usePartialFallback =
+                    reliableInputState != DataChannel.State.OPEN &&
+                        partiallyReliableInputState == DataChannel.State.OPEN
+                sendInput(
+                    bytes = inputEncoder.encodeHeartbeat(),
+                    partiallyReliable = usePartialFallback,
+                    fallbackToReliable = !usePartialFallback,
+                    resultDiagnosticKey = "heartbeat.input",
+                )
             }
         }
     }
@@ -2989,9 +3088,19 @@ class NativeStreamClient(
         return sentPartial
     }
 
-    private fun sendInput(bytes: ByteArray, partiallyReliable: Boolean, fallbackToReliable: Boolean): Boolean {
+    private fun sendInput(
+        bytes: ByteArray,
+        partiallyReliable: Boolean,
+        fallbackToReliable: Boolean,
+        resultDiagnosticKey: String? = null,
+    ): Boolean {
         val queuedChannel = openInputChannel(partiallyReliable, fallbackToReliable)
         if (queuedChannel == null) {
+            resultDiagnosticKey?.let { key ->
+                NativeInputDiagnostics.retainResult(key, succeeded = false) {
+                    "path=queue reason=noOpenChannel requestedPartial=$partiallyReliable ${inputChannelStateSummary()}"
+                }
+            }
             if (!inputDropLogged) {
                 inputDropLogged = true
                 NativeInputDiagnostics.addRetained(
@@ -3009,11 +3118,16 @@ class NativeStreamClient(
         // and calls only send(), avoiding the state()/bufferedAmount() JNI calls implicated in the
         // original input-dispatch ANR.
         if (synchronousInputFallback.get() && pendingInputSends.get() == 0) {
-            return sendInputSynchronously(queuedChannel, bytes, partiallyReliable)
+            return sendInputSynchronously(queuedChannel, bytes, partiallyReliable, resultDiagnosticKey)
         }
         val pending = pendingInputSends.incrementAndGet()
         if (pending > MAX_PENDING_INPUT_SENDS) {
             pendingInputSends.decrementAndGet()
+            resultDiagnosticKey?.let { key ->
+                NativeInputDiagnostics.retainResult(key, succeeded = false) {
+                    "path=queue reason=senderBackpressure requestedPartial=$partiallyReliable pending=$pending"
+                }
+            }
             NativeInputDiagnostics.retainThrottled(
                 key = "input.last-drop",
                 minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
@@ -3029,7 +3143,7 @@ class NativeStreamClient(
         // turning a touch event into an Input dispatching timed out ANR.
         inputScope.launch {
             try {
-                sendInputOnWorker(queuedChannel, bytes, partiallyReliable)
+                sendInputOnWorker(queuedChannel, bytes, partiallyReliable, resultDiagnosticKey)
             } finally {
                 pendingInputSends.decrementAndGet()
             }
@@ -3052,9 +3166,17 @@ class NativeStreamClient(
         channel: DataChannel,
         bytes: ByteArray,
         partiallyReliable: Boolean,
+        resultDiagnosticKey: String?,
     ) {
         runCatching {
-            if (channel.state() != DataChannel.State.OPEN) return@runCatching
+            if (channel.state() != DataChannel.State.OPEN) {
+                resultDiagnosticKey?.let { key ->
+                    NativeInputDiagnostics.retainResult(key, succeeded = false) {
+                        "path=worker reason=channelClosed requestedPartial=$partiallyReliable"
+                    }
+                }
+                return@runCatching
+            }
             val bufferedAmount = channel.bufferedAmount()
             // State inputs (mouse moves, touch MOVE, gamepad) are superseded by newer packets, so
             // the loss-tolerant channel drops them early instead of letting the queue grow into
@@ -3067,6 +3189,11 @@ class NativeStreamClient(
                 INPUT_RELIABLE_BACKPRESSURE_DROP_THRESHOLD
             }
             if (bufferedAmount > dropThreshold) {
+                resultDiagnosticKey?.let { key ->
+                    NativeInputDiagnostics.retainResult(key, succeeded = false) {
+                        "path=worker reason=dataChannelBackpressure requestedPartial=$partiallyReliable bufferedAmount=$bufferedAmount"
+                    }
+                }
                 NativeInputDiagnostics.retainThrottled(
                     key = "input.last-drop",
                     minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
@@ -3077,6 +3204,11 @@ class NativeStreamClient(
                 return@runCatching
             }
             val accepted = channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
+            resultDiagnosticKey?.let { key ->
+                NativeInputDiagnostics.retainResult(key, accepted) {
+                    "path=worker requestedPartial=$partiallyReliable"
+                }
+            }
             if (accepted) {
                 if (workerInputSendConfirmed.compareAndSet(false, true)) {
                     NativeInputDiagnostics.addRetained(
@@ -3096,6 +3228,11 @@ class NativeStreamClient(
                 }
             }
         }.onFailure { error ->
+            resultDiagnosticKey?.let { key ->
+                NativeInputDiagnostics.retainResult(key, succeeded = false) {
+                    "path=worker reason=${error.javaClass.simpleName} requestedPartial=$partiallyReliable"
+                }
+            }
             synchronousInputFallback.set(true)
             NativeInputDiagnostics.retainThrottled(
                 key = "input.last-send-error",
@@ -3111,10 +3248,16 @@ class NativeStreamClient(
         channel: DataChannel,
         bytes: ByteArray,
         partiallyReliable: Boolean,
+        resultDiagnosticKey: String? = null,
     ): Boolean = runCatching {
         channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), true))
     }.fold(
         onSuccess = { accepted ->
+            resultDiagnosticKey?.let { key ->
+                NativeInputDiagnostics.retainResult(key, accepted) {
+                    "path=direct-fallback requestedPartial=$partiallyReliable"
+                }
+            }
             if (accepted) {
                 if (directInputSendConfirmed.compareAndSet(false, true)) {
                     NativeInputDiagnostics.addRetained(
@@ -3135,6 +3278,11 @@ class NativeStreamClient(
             accepted
         },
         onFailure = { error ->
+            resultDiagnosticKey?.let { key ->
+                NativeInputDiagnostics.retainResult(key, succeeded = false) {
+                    "path=direct-fallback reason=${error.javaClass.simpleName} requestedPartial=$partiallyReliable"
+                }
+            }
             NativeInputDiagnostics.retainThrottled(
                 key = "input.last-send-error",
                 minimumIntervalMs = INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS,
@@ -3589,6 +3737,7 @@ class NativeStreamClient(
         private const val ANALOG_DIAGNOSTIC_INTERVAL_MS = 250L
         private const val GAMEPAD_PACKET_DIAGNOSTIC_INTERVAL_MS = 1_000L
         private const val INPUT_BACKPRESSURE_DIAGNOSTIC_INTERVAL_MS = 1_000L
+        private const val MOUSE_MOVE_MIN_SEND_INTERVAL_MS = 8L
         private const val MAX_PENDING_INPUT_SENDS = 256
         // State inputs are superseded by newer packets, so they are dropped well before the queue
         // can grow into lag; one-shot critical events keep the generous reliable threshold.

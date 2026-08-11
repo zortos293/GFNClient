@@ -2734,54 +2734,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }.getOrNull()
                 if (recoveryAttempt >= 2) {
-                    val launchAppId = resolvedAppId
-                        ?: error("Could not resolve appId for fresh stream recovery.")
-                    val selectedVariant = game?.variants?.getOrNull(game.selectedVariantIndex)
-                        ?: game?.variants?.firstOrNull()
-                    val accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true
-                    val normalizedZone = previousSession.zone.trim().lowercase(Locale.US).takeIf { zone ->
-                        zone.isNotBlank() &&
-                            !zone.startsWith(".") &&
-                            !zone.contains('/') &&
-                            !zone.contains(':')
-                    }
-                    val reusableProviderBase = listOfNotNull(
-                        previousSession.streamingBaseUrl,
-                        active?.streamingBaseUrl,
-                    ).firstOrNull { !it.isLikelyDirectServerUrl() }
-                    val creationBase = reusableProviderBase
-                        ?: effectiveStreamingBaseUrl(auth).takeIf { normalizedZone == null }
-
-                    recordDebugEvent(
-                        "recovery",
-                        "Escalating repeated recovery to fresh cloud session old=${previousSession.shortDebugId()} " +
-                            "zone=${normalizedZone.orEmpty()} base=${hostForDebug(creationBase)}",
-                    )
-                    runCatching {
-                        sessionRepository.stopSession(token, previousSession, currentSettings)
-                    }.onSuccess {
-                        sessionTimerAnchorStore.clear(previousSession.sessionId)
-                        recordDebugEvent("recovery", "Stopped stalled session before fresh recovery ${previousSession.shortDebugId()}")
-                    }.onFailure { error ->
-                        recordDebugEvent(
-                            "recovery",
-                            "Failed to stop stalled session before fresh recovery ${previousSession.shortDebugId()} error=${error.debugMessage()}",
-                        )
-                    }.getOrThrow()
-
-                    _state.update { it.copy(activeSession = null, launchPhase = "Creating fresh stream session") }
-                    val created = sessionRepository.createSession(
+                    return@runCatching createFreshRecoverySession(
                         token = token,
-                        streamingBaseUrl = creationBase,
-                        appId = launchAppId,
-                        internalTitle = game?.title.orEmpty(),
-                        zone = normalizedZone ?: "prod",
+                        auth = auth,
+                        previousSession = previousSession,
+                        active = active,
+                        game = game,
                         settings = currentSettings,
-                        accountLinked = accountLinked,
-                        appLaunchMode = appLaunchModeFor(game, currentSettings),
+                        resolvedAppId = resolvedAppId,
+                        reason = "repeated recovery",
                     )
-                    recordDebugEvent("recovery", "Created fresh recovery session ${created.debugSummary()}")
-                    return@runCatching pollUntilReady(token, created, currentSettings)
                 }
                 val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, currentSettings)
                 recordDebugEvent("recovery", "Recovery active sessions count=${activeSessions.size} base=${hostForDebug(baseUrl)}")
@@ -2807,7 +2769,29 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                     )?.takeIf { it.matchesStreamGeometry(currentSettings) }
                     ?: error("The running session could not be found anymore, so recovery was not possible.")
                 recordDebugEvent("recovery", "Claiming recovery candidate ${fallbackCandidate.debugSummary()}")
-                claimActiveSessionOrContinuePolling(token, fallbackCandidate, currentSettings)
+                try {
+                    claimActiveSessionOrContinuePolling(
+                        token = token,
+                        active = fallbackCandidate,
+                        settings = currentSettings,
+                        recoveryMode = true,
+                    )
+                } catch (error: TerminalSessionStatusException) {
+                    recordDebugEvent(
+                        "recovery",
+                        "Recovery candidate became terminal status=${error.status}; creating a fresh cloud session",
+                    )
+                    createFreshRecoverySession(
+                        token = token,
+                        auth = auth,
+                        previousSession = previousSession,
+                        active = active,
+                        game = game,
+                        settings = currentSettings,
+                        resolvedAppId = resolvedAppId,
+                        reason = "terminal status ${error.status}",
+                    )
+                }
             }.onSuccess { readySession ->
                 val anchoredSession = readySession.withSessionTimerAnchor()
                 recordDebugEvent("recovery", "Recovery claim ready ${anchoredSession.debugSummary()}")
@@ -2842,6 +2826,66 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
+    }
+
+    private suspend fun createFreshRecoverySession(
+        token: String,
+        auth: AuthSession,
+        previousSession: SessionInfo,
+        active: ActiveSessionInfo?,
+        game: GameInfo?,
+        settings: StreamSettings,
+        resolvedAppId: String?,
+        reason: String,
+    ): SessionInfo {
+        val launchAppId = resolvedAppId
+            ?: error("Could not resolve appId for fresh stream recovery.")
+        val selectedVariant = game?.variants?.getOrNull(game.selectedVariantIndex)
+            ?: game?.variants?.firstOrNull()
+        val accountLinked = game?.let { shouldSendAccountLinked(it, selectedVariant) } ?: true
+        val normalizedZone = previousSession.zone.trim().lowercase(Locale.US).takeIf { zone ->
+            zone.isNotBlank() &&
+                !zone.startsWith(".") &&
+                !zone.contains('/') &&
+                !zone.contains(':')
+        }
+        val reusableProviderBase = listOfNotNull(
+            previousSession.streamingBaseUrl,
+            active?.streamingBaseUrl,
+        ).firstOrNull { !it.isLikelyDirectServerUrl() }
+        val creationBase = reusableProviderBase
+            ?: effectiveStreamingBaseUrl(auth).takeIf { normalizedZone == null }
+
+        recordDebugEvent(
+            "recovery",
+            "Escalating $reason to fresh cloud session old=${previousSession.shortDebugId()} " +
+                "zone=${normalizedZone.orEmpty()} base=${hostForDebug(creationBase)}",
+        )
+        runCatching {
+            sessionRepository.stopSession(token, previousSession, settings)
+        }.onSuccess {
+            sessionTimerAnchorStore.clear(previousSession.sessionId)
+            recordDebugEvent("recovery", "Stopped stalled session before fresh recovery ${previousSession.shortDebugId()}")
+        }.onFailure { error ->
+            recordDebugEvent(
+                "recovery",
+                "Failed to stop stalled session before fresh recovery ${previousSession.shortDebugId()} error=${error.debugMessage()}",
+            )
+        }.getOrThrow()
+
+        _state.update { it.copy(activeSession = null, launchPhase = "Creating fresh stream session") }
+        val created = sessionRepository.createSession(
+            token = token,
+            streamingBaseUrl = creationBase,
+            appId = launchAppId,
+            internalTitle = game?.title.orEmpty(),
+            zone = normalizedZone ?: "prod",
+            settings = settings,
+            accountLinked = accountLinked,
+            appLaunchMode = appLaunchModeFor(game, settings),
+        )
+        recordDebugEvent("recovery", "Created fresh recovery session ${created.debugSummary()}")
+        return pollUntilReady(token, created, settings)
     }
 
     private fun SessionInfo.withSessionTimerAnchor(): SessionInfo =
@@ -3430,14 +3474,24 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         token: String,
         active: ActiveSessionInfo,
         settings: StreamSettings,
+        recoveryMode: Boolean = false,
     ): SessionInfo {
         return try {
             // Claiming re-sends the session request body, so repeating the mode the session was
             // created with keeps it from being downgraded mid-flight.
-            sessionRepository.claimSession(token, active, settings, appLaunchModeFor(_state.value.streamGame, settings))
+            sessionRepository.claimSession(
+                token = token,
+                active = active,
+                settings = settings,
+                appLaunchMode = appLaunchModeFor(_state.value.streamGame, settings),
+                recoveryMode = recoveryMode,
+            )
         } catch (error: SessionClaimNotReadyException) {
             val fallback = active.toPendingSession(zone = "prod")
             val latest = error.latestSession?.let { mergeQueueSessionState(fallback, it) } ?: fallback
+            if (isTerminalSessionStatus(latest.status)) {
+                throw TerminalSessionStatusException(latest.status, latest)
+            }
             recordDebugEvent("queue", "Claim stayed pending; continuing queue polling ${latest.debugSummary()}")
             _state.update {
                 it.copy(
@@ -3455,6 +3509,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun pollUntilReady(token: String, created: SessionInfo, settings: StreamSettings): SessionInfo {
         var latest = created
         var pollCount = 0
+        if (isTerminalSessionStatus(latest.status)) {
+            throw TerminalSessionStatusException(latest.status, latest)
+        }
         recordDebugEvent("queue", "Begin polling ${latest.debugSummary()}")
         _state.update {
             it.copy(
@@ -3510,6 +3567,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             latest = mergeQueueSessionState(latest, polled)
             recordDebugEvent("queue", "Poll #$pollCount result ${latest.debugSummary()}")
+            if (isTerminalSessionStatus(latest.status)) {
+                recordDebugEvent("queue", "Polling stopped at terminal session status=${latest.status} ${latest.shortDebugId()}")
+                throw TerminalSessionStatusException(latest.status, latest)
+            }
             _state.update {
                 it.copy(
                     streamSession = latest,

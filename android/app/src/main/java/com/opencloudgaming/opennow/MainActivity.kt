@@ -372,7 +372,7 @@ class MainActivity : ComponentActivity() {
         val now = SystemClock.uptimeMillis()
         if (now - lastStreamSystemUiInputReapplyMs < STREAM_SYSTEM_UI_INPUT_REAPPLY_MS) return
         lastStreamSystemUiInputReapplyMs = now
-        applyStreamSystemUi(true, force = true)
+        applyStreamSystemBars(active = true)
     }
 
     private fun applyStreamSystemUi(active: Boolean, force: Boolean = false) {
@@ -390,6 +390,11 @@ class MainActivity : ComponentActivity() {
             runCatching { window.decorView.releasePointerCapture() }
         }
 
+        applyStreamSystemBars(active)
+    }
+
+    /** Reapplies only immersive bars; pointer-icon traversal and window flags are state changes. */
+    private fun applyStreamSystemBars(active: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             WindowCompat.setDecorFitsSystemWindows(window, false)
             window.insetsController?.let { controller ->
@@ -505,7 +510,9 @@ class MainActivity : ComponentActivity() {
                         pointerLockEnabled = NativeStreamInputRouter.isExternalMousePointerCaptureEnabled(),
                     )
                 ) {
-                    applyStreamSystemUi(true, force = true)
+                    // Keep the immersive fallback without repeatedly walking the complete View
+                    // hierarchy to reapply pointer icons or rewriting unchanged window flags.
+                    applyStreamSystemBars(active = true)
                 }
             }
         }

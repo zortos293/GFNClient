@@ -33,4 +33,16 @@ class StreamSessionRecoveryTrackerTest {
         assertFalse(isLikelyDirectSessionServerUrl("https://np-bom-01.cloudmatchbeta.nvidiagrid.net"))
         assertFalse(isLikelyDirectSessionServerUrl("https://prod.cloudmatchbeta.nvidiagrid.net"))
     }
+
+    @Test
+    fun statusSevenIsTerminalWhileCleanupStatusCanStillProgress() {
+        assertFalse(isTerminalSessionStatus(0))
+        assertFalse(isTerminalSessionStatus(1))
+        assertFalse(isTerminalSessionStatus(2))
+        assertFalse(isTerminalSessionStatus(3))
+        assertFalse(isTerminalSessionStatus(6))
+        assertTrue(isTerminalSessionStatus(4))
+        assertTrue(isTerminalSessionStatus(5))
+        assertTrue(isTerminalSessionStatus(7))
+    }
 }

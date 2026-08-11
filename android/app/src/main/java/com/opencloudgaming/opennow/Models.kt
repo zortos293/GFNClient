@@ -398,7 +398,9 @@ internal fun streamResolutionPixels(settings: StreamSettings): Pair<Int, Int> {
 
 internal fun StreamSettings.requiresNativeDesktopCloudMatchMode(): Boolean {
     val (width, height) = streamResolutionPixels(this)
-    return fps > 60 || width > 1920 || height > 1200
+    // CloudMatch's browser allocation rejects HDR even at 1080p and caps the high-resolution
+    // matrix. The caller selects a platform-appropriate native identity (including Android TV).
+    return hdrEnabled || fps > 60 || width > 1920 || height > 1200
 }
 
 internal data class StreamResolutionMismatch(
@@ -1603,6 +1605,13 @@ internal fun SessionInfo.isReadyForStream(): Boolean =
         serverIp.isNotBlank() &&
         signalingServer.isNotBlank() &&
         signalingUrl.isNotBlank()
+
+/**
+ * CloudMatch status 6 is a transient cleanup state, but the other statuses above 3 are terminal.
+ * In particular, a stale recovered session remains at status 7 forever and must not be treated as
+ * ordinary rig setup.
+ */
+internal fun isTerminalSessionStatus(status: Int): Boolean = status > 3 && status != 6
 
 internal fun ActiveSessionInfo.isReadyForClaim(): Boolean =
     status in setOf(2, 3) && !serverIp.isNullOrBlank()

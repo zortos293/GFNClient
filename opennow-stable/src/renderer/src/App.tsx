@@ -106,11 +106,16 @@ import { GameDetailModal } from "./components/GameDetailModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
 import { ErrorReportingConsentModal } from "./components/ErrorReportingConsentModal";
 import { FeedbackModal } from "./components/FeedbackModal";
+import { ControllerModePromptModal } from "./components/ControllerModePromptModal";
 import { ModalSurface } from "./components/ui/ModalSurface";
 import { overlayMotion, pageTransition, streamRevealTransition } from "./components/MotionProvider";
 import { LazyShaderAtmosphere } from "./components/LazyShaderAtmosphere";
 import { ConsoleProfileGate } from "./components/console/ConsoleProfileGate";
 import { useConsoleShell } from "./hooks/useConsoleShell";
+import {
+  shouldOfferControllerModePrompt,
+  useControllerModePrompt,
+} from "./hooks/useControllerModePrompt";
 import { syncRendererTelemetry } from "./telemetry/posthog";
 
 type AppStyle = CSSProperties & {
@@ -233,6 +238,15 @@ export function App(): JSX.Element {
 
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: t("app.labels.game") });
   const [settingsFocusSection, setSettingsFocusSection] = useState<"account" | undefined>();
+  const {
+    open: controllerModePromptOpen,
+    dismiss: dismissControllerModePrompt,
+  } = useControllerModePrompt(shouldOfferControllerModePrompt({
+    settingsLoaded,
+    controllerMode: settings.controllerMode,
+    directLaunchConsoleMode,
+    promptDismissed: settings.controllerModePromptDismissed,
+  }));
 
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
@@ -316,6 +330,7 @@ export function App(): JSX.Element {
   const [logoutConfirmSurfacePresent, setLogoutConfirmSurfacePresent] = useState(false);
   const [removeAccountConfirmSurfacePresent, setRemoveAccountConfirmSurfacePresent] = useState(false);
   const [releaseHighlightsSurfacePresent, setReleaseHighlightsSurfacePresent] = useState(false);
+  const [controllerModePromptSurfacePresent, setControllerModePromptSurfacePresent] = useState(false);
   const streamRevealComplete = streamRevealPhase === "revealed";
   useEffect(() => {
     isStreamingRef.current = streamStatus === "streaming";
@@ -373,6 +388,10 @@ export function App(): JSX.Element {
   useEffect(() => {
     if (feedbackOpen) setFeedbackSurfacePresent(true);
   }, [feedbackOpen]);
+
+  useEffect(() => {
+    if (controllerModePromptOpen) setControllerModePromptSurfacePresent(true);
+  }, [controllerModePromptOpen]);
 
   useEffect(() => {
     if (settingsLoaded && settings.errorReportingConsent === "unset") {
@@ -2597,6 +2616,29 @@ export function App(): JSX.Element {
 
   const showErrorReportingConsent = settingsLoaded && settings.errorReportingConsent === "unset";
 
+  const handleAcceptControllerMode = useCallback((): void => {
+    dismissControllerModePrompt();
+    void updateSetting("controllerMode", true).catch((error) => {
+      console.warn("[Controller Mode] Failed to save controller mode:", error);
+    });
+  }, [dismissControllerModePrompt, updateSetting]);
+
+  const handleDeclineControllerMode = useCallback((): void => {
+    dismissControllerModePrompt();
+    void updateSetting("controllerModePromptDismissed", true).catch((error) => {
+      console.warn("[Controller Mode] Failed to save prompt preference:", error);
+    });
+  }, [dismissControllerModePrompt, updateSetting]);
+
+  const controllerModePromptModal = (
+    <ControllerModePromptModal
+      open={controllerModePromptOpen}
+      onAccept={handleAcceptControllerMode}
+      onDecline={handleDeclineControllerMode}
+      onExitComplete={() => setControllerModePromptSurfacePresent(false)}
+    />
+  );
+
   const mainPage: AppPage = currentPage === "settings" ? pageBeforeSettings : currentPage;
 
   // Show login screen if not authenticated
@@ -2622,6 +2664,7 @@ export function App(): JSX.Element {
           onDismiss={handleDismissReleaseHighlights}
           onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
         />
+        {controllerModePromptModal}
         <ErrorReportingConsentModal
           open={showErrorReportingConsent}
           onAccept={() => {
@@ -2670,6 +2713,8 @@ export function App(): JSX.Element {
     || consentSurfacePresent
     || feedbackOpen
     || feedbackSurfacePresent
+    || controllerModePromptOpen
+    || controllerModePromptSurfacePresent
     || logoutConfirmOpen
     || logoutConfirmSurfacePresent
     || removeAccountConfirmOpen
@@ -3031,6 +3076,7 @@ export function App(): JSX.Element {
         onDismiss={handleDismissReleaseHighlights}
         onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
       />
+      {controllerModePromptModal}
       <ErrorReportingConsentModal
         open={showErrorReportingConsent}
         onAccept={() => {

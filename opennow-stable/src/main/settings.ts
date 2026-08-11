@@ -260,6 +260,10 @@ export class SettingsManager {
       settings.translucentUI = false;
       migrated = true;
     }
+    if (typeof settings.controllerModePromptDismissed !== "boolean") {
+      settings.controllerModePromptDismissed = false;
+      migrated = true;
+    }
     if (typeof settings.nativeExternalRenderer !== "boolean") {
       settings.nativeExternalRenderer = false;
       migrated = true;

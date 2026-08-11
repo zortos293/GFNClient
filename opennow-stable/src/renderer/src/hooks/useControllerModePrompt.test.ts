@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 
 import {
   hasConnectedGamepad,
+  resolveControllerModePromptAction,
   shouldOfferControllerModePrompt,
 } from "./useControllerModePrompt";
+import { controllerButton } from "../utils/controllerGamepad";
 
 const ELIGIBLE = {
   settingsLoaded: true,
@@ -30,4 +32,10 @@ test("recognizes only connected gamepads", () => {
   assert.equal(hasConnectedGamepad(undefined), false);
   assert.equal(hasConnectedGamepad([null, disconnected]), false);
   assert.equal(hasConnectedGamepad([null, connected]), true);
+});
+
+test("maps A to switch mode and B to decline", () => {
+  assert.equal(resolveControllerModePromptAction(controllerButton.south), "accept");
+  assert.equal(resolveControllerModePromptAction(controllerButton.east), "decline");
+  assert.equal(resolveControllerModePromptAction(controllerButton.menu), null);
 });

@@ -10011,6 +10011,10 @@ button.game-card-store-chip.owned.active:hover {
 
 .controller-mode-prompt-decline,
 .controller-mode-prompt-accept {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   min-height: 40px;
   border-radius: 10px;
   padding: 0 16px;
@@ -10034,13 +10038,32 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .controller-mode-prompt-accept {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 72%, white 10%);
   color: #fff;
   background: var(--accent);
   box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.controller-mode-prompt-button-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 0.64rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.controller-mode-prompt-button-glyph--a {
+  color: #fff;
+  background: color-mix(in srgb, #000 16%, transparent);
+}
+
+.controller-mode-prompt-button-glyph--b {
+  color: var(--ink-muted);
 }
 
 .controller-mode-prompt-accept:hover {

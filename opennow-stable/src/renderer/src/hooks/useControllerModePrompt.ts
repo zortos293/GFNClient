@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
+import { controllerButton } from "../utils/controllerGamepad";
+
+export type ControllerModePromptAction = "accept" | "decline" | null;
+
+export function resolveControllerModePromptAction(pressedButtons: number): ControllerModePromptAction {
+  if (pressedButtons & controllerButton.south) return "accept";
+  if (pressedButtons & controllerButton.east) return "decline";
+  return null;
+}
 
 export interface ControllerModePromptEligibility {
   settingsLoaded: boolean;

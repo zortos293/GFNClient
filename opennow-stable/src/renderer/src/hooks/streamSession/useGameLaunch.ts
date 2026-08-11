@@ -228,6 +228,7 @@ export function useGameLaunch({
       if (launchAbortRef.current) return;
       const launchStreamingBaseUrl = i2pStorageRegionBaseUrl ?? options?.streamingBaseUrl ?? effectiveStreamingBaseUrl;
       let existingSessionStrategy: ExistingSessionStrategy | undefined;
+      let activeSessionGpuType: string | undefined;
 
       // Check for active sessions first
       if (token) {
@@ -235,6 +236,9 @@ export function useGameLaunch({
           const activeSessions = await window.openNow.getActiveSessions(token, launchStreamingBaseUrl);
           if (launchAbortRef.current) return;
           if (activeSessions.length > 0) {
+            activeSessionGpuType = activeSessions.find(
+              (entry) => entry.appId === numericAppId && entry.gpuType?.trim(),
+            )?.gpuType ?? activeSessions.find((entry) => entry.gpuType?.trim())?.gpuType;
             // Only claim sessions that are already paused/ready (status 2 or 3).
             // Status=1 sessions are still in queue/setup; sending a RESUME claim
             // skips the queue/ad phase entirely. Let them fall through to
@@ -276,7 +280,7 @@ export function useGameLaunch({
       if (launchAbortRef.current) return;
 
       // Create new session
-      const newSession = await window.openNow.createSession({
+      let newSession = await window.openNow.createSession({
         token: token || undefined,
         streamingBaseUrl: launchStreamingBaseUrl,
         appId,
@@ -291,6 +295,10 @@ export function useGameLaunch({
         settings: streamSettings,
         supportedCodecs,
       });
+
+      if (!newSession.gpuType?.trim() && activeSessionGpuType) {
+        newSession = { ...newSession, gpuType: activeSessionGpuType };
+      }
 
       if (await disposeSessionCreatedAfterAbort(
         launchAbortRef.current,

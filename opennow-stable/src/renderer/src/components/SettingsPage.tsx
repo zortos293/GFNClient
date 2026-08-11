@@ -1,5 +1,5 @@
-import { Check, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type JSX } from "react";
+import { Activity, Check, Cpu, Gamepad2, Globe, Heart, Info, Keyboard, Mic, Monitor, Search, Users, Wifi, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 
 import type {
   EntitledResolution,
@@ -13,12 +13,13 @@ import {
   loadCachedEntitledResolutions,
   saveCachedEntitledResolutions,
 } from "./settings/settingsFormatters";
-import type { SettingsSectionId, SettingsSearchScopeId } from "./settings/settingsTypes";
+import type { SettingsNavItem, SettingsSectionId, SettingsSearchScopeId } from "./settings/settingsTypes";
 import { settingsScopeMatchesSearch } from "./settings/settingsSearch";
 import { SettingsNav } from "./settings/SettingsNav";
 import { SettingsAccountSection } from "./settings/sections/SettingsAccountSection";
 import { SettingsAboutSection } from "./settings/sections/SettingsAboutSection";
 import { SettingsAudioSection } from "./settings/sections/SettingsAudioSection";
+import { SettingsConsoleSection } from "./settings/sections/SettingsConsoleSection";
 import { SettingsDiagnosticsSection } from "./settings/sections/SettingsDiagnosticsSection";
 import { SettingsGameSection } from "./settings/sections/SettingsGameSection";
 import { SettingsInputSection } from "./settings/sections/SettingsInputSection";
@@ -58,7 +59,7 @@ export function SettingsPage({
   onOpenWhatsNew,
   onOpenFeedback,
 }: SettingsPageProps): JSX.Element {
-  const { t } = useTranslation();
+  const { locale, t } = useTranslation();
   const [savedIndicator, setSavedIndicator] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("stream");
   const [settingsSearch, setSettingsSearch] = useState("");
@@ -75,6 +76,21 @@ export function SettingsPage({
   const identifyAsSteamDeckRef = useRef(settings.identifyAsSteamDeck);
   const subscriptionLoadIdRef = useRef(0);
   identifyAsSteamDeckRef.current = settings.identifyAsSteamDeck;
+
+  const settingsNavItems = useMemo<SettingsNavItem[]>(() => [
+    { id: "account", label: t("settings.sections.account"), description: t("settings.sectionDescriptions.account"), icon: <Users /> },
+    { id: "stream", label: t("settings.sections.stream"), description: t("settings.sectionDescriptions.stream"), icon: <Wifi /> },
+    { id: "diagnostics", label: t("settings.sections.diagnostics"), description: t("settings.sectionDescriptions.diagnostics"), icon: <Activity /> },
+    { id: "native-streamer", label: t("settings.sections.nativeStreamer"), description: t("settings.sectionDescriptions.nativeStreamer"), icon: <Cpu /> },
+    { id: "game", label: t("settings.sections.game"), description: t("settings.sectionDescriptions.game"), icon: <Globe /> },
+    { id: "audio", label: t("settings.sections.audio"), description: t("settings.sectionDescriptions.audio"), icon: <Mic /> },
+    { id: "input", label: t("settings.sections.input"), description: t("settings.sectionDescriptions.input"), icon: <Keyboard /> },
+    { id: "console", label: t("settings.sections.console"), description: t("settings.sectionDescriptions.console"), icon: <Gamepad2 /> },
+    { id: "interface", label: t("settings.sections.interface"), description: t("settings.sectionDescriptions.interface"), icon: <Monitor /> },
+    { id: "about", label: t("settings.sections.about"), description: t("settings.sectionDescriptions.about"), icon: <Info /> },
+    { id: "thanks", label: t("settings.sections.thanks"), description: t("settings.sectionDescriptions.thanks"), icon: <Heart /> },
+  ], [locale, t]);
+  const activeNavItem = settingsNavItems.find((item) => item.id === activeSection) ?? settingsNavItems[0];
 
   useEffect(() => {
     settingsContentRef.current?.scrollTo({ top: 0 });
@@ -231,10 +247,11 @@ export function SettingsPage({
   const showGame = showAll ? scopeMatchesSearch("game") : activeSection === "game";
   const showAudio = showAll ? scopeMatchesSearch("audio") : activeSection === "audio";
   const showInput = showAll ? scopeMatchesSearch("input") : activeSection === "input";
+  const showConsole = showAll ? scopeMatchesSearch("console") : activeSection === "console";
   const showInterface = showAll ? scopeMatchesSearch("interface") : activeSection === "interface";
   const showAbout = showAll ? scopeMatchesSearch("about") : activeSection === "about";
   const showThanks = showAll ? scopeMatchesSearch("thanks") : activeSection === "thanks";
-  const hasAnySearchMatches = showAccount || showStream || showDiagnostics || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
+  const hasAnySearchMatches = showAccount || showStream || showDiagnostics || showNativeStreamer || showGame || showAudio || showInput || showConsole || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
   return (
@@ -263,11 +280,25 @@ export function SettingsPage({
           activeSection={activeSection}
           settingsSearch={settingsSearch}
           showAll={showAll}
+          items={settingsNavItems}
           onSearchChange={setSettingsSearch}
           onSectionChange={setActiveSection}
         />
 
         <div ref={settingsContentRef} className="settings-content">
+          <div className="settings-page-heading">
+            <div className="settings-page-heading-icon" aria-hidden="true">
+              {showAll ? <Search /> : activeNavItem.icon}
+            </div>
+            <div className="settings-page-heading-copy">
+              <h2>{showAll ? t("settings.searchResults") : activeNavItem.label}</h2>
+              <p>
+                {showAll
+                  ? t("settings.searchResultsDescription", { query: settingsSearch.trim() })
+                  : activeNavItem.description}
+              </p>
+            </div>
+          </div>
           {showAll && !hasAnySearchMatches ? (
             <section className="settings-section">
               <div className="settings-thanks-state settings-thanks-state--muted">
@@ -345,6 +376,13 @@ export function SettingsPage({
                       showAll={showAll}
                       handleChange={handleChange}
                       handlePreview={handlePreview}
+                    />
+                  )}
+                  {showConsole && (
+                    <SettingsConsoleSection
+                      settings={settings}
+                      showAll={showAll}
+                      handleChange={handleChange}
                     />
                   )}
                   {showInterface && (

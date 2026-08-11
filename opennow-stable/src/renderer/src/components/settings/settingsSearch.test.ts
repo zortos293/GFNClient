@@ -45,6 +45,21 @@ test("routes legacy session timing aliases from interface to diagnostics", () =>
   }
 });
 
+test("routes controller-first shell settings to console", () => {
+  const movedQueries = [
+    "controller mode",
+    "profile picker",
+    "tv mode",
+    "big picture",
+  ];
+
+  for (const query of movedQueries) {
+    assert.equal(settingsScopeMatchesSearch("console", query), true);
+    assert.equal(settingsScopeMatchesSearch("interface", query), false);
+    assert.equal(settingsScopeMatchesSearch("stream-video", query), false);
+  }
+});
+
 test("matches search tokens by word prefix", () => {
   assert.equal(
     settingsScopeMatchesSearch("stream-diagnostics", "diag over"),

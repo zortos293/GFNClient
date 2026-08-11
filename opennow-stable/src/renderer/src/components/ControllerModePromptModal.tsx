@@ -3,6 +3,7 @@ import { useRef, type JSX } from "react";
 import { useTranslation } from "../i18n";
 import { useControllerNavigation } from "../hooks/useControllerNavigation";
 import { resolveControllerModePromptAction } from "../hooks/useControllerModePrompt";
+import { ConsoleHintGlyphIcon } from "./console/ConsoleHintBar";
 import { ModalSurface } from "./ui/ModalSurface";
 
 export interface ControllerModePromptModalProps {
@@ -64,12 +65,7 @@ export function ControllerModePromptModal({
 
       <div className="controller-mode-prompt-actions">
         <button type="button" className="controller-mode-prompt-decline" onClick={onDecline}>
-          <span
-            className="controller-mode-prompt-button-glyph controller-mode-prompt-button-glyph--b"
-            aria-hidden="true"
-          >
-            B
-          </span>
+          <ConsoleHintGlyphIcon glyph="b" />
           {t("console.controllerPrompt.decline")}
         </button>
         <button
@@ -78,12 +74,7 @@ export function ControllerModePromptModal({
           onClick={onAccept}
           ref={primaryActionRef}
         >
-          <span
-            className="controller-mode-prompt-button-glyph controller-mode-prompt-button-glyph--a"
-            aria-hidden="true"
-          >
-            A
-          </span>
+          <ConsoleHintGlyphIcon glyph="a" />
           {t("console.controllerPrompt.accept")}
           <ArrowRight size={16} strokeWidth={2.2} aria-hidden="true" />
         </button>

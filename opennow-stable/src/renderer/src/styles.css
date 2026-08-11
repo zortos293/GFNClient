@@ -10044,33 +10044,6 @@ button.game-card-store-chip.owned.active:hover {
   box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
-.controller-mode-prompt-button-glyph {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 20px;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  font-size: 0.64rem;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.controller-mode-prompt-button-glyph--a {
-  border-color: #22c55e;
-  color: #15803d;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 1px 4px rgba(21, 128, 61, 0.28);
-}
-
-.controller-mode-prompt-button-glyph--b {
-  border-color: #ef4444;
-  color: #dc2626;
-  background: color-mix(in srgb, #ef4444 8%, var(--panel));
-  box-shadow: 0 1px 4px rgba(220, 38, 38, 0.16);
-}
-
 .controller-mode-prompt-accept:hover {
   opacity: 0.88;
   transform: translateY(-1px);

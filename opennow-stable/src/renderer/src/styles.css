@@ -10058,12 +10058,17 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .controller-mode-prompt-button-glyph--a {
-  color: #fff;
-  background: color-mix(in srgb, #000 16%, transparent);
+  border-color: #22c55e;
+  color: #15803d;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 4px rgba(21, 128, 61, 0.28);
 }
 
 .controller-mode-prompt-button-glyph--b {
-  color: var(--ink-muted);
+  border-color: #ef4444;
+  color: #dc2626;
+  background: color-mix(in srgb, #ef4444 8%, var(--panel));
+  box-shadow: 0 1px 4px rgba(220, 38, 38, 0.16);
 }
 
 .controller-mode-prompt-accept:hover {

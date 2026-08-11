@@ -4,11 +4,49 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-class TouchMouseMotionAccumulatorTest {
+class MouseMotionAccumulatorTest {
+    @Test
+    fun externalMouseKeepsVerySlowFractionalRelativeMotion() {
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
+        val sent = mutableListOf<MouseMotionDelta>()
+
+        repeat(20) { index ->
+            accumulator.add(
+                dx = 0.2f,
+                dy = -0.1f,
+                eventTimeMs = index.toLong(),
+                sensitivity = 1f,
+                acceleration = 1,
+            )?.let(sent::add)
+        }
+
+        assertEquals(4, sent.sumOf { it.dx })
+        assertEquals(-2, sent.sumOf { it.dy })
+    }
+
+    @Test
+    fun externalMouseFastMotionRemainsLinearWithoutAcceleration() {
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
+        val sent = mutableListOf<MouseMotionDelta>()
+
+        repeat(10) { index ->
+            accumulator.add(
+                dx = 12.5f,
+                dy = -7.5f,
+                eventTimeMs = index.toLong(),
+                sensitivity = 1f,
+                acceleration = 1,
+            )?.let(sent::add)
+        }
+
+        assertEquals(125, sent.sumOf { it.dx })
+        assertEquals(-75, sent.sumOf { it.dy })
+    }
+
     @Test
     fun preservesFractionalMotionAcrossHighFrequencyEvents() {
-        val accumulator = TouchMouseMotionAccumulator(minimumSendIntervalMs = 8L)
-        val sent = mutableListOf<TouchMouseDelta>()
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 8L)
+        val sent = mutableListOf<MouseMotionDelta>()
 
         repeat(20) { index ->
             accumulator.add(
@@ -34,9 +72,9 @@ class TouchMouseMotionAccumulatorTest {
     }
 
     @Test
-    fun retainsSubpixelMotionAtLowSensitivity() {
-        val accumulator = TouchMouseMotionAccumulator(minimumSendIntervalMs = 0L)
-        val sent = mutableListOf<TouchMouseDelta>()
+    fun externalMouseKeepsSlowMotionAtReducedSensitivity() {
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
+        val sent = mutableListOf<MouseMotionDelta>()
 
         repeat(8) { index ->
             accumulator.add(
@@ -54,24 +92,24 @@ class TouchMouseMotionAccumulatorTest {
 
     @Test
     fun coalescesEventsInsideSendInterval() {
-        val accumulator = TouchMouseMotionAccumulator(minimumSendIntervalMs = 8L)
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 8L)
 
         assertEquals(
-            TouchMouseDelta(1, 0),
+            MouseMotionDelta(1, 0),
             accumulator.add(1f, 0f, eventTimeMs = 0L, sensitivity = 1f, acceleration = 1),
         )
         assertNull(
             accumulator.add(1f, 0f, eventTimeMs = 3L, sensitivity = 1f, acceleration = 1),
         )
         assertEquals(
-            TouchMouseDelta(2, 0),
+            MouseMotionDelta(2, 0),
             accumulator.add(1f, 0f, eventTimeMs = 8L, sensitivity = 1f, acceleration = 1),
         )
     }
 
     @Test
     fun resetDoesNotLeakResidualMotionIntoNextGesture() {
-        val accumulator = TouchMouseMotionAccumulator(minimumSendIntervalMs = 8L)
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 8L)
 
         assertNull(
             accumulator.add(0.4f, 0f, eventTimeMs = 0L, sensitivity = 1f, acceleration = 1),
@@ -84,7 +122,7 @@ class TouchMouseMotionAccumulatorTest {
 
     @Test
     fun nonFiniteMotionIsDroppedAndDoesNotPoisonNextGesture() {
-        val accumulator = TouchMouseMotionAccumulator(minimumSendIntervalMs = 0L)
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
 
         assertNull(
             accumulator.add(Float.NaN, 1f, eventTimeMs = 0L, sensitivity = 1f, acceleration = 1),
@@ -96,20 +134,20 @@ class TouchMouseMotionAccumulatorTest {
             accumulator.add(1f, 1f, eventTimeMs = 2L, sensitivity = Float.NaN, acceleration = 1),
         )
         assertEquals(
-            TouchMouseDelta(2, -1),
+            MouseMotionDelta(2, -1),
             accumulator.add(2f, -1f, eventTimeMs = 3L, sensitivity = 1f, acceleration = 1),
         )
     }
 
     @Test
     fun overflowingMotionIsDroppedBeforeRounding() {
-        val accumulator = TouchMouseMotionAccumulator(minimumSendIntervalMs = 0L)
+        val accumulator = MouseMotionAccumulator(minimumSendIntervalMs = 0L)
 
         assertNull(
             accumulator.add(Float.MAX_VALUE, 0f, eventTimeMs = 0L, sensitivity = Float.MAX_VALUE, acceleration = 1),
         )
         assertEquals(
-            TouchMouseDelta(1, 0),
+            MouseMotionDelta(1, 0),
             accumulator.add(1f, 0f, eventTimeMs = 1L, sensitivity = 1f, acceleration = 1),
         )
     }

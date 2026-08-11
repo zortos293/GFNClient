@@ -52,6 +52,10 @@ export function RegionSelectionSection({
       </div>
       <div className="settings-rows">
         <div className="settings-row settings-row--column settings-row--region">
+          <label className="settings-label" htmlFor="settings-stream-region-trigger">
+            {t("settings.region.serverRegion")}
+            <span className="settings-hint">{t("settings.region.serverRegionHint")}</span>
+          </label>
           <div className="region-selector" ref={selection.regionSelectorRef}>
             <button
               ref={selection.regionTriggerRef}

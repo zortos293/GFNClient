@@ -3703,7 +3703,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-thanks-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: start;
   min-width: 0;
@@ -3714,49 +3714,6 @@ button.game-card-store-chip.owned.active:hover {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-}
-
-.settings-thanks-hero {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(var(--accent-rgb), 0.03));
-}
-
-.settings-thanks-hero-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  line-height: 0;
-  border-radius: 10px;
-  background: rgba(var(--accent-rgb), 0.12);
-  color: var(--accent);
-  flex-shrink: 0;
-}
-
-.settings-thanks-hero-icon svg {
-  display: block;
-  transform: translateY(1px);
-}
-
-.settings-thanks-hero-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.settings-thanks-hero-copy h2 {
-  font-size: 1.02rem;
-  font-weight: 700;
-  color: var(--ink);
-}
-
-.settings-thanks-hero-copy p {
-  font-size: 0.88rem;
-  color: var(--ink-soft);
-  line-height: 1.55;
 }
 
 .settings-section-header--thanks {
@@ -3785,7 +3742,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-people-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 10px;
+  gap: 0;
   padding: 0 16px 18px;
   min-width: 0;
 }
@@ -3794,11 +3751,13 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 72px;
-  padding: 12px;
-  border-radius: 10px;
-  border: 1px solid var(--panel-border);
-  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  min-height: 68px;
+  padding: 12px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.settings-people-grid > :last-child .settings-person-card {
+  border-bottom: 0;
 }
 
 .settings-person-card--link {
@@ -3808,9 +3767,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-person-card--link:hover {
-  border-color: rgba(var(--accent-rgb), 0.24);
   background: rgba(var(--accent-rgb), 0.06);
-  transform: translateY(-1px);
 }
 
 .settings-person-avatar {
@@ -4223,6 +4180,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-section {
+  --settings-label-col: minmax(13rem, 15rem);
   background: color-mix(in srgb, var(--ink) 2%, transparent);
   border: 1px solid var(--panel-border);
   border-radius: 6px;
@@ -4236,23 +4194,21 @@ button.game-card-store-chip.owned.active:hover {
   z-index: 2;
 }
 
-.settings-section:hover {
-  border-color: color-mix(in srgb, var(--ink) 9%, transparent);
-}
-
 .settings-section-header {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 0;
-  padding: 18px 18px 12px;
-  border-bottom: none;
+  min-height: 58px;
+  padding: 15px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 5%, transparent);
   color: var(--accent);
 }
 
 .settings-section-header svg {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
+  flex: none;
 }
 
 .settings-section-header h2 {
@@ -4284,11 +4240,11 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 0 18px 16px;
+  padding: 0 18px;
 }
 
 .settings-rows--grouped {
-  gap: 18px;
+  gap: 0;
 }
 
 .settings-group {
@@ -4296,15 +4252,14 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-group + .settings-group {
-  padding-top: 18px;
-  border-top: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .settings-group-header {
   display: grid;
-  grid-template-columns: minmax(8rem, 13.5rem) minmax(0, 1fr);
-  gap: 16px;
-  padding: 0 0 8px;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+  gap: 20px;
+  padding: 14px 0 8px;
 }
 
 .settings-group-header h3 {
@@ -4327,18 +4282,18 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-group-rows > .settings-row:last-child {
-  border-bottom: none;
+  border-bottom: 0;
 }
 
 .settings-row {
-  --settings-label-col: minmax(12.5rem, 13.5rem);
   display: grid;
   grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
   align-items: center;
-  column-gap: 16px;
-  row-gap: 6px;
-  padding: 13px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--ink) 4%, transparent);
+  column-gap: 20px;
+  row-gap: 5px;
+  min-height: 64px;
+  padding: 11px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .settings-row:last-child {
@@ -4443,10 +4398,11 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-row--column {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 20px;
+  row-gap: 5px;
 }
 
 @media (max-width: 760px) {
@@ -4469,26 +4425,6 @@ button.game-card-store-chip.owned.active:hover {
     padding: 16px 14px 22px;
   }
 
-  .settings-row:not(.settings-row--column),
-  .settings-group-header {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .settings-row:not(.settings-row--column) > .settings-label,
-  .settings-row:not(.settings-row--column) > .settings-row-control,
-  .settings-row:not(.settings-row--column) > .settings-chip-row,
-  .settings-row:not(.settings-row--column) > .select-dropdown,
-  .settings-row:not(.settings-row--column) > .codec-test-btn {
-    grid-column: 1;
-  }
-
-  .settings-row:not(.settings-row--column) > .codec-test-btn {
-    justify-self: start;
-  }
-
-  .settings-group-header {
-    gap: 3px;
-  }
 }
 
 @media (max-width: 560px) {
@@ -4534,27 +4470,139 @@ button.game-card-store-chip.owned.active:hover {
   }
 }
 
-.settings-row--column > .settings-label,
+.settings-row-top {
+  display: grid;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+  grid-column: 1 / -1;
+  align-items: center;
+  column-gap: 20px;
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.settings-row-top > .settings-label {
+  grid-column: 1;
+}
+
+.settings-row-top > .settings-toggle,
+.settings-row-top > .settings-value-badge,
+.settings-row-top > .settings-shortcut-actions,
+.settings-row-top > .settings-icon-button {
+  grid-column: 2;
+  justify-self: end;
+}
+
+.settings-row--column > .settings-label {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.settings-row--column > .settings-subtle-hint,
+.settings-row--column > .settings-input-hint,
+.settings-row--column > .settings-shortcut-hint {
+  grid-column: 1;
+  grid-row: auto;
+  align-self: start;
+  width: 100%;
+}
+
 .settings-row--column > .settings-chip-row,
 .settings-row--column > .select-dropdown,
 .settings-row--column > .settings-toggle,
 .settings-row--column > .settings-text-input,
 .settings-row--column > .settings-slider,
-.settings-row--column > .settings-subtle-hint,
-.settings-row--column > .settings-input-hint,
-.settings-row--column > .settings-row-control {
-  grid-column: auto;
+.settings-row--column > .settings-slider-control,
+.settings-row--column > .settings-row-control,
+.settings-row--column > .settings-community-proxy-row,
+.settings-row--column > .settings-native-report-links,
+.settings-row--column > .settings-path-setting,
+.settings-row--column > .region-selector,
+.settings-row--column > .settings-shortcut-grid {
+  grid-column: 2;
   justify-self: stretch;
+  min-width: 0;
   width: 100%;
 }
 
-.settings-row-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.settings-row--column > .settings-row-top + .settings-chip-row,
+.settings-row--column > .settings-row-top + .settings-slider,
+.settings-row--column > .settings-row-top + .settings-slider-control,
+.settings-row--column > .settings-row-top + .settings-row-control {
+  grid-row: 2;
+}
+
+.settings-row--column > .settings-row-top + .settings-subtle-hint + .settings-community-proxy-row,
+.settings-row--column > .settings-row-top + .settings-subtle-hint + .settings-native-report-links {
+  grid-row: 2;
+}
+
+.settings-native-capability-row > .settings-native-capability-header,
+.settings-native-capability-row > .settings-native-capability-grid,
+.settings-native-capability-row > .settings-subtle-hint,
+.settings-row--column > .settings-updater-progress,
+.settings-row--column > .settings-install-steps,
+.settings-row--column > .settings-native-runtime-path {
+  grid-column: 1 / -1;
   width: 100%;
-  margin-bottom: 0;
+}
+
+@media (max-width: 680px) {
+  .settings-section {
+    --settings-label-col: minmax(0, 1fr);
+  }
+
+  .settings-row,
+  .settings-row--column,
+  .settings-group-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-row-top {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 12px;
+  }
+
+  .settings-row > .settings-label,
+  .settings-row > .settings-row-control,
+  .settings-row > .settings-chip-row,
+  .settings-row > .select-dropdown,
+  .settings-row > .settings-mic-device-wrap,
+  .settings-row > .settings-updater-actions,
+  .settings-row > .settings-export-logs-btn,
+  .settings-row > .settings-delete-cache-btn,
+  .settings-row > .settings-save-btn,
+  .settings-row > .codec-test-btn,
+  .settings-row--column > .settings-label,
+  .settings-row--column > .settings-subtle-hint,
+  .settings-row--column > .settings-input-hint,
+  .settings-row--column > .settings-shortcut-hint,
+  .settings-row--column > .settings-chip-row,
+  .settings-row--column > .select-dropdown,
+  .settings-row--column > .settings-text-input,
+  .settings-row--column > .settings-slider,
+  .settings-row--column > .settings-slider-control,
+  .settings-row--column > .settings-row-control,
+  .settings-row--column > .settings-community-proxy-row,
+  .settings-row--column > .settings-native-report-links,
+  .settings-row--column > .settings-path-setting,
+  .settings-row--column > .region-selector,
+  .settings-row--column > .settings-shortcut-grid {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .settings-row > .settings-export-logs-btn,
+  .settings-row > .settings-delete-cache-btn,
+  .settings-row > .settings-save-btn,
+  .settings-row > .codec-test-btn {
+    justify-self: start;
+  }
+
+  .settings-group-header {
+    gap: 3px;
+  }
 }
 
 .settings-row-top--compact {
@@ -4736,14 +4784,11 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-storage-card {
-  margin: 0 18px 18px;
-  padding: 18px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
-  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  margin: 0;
+  padding: 14px 18px 18px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
 .settings-storage-summary {
@@ -4835,10 +4880,11 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-storage-location-control {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
   align-items: end;
-  gap: 14px;
-  padding-top: 2px;
+  gap: 20px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .settings-storage-location-copy {
@@ -4859,7 +4905,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-storage-select-dropdown {
-  width: 100%;
+  width: min(280px, 100%);
   min-width: 0;
 }
 
@@ -4891,10 +4937,10 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-storage-footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 20px;
 }
 
 .settings-storage-meta {
@@ -4923,6 +4969,7 @@ button.game-card-store-chip.owned.active:hover {
   flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 10px;
+  justify-self: end;
 }
 
 .settings-storage-manager-btn,
@@ -4932,7 +4979,7 @@ button.game-card-store-chip.owned.active:hover {
 
 @media (max-width: 820px) {
   .settings-storage-card {
-    padding: 14px;
+    padding: 12px 14px 16px;
   }
 
   .settings-storage-summary,
@@ -4976,20 +5023,17 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-game-accounts-card {
-  margin: 0 18px 18px;
-  padding: 14px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
-  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  margin: 0;
+  padding: 0 18px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
 }
 
 .settings-game-account-grid {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
 }
 
 .settings-game-account-card {
@@ -4998,11 +5042,13 @@ button.game-card-store-chip.owned.active:hover {
   justify-content: space-between;
   gap: 14px;
   width: 100%;
-  min-height: 96px;
-  padding: 16px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--ink) 5.5%, transparent);
-  background: rgba(0, 0, 0, 0.12);
+  min-height: 88px;
+  padding: 14px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.settings-game-account-grid > :last-child .settings-game-account-card {
+  border-bottom: 0;
 }
 
 .settings-game-account-main {
@@ -5564,8 +5610,8 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-native-capability-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   width: 100%;
   min-width: 0;
 }
@@ -5576,31 +5622,18 @@ button.game-card-store-chip.owned.active:hover {
   min-width: 0;
   flex-direction: column;
   gap: 9px;
-  padding: 12px 12px 14px;
+  padding: 12px 0;
   overflow: hidden;
-  border: 1px solid var(--panel-border);
-  border-radius: 9px;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--ink) 3%, transparent), transparent 55%),
-    var(--bg-e);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   box-sizing: border-box;
 }
 
-.settings-native-capability-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 2px;
-  background: var(--panel-border-solid);
-}
-
-.settings-native-capability-card.is-supported::before {
-  background: var(--accent);
+.settings-native-capability-grid > .settings-native-capability-card:last-child {
+  border-bottom: 0;
 }
 
 .settings-native-capability-card.is-active {
-  border-color: rgba(var(--accent-rgb), 0.3);
-  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.05);
+  opacity: 1;
 }
 
 .settings-native-capability-card.is-unsupported {
@@ -6651,8 +6684,8 @@ button.game-card-store-chip.owned.active:hover {
 
 .codec-results {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
 }
 
 .codec-result-hint {
@@ -6667,18 +6700,15 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .codec-result-card {
-  background: var(--bg-a);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
-  padding: 16px 18px;
+  padding: 14px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   display: flex;
   flex-direction: column;
   gap: 12px;
-  transition: border-color var(--t-fast);
 }
 
-.codec-result-card:hover {
-  border-color: color-mix(in srgb, var(--ink) 10%, transparent);
+.codec-results > .codec-result-card:last-child {
+  border-bottom: 0;
 }
 
 .codec-result-header {

@@ -643,6 +643,8 @@
     },
     "region": {
       "title": "Region",
+      "serverRegion": "Server Region",
+      "serverRegionHint": "Choose a specific region or let OpenNOW use the lowest-latency route.",
       "autoBest": "Auto (Best)",
       "searchPlaceholder": "Search regions...",
       "refreshPing": "Refresh ping",
@@ -855,6 +857,11 @@
     },
     "input": {
       "title": "Input",
+      "behavior": "Input Behavior",
+      "behaviorDescription": "Keyboard, controller, clipboard, and cursor behavior during streamed sessions.",
+      "mouse": "Mouse",
+      "mouseDescription": "Pointer sensitivity and acceleration applied while a game has input focus.",
+      "shortcutsDescription": "Keyboard shortcuts for stream controls and common session actions.",
       "mouseAndKeyboard": "Mouse and Keyboard",
       "clipboardPaste": "Clipboard Paste",
       "gyroscopeControls": "Gyroscope Controls",
@@ -888,6 +895,11 @@
     },
     "interface": {
       "appearance": "Appearance",
+      "appearanceDescription": "Language, theme, translucency, and accent presentation across OpenNOW.",
+      "behavior": "App Behavior",
+      "behaviorDescription": "Overlay visibility, reminders, and fullscreen behavior during everyday use.",
+      "libraryAndPresence": "Library & Presence",
+      "libraryAndPresenceDescription": "Library density and how OpenNOW represents your activity outside the app.",
       "appLanguage": "App Language",
       "appLanguageHint": "Changes OpenNOW's interface language. English is used for untranslated strings.",
       "theme": "Theme",
@@ -956,6 +968,12 @@
       "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled and ask NVIDIA to launch streamed games in a gamepad-friendly big-picture mode."
     },
     "about": {
+      "updates": "Updates",
+      "updatesDescription": "Release notes, update channel, and automatic application update behavior.",
+      "supportAndPrivacy": "Support & Privacy",
+      "supportAndPrivacyDescription": "Diagnostics, feedback, and logs you can share when you need help.",
+      "localData": "Local Data",
+      "localDataDescription": "Cached library artwork and metadata stored on this device.",
       "applicationUpdates": "Application Updates",
       "version": "Version {{version}}",
       "backgroundChecksOn": "Packaged builds check GitHub Releases in the background.",
@@ -999,6 +1017,10 @@
     },
     "nativeStreamer": {
       "title": "Native Streamer",
+      "runtime": "Runtime",
+      "runtimeDescription": "Enable the experimental streamer and inspect its local GStreamer readiness.",
+      "videoOutput": "Video Output",
+      "videoOutputDescription": "Hardware capability, rendering backend, frame pacing, and window mode.",
       "nativeStreaming": "Native Streaming",
       "nativeStreamingHint": "Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.",
       "enablePromptKicker": "Experimental",

@@ -163,9 +163,10 @@ export function SettingsNativeStreamerSection({
       <section className="settings-section">
         {showAll && <div className="settings-section-context">{t("settings.sections.nativeStreamer")}</div>}
         <div className="settings-section-header">
+          <Cpu />
           <h2>{t("settings.nativeStreamer.title")}</h2>
         </div>
-        <div className="settings-rows">
+        <div className="settings-rows settings-rows--grouped">
           {!isNativeStreamerPlatform ? (
             <div className="settings-row settings-row--column">
               <div className="settings-row-top settings-row-top--compact">
@@ -182,6 +183,12 @@ export function SettingsNativeStreamerSection({
             </div>
           ) : (
             <>
+              <div className="settings-group">
+                <div className="settings-group-header">
+                  <h3>{t("settings.nativeStreamer.runtime")}</h3>
+                  <p>{t("settings.nativeStreamer.runtimeDescription")}</p>
+                </div>
+                <div className="settings-group-rows">
               <div className="settings-row settings-row--column">
                 <div className="settings-row-top settings-row-top--compact">
                   <label className="settings-label settings-label--wrap" htmlFor="settings-native-streaming-enabled">
@@ -303,6 +310,15 @@ export function SettingsNativeStreamerSection({
                 ) : null}
               </div>
 
+                </div>
+              </div>
+
+              <div className="settings-group">
+                <div className="settings-group-header">
+                  <h3>{t("settings.nativeStreamer.videoOutput")}</h3>
+                  <p>{t("settings.nativeStreamer.videoOutputDescription")}</p>
+                </div>
+                <div className="settings-group-rows">
               <div className="settings-row settings-row--column settings-native-capability-row">
                 <div className="settings-native-capability-header">
                   <div>
@@ -466,6 +482,8 @@ export function SettingsNativeStreamerSection({
                 </div>
               )}
 
+                </div>
+              </div>
             </>
           )}
         </div>

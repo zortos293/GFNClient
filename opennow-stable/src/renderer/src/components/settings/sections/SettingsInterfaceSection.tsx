@@ -1,4 +1,5 @@
 import { useCallback, useMemo, type JSX } from "react";
+import { Monitor } from "lucide-react";
 import type { AppAccentColor, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
@@ -62,9 +63,16 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
       <section className="settings-section">
         {showAll && <div className="settings-section-context">{t("settings.sections.interface")}</div>}
         <div className="settings-section-header">
-          <h2>{t("settings.interface.appearance")}</h2>
+          <Monitor />
+          <h2>{t("settings.sections.interface")}</h2>
         </div>
-        <div className="settings-rows">
+        <div className="settings-rows settings-rows--grouped">
+          <div className="settings-group">
+            <div className="settings-group-header">
+              <h3>{t("settings.interface.appearance")}</h3>
+              <p>{t("settings.interface.appearanceDescription")}</p>
+            </div>
+            <div className="settings-group-rows">
           <div className="settings-row">
             <label className="settings-label" htmlFor="settings-interface-app-language">
               {t("settings.interface.appLanguage")}
@@ -133,7 +141,15 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             </div>
           </div>
 
-          {/* Appearance toggles */}
+            </div>
+          </div>
+
+          <div className="settings-group">
+            <div className="settings-group-header">
+              <h3>{t("settings.interface.behavior")}</h3>
+              <p>{t("settings.interface.behaviorDescription")}</p>
+            </div>
+            <div className="settings-group-rows">
           <div className="settings-row settings-row--column">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-hide-stream-buttons">
@@ -272,6 +288,15 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.escapeExitsFullscreenHint")}</span>
           </div>
 
+            </div>
+          </div>
+
+          <div className="settings-group">
+            <div className="settings-group-header">
+              <h3>{t("settings.interface.libraryAndPresence")}</h3>
+              <p>{t("settings.interface.libraryAndPresenceDescription")}</p>
+            </div>
+            <div className="settings-group-rows">
           <div className="settings-row settings-row--column">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-discord-rich-presence">
@@ -309,6 +334,8 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.posterSizeHint")}</span>
           </div>
 
+            </div>
+          </div>
         </div>
       </section>
 

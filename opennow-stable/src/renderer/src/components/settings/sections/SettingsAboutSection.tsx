@@ -75,9 +75,16 @@ export function SettingsAboutSection({
     <section className="settings-section settings-about-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.about")}</div>}
       <div className="settings-section-header">
+        <Info />
         <h2>{t("settings.sections.about")}</h2>
       </div>
-      <div className="settings-rows">
+      <div className="settings-rows settings-rows--grouped">
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.about.updates")}</h3>
+            <p>{t("settings.about.updatesDescription")}</p>
+          </div>
+          <div className="settings-group-rows">
         <div className="settings-row">
           <label className="settings-label">
             {t("settings.about.whatsNew")}
@@ -235,6 +242,15 @@ export function SettingsAboutSection({
           </div>
         ) : null}
 
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.about.supportAndPrivacy")}</h3>
+            <p>{t("settings.about.supportAndPrivacyDescription")}</p>
+          </div>
+          <div className="settings-group-rows">
         <div className="settings-row settings-row--column">
           <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label settings-label--wrap" htmlFor="settings-about-error-reporting">
@@ -301,6 +317,16 @@ export function SettingsAboutSection({
           </button>
         </div>
 
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.about.localData")}</h3>
+            <p>{t("settings.about.localDataDescription")}</p>
+          </div>
+          <div className="settings-group-rows">
+
         <div className="settings-row">
           <label className="settings-label">
             {t("settings.about.deleteCache")}
@@ -325,6 +351,9 @@ export function SettingsAboutSection({
             <Trash2 size={16} />
             {t("settings.about.deleteCache")}
           </button>
+        </div>
+
+          </div>
         </div>
 
       </div>

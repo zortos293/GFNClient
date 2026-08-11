@@ -113,6 +113,11 @@ export async function createMainWindow(
       sandbox: false,
     },
   });
+  const syncAutomaticWindowTheme = (): void => {
+    if (deps.settingsManager.get("appTheme") !== "auto" || window.isDestroyed()) return;
+    window.setBackgroundColor(applyNativeAppTheme("auto", nativeTheme));
+  };
+  nativeTheme.on("updated", syncAutomaticWindowTheme);
   deps.setMainWindow(window);
   if (windowTitle) {
     window.on("page-title-updated", (event) => {
@@ -334,6 +339,7 @@ export async function createMainWindow(
   }
 
   window.on("closed", () => {
+    nativeTheme.off("updated", syncAutomaticWindowTheme);
     ipcMain.off(
       IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
       handleStreamShortcutInterceptionChange,

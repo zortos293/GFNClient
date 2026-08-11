@@ -923,15 +923,9 @@ export function App(): JSX.Element {
     if (!authSession || streamStatus !== "idle") {
       return;
     }
-    let inFlight = false;
     const refresh = async (): Promise<void> => {
-      if (inFlight || document.visibilityState === "hidden") return;
-      inFlight = true;
-      try {
-        await refreshNavbarActiveSession();
-      } finally {
-        inFlight = false;
-      }
+      if (document.visibilityState === "hidden") return;
+      await refreshNavbarActiveSession();
     };
     const handleVisibilityChange = (): void => {
       if (document.visibilityState !== "hidden") {
@@ -959,16 +953,16 @@ export function App(): JSX.Element {
     if (codecResults || codecTesting || codecStartupTestAttemptedRef.current) {
       return;
     }
-    codecStartupTestAttemptedRef.current = true;
+    const runStartupCodecTest = (): void => {
+      if (codecStartupTestAttemptedRef.current) return;
+      codecStartupTestAttemptedRef.current = true;
+      void runCodecTest();
+    };
     if (typeof window.requestIdleCallback === "function") {
-      const idleCallbackId = window.requestIdleCallback(() => {
-        void runCodecTest();
-      }, { timeout: 4000 });
+      const idleCallbackId = window.requestIdleCallback(runStartupCodecTest, { timeout: 4000 });
       return () => window.cancelIdleCallback(idleCallbackId);
     }
-    const timer = window.setTimeout(() => {
-      void runCodecTest();
-    }, 1500);
+    const timer = window.setTimeout(runStartupCodecTest, 1500);
     return () => window.clearTimeout(timer);
   }, [codecResults, codecTesting, runCodecTest]);
 

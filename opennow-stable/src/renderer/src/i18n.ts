@@ -25,6 +25,7 @@ const listeners = new Set<() => void>();
 let activeLocale = FALLBACK_LOCALE;
 let activeTranslations = fallbackTree;
 let snapshotVersion = 0;
+let localeLoadGeneration = 0;
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
@@ -187,14 +188,18 @@ export function getAvailableLocales(): string[] {
 
 export async function setLocale(locale: string): Promise<void> {
   const normalized = normalizeLocale(locale);
-  const translations = await loadTranslations(normalized);
+  const generation = ++localeLoadGeneration;
   writeStoredLocale(normalized);
+  const translations = await loadTranslations(normalized);
+  if (generation !== localeLoadGeneration) return;
   setActiveTranslations(normalized, translations);
 }
 
 export async function initializeLocale(): Promise<void> {
   const initialLocale = getInitialLocale();
+  const generation = ++localeLoadGeneration;
   const translations = await loadTranslations(initialLocale);
+  if (generation !== localeLoadGeneration) return;
   setActiveTranslations(initialLocale, translations);
 }
 

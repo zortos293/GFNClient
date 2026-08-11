@@ -9,16 +9,23 @@ import "./styles.css";
 
 // Initialize log capture for renderer process
 initLogCapture("renderer");
-void initializeLocale();
 
-if (import.meta.env.DEV) {
-  void import("react-scan").then(({ scan }) => scan());
-}
+const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const localeReady = initializeLocale().catch((error) => {
+  console.warn("[i18n] Failed to initialize locale; using English.", error);
+});
+const devToolsReady = import.meta.env.DEV
+  ? import("react-scan").then(({ scan }) => scan()).catch((error) => {
+      console.warn("[React Scan] Failed to initialize.", error);
+    })
+  : Promise.resolve();
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <MotionProvider>
-      <App />
-    </MotionProvider>
-  </React.StrictMode>,
-);
+void Promise.all([localeReady, devToolsReady]).then(() => {
+  root.render(
+    <React.StrictMode>
+      <MotionProvider>
+        <App />
+      </MotionProvider>
+    </React.StrictMode>,
+  );
+});

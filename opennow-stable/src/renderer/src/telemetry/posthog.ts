@@ -13,6 +13,7 @@ let initialized = false;
 let exceptionsEnabled = false;
 let activeDistinctId: string | null = null;
 let registeredVersionProperties: Record<string, string | undefined> | null = null;
+let activeConsent: ErrorReportingConsent = "unset";
 type PostHogClient = typeof import("posthog-js").default;
 let posthog: PostHogClient | null = null;
 
@@ -150,6 +151,7 @@ async function ensureInstallId(settings: Settings): Promise<string> {
  */
 export async function syncRendererTelemetry(settings: Settings): Promise<void> {
   const consent: ErrorReportingConsent = settings.errorReportingConsent;
+  activeConsent = consent;
   if (consent !== "granted") {
     if (posthog && initialized && exceptionsEnabled) {
       posthog.stopExceptionAutocapture();
@@ -160,6 +162,10 @@ export async function syncRendererTelemetry(settings: Settings): Promise<void> {
 
   const distinctId = await ensureInstallId(settings);
   await ensureClient(distinctId, true);
+  if (activeConsent !== "granted" && posthog && exceptionsEnabled) {
+    posthog.stopExceptionAutocapture();
+    exceptionsEnabled = false;
+  }
 }
 
 export function captureRendererException(

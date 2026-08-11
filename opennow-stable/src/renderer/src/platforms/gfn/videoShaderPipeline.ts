@@ -161,6 +161,7 @@ export class VideoShaderPipeline {
       this.resizeObserver = new ResizeObserver(() => this.syncCanvasSize());
       this.resizeObserver.observe(videoElement);
     }
+    window.addEventListener?.("resize", this.syncCanvasSize);
 
     this.applyActivation();
   }
@@ -184,6 +185,7 @@ export class VideoShaderPipeline {
     this.stopRenderLoop();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    window.removeEventListener?.("resize", this.syncCanvasSize);
     this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
     this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     if (this.gl) {
@@ -335,7 +337,7 @@ export class VideoShaderPipeline {
     this.applyActivation();
   };
 
-  private syncCanvasSize(): void {
+  private readonly syncCanvasSize = (): void => {
     if (!this.active) return;
     const rect = this.videoElement.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -345,7 +347,7 @@ export class VideoShaderPipeline {
       this.canvas.width = width;
       this.canvas.height = height;
     }
-  }
+  };
 
   private startRenderLoop(): void {
     this.stopRenderLoop();

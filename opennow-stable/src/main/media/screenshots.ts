@@ -71,26 +71,31 @@ export async function listScreenshots(): Promise<ScreenshotEntry[]> {
 
   const newest = metadata
     .filter((item): item is NonNullable<typeof item> => item !== null)
-    .sort((a, b) => b.createdAtMs - a.createdAtMs)
-    .slice(0, SCREENSHOT_LIMIT);
+    .sort((a, b) => b.createdAtMs - a.createdAtMs);
 
-  const loaded = await Promise.all(newest.map(async (item): Promise<ScreenshotEntry | null> => {
-    try {
-      const fileBuffer = await readFile(item.filePath);
-      return {
-        id: item.fileName,
-        fileName: item.fileName,
-        filePath: item.filePath,
-        createdAtMs: item.createdAtMs,
-        sizeBytes: item.sizeBytes,
-        dataUrl: buildScreenshotDataUrl(item.ext, fileBuffer),
-      };
-    } catch {
-      return null;
-    }
-  }));
+  const loaded: ScreenshotEntry[] = [];
+  for (let offset = 0; offset < newest.length && loaded.length < SCREENSHOT_LIMIT; offset += SCREENSHOT_LIMIT) {
+    const batch = await Promise.all(
+      newest.slice(offset, offset + SCREENSHOT_LIMIT).map(async (item): Promise<ScreenshotEntry | null> => {
+        try {
+          const fileBuffer = await readFile(item.filePath);
+          return {
+            id: item.fileName,
+            fileName: item.fileName,
+            filePath: item.filePath,
+            createdAtMs: item.createdAtMs,
+            sizeBytes: item.sizeBytes,
+            dataUrl: buildScreenshotDataUrl(item.ext, fileBuffer),
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    loaded.push(...batch.filter((item): item is ScreenshotEntry => item !== null));
+  }
 
-  return loaded.filter((item): item is ScreenshotEntry => item !== null);
+  return loaded.slice(0, SCREENSHOT_LIMIT);
 }
 
 export async function saveScreenshot(

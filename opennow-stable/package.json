@@ -110,6 +110,15 @@
       "dist-electron/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "../native/opennow-streamer/bin",
+        "to": "native/opennow-streamer",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "electronLanguages": [
       "de",
       "en-GB",
@@ -129,15 +138,6 @@
     ],
     "asar": true,
     "win": {
-      "extraResources": [
-        {
-          "from": "../native/opennow-streamer/bin",
-          "to": "native/opennow-streamer",
-          "filter": [
-            "**/*"
-          ]
-        }
-      ],
       "target": [
         "nsis",
         "portable"

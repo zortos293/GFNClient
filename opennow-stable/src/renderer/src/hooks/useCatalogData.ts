@@ -141,6 +141,18 @@ export function useCatalogData({
   const storePanelsLoadIdRef = useRef(0);
   const runtimeDataLoadIdRef = useRef(0);
   const gamesLoadIdRef = useRef({ main: 0, library: 0 });
+  const gamesLoadingIdRef = useRef({ main: 0, library: 0 });
+  const token = authSession?.tokens.idToken ?? authSession?.tokens.accessToken ?? "";
+  const userId = authSession?.user.userId ?? "";
+  const mainGamesContextKey = `${token}\0${userId}\0${effectiveStreamingBaseUrl}\0${buildProxyAwareCatalogQueryKey(
+    searchQuery,
+    catalogSelectedFilterIds,
+    catalogSelectedSortId,
+    activeSessionProxyUrl,
+  )}`;
+  const libraryGamesContextKey = `${token}\0${userId}\0${effectiveStreamingBaseUrl}\0${getSessionProxyUiScope(activeSessionProxyUrl)}`;
+  const gamesContextKeyRef = useRef({ main: mainGamesContextKey, library: libraryGamesContextKey });
+  gamesContextKeyRef.current = { main: mainGamesContextKey, library: libraryGamesContextKey };
   const lastCatalogQueryRef = useRef<string | null>(null);
   const lastCatalogProxyUrlRef = useRef<string | undefined>(undefined);
 
@@ -340,6 +352,8 @@ export function useCatalogData({
     runtimeDataLoadIdRef.current += 1;
     gamesLoadIdRef.current.main += 1;
     gamesLoadIdRef.current.library += 1;
+    gamesLoadingIdRef.current.main = 0;
+    gamesLoadingIdRef.current.library = 0;
     resetStorePanels();
     setGames([]);
     setLibraryGames([]);
@@ -383,10 +397,13 @@ export function useCatalogData({
     targetSource: "main" | "library",
     options?: { background?: boolean },
   ) => {
+    const contextKey = targetSource === "main" ? mainGamesContextKey : libraryGamesContextKey;
+    if (gamesContextKeyRef.current[targetSource] !== contextKey) return;
     const loadId = ++gamesLoadIdRef.current[targetSource];
     const isCurrentLoad = (): boolean => gamesLoadIdRef.current[targetSource] === loadId;
     const setLoading = targetSource === "main" ? setIsLoadingCatalog : setIsLoadingLibrary;
     if (!options?.background) {
+      gamesLoadingIdRef.current[targetSource] = loadId;
       setLoading(true);
     }
     try {
@@ -430,11 +447,12 @@ export function useCatalogData({
         console.error("Failed to load games:", error);
       }
     } finally {
-      if (isCurrentLoad() && !options?.background) {
+      if (gamesLoadingIdRef.current[targetSource] === loadId) {
+        gamesLoadingIdRef.current[targetSource] = 0;
         setLoading(false);
       }
     }
-  }, [activeSessionProxyUrl, applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames.length, searchQuery, catalogFilterKey, catalogSelectedSortId]);
+  }, [activeSessionProxyUrl, applyCatalogBrowseResult, applyVariantSelections, authSession, effectiveStreamingBaseUrl, featuredGames.length, searchQuery, catalogFilterKey, catalogSelectedSortId, libraryGamesContextKey, mainGamesContextKey]);
 
   const loadStorePanels = useCallback(async (options?: { force?: boolean; background?: boolean }) => {
     const session = authSession;

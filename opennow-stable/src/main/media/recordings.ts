@@ -49,6 +49,13 @@ export function extFromMimeType(mimeType: string): ".mp4" | ".webm" {
   return mimeType.startsWith("video/mp4") ? ".mp4" : ".webm";
 }
 
+function getRecordingCreatedAtMs(fileName: string, fallbackMs: number): number {
+  const match = /^(\d{4}-\d{2}-\d{2}T)(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-/.exec(fileName);
+  if (!match) return fallbackMs;
+  const parsed = Date.parse(`${match[1]}${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`);
+  return Number.isFinite(parsed) ? parsed : fallbackMs;
+}
+
 async function listRecordingMetadata(dir: string): Promise<RecordingMetadata[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const webmFiles = entries
@@ -75,7 +82,10 @@ async function listRecordingMetadata(dir: string): Promise<RecordingMetadata[]> 
           id: fileName,
           fileName,
           filePath,
-          createdAtMs: fileStats.birthtimeMs || fileStats.mtimeMs,
+          createdAtMs: getRecordingCreatedAtMs(
+            fileName,
+            fileStats.birthtimeMs || fileStats.mtimeMs,
+          ),
           sizeBytes: fileStats.size,
           durationMs,
           gameTitle,
@@ -185,12 +195,18 @@ export async function finishRecording(
   // Enforce recording limit: delete oldest entries beyond RECORDING_LIMIT
   const all = await listRecordingMetadata(dir);
   if (all.length > RECORDING_LIMIT) {
-    const toDelete = all.slice(RECORDING_LIMIT);
+    const toDelete = all
+      .filter((entry) => entry.filePath !== finalPath)
+      .slice(RECORDING_LIMIT - 1);
     await Promise.all(
       toDelete.map(async (entry) => {
-        await unlink(entry.filePath).catch(() => undefined);
-        const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
-        await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+        try {
+          await unlink(entry.filePath);
+          const stem = entry.fileName.replace(/\.(mp4|webm)$/i, "");
+          await unlink(join(dir, `${stem}-thumb.jpg`)).catch(() => undefined);
+        } catch {
+          return;
+        }
       }),
     );
   }

@@ -4357,6 +4357,10 @@ button.game-card-store-chip.owned.active:hover {
 .settings-row-control > .settings-toggle,
 .settings-row-control > .settings-toggle--control {
   align-self: flex-end;
+  flex: none;
+  width: 46px;
+  min-width: 46px;
+  height: 24px;
 }
 
 .settings-row-control > .settings-value-badge--control {

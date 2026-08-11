@@ -303,7 +303,7 @@ export function SettingsNativeStreamerSection({
                 ) : null}
               </div>
 
-              <div className="settings-row settings-row--column settings-native-capability-row">
+              <div className="settings-row settings-row--column settings-row--full settings-native-capability-row">
                 <div className="settings-native-capability-header">
                   <div>
                     <span className="settings-native-capability-kicker">{t("settings.nativeStreamer.thisPc")}</span>

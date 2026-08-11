@@ -3693,7 +3693,7 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(var(--accent-rgb), 0.03));
+  padding: 18px 20px;
 }
 
 .settings-thanks-hero-icon {
@@ -3768,10 +3768,12 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   gap: 12px;
   min-height: 72px;
-  padding: 12px;
-  border-radius: 10px;
-  border: 1px solid var(--panel-border);
-  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  padding: 12px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.settings-person-card:last-child {
+  border-bottom: none;
 }
 
 .settings-person-card--link {
@@ -3781,9 +3783,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-person-card--link:hover {
-  border-color: rgba(var(--accent-rgb), 0.24);
-  background: rgba(var(--accent-rgb), 0.06);
-  transform: translateY(-1px);
+  color: var(--accent);
 }
 
 .settings-person-avatar {
@@ -4224,11 +4224,11 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-section {
-  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  --settings-label-col: minmax(14rem, 15.5rem);
+  background: color-mix(in srgb, var(--ink) 1.5%, transparent);
   border: 1px solid var(--panel-border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0;
-  transition: border-color var(--t-normal);
   overflow: visible;
 }
 
@@ -4237,17 +4237,14 @@ button.game-card-store-chip.owned.active:hover {
   z-index: 2;
 }
 
-.settings-section:hover {
-  border-color: color-mix(in srgb, var(--ink) 9%, transparent);
-}
-
 .settings-section-header {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 0;
-  padding: 18px 18px 12px;
-  border-bottom: none;
+  min-height: 66px;
+  padding: 17px 20px 15px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   color: var(--accent);
 }
 
@@ -4257,8 +4254,8 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-section-header h2 {
-  font-size: 0.95rem;
-  font-weight: 600;
+  font-size: 0.98rem;
+  font-weight: 700;
   color: var(--ink);
   margin: 0;
   letter-spacing: -0.01em;
@@ -4272,7 +4269,8 @@ button.game-card-store-chip.owned.active:hover {
   min-width: 0;
 }
 
-.settings-section-description {
+.settings-section-description,
+.settings-section-header .settings-section-subtitle {
   max-width: 42rem;
   margin: 4px 0 0;
   color: var(--ink-muted);
@@ -4285,11 +4283,11 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 0 18px 16px;
+  padding: 0 20px 8px;
 }
 
 .settings-rows--grouped {
-  gap: 18px;
+  gap: 0;
 }
 
 .settings-group {
@@ -4297,18 +4295,19 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-group + .settings-group {
-  padding-top: 18px;
-  border-top: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
 }
 
 .settings-group-header {
   display: grid;
-  grid-template-columns: minmax(8rem, 13.5rem) minmax(0, 1fr);
-  gap: 16px;
-  padding: 0 0 8px;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+  column-gap: 20px;
+  row-gap: 3px;
+  padding: 16px 0 8px;
 }
 
 .settings-group-header h3 {
+  grid-column: 1;
   margin: 0;
   color: var(--ink);
   font-size: 0.78rem;
@@ -4317,6 +4316,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-group-header p {
+  grid-column: 1;
   margin: 0;
   color: var(--ink-muted);
   font-size: 0.72rem;
@@ -4332,14 +4332,14 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-row {
-  --settings-label-col: minmax(12.5rem, 13.5rem);
   display: grid;
   grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
   align-items: center;
-  column-gap: 16px;
+  column-gap: 20px;
   row-gap: 6px;
-  padding: 13px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--ink) 4%, transparent);
+  min-height: 58px;
+  padding: 14px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .settings-row:last-child {
@@ -4444,10 +4444,11 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-row--column {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+  align-items: start;
+  column-gap: 20px;
+  row-gap: 7px;
 }
 
 @media (max-width: 760px) {
@@ -4508,20 +4509,45 @@ button.game-card-store-chip.owned.active:hover {
   .settings-group-header {
     gap: 3px;
   }
+
+  .settings-row--column {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 12px;
+  }
 }
 
 .settings-row--column > .settings-label,
-.settings-row--column > .settings-chip-row,
-.settings-row--column > .select-dropdown,
-.settings-row--column > .settings-toggle,
-.settings-row--column > .settings-text-input,
-.settings-row--column > .settings-slider,
+.settings-row--column > .settings-row-top > .settings-label,
 .settings-row--column > .settings-subtle-hint,
-.settings-row--column > .settings-input-hint,
-.settings-row--column > .settings-row-control {
-  grid-column: auto;
-  justify-self: stretch;
-  width: 100%;
+.settings-row--column > .settings-input-hint {
+  grid-column: 1;
+}
+
+.settings-row--column > .settings-row-top {
+  display: contents;
+}
+
+.settings-row--column > .settings-row-top > :not(.settings-label),
+.settings-row--column > :not(.settings-row-top):not(.settings-label):not(.settings-subtle-hint):not(.settings-input-hint) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.settings-row--column > .settings-row-top > .settings-toggle {
+  align-self: center;
+  justify-self: end;
+}
+
+.settings-row--column > .settings-row-top > .settings-value-badge,
+.settings-row--column > .settings-row-top > .settings-shortcut-actions,
+.settings-row--column > .settings-row-top > .settings-icon-button {
+  justify-self: end;
+}
+
+.settings-row--full {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .settings-row-top {
@@ -4535,6 +4561,14 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-row-top--compact {
   margin-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .settings-row--column > .settings-subtle-hint,
+  .settings-row--column > .settings-input-hint,
+  .settings-row--column > :not(.settings-row-top):not(.settings-label) {
+    grid-column: 1 / -1;
+  }
 }
 
 .settings-shortcut-actions {
@@ -4592,6 +4626,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-row--region {
+  display: block;
   border-bottom: none;
   padding-bottom: 4px;
 }
@@ -4712,11 +4747,8 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-storage-card {
-  margin: 0 18px 18px;
-  padding: 18px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
-  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  margin: 0 20px 8px;
+  padding: 16px 0 12px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -4811,10 +4843,12 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-storage-location-control {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
   align-items: end;
-  gap: 14px;
-  padding-top: 2px;
+  gap: 20px;
+  padding: 14px 0;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .settings-storage-location-copy {
@@ -4867,10 +4901,10 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-storage-footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 20px;
 }
 
 .settings-storage-meta {
@@ -4952,11 +4986,8 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-game-accounts-card {
-  margin: 0 18px 18px;
-  padding: 14px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
-  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  margin: 0 20px 8px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -4965,7 +4996,7 @@ button.game-card-store-chip.owned.active:hover {
 .settings-game-account-grid {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
 }
 
 .settings-game-account-card {
@@ -4974,11 +5005,13 @@ button.game-card-store-chip.owned.active:hover {
   justify-content: space-between;
   gap: 14px;
   width: 100%;
-  min-height: 96px;
-  padding: 16px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--ink) 5.5%, transparent);
-  background: rgba(0, 0, 0, 0.12);
+  min-height: 88px;
+  padding: 15px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.settings-game-account-card:last-child {
+  border-bottom: none;
 }
 
 .settings-game-account-main {
@@ -5540,43 +5573,28 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-native-capability-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   width: 100%;
   min-width: 0;
 }
 
 .settings-native-capability-card {
-  position: relative;
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 9px;
-  padding: 12px 12px 14px;
-  overflow: hidden;
-  border: 1px solid var(--panel-border);
-  border-radius: 9px;
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--ink) 3%, transparent), transparent 55%),
-    var(--bg-e);
+  padding: 13px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
   box-sizing: border-box;
 }
 
-.settings-native-capability-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 2px;
-  background: var(--panel-border-solid);
-}
-
-.settings-native-capability-card.is-supported::before {
-  background: var(--accent);
+.settings-native-capability-card:last-child {
+  border-bottom: none;
 }
 
 .settings-native-capability-card.is-active {
-  border-color: rgba(var(--accent-rgb), 0.3);
-  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.05);
+  color: var(--ink);
 }
 
 .settings-native-capability-card.is-unsupported {

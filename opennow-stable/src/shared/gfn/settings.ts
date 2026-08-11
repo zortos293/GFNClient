@@ -118,6 +118,8 @@ export interface Settings {
   translucentUI: boolean;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
+  /** Permanently suppress the controller-detected suggestion after the user declines it */
+  controllerModePromptDismissed: boolean;
   /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
   launchInConsoleMode: boolean;
   /** Show the "Who's playing?" profile picker when console mode starts */
@@ -307,6 +309,7 @@ export function createDefaultSettings(platform: string): Settings {
     appTheme: "auto",
     translucentUI: false,
     controllerMode: false,
+    controllerModePromptDismissed: false,
     launchInConsoleMode: false,
     consoleProfilePickerOnLaunch: true,
     autoFullScreen: false,

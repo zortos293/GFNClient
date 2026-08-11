@@ -60,6 +60,10 @@ test("uses brief recurring Anti-AFK reminder defaults", () => {
   assert.equal(settings.antiAfkReminderDurationSeconds, 5);
 });
 
+test("offers the controller mode prompt until the user dismisses it", () => {
+  assert.equal(createDefaultSettings("win32").controllerModePromptDismissed, false);
+});
+
 test("creates fresh platform shortcut collections", () => {
   const first = createPlatformShortcutDefaults("linux");
   const second = createPlatformShortcutDefaults("linux");

@@ -192,6 +192,13 @@
     }
   },
   "console": {
+    "controllerPrompt": {
+      "kicker": "Controller detected",
+      "title": "Switch to Controller Mode?",
+      "description": "Use the console-style layout built for a gamepad. You can switch back anytime in Settings.",
+      "accept": "Switch mode",
+      "decline": "No, don't ask again"
+    },
     "splash": {
       "title": "OpenNOW",
       "subtitle": "Console mode"

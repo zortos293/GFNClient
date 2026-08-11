@@ -9934,6 +9934,149 @@ button.game-card-store-chip.owned.active:hover {
   border-color: var(--ink-muted);
 }
 
+.controller-mode-prompt-card {
+  width: min(500px, calc(100vw - 32px));
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 42%),
+    var(--panel);
+}
+
+.controller-mode-prompt-content {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 18px;
+  padding: 26px 26px 22px;
+}
+
+.controller-mode-prompt-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 18px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+}
+
+.controller-mode-prompt-status {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 75%, transparent);
+}
+
+.controller-mode-prompt-kicker {
+  margin: 2px 0 6px;
+  color: var(--accent);
+  font-size: 0.69rem;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.controller-mode-prompt-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.35rem;
+  font-weight: 780;
+  line-height: 1.18;
+}
+
+.controller-mode-prompt-description {
+  margin: 10px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.91rem;
+  line-height: 1.55;
+}
+
+.controller-mode-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+}
+
+.controller-mode-prompt-decline,
+.controller-mode-prompt-accept {
+  min-height: 40px;
+  border-radius: 10px;
+  padding: 0 16px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 680;
+  cursor: pointer;
+  transition: transform var(--t-fast), border-color var(--t-fast), background var(--t-fast), opacity var(--t-fast);
+}
+
+.controller-mode-prompt-decline {
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  background: transparent;
+}
+
+.controller-mode-prompt-decline:hover {
+  border-color: var(--ink-muted);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.controller-mode-prompt-accept {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 72%, white 10%);
+  color: #fff;
+  background: var(--accent);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.controller-mode-prompt-accept:hover {
+  opacity: 0.88;
+  transform: translateY(-1px);
+}
+
+.controller-mode-prompt-decline:active,
+.controller-mode-prompt-accept:active {
+  transform: translateY(0);
+}
+
+@media (max-width: 520px) {
+  .controller-mode-prompt-content {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 22px 20px 18px;
+  }
+
+  .controller-mode-prompt-icon {
+    width: 54px;
+    height: 54px;
+    border-radius: 16px;
+  }
+
+  .controller-mode-prompt-actions {
+    flex-direction: column-reverse;
+  }
+
+  .controller-mode-prompt-decline,
+  .controller-mode-prompt-accept {
+    justify-content: center;
+    width: 100%;
+  }
+}
+
 /* Fallback copy */
 .rh-fallback-text {
   color: var(--ink-muted);

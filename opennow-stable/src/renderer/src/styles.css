@@ -9935,78 +9935,98 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .controller-mode-prompt-card {
-  width: min(500px, calc(100vw - 32px));
+  isolation: isolate;
+  width: min(480px, calc(100vw - 32px));
   overflow: hidden;
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 20px;
   background:
-    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 42%),
-    var(--panel);
+    radial-gradient(circle at 12% 10%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 36%),
+    linear-gradient(145deg, color-mix(in srgb, var(--panel) 96%, var(--accent)), var(--panel) 58%);
+  box-shadow:
+    0 32px 80px rgba(0, 0, 0, 0.62),
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+
+.controller-mode-prompt-card::before {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 70px;
+  width: 190px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 55%, transparent);
+  content: "";
 }
 
 .controller-mode-prompt-content {
   display: grid;
   grid-template-columns: auto 1fr;
-  align-items: start;
-  gap: 18px;
-  padding: 26px 26px 22px;
+  align-items: center;
+  gap: 20px;
+  padding: 28px 28px 20px;
 }
 
 .controller-mode-prompt-icon {
   position: relative;
   display: grid;
   place-items: center;
-  width: 62px;
-  height: 62px;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
-  border-radius: 18px;
+  width: 64px;
+  height: 64px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 19px;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 15%, var(--panel)), color-mix(in srgb, var(--accent) 6%, var(--panel)));
+  box-shadow:
+    0 12px 28px color-mix(in srgb, var(--accent) 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
 }
 
 .controller-mode-prompt-status {
-  position: absolute;
-  right: 7px;
-  bottom: 7px;
-  width: 8px;
-  height: 8px;
-  border: 2px solid var(--panel);
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 75%, transparent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 80%, transparent);
 }
 
 .controller-mode-prompt-kicker {
-  margin: 2px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 7px;
   color: var(--accent);
-  font-size: 0.69rem;
-  font-weight: 750;
-  letter-spacing: 0.11em;
+  font-size: 0.67rem;
+  font-weight: 760;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .controller-mode-prompt-title {
   margin: 0;
   color: var(--ink);
-  font-size: 1.35rem;
+  font-size: 1.42rem;
   font-weight: 780;
-  line-height: 1.18;
+  letter-spacing: -0.025em;
+  line-height: 1.16;
 }
 
 .controller-mode-prompt-description {
-  margin: 10px 0 0;
+  max-width: 330px;
+  margin: 9px 0 0;
   color: var(--ink-soft);
-  font-size: 0.91rem;
-  line-height: 1.55;
+  font-size: 0.88rem;
+  line-height: 1.5;
 }
 
 .controller-mode-prompt-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 14px 18px;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
+  gap: 9px;
+  padding: 0 20px 20px;
 }
 
 .controller-mode-prompt-decline,
@@ -10014,39 +10034,68 @@ button.game-card-store-chip.owned.active:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 40px;
-  border-radius: 10px;
-  padding: 0 16px;
+  gap: 9px;
+  min-width: 0;
+  min-height: 48px;
+  border-radius: 12px;
+  padding: 0 14px;
   font-family: inherit;
-  font-size: 0.82rem;
-  font-weight: 680;
+  font-size: 0.8rem;
+  font-weight: 700;
   cursor: pointer;
-  transition: transform var(--t-fast), border-color var(--t-fast), background var(--t-fast), opacity var(--t-fast);
+  transition: transform var(--t-fast), border-color var(--t-fast), background var(--t-fast), box-shadow var(--t-fast);
+}
+
+.controller-mode-prompt-actions .console-hint-glyph {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  font-size: 0.67rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .controller-mode-prompt-decline {
   border: 1px solid var(--border);
   color: var(--ink-soft);
-  background: transparent;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
 }
 
 .controller-mode-prompt-decline:hover {
-  border-color: var(--ink-muted);
+  border-color: color-mix(in srgb, var(--ink-soft) 45%, var(--border));
   color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  transform: translateY(-1px);
 }
 
 .controller-mode-prompt-accept {
-  border: 1px solid color-mix(in srgb, var(--accent) 72%, white 10%);
-  color: #fff;
-  background: var(--accent);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 24%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 82%, white 8%);
+  color: var(--accent-on);
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .controller-mode-prompt-accept:hover {
-  opacity: 0.88;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-hover) 86%, white), var(--accent-hover));
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--accent) 28%, transparent);
   transform: translateY(-1px);
+}
+
+.controller-mode-prompt-decline:focus-visible,
+.controller-mode-prompt-accept:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.controller-mode-prompt-accept .console-hint-glyph--a {
+  border: 1px solid color-mix(in srgb, var(--accent-on) 16%, transparent);
+  background: color-mix(in srgb, white 20%, transparent);
+  color: var(--accent-on);
+  box-shadow: none;
+}
+
+.controller-mode-prompt-accept svg {
+  margin-left: auto;
 }
 
 .controller-mode-prompt-decline:active,
@@ -10056,25 +10105,49 @@ button.game-card-store-chip.owned.active:hover {
 
 @media (max-width: 520px) {
   .controller-mode-prompt-content {
-    grid-template-columns: 1fr;
-    gap: 14px;
-    padding: 22px 20px 18px;
+    gap: 16px;
+    padding: 24px 22px 18px;
   }
 
   .controller-mode-prompt-icon {
-    width: 54px;
-    height: 54px;
+    width: 56px;
+    height: 56px;
     border-radius: 16px;
   }
 
   .controller-mode-prompt-actions {
-    flex-direction: column-reverse;
+    padding: 0 16px 16px;
+  }
+}
+
+@media (max-width: 410px) {
+  .controller-mode-prompt-card {
+    border-radius: 16px;
   }
 
-  .controller-mode-prompt-decline,
-  .controller-mode-prompt-accept {
-    justify-content: center;
-    width: 100%;
+  .controller-mode-prompt-content {
+    grid-template-columns: 46px 1fr;
+    gap: 13px;
+    padding: 22px 18px 18px;
+  }
+
+  .controller-mode-prompt-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+  }
+
+  .controller-mode-prompt-icon svg {
+    width: 25px;
+    height: 25px;
+  }
+
+  .controller-mode-prompt-title {
+    font-size: 1.2rem;
+  }
+
+  .controller-mode-prompt-actions {
+    grid-template-columns: 1fr;
   }
 }
 

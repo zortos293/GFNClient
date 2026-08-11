@@ -50,10 +50,12 @@ export function ControllerModePromptModal({
       <div className="controller-mode-prompt-content">
         <div className="controller-mode-prompt-icon" aria-hidden="true">
           <Gamepad2 size={32} strokeWidth={1.8} />
-          <span className="controller-mode-prompt-status" />
         </div>
-        <div>
-          <div className="controller-mode-prompt-kicker">{t("console.controllerPrompt.kicker")}</div>
+        <div className="controller-mode-prompt-copy">
+          <div className="controller-mode-prompt-kicker">
+            <span className="controller-mode-prompt-status" aria-hidden="true" />
+            {t("console.controllerPrompt.kicker")}
+          </div>
           <h2 id="controller-mode-prompt-title" className="controller-mode-prompt-title">
             {t("console.controllerPrompt.title")}
           </h2>

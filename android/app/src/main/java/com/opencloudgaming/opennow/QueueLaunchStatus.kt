@@ -29,3 +29,33 @@ internal fun shouldShowQueueLaunchStatus(state: OpenNowUiState): Boolean {
     val sessionStatus = state.streamSession?.status
     return sessionStatus == null || sessionStatus !in setOf(2, 3)
 }
+
+internal fun isActivelyQueued(state: OpenNowUiState): Boolean =
+    queueDisplayPosition(state) != null ||
+        (state.streamStatus == "queue" && state.launchPhase.equals("Queue", ignoreCase = true))
+
+internal class QueueReadyNotificationTracker {
+    private var queuedSessionId: String? = null
+
+    fun update(state: OpenNowUiState): Boolean {
+        if (isActivelyQueued(state)) {
+            state.streamSession?.sessionId?.let { queuedSessionId = it }
+            return false
+        }
+
+        if (state.streamStatus == "idle") {
+            reset()
+            return false
+        }
+        if (state.streamStatus != "connecting") return false
+
+        val currentSessionId = state.streamSession?.sessionId
+        val completedObservedQueue = currentSessionId != null && currentSessionId == queuedSessionId
+        reset()
+        return completedObservedQueue
+    }
+
+    private fun reset() {
+        queuedSessionId = null
+    }
+}

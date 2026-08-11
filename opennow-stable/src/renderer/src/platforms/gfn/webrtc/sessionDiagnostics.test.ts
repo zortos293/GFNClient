@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   deriveStreamSessionDiagnostics,
+  formatServerLocation,
   getStreamServerLocationLabel,
+  mapServerGpuType,
 } from "./sessionDiagnostics";
 
 const baseSession = {
@@ -73,6 +75,39 @@ test("prefers parsed location metadata over a raw CloudMatch zone URL", () => {
       serverRegion: "https://np-ams-06.cloudmatchbeta.nvidiagrid.net/",
       serverZone: "https://prod.cloudmatchbeta.nvidiagrid.net/",
     }),
-    "np-ams-06.cloudmatchbeta.nvidiagrid.net",
+    "Netherlands (NP-AMS-06)",
+  );
+});
+
+test("formats partner hostnames and zone ids like the official client", () => {
+  assert.equal(
+    formatServerLocation("prod", "npa-yes-kul-01.yes.geforcenow.nvidiagrid.net"),
+    "Malaysia (NP-KUL-01)",
+  );
+  assert.equal(formatServerLocation("NP-TYO-01", ""), "Japan (NP-TYO-01)");
+  assert.equal(
+    formatServerLocation("prod", "183-78-14-236.yes.geforcenow.nvidiagrid.net"),
+    "--",
+  );
+});
+
+test("maps CloudMatch GPU codes and preserves unknown names", () => {
+  assert.equal(mapServerGpuType("2080d / T10"), "GeForce RTX");
+  assert.equal(mapServerGpuType("3080p / A10Gx2"), "GeForce RTX 3080");
+  assert.equal(mapServerGpuType("4080h / L40S"), "GeForce RTX 4080");
+  assert.equal(mapServerGpuType("5080h / B40"), "GeForce RTX 5080");
+  assert.equal(mapServerGpuType("1060b / T10-8"), "Basic Rig");
+  assert.equal(mapServerGpuType("Custom Rig"), "Custom Rig");
+  assert.equal(mapServerGpuType("   "), "");
+});
+
+test("derives a friendly server GPU name from session metadata", () => {
+  assert.equal(
+    deriveStreamSessionDiagnostics({
+      ...baseSession,
+      serverLocation: "np-tyo-01.cloudmatchbeta.nvidiagrid.net",
+      gpuType: "4080h / L40S",
+    }).serverGpuType,
+    "GeForce RTX 4080",
   );
 });

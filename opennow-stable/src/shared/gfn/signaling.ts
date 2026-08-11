@@ -184,4 +184,6 @@ export interface NativeStreamStats {
   lastTransitionSummary?: string;
   requestedStreamingFeaturesSummary?: string;
   finalizedStreamingFeaturesSummary?: string;
+  serverGpuType?: string;
+  serverLocation?: string;
 }

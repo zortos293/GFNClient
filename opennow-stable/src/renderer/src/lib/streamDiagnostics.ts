@@ -1,5 +1,9 @@
 import type { NativeStreamStats } from "@shared/gfn";
 
+import {
+  mapServerGpuType,
+  normalizeServerRegion,
+} from "../platforms/gfn/webrtc/sessionDiagnostics";
 import type { StreamDiagnostics } from "../platforms/gfn/webrtcClient";
 
 export function defaultDiagnostics(): StreamDiagnostics {
@@ -131,5 +135,12 @@ export function mergeNativeStreamStats(
     nativeTransitionSummary: stats.lastTransitionSummary,
     nativeRequestedStreamingFeaturesSummary: stats.requestedStreamingFeaturesSummary,
     nativeFinalizedStreamingFeaturesSummary: stats.finalizedStreamingFeaturesSummary,
+    serverGpuType: stats.serverGpuType
+      ? mapServerGpuType(stats.serverGpuType)
+      : current.serverGpuType,
+    serverLocation: stats.serverLocation?.trim() || current.serverLocation,
+    serverRegion: stats.serverLocation
+      ? normalizeServerRegion(stats.serverLocation)
+      : current.serverRegion,
   };
 }

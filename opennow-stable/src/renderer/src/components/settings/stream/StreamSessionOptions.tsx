@@ -74,33 +74,6 @@ export function StreamSessionOptions({
         </span>
       </div>
 
-      <div className="settings-row settings-row--column">
-        <div className="settings-row-top settings-row-top--compact">
-          <label
-            className="settings-label settings-label--wrap"
-            htmlFor="settings-stream-launch-console-mode"
-          >
-            <span className="settings-label-title">
-              {t("settings.video.launchInConsoleMode")}
-            </span>
-          </label>
-          <label className="settings-toggle">
-            <input
-              id="settings-stream-launch-console-mode"
-              type="checkbox"
-              checked={settings.launchInConsoleMode}
-              onChange={(event) => {
-                handleChange("launchInConsoleMode", event.target.checked);
-              }}
-            />
-            <span className="settings-toggle-track" />
-          </label>
-        </div>
-        <span className="settings-subtle-hint">
-          {t("settings.video.launchInConsoleModeHint")}
-        </span>
-      </div>
     </>
   );
 }
-

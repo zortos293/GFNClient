@@ -3596,9 +3596,8 @@ button.game-card-store-chip.owned.active:hover {
 .settings-modal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
-  padding: 18px 22px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--panel-border);
   flex-shrink: 0;
 }
@@ -3609,12 +3608,14 @@ button.game-card-store-chip.owned.active:hover {
   margin: 0;
   color: var(--ink);
   letter-spacing: -0.01em;
+  flex: 0 0 auto;
 }
 
 .settings-modal-header-actions {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 0 0 auto;
 }
 
 .settings-modal-close {
@@ -3675,7 +3676,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-thanks-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: start;
   min-width: 0;
@@ -3911,29 +3912,26 @@ button.game-card-store-chip.owned.active:hover {
   gap: 14px;
 }
 
-/* ── Settings two-panel layout ───────────────────────── */
+/* ── Settings studio layout ──────────────────────────── */
 .settings-layout {
   display: flex;
+  flex-direction: column;
   gap: 0;
   min-height: 0;
   flex: 1;
   overflow: hidden;
 }
 
-.settings-sidebar {
-  width: 220px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  background: var(--panel);
-  border-right: 1px solid var(--panel-border);
-  padding: 14px 12px;
-  overflow-y: auto;
+.settings-category-nav {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  border-bottom: 1px solid var(--panel-border);
+  background: color-mix(in srgb, var(--ink) 1.5%, transparent);
 }
 
-[data-translucent="true"] .settings-sidebar {
-  background: color-mix(in srgb, var(--ink) 1.5%, transparent);
+[data-translucent="true"] .settings-category-nav {
+  background: color-mix(in srgb, var(--bg-b) 24%, transparent);
 }
 
 .settings-search-wrap {
@@ -3941,18 +3939,26 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   gap: 8px;
   padding: 0 11px;
-  min-height: 36px;
+  min-height: 34px;
+  width: min(360px, 100%);
+  margin-left: auto;
   background: color-mix(in srgb, var(--ink) 4%, transparent);
   border: 1px solid var(--panel-border);
   border-radius: 6px;
-  margin-bottom: 12px;
-  flex-shrink: 0;
+  flex: 1 1 260px;
+  transition: border-color var(--t-fast), background var(--t-fast), box-shadow var(--t-fast);
+}
+
+.settings-search-wrap:focus-within {
+  border-color: rgba(var(--accent-rgb), 0.48);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.1);
 }
 
 .settings-search-icon {
   display: block;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   color: var(--ink-muted);
   flex-shrink: 0;
   align-self: center;
@@ -3971,6 +3977,11 @@ button.game-card-store-chip.owned.active:hover {
   padding: 0;
   margin: 0;
   align-self: center;
+  appearance: none;
+}
+
+.settings-search-input::-webkit-search-cancel-button {
+  display: none;
 }
 
 .settings-search-input::placeholder {
@@ -3986,9 +3997,16 @@ button.game-card-store-chip.owned.active:hover {
   border: none;
   color: var(--ink-muted);
   cursor: pointer;
-  padding: 2px;
+  width: 22px;
+  height: 22px;
+  padding: 5px;
   border-radius: 4px;
   transition: color var(--t-fast), background var(--t-fast);
+}
+
+.settings-search-clear svg {
+  width: 12px;
+  height: 12px;
 }
 
 .settings-search-clear:hover {
@@ -3998,76 +4016,80 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-nav {
   display: flex;
-  flex-direction: column;
-  gap: 14px;
+  align-items: stretch;
+  gap: 5px;
+  padding: 8px 18px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 20%, transparent) transparent;
 }
 
-.settings-nav-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.settings-nav::-webkit-scrollbar {
+  height: 4px;
 }
 
-.settings-nav-group-label {
-  padding: 0 10px 6px;
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
+.settings-nav::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 18%, transparent);
 }
 
 .settings-nav-item {
   position: relative;
   display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding: 0 12px 0 14px;
-  min-height: 38px;
+  justify-content: center;
+  gap: 4px;
+  min-width: 70px;
+  min-height: 55px;
+  padding: 7px 10px 6px;
   border-radius: 6px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--ink-soft);
-  font-size: 0.86rem;
+  font-size: 0.72rem;
   line-height: 1.2;
-  font-weight: 500;
+  font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  text-align: left;
-  transition: background var(--t-fast), color var(--t-fast);
+  text-align: center;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
   white-space: nowrap;
 }
 
 .settings-nav-item svg {
   display: block;
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   color: var(--ink-muted);
   transition: color var(--t-fast);
 }
 
 .settings-nav-item-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.1;
 }
 
 .settings-nav-badge {
-  flex: none;
-  padding: 2px 4px;
-  border: 1px solid color-mix(in srgb, var(--warning, #fbbf24) 32%, transparent);
-  border-radius: 4px;
-  color: color-mix(in srgb, var(--warning, #fbbf24) 78%, var(--ink));
-  font-size: 0.52rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  color: color-mix(in srgb, var(--warning, #fbbf24) 82%, var(--ink));
+  font-size: 0.42rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   line-height: 1;
   text-transform: uppercase;
 }
 
+.settings-nav-item:has(.settings-nav-badge) {
+  min-width: 102px;
+}
+
 .settings-nav-item:hover {
+  border-color: color-mix(in srgb, var(--ink) 7%, transparent);
   background: color-mix(in srgb, var(--ink) 4%, transparent);
   color: var(--ink);
 }
@@ -4076,22 +4098,26 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--ink-soft);
 }
 
-.settings-nav-item.active {
-  background: rgba(var(--accent-rgb), 0.1);
-  color: var(--ink);
-  font-weight: 600;
+.settings-nav-item:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.72);
+  outline-offset: -2px;
 }
 
-.settings-nav-item.active::before {
+.settings-nav-item.active {
+  border-color: rgba(var(--accent-rgb), 0.22);
+  background: rgba(var(--accent-rgb), 0.09);
+  color: var(--ink);
+}
+
+.settings-nav-item.active::after {
   content: "";
   position: absolute;
-  left: 0;
-  top: 50%;
-  width: 2px;
-  height: 16px;
-  border-radius: 999px;
+  right: 12px;
+  bottom: -9px;
+  left: 12px;
+  height: 2px;
+  border-radius: 999px 999px 0 0;
   background: var(--accent);
-  transform: translateY(-50%);
 }
 
 .settings-nav-item.active svg {
@@ -4107,10 +4133,31 @@ button.game-card-store-chip.owned.active:hover {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--ink) 28%, transparent) transparent;
-  padding: 20px 22px 28px;
+  padding: 22px 28px 30px;
+}
+
+.settings-sheet {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  width: min(100%, 740px);
+  margin: 0 auto;
+}
+
+.settings-category-header {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 2px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.settings-category-header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.24rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
 }
 
 .settings-content::-webkit-scrollbar {
@@ -4410,13 +4457,35 @@ button.game-card-store-chip.owned.active:hover {
     max-height: calc(100vh - 32px);
   }
 
-  .settings-sidebar {
-    width: 184px;
-    padding-inline: 8px;
+  .settings-modal-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 12px;
+    padding: 12px 14px;
+  }
+
+  .settings-modal-header-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .settings-modal-header .settings-search-wrap {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    margin: 0;
+  }
+
+  .settings-nav {
+    padding-inline: 12px;
   }
 
   .settings-content {
     padding: 16px 14px 22px;
+  }
+
+  .settings-category-header h2 {
+    font-size: 1.12rem;
   }
 
   .settings-row:not(.settings-row--column),

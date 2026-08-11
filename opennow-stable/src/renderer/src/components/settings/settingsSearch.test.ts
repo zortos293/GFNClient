@@ -45,6 +45,13 @@ test("routes legacy session timing aliases from interface to diagnostics", () =>
   }
 });
 
+test("routes console navigation and session launch searches to the console scope", () => {
+  for (const query of ["profile picker", "controller mode", "ask who's playing", "fullscreen launch", "gamepad friendly session"]) {
+    assert.equal(settingsScopeMatchesSearch("console", query), true);
+    assert.equal(settingsScopeMatchesSearch("interface", query), false);
+  }
+});
+
 test("matches search tokens by word prefix", () => {
   assert.equal(
     settingsScopeMatchesSearch("stream-diagnostics", "diag over"),

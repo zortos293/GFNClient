@@ -5,6 +5,7 @@ import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent 
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
 import { SettingRange } from "../SettingRange";
+import { SettingRow, SettingToggleRow } from "../SettingRow";
 import {
   getShortcutConflictMessage,
   isMac,
@@ -305,89 +306,39 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
   return (
     <section className="settings-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.input")}</div>}
-      <div className="settings-section-header">
-        <h2>{t("settings.input.title")}</h2>
+      <div className="settings-section-header settings-section-header--with-copy">
+        <div>
+          <h2>{t("settings.input.title")}</h2>
+          <p className="settings-section-description">{t("settings.input.description")}</p>
+        </div>
       </div>
       <div className="settings-rows">
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label" htmlFor="settings-input-clipboard-paste">{t("settings.input.clipboardPaste")}</label>
-            <label className="settings-toggle">
-              <input
-                id="settings-input-clipboard-paste"
-                type="checkbox"
-                checked={settings.clipboardPaste}
-                onChange={(e) => handleChange("clipboardPaste", e.target.checked)}
-              />
-              <span className="settings-toggle-track" />
-            </label>
-          </div>
-        </div>
-
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap" htmlFor="settings-input-gyroscope-controls">
-              <span className="settings-label-title">
-                {t("settings.input.gyroscopeControls")}
-                <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
-              </span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                id="settings-input-gyroscope-controls"
-                type="checkbox"
-                checked={settings.enableGyroscopeControls}
-                onChange={(e) => handleChange("enableGyroscopeControls", e.target.checked)}
-              />
-              <span className="settings-toggle-track" />
-            </label>
-          </div>
-          <span className="settings-subtle-hint">{t("settings.input.gyroscopeControlsHint")}</span>
-        </div>
+        <SettingToggleRow htmlFor="settings-input-clipboard-paste" label={t("settings.input.clipboardPaste")} checked={settings.clipboardPaste} onChange={(checked) => handleChange("clipboardPaste", checked)} />
+        <SettingToggleRow
+          htmlFor="settings-input-gyroscope-controls"
+          label={<>{t("settings.input.gyroscopeControls")}<span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span></>}
+          description={t("settings.input.gyroscopeControlsHint")}
+          checked={settings.enableGyroscopeControls}
+          onChange={(checked) => handleChange("enableGyroscopeControls", checked)}
+        />
 
         {isMac && (
-          <div className="settings-row settings-row--column">
-            <div className="settings-row-top settings-row-top--compact">
-              <label className="settings-label settings-label--wrap" htmlFor="settings-input-steam-controller-compatibility">
-                <span className="settings-label-title">
-                  {t("settings.input.steamControllerCompatibilityMode")}
-                  <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
-                </span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  id="settings-input-steam-controller-compatibility"
-                  type="checkbox"
-                  checked={settings.steamControllerCompatibilityMode}
-                  onChange={(e) => handleChange("steamControllerCompatibilityMode", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-            <span className="settings-subtle-hint">{t("settings.input.steamControllerCompatibilityModeHint")}</span>
-          </div>
+          <SettingToggleRow
+            htmlFor="settings-input-steam-controller-compatibility"
+            label={<>{t("settings.input.steamControllerCompatibilityMode")}<span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span></>}
+            description={t("settings.input.steamControllerCompatibilityModeHint")}
+            checked={settings.steamControllerCompatibilityMode}
+            onChange={(checked) => handleChange("steamControllerCompatibilityMode", checked)}
+          />
         )}
 
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap" htmlFor="settings-input-native-cursor-overlay">
-              <span className="settings-label-title">
-                {t("settings.input.nativeCursorOverlay")}
-                <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span>
-              </span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                id="settings-input-native-cursor-overlay"
-                type="checkbox"
-                checked={settings.nativeCursorOverlay}
-                onChange={(e) => handleChange("nativeCursorOverlay", e.target.checked)}
-              />
-              <span className="settings-toggle-track" />
-            </label>
-          </div>
-          <span className="settings-subtle-hint">{t("settings.input.nativeCursorOverlayHint")}</span>
-        </div>
+        <SettingToggleRow
+          htmlFor="settings-input-native-cursor-overlay"
+          label={<>{t("settings.input.nativeCursorOverlay")}<span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span></>}
+          description={t("settings.input.nativeCursorOverlayHint")}
+          checked={settings.nativeCursorOverlay}
+          onChange={(checked) => handleChange("nativeCursorOverlay", checked)}
+        />
 
         <div className="settings-row">
           <label className="settings-label settings-label--wrap" htmlFor="settings-input-keyboard-layout">
@@ -406,11 +357,8 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
         </div>
 
         {/* Mouse Sensitivity */}
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top">
-            <label id="settings-input-mouse-sensitivity-label" className="settings-label" htmlFor="settings-input-mouse-sensitivity-slider">{t("settings.input.mouseSensitivity")}</label>
-            <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(2)}x</span>
-          </div>
+        <SettingRow htmlFor="settings-input-mouse-sensitivity-slider" label={t("settings.input.mouseSensitivity")} description={t("settings.input.mouseSensitivityHint")}>
+          <span className="settings-value-badge settings-value-badge--control">{settings.mouseSensitivity.toFixed(2)}x</span>
           <div className="settings-slider-control">
             <SettingRange
               id="settings-input-mouse-sensitivity-slider"
@@ -429,7 +377,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
               id="settings-input-mouse-sensitivity-number"
               type="number"
               className="settings-text-input settings-number-input"
-              aria-labelledby="settings-input-mouse-sensitivity-label"
+              aria-label={t("settings.input.mouseSensitivity")}
               min={0.1}
               max={4}
               step={0.01}
@@ -445,14 +393,10 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
               }}
             />
           </div>
-          <span className="settings-subtle-hint">{t("settings.input.mouseSensitivityHint")}</span>
-        </div>
+        </SettingRow>
 
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top">
-            <label id="settings-input-mouse-acceleration-label" className="settings-label" htmlFor="settings-input-mouse-acceleration-slider">{t("settings.input.mouseAccelerator")}</label>
-            <span className="settings-value-badge">{Math.round(settings.mouseAcceleration)}%</span>
-          </div>
+        <SettingRow htmlFor="settings-input-mouse-acceleration-slider" label={t("settings.input.mouseAccelerator")} description={t("settings.input.mouseAcceleratorHint")}>
+          <span className="settings-value-badge settings-value-badge--control">{Math.round(settings.mouseAcceleration)}%</span>
           <div className="settings-slider-control">
             <SettingRange
               id="settings-input-mouse-acceleration-slider"
@@ -472,7 +416,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
               id="settings-input-mouse-acceleration-number"
               type="number"
               className="settings-text-input settings-number-input"
-              aria-labelledby="settings-input-mouse-acceleration-label"
+              aria-label={t("settings.input.mouseAccelerator")}
               min={1}
               max={150}
               step={1}
@@ -488,8 +432,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
               }}
             />
           </div>
-          <span className="settings-subtle-hint">{t("settings.input.mouseAcceleratorHint")}</span>
-        </div>
+        </SettingRow>
 
         {/* Shortcuts */}
         <div className="settings-row settings-row--column">

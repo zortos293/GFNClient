@@ -311,10 +311,9 @@ export function SettingsAccountSection({
     <section className="settings-section settings-storage-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.account")}</div>}
       <div className="settings-section-header settings-section-header--with-copy">
-        <HardDrive size={18} />
         <div>
           <h2>{t("settings.persistentStorage.title")}</h2>
-          <p className="settings-section-subtitle">{t("settings.persistentStorage.description")}</p>
+          <p className="settings-section-description">{t("settings.persistentStorage.description")}</p>
         </div>
       </div>
       <div className="settings-storage-card">
@@ -421,10 +420,9 @@ export function SettingsAccountSection({
     <section className="settings-section settings-game-accounts-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.account")}</div>}
       <div className="settings-section-header settings-section-header--with-copy settings-game-accounts-header">
-        <Users size={18} />
         <div>
           <h2>{t("settings.accountConnections.title")}</h2>
-          <p className="settings-section-subtitle">{t("settings.accountConnections.description")}</p>
+          <p className="settings-section-description">{t("settings.accountConnections.description")}</p>
         </div>
         <button
           type="button"

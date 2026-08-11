@@ -1,4 +1,3 @@
-import { Monitor } from "lucide-react";
 import { type JSX } from "react";
 import type { EntitledResolution, Settings } from "@shared/gfn";
 import type { CodecTestResult } from "../../../lib/codecDiagnostics";
@@ -39,9 +38,11 @@ export function StreamVideoSection({
   return (
     <section className="settings-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
-      <div className="settings-section-header">
-        <Monitor size={18} />
-        <h2>{t("settings.video.title")}</h2>
+      <div className="settings-section-header settings-section-header--with-copy">
+        <div>
+          <h2>{t("settings.video.title")}</h2>
+          <p className="settings-section-description">{t("settings.video.description")}</p>
+        </div>
       </div>
       <div className="settings-rows settings-rows--grouped">
         <StreamQualityControls

@@ -141,8 +141,11 @@ export function SettingsAudioSection({ settings, showAll, handleChange }: Settin
   return (
     <section className="settings-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.audio")}</div>}
-      <div className="settings-section-header">
-        <h2>{t("settings.audio.title")}</h2>
+      <div className="settings-section-header settings-section-header--with-copy">
+        <div>
+          <h2>{t("settings.audio.title")}</h2>
+          <p className="settings-section-description">{t("settings.audio.description")}</p>
+        </div>
       </div>
       <div className="settings-rows">
         <div className="settings-row">

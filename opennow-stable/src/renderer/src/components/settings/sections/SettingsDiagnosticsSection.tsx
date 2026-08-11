@@ -1,4 +1,3 @@
-import { Activity } from "lucide-react";
 import { type JSX } from "react";
 import type { Settings } from "@shared/gfn";
 import type { CodecTestResult } from "../../../lib/codecDiagnostics";
@@ -35,7 +34,6 @@ export function SettingsDiagnosticsSection({
         </div>
       )}
       <div className="settings-section-header settings-section-header--with-copy">
-        <Activity size={18} />
         <div>
           <h2>{t("settings.diagnostics.title")}</h2>
           <p className="settings-section-description">

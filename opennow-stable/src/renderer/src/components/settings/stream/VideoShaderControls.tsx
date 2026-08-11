@@ -3,6 +3,7 @@ import type { Settings } from "@shared/gfn";
 import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SettingRange } from "../SettingRange";
+import { SettingRow, SettingToggleRow } from "../SettingRow";
 import type { SettingsChangeHandler } from "./streamSettingsTypes";
 
 const VIDEO_SHADER_CONTROLS = [
@@ -28,54 +29,21 @@ export function VideoShaderControls({
   const { t } = useTranslation();
 
   return (
-    <div className="settings-row settings-row--column">
-      <div className="settings-row-top settings-row-top--compact">
-        <label
-          className="settings-label settings-label--wrap"
-          htmlFor="settings-stream-video-filters-enabled"
-        >
-          <span className="settings-label-title">
-            {t("settings.videoFilters.title")}
-            <span className="settings-inline-badge settings-inline-badge--beta">
-              {t("app.labels.experimental")}
-            </span>
-          </span>
-        </label>
-        <label className="settings-toggle">
-          <input
-            id="settings-stream-video-filters-enabled"
-            type="checkbox"
-            checked={settings.videoShader.enabled}
-            onChange={(event) => {
-              handleChange("videoShader", {
-                ...settings.videoShader,
-                enabled: event.target.checked,
-              });
-            }}
-          />
-          <span className="settings-toggle-track" />
-        </label>
-      </div>
-      <span className="settings-subtle-hint">
-        {settings.streamClientMode === "native"
-          ? t("settings.videoFilters.nativeUnavailable")
-          : t("settings.videoFilters.hint")}
-      </span>
+    <>
+      <SettingToggleRow
+        htmlFor="settings-stream-video-filters-enabled"
+        label={<>{t("settings.videoFilters.title")}<span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span></>}
+        description={settings.streamClientMode === "native" ? t("settings.videoFilters.nativeUnavailable") : t("settings.videoFilters.hint")}
+        checked={settings.videoShader.enabled}
+        onChange={(checked) => handleChange("videoShader", { ...settings.videoShader, enabled: checked })}
+      />
       {settings.videoShader.enabled && (
         <>
           {VIDEO_SHADER_CONTROLS.map((control) => (
-            <div key={control.key} className="settings-row settings-row--column">
-              <div className="settings-row-top">
-                <label
-                  className="settings-label"
-                  htmlFor={`settings-stream-video-filter-${control.key}`}
-                >
-                  {t(control.labelKey)}
-                </label>
-                <span className="settings-value-badge">
+            <SettingRow key={control.key} htmlFor={`settings-stream-video-filter-${control.key}`} label={t(control.labelKey)}>
+                <span className="settings-value-badge settings-value-badge--control">
                   {settings.videoShader[control.key]}%
                 </span>
-              </div>
               <SettingRange
                 id={`settings-stream-video-filter-${control.key}`}
                 className="settings-slider"
@@ -96,9 +64,9 @@ export function VideoShaderControls({
                   });
                 }}
               />
-            </div>
+            </SettingRow>
           ))}
-          <div className="settings-chip-row">
+          <div className="settings-row settings-row--actions">
             <button
               type="button"
               className="settings-chip"
@@ -114,6 +82,6 @@ export function VideoShaderControls({
           </div>
         </>
       )}
-    </div>
+    </>
   );
 }

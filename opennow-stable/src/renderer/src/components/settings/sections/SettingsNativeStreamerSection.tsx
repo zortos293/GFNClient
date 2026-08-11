@@ -8,6 +8,7 @@ import {
   NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
 } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
+import { SettingRow, SettingToggleRow } from "../SettingRow";
 import {
   formatGstreamerRuntimeLabel,
   formatNativeVideoCodec,
@@ -162,35 +163,23 @@ export function SettingsNativeStreamerSection({
       {showSection && (
       <section className="settings-section">
         {showAll && <div className="settings-section-context">{t("settings.sections.nativeStreamer")}</div>}
-        <div className="settings-section-header">
-          <h2>{t("settings.nativeStreamer.title")}</h2>
+        <div className="settings-section-header settings-section-header--with-copy">
+          <div>
+            <h2>{t("settings.nativeStreamer.title")}</h2>
+            <p className="settings-section-description">{t("settings.nativeStreamer.description")}</p>
+          </div>
         </div>
         <div className="settings-rows">
           {!isNativeStreamerPlatform ? (
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top settings-row-top--compact">
-                <label className="settings-label settings-label--wrap">
-                  <span className="settings-label-title">
-                    {t("settings.nativeStreamer.nativeStreaming")}
-                    <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
-                  </span>
-                </label>
-              </div>
+            <SettingRow label={<>{t("settings.nativeStreamer.nativeStreaming")}<span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span></>} description={NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE}>
               <span className="settings-input-hint">
                 {NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE}
               </span>
-            </div>
+            </SettingRow>
           ) : (
             <>
-              <div className="settings-row settings-row--column">
-                <div className="settings-row-top settings-row-top--compact">
-                  <label className="settings-label settings-label--wrap" htmlFor="settings-native-streaming-enabled">
-                    <span className="settings-label-title">
-                      {t("settings.nativeStreamer.nativeStreaming")}
-                      <span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span>
-                    </span>
-                  </label>
-                  <label className="settings-toggle">
+              <SettingRow htmlFor="settings-native-streaming-enabled" label={<>{t("settings.nativeStreamer.nativeStreaming")}<span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.experimental")}</span></>} description={t("settings.nativeStreamer.nativeStreamingHint")}>
+                  <label className="settings-toggle settings-toggle--control">
                     <input
                       id="settings-native-streaming-enabled"
                       type="checkbox"
@@ -199,10 +188,6 @@ export function SettingsNativeStreamerSection({
                     />
                     <span className="settings-toggle-track" />
                   </label>
-                </div>
-                <span className="settings-subtle-hint">
-                  {t("settings.nativeStreamer.nativeStreamingHint")}
-                </span>
                 <div className="settings-native-report-links">
                   <a href="https://github.com/OpenCloudGaming/OpenNOW/issues" target="_blank" rel="noreferrer">
                     <span>{t("settings.nativeStreamer.reportOnGithubIssues")}</span>
@@ -213,27 +198,9 @@ export function SettingsNativeStreamerSection({
                     <ExternalLink size={12} />
                   </a>
                 </div>
-              </div>
+              </SettingRow>
 
-              <div className="settings-row settings-row--column">
-                <div className="settings-row-top settings-row-top--compact">
-                  <label className="settings-label settings-label--wrap" htmlFor="settings-native-show-stats">
-                    <span className="settings-label-title">{t("settings.nativeStreamer.showNativeStreamerStats")}</span>
-                  </label>
-                  <label className="settings-toggle">
-                    <input
-                      id="settings-native-show-stats"
-                      type="checkbox"
-                      checked={settings.showNativeStreamerStats}
-                      onChange={(e) => handleChange("showNativeStreamerStats", e.target.checked)}
-                    />
-                    <span className="settings-toggle-track" />
-                  </label>
-                </div>
-                <span className="settings-subtle-hint">
-                  {t("settings.nativeStreamer.showNativeStreamerStatsHint")}
-                </span>
-              </div>
+              <SettingToggleRow htmlFor="settings-native-show-stats" label={t("settings.nativeStreamer.showNativeStreamerStats")} description={t("settings.nativeStreamer.showNativeStreamerStatsHint")} checked={settings.showNativeStreamerStats} onChange={(checked) => handleChange("showNativeStreamerStats", checked)} />
 
               <div className="settings-row settings-row--column">
                 <div className="settings-row-top settings-row-top--compact">

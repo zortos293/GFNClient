@@ -2,6 +2,7 @@ import type { JSX } from "react";
 import type { GameLanguage, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
+import { SettingToggleRow } from "../SettingRow";
 import { gameLanguageOptions } from "../settingsFormatters";
 
 export interface SettingsGameSectionProps {
@@ -18,8 +19,11 @@ export function SettingsGameSection({ settings, showAll, handleChange }: Setting
   return (
     <section className="settings-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.game")}</div>}
-      <div className="settings-section-header">
-        <h2>{t("settings.game.title")}</h2>
+      <div className="settings-section-header settings-section-header--with-copy">
+        <div>
+          <h2>{t("settings.game.title")}</h2>
+          <p className="settings-section-description">{t("settings.game.description")}</p>
+        </div>
       </div>
       <div className="settings-rows">
         <div className="settings-row">
@@ -37,27 +41,13 @@ export function SettingsGameSection({ settings, showAll, handleChange }: Setting
             />
           </div>
         </div>
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap" htmlFor={persistSettingsId}>
-              <span className="settings-label-title">
-                {t("settings.game.persistInGameSettings")}
-              </span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                id={persistSettingsId}
-                type="checkbox"
-                checked={settings.enablePersistingInGameSettings}
-                onChange={(e) => handleChange("enablePersistingInGameSettings", e.target.checked)}
-              />
-              <span className="settings-toggle-track" />
-            </label>
-          </div>
-          <span className="settings-subtle-hint">
-            {t("settings.game.persistInGameSettingsHint")}
-          </span>
-        </div>
+        <SettingToggleRow
+          htmlFor={persistSettingsId}
+          label={t("settings.game.persistInGameSettings")}
+          description={t("settings.game.persistInGameSettingsHint")}
+          checked={settings.enablePersistingInGameSettings}
+          onChange={(checked) => handleChange("enablePersistingInGameSettings", checked)}
+        />
       </div>
     </section>
   );

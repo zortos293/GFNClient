@@ -657,6 +657,7 @@
     },
     "region": {
       "title": "Region",
+      "description": "Choose the GeForce NOW data center OpenNOW uses for new sessions.",
       "autoBest": "Auto (Best)",
       "searchPlaceholder": "Search regions...",
       "refreshPing": "Refresh ping",
@@ -739,6 +740,7 @@
     },
     "video": {
       "title": "Stream Quality",
+      "description": "Tune video quality, session compatibility, and local processing in one place.",
       "profile": "Quality Profile",
       "profileHint": "Set the stream resolution, frame rate, and bandwidth ceiling.",
       "codecAndColor": "Codec & Color",
@@ -840,6 +842,7 @@
     },
     "game": {
       "title": "Game",
+      "description": "Choose the language and persistence behavior applied when a game starts.",
       "language": "Language",
       "inGameLanguageHint": "Language for in-game menus, subtitles, and audio (where supported)",
       "persistInGameSettings": "Save in-game graphics settings",
@@ -850,6 +853,7 @@
     },
     "audio": {
       "title": "Audio",
+      "description": "Configure microphone capture and the input device used during streams.",
       "microphone": "Microphone",
       "microphoneHint": "Enable voice chat during streaming",
       "microphoneMode": "Microphone Mode",
@@ -869,6 +873,7 @@
     },
     "input": {
       "title": "Input",
+      "description": "Configure keyboard, mouse, controller, cursor, and shortcut behavior.",
       "mouseAndKeyboard": "Mouse and Keyboard",
       "clipboardPaste": "Clipboard Paste",
       "gyroscopeControls": "Gyroscope Controls",
@@ -912,6 +917,7 @@
     },
     "interface": {
       "appearance": "Appearance",
+      "description": "Personalize OpenNOW’s theme, language, overlays, and desktop behavior.",
       "appLanguage": "App Language",
       "appLanguageHint": "Changes OpenNOW's interface language. English is used for untranslated strings.",
       "theme": "Theme",
@@ -967,6 +973,7 @@
       "posTopRight": "Top right"
     },
     "about": {
+      "description": "Manage updates, diagnostics sharing, logs, cache, and application details.",
       "applicationUpdates": "Application Updates",
       "version": "Version {{version}}",
       "backgroundChecksOn": "Packaged builds check GitHub Releases in the background.",
@@ -1010,6 +1017,7 @@
     },
     "nativeStreamer": {
       "title": "Native Streamer",
+      "description": "Configure the experimental native backend, its renderer, and host capabilities.",
       "nativeStreaming": "Native Streaming",
       "nativeStreamingHint": "Native streaming is experimental and may have platform-specific bugs, glitches, or fallbacks to Chromium/WebRTC. Enable it only if you are comfortable testing the GStreamer-based desktop streamer for new sessions.",
       "enablePromptKicker": "Experimental",

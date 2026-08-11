@@ -1,6 +1,7 @@
 import type { JSX } from "react";
 import type { Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
+import { SettingToggleRow } from "../SettingRow";
 
 export interface SettingsConsoleSectionProps {
   settings: Settings;
@@ -25,53 +26,27 @@ export function SettingsConsoleSection({
         </div>
       </div>
       <div className="settings-rows">
-        <div className="settings-row">
-          <label className="settings-label" htmlFor="settings-console-controller-mode">
-            {t("settings.console.controllerMode")}
-            <span className="settings-hint">{t("settings.console.controllerModeHint")}</span>
-          </label>
-          <label className="settings-toggle">
-            <input
-              id="settings-console-controller-mode"
-              type="checkbox"
-              checked={settings.controllerMode}
-              onChange={(event) => handleChange("controllerMode", event.target.checked)}
-            />
-            <span className="settings-toggle-track" />
-          </label>
-        </div>
-
-        <div className="settings-row">
-          <label className="settings-label" htmlFor="settings-console-profile-picker">
-            {t("settings.console.profilePicker")}
-            <span className="settings-hint">{t("settings.console.profilePickerHint")}</span>
-          </label>
-          <label className="settings-toggle">
-            <input
-              id="settings-console-profile-picker"
-              type="checkbox"
-              checked={settings.consoleProfilePickerOnLaunch}
-              onChange={(event) => handleChange("consoleProfilePickerOnLaunch", event.target.checked)}
-            />
-            <span className="settings-toggle-track" />
-          </label>
-        </div>
-
-        <div className="settings-row">
-          <label className="settings-label" htmlFor="settings-console-launch-mode">
-            {t("settings.console.launchMode")}
-            <span className="settings-hint">{t("settings.console.launchModeHint")}</span>
-          </label>
-          <label className="settings-toggle">
-            <input
-              id="settings-console-launch-mode"
-              type="checkbox"
-              checked={settings.launchInConsoleMode}
-              onChange={(event) => handleChange("launchInConsoleMode", event.target.checked)}
-            />
-            <span className="settings-toggle-track" />
-          </label>
-        </div>
+        <SettingToggleRow
+          htmlFor="settings-console-controller-mode"
+          label={t("settings.console.controllerMode")}
+          description={t("settings.console.controllerModeHint")}
+          checked={settings.controllerMode}
+          onChange={(checked) => handleChange("controllerMode", checked)}
+        />
+        <SettingToggleRow
+          htmlFor="settings-console-profile-picker"
+          label={t("settings.console.profilePicker")}
+          description={t("settings.console.profilePickerHint")}
+          checked={settings.consoleProfilePickerOnLaunch}
+          onChange={(checked) => handleChange("consoleProfilePickerOnLaunch", checked)}
+        />
+        <SettingToggleRow
+          htmlFor="settings-console-launch-mode"
+          label={t("settings.console.launchMode")}
+          description={t("settings.console.launchModeHint")}
+          checked={settings.launchInConsoleMode}
+          onChange={(checked) => handleChange("launchInConsoleMode", checked)}
+        />
       </div>
     </section>
   );

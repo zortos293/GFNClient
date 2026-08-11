@@ -4,6 +4,7 @@ import type { Settings } from "@shared/gfn";
 import { isZortosCommunityProxyUrl } from "@shared/communityProxy";
 import { useTranslation } from "../../../i18n";
 import { ModalSurface } from "../../ui/ModalSurface";
+import { SettingRow } from "../SettingRow";
 import type { SettingsChangeHandler } from "./streamSettingsTypes";
 import { useCommunityProxyProvisioning } from "./useCommunityProxyProvisioning";
 
@@ -28,20 +29,12 @@ export function SessionProxySettings({
 
   return (
     <>
-      <div className="settings-row settings-row--column">
-        <div className="settings-row-top settings-row-top--compact">
-          <label
-            className="settings-label settings-label--wrap"
-            htmlFor="settings-stream-session-proxy"
-          >
-            <span className="settings-label-title">
-              {t("settings.video.sessionProxy")}
-              <span className="settings-inline-badge settings-inline-badge--beta">
-                {t("app.labels.beta")}
-              </span>
-            </span>
-          </label>
-          <label className="settings-toggle">
+      <SettingRow
+        htmlFor="settings-stream-session-proxy"
+        label={<>{t("settings.video.sessionProxy")}<span className="settings-inline-badge settings-inline-badge--beta">{t("app.labels.beta")}</span></>}
+        description={t("settings.video.sessionProxyHint")}
+      >
+          <label className="settings-toggle settings-toggle--control">
             <input
               id="settings-stream-session-proxy"
               type="checkbox"
@@ -52,8 +45,6 @@ export function SessionProxySettings({
             />
             <span className="settings-toggle-track" />
           </label>
-        </div>
-        <span className="settings-subtle-hint">{t("settings.video.sessionProxyHint")}</span>
         <div className="settings-community-proxy-row">
           {isUsingZortosCommunityProxy ? (
             <span className="settings-inline-badge settings-inline-badge--beta">
@@ -79,7 +70,7 @@ export function SessionProxySettings({
             onChange={(event) => handleChange("sessionProxyUrl", event.target.value)}
           />
         )}
-      </div>
+      </SettingRow>
 
       <ModalSurface
         open={communityProxy.promptOpen}

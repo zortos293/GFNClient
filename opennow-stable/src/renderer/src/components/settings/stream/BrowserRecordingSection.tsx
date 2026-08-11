@@ -1,4 +1,3 @@
-import { Video } from "lucide-react";
 import { type JSX } from "react";
 import type { Settings } from "@shared/gfn";
 import {
@@ -10,6 +9,7 @@ import {
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
 import { SettingRange } from "../SettingRange";
+import { SettingRow } from "../SettingRow";
 import type { SettingsChangeHandler } from "./streamSettingsTypes";
 
 interface BrowserRecordingSectionProps {
@@ -35,7 +35,6 @@ export function BrowserRecordingSection({
         </div>
       )}
       <div className="settings-section-header settings-section-header--with-copy">
-        <Video size={18} />
         <div>
           <h2>{t("settings.recording.title")}</h2>
           <p className="settings-section-description">
@@ -91,20 +90,12 @@ export function BrowserRecordingSection({
           </div>
         </div>
 
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top">
-            <label
-              className="settings-label"
-              htmlFor="settings-stream-recording-bitrate"
-            >
-              {t("settings.video.recordingBitrate")}
-            </label>
-            <span className="settings-value-badge">
+        <SettingRow htmlFor="settings-stream-recording-bitrate" label={t("settings.video.recordingBitrate")} description={t("settings.video.recordingBitrateHint")}>
+            <span className="settings-value-badge settings-value-badge--control">
               {settings.recordingBitrateMbps === null
                 ? t("app.labels.auto")
                 : `${settings.recordingBitrateMbps} Mbps`}
             </span>
-          </div>
           <div className="settings-chip-row">
             <button
               type="button"
@@ -143,10 +134,7 @@ export function BrowserRecordingSection({
             onPreview={(value) => handlePreview("recordingBitrateMbps", value)}
             onCommit={(value) => handleChange("recordingBitrateMbps", value)}
           />
-          <span className="settings-subtle-hint">
-            {t("settings.video.recordingBitrateHint")}
-          </span>
-        </div>
+        </SettingRow>
       </div>
     </section>
   );

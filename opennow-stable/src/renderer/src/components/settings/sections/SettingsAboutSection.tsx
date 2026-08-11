@@ -5,6 +5,7 @@ import { useTranslation } from "../../../i18n";
 import { formatBytes, formatUpdaterTimestamp, getUpdaterBadgeLabel } from "../settingsFormatters";
 import { MotionSpinner } from "../../MotionSpinner";
 import { SelectDropdown } from "../../ui/SelectDropdown";
+import { SettingToggleRow } from "../SettingRow";
 
 export interface SettingsAboutSectionProps {
   settings: Settings;
@@ -74,8 +75,11 @@ export function SettingsAboutSection({
   return (
     <section className="settings-section settings-about-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.about")}</div>}
-      <div className="settings-section-header">
-        <h2>{t("settings.sections.about")}</h2>
+      <div className="settings-section-header settings-section-header--with-copy">
+        <div>
+          <h2>{t("settings.sections.about")}</h2>
+          <p className="settings-section-description">{t("settings.about.description")}</p>
+        </div>
       </div>
       <div className="settings-rows">
         <div className="settings-row">
@@ -196,31 +200,18 @@ export function SettingsAboutSection({
           </div>
         </div>
 
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap" htmlFor="settings-about-auto-check-updates">
-              <span className="settings-label-title">{t("settings.about.automaticallyCheckForUpdates")}</span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                id="settings-about-auto-check-updates"
-                type="checkbox"
-                checked={settings.autoCheckForUpdates}
-                onChange={(e) => handleChange("autoCheckForUpdates", e.target.checked)}
-              />
-              <span className="settings-toggle-track" />
-            </label>
-          </div>
-          <span className="settings-subtle-hint">
-            {t("settings.about.automaticallyCheckForUpdatesOnHint")}
-          </span>
-          <span className="settings-subtle-hint">
-            {t("settings.about.automaticallyCheckForUpdatesOffHint")}
-          </span>
-        </div>
+        <SettingToggleRow
+          htmlFor="settings-about-auto-check-updates"
+          label={t("settings.about.automaticallyCheckForUpdates")}
+          description={settings.autoCheckForUpdates
+            ? t("settings.about.automaticallyCheckForUpdatesOnHint")
+            : t("settings.about.automaticallyCheckForUpdatesOffHint")}
+          checked={settings.autoCheckForUpdates}
+          onChange={(checked) => handleChange("autoCheckForUpdates", checked)}
+        />
 
         {updaterState.status === "downloading" && updaterState.progress ? (
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--full">
             <div
               className="settings-updater-progress"
               role="progressbar"
@@ -235,25 +226,13 @@ export function SettingsAboutSection({
           </div>
         ) : null}
 
-        <div className="settings-row settings-row--column">
-          <div className="settings-row-top settings-row-top--compact">
-            <label className="settings-label settings-label--wrap" htmlFor="settings-about-error-reporting">
-              <span className="settings-label-title">{t("settings.about.errorReporting")}</span>
-            </label>
-            <label className="settings-toggle">
-              <input
-                id="settings-about-error-reporting"
-                type="checkbox"
-                checked={settings.errorReportingConsent === "granted"}
-                onChange={(e) => handleChange("errorReportingConsent", e.target.checked ? "granted" : "denied")}
-              />
-              <span className="settings-toggle-track" />
-            </label>
-          </div>
-          <span className="settings-subtle-hint">
-            {t("settings.about.errorReportingHint")}
-          </span>
-        </div>
+        <SettingToggleRow
+          htmlFor="settings-about-error-reporting"
+          label={t("settings.about.errorReporting")}
+          description={t("settings.about.errorReportingHint")}
+          checked={settings.errorReportingConsent === "granted"}
+          onChange={(checked) => handleChange("errorReportingConsent", checked ? "granted" : "denied")}
+        />
 
         <div className="settings-row">
           <label className="settings-label">

@@ -1,4 +1,4 @@
-import { Heart, Users, ExternalLink } from "lucide-react";
+import { Heart, ExternalLink } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import type { ThankYouContributor, ThankYouDataResult, ThankYouSupporter } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
@@ -169,11 +169,10 @@ export function SettingsThanksSection(): JSX.Element {
 
       <div className="settings-thanks-grid">
         <section className="settings-section">
-          <div className="settings-section-header settings-section-header--thanks">
-            <Users size={18} />
+          <div className="settings-section-header settings-section-header--with-copy settings-section-header--thanks">
             <div>
               <h2>{t("settings.thanks.contributorsTitle")}</h2>
-              <p className="settings-section-subtitle">{t("settings.thanks.contributorsSubtitle")}</p>
+              <p className="settings-section-description">{t("settings.thanks.contributorsSubtitle")}</p>
             </div>
           </div>
           {thanksLoadState === "loading" && !thanksData ? (
@@ -195,11 +194,10 @@ export function SettingsThanksSection(): JSX.Element {
         </section>
 
         <section className="settings-section">
-          <div className="settings-section-header settings-section-header--thanks">
-            <Heart size={18} />
+          <div className="settings-section-header settings-section-header--with-copy settings-section-header--thanks">
             <div>
               <h2>{t("settings.thanks.supportersTitle")}</h2>
-              <p className="settings-section-subtitle">{t("settings.thanks.supportersSubtitle")}</p>
+              <p className="settings-section-description">{t("settings.thanks.supportersSubtitle")}</p>
             </div>
           </div>
           {thanksLoadState === "loading" && !thanksData ? (

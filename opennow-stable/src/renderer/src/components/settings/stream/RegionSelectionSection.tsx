@@ -1,4 +1,4 @@
-import { Check, Globe, MapPin, Search, Wifi, X } from "lucide-react";
+import { Check, Globe, Search, Wifi, X } from "lucide-react";
 import { type JSX } from "react";
 import type { Settings, StreamRegion } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
@@ -46,9 +46,11 @@ export function RegionSelectionSection({
   return (
     <section className="settings-section settings-section--dropdown">
       {showAll && <div className="settings-section-context">{t("settings.sections.stream")}</div>}
-      <div className="settings-section-header">
-        <MapPin size={18} />
-        <h2>{t("settings.region.title")}</h2>
+      <div className="settings-section-header settings-section-header--with-copy">
+        <div>
+          <h2>{t("settings.region.title")}</h2>
+          <p className="settings-section-description">{t("settings.region.description")}</p>
+        </div>
       </div>
       <div className="settings-rows">
         <div className="settings-row settings-row--column settings-row--region">

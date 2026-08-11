@@ -472,12 +472,13 @@ internal class FirstVideoFrameWatchdog(
     }
 }
 
-internal data class TouchMouseDelta(
+internal data class MouseMotionDelta(
     val dx: Int,
     val dy: Int,
 )
 
-internal class TouchMouseMotionAccumulator(
+/** Applies mouse tuning in float space and retains the wire format's subpixel rounding residual. */
+internal class MouseMotionAccumulator(
     private val minimumSendIntervalMs: Long = 8L,
 ) {
     private var pendingDx = 0f
@@ -497,7 +498,7 @@ internal class TouchMouseMotionAccumulator(
         sensitivity: Float,
         acceleration: Int,
         force: Boolean = false,
-    ): TouchMouseDelta? {
+    ): MouseMotionDelta? {
         if (!dx.isFinite() || !dy.isFinite() || !sensitivity.isFinite()) {
             reset()
             return null
@@ -538,7 +539,7 @@ internal class TouchMouseMotionAccumulator(
         pendingDx -= sendDx
         pendingDy -= sendDy
         lastSendTimeMs = eventTimeMs
-        return TouchMouseDelta(sendDx, sendDy)
+        return MouseMotionDelta(sendDx, sendDy)
     }
 }
 
@@ -912,7 +913,7 @@ internal class TouchMouseState {
     private var lastTapY = Float.NaN
     private val virtualCursor = VirtualCursor()
     private var twoFingerTapCandidate = false
-    private val motionAccumulator = TouchMouseMotionAccumulator()
+    private val motionAccumulator = MouseMotionAccumulator()
     // 2-finger scroll state
     private var secondPointerId = -1
     private var secondPointerDownY = 0f

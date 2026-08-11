@@ -39,6 +39,7 @@ jobs:
       source_ref: ${{ steps.release.outputs.source_ref }}
       release_type: ${{ steps.release.outputs.release_type }}
       release_name: ${{ steps.release.outputs.release_name }}
+      previous_tag: ${{ steps.release.outputs.previous_tag }}
 
     steps:
       - name: Checkout
@@ -132,6 +133,35 @@ jobs:
             source_ref="$REF_NAME"
           fi
 
+          release_pages="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100")"
+          previous_tag="$(jq -r \
+            --arg release_tag "$release_tag" \
+            --arg release_type "$release_type" '
+              [ .[][] ] as $releases
+              | ($releases | map(select(.tag_name == $release_tag)) | first | .created_at) as $current_created_at
+              | ($releases | map(select(
+                  .draft == false
+                  and .tag_name != $release_tag
+                  and ($current_created_at == null or .created_at < $current_created_at)
+                ))) as $eligible
+              | (if $release_type == "nightly" then
+                   ($eligible | map(select(
+                     .prerelease == true
+                     and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\."))
+                   )) | first)
+                   // ($eligible | map(select(.prerelease == false)) | first)
+                 else
+                   ($eligible | map(select(.prerelease == false)) | first)
+                 end)
+              | .tag_name // empty
+            ' <<< "$release_pages")"
+
+          if [[ -n "$previous_tag" ]]; then
+            echo "Release notes will compare $previous_tag...$release_tag"
+          else
+            echo "No previous release tag found; release notes will include the full history."
+          fi
+
           {
             echo "version=$version"
             echo "prerelease=$prerelease"
@@ -140,6 +170,7 @@ jobs:
             echo "source_ref=$source_ref"
             echo "release_type=$release_type"
             echo "release_name=$release_name"
+            echo "previous_tag=$previous_tag"
           } >> "$GITHUB_OUTPUT"
 
   prepare-source:
@@ -686,6 +717,27 @@ jobs:
           mv /tmp/merged.yml "$x64_feed"
           rm "$arm64_feed"
 
+      - name: Generate GitHub release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.prepare-source.outputs.release_sha }}
+          PREVIOUS_TAG: ${{ needs.preflight.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          args=(
+            --method POST
+            "repos/${RELEASE_REPOSITORY}/releases/generate-notes"
+            --raw-field "tag_name=${RELEASE_TAG}"
+            --raw-field "target_commitish=${RELEASE_SHA}"
+          )
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            args+=(--raw-field "previous_tag_name=${PREVIOUS_TAG}")
+          fi
+          gh api "${args[@]}" --jq .body > release-notes.md
+
       - name: Stage GitHub release draft
         uses: softprops/action-gh-release@v2
         with:
@@ -695,7 +747,7 @@ jobs:
           draft: true
           prerelease: ${{ needs.preflight.outputs.prerelease }}
           make_latest: ${{ needs.preflight.outputs.make_latest }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: release-artifacts/**/*
 
       - name: Publish completed GitHub release

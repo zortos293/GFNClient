@@ -7,6 +7,7 @@ import type {
   Shell,
   SystemPreferences,
 } from "electron";
+import { nativeTheme } from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type { CommunityProxyProvisionResult } from "@shared/communityProxy";
 import type { DiscordActivityUpdate } from "@shared/discord";
@@ -44,6 +45,7 @@ import { fetchThanksData } from "../thanks/fetchThanksData";
 import { applyTelemetrySettingsChange, syncMainTelemetry } from "../telemetry/posthog";
 import { openExplicitExternalUrl } from "../window/externalUrl";
 import { EMPTY_GPU_BACKEND_INFO, getGpuBackendInfo } from "../gpuInfo";
+import { applyNativeAppTheme } from "../window/windowTheme";
 
 type DiscordMonitor = {
   start(): void;
@@ -246,6 +248,10 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
         if (key === "updateChannel") {
           deps.getAppUpdater()?.setUpdateChannel(appliedValue as Settings["updateChannel"]);
         }
+        if (key === "appTheme") {
+          const backgroundColor = applyNativeAppTheme(appliedValue as Settings["appTheme"], nativeTheme);
+          deps.getMainWindow()?.setBackgroundColor(backgroundColor);
+        }
         deps.getSignalingCoordinator()?.applySettingsChange(key, appliedValue);
         if (key === "discordRichPresence") {
           if (appliedValue) {
@@ -264,6 +270,8 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
     const resetSettings = settingsManager.reset();
+    const backgroundColor = applyNativeAppTheme(resetSettings.appTheme, nativeTheme);
+    deps.getMainWindow()?.setBackgroundColor(backgroundColor);
     deps
       .getAppUpdater()
       ?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);

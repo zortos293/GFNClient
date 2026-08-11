@@ -1,4 +1,3 @@
-import posthog from "posthog-js";
 import type { ErrorReportingConsent, Settings } from "@shared/gfn";
 import { getLogCapture } from "@shared/logger";
 import {
@@ -14,6 +13,14 @@ let initialized = false;
 let exceptionsEnabled = false;
 let activeDistinctId: string | null = null;
 let registeredVersionProperties: Record<string, string | undefined> | null = null;
+let activeConsent: ErrorReportingConsent = "unset";
+type PostHogClient = typeof import("posthog-js").default;
+let posthog: PostHogClient | null = null;
+
+async function loadPostHog(): Promise<PostHogClient> {
+  posthog ??= (await import("posthog-js")).default;
+  return posthog;
+}
 
 function buildRendererBaseProperties(): Record<string, string | undefined> {
   return {
@@ -42,12 +49,13 @@ async function getAppVersionProperties(): Promise<Record<string, string | undefi
 }
 
 async function registerClientProperties(): Promise<void> {
-  if (!initialized) {
+  const client = posthog;
+  if (!initialized || !client) {
     return;
   }
   const versionProperties = await getAppVersionProperties();
   registeredVersionProperties = versionProperties;
-  posthog.register({
+  client.register({
     ...buildRendererBaseProperties(),
     ...versionProperties,
   });
@@ -58,8 +66,9 @@ async function ensureClient(distinctId: string, enableExceptions: boolean): Prom
     return false;
   }
 
+  const client = await loadPostHog();
   if (!initialized) {
-    posthog.init(POSTHOG_PROJECT_TOKEN, {
+    client.init(POSTHOG_PROJECT_TOKEN, {
       api_host: POSTHOG_HOST,
       autocapture: false,
       capture_pageview: false,
@@ -91,19 +100,19 @@ async function ensureClient(distinctId: string, enableExceptions: boolean): Prom
   }
 
   if (activeDistinctId !== distinctId) {
-    posthog.identify(distinctId);
+    client.identify(distinctId);
     activeDistinctId = distinctId;
   }
 
   if (enableExceptions && !exceptionsEnabled) {
-    posthog.startExceptionAutocapture({
+    client.startExceptionAutocapture({
       capture_unhandled_errors: true,
       capture_unhandled_rejections: true,
       capture_console_errors: false,
     });
     exceptionsEnabled = true;
   } else if (!enableExceptions && exceptionsEnabled) {
-    posthog.stopExceptionAutocapture();
+    client.stopExceptionAutocapture();
     exceptionsEnabled = false;
   }
 
@@ -142,8 +151,9 @@ async function ensureInstallId(settings: Settings): Promise<string> {
  */
 export async function syncRendererTelemetry(settings: Settings): Promise<void> {
   const consent: ErrorReportingConsent = settings.errorReportingConsent;
+  activeConsent = consent;
   if (consent !== "granted") {
-    if (initialized && exceptionsEnabled) {
+    if (posthog && initialized && exceptionsEnabled) {
       posthog.stopExceptionAutocapture();
       exceptionsEnabled = false;
     }
@@ -152,13 +162,17 @@ export async function syncRendererTelemetry(settings: Settings): Promise<void> {
 
   const distinctId = await ensureInstallId(settings);
   await ensureClient(distinctId, true);
+  if (activeConsent !== "granted" && posthog && exceptionsEnabled) {
+    posthog.stopExceptionAutocapture();
+    exceptionsEnabled = false;
+  }
 }
 
 export function captureRendererException(
   error: unknown,
   additionalProperties?: Record<string, unknown>,
 ): void {
-  if (!initialized || !exceptionsEnabled) {
+  if (!posthog || !initialized || !exceptionsEnabled) {
     return;
   }
 
@@ -238,7 +252,7 @@ export async function captureFeedback(
     properties.logs_bytes = logsBytes;
   }
 
-  posthog.capture(FEEDBACK_EVENT_NAME, properties);
+  posthog?.capture(FEEDBACK_EVENT_NAME, properties);
   return true;
 }
 

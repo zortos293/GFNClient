@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { IPC_CHANNELS } from "@shared/ipc";
@@ -17,6 +17,7 @@ import { shouldReportRendererTermination } from "./rendererLifecycle";
 import type { StreamShortcutInterceptionGate } from "@shared/gfn";
 import { resolveStatsShortcutInterception } from "./streamShortcutInterception";
 import { StreamEscapeShortcutController } from "./streamEscapeShortcut";
+import { applyNativeAppTheme } from "./windowTheme";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
@@ -88,6 +89,7 @@ export async function createMainWindow(
   const startFullscreen =
     settings.launchInConsoleMode ||
     deps.getPendingDirectLaunchRequest() !== null;
+  const windowBackgroundColor = applyNativeAppTheme(settings.appTheme, nativeTheme);
   const linuxWindowIcon = process.platform === "linux"
     ? app.isPackaged
       ? join(process.resourcesPath, "app-icon.png")
@@ -103,7 +105,7 @@ export async function createMainWindow(
     ...(startFullscreen ? { fullscreen: true } : {}),
     ...(linuxWindowIcon ? { icon: linuxWindowIcon } : {}),
     autoHideMenuBar: true,
-    backgroundColor: "#0f172a",
+    backgroundColor: windowBackgroundColor,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -111,6 +113,11 @@ export async function createMainWindow(
       sandbox: false,
     },
   });
+  const syncAutomaticWindowTheme = (): void => {
+    if (deps.settingsManager.get("appTheme") !== "auto" || window.isDestroyed()) return;
+    window.setBackgroundColor(applyNativeAppTheme("auto", nativeTheme));
+  };
+  nativeTheme.on("updated", syncAutomaticWindowTheme);
   deps.setMainWindow(window);
   if (windowTitle) {
     window.on("page-title-updated", (event) => {
@@ -332,6 +339,7 @@ export async function createMainWindow(
   }
 
   window.on("closed", () => {
+    nativeTheme.off("updated", syncAutomaticWindowTheme);
     ipcMain.off(
       IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
       handleStreamShortcutInterceptionChange,

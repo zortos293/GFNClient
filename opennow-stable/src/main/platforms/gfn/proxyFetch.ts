@@ -1,5 +1,3 @@
-import { ProxyAgent, fetch as undiciFetch } from "undici";
-
 import {
   normalizeSessionProxyUrl,
   parseSessionProxyForElectron,
@@ -11,16 +9,29 @@ type ElectronSessionWithFetch = Electron.Session & {
   fetch?: typeof fetch;
 };
 
-const httpProxyAgents = new Map<string, ProxyAgent>();
+type UndiciModule = typeof import("undici");
+
+const httpProxyAgents = new Map<string, import("undici").ProxyAgent>();
 const proxyCredentialsByEndpoint = new Map<string, { username: string; password: string }>();
 let proxyLoginHandlerRegistered = false;
+let undiciModulePromise: Promise<UndiciModule> | null = null;
 
-function getHttpProxyAgent(normalizedProxyUrl: string): ProxyAgent {
+function loadUndici(): Promise<UndiciModule> {
+  undiciModulePromise ??= import("undici");
+  return undiciModulePromise;
+}
+
+async function getHttpProxyAgent(normalizedProxyUrl: string): Promise<import("undici").ProxyAgent> {
   const existing = httpProxyAgents.get(normalizedProxyUrl);
   if (existing) {
     return existing;
   }
 
+  const { ProxyAgent } = await loadUndici();
+  const raced = httpProxyAgents.get(normalizedProxyUrl);
+  if (raced) {
+    return raced;
+  }
   const agent = new ProxyAgent(normalizedProxyUrl);
   httpProxyAgents.set(normalizedProxyUrl, agent);
   return agent;
@@ -103,11 +114,14 @@ export async function fetchWithOptionalProxy(
 
   const protocol = new URL(normalizedProxyUrl).protocol;
   if (protocol === "http:" || protocol === "https:") {
-    const agent = getHttpProxyAgent(normalizedProxyUrl);
+    const [{ fetch: undiciFetch }, agent] = await Promise.all([
+      loadUndici(),
+      getHttpProxyAgent(normalizedProxyUrl),
+    ]);
     return undiciFetch(input, {
       ...init,
       dispatcher: agent,
-    } as Parameters<typeof undiciFetch>[1]) as unknown as Response;
+    } as Parameters<UndiciModule["fetch"]>[1]) as unknown as Response;
   }
 
   const proxyConfig = parseSessionProxyForElectron(normalizedProxyUrl);

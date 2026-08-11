@@ -6,16 +6,11 @@ export type SettingsNavItem = {
   icon: JSX.Element;
 };
 
-export type SettingsNavGroup = {
-  label: string;
-  items: SettingsNavItem[];
-};
-
 export type ThanksLoadState = "idle" | "loading" | "loaded" | "error";
 export type StorageResetState = "idle" | "resetting" | "success" | "error";
 export type GameAccountBusyAction = "link" | "unlink" | "resync";
 
-export type SettingsSectionId = "account" | "stream" | "diagnostics" | "native-streamer" | "game" | "audio" | "input" | "interface" | "about" | "thanks";
+export type SettingsSectionId = "account" | "stream" | "diagnostics" | "native-streamer" | "game" | "audio" | "input" | "console" | "interface" | "about" | "thanks";
 export type SettingsSearchScopeId =
   | "account-storage"
   | "stream-region"
@@ -26,6 +21,7 @@ export type SettingsSearchScopeId =
   | "game"
   | "audio"
   | "input"
+  | "console"
   | "interface"
   | "about"
   | "thanks";
@@ -87,10 +83,6 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "aspect ratio",
     "l4s",
     "cloud gsync",
-    "console mode",
-    "tv mode",
-    "big picture",
-    "gamepad friendly",
     "video acceleration",
     "filters",
     "shader",
@@ -198,6 +190,24 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "recording",
     "screenshot",
   ],
+  console: [
+    "console",
+    "console mode",
+    "controller mode",
+    "tv mode",
+    "big picture",
+    "gamepad friendly",
+    "console shell",
+    "profile picker",
+    "ask who's playing",
+    "session launch",
+    "sessions",
+    "launch games",
+    "gamepad friendly session",
+    "fullscreen session",
+    "controller",
+    "gamepad",
+  ],
   interface: [
     "interface",
     "ui",
@@ -217,9 +227,6 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "anti afk reminder",
     "afk notification",
     "afk reminder interval",
-    "controller",
-    "gamepad",
-    "big picture",
   ],
   about: [
     "about",

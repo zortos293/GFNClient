@@ -1,4 +1,4 @@
-import { Check, X } from "lucide-react";
+import { Check, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 
 import type {
@@ -19,6 +19,7 @@ import { SettingsNav } from "./settings/SettingsNav";
 import { SettingsAccountSection } from "./settings/sections/SettingsAccountSection";
 import { SettingsAboutSection } from "./settings/sections/SettingsAboutSection";
 import { SettingsAudioSection } from "./settings/sections/SettingsAudioSection";
+import { SettingsConsoleSection } from "./settings/sections/SettingsConsoleSection";
 import { SettingsDiagnosticsSection } from "./settings/sections/SettingsDiagnosticsSection";
 import { SettingsGameSection } from "./settings/sections/SettingsGameSection";
 import { SettingsInputSection } from "./settings/sections/SettingsInputSection";
@@ -216,6 +217,20 @@ export function SettingsPage({
 
   const normalizedSettingsSearch = settingsSearch.trim().toLowerCase();
   const showAll = settingsSearchShowsAll;
+  const sectionLabels: Record<SettingsSectionId, string> = {
+    account: t("settings.sections.account"),
+    stream: t("settings.sections.stream"),
+    diagnostics: t("settings.sections.diagnostics"),
+    "native-streamer": t("settings.sections.nativeStreamer"),
+    game: t("settings.sections.game"),
+    audio: t("settings.sections.audio"),
+    input: t("settings.sections.input"),
+    console: t("settings.sections.console"),
+    interface: t("settings.sections.interface"),
+    about: t("settings.sections.about"),
+    thanks: t("settings.sections.thanks"),
+  };
+  const headerSectionLabel = showAll ? t("settings.searchResults") : sectionLabels[activeSection];
   const scopeMatchesSearch = (scopeId: SettingsSearchScopeId): boolean => {
     return !showAll || settingsScopeMatchesSearch(scopeId, normalizedSettingsSearch);
   };
@@ -231,18 +246,48 @@ export function SettingsPage({
   const showGame = showAll ? scopeMatchesSearch("game") : activeSection === "game";
   const showAudio = showAll ? scopeMatchesSearch("audio") : activeSection === "audio";
   const showInput = showAll ? scopeMatchesSearch("input") : activeSection === "input";
+  const showConsole = showAll ? scopeMatchesSearch("console") : activeSection === "console";
   const showInterface = showAll ? scopeMatchesSearch("interface") : activeSection === "interface";
   const showAbout = showAll ? scopeMatchesSearch("about") : activeSection === "about";
   const showThanks = showAll ? scopeMatchesSearch("thanks") : activeSection === "thanks";
-  const hasAnySearchMatches = showAccount || showStream || showDiagnostics || showNativeStreamer || showGame || showAudio || showInput || showInterface || showAbout || showThanks;
+  const hasAnySearchMatches = showAccount || showStream || showDiagnostics || showNativeStreamer || showGame || showAudio || showInput || showConsole || showInterface || showAbout || showThanks;
   const shouldRenderSettingsSections = showAll || activeSection !== "thanks";
 
   return (
     <>
       <header className="settings-modal-header">
-        <h1>{t("settings.title")}</h1>
+        <div className="settings-modal-heading">
+          <h1>{t("settings.title")}</h1>
+          <span className="settings-modal-heading-separator" aria-hidden="true" />
+          <span className="settings-modal-section-label" aria-live="polite">{headerSectionLabel}</span>
+        </div>
+        <div className="settings-search-wrap">
+          <Search className="settings-search-icon" aria-hidden="true" />
+          <input
+            type="search"
+            className="settings-search-input"
+            placeholder={t("settings.searchPlaceholder")}
+            aria-label={t("settings.searchPlaceholder")}
+            value={settingsSearch}
+            onChange={(event) => setSettingsSearch(event.target.value)}
+          />
+          {settingsSearch && (
+            <button
+              type="button"
+              className="settings-search-clear"
+              onClick={() => setSettingsSearch("")}
+              aria-label={t("settings.clearSearch")}
+            >
+              <X />
+            </button>
+          )}
+        </div>
         <div className="settings-modal-header-actions">
-          <div className={`settings-saved ${savedIndicator ? "visible" : ""}`}>
+          <div
+            className={`settings-saved ${savedIndicator ? "visible" : ""}`}
+            role="status"
+            aria-live="polite"
+          >
             <Check size={14} />
             {t("settings.saved")}
           </div>
@@ -261,10 +306,11 @@ export function SettingsPage({
       <div className="settings-layout">
         <SettingsNav
           activeSection={activeSection}
-          settingsSearch={settingsSearch}
           showAll={showAll}
-          onSearchChange={setSettingsSearch}
-          onSectionChange={setActiveSection}
+          onSectionChange={(section) => {
+            setActiveSection(section);
+            setSettingsSearch("");
+          }}
         />
 
         <div ref={settingsContentRef} className="settings-content">
@@ -345,6 +391,13 @@ export function SettingsPage({
                       showAll={showAll}
                       handleChange={handleChange}
                       handlePreview={handlePreview}
+                    />
+                  )}
+                  {showConsole && (
+                    <SettingsConsoleSection
+                      settings={settings}
+                      showAll={showAll}
+                      handleChange={handleChange}
                     />
                   )}
                   {showInterface && (

@@ -626,6 +626,7 @@
     "saved": "Saved",
     "searchPlaceholder": "Search settings...",
     "clearSearch": "Clear settings search",
+    "searchResults": "Search results",
     "noMatches": "No settings matched \"{{query}}\".",
     "sections": {
       "account": "Account",
@@ -635,6 +636,7 @@
       "game": "Game",
       "audio": "Audio",
       "input": "Input",
+      "console": "Console",
       "interface": "Interface",
       "about": "About",
       "thanks": "Thanks"
@@ -774,9 +776,7 @@
       "experimentalL4SRequest": "Experimental L4S Request",
       "experimentalL4SRequestHint": "Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
-      "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
-      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+      "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically."
     },
     "recording": {
       "title": "Browser Recording",
@@ -918,10 +918,6 @@
       "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Auto Full Screen",
       "autoFullScreenHint": "Automatically enter fullscreen when connecting to or starting a session.",
-      "controllerMode": "Controller Mode",
-      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
-      "consoleProfilePicker": "Ask who's playing",
-      "consoleProfilePickerHint": "Show the profile picker when console mode starts. Direct game launches are never interrupted.",
       "escapeExitsFullscreen": "Escape Exits Fullscreen",
       "escapeExitsFullscreenHint": "When enabled, pressing Escape exits fullscreen immediately. When disabled (default), Escape is forwarded to the game while pointer-locked; hold Escape ~1.5s to exit fullscreen.",
       "discordRichPresence": "Discord Rich Presence",
@@ -945,6 +941,19 @@
       "posBottomRight": "Bottom right",
       "posTopLeft": "Top left",
       "posTopRight": "Top right"
+    },
+    "console": {
+      "title": "Console Experience",
+      "appShell": "App Shell",
+      "appShellDescription": "Controller-first navigation for browsing OpenNOW from a TV or across the room.",
+      "controllerMode": "Controller Mode",
+      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "profilePicker": "Ask who's playing",
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted.",
+      "sessionLaunch": "Startup & Sessions",
+      "sessionLaunchDescription": "Fullscreen startup and gamepad-friendly launch behavior for a TV-style flow.",
+      "launchInConsoleMode": "TV / Big Picture Startup",
+      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled and ask NVIDIA to launch streamed games in a gamepad-friendly big-picture mode."
     },
     "about": {
       "applicationUpdates": "Application Updates",

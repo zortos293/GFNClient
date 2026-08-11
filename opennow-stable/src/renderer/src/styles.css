@@ -3594,26 +3594,54 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-modal-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 320px) minmax(112px, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
-  padding: 18px 22px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--panel-border);
   flex-shrink: 0;
 }
 
+.settings-modal-heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
 .settings-modal-header h1 {
-  font-size: 1.05rem;
+  flex: none;
+  font-size: 0.78rem;
   font-weight: 700;
   margin: 0;
+  color: var(--ink-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-modal-heading-separator {
+  width: 1px;
+  height: 14px;
+  flex: none;
+  background: var(--panel-border-solid);
+}
+
+.settings-modal-section-label {
+  min-width: 0;
+  overflow: hidden;
   color: var(--ink);
+  font-size: 0.94rem;
+  font-weight: 650;
   letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-modal-header-actions {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 10px;
 }
 
@@ -3921,15 +3949,19 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-sidebar {
-  width: 220px;
+  width: 64px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 0;
   background: var(--panel);
   border-right: 1px solid var(--panel-border);
-  padding: 14px 12px;
+  padding: 10px 8px;
   overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.settings-sidebar::-webkit-scrollbar {
+  display: none;
 }
 
 [data-translucent="true"] .settings-sidebar {
@@ -3941,18 +3973,25 @@ button.game-card-store-chip.owned.active:hover {
   align-items: center;
   gap: 8px;
   padding: 0 11px;
-  min-height: 36px;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
   background: color-mix(in srgb, var(--ink) 4%, transparent);
   border: 1px solid var(--panel-border);
   border-radius: 6px;
-  margin-bottom: 12px;
-  flex-shrink: 0;
+  transition: border-color var(--t-fast), background var(--t-fast), box-shadow var(--t-fast);
+}
+
+.settings-search-wrap:focus-within {
+  border-color: rgba(var(--accent-rgb), 0.48);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.1);
 }
 
 .settings-search-icon {
   display: block;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   color: var(--ink-muted);
   flex-shrink: 0;
   align-self: center;
@@ -3977,6 +4016,10 @@ button.game-card-store-chip.owned.active:hover {
   color: var(--ink-muted);
 }
 
+.settings-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
 .settings-search-clear {
   display: flex;
   align-items: center;
@@ -3986,9 +4029,16 @@ button.game-card-store-chip.owned.active:hover {
   border: none;
   color: var(--ink-muted);
   cursor: pointer;
-  padding: 2px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   border-radius: 4px;
   transition: color var(--t-fast), background var(--t-fast);
+}
+
+.settings-search-clear svg {
+  width: 12px;
+  height: 12px;
 }
 
 .settings-search-clear:hover {
@@ -3999,32 +4049,19 @@ button.game-card-store-chip.owned.active:hover {
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-}
-
-.settings-nav-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.settings-nav-group-label {
-  padding: 0 10px 6px;
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-muted);
+  align-items: center;
+  gap: 4px;
 }
 
 .settings-nav-item {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 12px 0 14px;
-  min-height: 38px;
-  border-radius: 6px;
+  justify-content: center;
+  width: 46px;
+  height: 42px;
+  padding: 0;
+  border-radius: 8px;
   border: none;
   background: transparent;
   color: var(--ink-soft);
@@ -4033,38 +4070,40 @@ button.game-card-store-chip.owned.active:hover {
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
-  text-align: left;
   transition: background var(--t-fast), color var(--t-fast);
-  white-space: nowrap;
 }
 
 .settings-nav-item svg {
   display: block;
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   color: var(--ink-muted);
   transition: color var(--t-fast);
 }
 
 .settings-nav-item-label {
-  flex: 1;
-  min-width: 0;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .settings-nav-badge {
-  flex: none;
-  padding: 2px 4px;
-  border: 1px solid color-mix(in srgb, var(--warning, #fbbf24) 32%, transparent);
-  border-radius: 4px;
-  color: color-mix(in srgb, var(--warning, #fbbf24) 78%, var(--ink));
-  font-size: 0.52rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  text-transform: uppercase;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 5px;
+  height: 5px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--warning, #fbbf24) 72%, var(--panel));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning, #fbbf24) 82%, var(--ink));
 }
 
 .settings-nav-item:hover {
@@ -4088,10 +4127,17 @@ button.game-card-store-chip.owned.active:hover {
   left: 0;
   top: 50%;
   width: 2px;
-  height: 16px;
+  height: 20px;
   border-radius: 999px;
   background: var(--accent);
   transform: translateY(-50%);
+}
+
+.settings-nav-item:focus-visible,
+.settings-modal-close:focus-visible,
+.settings-search-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .settings-nav-item.active svg {
@@ -4411,8 +4457,12 @@ button.game-card-store-chip.owned.active:hover {
   }
 
   .settings-sidebar {
-    width: 184px;
-    padding-inline: 8px;
+    width: 58px;
+    padding-inline: 6px;
+  }
+
+  .settings-nav-item {
+    width: 44px;
   }
 
   .settings-content {
@@ -4438,6 +4488,49 @@ button.game-card-store-chip.owned.active:hover {
 
   .settings-group-header {
     gap: 3px;
+  }
+}
+
+@media (max-width: 560px) {
+  .settings-modal-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 12px;
+    padding: 12px 14px;
+  }
+
+  .settings-modal-heading {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .settings-modal-header-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .settings-modal-header-actions .settings-saved {
+    gap: 0;
+    padding-inline: 7px;
+    font-size: 0;
+  }
+
+  .settings-search-wrap {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .settings-sidebar {
+    width: 52px;
+    padding-inline: 5px;
+  }
+
+  .settings-nav-item {
+    width: 40px;
+    height: 40px;
+  }
+
+  .settings-content {
+    padding-inline: 10px;
   }
 }
 

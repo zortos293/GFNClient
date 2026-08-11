@@ -256,42 +256,6 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
 
           <div className="settings-row settings-row--column">
             <div className="settings-row-top settings-row-top--compact">
-              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-controller-mode">
-                <span className="settings-label-title">{t("settings.interface.controllerMode")}</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  id="settings-interface-controller-mode"
-                  type="checkbox"
-                  checked={settings.controllerMode}
-                  onChange={(e) => handleChange("controllerMode", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-            <span className="settings-subtle-hint">{t("settings.interface.controllerModeHint")}</span>
-          </div>
-
-          <div className="settings-row settings-row--column">
-            <div className="settings-row-top settings-row-top--compact">
-              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-console-profile-picker">
-                <span className="settings-label-title">{t("settings.interface.consoleProfilePicker")}</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  id="settings-interface-console-profile-picker"
-                  type="checkbox"
-                  checked={settings.consoleProfilePickerOnLaunch}
-                  onChange={(e) => handleChange("consoleProfilePickerOnLaunch", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-            <span className="settings-subtle-hint">{t("settings.interface.consoleProfilePickerHint")}</span>
-          </div>
-
-          <div className="settings-row settings-row--column">
-            <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-escape-exits-fullscreen">
                 <span className="settings-label-title">{t("settings.interface.escapeExitsFullscreen")}</span>
               </label>

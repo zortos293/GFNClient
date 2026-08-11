@@ -58,8 +58,8 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
         targetSdk = 36
-        versionCode = 75
-        versionName = "1.1.9"
+        versionCode = 76
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))

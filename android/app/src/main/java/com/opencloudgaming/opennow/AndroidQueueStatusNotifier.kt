@@ -28,21 +28,10 @@ private const val QUEUE_SERVICE_EXTRA_TEXT = "text"
 private const val QUEUE_SERVICE_TAG = "OpenNOWQueueService"
 private val QUEUE_NOTIFICATION_SMALL_ICON = R.drawable.ic_tab_stream
 
-/** Returns true if the queue wait is over and the game is now launching/loading. */
-private fun isQueueComplete(state: OpenNowUiState): Boolean {
-    val queuePosition = queueDisplayPosition(state)
-    if (queuePosition != null) return false // Still in queue
-    val phase = state.launchPhase
-    if (phase.isBlank()) return false
-    return phase.equals("Connecting stream", ignoreCase = true) ||
-        phase.equals("Setting up rig", ignoreCase = true) ||
-        phase.equals("Resuming session", ignoreCase = true) ||
-        phase.contains("Starting", ignoreCase = true)
-}
-
 class AndroidQueueStatusNotifier(context: Context) {
     private val appContext = context.applicationContext
     private val commandVersion = AtomicLong()
+    private val queueReadyTracker = QueueReadyNotificationTracker()
     @Volatile private var serviceStartRequested = false
     private var queueReadyAlertSent = false
     private var activeTitle: String? = null
@@ -50,19 +39,15 @@ class AndroidQueueStatusNotifier(context: Context) {
     private var cancellationApplied = true
 
     fun update(state: OpenNowUiState) {
-        if (!shouldShowQueueLaunchStatus(state)) {
-            cancel()
-            return
-        }
-        cancellationApplied = false
-
-        // Reset alert tracker when user is actively queuing so it fires again next time queue completes.
-        if (queueDisplayPosition(state) != null) {
+        val queueFinished = queueReadyTracker.update(state)
+        if (isActivelyQueued(state) && queueReadyAlertSent) {
             queueReadyAlertSent = false
+            AndroidServiceCommandDispatcher.dispatch("queue-ready-alert-reset") {
+                appContext.getSystemService(NotificationManager::class.java).cancel(QUEUE_ALERT_NOTIFICATION_ID)
+            }
         }
-
-        // Send a one-shot high-priority heads-up alert when queue finishes and game is loading.
-        if (!queueReadyAlertSent && isQueueComplete(state)) {
+        // Send a one-shot high-priority heads-up alert only after an observed queue finishes.
+        if (!queueReadyAlertSent && queueFinished) {
             queueReadyAlertSent = true
             val readyTitle = state.streamGame?.title ?: "OpenNOW"
             AndroidServiceCommandDispatcher.dispatch("queue-ready-alert") {
@@ -75,6 +60,13 @@ class AndroidQueueStatusNotifier(context: Context) {
                 }
             }
         }
+        if (!shouldShowQueueLaunchStatus(state)) {
+            val preserveReadyAlert = queueReadyAlertSent &&
+                (state.streamStatus == "connecting" || state.streamStatus == "streaming")
+            cancel(preserveReadyAlert = preserveReadyAlert)
+            return
+        }
+        cancellationApplied = false
 
         val title = state.streamGame?.title ?: "OpenNOW"
         val text = queueLaunchStatusText(state)
@@ -113,12 +105,14 @@ class AndroidQueueStatusNotifier(context: Context) {
         }
     }
 
-    fun cancel() {
-        if (!serviceStartRequested && cancellationApplied) return
+    fun cancel() = cancel(preserveReadyAlert = false)
+
+    private fun cancel(preserveReadyAlert: Boolean) {
+        if (!serviceStartRequested && cancellationApplied && (preserveReadyAlert || !queueReadyAlertSent)) return
         commandVersion.incrementAndGet()
         val startWasRequested = serviceStartRequested
         serviceStartRequested = false
-        queueReadyAlertSent = false
+        if (!preserveReadyAlert) queueReadyAlertSent = false
         activeTitle = null
         activeText = null
         cancellationApplied = true
@@ -133,7 +127,7 @@ class AndroidQueueStatusNotifier(context: Context) {
             }
             appContext.getSystemService(NotificationManager::class.java).apply {
                 cancel(QUEUE_NOTIFICATION_ID)
-                cancel(QUEUE_ALERT_NOTIFICATION_ID)
+                if (!preserveReadyAlert) cancel(QUEUE_ALERT_NOTIFICATION_ID)
             }
         }
     }

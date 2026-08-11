@@ -464,6 +464,7 @@ export function App(): JSX.Element {
     handleCancelQrLogin,
     handleSwitchAccount,
     handleRemoveAccount,
+    removeAccountNow,
     confirmRemoveAccount,
     handleAddAccount,
     refreshSavedAccounts,
@@ -680,12 +681,10 @@ export function App(): JSX.Element {
     hasAuthSession: authSession !== null,
     savedAccounts,
     activeUserId: authSession?.user.userId ?? null,
+    switchFailedMessage: t("console.profiles.switchFailed"),
     onSwitchAccount: handleSwitchAccount,
     onAddAccount: handleAddAccount,
-    onRemoveAccount: async (userId) => {
-      await window.openNow.removeAccount(userId);
-      await refreshSavedAccounts();
-    },
+    onRemoveAccount: removeAccountNow,
   });
 
   const buildCurrentStreamSettings = useCallback((subscriptionOverride?: SubscriptionInfo | null): StreamSettings => {
@@ -2687,10 +2686,8 @@ export function App(): JSX.Element {
         savedAccounts={savedAccounts}
         activeUserId={authSession?.user.userId ?? null}
         onAddAccount={handleAddAccount}
-        onRemoveAccount={async (userId) => {
-          await window.openNow.removeAccount(userId);
-          await refreshSavedAccounts();
-        }}
+        onProfilesChanged={async () => { await refreshSavedAccounts(); }}
+        onRemoveAccount={removeAccountNow}
         onLogoutAll={() => setLogoutConfirmOpen(true)}
       />
       <div

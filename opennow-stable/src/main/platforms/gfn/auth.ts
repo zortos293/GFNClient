@@ -90,8 +90,11 @@ export class AuthService {
   }
 
   async initialize(): Promise<void> {
-    await this.consoleProfiles.initialize();
     const restoredSession = await this.state.initialize();
+    await this.consoleProfiles.initialize();
+    await this.consoleProfiles.retainUsers(
+      this.state.accounts.getSavedAccounts().map((account) => account.userId),
+    );
     if (restoredSession) {
       this.state.accounts.setSelectedProvider(restoredSession.provider);
       await this.enrichmentCaches.enrichUserTier();
@@ -115,11 +118,12 @@ export class AuthService {
     return this.accountManager.getSavedAccounts();
   }
 
-  async switchAccount(userId: string): Promise<AuthSession> {
+  async switchAccount(userId: string, pin?: string): Promise<AuthSession> {
     return this.accountManager.switchAccount(
       userId,
       (forceRefresh, expectedUserId) =>
         this.ensureValidSessionWithStatus(forceRefresh, expectedUserId),
+      pin,
     );
   }
 

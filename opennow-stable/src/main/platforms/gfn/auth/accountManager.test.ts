@@ -108,6 +108,40 @@ test("AccountManager reports hasPin per account and never leaks the hash", async
   }
 });
 
+test("AccountManager requires the PIN before switching to a locked account", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "opennow-auth-account-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const state = new PersistedAccountState(join(directory, "auth.json"));
+  const first = session("first");
+  const locked = session("locked");
+  state.accounts.setSession(first);
+  state.accounts.setSession(locked);
+  state.accounts.setActiveAccount("first");
+
+  const profiles = new ConsoleProfileStore(join(directory, "console-profiles.json"), passthroughCrypto);
+  await profiles.initialize();
+  await profiles.setPin("locked", "1234");
+
+  const manager = new AccountManager(state, () => {}, profiles);
+  let refreshCalls = 0;
+  const ensureSession = async () => {
+    refreshCalls += 1;
+    return {
+      session: locked,
+      refresh: { attempted: false, forced: true, outcome: "not_attempted" as const, message: "Current" },
+    };
+  };
+
+  await assert.rejects(() => manager.switchAccount("locked", ensureSession), /PIN is required or incorrect/);
+  await assert.rejects(() => manager.switchAccount("locked", ensureSession, "0000"), /PIN is required or incorrect/);
+  assert.equal(refreshCalls, 0);
+  assert.equal(state.accounts.getActiveUserId(), "first");
+
+  assert.equal((await manager.switchAccount("locked", ensureSession, "1234")).user.userId, "locked");
+  assert.equal(refreshCalls, 1);
+});
+
 test("AccountManager defaults hasPin to false without a lock store", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "opennow-auth-account-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

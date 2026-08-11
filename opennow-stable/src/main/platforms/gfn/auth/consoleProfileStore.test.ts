@@ -142,6 +142,20 @@ test("lockout survives a store restart", async () => {
   assert.equal((await second.verifyPin(USER, "1111", 1_000)).reason, "locked_out");
 });
 
+test("parallel failures cannot overwrite the lockout", async () => {
+  const path = await tempPath();
+  const first = await openStore(path);
+  await first.setPin(USER, "1111");
+
+  await Promise.all(
+    Array.from({ length: PIN_MAX_ATTEMPTS + 2 }, () => first.verifyPin(USER, "0000", 1_000)),
+  );
+
+  assert.equal(first.getStatus(USER, 1_000).lockedUntilMs, 1_000 + PIN_LOCKOUT_STEPS_MS[0]);
+  const second = await openStore(path);
+  assert.equal(second.getStatus(USER, 1_000).lockedUntilMs, 1_000 + PIN_LOCKOUT_STEPS_MS[0]);
+});
+
 test("a successful verify clears the failure counter", async () => {
   const store = await openStore(await tempPath());
   await store.setPin(USER, "1111");
@@ -161,6 +175,20 @@ test("forgetUser drops the lock and persists the removal", async () => {
 
   const second = await openStore(path);
   assert.equal(second.hasPin(USER), false);
+});
+
+test("retainUsers prunes orphaned profile locks", async () => {
+  const path = await tempPath();
+  const first = await openStore(path);
+  await first.setPin("kept", "1111");
+  await first.setPin("orphan", "2222");
+  await first.retainUsers(["kept"]);
+
+  assert.equal(first.hasPin("kept"), true);
+  assert.equal(first.hasPin("orphan"), false);
+  const second = await openStore(path);
+  assert.equal(second.hasPin("kept"), true);
+  assert.equal(second.hasPin("orphan"), false);
 });
 
 test("round-trips when OS encryption is unavailable", async () => {

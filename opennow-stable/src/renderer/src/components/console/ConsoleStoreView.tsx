@@ -1,4 +1,4 @@
-import { Gamepad2 } from "lucide-react";
+import { Gamepad2, Search } from "lucide-react";
 import type { JSX, RefObject } from "react";
 import type { GameInfo } from "@shared/gfn";
 import { gameNeedsPurchase, getSelectedVariant } from "../../lib/controllerCatalogUi";
@@ -101,12 +101,35 @@ export function ConsoleStoreView({
 
   if (sections.length === 0) {
     return (
-      <div className="console-page">
+      <div className="console-page console-store">
         <div className="console-empty">
-          <Gamepad2 className="console-empty-icon" size={64} />
-          <h3>{t("home.controller.emptyTitle")}</h3>
-          <p>{t("home.controller.emptyBody")}</p>
+          {searchQuery.trim() ? <Search className="console-empty-icon" size={64} /> : <Gamepad2 className="console-empty-icon" size={64} />}
+          <h3>{searchQuery.trim() ? t("home.empty.noGamesFound") : t("home.controller.emptyTitle")}</h3>
+          <p>{searchQuery.trim() ? t("home.empty.tryAdjustingSearch") : t("home.controller.emptyBody")}</p>
         </div>
+        <ConsoleHintBar
+          hints={[
+            { glyph: "b", label: t("app.actions.back"), onSelect: onBack },
+            { glyph: "x", label: t("app.actions.search"), onSelect: onOpenSearch },
+          ]}
+        />
+        {searchOpen && (
+          <ConsoleOverlay label={t("app.actions.search")} eyebrow={t("app.actions.search")}>
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder={t("home.searchPlaceholder")}
+              className="console-search-input"
+            />
+            <div className="console-overlay-actions">
+              <button type="button" className="console-action console-action--secondary" onClick={onCloseSearch}>
+                {t("app.actions.back")}
+              </button>
+            </div>
+          </ConsoleOverlay>
+        )}
       </div>
     );
   }

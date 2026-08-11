@@ -44,6 +44,7 @@ const EMPTY_DOCUMENT: ConsoleProfileDocument = { version: 1, profiles: [] };
 export class ConsoleProfileStore {
   private profiles = new Map<string, ConsoleProfileRecord>();
   private initialized = false;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly filePath: string,
@@ -70,6 +71,12 @@ export class ConsoleProfileStore {
       version: 1,
       profiles: [...this.profiles.values()],
     });
+  }
+
+  private runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(operation, operation);
+    this.mutationQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   private ensureRecord(userId: string): ConsoleProfileRecord {
@@ -104,100 +111,123 @@ export class ConsoleProfileStore {
   }
 
   async setPin(userId: string, pin: string, currentPin?: string, nowMs = Date.now()): Promise<ConsolePinMutationResult> {
-    if (!this.initialized) return { ok: false, reason: "storage_unavailable", hasPin: false };
-    if (!isPinFormatValid(pin)) return { ok: false, reason: "invalid_format", hasPin: this.hasPin(userId) };
+    return this.runExclusive(async () => {
+      if (!this.initialized) return { ok: false, reason: "storage_unavailable", hasPin: false };
+      if (!isPinFormatValid(pin)) return { ok: false, reason: "invalid_format", hasPin: this.hasPin(userId) };
 
-    const record = this.ensureRecord(userId);
-    if (record.pin) {
-      // Replacing a PIN requires proving you know the current one, otherwise the
-      // lock could be reset from the manage screen without ever unlocking it.
-      if (currentPin === undefined || !isPinFormatValid(currentPin)) {
-        return { ok: false, reason: "invalid_format", hasPin: true };
+      const record = this.ensureRecord(userId);
+      if (record.pin) {
+        // Replacing a PIN requires proving you know the current one, otherwise the
+        // lock could be reset from the manage screen without ever unlocking it.
+        if (currentPin === undefined || !isPinFormatValid(currentPin)) {
+          return { ok: false, reason: "invalid_format", hasPin: true };
+        }
+        const gate = evaluatePinGate(record.attempts, nowMs);
+        if (!gate.allowed) return { ok: false, reason: "locked_out", hasPin: true };
+        if (!(await verifyPinHash(currentPin, record.pin))) {
+          record.attempts = registerPinFailure(record.attempts, nowMs);
+          await this.persist();
+          return { ok: false, reason: "invalid_pin", hasPin: true };
+        }
       }
+
+      record.pin = await hashPin(pin);
+      record.attempts = createPinAttemptState();
+      record.updatedAtMs = nowMs;
+      await this.persist();
+      return { ok: true, hasPin: true };
+    });
+  }
+
+  async clearPin(userId: string, currentPin: string, nowMs = Date.now()): Promise<ConsolePinMutationResult> {
+    return this.runExclusive(async () => {
+      if (!this.initialized) return { ok: false, reason: "storage_unavailable", hasPin: false };
+
+      const record = this.profiles.get(userId);
+      if (!record?.pin) return { ok: false, reason: "no_pin_set", hasPin: false };
+
       const gate = evaluatePinGate(record.attempts, nowMs);
       if (!gate.allowed) return { ok: false, reason: "locked_out", hasPin: true };
+      if (!isPinFormatValid(currentPin)) return { ok: false, reason: "invalid_format", hasPin: true };
+
       if (!(await verifyPinHash(currentPin, record.pin))) {
         record.attempts = registerPinFailure(record.attempts, nowMs);
         await this.persist();
         return { ok: false, reason: "invalid_pin", hasPin: true };
       }
-    }
 
-    record.pin = await hashPin(pin);
-    record.attempts = createPinAttemptState();
-    record.updatedAtMs = nowMs;
-    await this.persist();
-    return { ok: true, hasPin: true };
-  }
-
-  async clearPin(userId: string, currentPin: string, nowMs = Date.now()): Promise<ConsolePinMutationResult> {
-    if (!this.initialized) return { ok: false, reason: "storage_unavailable", hasPin: false };
-
-    const record = this.profiles.get(userId);
-    if (!record?.pin) return { ok: false, reason: "no_pin_set", hasPin: false };
-
-    const gate = evaluatePinGate(record.attempts, nowMs);
-    if (!gate.allowed) return { ok: false, reason: "locked_out", hasPin: true };
-    if (!isPinFormatValid(currentPin)) return { ok: false, reason: "invalid_format", hasPin: true };
-
-    if (!(await verifyPinHash(currentPin, record.pin))) {
-      record.attempts = registerPinFailure(record.attempts, nowMs);
+      record.pin = null;
+      record.attempts = createPinAttemptState();
+      record.updatedAtMs = nowMs;
       await this.persist();
-      return { ok: false, reason: "invalid_pin", hasPin: true };
-    }
-
-    record.pin = null;
-    record.attempts = createPinAttemptState();
-    record.updatedAtMs = nowMs;
-    await this.persist();
-    return { ok: true, hasPin: false };
+      return { ok: true, hasPin: false };
+    });
   }
 
   async verifyPin(userId: string, pin: string, nowMs = Date.now()): Promise<ConsolePinVerifyResult> {
-    if (!this.initialized) {
-      return { ok: false, reason: "storage_unavailable", remainingAttempts: 0, lockedUntilMs: null };
-    }
+    return this.runExclusive(async () => {
+      if (!this.initialized) {
+        return { ok: false, reason: "storage_unavailable", remainingAttempts: 0, lockedUntilMs: null };
+      }
 
-    const record = this.profiles.get(userId);
-    if (!record?.pin) {
-      return { ok: true, reason: "no_pin_set", remainingAttempts: PIN_MAX_ATTEMPTS, lockedUntilMs: null };
-    }
+      const record = this.profiles.get(userId);
+      if (!record?.pin) {
+        return { ok: true, reason: "no_pin_set", remainingAttempts: PIN_MAX_ATTEMPTS, lockedUntilMs: null };
+      }
 
-    const gate = evaluatePinGate(record.attempts, nowMs);
-    if (!gate.allowed) {
-      return { ok: false, reason: "locked_out", remainingAttempts: 0, lockedUntilMs: gate.lockedUntilMs };
-    }
+      const gate = evaluatePinGate(record.attempts, nowMs);
+      if (!gate.allowed) {
+        return { ok: false, reason: "locked_out", remainingAttempts: 0, lockedUntilMs: gate.lockedUntilMs };
+      }
 
-    if (!isPinFormatValid(pin)) {
-      return { ok: false, reason: "invalid_format", remainingAttempts: gate.remainingAttempts, lockedUntilMs: null };
-    }
+      if (!isPinFormatValid(pin)) {
+        return { ok: false, reason: "invalid_format", remainingAttempts: gate.remainingAttempts, lockedUntilMs: null };
+      }
 
-    if (await verifyPinHash(pin, record.pin)) {
-      record.attempts = registerPinSuccess(record.attempts);
+      if (await verifyPinHash(pin, record.pin)) {
+        record.attempts = registerPinSuccess(record.attempts);
+        await this.persist();
+        return { ok: true, remainingAttempts: PIN_MAX_ATTEMPTS, lockedUntilMs: null };
+      }
+
+      record.attempts = registerPinFailure(record.attempts, nowMs);
       await this.persist();
-      return { ok: true, remainingAttempts: PIN_MAX_ATTEMPTS, lockedUntilMs: null };
-    }
-
-    record.attempts = registerPinFailure(record.attempts, nowMs);
-    await this.persist();
-    const nextGate = evaluatePinGate(record.attempts, nowMs);
-    return {
-      ok: false,
-      reason: nextGate.allowed ? "invalid_pin" : "locked_out",
-      remainingAttempts: nextGate.remainingAttempts,
-      lockedUntilMs: nextGate.lockedUntilMs,
-    };
+      const nextGate = evaluatePinGate(record.attempts, nowMs);
+      return {
+        ok: false,
+        reason: nextGate.allowed ? "invalid_pin" : "locked_out",
+        remainingAttempts: nextGate.remainingAttempts,
+        lockedUntilMs: nextGate.lockedUntilMs,
+      };
+    });
   }
 
   /** Drops a profile's lock when the underlying account is removed. */
   async forgetUser(userId: string): Promise<void> {
-    if (!this.profiles.delete(userId)) return;
-    await this.persist();
+    await this.runExclusive(async () => {
+      if (!this.profiles.delete(userId)) return;
+      await this.persist();
+    });
   }
 
   async forgetAll(): Promise<void> {
-    if (this.profiles.size === 0) return;
-    this.profiles.clear();
-    await this.persist();
+    await this.runExclusive(async () => {
+      if (this.profiles.size === 0) return;
+      this.profiles.clear();
+      await this.persist();
+    });
+  }
+
+  async retainUsers(userIds: Iterable<string>): Promise<void> {
+    const retained = new Set(userIds);
+    await this.runExclusive(async () => {
+      let changed = false;
+      for (const userId of this.profiles.keys()) {
+        if (retained.has(userId)) continue;
+        this.profiles.delete(userId);
+        changed = true;
+      }
+      if (changed) await this.persist();
+    });
   }
 }

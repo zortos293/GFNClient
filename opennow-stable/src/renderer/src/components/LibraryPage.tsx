@@ -19,6 +19,7 @@ import { useTranslation } from "../i18n";
 import { formatCatalogLastPlayed } from "../utils/lastPlayedFormat";
 import { controllerButton } from "../utils/controllerGamepad";
 import { wasReleasedAsTap } from "../lib/controllerInputState";
+import { isControllerKeyboardActivationTarget } from "../lib/controllerKeyboard";
 import { useControllerFocusScroll } from "../hooks/useControllerFocusScroll";
 import { useControllerKeyDown, useControllerNavigation } from "../hooks/useControllerNavigation";
 import { pageTransition } from "./MotionProvider";
@@ -292,6 +293,7 @@ export const LibraryPage = memo(function LibraryPage({
   };
 
   useControllerKeyDown(controllerSurfaceActive, (event) => {
+    if ((event.key === "Enter" || event.key === " ") && isControllerKeyboardActivationTarget(event.target)) return;
     if (detailsGame && storePickerOpen) {
       const choices = storeChoicesFor(detailsGame);
       if (event.key === "Escape" || event.key.toLowerCase() === "b") {

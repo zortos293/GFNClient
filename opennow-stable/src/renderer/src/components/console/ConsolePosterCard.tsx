@@ -62,6 +62,7 @@ export function ConsolePosterCard({
       data-console-column={index}
       data-poster-fallback={isLandscapeFallback ? "landscape" : undefined}
       aria-label={game.title}
+      onFocus={onSelect}
       onClick={onSelect}
       onDoubleClick={onActivate}
     >

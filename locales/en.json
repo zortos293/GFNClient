@@ -213,6 +213,8 @@
       "lockedOut": "Too many attempts. Try again in {{seconds}}s.",
       "recoveryHint": "Hold B to remove this profile",
       "recoveryReady": "Release to choose",
+      "forgotPin": "Forgot PIN?",
+      "recoveryPrompt": "Remove this profile and sign out?",
       "removeProfile": "Remove this profile"
     },
     "manage": {

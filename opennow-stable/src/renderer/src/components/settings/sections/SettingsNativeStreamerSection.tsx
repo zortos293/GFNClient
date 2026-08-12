@@ -242,7 +242,7 @@ export function SettingsNativeStreamerSection({
                 </span>
               </div>
 
-              <div className="settings-row settings-row--column">
+              <div className="settings-row settings-row--column settings-row--status">
                 <div className="settings-row-top settings-row-top--compact">
                   <label className="settings-label settings-label--wrap">
                     <span className="settings-label-title">{t("settings.nativeStreamer.streamerStatus")}</span>

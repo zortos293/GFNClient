@@ -4318,7 +4318,7 @@ button.game-card-store-chip.owned.active:hover {
   grid-column: 2;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-end;
   gap: 6px;
   min-width: 0;
   width: 100%;
@@ -4336,6 +4336,14 @@ button.game-card-store-chip.owned.active:hover {
 .settings-row-control > .settings-mic-device-wrap,
 .settings-row-control > .settings-path-setting {
   width: 100%;
+}
+
+.settings-row-control > .settings-chip-row,
+.settings-row-control > .settings-slider,
+.settings-row-control > .settings-text-input,
+.settings-row-control > .settings-mic-device-wrap,
+.settings-row-control > .settings-path-setting {
+  align-self: stretch;
 }
 
 .settings-row > .settings-chip-row,
@@ -4382,7 +4390,7 @@ button.game-card-store-chip.owned.active:hover {
 
 .settings-row > .select-dropdown {
   width: min(280px, 100%);
-  justify-self: start;
+  justify-self: end;
 }
 
 .settings-row > .settings-export-logs-btn,
@@ -4524,6 +4532,12 @@ button.game-card-store-chip.owned.active:hover {
   width: 100%;
 }
 
+.settings-row--column > .select-dropdown,
+.settings-row--column > .settings-text-input--narrow {
+  width: min(280px, 100%);
+  justify-self: end;
+}
+
 .settings-row--column > .settings-row-top + .settings-chip-row,
 .settings-row--column > .settings-row-top + .settings-slider,
 .settings-row--column > .settings-row-top + .settings-slider-control,
@@ -4591,6 +4605,15 @@ button.game-card-store-chip.owned.active:hover {
     grid-row: auto;
     justify-self: stretch;
     width: 100%;
+  }
+
+  .settings-row-control {
+    align-items: stretch;
+  }
+
+  .settings-row--column > .select-dropdown,
+  .settings-row--column > .settings-text-input--narrow {
+    max-width: none;
   }
 
   .settings-row > .settings-export-logs-btn,

@@ -120,7 +120,7 @@ export interface Settings {
   controllerMode: boolean;
   /** Permanently suppress the controller-detected suggestion after the user declines it */
   controllerModePromptDismissed: boolean;
-  /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
+  /** Request GeForce NOW's gamepad-friendly app launch mode for new sessions */
   launchInConsoleMode: boolean;
   /** Show the "Who's playing?" profile picker when console mode starts */
   consoleProfilePickerOnLaunch: boolean;

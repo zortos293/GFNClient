@@ -759,7 +759,9 @@
       "sessionProxy": "Session proxy",
       "sessionProxyHint": "Used for Nvidia games catalog, session creation, and queue polling. Streaming/signaling traffic is not proxied.",
       "session": "Session & Compatibility",
-      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "sessionHint": "Proxy routing applied to catalog requests, session creation, and queue polling.",
+      "gfnLaunchMode": "GeForce NOW Launch Mode",
+      "gfnLaunchModeHint": "Client identity and feature requests sent only when OpenNOW creates a new GeForce NOW session.",
       "processing": "Video Processing",
       "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
@@ -778,7 +780,9 @@
       "experimentalL4SRequest": "Experimental L4S Request",
       "experimentalL4SRequestHint": "Request the GeForce NOW L4S streaming feature on newly created sessions. This does not change browser WebRTC behavior by itself and may be ignored by the service or network path.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
-      "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically."
+      "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
+      "identifyAsConsole": "Identify as Console",
+      "identifyAsConsoleHint": "Ask GeForce NOW to launch streamed games in gamepad-friendly mode so launchers such as Steam can start in Big Picture. This affects new GFN sessions only; it does not fullscreen OpenNOW or enable its console shell."
     },
     "recording": {
       "title": "Browser Recording",
@@ -961,11 +965,7 @@
       "controllerMode": "Controller Mode",
       "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
       "profilePicker": "Ask who's playing",
-      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted.",
-      "sessionLaunch": "Startup & Sessions",
-      "sessionLaunchDescription": "Fullscreen startup and gamepad-friendly launch behavior for a TV-style flow.",
-      "launchInConsoleMode": "TV / Big Picture Startup",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled and ask NVIDIA to launch streamed games in a gamepad-friendly big-picture mode."
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted."
     },
     "about": {
       "updates": "Updates",

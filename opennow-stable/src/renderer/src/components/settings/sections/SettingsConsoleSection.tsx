@@ -63,32 +63,6 @@ export function SettingsConsoleSection({ settings, showAll, handleChange }: Sett
             </div>
           </div>
         </div>
-
-        <div className="settings-group">
-          <div className="settings-group-header">
-            <h3>{t("settings.console.sessionLaunch")}</h3>
-            <p>{t("settings.console.sessionLaunchDescription")}</p>
-          </div>
-          <div className="settings-group-rows">
-            <div className="settings-row settings-row--column">
-              <div className="settings-row-top settings-row-top--compact">
-                <label className="settings-label settings-label--wrap" htmlFor="settings-console-session-launch">
-                  <span className="settings-label-title">{t("settings.console.launchInConsoleMode")}</span>
-                </label>
-                <label className="settings-toggle">
-                  <input
-                    id="settings-console-session-launch"
-                    type="checkbox"
-                    checked={settings.launchInConsoleMode}
-                    onChange={(event) => handleChange("launchInConsoleMode", event.target.checked)}
-                  />
-                  <span className="settings-toggle-track" />
-                </label>
-              </div>
-              <span className="settings-subtle-hint">{t("settings.console.launchInConsoleModeHint")}</span>
-            </div>
-          </div>
-        </div>
       </div>
     </section>
   );

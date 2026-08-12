@@ -9274,7 +9274,7 @@ button.game-card-store-chip.owned.active:hover {
 .sidebar-footer {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 14px;
   padding: 12px 16px;
@@ -9321,6 +9321,34 @@ button.game-card-store-chip.owned.active:hover {
   padding: 0 12px 0 10px;
   border-radius: 8px;
   background: transparent;
+}
+
+.sidebar-report-bug-button {
+  min-height: 36px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent, #76b900) 34%, var(--panel-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #76b900) 7%, transparent);
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.sidebar-report-bug-button:hover {
+  border-color: color-mix(in srgb, var(--accent, #76b900) 62%, var(--panel-border));
+  background: color-mix(in srgb, var(--accent, #76b900) 12%, transparent);
+  color: var(--ink);
+}
+
+.sidebar-report-bug-button:focus-visible {
+  outline: 2px solid var(--accent, #76b900);
+  outline-offset: 2px;
 }
 
 .sv-sidebar .sidebar-tabs {
@@ -10257,6 +10285,24 @@ button.game-card-store-chip.owned.active:hover {
   margin-bottom: 14px;
 }
 
+.telemetry-feedback-input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-elevated, color-mix(in srgb, var(--ink) 4%, var(--panel)));
+  color: var(--ink);
+  padding: 9px 12px;
+  font: inherit;
+  margin-bottom: 14px;
+}
+
+.telemetry-feedback-input:focus,
+.telemetry-feedback-textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent, #76b900) 55%, transparent);
+  outline-offset: 1px;
+}
+
 .telemetry-feedback-textarea:focus {
   outline: 2px solid color-mix(in srgb, var(--accent, #76b900) 55%, transparent);
   outline-offset: 1px;
@@ -10300,6 +10346,263 @@ button.game-card-store-chip.owned.active:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.telemetry-feedback-disclosure {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 10px 0 12px !important;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #76b900) 25%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent, #76b900) 6%, transparent);
+  color: var(--ink-muted) !important;
+  font-size: 12px;
+}
+
+.telemetry-feedback-disclosure svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--accent, #76b900);
+}
+
+.bug-report-review-copy {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-elevated, color-mix(in srgb, var(--ink) 4%, var(--panel)));
+}
+
+.bug-report-review-copy strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink);
+}
+
+.bug-report-review-copy p {
+  margin: 0 !important;
+  color: var(--ink-muted) !important;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bug-report-attachment-list {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 14px;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.bug-report-attachment-list span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.bug-report-consent {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.telemetry-feedback-reference {
+  color: var(--ink-muted) !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.session-report-card {
+  max-width: 720px;
+  max-height: min(90vh, 820px);
+}
+
+.session-report-header .session-report-game {
+  margin: 5px 32px 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.session-report-body {
+  display: grid;
+  gap: 18px;
+}
+
+.session-report-score {
+  --report-tone: var(--accent, #76b900);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--report-tone) 32%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--report-tone) 7%, transparent);
+}
+
+.session-report-score--fair {
+  --report-tone: #f5b942;
+}
+
+.session-report-score--poor {
+  --report-tone: #f87171;
+}
+
+.session-report-score-ring {
+  width: 72px;
+  height: 72px;
+  flex: 0 0 72px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  border: 3px solid color-mix(in srgb, var(--report-tone) 72%, transparent);
+  border-radius: 50%;
+  color: var(--report-tone);
+}
+
+.session-report-score-ring strong {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.session-report-score-ring span {
+  margin-top: 2px;
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
+.session-report-rating {
+  color: var(--report-tone);
+  font-weight: 750;
+}
+
+.session-report-score p {
+  margin: 3px 0 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.session-report-score .session-report-limited {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #f5b942;
+  font-size: 11px;
+}
+
+.session-report-section-title {
+  margin: 0 0 9px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.session-report-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.session-report-metric {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+
+.session-report-metric span,
+.session-report-metric small {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+
+.session-report-metric strong {
+  display: block;
+  margin: 3px 0 1px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.session-report-profile-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.session-report-profile-grid span {
+  color: var(--ink-muted);
+}
+
+.session-report-profile-grid strong {
+  min-width: 0;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.session-report-findings {
+  display: grid;
+  gap: 8px;
+}
+
+.session-report-finding {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.session-report-finding > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent, #76b900);
+}
+
+.session-report-finding--warning > svg {
+  color: #f5b942;
+}
+
+.session-report-finding strong {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.session-report-finding p {
+  margin: 3px 0 0;
+  color: var(--ink-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.session-report-hide-toggle {
+  margin: 0;
+}
+
+.session-report-footer .rh-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 620px) {
+  .session-report-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .session-report-footer {
+    flex-wrap: wrap;
+  }
 }
 
 /* ======================================================

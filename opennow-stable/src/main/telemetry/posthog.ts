@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { PostHog } from "posthog-node";
 import type { Settings } from "@shared/gfn";
 import {
@@ -9,6 +8,7 @@ import {
 } from "@shared/telemetry";
 import { getAppBuildInfo } from "../appBuildInfo";
 import type { SettingsManager } from "../settings";
+import { getOrCreateTelemetryInstallId } from "../installationId";
 
 let client: PostHog | null = null;
 let activeDistinctId: string | null = null;
@@ -27,16 +27,6 @@ function buildCommonProperties(): Record<string, string | undefined> {
     arch: process.arch,
     electron_version: process.versions.electron,
   };
-}
-
-function ensureInstallId(settingsManager: SettingsManager): string {
-  const existing = settingsManager.get("telemetryInstallId").trim();
-  if (existing) {
-    return existing;
-  }
-  const generated = randomUUID();
-  settingsManager.set("telemetryInstallId", generated);
-  return generated;
 }
 
 function onUncaughtException(error: Error): void {
@@ -88,7 +78,7 @@ function startClient(settingsManager: SettingsManager): void {
     return;
   }
 
-  const distinctId = ensureInstallId(settingsManager);
+  const distinctId = getOrCreateTelemetryInstallId(settingsManager);
   if (client && activeDistinctId === distinctId) {
     installProcessHandlers();
     return;

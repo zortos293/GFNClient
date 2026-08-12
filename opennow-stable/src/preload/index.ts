@@ -61,6 +61,7 @@ import type {
   GameAccountOperationResult,
 } from "@shared/gfn";
 import type { DiscordActivityUpdate } from "@shared/discord";
+import type { DesktopBugReportReceipt, DesktopBugReportRequest } from "@shared/bugReport";
 import { parseSerializedSessionErrorTransport } from "@shared/sessionError";
 
 const { contextBridge, ipcRenderer } = electron;
@@ -250,6 +251,8 @@ const api: OpenNowApi = {
   getMicrophonePermission: () => ipcRenderer.invoke(IPC_CHANNELS.MICROPHONE_PERMISSION_GET),
   readClipboardText: (): Promise<string> => ipcRenderer.invoke(IPC_CHANNELS.CLIPBOARD_READ_TEXT),
   exportLogs: (format?: "text" | "json") => ipcRenderer.invoke(IPC_CHANNELS.LOGS_EXPORT, format),
+  submitBugReport: (input: DesktopBugReportRequest): Promise<DesktopBugReportReceipt> =>
+    ipcRenderer.invoke(IPC_CHANNELS.BUG_REPORT_SUBMIT, input),
   pingRegions: (regions: StreamRegion[]) => ipcRenderer.invoke(IPC_CHANNELS.PING_REGIONS, regions),
   saveScreenshot: (input: ScreenshotSaveRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_SAVE, input),
   listScreenshots: () => ipcRenderer.invoke(IPC_CHANNELS.SCREENSHOT_LIST),

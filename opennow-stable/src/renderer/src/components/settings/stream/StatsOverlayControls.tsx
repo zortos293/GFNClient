@@ -143,6 +143,33 @@ export function StatsOverlayControls({
         </span>
       </div>
 
+      <div className="settings-row settings-row--column">
+        <div className="settings-row-top settings-row-top--compact">
+          <label
+            className="settings-label settings-label--wrap"
+            htmlFor="settings-interface-session-report"
+          >
+            <span className="settings-label-title">
+              {t("settings.interface.showSessionReport")}
+            </span>
+          </label>
+          <label className="settings-toggle">
+            <input
+              id="settings-interface-session-report"
+              type="checkbox"
+              checked={settings.showSessionReport}
+              onChange={(event) =>
+                handleChange("showSessionReport", event.target.checked)
+              }
+            />
+            <span className="settings-toggle-track" />
+          </label>
+        </div>
+        <span className="settings-subtle-hint">
+          {t("settings.interface.showSessionReportHint")}
+        </span>
+      </div>
+
       {settings.sessionCounterEnabled && (
         <>
           <div className="settings-row settings-row--column">

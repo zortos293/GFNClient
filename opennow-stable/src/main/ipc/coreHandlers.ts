@@ -46,6 +46,8 @@ import { applyTelemetrySettingsChange, syncMainTelemetry } from "../telemetry/po
 import { openExplicitExternalUrl } from "../window/externalUrl";
 import { EMPTY_GPU_BACKEND_INFO, getGpuBackendInfo } from "../gpuInfo";
 import { applyNativeAppTheme } from "../window/windowTheme";
+import type { DesktopBugReportRequest, DesktopBugReportReceipt } from "@shared/bugReport";
+import { uploadDesktopBugReport } from "../services/desktopBugReports";
 
 type DiscordMonitor = {
   start(): void;
@@ -374,6 +376,19 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
     IPC_CHANNELS.LOGS_EXPORT,
     async (_event, format: "text" | "json" = "text"): Promise<string> => {
       return exportLogs(format);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.BUG_REPORT_SUBMIT,
+    async (_event, input: DesktopBugReportRequest): Promise<DesktopBugReportReceipt> => {
+      try {
+        return await uploadDesktopBugReport({ app, settingsManager }, input);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Bug report upload failed.";
+        console.warn("[BugReport] Upload failed:", message);
+        throw new Error(message);
+      }
     },
   );
 

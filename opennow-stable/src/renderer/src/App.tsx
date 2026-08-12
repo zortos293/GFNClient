@@ -20,6 +20,8 @@ import type {
   VideoShaderSettings,
 } from "@shared/gfn";
 import { discordGameImageUrl } from "@shared/discord";
+import type { DesktopSessionReport } from "@shared/bugReport";
+import type { FeedbackCategory } from "@shared/telemetry";
 import {
   buildNativeStreamerSessionContext,
   createDefaultSettings,
@@ -46,6 +48,7 @@ import {
 import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
+import { StreamSessionReportAccumulator } from "./utils/sessionReport";
 import { nextStatsOverlayMode } from "./utils/streamStatsHud";
 import { isShortcutCaptureTarget } from "./utils/shortcutCaptureFocus";
 import type { StreamStatus } from "./lib/appTypes";
@@ -106,6 +109,7 @@ import { GameDetailModal } from "./components/GameDetailModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
 import { ErrorReportingConsentModal } from "./components/ErrorReportingConsentModal";
 import { FeedbackModal } from "./components/FeedbackModal";
+import { SessionReportModal } from "./components/SessionReportModal";
 import { ControllerModePromptModal } from "./components/ControllerModePromptModal";
 import { ModalSurface } from "./components/ui/ModalSurface";
 import { overlayMotion, pageTransition, streamRevealTransition } from "./components/MotionProvider";
@@ -163,6 +167,13 @@ export function App(): JSX.Element {
   const [releaseHighlightsIsAuto, setReleaseHighlightsIsAuto] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackSurfacePresent, setFeedbackSurfacePresent] = useState(false);
+  const [feedbackInitialCategory, setFeedbackInitialCategory] = useState<FeedbackCategory>("bug");
+  const [feedbackSessionReport, setFeedbackSessionReport] = useState<DesktopSessionReport | null>(null);
+  const [latestSessionReport, setLatestSessionReport] = useState<DesktopSessionReport | null>(null);
+  const [sessionReportOpen, setSessionReportOpen] = useState(false);
+  const sessionReportAccumulatorRef = useRef<StreamSessionReportAccumulator | null>(null);
+  const showSessionReportRef = useRef(settings.showSessionReport);
+  const directLaunchConsoleModeRef = useRef(false);
   const [consentSurfacePresent, setConsentSurfacePresent] = useState(false);
   const activeSessionProxyUrl = useMemo(
     () => getEnabledSessionProxyUrl(settings),
@@ -261,6 +272,39 @@ export function App(): JSX.Element {
   useEffect(() => {
     streamingGameRef.current = streamingGame;
   }, [streamingGame]);
+
+  showSessionReportRef.current = settings.showSessionReport;
+  directLaunchConsoleModeRef.current = directLaunchConsoleMode;
+
+  useEffect(() => {
+    if (sessionStartedAtMs === null) return undefined;
+
+    const accumulator = new StreamSessionReportAccumulator({
+      gameTitle: streamingGameRef.current?.title ?? t("app.labels.game"),
+      requestedResolution: settings.resolution,
+      requestedCodec: settings.codec,
+      targetFps: settings.fps,
+    }, sessionStartedAtMs);
+    sessionReportAccumulatorRef.current = accumulator;
+    const record = (): void => accumulator.record(diagnosticsStore.getSnapshot());
+    record();
+    const unsubscribe = diagnosticsStore.subscribe(record);
+
+    return () => {
+      unsubscribe();
+      const report = accumulator.finish();
+      if (sessionReportAccumulatorRef.current === accumulator) {
+        sessionReportAccumulatorRef.current = null;
+      }
+      if (!report) return;
+      setLatestSessionReport(report);
+      if (showSessionReportRef.current && !directLaunchConsoleModeRef.current) {
+        setSessionReportOpen(true);
+      }
+    };
+    // A session keeps the profile captured when its first decoded frame arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- finalize only when this session anchor changes
+  }, [diagnosticsStore, sessionStartedAtMs]);
 
   useEffect(() => {
     let active = true;
@@ -2596,9 +2640,32 @@ export function App(): JSX.Element {
     accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
     handleLogout();
   }, [handleLogout]);
-  const handleOpenFeedback = useCallback((): void => {
+  const openFeedback = useCallback((
+    category: FeedbackCategory,
+    report?: DesktopSessionReport | null,
+  ): void => {
+    const currentReport = report !== undefined
+      ? report
+      : sessionReportAccumulatorRef.current
+        ? sessionReportAccumulatorRef.current.finish()
+        : latestSessionReport;
+    setFeedbackInitialCategory(category);
+    setFeedbackSessionReport(currentReport);
     setFeedbackOpen(true);
-  }, []);
+  }, [latestSessionReport]);
+
+  const handleOpenFeedback = useCallback((): void => {
+    openFeedback("bug");
+  }, [openFeedback]);
+
+  const handleOpenStreamBugReport = useCallback((): void => {
+    openFeedback("bug");
+  }, [openFeedback]);
+
+  const handleSessionReportBug = useCallback((report: DesktopSessionReport): void => {
+    setSessionReportOpen(false);
+    openFeedback("bug", report);
+  }, [openFeedback]);
 
   const handleErrorReportingConsent = useCallback(async (granted: boolean): Promise<void> => {
     await updateSetting("errorReportingConsent", granted ? "granted" : "denied");
@@ -2678,6 +2745,8 @@ export function App(): JSX.Element {
         <FeedbackModal
           open={feedbackOpen}
           settings={settings}
+          initialCategory={feedbackInitialCategory}
+          sessionReport={feedbackSessionReport}
           onClose={() => setFeedbackOpen(false)}
           onExitComplete={() => setFeedbackSurfacePresent(false)}
         />
@@ -2713,6 +2782,7 @@ export function App(): JSX.Element {
     || consentSurfacePresent
     || feedbackOpen
     || feedbackSurfacePresent
+    || sessionReportOpen
     || controllerModePromptOpen
     || controllerModePromptSurfacePresent
     || logoutConfirmOpen
@@ -2943,6 +3013,7 @@ export function App(): JSX.Element {
               onEndSession={() => {
                 void handlePromptedStopStream();
               }}
+              onReportBug={handleOpenStreamBugReport}
               onToggleMicrophone={() => {
                 clientRef.current?.toggleMicrophone();
               }}
@@ -3090,8 +3161,19 @@ export function App(): JSX.Element {
       <FeedbackModal
         open={feedbackOpen}
         settings={settings}
+        initialCategory={feedbackInitialCategory}
+        sessionReport={feedbackSessionReport}
         onClose={() => setFeedbackOpen(false)}
         onExitComplete={() => setFeedbackSurfacePresent(false)}
+      />
+      <SessionReportModal
+        open={sessionReportOpen}
+        report={latestSessionReport}
+        onClose={() => setSessionReportOpen(false)}
+        onReportBug={handleSessionReportBug}
+        onShowReportsChange={(show) => {
+          void updateSetting("showSessionReport", show);
+        }}
       />
     </div>
   );

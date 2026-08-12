@@ -97,6 +97,7 @@ interface StreamViewProps {
   onConfirmExit: () => void;
   onCancelExit: () => void;
   onEndSession: () => void;
+  onReportBug: () => void;
   onToggleMicrophone?: () => void;
   mouseSensitivity: number;
   onMouseSensitivityChange: (value: number) => void;
@@ -159,6 +160,7 @@ export function StreamView({
   onConfirmExit,
   onCancelExit,
   onEndSession,
+  onReportBug,
   onToggleMicrophone,
   mouseSensitivity,
   onMouseSensitivityChange,
@@ -736,6 +738,7 @@ export function StreamView({
         activeTab={activeSidebarTab}
         setActiveTab={setActiveSidebarTab}
         onEndSession={handleSidebarExitSession}
+        onReportBug={onReportBug}
         gameTitle={gameTitle}
         platformName={platformName}
         PlatformIcon={PlatformIcon}

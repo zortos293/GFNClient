@@ -127,6 +127,8 @@ export interface Settings {
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;
+  /** Show an evidence-based quality summary after each completed stream. */
+  showSessionReport: boolean;
   /** Also show the session-limit countdown in the stats overlay while streaming */
   showSessionTimeRemainingInStatsOverlay: boolean;
   sessionClockShowEveryMinutes: number;
@@ -167,7 +169,7 @@ export interface Settings {
    * `"unset"` shows the one-time prompt; only `"granted"` enables exception capture.
    */
   errorReportingConsent: ErrorReportingConsent;
-  /** Anonymous install UUID used as PostHog distinct ID (empty until first grant or feedback) */
+  /** Anonymous install UUID used for opt-in telemetry and hashed bug-report abuse control. */
   telemetryInstallId: string;
 }
 
@@ -315,6 +317,7 @@ export function createDefaultSettings(platform: string): Settings {
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,
+    showSessionReport: true,
     showSessionTimeRemainingInStatsOverlay: false,
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,

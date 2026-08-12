@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import type { Dispatch, JSX, RefObject, SetStateAction } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { Gauge, Images, Keyboard, LogOut, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Bug, Gauge, Images, Keyboard, LogOut, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
 import type {
   MicrophoneMode,
   RecordingFps,
@@ -31,6 +31,7 @@ interface StreamQuickMenuProps {
   activeTab: StreamMenuTab;
   setActiveTab: Dispatch<SetStateAction<StreamMenuTab>>;
   onEndSession: () => void;
+  onReportBug: () => void;
   gameTitle: string;
   platformName: string;
   PlatformIcon: (() => JSX.Element) | null;
@@ -79,6 +80,7 @@ export function StreamQuickMenu({
   activeTab,
   setActiveTab,
   onEndSession,
+  onReportBug,
   gameTitle,
   platformName,
   PlatformIcon,
@@ -159,6 +161,14 @@ export function StreamQuickMenu({
                   <span><kbd>B</kbd> Back</span>
                   <span><kbd>LB</kbd><kbd>RB</kbd> Pages</span>
                 </div>
+                <button
+                  type="button"
+                  className="sidebar-report-bug-button"
+                  onClick={onReportBug}
+                >
+                  <Bug size={16} />
+                  <span>Report a stream bug</span>
+                </button>
                 <button
                   type="button"
                   className="sidebar-exit-session-button"

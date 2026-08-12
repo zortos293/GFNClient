@@ -4188,6 +4188,7 @@ button.game-card-store-chip.owned.active:hover {
   padding: 0;
   transition: border-color var(--t-normal);
   overflow: visible;
+  container-type: inline-size;
 }
 
 .settings-section--dropdown {
@@ -4257,10 +4258,11 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-group-header {
-  display: grid;
-  grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr);
-  gap: 24px;
-  padding: 16px 0 9px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 16px 0 8px;
 }
 
 .settings-group-header h3 {
@@ -4272,6 +4274,7 @@ button.game-card-store-chip.owned.active:hover {
 }
 
 .settings-group-header p {
+  max-width: 42rem;
   margin: 0;
   color: var(--ink-muted);
   font-size: 0.72rem;
@@ -4398,20 +4401,13 @@ button.game-card-store-chip.owned.active:hover {
 .settings-row > .settings-delete-cache-btn,
 .settings-row > .settings-save-btn,
 .settings-row > .codec-test-btn {
+  width: min(280px, 100%);
   margin-top: 0;
 }
 
 .settings-row > .settings-mic-device-wrap,
 .settings-row > .settings-path-setting {
   width: 100%;
-}
-
-.settings-row--column {
-  display: grid;
-  grid-template-columns: var(--settings-label-col) var(--settings-control-col);
-  align-items: center;
-  column-gap: 24px;
-  row-gap: 7px;
 }
 
 @media (max-width: 760px) {
@@ -4501,90 +4497,119 @@ button.game-card-store-chip.owned.active:hover {
   justify-self: end;
 }
 
-.settings-row--column > .settings-label {
-  grid-column: 1;
-  grid-row: 1;
+.settings-row--toggle,
+.settings-row--range,
+.settings-row--choice,
+.settings-row--status-action,
+.settings-row--complex {
+  align-items: start;
 }
 
-.settings-row--column > .settings-subtle-hint,
-.settings-row--column > .settings-input-hint,
-.settings-row--column > .settings-shortcut-hint {
+.settings-row--simple > .settings-row-control,
+.settings-row--simple > .settings-updater-actions,
+.settings-row--simple > .settings-export-logs-btn,
+.settings-row--simple > .settings-delete-cache-btn,
+.settings-row--simple > .settings-save-btn,
+.settings-row--simple > .codec-test-btn,
+.settings-row--simple > .settings-mic-device-wrap {
+  grid-column: 2;
+}
+
+.settings-row--toggle > .settings-row-top,
+.settings-row--range > .settings-row-top,
+.settings-row--status-action > .settings-row-top {
   grid-column: 1 / -1;
-  grid-row: auto;
-  align-self: start;
-  max-width: 48rem;
+}
+
+.settings-row--toggle > .settings-subtle-hint,
+.settings-row--toggle > .settings-input-hint,
+.settings-row--toggle > .settings-shortcut-hint {
+  grid-column: 1;
   width: 100%;
 }
 
-.settings-row--column > .settings-chip-row,
-.settings-row--column > .select-dropdown,
-.settings-row--column > .settings-toggle,
-.settings-row--column > .settings-text-input,
-.settings-row--column > .settings-slider,
-.settings-row--column > .settings-slider-control,
-.settings-row--column > .settings-row-control,
-.settings-row--column > .settings-community-proxy-row,
-.settings-row--column > .settings-native-report-links,
-.settings-row--column > .settings-path-setting,
-.settings-row--column > .region-selector,
-.settings-row--column > .settings-shortcut-grid {
+.settings-row--toggle > .settings-community-proxy-row,
+.settings-row--toggle > .settings-native-report-links {
+  grid-column: 1;
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.settings-row--toggle > .settings-text-input,
+.settings-row--toggle > .settings-path-setting {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.settings-row--range > .settings-slider,
+.settings-row--range > .settings-slider-control {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.settings-row--range > .settings-subtle-hint,
+.settings-row--range > .settings-input-hint {
+  grid-column: 1 / -1;
+  max-width: 48rem;
+}
+
+.settings-row--choice > .settings-label {
+  grid-column: 1;
+}
+
+.settings-row--choice > .settings-chip-row,
+.settings-row--choice > .select-dropdown,
+.settings-row--choice > .settings-row-control {
   grid-column: 2;
   justify-self: stretch;
+  width: 100%;
+}
+
+.settings-row--choice > .settings-subtle-hint,
+.settings-row--choice > .settings-input-hint {
+  grid-column: 1;
+  width: 100%;
+}
+
+.settings-row--status-action > .settings-chip-row,
+.settings-row--status-action > .settings-subtle-hint,
+.settings-row--status-action > .settings-input-hint {
+  grid-column: 1;
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.settings-row--status-action > .settings-chip-row {
+  margin-top: 2px;
+}
+
+.settings-row--status-action > .settings-native-runtime-path,
+.settings-row--status-action > .settings-install-steps {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.settings-row--complex > * {
+  grid-column: 1 / -1;
   min-width: 0;
   width: 100%;
 }
 
-.settings-row--column > .select-dropdown,
-.settings-row--column > .settings-text-input--narrow {
-  width: min(280px, 100%);
-  justify-self: end;
+.settings-row--complex > .settings-row-top {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.settings-row--column > .settings-row-top + .settings-chip-row,
-.settings-row--column > .settings-row-top + .settings-slider,
-.settings-row--column > .settings-row-top + .settings-slider-control,
-.settings-row--column > .settings-row-top + .settings-row-control {
-  grid-row: 2;
+.settings-row--region > .settings-label {
+  grid-column: 1;
 }
 
-.settings-row--column > .settings-row-top + .settings-subtle-hint + .settings-community-proxy-row,
-.settings-row--column > .settings-row-top + .settings-subtle-hint + .settings-native-report-links {
-  grid-row: 2;
-}
-
-.settings-native-capability-row > .settings-native-capability-header,
-.settings-native-capability-row > .settings-native-capability-grid,
-.settings-native-capability-row > .settings-subtle-hint,
-.settings-row--column > .settings-updater-progress,
-.settings-row--column > .settings-install-steps,
-.settings-row--column > .settings-native-runtime-path {
-  grid-column: 1 / -1;
-  width: 100%;
-}
-
-.settings-row--status > .settings-chip-row,
-.settings-row--status > .settings-native-report-links {
+.settings-row--region > .region-selector {
   grid-column: 2;
   width: 100%;
 }
 
-.settings-row--status > .settings-native-runtime-path,
-.settings-row--status > .settings-install-steps,
-.settings-row--status > .settings-subtle-hint,
-.settings-row--status > .settings-input-hint {
-  grid-column: 1 / -1;
-  max-width: 58rem;
-}
-
-@media (max-width: 780px) {
-  .settings-section {
-    --settings-label-col: minmax(0, 1fr);
-    --settings-control-col: minmax(0, 1fr);
-  }
-
-  .settings-row,
-  .settings-row--column,
-  .settings-group-header {
+@container (max-width: 720px) {
+  .settings-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -4603,21 +4628,23 @@ button.game-card-store-chip.owned.active:hover {
   .settings-row > .settings-delete-cache-btn,
   .settings-row > .settings-save-btn,
   .settings-row > .codec-test-btn,
-  .settings-row--column > .settings-label,
-  .settings-row--column > .settings-subtle-hint,
-  .settings-row--column > .settings-input-hint,
-  .settings-row--column > .settings-shortcut-hint,
-  .settings-row--column > .settings-chip-row,
-  .settings-row--column > .select-dropdown,
-  .settings-row--column > .settings-text-input,
-  .settings-row--column > .settings-slider,
-  .settings-row--column > .settings-slider-control,
-  .settings-row--column > .settings-row-control,
-  .settings-row--column > .settings-community-proxy-row,
-  .settings-row--column > .settings-native-report-links,
-  .settings-row--column > .settings-path-setting,
-  .settings-row--column > .region-selector,
-  .settings-row--column > .settings-shortcut-grid {
+  .settings-row--toggle > .settings-subtle-hint,
+  .settings-row--toggle > .settings-input-hint,
+  .settings-row--toggle > .settings-shortcut-hint,
+  .settings-row--toggle > .settings-community-proxy-row,
+  .settings-row--toggle > .settings-native-report-links,
+  .settings-row--choice > .settings-label,
+  .settings-row--choice > .settings-chip-row,
+  .settings-row--choice > .select-dropdown,
+  .settings-row--choice > .settings-row-control,
+  .settings-row--choice > .settings-subtle-hint,
+  .settings-row--choice > .settings-input-hint,
+  .settings-row--status-action > .settings-chip-row,
+  .settings-row--status-action > .settings-native-report-links,
+  .settings-row--status-action > .settings-subtle-hint,
+  .settings-row--status-action > .settings-input-hint,
+  .settings-row--region > .settings-label,
+  .settings-row--region > .region-selector {
     grid-column: 1;
     grid-row: auto;
     justify-self: stretch;
@@ -4628,11 +4655,6 @@ button.game-card-store-chip.owned.active:hover {
     align-items: stretch;
   }
 
-  .settings-row--column > .select-dropdown,
-  .settings-row--column > .settings-text-input--narrow {
-    max-width: none;
-  }
-
   .settings-row > .settings-export-logs-btn,
   .settings-row > .settings-delete-cache-btn,
   .settings-row > .settings-save-btn,
@@ -4640,17 +4662,8 @@ button.game-card-store-chip.owned.active:hover {
     justify-self: start;
   }
 
-  .settings-group-header {
-    gap: 3px;
-  }
-
-  .settings-row--status > .settings-chip-row,
-  .settings-row--status > .settings-native-report-links,
-  .settings-row--status > .settings-native-runtime-path,
-  .settings-row--status > .settings-install-steps,
-  .settings-row--status > .settings-subtle-hint,
-  .settings-row--status > .settings-input-hint {
-    grid-column: 1;
+  .settings-row--choice > .settings-chip-row {
+    justify-content: flex-start;
   }
 }
 
@@ -6586,13 +6599,18 @@ button.game-card-store-chip.owned.active:hover {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 10px;
+  width: min(280px, 100%);
 }
 
 .settings-row > .settings-updater-actions {
-  width: auto;
+  width: min(280px, 100%);
   max-width: 100%;
+}
+
+.settings-updater-actions > button {
+  width: 100%;
 }
 
 .settings-save-btn--compact {

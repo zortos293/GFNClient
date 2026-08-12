@@ -168,7 +168,7 @@ export function SettingsNativeStreamerSection({
         </div>
         <div className="settings-rows settings-rows--grouped">
           {!isNativeStreamerPlatform ? (
-            <div className="settings-row settings-row--column">
+            <div className="settings-row settings-row--complex">
               <div className="settings-row-top settings-row-top--compact">
                 <label className="settings-label settings-label--wrap">
                   <span className="settings-label-title">
@@ -189,7 +189,7 @@ export function SettingsNativeStreamerSection({
                   <p>{t("settings.nativeStreamer.runtimeDescription")}</p>
                 </div>
                 <div className="settings-group-rows">
-              <div className="settings-row settings-row--column">
+              <div className="settings-row settings-row--toggle">
                 <div className="settings-row-top settings-row-top--compact">
                   <label className="settings-label settings-label--wrap" htmlFor="settings-native-streaming-enabled">
                     <span className="settings-label-title">
@@ -222,7 +222,7 @@ export function SettingsNativeStreamerSection({
                 </div>
               </div>
 
-              <div className="settings-row settings-row--column">
+              <div className="settings-row settings-row--toggle">
                 <div className="settings-row-top settings-row-top--compact">
                   <label className="settings-label settings-label--wrap" htmlFor="settings-native-show-stats">
                     <span className="settings-label-title">{t("settings.nativeStreamer.showNativeStreamerStats")}</span>
@@ -242,7 +242,7 @@ export function SettingsNativeStreamerSection({
                 </span>
               </div>
 
-              <div className="settings-row settings-row--column settings-row--status">
+              <div className="settings-row settings-row--status-action">
                 <div className="settings-row-top settings-row-top--compact">
                   <label className="settings-label settings-label--wrap">
                     <span className="settings-label-title">{t("settings.nativeStreamer.streamerStatus")}</span>
@@ -319,7 +319,7 @@ export function SettingsNativeStreamerSection({
                   <p>{t("settings.nativeStreamer.videoOutputDescription")}</p>
                 </div>
                 <div className="settings-group-rows">
-              <div className="settings-row settings-row--column settings-native-capability-row">
+              <div className="settings-row settings-row--complex settings-native-capability-row">
                 <div className="settings-native-capability-header">
                   <div>
                     <span className="settings-native-capability-kicker">{t("settings.nativeStreamer.thisPc")}</span>
@@ -403,7 +403,7 @@ export function SettingsNativeStreamerSection({
                 )}
               </div>
 
-              {isNativeStreamerPlatform && selectableVideoBackendOptions.length > 1 && <div className="settings-row settings-row--column">
+              {isNativeStreamerPlatform && selectableVideoBackendOptions.length > 1 && <div className="settings-row settings-row--choice">
                 <label className="settings-label">{t("settings.nativeStreamer.directxBackend")}</label>
                 <div className="settings-chip-row">
                   {selectableVideoBackendOptions.map((option) => {
@@ -436,7 +436,7 @@ export function SettingsNativeStreamerSection({
                 </span>
               </div>}
 
-              <div className="settings-row settings-row--column">
+              <div className="settings-row settings-row--choice">
                 <label className="settings-label">{t("settings.nativeStreamer.framePacing")}</label>
                 <div className="settings-chip-row">
                   <button
@@ -462,7 +462,7 @@ export function SettingsNativeStreamerSection({
               </div>
 
               {supportsNativeExternalRenderer ? (
-                <div className="settings-row settings-row--column">
+                <div className="settings-row settings-row--choice">
                   <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
                   <div className="settings-chip-row">
                     <button type="button" className={`settings-chip ${!settings.nativeExternalRenderer ? "active" : ""}`} aria-pressed={!settings.nativeExternalRenderer} onClick={() => handleChange("nativeExternalRenderer", false)}>
@@ -475,7 +475,7 @@ export function SettingsNativeStreamerSection({
                   <span className="settings-subtle-hint">{t("settings.nativeStreamer.renderModeHint")}</span>
                 </div>
               ) : (
-                <div className="settings-row settings-row--column">
+                <div className="settings-row settings-row--choice">
                   <label className="settings-label">{t("settings.nativeStreamer.renderMode")}</label>
                   <div className="settings-chip-row"><span className="settings-inline-badge">{t("settings.nativeStreamer.renderModeInternal")}</span></div>
                   <span className="settings-subtle-hint">{t("settings.nativeStreamer.renderModeInternalOnlyHint")}</span>

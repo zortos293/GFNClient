@@ -85,7 +85,7 @@ export function SettingsAboutSection({
             <p>{t("settings.about.updatesDescription")}</p>
           </div>
           <div className="settings-group-rows">
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label">
             {t("settings.about.whatsNew")}
             <span className="settings-hint">{t("settings.about.whatsNewHint")}</span>
@@ -100,7 +100,7 @@ export function SettingsAboutSection({
           </button>
         </div>
 
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label settings-label--wrap" htmlFor="updateChannel">
             {t("settings.about.updateChannel")}
             <span className="settings-hint">{t("settings.about.updateChannelHint")}</span>
@@ -125,7 +125,7 @@ export function SettingsAboutSection({
           </div>
         </div>
 
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label settings-label--wrap">
             <span className="settings-label-title">
               {t("settings.about.applicationUpdates")}
@@ -203,7 +203,7 @@ export function SettingsAboutSection({
           </div>
         </div>
 
-        <div className="settings-row settings-row--column">
+        <div className="settings-row settings-row--toggle">
           <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label settings-label--wrap" htmlFor="settings-about-auto-check-updates">
               <span className="settings-label-title">{t("settings.about.automaticallyCheckForUpdates")}</span>
@@ -227,7 +227,7 @@ export function SettingsAboutSection({
         </div>
 
         {updaterState.status === "downloading" && updaterState.progress ? (
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--complex">
             <div
               className="settings-updater-progress"
               role="progressbar"
@@ -251,7 +251,7 @@ export function SettingsAboutSection({
             <p>{t("settings.about.supportAndPrivacyDescription")}</p>
           </div>
           <div className="settings-group-rows">
-        <div className="settings-row settings-row--column">
+        <div className="settings-row settings-row--toggle">
           <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label settings-label--wrap" htmlFor="settings-about-error-reporting">
               <span className="settings-label-title">{t("settings.about.errorReporting")}</span>
@@ -271,7 +271,7 @@ export function SettingsAboutSection({
           </span>
         </div>
 
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label">
             {t("settings.about.sendFeedback")}
             <span className="settings-hint">{t("settings.about.sendFeedbackHint")}</span>
@@ -286,7 +286,7 @@ export function SettingsAboutSection({
           </button>
         </div>
 
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label">
             {t("settings.about.exportLogs")}
             <span className="settings-hint">{t("settings.about.exportLogsHint")}</span>
@@ -327,7 +327,7 @@ export function SettingsAboutSection({
           </div>
           <div className="settings-group-rows">
 
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label">
             {t("settings.about.deleteCache")}
             <span className="settings-hint">{t("settings.about.deleteCacheHint")}</span>

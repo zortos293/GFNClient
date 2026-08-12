@@ -231,7 +231,7 @@ export function StreamQualityControls({
           <p>{t("settings.video.profileHint")}</p>
         </div>
         <div className="settings-group-rows">
-      <div className="settings-row">
+      <div className="settings-row settings-row--simple">
             <label
               className="settings-label"
               htmlFor="settings-stream-resolution"
@@ -254,7 +254,7 @@ export function StreamQualityControls({
         </div>
       </div>
 
-      <div className="settings-row">
+      <div className="settings-row settings-row--simple">
         <label className="settings-label">{t("settings.video.fps")}</label>
         <div className="settings-row-control">
           <div className="settings-chip-row">
@@ -277,7 +277,7 @@ export function StreamQualityControls({
         </div>
       </div>
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--range">
             <div className="settings-row-top">
               <label
                 className="settings-label"
@@ -309,7 +309,7 @@ export function StreamQualityControls({
           <p>{t("settings.video.codecAndColorHint")}</p>
         </div>
         <div className="settings-group-rows">
-      <div className="settings-row">
+      <div className="settings-row settings-row--simple">
         <label className="settings-label" htmlFor="settings-stream-codec">
           {t("settings.video.codec")}
         </label>
@@ -332,7 +332,7 @@ export function StreamQualityControls({
         </div>
       </div>
 
-      <div className="settings-row">
+      <div className="settings-row settings-row--simple">
             <label
               className="settings-label"
               htmlFor="settings-stream-fallback-codec"
@@ -359,7 +359,7 @@ export function StreamQualityControls({
         </div>
       </div>
 
-      <div className="settings-row">
+      <div className="settings-row settings-row--simple">
             <label className="settings-label">
               {t("settings.video.colorDepth")}
             </label>

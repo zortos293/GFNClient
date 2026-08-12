@@ -146,7 +146,7 @@ export function SettingsAudioSection({ settings, showAll, handleChange }: Settin
         <h2>{t("settings.audio.title")}</h2>
       </div>
       <div className="settings-rows">
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label" htmlFor={microphoneModeId}>
             {t("settings.audio.microphone")}
             <span className="settings-hint">{t("settings.audio.microphoneHint")}</span>
@@ -162,7 +162,7 @@ export function SettingsAudioSection({ settings, showAll, handleChange }: Settin
         </div>
 
         {settings.microphoneMode !== "disabled" && (
-          <div className="settings-row">
+          <div className="settings-row settings-row--simple">
             <label className="settings-label" htmlFor={microphoneDeviceId}>
               <span className="settings-label--with-icon">
                 <Mic size={14} aria-hidden="true" />

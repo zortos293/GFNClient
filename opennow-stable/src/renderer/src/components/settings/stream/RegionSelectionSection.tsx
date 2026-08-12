@@ -51,7 +51,7 @@ export function RegionSelectionSection({
         <h2>{t("settings.region.title")}</h2>
       </div>
       <div className="settings-rows">
-        <div className="settings-row settings-row--column settings-row--region">
+        <div className="settings-row settings-row--region">
           <label className="settings-label" htmlFor="settings-stream-region-trigger">
             {t("settings.region.serverRegion")}
             <span className="settings-hint">{t("settings.region.serverRegionHint")}</span>

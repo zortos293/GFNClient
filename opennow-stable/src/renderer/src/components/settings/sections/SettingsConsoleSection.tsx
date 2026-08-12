@@ -26,7 +26,7 @@ export function SettingsConsoleSection({ settings, showAll, handleChange }: Sett
             <p>{t("settings.console.appShellDescription")}</p>
           </div>
           <div className="settings-group-rows">
-            <div className="settings-row settings-row--column">
+            <div className="settings-row settings-row--toggle">
               <div className="settings-row-top settings-row-top--compact">
                 <label className="settings-label settings-label--wrap" htmlFor="settings-console-controller-mode">
                   <span className="settings-label-title">{t("settings.console.controllerMode")}</span>
@@ -44,7 +44,7 @@ export function SettingsConsoleSection({ settings, showAll, handleChange }: Sett
               <span className="settings-subtle-hint">{t("settings.console.controllerModeHint")}</span>
             </div>
 
-            <div className="settings-row settings-row--column">
+            <div className="settings-row settings-row--toggle">
               <div className="settings-row-top settings-row-top--compact">
                 <label className="settings-label settings-label--wrap" htmlFor="settings-console-profile-picker">
                   <span className="settings-label-title">{t("settings.console.profilePicker")}</span>

@@ -86,7 +86,12 @@ internal class NativeUiTouchRoutingState {
         if (streamPanelBounds?.contains(x, y) == true) return true
         if (overlayBounds.values.any { it.contains(x, y) }) return true
         if (touchControllerBounds.values.any { it.contains(x, y) }) return true
+        // Before Compose has measured the controller there are no precise bounds to protect, so
+        // retain the lower-screen fallback for that short startup window. Once even one control
+        // has registered, use the measured bounds exclusively. Keeping the fallback active after
+        // layout makes the entire lower half unavailable to Finger Mouse even in empty space.
         return touchControllerVisible &&
+            touchControllerBounds.isEmpty() &&
             width > 0 &&
             height > 0 &&
             y >= height * TOUCH_CONTROLLER_FALLBACK_TOP_RATIO

@@ -58,6 +58,20 @@ class NativeTouchTest {
     }
 
     @Test
+    fun measuredTouchControllerLeavesUnoccupiedLowerScreenForFingerMouse() {
+        val routing = NativeUiTouchRoutingState()
+        routing.setTouchControllerVisible(true)
+
+        // Protect the controller area until Compose reports its first measured control.
+        assertTrue(routing.touchesRegisteredUi(x = 640f, y = 600f, width = 1280, height = 720))
+
+        routing.setTouchControllerBound("face", left = 1040, top = 500, right = 1240, bottom = 700)
+
+        assertTrue(routing.touchesRegisteredUi(x = 1140f, y = 600f, width = 1280, height = 720))
+        assertFalse(routing.touchesRegisteredUi(x = 640f, y = 600f, width = 1280, height = 720))
+    }
+
+    @Test
     fun onlyAnOwnedLauncherGestureIsConsumedAfterUiOpens() {
         assertTrue(shouldConsumeNativeUiTransitionTouch(streamUiActive = true, hasOwnedPointer = true))
         assertFalse(shouldConsumeNativeUiTransitionTouch(streamUiActive = false, hasOwnedPointer = true))

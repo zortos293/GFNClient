@@ -264,6 +264,10 @@ export class SettingsManager {
       settings.controllerModePromptDismissed = false;
       migrated = true;
     }
+    if (typeof settings.showSessionReport !== "boolean") {
+      settings.showSessionReport = true;
+      migrated = true;
+    }
     if (typeof settings.nativeExternalRenderer !== "boolean") {
       settings.nativeExternalRenderer = false;
       migrated = true;

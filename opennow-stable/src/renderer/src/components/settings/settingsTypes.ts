@@ -133,6 +133,8 @@ export const SETTINGS_SCOPE_SEARCH_TERMS: Record<SettingsSearchScopeId, readonly
     "session time left",
     "session countdown",
     "session timer",
+    "session report",
+    "quality report",
     "free tier time",
     "priority time",
     "ultimate time",

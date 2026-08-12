@@ -84,6 +84,7 @@ import type {
   ScreenshotSaveRequest,
 } from "./media";
 import type { PrintedWasteQueueData, PrintedWasteServerMapping } from "./printedWaste";
+import type { DesktopBugReportReceipt, DesktopBugReportRequest } from "../bugReport";
 
 export interface GpuBackendInfo {
   gpuName: string | null;
@@ -179,6 +180,8 @@ export interface OpenNowApi {
   getMicrophonePermission(): Promise<MicrophonePermissionResult>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;
+  /** Submit an explicit, reviewed bug report through the main-process upload owner. */
+  submitBugReport(input: DesktopBugReportRequest): Promise<DesktopBugReportReceipt>;
   /** Ping all regions and return latency results */
   pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
 

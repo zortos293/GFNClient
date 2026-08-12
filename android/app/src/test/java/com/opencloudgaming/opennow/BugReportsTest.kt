@@ -276,6 +276,25 @@ class BugReportsTest {
         )
     }
 
+    @Test
+    fun mlKitNullFailureCanUseAlreadyValidatedDetailedReport() {
+        val check = androidBugReportLanguageCheckAfterMlKitNullFailure(
+            title = "Video freezes after reconnect",
+            description = "The video stopped after reconnecting, but audio continued until I manually ended the stream.",
+        )
+
+        assertEquals("en", check.languageTag)
+        assertEquals(ANDROID_BUG_REPORT_MIN_ENGLISH_CONFIDENCE, check.confidence)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun mlKitNullFailureDoesNotBypassContentValidation() {
+        androidBugReportLanguageCheckAfterMlKitNullFailure(
+            title = "Lag",
+            description = "It lagged.",
+        )
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun requestBuilderRejectsReportsWhenTheAppLocaleIsNotEnglish() {
         buildAndroidBugReportRequest(

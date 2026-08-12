@@ -655,22 +655,31 @@ private fun QueueMetricPill(
 private fun isStandardPrintedWasteZone(zoneId: String): Boolean =
     zoneId.startsWith("NP-") && !zoneId.startsWith("NPA-")
 
-private data class PrintedWasteZoneOption(
+internal data class PrintedWasteZoneOption(
     val zoneId: String,
     val zone: PrintedWasteZone,
     val routingUrl: String,
     val pingMs: Long?,
 )
 
-private fun recommendedPrintedWasteZone(zones: List<PrintedWasteZoneOption>): PrintedWasteZoneOption? {
+internal fun recommendedPrintedWasteZone(zones: List<PrintedWasteZoneOption>): PrintedWasteZoneOption? {
     if (zones.isEmpty()) return null
     val pool = zones.filter { it.pingMs != null }.ifEmpty { zones }
     val maxPing = pool.mapNotNull { it.pingMs }.maxOrNull()?.coerceAtLeast(1) ?: 1
     val maxQueue = pool.maxOfOrNull { it.zone.QueuePosition }?.coerceAtLeast(1) ?: 1
-    return pool.minWithOrNull(
+    val queueAwareRecommendation = pool.minWithOrNull(
         compareBy<PrintedWasteZoneOption> { printedWasteScore(it, maxPing, maxQueue) }
             .thenBy { it.pingMs ?: Long.MAX_VALUE }
             .thenBy { it.zone.QueuePosition },
+    )
+    if ((queueAwareRecommendation?.pingMs ?: 0L) <= MAX_QUEUE_AWARE_RECOMMENDED_PING_MS) {
+        return queueAwareRecommendation
+    }
+
+    return pool.minWithOrNull(
+        compareBy<PrintedWasteZoneOption> { it.pingMs ?: Long.MAX_VALUE }
+            .thenBy { it.zone.QueuePosition }
+            .thenBy { it.zoneId },
     )
 }
 
@@ -679,6 +688,8 @@ private fun printedWasteScore(zone: PrintedWasteZoneOption, maxPing: Long, maxQu
     val queueScore = (zone.zone.QueuePosition.toDouble() / maxQueue.toDouble()) * 0.25
     return pingScore + queueScore
 }
+
+private const val MAX_QUEUE_AWARE_RECOMMENDED_PING_MS = 100L
 
 private fun printedWasteZoneUrl(zoneId: String): String =
     "https://${zoneId.lowercase()}.cloudmatchbeta.nvidiagrid.net/"

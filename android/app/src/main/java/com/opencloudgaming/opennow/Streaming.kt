@@ -115,8 +115,8 @@ class NativeStreamClient(
             priority = Thread.MAX_PRIORITY
         }
     }
-    private val teardownExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "opennow-native-teardown").apply {
+    private val nativeLifecycleExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "opennow-native-lifecycle").apply {
             priority = Thread.NORM_PRIORITY
         }
     }
@@ -198,7 +198,7 @@ class NativeStreamClient(
     private var renderer: SurfaceViewRenderer? = null
     private var rendererSharpnessDrawer: StreamSharpnessGlDrawer? = null
     private var rendererSurfaceCallback: SurfaceHolder.Callback? = null
-    private var rendererSinkAttached = false
+    private val rendererSinkLifecycle = RendererSinkLifecycle()
     private var heartbeatJob: Job? = null
     private var gamepadKeepaliveJob: Job? = null
     private var statsJob: Job? = null
@@ -346,15 +346,15 @@ class NativeStreamClient(
         NativeInputDiagnostics.add("stream $message")
     }
 
-    private fun enqueueNativeTeardown(label: String, command: () -> Unit) {
+    private fun enqueueNativeLifecycleOperation(label: String, command: () -> Unit) {
         runCatching {
-            teardownExecutor.execute {
+            nativeLifecycleExecutor.execute {
                 runCatching(command).onFailure { error ->
-                    recordStreamDiagnostic("native teardown failed step=$label error=${error.message.orEmpty()}")
+                    recordStreamDiagnostic("native lifecycle failed step=$label error=${error.message.orEmpty()}")
                 }
             }
         }.onFailure { error ->
-            recordStreamDiagnostic("native teardown rejected step=$label error=${error.message.orEmpty()}")
+            recordStreamDiagnostic("native lifecycle rejected step=$label error=${error.message.orEmpty()}")
         }
     }
 
@@ -443,36 +443,36 @@ class NativeStreamClient(
     }
 
     private fun attachRendererSinkIfAvailable(candidate: SurfaceViewRenderer) {
-        if (renderer !== candidate || rendererSinkAttached || candidate.holder.surface?.isValid != true) return
+        if (renderer !== candidate || candidate.holder.surface?.isValid != true) return
         val track = videoTrack ?: return
+        if (!rendererSinkLifecycle.requestAttach()) return
         firstVideoFrameWatchdog.reset()
-        track.addSink(candidate)
-        rendererSinkAttached = true
-        recordStreamDiagnostic("video renderer sink attached")
+        enqueueNativeLifecycleOperation("renderer-sink-attach") {
+            track.addSink(candidate)
+            recordStreamDiagnostic("video renderer sink attached")
+        }
     }
 
     private fun detachRendererSink(candidate: SurfaceViewRenderer) {
-        if (renderer !== candidate || !rendererSinkAttached) return
-        videoTrack?.removeSink(candidate)
-        rendererSinkAttached = false
-        recordStreamDiagnostic("video renderer sink detached surface=${candidate.holder.surface?.isValid == true}")
+        if (renderer !== candidate || !rendererSinkLifecycle.requestDetach()) return
+        val attachedTrack = videoTrack
+        val surfaceValid = candidate.holder.surface?.isValid == true
+        enqueueNativeLifecycleOperation("renderer-sink-detach") {
+            attachedTrack?.removeSink(candidate)
+            recordStreamDiagnostic("video renderer sink detached surface=$surfaceValid")
+        }
     }
 
     private fun releaseRendererInternal(candidate: SurfaceViewRenderer) {
         prepareRendererForRelease(candidate)
-        enqueueNativeTeardown("renderer-release") {
+        enqueueNativeLifecycleOperation("renderer-release") {
             candidate.release()
         }
     }
 
     private fun prepareRendererForRelease(candidate: SurfaceViewRenderer) {
-        if (renderer === candidate && rendererSinkAttached) {
-            val attachedTrack = videoTrack
-            rendererSinkAttached = false
-            enqueueNativeTeardown("renderer-sink-detach") {
-                attachedTrack?.removeSink(candidate)
-            }
-            recordStreamDiagnostic("video renderer sink detach queued")
+        if (renderer === candidate) {
+            detachRendererSink(candidate)
         }
         rendererSurfaceCallback?.let(candidate.holder::removeCallback)
         rendererSurfaceCallback = null
@@ -684,7 +684,7 @@ class NativeStreamClient(
         inputExecutor.shutdown()
         val activeFactory = factory
         factory = null
-        enqueueNativeTeardown("runtime-release") {
+        enqueueNativeLifecycleOperation("runtime-release") {
             preparedRenderer?.let { renderer ->
                 runCatching { renderer.release() }
                     .onFailure { error -> recordStreamDiagnostic("renderer release failed error=${error.message.orEmpty()}") }
@@ -696,7 +696,7 @@ class NativeStreamClient(
             runCatching { eglBase.release() }
                 .onFailure { error -> recordStreamDiagnostic("EGL release failed error=${error.message.orEmpty()}") }
         }
-        teardownExecutor.shutdown()
+        nativeLifecycleExecutor.shutdown()
         scope.cancel()
     }
 
@@ -1522,7 +1522,7 @@ class NativeStreamClient(
         val closingSignaling = signaling
         val closingVideoTrack = videoTrack
         val closingRenderer = renderer
-        val closingRendererSinkAttached = rendererSinkAttached
+        val closingRendererSinkAttached = rendererSinkLifecycle.requestDetach()
         val closingMicrophone = takeMicrophoneResources()
         val closingPeerConnection = peerConnection
         signaling = null
@@ -1538,11 +1538,10 @@ class NativeStreamClient(
         hapticsAdvertised = null
         lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
-        rendererSinkAttached = false
         videoTrack = null
         audioTrack = null
         peerConnection = null
-        enqueueNativeTeardown("transport-close") {
+        enqueueNativeLifecycleOperation("transport-close") {
             runCatching { closingSignaling?.disconnect() }
                 .onFailure { error -> recordStreamDiagnostic("signaling disconnect failed error=${error.message.orEmpty()}") }
             if (closingRendererSinkAttached && closingRenderer != null) {
@@ -2234,14 +2233,14 @@ class NativeStreamClient(
             renderer?.let(::attachRendererSinkIfAvailable)
             return
         }
-        if (rendererSinkAttached) {
-            currentTrack?.removeSink(renderer)
-            rendererSinkAttached = false
-        }
+        renderer?.let(::detachRendererSink)
         videoTrack = track
         track.setEnabled(true)
         renderer?.let(::attachRendererSinkIfAvailable)
-        recordStreamDiagnostic("video track attached id=${track.id()} state=${track.state()?.name ?: "unknown"} renderer=${renderer != null} sink=$rendererSinkAttached")
+        recordStreamDiagnostic(
+            "video track attached id=${track.id()} state=${track.state()?.name ?: "unknown"} " +
+                "renderer=${renderer != null} sink=${rendererSinkLifecycle.isAttachRequested()}",
+        )
     }
 
     private fun attachDataChannel(channel: DataChannel) {
@@ -2672,7 +2671,7 @@ class NativeStreamClient(
         )
         updateTransportRecoveryProgress(livenessWatchdog.latestObservationProgressed)
         if (
-            rendererSinkAttached &&
+            rendererSinkLifecycle.isAttachRequested() &&
             firstVideoFrameWatchdog.shouldRecover(SystemClock.elapsedRealtime(), snapshot.bytesReceived, connected)
         ) {
             when (firstFrameRecoveryStep(transportHasStableMedia, reconnectAttempts, videoSafeFallbackApplied)) {

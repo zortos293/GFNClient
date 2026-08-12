@@ -903,6 +903,14 @@ private fun SettingsContent(
                     val style = TouchControllerStyle.valueOf(styleName)
                     viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(touchControllerStyle = style)))
                 }
+                val touchAimOptions = listOf(
+                    SettingsChoiceOption(TouchAimMode.LockJoystick.name, stringResource(R.string.stream_joysticks_lock_joystick)),
+                    SettingsChoiceOption(TouchAimMode.LockZone.name, stringResource(R.string.stream_joysticks_lock_zone)),
+                )
+                ChoiceOptionRow(stringResource(R.string.stream_joysticks_aim_mode), touchAimOptions, settings.androidTouch.aimMode.name) { modeName ->
+                    val mode = TouchAimMode.valueOf(modeName)
+                    viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(aimMode = mode)))
+                }
                 val joystickModeOptions = listOf(
                     SettingsChoiceOption(TouchJoystickMode.Fixed.name, stringResource(R.string.stream_panel_joystick_fixed)),
                     SettingsChoiceOption(TouchJoystickMode.Dynamic.name, stringResource(R.string.stream_panel_joystick_dynamic)),

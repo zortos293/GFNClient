@@ -953,6 +953,18 @@ internal fun StreamScreen(
                             ),
                         )
                     },
+                    onTouchAimModeToggle = {
+                        val nextMode = if (state.settings.androidTouch.aimMode == TouchAimMode.LockJoystick) {
+                            TouchAimMode.LockZone
+                        } else {
+                            TouchAimMode.LockJoystick
+                        }
+                        viewModel.updateSettings(
+                            state.settings.copy(
+                                androidTouch = state.settings.androidTouch.copy(aimMode = nextMode),
+                            ),
+                        )
+                    },
                     onJoystickDeadZoneChange = { value ->
                         viewModel.updateSettings(
                             state.settings.copy(

@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -47,6 +49,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -134,6 +137,7 @@ internal fun TouchOverlay(
                         buttonScale = buttonScale,
                         stickScale = stickScale,
                         joystickMode = touch.joystickMode,
+                        aimMode = touch.aimMode,
                         joystickDeadZone = touch.joystickDeadZone,
                         viewportHeight = maxHeight,
                         layoutEditing = layoutEditing,
@@ -149,6 +153,7 @@ internal fun TouchOverlay(
                         buttonScale = buttonScale,
                         stickScale = stickScale,
                         joystickMode = touch.joystickMode,
+                        aimMode = touch.aimMode,
                         joystickDeadZone = touch.joystickDeadZone,
                         layoutEditing = layoutEditing,
                         getLocalOffset = getOrientationLocalOffset,
@@ -169,6 +174,7 @@ private fun PortraitTouchControls(
     buttonScale: Float,
     stickScale: Float,
     joystickMode: TouchJoystickMode,
+    aimMode: TouchAimMode,
     joystickDeadZone: Float,
     layoutEditing: Boolean,
     getLocalOffset: (String) -> TouchOffset,
@@ -184,6 +190,19 @@ private fun PortraitTouchControls(
     Box(
         Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)
     ) {
+        if (aimMode == TouchAimMode.LockZone) {
+            LockZoneAimSurface(
+                id = "portrait-aim-zone",
+                client = client,
+                opacity = opacity,
+                deadZone = joystickDeadZone,
+                enabled = !layoutEditing,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .fillMaxWidth(0.54f)
+                    .fillMaxHeight(0.48f),
+            )
+        }
         val scale = buttonScale * layoutScale
         val triggerWidth = 64.dp * scale
         val bumperHeight = 32.dp * scale
@@ -332,23 +351,25 @@ private fun PortraitTouchControls(
             GamepadButton("▶", 0x0010, client, opacity, buttonSize44, onButtonTone)
         }
 
-        TouchControlGroup(
-            id = "portrait-rstick",
-            layoutEditing = layoutEditing,
-            offsetX = getLocalOffset("rstick").x.dp,
-            offsetY = getLocalOffset("rstick").y.dp,
-            onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 12.dp),
-        ) {
-            VirtualStick(
-                label = "R",
-                client = client,
-                opacity = opacity,
-                diameter = rightStickDiameter,
-                mode = joystickMode,
-                deadZone = joystickDeadZone,
-                onChange = client::setVirtualRightStick,
-            )
+        if (aimMode == TouchAimMode.LockJoystick) {
+            TouchControlGroup(
+                id = "portrait-rstick",
+                layoutEditing = layoutEditing,
+                offsetX = getLocalOffset("rstick").x.dp,
+                offsetY = getLocalOffset("rstick").y.dp,
+                onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 12.dp),
+            ) {
+                VirtualStick(
+                    label = "R",
+                    client = client,
+                    opacity = opacity,
+                    diameter = rightStickDiameter,
+                    mode = joystickMode,
+                    deadZone = joystickDeadZone,
+                    onChange = client::setVirtualRightStick,
+                )
+            }
         }
 
         TouchControlGroup(
@@ -386,6 +407,7 @@ private fun BoxScope.LandscapeTouchControls(
     buttonScale: Float,
     stickScale: Float,
     joystickMode: TouchJoystickMode,
+    aimMode: TouchAimMode,
     joystickDeadZone: Float,
     viewportHeight: Dp,
     layoutEditing: Boolean,
@@ -396,6 +418,19 @@ private fun BoxScope.LandscapeTouchControls(
     val controlScale = buttonScale * layoutScale
     val topControlClearance = landscapeTouchTopControlClearanceDp(viewportHeight.value, controlScale).dp
     Box(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
+        if (aimMode == TouchAimMode.LockZone) {
+            LockZoneAimSurface(
+                id = "landscape-aim-zone",
+                client = client,
+                opacity = opacity,
+                deadZone = joystickDeadZone,
+                enabled = !layoutEditing,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxWidth(0.48f)
+                    .fillMaxHeight(0.72f),
+            )
+        }
         val triggerWidth = 76.dp * controlScale
         val bumperHeight = 36.dp * controlScale
 
@@ -553,23 +588,25 @@ private fun BoxScope.LandscapeTouchControls(
         val faceButtonSize = 54.dp * faceScale
         val faceWidth = faceButtonSize * 2.44f
         val rightStickDiameter = 112.dp * stickScale * layoutScale
-        TouchControlGroup(
-            id = "landscape-rstick",
-            layoutEditing = layoutEditing,
-            offsetX = getLocalOffset("rstick").x.dp,
-            offsetY = getLocalOffset("rstick").y.dp,
-            onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 14.dp),
-        ) {
-            VirtualStick(
-                label = "R",
-                client = client,
-                opacity = opacity,
-                diameter = rightStickDiameter,
-                mode = joystickMode,
-                deadZone = joystickDeadZone,
-                onChange = client::setVirtualRightStick,
-            )
+        if (aimMode == TouchAimMode.LockJoystick) {
+            TouchControlGroup(
+                id = "landscape-rstick",
+                layoutEditing = layoutEditing,
+                offsetX = getLocalOffset("rstick").x.dp,
+                offsetY = getLocalOffset("rstick").y.dp,
+                onOffsetChange = { x, y -> onLocalOffsetChange("rstick", x, y) },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = faceWidth + 14.dp),
+            ) {
+                VirtualStick(
+                    label = "R",
+                    client = client,
+                    opacity = opacity,
+                    diameter = rightStickDiameter,
+                    mode = joystickMode,
+                    deadZone = joystickDeadZone,
+                    onChange = client::setVirtualRightStick,
+                )
+            }
         }
 
         val r3Size = 54.dp * controlScale
@@ -685,6 +722,24 @@ private fun clampStickOffset(offset: Offset, maxRadius: Float): Offset {
     return Offset(offset.x * scale, offset.y * scale)
 }
 
+internal fun touchStickValue(
+    deltaX: Float,
+    deltaY: Float,
+    maxTravel: Float,
+    deadZone: Float,
+): Offset {
+    if (!deltaX.isFinite() || !deltaY.isFinite() || !maxTravel.isFinite() || maxTravel <= 0f) {
+        return Offset.Zero
+    }
+    val clamped = clampStickOffset(Offset(deltaX, deltaY), maxTravel)
+    val rawX = (clamped.x / maxTravel).coerceIn(-1f, 1f)
+    val rawY = (clamped.y / maxTravel).coerceIn(-1f, 1f)
+    val magnitude = sqrt(rawX * rawX + rawY * rawY).coerceIn(0f, 1f)
+    val adjustedMagnitude = applyTouchJoystickDeadZone(magnitude, deadZone)
+    val adjustment = if (magnitude > 0f) adjustedMagnitude / magnitude else 0f
+    return Offset(rawX * adjustment, rawY * adjustment)
+}
+
 internal fun applyTouchJoystickDeadZone(value: Float, deadZone: Float): Float {
     val clampedValue = value.coerceIn(-1f, 1f)
     val clampedDeadZone = deadZone.coerceIn(0f, 0.95f)
@@ -692,6 +747,103 @@ internal fun applyTouchJoystickDeadZone(value: Float, deadZone: Float): Float {
     if (magnitude <= clampedDeadZone) return 0f
     val adjusted = (magnitude - clampedDeadZone) / (1f - clampedDeadZone)
     return if (clampedValue < 0f) -adjusted else adjusted
+}
+
+@Composable
+private fun LockZoneAimSurface(
+    id: String,
+    client: NativeStreamClient,
+    opacity: Float,
+    deadZone: Float,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val currentOnChange by rememberUpdatedState(client::setVirtualRightStick)
+    var aimAnchor by remember { mutableStateOf<Offset?>(null) }
+    var aimOffset by remember { mutableStateOf(Offset.Zero) }
+    val maxTravelPx = with(density) { LOCK_ZONE_MAX_TRAVEL_DP.dp.toPx() }
+
+    DisposableEffect(client, id) {
+        onDispose {
+            client.setVirtualRightStick(0f, 0f)
+            NativeStreamInputRouter.clearTouchControllerPassthroughBound(id)
+        }
+    }
+
+    Box(
+        modifier
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInRoot()
+                NativeStreamInputRouter.setTouchControllerPassthroughBound(
+                    id,
+                    bounds.left.roundToInt(),
+                    bounds.top.roundToInt(),
+                    bounds.right.roundToInt(),
+                    bounds.bottom.roundToInt(),
+                )
+            }
+            .pointerInput(client, deadZone, enabled, maxTravelPx) {
+                if (!enabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val anchor = down.position
+                    aimAnchor = anchor
+                    aimOffset = Offset.Zero
+
+                    fun updateAim(position: Offset) {
+                        val delta = position - anchor
+                        val value = touchStickValue(delta.x, delta.y, maxTravelPx, deadZone)
+                        currentOnChange(value.x, value.y)
+                        aimOffset = clampStickOffset(delta, maxTravelPx)
+                    }
+
+                    try {
+                        updateAim(down.position)
+                        down.consume()
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                change.consume()
+                                break
+                            }
+                            updateAim(change.position)
+                            change.consume()
+                        }
+                    } finally {
+                        currentOnChange(0f, 0f)
+                        aimAnchor = null
+                        aimOffset = Offset.Zero
+                    }
+                }
+            },
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        val zoneColor = Color.White.copy(alpha = opacity * 0.22f)
+        Canvas(Modifier.matchParentSize()) {
+            drawRoundRect(
+                color = zoneColor,
+                cornerRadius = CornerRadius(22.dp.toPx()),
+                style = Stroke(width = 1.dp.toPx()),
+            )
+            aimAnchor?.let { anchor ->
+                drawCircle(
+                    color = Color.White.copy(alpha = opacity * 0.32f),
+                    radius = 13.dp.toPx(),
+                    center = anchor + aimOffset,
+                    style = Stroke(width = 1.5.dp.toPx()),
+                )
+            }
+        }
+        Text(
+            text = stringResource(R.string.stream_joysticks_aim_zone_label),
+            color = Color.White.copy(alpha = opacity * 0.46f),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+    }
 }
 
 @Composable
@@ -767,12 +919,8 @@ private fun VirtualStick(
 
                     fun updateStick(position: Offset) {
                         val clamped = clampStickOffset(position - gestureCenter, maxRadius)
-                        val rawX = (clamped.x / maxRadius).coerceIn(-1f, 1f)
-                        val rawY = (clamped.y / maxRadius).coerceIn(-1f, 1f)
-                        val magnitude = sqrt(rawX * rawX + rawY * rawY).coerceIn(0f, 1f)
-                        val adjustedMagnitude = applyTouchJoystickDeadZone(magnitude, deadZone)
-                        val adjustment = if (magnitude > 0f) adjustedMagnitude / magnitude else 0f
-                        currentOnChange(rawX * adjustment, rawY * adjustment)
+                        val value = touchStickValue(clamped.x, clamped.y, maxRadius, deadZone)
+                        currentOnChange(value.x, value.y)
                         knobOffset = clamped
                     }
 
@@ -834,6 +982,8 @@ private fun VirtualStick(
         }
     }
 }
+
+private const val LOCK_ZONE_MAX_TRAVEL_DP = 72f
 
 @Composable
 private fun FaceButtonCluster(client: NativeStreamClient, opacity: Float, scale: Float, onButtonTone: () -> Unit) {

@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.nl.languageid.LanguageIdentification
 import com.google.mlkit.nl.languageid.LanguageIdentificationOptions
+import com.google.mlkit.nl.languageid.LanguageIdentifier
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.Locale
 import kotlin.coroutines.resume
@@ -76,13 +77,15 @@ internal suspend fun identifyAndroidBugReportLanguage(
     title: String,
     description: String,
 ): AndroidBugReportLanguageCheck {
-    val identifier = LanguageIdentification.getClient(
-        LanguageIdentificationOptions.Builder()
-            .setConfidenceThreshold(MIN_LANGUAGE_CANDIDATE_CONFIDENCE)
-            .build(),
-    )
+    var identifier: LanguageIdentifier? = null
     return try {
-        val candidates = identifier.identifyPossibleLanguages("${title.trim()}\n${description.trim()}")
+        val activeIdentifier = LanguageIdentification.getClient(
+            LanguageIdentificationOptions.Builder()
+                .setConfidenceThreshold(MIN_LANGUAGE_CANDIDATE_CONFIDENCE)
+                .build(),
+        )
+        identifier = activeIdentifier
+        val candidates = activeIdentifier.identifyPossibleLanguages("${title.trim()}\n${description.trim()}")
             .awaitResult()
             .map { candidate ->
                 AndroidBugReportLanguageCandidate(
@@ -99,9 +102,28 @@ internal suspend fun identifyAndroidBugReportLanguage(
             languageTag = strongest.languageTag,
             confidence = strongest.confidence,
         )
+    } catch (error: NullPointerException) {
+        // Some minified Play builds have failed inside ML Kit before the request is built. The
+        // report has already passed the English app-locale, meaningful-content, and anti-padding
+        // gates, so keep reporting available instead of surfacing an obfuscated platform NPE.
+        androidBugReportLanguageCheckAfterMlKitNullFailure(title, description)
     } finally {
-        identifier.close()
+        // A broken ML Kit client can also throw while releasing native resources. Never let cleanup
+        // replace a successful language result or block the bug report itself.
+        runCatching { identifier?.close() }
     }
+}
+
+internal fun androidBugReportLanguageCheckAfterMlKitNullFailure(
+    title: String,
+    description: String,
+): AndroidBugReportLanguageCheck {
+    androidBugReportTitleError(title)?.let { message -> throw IllegalArgumentException(message) }
+    androidBugReportDescriptionError(description)?.let { message -> throw IllegalArgumentException(message) }
+    return AndroidBugReportLanguageCheck(
+        languageTag = "en",
+        confidence = ANDROID_BUG_REPORT_MIN_ENGLISH_CONFIDENCE,
+    )
 }
 
 private suspend fun <T> Task<T>.awaitResult(): T = suspendCancellableCoroutine { continuation ->

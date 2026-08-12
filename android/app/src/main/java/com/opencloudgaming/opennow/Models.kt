@@ -221,6 +221,12 @@ enum class TouchJoystickMode {
 }
 
 @Serializable
+enum class TouchAimMode {
+    LockJoystick,
+    LockZone,
+}
+
+@Serializable
 data class TouchOffset(val x: Float = 0f, val y: Float = 0f)
 
 /**
@@ -245,6 +251,7 @@ data class AndroidTouchSettings(
     val buttonScale: Float = 1.102468f,
     val stickScale: Float = 1f,
     val joystickMode: TouchJoystickMode = TouchJoystickMode.Fixed,
+    val aimMode: TouchAimMode = TouchAimMode.LockJoystick,
     val joystickDeadZone: Float = 0f,
     val edgePaddingDp: Float = 14f,
     val bottomPaddingDp: Float = 10f,

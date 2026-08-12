@@ -663,6 +663,7 @@ internal fun StreamControlsPanel(
     onMouseDirectClickToggle: () -> Unit,
     onToggleTouchControllerStyle: () -> Unit,
     onJoystickModeToggle: () -> Unit,
+    onTouchAimModeToggle: () -> Unit,
     onJoystickDeadZoneChange: (Float) -> Unit,
     onSharpeningToggle: () -> Unit,
     onSharpeningAmountChange: (Float) -> Unit,
@@ -805,6 +806,18 @@ internal fun StreamControlsPanel(
                     item {
                         ControlSection(stringResource(R.string.stream_joysticks_title)) {
                             val dynamic = settings.androidTouch.joystickMode == TouchJoystickMode.Dynamic
+                            val lockZone = settings.androidTouch.aimMode == TouchAimMode.LockZone
+                            ControlSwitchRow(
+                                label = stringResource(R.string.stream_joysticks_aim_mode),
+                                checked = lockZone,
+                                onCheckedChange = {
+                                    onButtonTone()
+                                    onTouchAimModeToggle()
+                                },
+                                value = stringResource(
+                                    if (lockZone) R.string.stream_joysticks_lock_zone else R.string.stream_joysticks_lock_joystick,
+                                ),
+                            )
                             ControlSwitchRow(
                                 label = stringResource(R.string.stream_joysticks_dynamic),
                                 checked = dynamic,
@@ -833,7 +846,13 @@ internal fun StreamControlsPanel(
                                 onJoystickDeadZoneChange,
                             )
                             Text(
-                                stringResource(R.string.stream_joysticks_explainer),
+                                stringResource(
+                                    if (lockZone) {
+                                        R.string.stream_joysticks_lock_zone_summary
+                                    } else {
+                                        R.string.stream_joysticks_explainer
+                                    },
+                                ),
                                 color = TextMuted,
                                 style = MaterialTheme.typography.bodySmall,
                             )

@@ -44,7 +44,19 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.analyticsSharingEnabled)
         assertTrue(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
+        assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
+    }
+
+    @Test
+    fun touchAimZoneIsOptInAndPersistsWhenSelected() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedIn = OpenNowJson.decodeFromString<AppSettings>(
+            """{"androidTouch":{"aimMode":"LockZone"}}""",
+        )
+
+        assertEquals(TouchAimMode.LockJoystick, defaulted.androidTouch.aimMode)
+        assertEquals(TouchAimMode.LockZone, optedIn.androidTouch.aimMode)
     }
 
     @Test

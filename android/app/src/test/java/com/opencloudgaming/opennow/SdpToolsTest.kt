@@ -194,6 +194,26 @@ class SdpToolsTest {
     }
 
     @Test
+    fun nvstSdpHonorsConfiguredBitrateBelowTheNormalFourMbpsFloor() {
+        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 1))
+
+        assertTrue(nvst.contains("a=video.initialBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=video.initialPeakBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=vqos.bw.peakBitrateKbps:1000"))
+        assertTrue(nvst.contains("a=vqos.bw.serverPeakBitrateKbps:1000"))
+    }
+
+    @Test
+    fun nvstSdpKeepsTheNormalFourMbpsMinimumForHigherBitrateProfiles() {
+        val nvst = buildNvstSdp(StreamSettings(maxBitrateMbps = 18))
+
+        assertTrue(nvst.contains("a=vqos.bw.maximumBitrateKbps:18000"))
+        assertTrue(nvst.contains("a=vqos.bw.minimumBitrateKbps:4000"))
+    }
+
+    @Test
     fun everyResolutionCodecAndSupportedFpsProducesFixedGeometrySdp() {
         val modes = STREAM_RESOLUTION_OPTIONS.map { option ->
             Triple(option.value, option.aspectRatio, parseResolutionPixels(option.value))

@@ -212,6 +212,11 @@
     <string name="stream_joysticks_dynamic">Dynamic placement</string>
     <string name="stream_joysticks_dynamic_on">Starts centered beneath your thumb</string>
     <string name="stream_joysticks_dynamic_off">Uses the saved fixed center</string>
+    <string name="stream_joysticks_aim_mode">Touch aiming</string>
+    <string name="stream_joysticks_lock_joystick">Lock Joystick</string>
+    <string name="stream_joysticks_lock_zone">Lock Zone / Touch Aim</string>
+    <string name="stream_joysticks_lock_zone_summary">Move anywhere inside the right-side zone for finer camera aim. Release to return the aim stick to neutral.</string>
+    <string name="stream_joysticks_aim_zone_label">AIM ZONE</string>
     <string name="stream_joysticks_stick_size">Stick size</string>
     <string name="stream_joysticks_dead_zone">Dead zone</string>
     <string name="stream_joysticks_explainer">Dynamic mode keeps the saved stick area, but treats wherever your thumb first lands as neutral. This avoids sudden movement when you miss the exact center.</string>

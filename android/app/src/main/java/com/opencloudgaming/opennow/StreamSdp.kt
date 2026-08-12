@@ -282,8 +282,11 @@ object SdpTools {
         val fingerprint = Regex("a=fingerprint:sha-256 ([^\\r\\n]+)").find(localAnswer)?.groupValues?.getOrNull(1)?.trim().orEmpty()
         val threshold = Regex("a=ri\\.partialReliableThresholdMs:(\\d+)").find(offerSdp)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 30
         val bitDepth = if (settings.hdrEnabled || settings.colorQuality == ColorQuality.TenBit420 || settings.colorQuality == ColorQuality.TenBit444) 10 else 8
-        val maxBitrate = max(OFFICIAL_MIN_BITRATE_KBPS, settings.maxBitrateMbps * 1000)
-        val minBitrate = OFFICIAL_MIN_BITRATE_KBPS
+        // The settings UI intentionally allows 1-3 Mbps for severely constrained links. Keep the
+        // usual NVIDIA 4 Mbps floor for normal profiles, but never let that floor exceed the
+        // user's maximum or the server will continue sending above the selected cap.
+        val maxBitrate = max(MIN_CONFIGURABLE_BITRATE_KBPS, settings.maxBitrateMbps * 1000)
+        val minBitrate = minOf(OFFICIAL_MIN_BITRATE_KBPS, maxBitrate)
         val initialBitrate = max(minBitrate, maxBitrate / 4)
         val isHighFps = settings.fps > 60
         val isAtLeast120Fps = settings.fps >= 120
@@ -513,7 +516,7 @@ object SdpTools {
     }
 
     private const val OFFICIAL_MIN_BITRATE_KBPS = 4000
+    private const val MIN_CONFIGURABLE_BITRATE_KBPS = 1000
     private const val HIGH_RESOLUTION_AV1_SPLIT_ENCODE_PIXELS = 2_764_800
     private const val PARTIALLY_RELIABLE_GAMEPAD_MASK_ALL = 0x0f
 }
-

@@ -932,6 +932,8 @@
       "showSessionTimeRemainingInStatsOverlayHint": "The session countdown appears in the in-stream sidebar by default. Enable this to also show it in the stats overlay.",
       "sessionElapsedCounter": "Geçen Oturum Sayacı",
       "sessionElapsedCounterHint": "Akış sırasında geçen canlı oturum sayacını etkinleştirin veya devre dışı bırakın.",
+      "showSessionReport": "Show Session Report",
+      "showSessionReportHint": "Show a measured quality summary after each completed stream.",
       "sessionTimerReappear": "Oturum Zamanlayıcısı Yeniden Görünüyor",
       "sessionTimerVisibleTime": "Oturum Zamanlayıcısı Görünür Zamanı",
       "sessionTimerReappearHint": "Akış sırasında oturum zamanlayıcısının ne sıklıkta yeniden açıldığı (0, tekrarları devre dışı bırakır).",
@@ -1185,10 +1187,65 @@
     "cancel": "İptal",
     "close": "Kapat",
     "success": "Thanks — your feedback was sent.",
+    "bug": {
+      "kicker": "Diagnostics",
+      "title": "Report a bug",
+      "issueTitle": "Issue title",
+      "issueTitlePlaceholder": "Stream froze after reconnecting",
+      "description": "What happened?",
+      "descriptionPlaceholder": "What were you doing, what went wrong, what did you expect, and can you reproduce it?",
+      "meaningfulCharacters": "{{count}} / {{minimum}} meaningful characters",
+      "includeSystemInfo": "Include extra OS, GPU, and device info",
+      "includeSessionReport": "Include the latest measured session report",
+      "disclosure": "Before anything is uploaded, you can review the report and attachments. Logs are redacted. A selected session report includes the game title and measured quality, but never gameplay, passwords, account tokens, or your library list.",
+      "review": "Review & send",
+      "reviewHint": "Review the report fields and selected attachments before sending them to the PrintedWaste bug-report API.",
+      "appVersionRequired": "App version and build (required by the report API)",
+      "systemMetadata": "OS, GPU, and device metadata",
+      "noAttachments": "No optional diagnostic attachments selected",
+      "consent": "I understand what will be uploaded and consent to send this report to the PrintedWaste API.",
+      "consentRequired": "Confirm that you understand what will be uploaded before sending.",
+      "back": "Geri",
+      "send": "Send to developer",
+      "success": "Thanks — your bug report was sent to the developer.",
+      "reference": "Reference: {{reference}}"
+    },
     "errors": {
       "empty": "Please enter a message before sending.",
       "notConfigured": "Feedback is unavailable because PostHog is not configured in this build.",
       "sendFailed": "Couldn't send feedback. Please try again."
     }
+  },
+  "sessionReport": {
+    "kicker": "Session quality",
+    "title": "Session report",
+    "scoreLabel": "Session score {{score}} out of 100",
+    "summary": "Measured over {{duration}}",
+    "limitedData": "Limited data: only {{count}} samples were available.",
+    "ratings": {
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "poor": "Needs work"
+    },
+    "connection": "Connection",
+    "metrics": {
+      "latency": "Latency",
+      "speed": "Stream speed",
+      "loss": "Packet loss",
+      "jitter": "Jitter",
+      "fps": "Frame rate",
+      "decode": "Decode time"
+    },
+    "peak": "peak {{value}}",
+    "profile": "Stream profile",
+    "requested": "Requested",
+    "delivered": "Delivered",
+    "route": "Route",
+    "changes": "Changes detected",
+    "recommendations": "Recommendations",
+    "dontShowAgain": "Don't show session reports again",
+    "close": "Kapat",
+    "reportBug": "Experienced a bug? Report it"
   }
 }

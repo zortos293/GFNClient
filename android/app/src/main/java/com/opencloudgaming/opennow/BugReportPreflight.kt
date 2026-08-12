@@ -9,13 +9,27 @@ internal enum class BugReportPreflightTone {
     Warning,
 }
 
+internal enum class BugReportPreflightArea {
+    Experimental,
+    Connection,
+    VideoDevice,
+    Input,
+}
+
 internal data class BugReportPreflightCard(
+    val area: BugReportPreflightArea,
     val label: String,
     val title: String,
     val summary: String,
     val facts: List<String>,
     val recommendations: List<SessionReportFinding>,
     val tone: BugReportPreflightTone,
+)
+
+internal data class BugReportKnownIssueBlock(
+    val key: String,
+    val title: String,
+    val action: String,
 )
 
 internal data class BugReportPreflightDeck(
@@ -109,11 +123,12 @@ internal fun buildBugReportPreflightDeck(
 
 private fun buildExperimentalNativeStreamerPreflightCard(): BugReportPreflightCard =
     BugReportPreflightCard(
+        area = BugReportPreflightArea.Experimental,
         label = "EXPERIMENTAL FEATURE DETECTED",
         title = "Native streamer is enabled",
         summary =
             "Native streamer changes the hardware decoder with experimental vendor settings. " +
-                "Bug reports captured while it is enabled will be ignored.",
+                "Turn it off and reproduce first, or explicitly acknowledge sending anyway.",
         facts = listOf(
             "Native streamer (Experimental): On",
             "Unsupported report configuration",
@@ -181,6 +196,7 @@ private fun buildConnectionPreflightCard(
             "Android did not expose enough live network data to make a specific recommendation."
     }
     return BugReportPreflightCard(
+        area = BugReportPreflightArea.Connection,
         label = "CONNECTION CHECK",
         title = title,
         summary = summary,
@@ -288,6 +304,7 @@ private fun buildVideoDevicePreflightCard(
             "Reproduce the visual issue while the stream is active so the report can capture delivery data."
     }
     return BugReportPreflightCard(
+        area = BugReportPreflightArea.VideoDevice,
         label = "VIDEO + DEVICE",
         title = title,
         summary = summary,
@@ -349,6 +366,7 @@ private fun buildInputPreflightCard(inputDiagnostics: String): BugReportPrefligh
         else -> BugReportPreflightTone.Notice
     }
     return BugReportPreflightCard(
+        area = BugReportPreflightArea.Input,
         label = "INPUT EVIDENCE",
         title = when (tone) {
             BugReportPreflightTone.Warning -> "Capture the affected input first"
@@ -370,6 +388,97 @@ private fun buildInputPreflightCard(inputDiagnostics: String): BugReportPrefligh
         tone = tone,
     )
 }
+
+internal fun bugReportKnownIssueBlock(
+    title: String,
+    description: String,
+    deck: BugReportPreflightDeck,
+): BugReportKnownIssueBlock? {
+    val reportText = "$title $description".lowercase(Locale.ROOT)
+    val experimental = deck.cards.firstOrNull {
+        it.area == BugReportPreflightArea.Experimental && it.tone == BugReportPreflightTone.Warning
+    }
+    if (experimental != null) {
+        return BugReportKnownIssueBlock(
+            key = "experimental-native-streamer",
+            title = "Turn off Native streamer first",
+            action = "Restart the stream with Native streamer off, then reproduce the issue.",
+        )
+    }
+
+    val connection = deck.cards.firstOrNull {
+        it.area == BugReportPreflightArea.Connection && it.tone == BugReportPreflightTone.Warning
+    }
+    if (connection != null && reportText.containsAnyWholeTerm(BUG_REPORT_NETWORK_SYMPTOM_PATTERNS)) {
+        val twoPointFourGhz = connection.facts.any { it.contains("2.4 GHz", ignoreCase = true) }
+        return BugReportKnownIssueBlock(
+            key = if (twoPointFourGhz) "network-2.4ghz" else "network-measured",
+            title = if (twoPointFourGhz) "2.4 GHz likely explains this" else "Connection issue detected",
+            action = if (twoPointFourGhz) {
+                "Use 5/6 GHz Wi-Fi, Ethernet, or stable cellular, then try again."
+            } else {
+                connection.recommendations.firstOrNull()?.compactPreflightAction()
+                    ?: "Fix the measured connection warning, then reproduce the issue."
+            },
+        )
+    }
+
+    val video = deck.cards.firstOrNull {
+        it.area == BugReportPreflightArea.VideoDevice && it.tone == BugReportPreflightTone.Warning
+    }
+    if (video != null && reportText.containsAnyWholeTerm(BUG_REPORT_VIDEO_SYMPTOM_PATTERNS)) {
+        return BugReportKnownIssueBlock(
+            key = "video-device-measured",
+            title = "Local video issue detected",
+            action = video.recommendations.firstOrNull()?.compactPreflightAction()
+                ?: "Apply the video or device fix shown above, then reproduce the issue.",
+        )
+    }
+
+    val input = deck.cards.firstOrNull {
+        it.area == BugReportPreflightArea.Input && it.tone == BugReportPreflightTone.Warning
+    }
+    if (input != null && reportText.containsAnyWholeTerm(BUG_REPORT_INPUT_SYMPTOM_PATTERNS)) {
+        return BugReportKnownIssueBlock(
+            key = "input-measured",
+            title = "Input path issue detected",
+            action = input.recommendations.firstOrNull()?.compactPreflightAction()
+                ?: "Reconnect the input path and reproduce the issue before reporting.",
+        )
+    }
+    return null
+}
+
+internal fun bugReportKnownIssueAllowsSubmission(
+    block: BugReportKnownIssueBlock?,
+    acknowledgedBlockKey: String?,
+): Boolean = block == null || block.key == acknowledgedBlockKey
+
+private fun String.containsAnyWholeTerm(patterns: List<Regex>): Boolean = patterns.any { it.containsMatchIn(this) }
+
+private fun SessionReportFinding.compactPreflightAction(): String {
+    val firstSentence = detail.trim().substringBefore('.').trim()
+    return if (firstSentence.isNotEmpty()) "$firstSentence." else title
+}
+
+private fun bugReportTermPatterns(vararg terms: String): List<Regex> = terms.map { term ->
+    Regex("(^|[^a-z0-9])${Regex.escape(term)}([^a-z0-9]|$)")
+}
+
+private val BUG_REPORT_NETWORK_SYMPTOM_PATTERNS = bugReportTermPatterns(
+    "lag", "laggy", "latency", "ping", "delay", "delayed", "jitter", "packet loss",
+    "buffering", "stutter", "stuttering", "choppy", "pixelated", "blurry", "slow",
+)
+
+private val BUG_REPORT_VIDEO_SYMPTOM_PATTERNS = bugReportTermPatterns(
+    "fps", "frame", "frames", "video", "decoder", "decode", "freeze", "frozen", "blurry",
+    "pixelated", "stutter", "stuttering", "choppy", "lag", "laggy", "slow", "overheat", "hot",
+)
+
+private val BUG_REPORT_INPUT_SYMPTOM_PATTERNS = bugReportTermPatterns(
+    "input", "mouse", "keyboard", "controller", "gamepad", "touch", "button", "joystick",
+    "stick", "click", "cursor",
+)
 
 private fun streamResolutionLabelForPreflight(settings: StreamSettings): String {
     val (width, height) = streamResolutionPixels(settings)

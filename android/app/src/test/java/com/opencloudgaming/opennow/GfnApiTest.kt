@@ -20,6 +20,15 @@ import org.junit.Test
 
 class GfnApiTest {
     @Test
+    fun shieldDetectionRequiresAnNvidiaShieldAndroidTv() {
+        assertTrue(isNvidiaShieldTvDevice(true, "NVIDIA", "SHIELD Android TV"))
+        assertTrue(isNvidiaShieldTvDevice(true, " nvidia ", "Nvidia Shield"))
+        assertFalse(isNvidiaShieldTvDevice(false, "NVIDIA", "SHIELD Android TV"))
+        assertFalse(isNvidiaShieldTvDevice(true, "Google", "Chromecast"))
+        assertFalse(isNvidiaShieldTvDevice(true, "NVIDIA", "Jetson"))
+    }
+
+    @Test
     fun recoveryClaimDoesNotResumeAnAlreadyReadySession() {
         assertFalse(shouldResumeClaimedSession(status = 1, recoveryMode = false))
         assertTrue(shouldResumeClaimedSession(status = 2, recoveryMode = false))
@@ -356,6 +365,36 @@ class GfnApiTest {
     }
 
     @Test
+    fun cloudMatchSessionRequestCarriesArabicAndPortugueseLocales() {
+        val base = "https://np-ams-06.cloudmatchbeta.nvidiagrid.net"
+        val arabicUrl = cloudMatchSessionRequestUrl(
+            base,
+            StreamSettings(keyboardLayout = "ar-SA", gameLanguage = "ar_SA"),
+        )
+        val portugueseUrl = cloudMatchSessionRequestUrl(
+            base,
+            StreamSettings(keyboardLayout = "pt-PT", gameLanguage = "pt_PT"),
+            sessionId = "session 1",
+        )
+
+        assertTrue(arabicUrl.contains("keyboardLayout=ar-SA"))
+        assertTrue(arabicUrl.contains("languageCode=ar_SA"))
+        assertTrue(portugueseUrl.contains("/v2/session/session+1?"))
+        assertTrue(portugueseUrl.contains("keyboardLayout=pt-PT"))
+        assertTrue(portugueseUrl.contains("languageCode=pt_PT"))
+    }
+
+    @Test
+    fun androidAppLocalesMapToCloudMatchCatalogLocales() {
+        assertEquals("ar_SA", gfnLocaleForAndroidLanguageTag("ar"))
+        assertEquals("fr_FR", gfnLocaleForAndroidLanguageTag("fr-CA"))
+        assertEquals("pt_PT", gfnLocaleForAndroidLanguageTag("pt"))
+        assertEquals("pt_BR", gfnLocaleForAndroidLanguageTag("pt-BR"))
+        assertEquals("zh_CN", gfnLocaleForAndroidLanguageTag("zh-Hans"))
+        assertEquals("en_US", gfnLocaleForAndroidLanguageTag("unsupported"))
+    }
+
+    @Test
     fun nvidiaHighPerformanceGamepadLaunchUsesNativeDesktopIdentity() {
         val headers = cloudMatchHeaders(
             token = "token",
@@ -432,7 +471,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun cloudMatchUsesNativeAndroidTvIdentityForHighQualityTvProfile() {
+    fun cloudMatchUsesDesktopNativeIdentityForHighQualityShieldProfile() {
         val headers = cloudMatchHeaders(
             token = "token",
             clientId = "client",
@@ -442,6 +481,29 @@ class GfnApiTest {
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             preferNativeDesktopMode = true,
             isAndroidTv = true,
+            isNvidiaShield = true,
+        )
+
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
+        assertEquals("WINDOWS", headers["nv-device-os"])
+        assertEquals("DESKTOP", headers["nv-device-type"])
+        assertTrue(headers["User-Agent"].orEmpty().contains("Linux; Android"))
+        assertFalse(headers["User-Agent"].orEmpty().contains("Android-Generic-TV"))
+    }
+
+    @Test
+    fun cloudMatchKeepsAndroidNativeIdentityForOtherHighQualityTvProfiles() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+            streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            preferNativeDesktopMode = true,
+            isAndroidTv = true,
+            isNvidiaShield = false,
         )
 
         assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
@@ -885,7 +947,7 @@ class GfnApiTest {
     }
 
     @Test
-    fun androidTv4kHdrClaimUsesNativeTvAllocationAndPreservesRequestedProfile() {
+    fun shieldFourKHdrClaimUsesDesktopAllocationAndPreservesRequestedProfile() {
         val settings = StreamSettings(
             resolution = "3840x2160",
             aspectRatio = "16:9",
@@ -902,13 +964,14 @@ class GfnApiTest {
             streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             isAndroidTv = true,
+            isNvidiaShield = true,
         )
         val sessionRequestData = body.getValue("sessionRequestData").jsonObject
         val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
         val features = sessionRequestData.getValue("requestedStreamingFeatures").jsonObject
 
-        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
-        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(3840, monitor.getValue("widthInPixels").jsonPrimitive.int)
         assertEquals(2160, monitor.getValue("heightInPixels").jsonPrimitive.int)
         assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
@@ -921,7 +984,23 @@ class GfnApiTest {
     }
 
     @Test
-    fun androidTv1080pHdrAlsoRequiresNativeTvAllocation() {
+    fun otherAndroidTvFourKClaimKeepsAndroidPlatformAllocation() {
+        val sessionRequestData = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = StreamSettings(resolution = "3840x2160", fps = 60, codec = VideoCodec.H265),
+            streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            isAndroidTv = true,
+            isNvidiaShield = false,
+        ).getValue("sessionRequestData").jsonObject
+
+        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(false, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun hdrClaimAlsoRequiresDesktopAllocationAt1080p() {
         val settings = StreamSettings(
             resolution = "1920x1080",
             fps = 60,
@@ -937,10 +1016,10 @@ class GfnApiTest {
             deviceId = "device",
             settings = settings,
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
-            isAndroidTv = true,
         ).getValue("sessionRequestData").jsonObject
 
-        assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
         assertEquals(100, sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject.getValue("dpi").jsonPrimitive.int)
     }
 

@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow
 
 import android.Manifest
 import android.app.PictureInPictureParams
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -64,6 +65,10 @@ class MainActivity : ComponentActivity() {
     private var streamPictureInPictureAspectRatio = Rational(16, 9)
     private var startupDataReady = false
     private var pendingExternalLaunchIntent: Intent? = null
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(localizedAndroidContext(newBase))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

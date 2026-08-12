@@ -992,6 +992,25 @@ internal enum class AndroidControllerFamily {
     Generic,
 }
 
+internal fun androidGamepadConnectionBitmap(
+    controllerId: Int,
+    connected: Boolean,
+    physicalControllerFamily: AndroidControllerFamily?,
+): Int {
+    if (!connected) return 0
+    val id = controllerId.coerceIn(0, 3)
+    val connectedBit = 1 shl id
+    // The host protocol uses bit (slot + 8) to distinguish an Xbox/XInput-style pad from the
+    // PlayStation-style identity used by its native controller mapping. Unknown controllers and
+    // OpenNOW's virtual pad retain the established XInput fallback for compatibility.
+    val xinputStyleBit = if (physicalControllerFamily == AndroidControllerFamily.PlayStation) {
+        0
+    } else {
+        1 shl (id + 8)
+    }
+    return connectedBit or xinputStyleBit
+}
+
 internal object AndroidControllerInput {
     fun hasControllerSource(source: Int): Boolean =
         source.hasSource(InputDevice.SOURCE_GAMEPAD) ||
@@ -1052,11 +1071,12 @@ internal object AndroidControllerInput {
     fun controllerFamily(device: InputDevice?): AndroidControllerFamily? =
         device
             ?.takeIf(::isControllerDevice)
-            ?.let { controllerFamily(it.name) }
+            ?.let { controllerFamily(it.name, it.vendorId) }
 
-    internal fun controllerFamily(name: String?): AndroidControllerFamily {
+    internal fun controllerFamily(name: String?, vendorId: Int = 0): AndroidControllerFamily {
         val normalized = name.orEmpty().lowercase(Locale.US)
         return when {
+            vendorId == SONY_VENDOR_ID -> AndroidControllerFamily.PlayStation
             normalized.contains("stadia") ||
                 normalized.contains("google") ||
                 normalized.contains("chromecast") -> AndroidControllerFamily.Google
@@ -1066,7 +1086,7 @@ internal object AndroidControllerInput {
             normalized.contains("dualsense") ||
                 normalized.contains("dualshock") ||
                 normalized.contains("playstation") ||
-                normalized == "wireless controller" -> AndroidControllerFamily.PlayStation
+                normalized.contains("wireless controller") -> AndroidControllerFamily.PlayStation
             normalized.contains("switch") || normalized.contains("nintendo") -> AndroidControllerFamily.Nintendo
             else -> AndroidControllerFamily.Generic
         }
@@ -1078,6 +1098,8 @@ internal object AndroidControllerInput {
             keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
 
     private fun Int.hasSource(source: Int): Boolean = (this and source) == source
+
+    private const val SONY_VENDOR_ID = 0x054c
 }
 
 internal data class AndroidControllerSlotAssignment(
@@ -1407,4 +1429,3 @@ internal class SteamOverlayChordState {
         const val TOP_BUTTONS = 0x0030
     }
 }
-

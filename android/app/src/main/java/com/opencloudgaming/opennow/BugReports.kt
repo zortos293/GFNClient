@@ -20,7 +20,6 @@ internal const val ANDROID_BUG_REPORT_ENDPOINT =
     "https://api.printedwaste.com/releases/opennow/bug-reports"
 internal const val ANDROID_BUG_REPORT_MAX_FILES = 5
 internal const val ANDROID_BUG_REPORT_MAX_FILE_BYTES = 10L * 1024L * 1024L
-internal const val ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS = 50
 internal const val ANDROID_BUG_REPORT_REPORTER_ID_PREFIX = "br1_"
 
 enum class AndroidBugReportVersionCheckStatus {
@@ -78,6 +77,8 @@ internal data class AndroidBugReport(
     val versionName: String,
     val versionCode: String,
     val reporterId: String,
+    val appLanguageSelectionTag: String,
+    val languageCheck: AndroidBugReportLanguageCheck,
     val metadata: String,
     val files: List<AndroidBugReportAttachment>,
 )
@@ -112,9 +113,14 @@ internal fun androidBugReportReporterId(stableDeviceId: String): String {
 
 internal fun buildAndroidBugReportMetadata(
     logFileName: String,
+    knownIssueOverrideKey: String? = null,
 ): String = buildJsonObject {
     put("source", "settings-advanced-debug-logs")
     put("attachment", logFileName)
+    knownIssueOverrideKey?.trim()?.takeIf { it.isNotEmpty() }?.let { key ->
+        put("knownIssueOverride", true)
+        put("knownIssueKey", key)
+    }
 }.toString()
 
 internal fun buildAndroidBugReportRequest(
@@ -123,10 +129,19 @@ internal fun buildAndroidBugReportRequest(
 ): Request {
     val title = report.title.trim()
     val description = report.description.trim()
-    require(title.isNotEmpty()) { "Enter a short issue title" }
-    require(description.length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS) {
-        "Describe what happened in at least $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS characters"
+    androidBugReportTitleError(title)?.let { error -> throw IllegalArgumentException(error) }
+    androidBugReportDescriptionError(description)?.let { error -> throw IllegalArgumentException(error) }
+    require(androidAppLocaleIsEnglish(report.appLanguageSelectionTag)) {
+        "Set the OpenNOW or device language to English before sending a bug report"
     }
+    androidBugReportLanguageError(
+        listOf(
+            AndroidBugReportLanguageCandidate(
+                languageTag = report.languageCheck.languageTag,
+                confidence = report.languageCheck.confidence,
+            ),
+        ),
+    )?.let { error -> throw IllegalArgumentException(error) }
     require(report.versionName.isNotBlank()) { "App version is unavailable" }
     require(report.versionCode.isNotBlank()) { "App build is unavailable" }
     require(report.reporterId.matches(ANDROID_BUG_REPORT_REPORTER_ID_REGEX)) {

@@ -16,6 +16,23 @@
     <string name="search_settings">Search settings</string>
     <string name="settings_category_general">General</string>
     <string name="settings_category_general_summary">Updates, privacy, and app data</string>
+    <string name="settings_section_language">Language</string>
+    <string name="settings_app_language">App language</string>
+    <string name="app_language_system_default">System default</string>
+    <string name="app_language_english">English</string>
+    <string name="app_language_arabic" translatable="false">العربية</string>
+    <string name="app_language_german" translatable="false">Deutsch</string>
+    <string name="app_language_spanish" translatable="false">Español</string>
+    <string name="app_language_french" translatable="false">Français</string>
+    <string name="app_language_japanese" translatable="false">日本語</string>
+    <string name="app_language_korean" translatable="false">한국어</string>
+    <string name="app_language_dutch" translatable="false">Nederlands</string>
+    <string name="app_language_polish" translatable="false">Polski</string>
+    <string name="app_language_portuguese" translatable="false">Português</string>
+    <string name="app_language_romanian" translatable="false">Română</string>
+    <string name="app_language_russian" translatable="false">Русский</string>
+    <string name="app_language_turkish" translatable="false">Türkçe</string>
+    <string name="app_language_simplified_chinese" translatable="false">简体中文</string>
     <string name="settings_category_stream">Stream</string>
     <string name="settings_category_stream_summary">Resolution, FPS, codec, HDR, proxy</string>
     <string name="settings_category_input">Input</string>
@@ -57,6 +74,66 @@
     <string name="controller_action_favorite">Favorite</string>
     <string name="controller_action_unfavorite">Unfavorite</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_minimize">Minimize</string>
+    <string name="action_view">View</string>
+    <string name="action_play_on_tv_generic">Play on TV</string>
+    <string name="queue_starting_stream">Starting stream</string>
+    <string name="queue_position">Queue position %1$d</string>
+    <string name="queue_waiting_for_rig">Waiting for a rig</string>
+    <string name="queue_connecting_stream">Connecting stream</string>
+    <string name="queue_resuming_session">Resuming session</string>
+    <string name="queue_setting_up_rig">Setting up rig</string>
+    <string name="queue_starting_session">Starting session</string>
+    <string name="queue_status">Queue status</string>
+    <string name="queue_ready_title">%1$s is ready to play!</string>
+    <string name="queue_ready_body">Your GFN queue is done. Tap to return to the app.</string>
+    <string name="stream_background_notification">Streaming continues while the screen is off</string>
+    <string name="catalog_not_owned">Not owned</string>
+    <string name="catalog_unknown_publisher">Unknown publisher</string>
+    <string name="catalog_resume_cloud_session">Resume cloud session</string>
+    <string name="catalog_app_id">App %1$s</string>
+    <string name="queue_short_position">Queue %1$d</string>
+    <string name="common_starting">Starting</string>
+    <string name="catalog_no_description">No description is available for this game yet.</string>
+    <string name="action_next">Next</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_launch">Launch</string>
+    <string name="action_skip">Skip</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="action_send">Send</string>
+    <string name="action_ok">OK</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_install">Install</string>
+    <string name="action_manage">Manage</string>
+    <string name="action_allow">Allow</string>
+    <string name="common_active">Active</string>
+    <string name="common_ready">Ready</string>
+    <string name="queue_checking">Checking</string>
+    <string name="queue_best_route">Best available route</string>
+    <string name="queue_metric_ahead">Ahead</string>
+    <string name="queue_metric_wait">Wait</string>
+    <string name="session_timer">Session timer</string>
+    <string name="settings_clear_cache">Clear cache</string>
+    <string name="settings_reset_tutorial">Reset tutorial</string>
+    <string name="settings_reset_settings">Reset settings</string>
+    <string name="settings_reset_and_relaunch">Reset and relaunch</string>
+    <string name="account_switch">Switch</string>
+    <string name="account_add">Add account</string>
+    <string name="account_sign_out">Sign out</string>
+    <string name="account_sign_out_all">Sign out all accounts</string>
+    <string name="account_choose_provider">Choose provider</string>
+    <string name="account_play_time_stats">Play time stats</string>
+    <string name="account_cloud_storage">Cloud storage</string>
+    <string name="account_add_storage">Add storage</string>
+    <string name="account_change_storage_location">Change storage location</string>
+    <string name="stream_no_active">No active stream</string>
+    <string name="stream_back_to_library">Back to library</string>
+    <string name="stream_end_cloud_session">End cloud session</string>
+    <string name="stream_guide_step">Step %1$d of %2$d</string>
+    <string name="stream_guide_press_done">Press Done</string>
+    <string name="stream_controller_detected">Controller detected</string>
+    <string name="stream_controller_hidden">The on-screen controller was hidden because a physical controller is connected.</string>
+    <string name="common_dont_show_again">Don\'t show again</string>
 
     <!-- Reusable state words. One pair each, so the same boolean stops reading "On/Off" in one
          row and "Visible/Hidden" in the next for no reason. -->
@@ -231,6 +308,9 @@
     <string name="settings_section_stream_video">Video</string>
     <string name="settings_section_stream_connection">Connection</string>
     <string name="settings_section_audio_keyboard">Audio and keyboard</string>
+    <string name="settings_keyboard_layout">Keyboard layout</string>
+    <string name="settings_game_language">Game language</string>
+    <string name="settings_clipboard_paste">Clipboard paste</string>
     <string name="settings_section_pointer_input">Pointer input</string>
     <string name="settings_mouse_lock">Mouse lock</string>
     <string name="settings_mouse_lock_desc">Keep an external mouse captured inside the game while streaming. Opening Stream Controls releases it.</string>

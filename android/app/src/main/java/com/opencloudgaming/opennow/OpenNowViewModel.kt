@@ -217,7 +217,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     private val sessionTimerAnchorStore = SessionTimerAnchorStore(application)
     private val authStore = openNowApplication.authStore
     private val authRepository = openNowApplication.authRepository
-    private val catalogRepository = GfnCatalogRepository(http)
+    private val catalogRepository = GfnCatalogRepository(http) {
+        gfnLocaleForAndroidLanguageTag(currentAndroidAppLocale(getApplication()).effectiveLanguageTag)
+    }
     private val catalogCacheStore = CatalogCacheStore(application)
     private val queuedGameStore = QueuedGameStore(application)
     private val subscriptionRepository = GfnSubscriptionRepository(http)
@@ -607,18 +609,24 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         _state.update { it.copy(bugReportSubmission = BugReportSubmissionState()) }
     }
 
-    fun submitBugReport(title: String, description: String) {
+    fun submitBugReport(title: String, description: String) =
+        submitBugReport(title, description, knownIssueOverrideKey = null)
+
+    fun submitBugReport(title: String, description: String, knownIssueOverrideKey: String?) {
         if (state.value.bugReportSubmission.uploading) return
         val snapshot = state.value
         val versionBlock = androidBugReportBlockMessage(
             update = snapshot.androidUpdate,
             versionCheck = snapshot.bugReportVersionCheck,
         )
+        val appLocale = currentAndroidAppLocale(getApplication())
+        val contentError = androidBugReportTitleError(title)
+            ?: androidBugReportDescriptionError(description)
         val validationError = when {
             versionBlock != null -> versionBlock
-            title.isBlank() -> "Enter a short issue title"
-            description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS ->
-                "Describe what happened in at least $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS characters"
+            !appLocale.bugReportsAllowed ->
+                "Set the OpenNOW or device language to English before sending a bug report"
+            contentError != null -> contentError
             else -> null
         }
         if (validationError != null) {
@@ -634,8 +642,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             try {
+                val languageCheck = identifyAndroidBugReportLanguage(title, description)
                 val logFileName = debugLogFileName()
-                val metadata = buildAndroidBugReportMetadata(logFileName)
+                val metadata = buildAndroidBugReportMetadata(logFileName, knownIssueOverrideKey)
                 val logBytes = withContext(Dispatchers.Default) {
                     sanitizedDebugLogText().toByteArray(Charsets.UTF_8)
                 }
@@ -647,6 +656,8 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         versionName = BuildConfig.VERSION_NAME,
                         versionCode = BuildConfig.VERSION_CODE.toString(),
                         reporterId = androidBugReportReporterId(authStore.stableDeviceId()),
+                        appLanguageSelectionTag = appLocale.bugReportLanguageTag.orEmpty(),
+                        languageCheck = languageCheck,
                         metadata = metadata,
                         files = listOf(
                             AndroidBugReportAttachment(
@@ -657,7 +668,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         ),
                     ),
                 )
-                recordDebugEvent("bug-report", "PrintedWaste bug report submitted")
+                recordDebugEvent(
+                    "bug-report",
+                    "PrintedWaste bug report submitted knownIssueOverride=${knownIssueOverrideKey ?: "none"}",
+                )
                 _state.update {
                     it.copy(
                         bugReportSubmission = BugReportSubmissionState(
@@ -1733,7 +1747,9 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 return@launch
             }
             val requestedSettings = streamSettingsBeforeDeviceAdjustment()
-            val settings = requestedSettings.adjustedForDevice(state.value.codecReport)
+            val deviceAdjustedSettings = requestedSettings.adjustedForDevice(state.value.codecReport)
+            val launchNetwork = AndroidRuntimeDiagnostics.networkSnapshot(getApplication())
+            val settings = deviceAdjustedSettings.adjustedForCurrentNetwork(launchNetwork)
             prepareSessionReport(
                 gameTitle = game.title,
                 selectedSettings = state.value.settings.stream,
@@ -1744,6 +1760,15 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 recordDebugEvent(
                     "launch",
                     "Adjusted stream settings requested=${requestedSettings.debugSummary()} effective=${settings.debugSummary()}",
+                )
+            }
+            if (settings.maxBitrateMbps < deviceAdjustedSettings.maxBitrateMbps) {
+                recordDebugEvent(
+                    "launch",
+                    "Capped stream bitrate for current network requested=${deviceAdjustedSettings.maxBitrateMbps} " +
+                        "effective=${settings.maxBitrateMbps} network=${launchNetwork.networkKind.logValue} " +
+                        "downKbps=${launchNetwork.networkDownstreamKbps ?: 0} " +
+                        "wifiMhz=${launchNetwork.wifiFrequencyMhz ?: 0} wifiBand=${launchNetwork.wifiBand.logValue}",
                 )
             }
             val token = auth.tokens.idToken ?: auth.tokens.accessToken

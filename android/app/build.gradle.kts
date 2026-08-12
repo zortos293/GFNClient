@@ -58,8 +58,8 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
         targetSdk = 36
-        versionCode = 76
-        versionName = "1.2.0"
+        versionCode = 82
+        versionName = "1.2.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
@@ -164,6 +164,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.4.0")
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
     implementation("com.google.android.play:app-update:2.1.0")
+    implementation("com.google.mlkit:language-id:17.0.6")
     implementation("io.github.webrtc-sdk:android:144.7559.09")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")

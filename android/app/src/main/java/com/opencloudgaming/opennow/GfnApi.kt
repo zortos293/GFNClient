@@ -159,9 +159,7 @@ private val NVIDIA_NATIVE_TOUCH_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     desktopMonitorDescriptor = true,
 )
 
-// High-quality Android TV sessions need a native-TV transport identity. The Browser/PHONE
-// allocation is limited to the browser mode matrix and CloudMatch can silently return 1080p for a
-// 4K request or reject HDR during session creation.
+// Default high-quality allocation for Android TVs other than an explicitly detected SHIELD.
 private val NVIDIA_NATIVE_TV_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
     platformName = "android",
     persistGameSettings = false,
@@ -187,15 +185,17 @@ private val ALLIANCE_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
 )
 
 // NVIDIA's Browser/WebRTC identity preserves the standard mobile allocation, but CloudMatch limits
-// its mode matrix and rejects HDR requests from that client class. Use a native identity only for
-// explicit launches that need the high-quality mode matrix; Android TV keeps an Android-native
-// identity while desktop-class handset launches use the existing Windows-native identity. Generic
+// its mode matrix and rejects HDR requests from that client class. Use the internally consistent
+// desktop-native identity only for explicit gamepad launches that need the high-quality mode
+// matrix. NVIDIA SHIELD is the one TV exception: its Android/native allocation silently provisioned
+// 1080p for a captured 4K request. Other Android TVs retain the Android/native identity. Generic
 // follow-up requests stay on the browser identity so they cannot change an existing allocation.
 private fun cloudMatchClientIdentity(
     streamingBaseUrl: String?,
     appLaunchMode: Int? = null,
     preferNativeDesktopMode: Boolean = false,
     isAndroidTv: Boolean = false,
+    isNvidiaShield: Boolean = false,
 ): CloudMatchClientIdentity {
     // Touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
     // with Android os + TABLET device type, so the server allocates the full desktop
@@ -206,6 +206,7 @@ private fun cloudMatchClientIdentity(
     }
     val requestedNativeIdentity = when {
         appLaunchMode == null || !preferNativeDesktopMode -> null
+        isAndroidTv && isNvidiaShield -> NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
         isAndroidTv -> NVIDIA_NATIVE_TV_CLOUD_MATCH_IDENTITY
         else -> NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
     }
@@ -222,6 +223,15 @@ private fun cloudMatchClientIdentity(
     return requestedNativeIdentity ?: NVIDIA_BROWSER_CLOUD_MATCH_IDENTITY
 }
 
+internal fun isNvidiaShieldTvDevice(
+    androidTvProfile: Boolean,
+    manufacturer: String?,
+    model: String?,
+): Boolean =
+    androidTvProfile &&
+        manufacturer?.trim()?.equals("NVIDIA", ignoreCase = true) == true &&
+        model?.contains("SHIELD", ignoreCase = true) == true
+
 /**
  * Server-side values, chosen when the session is created. They decide which virtual input devices
  * the host sets up, which is why the choice cannot be revisited once the game is running.
@@ -237,6 +247,33 @@ internal object GfnAppLaunchMode {
 }
 private const val LIBRARY_WITH_TIME_QUERY_HASH = "7f54d6bbbf3b1c09d0e5264dfa36f0f4aaf5e2678f2089f0cbf0d4dda18c3af9"
 private const val DEFAULT_LOCALE = "en_US"
+
+internal fun gfnLocaleForAndroidLanguageTag(languageTag: String): String {
+    val locale = Locale.forLanguageTag(languageTag.trim().replace('_', '-'))
+    return when (locale.language.lowercase(Locale.US)) {
+        "ar" -> "ar_SA"
+        "de" -> "de_DE"
+        "es" -> "es_ES"
+        "fr" -> "fr_FR"
+        "ja" -> "ja_JP"
+        "ko" -> "ko_KR"
+        "nl" -> "nl_NL"
+        "pl" -> "pl_PL"
+        "pt" -> if (locale.country.equals("BR", ignoreCase = true)) "pt_BR" else "pt_PT"
+        "ro" -> "ro_RO"
+        "ru" -> "ru_RU"
+        "tr" -> "tr_TR"
+        "zh" -> if (
+            locale.script.equals("Hant", ignoreCase = true) ||
+            locale.country.uppercase(Locale.US) in setOf("TW", "HK", "MO")
+        ) {
+            "zh_TW"
+        } else {
+            "zh_CN"
+        }
+        else -> DEFAULT_LOCALE
+    }
+}
 private const val DEFAULT_CATALOG_FETCH_COUNT = 120
 private const val MAX_CATALOG_PAGES = 3
 private const val MAX_CATALOG_REQUEST_PAGES = 50
@@ -495,12 +532,14 @@ internal fun buildMinimalClaimRequestBody(
     streamingBaseUrl: String? = null,
     appLaunchMode: Int = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
     isAndroidTv: Boolean = false,
+    isNvidiaShield: Boolean = false,
 ): JsonObject {
     val identity = cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings?.requiresNativeDesktopCloudMatchMode() == true,
         isAndroidTv = isAndroidTv,
+        isNvidiaShield = isNvidiaShield,
     )
     val profile = settings?.requestProfile()
     return buildJsonObject {
@@ -773,14 +812,17 @@ internal fun cloudMatchHeaders(
     appLaunchMode: Int? = null,
     preferNativeDesktopMode: Boolean = false,
     isAndroidTv: Boolean = false,
+    isNvidiaShield: Boolean = false,
 ): Headers {
     val identity = cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
         preferNativeDesktopMode = preferNativeDesktopMode,
         isAndroidTv = isAndroidTv,
+        isNvidiaShield = isNvidiaShield,
     )
     val userAgent = when {
+        identity == NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY -> identity.userAgent
         isAndroidTv -> GFN_ANDROID_TV_USER_AGENT
         appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY -> GFN_ANDROID_TOUCH_USER_AGENT
         else -> identity.userAgent
@@ -1686,11 +1728,16 @@ internal fun mergeSupplementalPublicGameVariants(
 
 class GfnCatalogRepository(
     private val http: OkHttpClient = defaultHttpClient(),
+    private val localeProvider: () -> String = { DEFAULT_LOCALE },
 ) {
     private data class CachedVpcId(val value: String, val expiresAtElapsedMs: Long)
 
     private val vpcIdMutex = Mutex()
     private val vpcIdCache = mutableMapOf<String, CachedVpcId>()
+
+    private fun requestLocale(): String = localeProvider().takeIf {
+        it.matches(Regex("^[a-z]{2}_[A-Z]{2}$"))
+    } ?: DEFAULT_LOCALE
 
     suspend fun fetchMainGames(
         token: String,
@@ -1762,7 +1809,7 @@ class GfnCatalogRepository(
                 query = query,
                 variables = buildJsonObject {
                     put("vpcId", vpcId)
-                    put("locale", DEFAULT_LOCALE)
+                    put("locale", requestLocale())
                     put("sortString", selectedSort.orderBy)
                     put("fetchCount", DEFAULT_CATALOG_FETCH_COUNT)
                     put("cursor", cursor)
@@ -1849,7 +1896,7 @@ class GfnCatalogRepository(
         val query = if (variantId != null) launchMetadataByVariantQuery() else launchMetadataByAppQuery()
         val variables = buildJsonObject {
             put("vpcId", vpcId)
-            put("locale", DEFAULT_LOCALE)
+            put("locale", requestLocale())
             if (variantId != null) {
                 putJsonArray("variantIds") { add(JsonPrimitive(variantId)) }
             } else {
@@ -1874,7 +1921,7 @@ class GfnCatalogRepository(
             query = query,
             variables = buildJsonObject {
                 put("cmsId", variantId)
-                put("locale", DEFAULT_LOCALE)
+                put("locale", requestLocale())
             },
             token = token,
         ).checkGraphQlErrors("Add free game to library")
@@ -1932,7 +1979,7 @@ class GfnCatalogRepository(
     private suspend fun fetchPanels(token: String, panelNames: List<String>, vpcId: String, withLibraryTime: Boolean): JsonObject {
         val variables = buildJsonObject {
             put("vpcId", vpcId)
-            put("locale", DEFAULT_LOCALE)
+            put("locale", requestLocale())
             putJsonArray("panelNames") { panelNames.forEach { add(JsonPrimitive(it)) } }
         }.toString()
         val extensions = buildJsonObject {
@@ -1956,7 +2003,7 @@ class GfnCatalogRepository(
         if (appIds.isEmpty()) return emptyList()
         val variables = buildJsonObject {
             put("vpcId", vpcId)
-            put("locale", DEFAULT_LOCALE)
+            put("locale", requestLocale())
             putJsonArray("appIds") { appIds.distinct().forEach { add(JsonPrimitive(it)) } }
         }.toString()
         val extensions = buildJsonObject {
@@ -2084,7 +2131,7 @@ class GfnCatalogRepository(
               sortOrderDefinitions(language: ${'$'}locale) { id label orderBy }
             }
         """.trimIndent()
-        val payload = postGraphQl(query, buildJsonObject { put("locale", DEFAULT_LOCALE) }, token).checkGraphQlErrors()
+        val payload = postGraphQl(query, buildJsonObject { put("locale", requestLocale()) }, token).checkGraphQlErrors()
         val data = payload.obj("data")
         val filterPayloadById = mutableMapOf<String, JsonElement>()
         val groups = data?.arr("filterGroupDefinitions")?.mapNotNull { raw ->
@@ -2600,6 +2647,11 @@ class GfnSessionRepository(
     private val physicalDisplayResolutionProvider: () -> Pair<Int, Int>? = { null },
     private val diagnosticsSink: (GfnSessionDiagnosticResponse) -> Unit = {},
     private val isAndroidTv: Boolean = false,
+    private val isNvidiaShield: Boolean = isNvidiaShieldTvDevice(
+        androidTvProfile = isAndroidTv,
+        manufacturer = Build.MANUFACTURER,
+        model = Build.MODEL,
+    ),
 ) {
     suspend fun createSession(
         token: String,
@@ -2627,7 +2679,7 @@ class GfnSessionRepository(
             streamingBaseUrl = base,
             appLaunchMode = appLaunchMode,
         )
-        val url = "$base/v2/session?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}"
+        val url = cloudMatchSessionRequestUrl(base, settings)
         val host = Uri.parse(base).host.orEmpty()
         val requestHttp = if (isZoneHostname(host)) sessionProxyHttpClient(settings, http) else http
         val request = Request.Builder()
@@ -2642,6 +2694,7 @@ class GfnSessionRepository(
                     appLaunchMode = appLaunchMode,
                     preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                     isAndroidTv = isAndroidTv,
+                    isNvidiaShield = isNvidiaShield,
                 ),
             )
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
@@ -2817,7 +2870,7 @@ class GfnSessionRepository(
                 appLaunchMode = appLaunchMode,
             )
             val claimRequest = Request.Builder()
-                .url("$sessionBase/v2/session/${active.sessionId}?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}")
+                .url(cloudMatchSessionRequestUrl(sessionBase, settings, active.sessionId))
                 .headers(
                     cloudMatchHeaders(
                         token = token,
@@ -2828,6 +2881,7 @@ class GfnSessionRepository(
                         appLaunchMode = appLaunchMode,
                         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                         isAndroidTv = isAndroidTv,
+                        isNvidiaShield = isNvidiaShield,
                     ),
                 )
                 .put(claimBody.toString().toRequestBody(JSON_MEDIA_TYPE))
@@ -2958,6 +3012,7 @@ class GfnSessionRepository(
             appLaunchMode = appLaunchMode,
             preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
             isAndroidTv = isAndroidTv,
+            isNvidiaShield = isNvidiaShield,
         )
         val profile = settings.requestProfile()
         return buildJsonObject {
@@ -3012,6 +3067,7 @@ class GfnSessionRepository(
             streamingBaseUrl = streamingBaseUrl,
             appLaunchMode = appLaunchMode,
             isAndroidTv = isAndroidTv,
+            isNvidiaShield = isNvidiaShield,
         )
 
     private suspend fun toSessionInfo(zone: String, base: String, payload: JsonObject, clientId: String, deviceId: String): SessionInfo {
@@ -3280,6 +3336,19 @@ class GfnSessionRepository(
         return if (host != null && base.contains("cloudmatchbeta.nvidiagrid.net") && !isZoneHostname(host)) "https://$host" else base
     }
 
+}
+
+internal fun cloudMatchSessionRequestUrl(
+    base: String,
+    settings: StreamSettings,
+    sessionId: String? = null,
+): String {
+    val path = if (sessionId.isNullOrBlank()) {
+        "${base.trimEnd('/')}/v2/session"
+    } else {
+        "${base.trimEnd('/')}/v2/session/${encoded(sessionId)}"
+    }
+    return "$path?keyboardLayout=${encoded(settings.keyboardLayout)}&languageCode=${encoded(settings.gameLanguage)}"
 }
 
 internal fun usableSessionHost(value: String?): String? {

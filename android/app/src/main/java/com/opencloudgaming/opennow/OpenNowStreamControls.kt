@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.content.res.Configuration
 import android.provider.Settings
 import androidx.annotation.StringRes
 import androidx.activity.compose.BackHandler
@@ -86,6 +87,8 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -180,7 +183,7 @@ internal fun ActiveSessionDecisionScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    TextButton(onClick = onCancel) { Text("Cancel") }
+                    TextButton(onClick = onCancel) { Text(stringResource(R.string.action_cancel)) }
                     OutlinedButton(onClick = onReplaceSession) { Text("Terminate and start new") }
                     Button(onClick = onResumeSession) { Text(stringResource(R.string.action_resume)) }
                 }
@@ -204,7 +207,7 @@ internal fun NoActiveStreamScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("No active stream", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(stringResource(R.string.stream_no_active), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
             "OpenNOW does not have a local stream attached right now.",
@@ -213,12 +216,12 @@ internal fun NoActiveStreamScreen(
         )
         Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedButton(onClick = onBack) { Text("Back to library") }
+            OutlinedButton(onClick = onBack) { Text(stringResource(R.string.stream_back_to_library)) }
             if (canResumeSession) {
                 Button(onClick = onResumeSession) { Text(stringResource(R.string.action_resume)) }
             }
             if (canEndSession) {
-                Button(onClick = onEndSession) { Text("End cloud session") }
+                Button(onClick = onEndSession) { Text(stringResource(R.string.stream_end_cloud_session)) }
             }
         }
     }
@@ -264,10 +267,10 @@ private fun StreamControlLauncher(
             }
         }
         Button(onClick = onToggle, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
-            Text(if (controlsOpen) "Close" else "Controls")
+            Text(if (controlsOpen) stringResource(R.string.action_close) else stringResource(R.string.stream_panel_title))
         }
         OutlinedButton(onClick = onExit, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
-            Text("Exit")
+            Text(stringResource(R.string.stream_panel_exit))
         }
     }
 
@@ -428,14 +431,14 @@ private fun StreamGuideDoneCallout(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text("Step 2 of 2", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                Text("Press Done", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.stream_guide_step, 2, 2), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.stream_guide_press_done), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             TextButton(
                 onClick = onSkip,
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
             ) {
-                Text("Skip", maxLines = 1)
+                Text(stringResource(R.string.action_skip), maxLines = 1)
             }
             if (!controlsOpen) {
                 Button(
@@ -443,7 +446,7 @@ private fun StreamGuideDoneCallout(
                     modifier = Modifier.focusRequester(primaryFocusRequester),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                 ) {
-                    Text("Open", maxLines = 1)
+                    Text(stringResource(R.string.action_open), maxLines = 1)
                 }
             }
         }
@@ -459,11 +462,11 @@ internal fun PhysicalControllerTouchControlsDialog(
 ) {
     AlertDialog(
         onDismissRequest = onOk,
-        title = { Text("Controller detected") },
+        title = { Text(stringResource(R.string.stream_controller_detected)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "The on-screen controller was hidden because a physical controller is connected.",
+                    stringResource(R.string.stream_controller_hidden),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(
@@ -479,18 +482,18 @@ internal fun PhysicalControllerTouchControlsDialog(
                         checked = doNotShowAgain,
                         onCheckedChange = onDoNotShowAgainChange,
                     )
-                    Text("Don't show again", color = MaterialTheme.colorScheme.onSurface)
+                    Text(stringResource(R.string.common_dont_show_again), color = MaterialTheme.colorScheme.onSurface)
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = onOk) {
-                Text("OK")
+                Text(stringResource(R.string.action_ok))
             }
         },
         dismissButton = {
             TextButton(onClick = onUndo) {
-                Text("Undo")
+                Text(stringResource(R.string.action_undo))
             }
         },
     )
@@ -530,7 +533,7 @@ private fun StreamGuideEdgeCue(modifier: Modifier = Modifier) {
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(18.dp),
                 )
-                Text("Back", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.action_back), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -678,7 +681,7 @@ internal fun StreamControlsPanel(
     onTouchLeftOffsetChange: (Float) -> Unit,
     onTouchRightOffsetChange: (Float) -> Unit,
     onTouchLayoutReset: () -> Unit,
-    onBugReportSubmit: (String, String) -> Unit,
+    onBugReportSubmit: (String, String, String?) -> Unit,
     onBugReportReset: () -> Unit,
     onBugReportVersionCheck: () -> Unit,
     onOpenUpdate: () -> Unit,
@@ -1462,12 +1465,91 @@ private fun streamPanelPageTransition(
 @Composable
 private fun BugReportSubmissionRequirements(modifier: Modifier = Modifier) {
     Text(
-        "Bug reports are currently supported only in English. Descriptions must be at least $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS characters and explain what happened. Non-English or non-descriptive reports will be ignored.",
+        "Bug reports require English as the OpenNOW or device language. Descriptions must contain at least $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful letters or numbers and explain what happened. Non-English, repeated, or random text cannot be sent.",
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.error,
         fontWeight = FontWeight.Bold,
         style = MaterialTheme.typography.bodyMedium,
     )
+}
+
+@Composable
+internal fun BugReportLocaleGateCard(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.error.copy(alpha = 0.10f),
+        contentColor = TextPrimary,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.38f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "English language required",
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                "Set either OpenNOW or the device language to English before reporting.",
+                color = TextMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(
+                onClick = { setAndroidAppLanguage(context, ANDROID_APP_LANGUAGE_ENGLISH) },
+            ) {
+                Text("Use English for OpenNOW")
+            }
+        }
+    }
+}
+
+@Composable
+internal fun BugReportKnownIssueOverride(
+    block: BugReportKnownIssueBlock,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val warning = Color(0xffffc266)
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = warning.copy(alpha = 0.09f),
+        border = BorderStroke(1.dp, warning.copy(alpha = 0.34f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(block.title, color = warning, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            Text(block.action, color = TextMuted, style = MaterialTheme.typography.labelSmall)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = enabled) { onCheckedChange(!checked) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = checked,
+                    onCheckedChange = onCheckedChange,
+                    enabled = enabled,
+                    modifier = Modifier.size(36.dp),
+                )
+                Text(
+                    "I understand OpenNOW found a likely cause. Send anyway; I may lose future reporting access.",
+                    modifier = Modifier.weight(1f),
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -1694,31 +1776,36 @@ private fun BugReportPreflightDeckView(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onRefresh) {
-                Text("Refresh")
+                Text(stringResource(R.string.action_refresh))
             }
             Spacer(Modifier.weight(1f))
             OutlinedButton(onClick = if (page == 0) onCancel else onPrevious) {
-                Text(if (page == 0) "Cancel" else "Back")
+                Text(if (page == 0) stringResource(R.string.action_cancel) else stringResource(R.string.action_back))
             }
             Button(onClick = onNext) {
-                Text(if (page == deck.cards.lastIndex) "Continue" else "Next")
+                Text(if (page == deck.cards.lastIndex) stringResource(R.string.action_continue) else stringResource(R.string.action_next))
             }
         }
     }
 }
 
 @Composable
-private fun BugReportFormInputs(
+internal fun BugReportFormInputs(
     title: String,
     description: String,
     consentChecked: Boolean,
+    knownIssueBlock: BugReportKnownIssueBlock?,
+    acknowledgedKnownIssueKey: String?,
     submission: BugReportSubmissionState,
     onTitleChange: (String) -> Unit,
     onDescriptionChange: (String) -> Unit,
     onConsentChange: (Boolean) -> Unit,
+    onKnownIssueAcknowledgementChange: (String?) -> Unit,
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val descriptionError = androidBugReportDescriptionError(description)
+    val titleError = androidBugReportTitleError(title)
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1745,10 +1832,12 @@ private fun BugReportFormInputs(
             label = { Text("What happened?") },
             placeholder = { Text("What were you doing, what went wrong, and can you reproduce it?") },
             supportingText = {
-                Text("${description.trim().length} / $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS minimum characters")
+                Text(
+                    descriptionError
+                        ?: "${androidBugReportMeaningfulCharacterCount(description)} / $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful characters",
+                )
             },
-            isError = description.isNotEmpty() &&
-                description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS,
+            isError = description.isNotEmpty() && descriptionError != null,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
         )
         Row(
@@ -1773,6 +1862,16 @@ private fun BugReportFormInputs(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        knownIssueBlock?.let { block ->
+            BugReportKnownIssueOverride(
+                block = block,
+                checked = acknowledgedKnownIssueKey == block.key,
+                enabled = !submission.uploading,
+                onCheckedChange = { checked ->
+                    onKnownIssueAcknowledgementChange(block.key.takeIf { checked })
+                },
+            )
+        }
         submission.error?.let { error ->
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1789,9 +1888,10 @@ private fun BugReportFormInputs(
         }
         Button(
             onClick = onConfirm,
-            enabled = title.isNotBlank() &&
-                description.trim().length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS &&
+            enabled = titleError == null &&
+                descriptionError == null &&
                 consentChecked &&
+                bugReportKnownIssueAllowsSubmission(knownIssueBlock, acknowledgedKnownIssueKey) &&
                 !submission.uploading,
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -1804,7 +1904,7 @@ private fun BugReportFormInputs(
                 Spacer(Modifier.width(8.dp))
                 Text("Uploading report…")
             } else {
-                Text("Send bug report")
+                Text(if (knownIssueBlock == null) "Send bug report" else "Send anyway")
             }
         }
     }
@@ -1815,7 +1915,7 @@ private fun StreamBugReporter(
     submission: BugReportSubmissionState,
     versionCheck: AndroidBugReportVersionCheckState,
     update: AndroidUpdateState,
-    onSubmit: (String, String) -> Unit,
+    onSubmit: (String, String, String?) -> Unit,
     onReset: () -> Unit,
     onVersionCheck: () -> Unit,
     onOpenUpdate: () -> Unit,
@@ -1823,8 +1923,9 @@ private fun StreamBugReporter(
     preflightProvider: () -> BugReportPreflightDeck,
     initiallyExpanded: Boolean = false,
     onExpandedClose: () -> Unit = {},
-    landscapeLayout: Boolean = false,
 ) {
+    val landscapeLayout = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val appLocale = currentAndroidAppLocale(LocalContext.current)
     var expanded by rememberSaveable(initiallyExpanded) { mutableStateOf(initiallyExpanded) }
     var title by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
@@ -1833,6 +1934,10 @@ private fun StreamBugReporter(
     var preflightReviewed by rememberSaveable { mutableStateOf(false) }
     var preflightPage by rememberSaveable { mutableStateOf(0) }
     var preflightDeck by remember { mutableStateOf<BugReportPreflightDeck?>(null) }
+    var acknowledgedKnownIssueKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val knownIssueBlock = preflightDeck?.let { deck ->
+        bugReportKnownIssueBlock(title, description, deck)
+    }
 
     LaunchedEffect(expanded, update.installSource.isGooglePlay) {
         if (expanded && update.installSource.isGooglePlay) {
@@ -1892,6 +1997,7 @@ private fun StreamBugReporter(
                                 title = ""
                                 description = ""
                                 consentChecked = false
+                                acknowledgedKnownIssueKey = null
                                 confirmationOpen = false
                                 preflightReviewed = false
                                 preflightPage = 0
@@ -1911,11 +2017,16 @@ private fun StreamBugReporter(
                                 onExpandedClose()
                             },
                         ) {
-                            Text("Close")
+                            Text(stringResource(R.string.action_close))
                         }
                     }
                 }
             }
+            return@ControlSection
+        }
+
+        if (!appLocale.bugReportsAllowed) {
+            BugReportLocaleGateCard()
             return@ControlSection
         }
 
@@ -1982,7 +2093,7 @@ private fun StreamBugReporter(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Report a stream bug", fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.bug_report_open_label), fontWeight = FontWeight.Bold)
                     Text(
                         "Describe the problem without leaving your game.",
                         color = TextMuted,
@@ -2011,7 +2122,7 @@ private fun StreamBugReporter(
                         onExpandedClose()
                     },
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.action_cancel))
                 }
             }
 
@@ -2032,6 +2143,8 @@ private fun StreamBugReporter(
                         title = title,
                         description = description,
                         consentChecked = consentChecked,
+                        knownIssueBlock = knownIssueBlock,
+                        acknowledgedKnownIssueKey = acknowledgedKnownIssueKey,
                         submission = submission,
                         onTitleChange = { value ->
                             title = value
@@ -2042,6 +2155,7 @@ private fun StreamBugReporter(
                             if (submission.error != null) onReset()
                         },
                         onConsentChange = { consentChecked = it },
+                        onKnownIssueAcknowledgementChange = { acknowledgedKnownIssueKey = it },
                         onConfirm = {
                             onButtonTone()
                             confirmationOpen = true
@@ -2056,6 +2170,8 @@ private fun StreamBugReporter(
                     title = title,
                     description = description,
                     consentChecked = consentChecked,
+                    knownIssueBlock = knownIssueBlock,
+                    acknowledgedKnownIssueKey = acknowledgedKnownIssueKey,
                     submission = submission,
                     onTitleChange = { value ->
                         title = value
@@ -2066,6 +2182,7 @@ private fun StreamBugReporter(
                         if (submission.error != null) onReset()
                     },
                     onConsentChange = { consentChecked = it },
+                    onKnownIssueAcknowledgementChange = { acknowledgedKnownIssueKey = it },
                     onConfirm = {
                         onButtonTone()
                         confirmationOpen = true
@@ -2087,6 +2204,10 @@ private fun StreamBugReporter(
             title = { Text("Upload bug report?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    knownIssueBlock?.let { block ->
+                        Text(block.title, color = Color(0xffffc266), fontWeight = FontWeight.Bold)
+                        Text(block.action, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                    }
                     BugReportSubmissionRequirements()
                     BugReportDataDisclosure(includeTypedTextWarning = true)
                 }
@@ -2096,7 +2217,11 @@ private fun StreamBugReporter(
                     onClick = {
                         onButtonTone()
                         confirmationOpen = false
-                        onSubmit(title, description)
+                        onSubmit(
+                            title,
+                            description,
+                            knownIssueBlock?.key?.takeIf { it == acknowledgedKnownIssueKey },
+                        )
                     },
                 ) {
                     Text("Upload report")

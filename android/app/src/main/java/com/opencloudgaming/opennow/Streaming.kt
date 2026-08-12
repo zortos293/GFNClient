@@ -244,6 +244,7 @@ class NativeStreamClient(
     private var physicalControllerActive = false
     private var activeControllerId = 0
     private val controllerSlots = linkedMapOf<Int, Int>()
+    private val controllerFamiliesBySlot = mutableMapOf<Int, AndroidControllerFamily>()
     private val controllerAxisAvailability = mutableMapOf<Int, AndroidGamepadAxisAvailability>()
     private var physicalButtons = 0
     private var physicalHatButtons = 0
@@ -487,15 +488,16 @@ class NativeStreamClient(
     }
 
     fun updateRendererSettings(settings: StreamSettings) {
-        this.settings = this.settings.copy(
+        val updatedSettings = this.settings.copy(
             mouseSensitivity = settings.mouseSensitivity,
             mouseAcceleration = settings.mouseAcceleration,
             streamSharpeningEnabled = settings.streamSharpeningEnabled,
             streamSharpeningAmount = settings.streamSharpeningAmount,
             mouseScrollSensitivity = settings.mouseScrollSensitivity,
         )
+        if (updatedSettings == this.settings) return
+        this.settings = updatedSettings
         rendererSharpnessDrawer?.amount = streamSharpnessShaderStrength(settings.streamSharpeningEnabled, settings.streamSharpeningAmount)
-        renderer?.setStreamScaling()
     }
 
     private fun SurfaceViewRenderer.setStreamScaling() {
@@ -746,6 +748,7 @@ class NativeStreamClient(
         controllerMouseRightButtonDown = false
         activeControllerId = 0
         controllerSlots.clear()
+        controllerFamiliesBySlot.clear()
         controllerAxisAvailability.clear()
         mousePositionValid = false
         mouseSuppressNextAbsoluteDelta = false
@@ -798,14 +801,14 @@ class NativeStreamClient(
     }
 
     /**
-     * Mouse deltas are state: a newer packet supersedes every older one, so loss is better served
-     * by the loss-tolerant channel (no head-of-line stall for the input stream behind it). Falls
-     * back to the reliable channel automatically when the partially-reliable one is not open.
+     * Mouse packets carry relative deltas, so every packet must arrive in order. A later delta does
+     * not replace a dropped one; losing either axis permanently shortens the gesture and makes the
+     * cursor stutter or drift away from the client's position model.
      */
-    fun sendRawMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
+    fun sendRawMouseMove(dx: Int, dy: Int): Boolean {
         return sendInput(
             inputEncoder.encodeMouseMove(dx, dy),
-            partiallyReliable = partiallyReliable,
+            partiallyReliable = false,
         )
     }
 
@@ -815,7 +818,7 @@ class NativeStreamClient(
         return sendReliableInput(packet)
     }
 
-    fun sendTouchMouseMove(dx: Int, dy: Int, partiallyReliable: Boolean = true): Boolean {
+    fun sendTouchMouseMove(dx: Int, dy: Int): Boolean {
         var adjustedDx = dx * settings.mouseSensitivity
         var adjustedDy = dy * settings.mouseSensitivity
         if (settings.mouseAcceleration > 1) {
@@ -828,7 +831,7 @@ class NativeStreamClient(
         return sendBurstLimitedMouseMove(
             dx = adjustedDx.roundToInt(),
             dy = adjustedDy.roundToInt(),
-            partiallyReliable = partiallyReliable,
+            partiallyReliable = false,
         )
     }
 
@@ -3255,11 +3258,11 @@ class NativeStreamClient(
                 return@runCatching
             }
             val bufferedAmount = channel.bufferedAmount()
-            // State inputs (mouse moves, touch MOVE, gamepad) are superseded by newer packets, so
-            // the loss-tolerant channel drops them early instead of letting the queue grow into
-            // lag. Critical one-shot events (buttons, lifts, keystrokes) keep the generous reliable
-            // threshold and are only dropped when the channel is genuinely backed up. Key this on
-            // requested reliability so a critical event using the partial fallback stays critical.
+            // Inputs explicitly routed to the loss-tolerant channel may be dropped early instead
+            // of letting that channel accumulate lag. Ordered relative mouse deltas and critical
+            // one-shot events use the reliable threshold and are dropped only when the channel is
+            // genuinely backed up. Key this on requested reliability so a critical event using the
+            // partial fallback stays critical.
             val dropThreshold = if (partiallyReliable) {
                 INPUT_PARTIAL_BACKPRESSURE_DROP_THRESHOLD
             } else {
@@ -3401,15 +3404,26 @@ class NativeStreamClient(
             connectedDeviceIds = connectedDeviceIds,
         )
         if (removedControllerSlots.isNotEmpty()) {
+            removedControllerSlots.values.forEach(controllerFamiliesBySlot::remove)
             NativeInputDiagnostics.add(
                 "physical gamepad slots released=${removedControllerSlots.entries.joinToString { "${it.key}:${it.value}" }}",
             )
+        }
+        connectedDevices.forEach { device ->
+            controllerSlots[device.id]?.let { slot ->
+                AndroidControllerInput.controllerFamily(device)?.let { family ->
+                    controllerFamiliesBySlot[slot] = family
+                }
+            }
         }
         val activeControllerDisconnected = activeControllerId in removedControllerSlots.values
         val connected = connectedDevices.isNotEmpty()
         val connectionChanged = connected != physicalControllerConnected
         val connectionMessage =
-            "physical gamepad connected=$connected devices=${connectedDevices.joinToString { "${it.id}:${it.name}" }}"
+            "physical gamepad connected=$connected devices=${connectedDevices.joinToString { device ->
+                val family = AndroidControllerInput.controllerFamily(device)
+                "${device.id}:${device.name}:family=$family:vendor=0x${device.vendorId.toString(16)}:product=0x${device.productId.toString(16)}"
+            }}"
         if (connectionChanged) {
             NativeInputDiagnostics.addRetained("controller.connection", connectionMessage)
         } else {
@@ -3663,7 +3677,8 @@ class NativeStreamClient(
     private fun controllerIdFor(event: MotionEvent): Int = controllerIdFor(event.deviceId)
 
     private fun controllerIdFor(deviceId: Int): Int {
-        val connectedDeviceIds = connectedControllerDevices().mapTo(mutableSetOf()) { it.id }
+        val connectedDevices = connectedControllerDevices()
+        val connectedDeviceIds = connectedDevices.mapTo(mutableSetOf()) { it.id }
         val assignment = AndroidControllerSlotRegistry.assign(
             controllerSlots = controllerSlots,
             deviceId = deviceId,
@@ -3674,11 +3689,16 @@ class NativeStreamClient(
             clearPhysicalControllerInputState()
         }
         if (assignment.removedDevices.isNotEmpty()) {
+            assignment.removedDevices.values.forEach(controllerFamiliesBySlot::remove)
             NativeInputDiagnostics.add(
                 "physical gamepad slots reconciled removed=${assignment.removedDevices.entries.joinToString { "${it.key}:${it.value}" }} " +
                     "device=$deviceId slot=${assignment.slot}",
             )
         }
+        connectedDevices
+            .firstOrNull { controllerSlots[it.id] == assignment.slot }
+            ?.let(AndroidControllerInput::controllerFamily)
+            ?.let { controllerFamiliesBySlot[assignment.slot] = it }
         return assignment.slot
     }
 
@@ -3699,7 +3719,16 @@ class NativeStreamClient(
             virtualRightStickActive
         if (!connected) return 0
         val id = controllerId.coerceIn(0, 3)
-        return (1 shl id) or (1 shl (id + 8))
+        val physicalFamily = if (physicalControllerConnected || physicalControllerActive) {
+            controllerFamiliesBySlot[id]
+        } else {
+            null
+        }
+        return androidGamepadConnectionBitmap(
+            controllerId = id,
+            connected = true,
+            physicalControllerFamily = physicalFamily,
+        )
     }
 
     private fun MotionEvent.isFromSource(source: Int): Boolean = (this.source and source) == source

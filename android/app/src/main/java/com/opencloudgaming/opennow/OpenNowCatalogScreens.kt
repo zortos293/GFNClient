@@ -658,9 +658,9 @@ private fun ActiveSessionResumeCard(
                     .clip(RoundedCornerShape(10.dp)),
             )
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Resume cloud session", color = TextPrimary, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.catalog_resume_cloud_session), color = TextPrimary, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    game?.title ?: "App ${active.appId}",
+                    game?.title ?: stringResource(R.string.catalog_app_id, active.appId),
                     color = TextMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -686,12 +686,14 @@ internal fun activeSessionGame(state: OpenNowUiState, active: ActiveSessionInfo)
             game.variants.any { variant -> variant.id == active.appId.toString() }
     }
 
+@Composable
 internal fun activeSessionSummary(active: ActiveSessionInfo): String =
     listOfNotNull(
         when (active.status) {
-            1 -> active.queuePosition?.takeIf { it > 0 }?.let { "Queue $it" } ?: "Starting"
-            2, 3 -> "Ready"
-            else -> "Active"
+            1 -> active.queuePosition?.takeIf { it > 0 }?.let { stringResource(R.string.queue_short_position, it) }
+                ?: stringResource(R.string.common_starting)
+            2, 3 -> stringResource(R.string.common_ready)
+            else -> stringResource(R.string.common_active)
         },
         active.resolution,
         active.fps?.let { "${it} FPS" },
@@ -2616,7 +2618,7 @@ private fun GameDetailsLandscapeContent(
                             },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text("Play on TV", maxLines = 1)
+                            Text(stringResource(R.string.action_play_on_tv_generic), maxLines = 1)
                         }
                     }
                     LongPressPlayButton(
@@ -2685,7 +2687,7 @@ private fun GameDetailsLandscapeContent(
                             .onFocusChanged { dismissFocused = it.isFocused }
                     ) {
                         Text(
-                            "Dismiss",
+                            stringResource(R.string.action_dismiss),
                             color = if (dismissFocused) accent else TextPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -2712,7 +2714,7 @@ private fun GameDetailsLandscapeContent(
                             },
                             modifier = Modifier.weight(1f).height(48.dp),
                         ) {
-                            Text("Play on TV", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(stringResource(R.string.action_play_on_tv_generic), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -3172,7 +3174,7 @@ private fun GameImageTitleOverlay(
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            game.publisherName?.takeIf { it.isNotBlank() } ?: "Unknown publisher",
+            game.publisherName?.takeIf { it.isNotBlank() } ?: stringResource(R.string.catalog_unknown_publisher),
             color = TextPrimary.copy(alpha = 0.88f),
             style = MaterialTheme.typography.bodyMedium.copy(shadow = textShadow),
             maxLines = 1,
@@ -3193,7 +3195,7 @@ private fun GameTitleBlock(game: GameInfo, compact: Boolean) {
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            game.publisherName?.takeIf { it.isNotBlank() } ?: "Unknown publisher",
+            game.publisherName?.takeIf { it.isNotBlank() } ?: stringResource(R.string.catalog_unknown_publisher),
             color = TextMuted,
             style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,
@@ -3214,7 +3216,7 @@ private fun OwnershipStatusRow(game: GameInfo, compact: Boolean) {
             tonalElevation = 0.dp,
         ) {
             Text(
-                "Not owned",
+                stringResource(R.string.catalog_not_owned),
                 color = OpenNowPalette.OnErrorContainer,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
@@ -3326,7 +3328,7 @@ private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
 @Composable
 private fun GameDescriptionDisclosure(description: String?, compact: Boolean) {
     var expanded by remember(description) { mutableStateOf(true) }
-    val text = description?.takeIf { it.isNotBlank() } ?: "No description is available for this game yet."
+    val text = description?.takeIf { it.isNotBlank() } ?: stringResource(R.string.catalog_no_description)
     var focused by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
     Surface(
@@ -3356,7 +3358,11 @@ private fun GameDescriptionDisclosure(description: String?, compact: Boolean) {
                 IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(36.dp)) {
                     Icon(
                         painter = painterResource(R.drawable.ic_chevron_right),
-                        contentDescription = if (expanded) "Hide description" else "Show description",
+                        contentDescription = if (expanded) {
+                            stringResource(R.string.control_hide_description)
+                        } else {
+                            stringResource(R.string.control_show_description)
+                        },
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
                             .size(20.dp)

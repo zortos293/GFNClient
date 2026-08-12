@@ -69,6 +69,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -76,6 +77,8 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -89,6 +92,9 @@ import java.io.File
 import java.util.Locale
 import com.opencloudgaming.opennow.ui.theme.LocalReduceMotion
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
+import kotlin.math.PI
+import kotlin.math.max
+import kotlin.math.sin
 
 @Composable
 internal fun SortPicker(
@@ -236,7 +242,7 @@ internal fun FilterMenu(
                 },
                 confirmButton = {
                     Button(onClick = { expanded = false }) {
-                        Text("Done")
+                        Text(stringResource(R.string.stream_panel_done))
                     }
                 }
             )
@@ -443,7 +449,7 @@ private fun PrintedWasteOptionsColumn(
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(state.printedWasteError, color = Color(0xffff9f9f))
-                    OutlinedButton(onClick = onRetry) { Text("Retry") }
+                    OutlinedButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
                 }
             }
         } else {
@@ -509,14 +515,14 @@ private fun PrintedWasteOptionsColumn(
         }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
             OutlinedButton(
                 onClick = onDefault,
                 modifier = Modifier
                     .weight(1f)
                     .focusRequester(defaultFocusRequester),
             ) {
-                Text("Default", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.store_selector_default), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Button(
                 onClick = onLaunch,
@@ -526,7 +532,7 @@ private fun PrintedWasteOptionsColumn(
                     .focusRequester(launchFocusRequester)
                     .focusProperties { up = zoneListFocusRequester },
             ) {
-                Text("Launch", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.action_launch), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -545,7 +551,7 @@ private fun RecommendedPrintedWasteCard(zoneOption: PrintedWasteZoneOption) {
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Best available route", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.queue_best_route), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Text(
                     "${zoneOption.zoneId} · ${regionLabel(zoneOption.zone.Region)}",
                     color = TextMuted,
@@ -553,8 +559,8 @@ private fun RecommendedPrintedWasteCard(zoneOption: PrintedWasteZoneOption) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            QueueMetricPill("Ping", zoneOption.pingMs?.let { "$it ms" } ?: "Checking")
-            QueueMetricPill("Ahead", zoneOption.zone.QueuePosition.toString(), queueColor(zoneOption.zone.QueuePosition))
+            QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: stringResource(R.string.queue_checking))
+            QueueMetricPill(stringResource(R.string.queue_metric_ahead), zoneOption.zone.QueuePosition.toString(), queueColor(zoneOption.zone.QueuePosition))
         }
     }
 }
@@ -597,13 +603,13 @@ private fun PrintedWasteZoneRow(
                             Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                         }
                         if (selected) {
-                            Text("Selected", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                            Text(stringResource(R.string.store_selector_selected), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        QueueMetricPill("Ping", zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
-                        QueueMetricPill("Ahead", zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
-                        zone.eta?.let { QueueMetricPill("Wait", formatPrintedWasteWait(it)) }
+                        QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
+                        QueueMetricPill(stringResource(R.string.queue_metric_ahead), zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
+                        zone.eta?.let { QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it)) }
                     }
                 }
             } else {
@@ -616,9 +622,9 @@ private fun PrintedWasteZoneRow(
                         Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
                         Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                     }
-                    QueueMetricPill("Ping", zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
-                    QueueMetricPill("Ahead", zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
-                    zone.eta?.let { QueueMetricPill("Wait", formatPrintedWasteWait(it)) }
+                    QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
+                    QueueMetricPill(stringResource(R.string.queue_metric_ahead), zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
+                    zone.eta?.let { QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it)) }
                 }
             }
         }
@@ -911,11 +917,44 @@ internal fun OpenNowMark(size: androidx.compose.ui.unit.Dp, modifier: Modifier =
 }
 
 @Composable
-internal fun OpenNowAppIcon(size: androidx.compose.ui.unit.Dp) {
+internal fun OpenNowAppIcon(
+    size: androidx.compose.ui.unit.Dp,
+    animate: Boolean = false,
+) {
+    val glide = if (animate) {
+        val transition = rememberInfiniteTransition(label = "app-icon-glide")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2_600, easing = LinearEasing),
+            ),
+            label = "app-icon-glide-phase",
+        )
+    } else {
+        null
+    }
+    val glideDistancePx = with(LocalDensity.current) { (size * 0.055f).toPx() }
+    val motionModifier = if (glide == null) {
+        Modifier
+    } else {
+        // Read the animation state in the layer block so each frame only updates this GPU layer;
+        // it does not remeasure the navigation rail or recompose the surrounding chrome.
+        Modifier.graphicsLayer {
+            val radians = glide.value * (2f * PI.toFloat())
+            val horizontalGlide = sin(radians)
+            translationX = horizontalGlide * glideDistancePx
+            translationY = sin(radians * 2f - PI.toFloat() / 2f) * glideDistancePx * 0.24f
+            rotationZ = -horizontalGlide * 0.85f
+            scaleX = 1f + max(0f, horizontalGlide) * 0.018f
+        }
+    }
     Image(
         painter = painterResource(R.drawable.opennow_icon),
         contentDescription = "OpenNOW",
-        modifier = Modifier.size(size),
+        modifier = Modifier
+            .size(size)
+            .then(motionModifier),
         contentScale = ContentScale.Fit,
     )
 }

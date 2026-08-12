@@ -607,10 +607,26 @@ fun OpenNowApp(
                         submission = state.bugReportSubmission,
                         versionCheck = state.bugReportVersionCheck,
                         update = state.androidUpdate,
-                        onSubmit = viewModel::submitBugReport,
+                        onSubmit = { title, description, knownIssueOverrideKey ->
+                            viewModel.submitBugReport(title, description, knownIssueOverrideKey)
+                        },
                         onReset = viewModel::resetBugReportSubmission,
                         onVersionCheck = viewModel::verifyBugReportVersion,
                         onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
+                        preflightProvider = {
+                            buildBugReportPreflightDeck(
+                                BugReportPreflightEvidence(
+                                    requestedSettings = state.settings.stream,
+                                    nativeLowLatencyDecoderEnabled = state.settings.nativeLowLatencyDecoder,
+                                    runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
+                                    sessionReport = state.sessionReport,
+                                    codecReport = state.codecReport,
+                                    androidTvProfile = state.androidTvProfile,
+                                    serverZone = state.streamSession?.zone,
+                                    inputDiagnostics = NativeInputDiagnostics.snapshot(),
+                                ),
+                            )
+                        },
                         onDismiss = {
                             if (!state.bugReportSubmission.uploading) {
                                 completedSessionBugReportOpen = false
@@ -1076,7 +1092,11 @@ private fun AppNavigationRail(
                         contentAlignment = Alignment.Center,
                     ) {
                         OpenNowAppIcon(
-                            if (largeIcons) 44.dp else 34.dp,
+                            size = if (largeIcons) 44.dp else 34.dp,
+                            animate = shouldAnimateOpenNowAppIcon(
+                                codecReport = state.codecReport,
+                                reduceMotion = LocalReduceMotion.current,
+                            ),
                         )
                     }
                 }
@@ -1145,7 +1165,7 @@ private fun AppNavigationRail(
                                 selected = false,
                                 onClick = onSettingsBack,
                                 iconRes = R.drawable.ic_arrow_back,
-                                label = "Back",
+                                label = stringResource(R.string.action_back),
                                 iconSize = if (largeIcons) 30.dp else 24.dp,
                             )
                         }
@@ -1158,6 +1178,15 @@ private fun AppNavigationRail(
 
 internal fun shouldShowLocalTvConnectionDot(tvProfile: Boolean, pairedDeviceName: String?): Boolean =
     tvProfile && !pairedDeviceName.isNullOrBlank()
+
+internal fun shouldAnimateOpenNowAppIcon(
+    codecReport: RuntimeCodecReport?,
+    reduceMotion: Boolean,
+): Boolean =
+    !reduceMotion &&
+        codecReport != null &&
+        !codecReport.lowPowerGpuProfile &&
+        !codecReport.constrainedRuntimeProfile
 
 internal fun shouldShowSettingsBackRail(
     tvProfile: Boolean,

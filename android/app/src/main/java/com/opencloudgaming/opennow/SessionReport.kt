@@ -496,7 +496,7 @@ internal fun buildSessionRecommendations(
     }
     if (
         estimatedLinkDownstreamKbps != null &&
-        estimatedLinkDownstreamKbps < targetBitrateMbps * 1_200
+        estimatedLinkDownstreamKbps < targetBitrateMbps * STREAM_NETWORK_HEADROOM_KBPS_PER_MBPS
     ) {
         val actual = averageBitrateKbps?.let { " The stream averaged ${formatMbps(it)} Mbps." }.orEmpty()
         add(

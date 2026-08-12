@@ -27,7 +27,7 @@ class BugReportPreflightTest {
         assertEquals(4, deck.cards.size)
         assertEquals(BugReportPreflightTone.Warning, warning.tone)
         assertEquals("EXPERIMENTAL FEATURE DETECTED", warning.label)
-        assertTrue(warning.summary.contains("Bug reports captured while it is enabled will be ignored"))
+        assertTrue(warning.summary.contains("explicitly acknowledge sending anyway"))
         assertTrue(warning.facts.contains("Native streamer (Experimental): On"))
         assertEquals("Turn it off and reproduce the issue again", warning.recommendations.single().title)
     }
@@ -74,6 +74,14 @@ class BugReportPreflightTest {
         assertTrue(connection.recommendations.isEmpty())
         assertFalse(connection.toString().contains("Use 5 GHz"))
         assertFalse(connection.toString().contains("2.4 GHz Wi-Fi"))
+        assertEquals(
+            null,
+            bugReportKnownIssueBlock(
+                title = "High ping and lag",
+                description = "The game has high latency even though the connection looks normal during this session.",
+                deck = deck,
+            ),
+        )
         val video = deck.cards[1]
         assertTrue(video.facts.contains("Requested max 35 Mbps"))
         assertTrue(video.facts.contains("28 Mbps video"))
@@ -118,6 +126,26 @@ class BugReportPreflightTest {
         assertTrue(titles.contains("Reduce packet loss"))
         assertTrue(titles.contains("Stabilize latency"))
         assertTrue(titles.contains("Lower the maximum bitrate"))
+        val block = requireNotNull(
+            bugReportKnownIssueBlock(
+                title = "High ping and lag",
+                description = "The stream feels delayed and stutters while I am playing over this connection.",
+                deck = deck,
+            ),
+        )
+        assertEquals("network-2.4ghz", block.key)
+        assertTrue(block.action.contains("5/6 GHz"))
+        assertTrue(block.action.contains("cellular"))
+        assertFalse(bugReportKnownIssueAllowsSubmission(block, null))
+        assertTrue(bugReportKnownIssueAllowsSubmission(block, block.key))
+        assertEquals(
+            null,
+            bugReportKnownIssueBlock(
+                title = "Flag icon is incorrect",
+                description = "The country flag icon has the wrong colors after opening the settings page.",
+                deck = deck,
+            ),
+        )
     }
 
     @Test
@@ -201,6 +229,14 @@ class BugReportPreflightTest {
         assertTrue(titles.contains("Let the device cool down"))
         assertTrue(titles.contains("Use a hardware-decoded codec"))
         assertTrue(video.recommendations.any { it.detail.contains("Try H264") })
+        assertEquals(
+            "video-device-measured",
+            bugReportKnownIssueBlock(
+                title = "Low FPS and video stutter",
+                description = "The video becomes choppy and slow after the phone gets hot during a stream.",
+                deck = deck,
+            )?.key,
+        )
     }
 
     @Test
@@ -226,5 +262,32 @@ class BugReportPreflightTest {
         assertTrue(captured.facts.contains("Input channels opened"))
         assertTrue(captured.facts.contains("Mouse movement sent"))
         assertTrue(captured.recommendations.isEmpty())
+    }
+
+    @Test
+    fun disconnectedInputOnlyBlocksMatchingInputReports() {
+        val deck = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(
+                requestedSettings = settings,
+                inputDiagnostics = "external mouse input dropped noOpenChannel",
+            ),
+        )
+
+        assertEquals(
+            "input-measured",
+            bugReportKnownIssueBlock(
+                title = "Mouse input does not work",
+                description = "The cursor stops moving after the stream reconnects and clicks no longer reach the game.",
+                deck = deck,
+            )?.key,
+        )
+        assertEquals(
+            null,
+            bugReportKnownIssueBlock(
+                title = "Store artwork is missing",
+                description = "Several game cards show a blank image after I return from the library page.",
+                deck = deck,
+            ),
+        )
     }
 }

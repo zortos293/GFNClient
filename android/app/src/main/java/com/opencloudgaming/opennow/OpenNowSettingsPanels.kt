@@ -83,7 +83,7 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
                         viewModel.clearCatalogCache()
                     },
                 ) {
-                    Text("Clear cache")
+                    Text(stringResource(R.string.settings_clear_cache))
                 }
             },
             dismissButton = {
@@ -105,7 +105,7 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
                         viewModel.resetSettings()
                     },
                 ) {
-                    Text("Reset and relaunch")
+                    Text(stringResource(R.string.settings_reset_and_relaunch))
                 }
             },
             dismissButton = {
@@ -124,14 +124,14 @@ internal fun AppDataSettingsPanel(viewModel: OpenNowViewModel) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = { clearCacheConfirmOpen = true }, modifier = Modifier.weight(1f)) {
-                    Text("Clear cache", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.settings_clear_cache), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 OutlinedButton(onClick = viewModel::resetStreamTutorial, modifier = Modifier.weight(1f)) {
-                    Text("Reset tutorial", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.settings_reset_tutorial), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             OutlinedButton(onClick = { resetSettingsConfirmOpen = true }, modifier = Modifier.fillMaxWidth()) {
-                Text("Reset settings", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.settings_reset_settings), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -232,7 +232,7 @@ internal fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewMod
                             enabled = update.canInstall,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("Install", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(stringResource(R.string.action_install), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -534,10 +534,10 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
                         )
                     }
                     if (selected) {
-                        Text("Active", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.common_active), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                     } else {
                         OutlinedButton(onClick = { viewModel.switchAccount(account.userId) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                            Text("Switch")
+                            Text(stringResource(R.string.account_switch))
                         }
                     }
                 }
@@ -559,10 +559,10 @@ internal fun AccountSettingsPanel(state: OpenNowUiState, viewModel: OpenNowViewM
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = { addAccountPromptOpen = true }, modifier = Modifier.weight(1f)) { Text("Add account") }
-            OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text("Sign out") }
+            Button(onClick = { addAccountPromptOpen = true }, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.account_add)) }
+            OutlinedButton(onClick = viewModel::logout, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.account_sign_out)) }
         }
-        OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text("Sign out all accounts") }
+        OutlinedButton(onClick = viewModel::logoutAll, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.account_sign_out_all)) }
         AccountPlayTimeStatsPanel(
             subscriptionInfo = state.subscriptionInfo,
             fallbackMembershipTier = state.authSession?.user?.membershipTier,
@@ -611,7 +611,7 @@ private fun AddAccountProviderDialog(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Choose provider") },
+        title = { Text(stringResource(R.string.account_choose_provider)) },
         text = {
             Column(
                 Modifier
@@ -635,7 +635,7 @@ private fun AddAccountProviderDialog(
         },
         confirmButton = {
             Button(onClick = { onProviderSelected(providerChoice) }) {
-                Text("Continue")
+                Text(stringResource(R.string.action_continue))
             }
         },
         dismissButton = {
@@ -682,7 +682,7 @@ private fun ProviderChoiceRow(provider: LoginProvider, selected: Boolean, onClic
                 )
             }
             if (selected) {
-                Text("Selected", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.store_selector_selected), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -706,7 +706,7 @@ private fun AccountPlayTimeStatsPanel(subscriptionInfo: SubscriptionInfo?, fallb
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Play time stats", color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.account_play_time_stats), color = SettingsText, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 UsageMetricTile(
                     label = "Session",
@@ -869,11 +869,11 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Cloud storage", color = SettingsText, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.account_cloud_storage), color = SettingsText, fontWeight = FontWeight.SemiBold)
             if (storageAddon == null) {
                 Text("No persistent storage add-on is active for this account.", color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(onClick = { openExternal(GFN_ADD_STORAGE_URL) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Add storage", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.account_add_storage), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             } else {
                 val used = storageAddon.usedGb
@@ -934,14 +934,14 @@ private fun StorageAddonPanel(storageAddon: StorageAddon?, openExternal: (String
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(onClick = { openExternal(GFN_STORAGE_MANAGEMENT_URL) }, modifier = Modifier.weight(1f)) {
-                        Text("Manage", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(stringResource(R.string.action_manage), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     OutlinedButton(onClick = { openExternal(GFN_STORAGE_RESET_URL) }, modifier = Modifier.weight(1f)) {
-                        Text("Reset", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(stringResource(R.string.action_reset), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 OutlinedButton(onClick = { openExternal(GFN_STORAGE_MANAGEMENT_URL) }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Change storage location", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.account_change_storage_location), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -1587,7 +1587,7 @@ internal fun BatteryOptimizationPanel() {
                         }
                     }
                 ) {
-                    Text("Allow")
+                    Text(stringResource(R.string.action_allow))
                 }
             } else {
                 OutlinedButton(
@@ -1597,7 +1597,7 @@ internal fun BatteryOptimizationPanel() {
                         } catch (_: Exception) {}
                     }
                 ) {
-                    Text("Settings")
+                    Text(stringResource(R.string.nav_settings))
                 }
             }
         }

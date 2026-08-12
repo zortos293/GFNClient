@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -613,11 +614,22 @@ private fun rememberStableQueuePosition(queuePosition: Int?): Int? {
     return stableQueuePosition
 }
 
-private fun queueLaunchStatusText(state: OpenNowUiState, queuePosition: Int?): String =
-    queuePosition?.let { "Queue position $it" } ?: queueLaunchStatusText(state)
+@Composable
+private fun queueLaunchStatusText(state: OpenNowUiState, queuePosition: Int?): String {
+    val status = queueLaunchStatus(state, queuePosition)
+    return when (status.kind) {
+        QueueLaunchStatusKind.QueuePosition -> stringResource(R.string.queue_position, requireNotNull(status.queuePosition))
+        QueueLaunchStatusKind.WaitingForRig -> stringResource(R.string.queue_waiting_for_rig)
+        QueueLaunchStatusKind.ConnectingStream -> stringResource(R.string.queue_connecting_stream)
+        QueueLaunchStatusKind.ResumingSession -> stringResource(R.string.queue_resuming_session)
+        QueueLaunchStatusKind.SettingUpRig -> stringResource(R.string.queue_setting_up_rig)
+        QueueLaunchStatusKind.StartingSession -> stringResource(R.string.queue_starting_session)
+    }
+}
 
+@Composable
 private fun queueIdleStatusColor(queueCopy: String): Color =
-    if (queueCopy.equals("Starting session", ignoreCase = true)) Green else TextMuted
+    if (queueCopy == stringResource(R.string.queue_starting_session)) Green else TextMuted
 
 private fun queueUrgencyColor(queuePosition: Int?): Color {
     val heat = queueUrgency(queuePosition)
@@ -654,7 +666,7 @@ private fun QueueStatusPanel(
         )
         Spacer(Modifier.height(if (compact) 12.dp else 16.dp))
         Text(
-            game?.title ?: "Starting stream",
+            game?.title ?: stringResource(R.string.queue_starting_stream),
             color = TextPrimary,
             style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
@@ -675,10 +687,10 @@ private fun QueueStatusPanel(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             OutlinedButton(onClick = onMinimize, modifier = Modifier.weight(1f)) {
-                Text("Minimize", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.action_minimize), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
-                Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.action_cancel), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         if (compact && queuePosition != null) {
@@ -881,7 +893,7 @@ private fun QueueAdHeading(game: GameInfo?, compact: Boolean) {
             maxLines = 1,
         )
         Text(
-            game?.title ?: "Starting stream",
+            game?.title ?: stringResource(R.string.queue_starting_stream),
             color = TextPrimary,
             style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
@@ -913,10 +925,10 @@ private fun QueueStatusAndActions(
         LinearProgressIndicator(Modifier.fillMaxWidth())
         if (stackActions) {
             OutlinedButton(onClick = onMinimize, modifier = Modifier.fillMaxWidth()) {
-                Text("Minimize", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.action_minimize), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
-                Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.action_cancel), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         } else {
             Row(
@@ -924,10 +936,10 @@ private fun QueueStatusAndActions(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OutlinedButton(onClick = onMinimize, modifier = Modifier.weight(1f)) {
-                    Text("Minimize", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.action_minimize), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
-                    Text("Cancel", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.action_cancel), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -960,7 +972,7 @@ internal fun MinimizedQueueDock(
             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f)) {
                 Text(
-                    state.streamGame?.title ?: "Starting stream",
+                    state.streamGame?.title ?: stringResource(R.string.queue_starting_stream),
                     color = TextPrimary,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -971,9 +983,9 @@ internal fun MinimizedQueueDock(
                     queuePosition = visibleQueuePosition,
                 )
             }
-            TextButton(onClick = onRestore) { Text("View") }
+            TextButton(onClick = onRestore) { Text(stringResource(R.string.action_view)) }
             OutlinedButton(onClick = onCancel, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                Text("Cancel")
+                Text(stringResource(R.string.action_cancel))
             }
         }
     }

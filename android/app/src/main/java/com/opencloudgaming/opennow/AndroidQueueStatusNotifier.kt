@@ -69,7 +69,7 @@ class AndroidQueueStatusNotifier(context: Context) {
         cancellationApplied = false
 
         val title = state.streamGame?.title ?: "OpenNOW"
-        val text = queueLaunchStatusText(state)
+        val text = localizedQueueLaunchStatusText(appContext, state)
         if (serviceStartRequested && activeTitle == title && activeText == text) return
         serviceStartRequested = true
         activeTitle = title
@@ -144,17 +144,18 @@ class AndroidQueueStatusService : Service() {
         runCatching {
             when (intent?.action) {
                 QUEUE_SERVICE_ACTION_STOP -> {
-                    startQueueForeground("OpenNOW", "Queue status")
+                    startQueueForeground("OpenNOW", localizedAndroidContext(this).getString(R.string.queue_status))
                     ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
                 QUEUE_SERVICE_ACTION_UPDATE, null -> {
                     val title = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TITLE) ?: "OpenNOW"
-                    val text = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TEXT) ?: "Queue status"
+                    val text = intent?.getStringExtra(QUEUE_SERVICE_EXTRA_TEXT)
+                        ?: localizedAndroidContext(this).getString(R.string.queue_status)
                     startQueueForeground(title, text)
                 }
                 else -> {
-                    startQueueForeground("OpenNOW", "Queue status")
+                    startQueueForeground("OpenNOW", localizedAndroidContext(this).getString(R.string.queue_status))
                     ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
@@ -271,8 +272,8 @@ private fun buildQueueReadyNotification(context: Context, gameTitle: String): No
     }
     return builder
         .setSmallIcon(QUEUE_NOTIFICATION_SMALL_ICON)
-        .setContentTitle("$gameTitle is ready to play!")
-        .setContentText("Your GFN queue is done. Tap to return to the app.")
+        .setContentTitle(localizedAndroidContext(context).getString(R.string.queue_ready_title, gameTitle))
+        .setContentText(localizedAndroidContext(context).getString(R.string.queue_ready_body))
         .setSubText("OpenNOW")
         .setCategory(Notification.CATEGORY_ALARM)
         .setVisibility(Notification.VISIBILITY_PUBLIC)

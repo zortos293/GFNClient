@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.AnnotatedString
@@ -152,7 +153,7 @@ internal fun SessionReportDialog(
                 )
             }
         },
-        confirmButton = { Button(onClick = { onDismiss(dontShowAgain) }) { Text("Done") } },
+        confirmButton = { Button(onClick = { onDismiss(dontShowAgain) }) { Text(stringResource(R.string.stream_panel_done)) } },
     )
 }
 
@@ -308,18 +309,23 @@ internal fun CompletedSessionBugReportDialog(
     submission: BugReportSubmissionState,
     versionCheck: AndroidBugReportVersionCheckState,
     update: AndroidUpdateState,
-    onSubmit: (String, String) -> Unit,
+    onSubmit: (String, String, String?) -> Unit,
     onReset: () -> Unit,
     onVersionCheck: () -> Unit,
     onOpenUpdate: () -> Unit,
+    preflightProvider: () -> BugReportPreflightDeck,
     onDismiss: () -> Unit,
 ) {
     val configuration = LocalConfiguration.current
+    val appLocale = currentAndroidAppLocale(LocalContext.current)
     val landscapeLayout = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     var title by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
     var consentChecked by rememberSaveable { mutableStateOf(false) }
     var confirmationOpen by rememberSaveable { mutableStateOf(false) }
+    var acknowledgedKnownIssueKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val preflightDeck = remember { preflightProvider() }
+    val knownIssueBlock = bugReportKnownIssueBlock(title, description, preflightDeck)
 
     LaunchedEffect(update.installSource.isGooglePlay) {
         if (update.installSource.isGooglePlay) onVersionCheck()
@@ -357,6 +363,7 @@ internal fun CompletedSessionBugReportDialog(
                             Text("Reference: $reference", color = TextMuted, style = MaterialTheme.typography.bodySmall)
                         }
                     }
+                    !appLocale.bugReportsAllowed -> BugReportLocaleGateCard()
                     !androidBugReportsAllowed(update, versionCheck) -> BugReportVersionGateCard(
                         update = update,
                         versionCheck = versionCheck,
@@ -393,10 +400,13 @@ internal fun CompletedSessionBugReportDialog(
                             maxLines = 7,
                             label = { Text("What happened?") },
                             supportingText = {
-                                Text("${description.trim().length} / $ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS")
+                                Text(
+                                    androidBugReportDescriptionError(description)
+                                        ?: "${androidBugReportMeaningfulCharacterCount(description)} / $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful characters",
+                                )
                             },
                             isError = description.isNotEmpty() &&
-                                description.trim().length < ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS,
+                                androidBugReportDescriptionError(description) != null,
                         )
                         BugReportDataDisclosure(includeTypedTextWarning = true)
                         Row(
@@ -419,6 +429,16 @@ internal fun CompletedSessionBugReportDialog(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
+                        knownIssueBlock?.let { block ->
+                            BugReportKnownIssueOverride(
+                                block = block,
+                                checked = acknowledgedKnownIssueKey == block.key,
+                                enabled = !submission.uploading,
+                                onCheckedChange = { checked ->
+                                    acknowledgedKnownIssueKey = block.key.takeIf { checked }
+                                },
+                            )
+                        }
                         submission.error?.let { error ->
                             Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                         }
@@ -428,7 +448,7 @@ internal fun CompletedSessionBugReportDialog(
         },
         confirmButton = {
             when {
-                submission.submitted -> Button(onClick = onDismiss) { Text("Done") }
+                submission.submitted -> Button(onClick = onDismiss) { Text(stringResource(R.string.stream_panel_done)) }
                 submission.uploading -> Button(enabled = false, onClick = {}) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
@@ -438,13 +458,14 @@ internal fun CompletedSessionBugReportDialog(
                     Spacer(Modifier.width(8.dp))
                     Text("Sending…")
                 }
-                androidBugReportsAllowed(update, versionCheck) -> Button(
+                appLocale.bugReportsAllowed && androidBugReportsAllowed(update, versionCheck) -> Button(
                     onClick = { confirmationOpen = true },
-                    enabled = title.isNotBlank() &&
-                        description.trim().length >= ANDROID_BUG_REPORT_MIN_DESCRIPTION_CHARS &&
-                        consentChecked,
+                    enabled = androidBugReportTitleError(title) == null &&
+                        androidBugReportDescriptionError(description) == null &&
+                        consentChecked &&
+                        bugReportKnownIssueAllowsSubmission(knownIssueBlock, acknowledgedKnownIssueKey),
                 ) {
-                    Text("Review & send")
+                    Text(if (knownIssueBlock == null) "Review & send" else "Send anyway")
                 }
             }
         },
@@ -461,20 +482,32 @@ internal fun CompletedSessionBugReportDialog(
         AlertDialog(
             onDismissRequest = { confirmationOpen = false },
             title = { Text("Send bug report?") },
-            text = { Text("Send this report and the attached redacted diagnostics to PrintedWaste API?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    knownIssueBlock?.let { block ->
+                        Text(block.title, color = Color(0xffffc266), fontWeight = FontWeight.Bold)
+                        Text(block.action, color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("Send this report and the attached redacted diagnostics to PrintedWaste API?")
+                }
+            },
             confirmButton = {
                 Button(
                     onClick = {
                         confirmationOpen = false
-                        onSubmit(title, description)
+                        onSubmit(
+                            title,
+                            description,
+                            knownIssueBlock?.key?.takeIf { it == acknowledgedKnownIssueKey },
+                        )
                     },
                 ) {
-                    Text("Send")
+                    Text(if (knownIssueBlock == null) "Send" else "Send anyway")
                 }
             },
             dismissButton = {
                 TextButton(onClick = { confirmationOpen = false }) {
-                    Text("Back")
+                    Text(stringResource(R.string.action_back))
                 }
             },
         )
@@ -610,7 +643,7 @@ internal fun DiagnosticShareDialog(
                         }
                     }
                 },
-                confirmButton = { Button(onClick = onDismiss) { Text("Done") } },
+                confirmButton = { Button(onClick = onDismiss) { Text(stringResource(R.string.stream_panel_done)) } },
             )
         }
         else -> AlertDialog(
@@ -624,7 +657,7 @@ internal fun DiagnosticShareDialog(
                 }
             },
             confirmButton = { Button(onClick = onUpload) { Text(if (share.error == null) "Sanitize and upload" else "Retry") } },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 }

@@ -245,6 +245,32 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
+    fun appIconGlideRequiresAProbedUnconstrainedDeviceAndMotionPermission() {
+        val capableReport = RuntimeCodecReport(
+            capabilities = emptyList(),
+            nativeRuntimeSummary = "",
+            androidTvProfile = false,
+            lowPowerGpuProfile = false,
+            constrainedRuntimeProfile = false,
+        )
+        assertTrue(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = false))
+        assertFalse(shouldAnimateOpenNowAppIcon(null, reduceMotion = false))
+        assertFalse(shouldAnimateOpenNowAppIcon(capableReport, reduceMotion = true))
+        assertFalse(
+            shouldAnimateOpenNowAppIcon(
+                capableReport.copy(lowPowerGpuProfile = true),
+                reduceMotion = false,
+            ),
+        )
+        assertFalse(
+            shouldAnimateOpenNowAppIcon(
+                capableReport.copy(constrainedRuntimeProfile = true),
+                reduceMotion = false,
+            ),
+        )
+    }
+
+    @Test
     fun tvSettingsNeverAddsASecondBackItemToTheRail() {
         assertFalse(
             shouldShowSettingsBackRail(

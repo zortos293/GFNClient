@@ -3,6 +3,7 @@ package com.opencloudgaming.opennow
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.view.MotionEvent
+import org.webrtc.GlRectDrawer
 import org.webrtc.GlShader
 import org.webrtc.GlUtil
 import org.webrtc.RendererCommon
@@ -21,6 +22,9 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
     @Volatile
     var amount: Float = 0f
 
+    // Keep disabled sharpening on WebRTC's native pass-through path. Enabling the setting still
+    // takes effect on the next frame without recreating the SurfaceViewRenderer.
+    private val passthroughDrawer = GlRectDrawer()
     private val vertexBuffer: FloatBuffer = GlUtil.createFloatBuffer(
         floatArrayOf(
             -1f, -1f,
@@ -52,6 +56,20 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
         viewportWidth: Int,
         viewportHeight: Int,
     ) {
+        val strength = amount
+        if (!streamSharpnessShaderActive(strength)) {
+            passthroughDrawer.drawOes(
+                oesTextureId,
+                texMatrix,
+                frameWidth,
+                frameHeight,
+                viewportX,
+                viewportY,
+                viewportWidth,
+                viewportHeight,
+            )
+            return
+        }
         val program = oesProgram ?: SharpnessProgram(SHARPEN_OES_FRAGMENT_SHADER, TextureMode.Oes).also { oesProgram = it }
         program.draw(
             textureIds = intArrayOf(oesTextureId),
@@ -63,7 +81,7 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
             viewportY = viewportY,
             viewportWidth = viewportWidth,
             viewportHeight = viewportHeight,
-            amount = amount,
+            amount = strength,
             vertexBuffer = vertexBuffer,
             textureBuffer = textureBuffer,
         )
@@ -79,6 +97,20 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
         viewportWidth: Int,
         viewportHeight: Int,
     ) {
+        val strength = amount
+        if (!streamSharpnessShaderActive(strength)) {
+            passthroughDrawer.drawRgb(
+                textureId,
+                texMatrix,
+                frameWidth,
+                frameHeight,
+                viewportX,
+                viewportY,
+                viewportWidth,
+                viewportHeight,
+            )
+            return
+        }
         val program = rgbProgram ?: SharpnessProgram(SHARPEN_RGB_FRAGMENT_SHADER, TextureMode.Rgb).also { rgbProgram = it }
         program.draw(
             textureIds = intArrayOf(textureId),
@@ -90,7 +122,7 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
             viewportY = viewportY,
             viewportWidth = viewportWidth,
             viewportHeight = viewportHeight,
-            amount = amount,
+            amount = strength,
             vertexBuffer = vertexBuffer,
             textureBuffer = textureBuffer,
         )
@@ -106,6 +138,20 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
         viewportWidth: Int,
         viewportHeight: Int,
     ) {
+        val strength = amount
+        if (!streamSharpnessShaderActive(strength)) {
+            passthroughDrawer.drawYuv(
+                yuvTextures,
+                texMatrix,
+                frameWidth,
+                frameHeight,
+                viewportX,
+                viewportY,
+                viewportWidth,
+                viewportHeight,
+            )
+            return
+        }
         val program = yuvProgram ?: SharpnessProgram(SHARPEN_YUV_FRAGMENT_SHADER, TextureMode.Yuv).also { yuvProgram = it }
         program.draw(
             textureIds = yuvTextures,
@@ -117,13 +163,14 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
             viewportY = viewportY,
             viewportWidth = viewportWidth,
             viewportHeight = viewportHeight,
-            amount = amount,
+            amount = strength,
             vertexBuffer = vertexBuffer,
             textureBuffer = textureBuffer,
         )
     }
 
     override fun release() {
+        passthroughDrawer.release()
         oesProgram?.release()
         rgbProgram?.release()
         yuvProgram?.release()
@@ -266,6 +313,11 @@ internal class StreamSharpnessGlDrawer : RendererCommon.GlDrawer {
         """ + SHARPEN_BODY
     }
 }
+
+internal fun streamSharpnessShaderActive(amount: Float): Boolean =
+    amount.isFinite() && amount > STREAM_SHARPNESS_ACTIVE_EPSILON
+
+private const val STREAM_SHARPNESS_ACTIVE_EPSILON = 0.001f
 
 internal sealed interface StreamLivenessAction {
     data object None : StreamLivenessAction
@@ -959,7 +1011,7 @@ internal class TouchMouseState {
             // The reanchor series is order-sensitive: the host must clamp through the top-left
             // boundary before moving to the target. The unordered loss-tolerant channel could
             // deliver these out of order and clamp the cursor back to 0,0, so keep it reliable.
-            if (!client.sendRawMouseMove(delta.dx, delta.dy, partiallyReliable = false)) {
+            if (!client.sendRawMouseMove(delta.dx, delta.dy)) {
                 virtualCursor.forget()
                 return false
             }
@@ -1290,7 +1342,6 @@ internal class TouchMouseState {
         dy: Float,
         eventTimeMs: Long,
         client: NativeStreamClient,
-        partiallyReliable: Boolean = true,
         force: Boolean = false,
     ) {
         val delta = motionAccumulator.add(
@@ -1301,7 +1352,7 @@ internal class TouchMouseState {
             acceleration = client.settings.mouseAcceleration,
             force = force,
         ) ?: return
-        client.sendRawMouseMove(delta.dx, delta.dy, partiallyReliable)
+        client.sendRawMouseMove(delta.dx, delta.dy)
     }
 
     companion object {

@@ -246,8 +246,46 @@ class InputEncoderGamepadTest {
         assertEquals(AndroidControllerFamily.Google, AndroidControllerInput.controllerFamily("Chromecast Remote"))
         assertEquals(AndroidControllerFamily.Xbox, AndroidControllerInput.controllerFamily("Xbox Wireless Controller"))
         assertEquals(AndroidControllerFamily.PlayStation, AndroidControllerInput.controllerFamily("DualSense Wireless Controller"))
+        assertEquals(AndroidControllerFamily.PlayStation, AndroidControllerInput.controllerFamily("Sony Interactive Entertainment Wireless Controller"))
+        assertEquals(AndroidControllerFamily.PlayStation, AndroidControllerInput.controllerFamily("Generic Gamepad", vendorId = 0x054c))
         assertEquals(AndroidControllerFamily.Nintendo, AndroidControllerInput.controllerFamily("Nintendo Switch Pro Controller"))
         assertEquals(AndroidControllerFamily.Generic, AndroidControllerInput.controllerFamily("8BitDo Gamepad"))
+    }
+
+    @Test
+    fun advertisesPlayStationControllersWithoutTheXinputStyleBit() {
+        assertEquals(
+            0x0001,
+            androidGamepadConnectionBitmap(
+                controllerId = 0,
+                connected = true,
+                physicalControllerFamily = AndroidControllerFamily.PlayStation,
+            ),
+        )
+        assertEquals(
+            0x0202,
+            androidGamepadConnectionBitmap(
+                controllerId = 1,
+                connected = true,
+                physicalControllerFamily = AndroidControllerFamily.Xbox,
+            ),
+        )
+        assertEquals(
+            0x0404,
+            androidGamepadConnectionBitmap(
+                controllerId = 2,
+                connected = true,
+                physicalControllerFamily = null,
+            ),
+        )
+        assertEquals(
+            0,
+            androidGamepadConnectionBitmap(
+                controllerId = 0,
+                connected = false,
+                physicalControllerFamily = AndroidControllerFamily.PlayStation,
+            ),
+        )
     }
 
     @Test
@@ -480,6 +518,9 @@ class InputEncoderGamepadTest {
         assertEquals(0f, streamSharpnessShaderStrength(enabled = false, amount = 1f), 0.0001f)
         assertEquals(0f, streamSharpnessShaderStrength(enabled = true, amount = -1f), 0.0001f)
         assertEquals(0.28f, streamSharpnessShaderStrength(enabled = true, amount = 2f), 0.0001f)
+        assertFalse(streamSharpnessShaderActive(streamSharpnessShaderStrength(enabled = false, amount = 1f)))
+        assertFalse(streamSharpnessShaderActive(Float.NaN))
+        assertTrue(streamSharpnessShaderActive(streamSharpnessShaderStrength(enabled = true, amount = 1f)))
     }
 
     @Test

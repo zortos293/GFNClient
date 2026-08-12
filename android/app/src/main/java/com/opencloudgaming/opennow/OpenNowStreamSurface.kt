@@ -77,6 +77,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
@@ -714,7 +715,7 @@ internal fun StreamScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "Done",
+                            stringResource(R.string.stream_panel_done),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -775,7 +776,7 @@ internal fun StreamScreen(
                 modifier = Modifier.align(Alignment.BottomEnd),
             ) {
                 StreamControlsPanel(
-                    gameTitle = game?.title ?: "Stream",
+                    gameTitle = game?.title ?: stringResource(R.string.settings_section_stream),
                     status = (state.queuePosition?.let { "Queue $it" } ?: streamState).takeUnless(::shouldHideStreamStatusText),
                     settings = state.settings,
                     tvProfile = tvProfile,
@@ -1030,7 +1031,9 @@ internal fun StreamScreen(
                             )
                         )
                     },
-                    onBugReportSubmit = viewModel::submitBugReport,
+                    onBugReportSubmit = { title, description, knownIssueOverrideKey ->
+                        viewModel.submitBugReport(title, description, knownIssueOverrideKey)
+                    },
                     onBugReportReset = viewModel::resetBugReportSubmission,
                     onBugReportVersionCheck = viewModel::verifyBugReportVersion,
                     onOpenUpdate = viewModel::performAndroidUpdatePrimaryAction,
@@ -1177,7 +1180,7 @@ internal fun StreamSessionTimerMenuRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
-                Text("Session timer", fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.session_timer), fontWeight = FontWeight.SemiBold)
                 Text(display.label, color = TextMuted, style = MaterialTheme.typography.labelSmall)
             }
             Text(

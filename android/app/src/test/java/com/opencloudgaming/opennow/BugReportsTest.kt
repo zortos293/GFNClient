@@ -18,6 +18,8 @@ class BugReportsTest {
                 versionName = "0.9.0",
                 versionCode = "45",
                 reporterId = reporterId,
+                appLanguageSelectionTag = "en-US",
+                languageCheck = englishLanguageCheck,
                 metadata = """{"device":"Pixel 9","sessionId":"[redacted]"}""",
                 files = listOf(
                     AndroidBugReportAttachment(
@@ -60,6 +62,17 @@ class BugReportsTest {
         assertFalse(metadata.contains("sessionId"))
     }
 
+    @Test
+    fun metadataRecordsAUserAcknowledgedKnownIssueOverride() {
+        val metadata = buildAndroidBugReportMetadata(
+            logFileName = "opennow-android-logs.txt",
+            knownIssueOverrideKey = "network-2.4ghz",
+        )
+
+        assertTrue(metadata.contains("\"knownIssueOverride\":true"))
+        assertTrue(metadata.contains("\"knownIssueKey\":\"network-2.4ghz\""))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsMoreThanFiveFiles() {
         val files = (1..6).map { index ->
@@ -72,6 +85,8 @@ class BugReportsTest {
                 "0.9.0",
                 "45",
                 reporterId,
+                "en",
+                englishLanguageCheck,
                 "{}",
                 files,
             ),
@@ -87,6 +102,8 @@ class BugReportsTest {
                 "0.9.0",
                 "45",
                 reporterId,
+                "en",
+                englishLanguageCheck,
                 "{}",
                 listOf(
                     AndroidBugReportAttachment(
@@ -114,6 +131,8 @@ class BugReportsTest {
                 versionName = "1.0.5",
                 versionCode = "60",
                 reporterId = reporterId,
+                appLanguageSelectionTag = "en",
+                languageCheck = englishLanguageCheck,
                 metadata = "{}",
                 files = emptyList(),
             ),
@@ -210,4 +229,130 @@ class BugReportsTest {
         assertEquals("Bug report upload failed (HTTP 502).", error.message)
         assertFalse(error.message.contains("private reverse proxy"))
     }
+
+    @Test
+    fun rejectsRandomOrRepeatedPaddingThatOnlyPassesTheRawCharacterLimit() {
+        assertTrue(
+            androidBugReportDescriptionError("eworuejwgojug ".repeat(8))
+                ?.contains("complete English sentences") == true,
+        )
+        assertTrue(
+            androidBugReportDescriptionError(
+                "the stream froze while loading the game the stream froze while loading the game",
+            )?.contains("repeated or random text") == true,
+        )
+    }
+
+    @Test
+    fun acceptsDetailedDescriptionWithEnoughMeaningfulEnglishWords() {
+        assertEquals(
+            null,
+            androidBugReportDescriptionError(
+                "The video froze after I reopened the app, while audio continued until I ended the stream.",
+            ),
+        )
+    }
+
+    @Test
+    fun languageCandidatesMustConfidentlyIdentifyEnglish() {
+        assertEquals(
+            null,
+            androidBugReportLanguageError(
+                listOf(AndroidBugReportLanguageCandidate("en", 0.91f)),
+            ),
+        )
+        assertTrue(
+            androidBugReportLanguageError(
+                listOf(
+                    AndroidBugReportLanguageCandidate("es", 0.82f),
+                    AndroidBugReportLanguageCandidate("en", 0.12f),
+                ),
+            )?.contains("clear English") == true,
+        )
+        assertTrue(
+            androidBugReportLanguageError(
+                listOf(AndroidBugReportLanguageCandidate("und", 1.0f)),
+            )?.contains("unrecognizable") == true,
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun requestBuilderRejectsReportsWhenTheAppLocaleIsNotEnglish() {
+        buildAndroidBugReportRequest(
+            validReport().copy(appLanguageSelectionTag = "fr-FR"),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun requestBuilderRejectsReportsWithoutAConfidentEnglishLanguageCheck() {
+        buildAndroidBugReportRequest(
+            validReport().copy(
+                languageCheck = AndroidBugReportLanguageCheck("es", 0.97f),
+            ),
+        )
+    }
+
+    @Test
+    fun appLocaleGateAllowsAnEnglishAppOrDeviceLanguage() {
+        assertTrue(androidAppLocaleIsEnglish("en-CA"))
+        assertTrue(androidAppLocaleIsEnglish("en_GB"))
+        assertFalse(androidAppLocaleIsEnglish("fr-CA"))
+        assertFalse(androidAppLocaleIsEnglish(""))
+        assertTrue(
+            AndroidAppLocaleState(
+                selectedLanguageTag = "",
+                effectiveLanguageTag = "en-CA",
+            ).bugReportsAllowed,
+        )
+        assertTrue(
+            AndroidAppLocaleState(
+                selectedLanguageTag = "fr",
+                effectiveLanguageTag = "fr-FR",
+                deviceLanguageTag = "en-US",
+            ).bugReportsAllowed,
+        )
+        assertTrue(
+            AndroidAppLocaleState(
+                selectedLanguageTag = "en",
+                effectiveLanguageTag = "en-CA",
+                deviceLanguageTag = "fr-FR",
+            ).bugReportsAllowed,
+        )
+        assertFalse(
+            AndroidAppLocaleState(
+                selectedLanguageTag = "fr",
+                effectiveLanguageTag = "fr-FR",
+                deviceLanguageTag = "de-DE",
+            ).bugReportsAllowed,
+        )
+        assertEquals(
+            "en-US",
+            AndroidAppLocaleState("fr", "fr-FR", "en-US").bugReportLanguageTag,
+        )
+    }
+
+    @Test
+    fun androidAppLanguageSelectionSupportsEveryBundledLocale() {
+        assertTrue(androidAppLanguageSelectionIsSupported(""))
+        listOf("en", "ar", "de", "es", "fr", "ja", "ko", "nl", "pl", "pt", "ro", "ru", "tr", "zh-Hans")
+            .forEach { languageTag ->
+                assertTrue(languageTag, androidAppLanguageSelectionIsSupported(languageTag))
+            }
+        assertFalse(androidAppLanguageSelectionIsSupported("pt-BR"))
+        assertFalse(androidAppLanguageSelectionIsSupported("zh-Hant"))
+    }
+
+    private fun validReport() = AndroidBugReport(
+        title = "Video freezes after reconnect",
+        description = "The video stopped after reconnecting, but audio continued until I manually ended the stream.",
+        versionName = "1.2.2",
+        versionCode = "78",
+        reporterId = reporterId,
+        appLanguageSelectionTag = "en-CA",
+        languageCheck = englishLanguageCheck,
+        metadata = "{}",
+        files = emptyList(),
+    )
+
+    private val englishLanguageCheck = AndroidBugReportLanguageCheck("en", 0.95f)
 }

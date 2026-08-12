@@ -114,8 +114,8 @@ internal enum class SearchTarget {
 }
 
 /**
- * Titles and summaries are string resources rather than hardcoded English constants, so the twelve
- * locales already maintained under the repo-root `locales` directory have somewhere to land.
+ * Titles and summaries are string resources rather than hardcoded English constants, so Android's
+ * app-owned `res/values-*` translations can cover them without a runtime translation table.
  *
  * Icons come from `material-icons-extended` (already a dependency) so each category gets a distinct
  * one. The previous set reused `ic_tab_store` for both Interface and Account, `ic_tab_settings` for
@@ -165,33 +165,33 @@ private val gameLanguageOptions = listOf(
     SettingsChoiceOption("en_US", "English (US)"),
     SettingsChoiceOption("en_GB", "English (UK)"),
     SettingsChoiceOption("de_DE", "Deutsch"),
-    SettingsChoiceOption("fr_FR", "Francais"),
-    SettingsChoiceOption("es_ES", "Espanol (ES)"),
-    SettingsChoiceOption("es_MX", "Espanol (MX)"),
+    SettingsChoiceOption("fr_FR", "Français"),
+    SettingsChoiceOption("es_ES", "Español (ES)"),
+    SettingsChoiceOption("es_MX", "Español (MX)"),
     SettingsChoiceOption("it_IT", "Italiano"),
-    SettingsChoiceOption("pt_PT", "Portugues (PT)"),
-    SettingsChoiceOption("pt_BR", "Portugues (BR)"),
-    SettingsChoiceOption("ru_RU", "Russian"),
-    SettingsChoiceOption("pl_PL", "Polish"),
-    SettingsChoiceOption("tr_TR", "Turkish"),
-    SettingsChoiceOption("ar_SA", "Arabic"),
-    SettingsChoiceOption("ja_JP", "Japanese"),
-    SettingsChoiceOption("ko_KR", "Korean"),
-    SettingsChoiceOption("zh_CN", "Chinese (Simplified)"),
-    SettingsChoiceOption("zh_TW", "Chinese (Traditional)"),
-    SettingsChoiceOption("th_TH", "Thai"),
-    SettingsChoiceOption("vi_VN", "Vietnamese"),
-    SettingsChoiceOption("id_ID", "Indonesian"),
-    SettingsChoiceOption("cs_CZ", "Czech"),
-    SettingsChoiceOption("el_GR", "Greek"),
-    SettingsChoiceOption("hu_HU", "Hungarian"),
-    SettingsChoiceOption("ro_RO", "Romanian"),
-    SettingsChoiceOption("uk_UA", "Ukrainian"),
-    SettingsChoiceOption("nl_NL", "Dutch"),
-    SettingsChoiceOption("sv_SE", "Swedish"),
-    SettingsChoiceOption("da_DK", "Danish"),
-    SettingsChoiceOption("fi_FI", "Finnish"),
-    SettingsChoiceOption("no_NO", "Norwegian"),
+    SettingsChoiceOption("pt_PT", "Português (PT)"),
+    SettingsChoiceOption("pt_BR", "Português (BR)"),
+    SettingsChoiceOption("ru_RU", "Русский"),
+    SettingsChoiceOption("pl_PL", "Polski"),
+    SettingsChoiceOption("tr_TR", "Türkçe"),
+    SettingsChoiceOption("ar_SA", "العربية"),
+    SettingsChoiceOption("ja_JP", "日本語"),
+    SettingsChoiceOption("ko_KR", "한국어"),
+    SettingsChoiceOption("zh_CN", "简体中文"),
+    SettingsChoiceOption("zh_TW", "繁體中文"),
+    SettingsChoiceOption("th_TH", "ไทย"),
+    SettingsChoiceOption("vi_VN", "Tiếng Việt"),
+    SettingsChoiceOption("id_ID", "Bahasa Indonesia"),
+    SettingsChoiceOption("cs_CZ", "Čeština"),
+    SettingsChoiceOption("el_GR", "Ελληνικά"),
+    SettingsChoiceOption("hu_HU", "Magyar"),
+    SettingsChoiceOption("ro_RO", "Română"),
+    SettingsChoiceOption("uk_UA", "Українська"),
+    SettingsChoiceOption("nl_NL", "Nederlands"),
+    SettingsChoiceOption("sv_SE", "Svenska"),
+    SettingsChoiceOption("da_DK", "Dansk"),
+    SettingsChoiceOption("fi_FI", "Suomi"),
+    SettingsChoiceOption("no_NO", "Norsk"),
 )
 
 @Composable
@@ -470,6 +470,39 @@ private fun SettingsContent(
                 }
                 AndroidUpdatePanel(state = state, viewModel = viewModel)
             }
+    CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, stringResource(R.string.settings_section_language), "language", "locale", "english", "system default", "app language") {
+                val appLocale = currentAndroidAppLocale(context)
+                val systemDefaultLabel = stringResource(R.string.app_language_system_default)
+                val languageOptions = listOf(
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_SYSTEM, systemDefaultLabel),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_ENGLISH, stringResource(R.string.app_language_english)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_ARABIC, stringResource(R.string.app_language_arabic)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_GERMAN, stringResource(R.string.app_language_german)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_SPANISH, stringResource(R.string.app_language_spanish)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_FRENCH, stringResource(R.string.app_language_french)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_JAPANESE, stringResource(R.string.app_language_japanese)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_KOREAN, stringResource(R.string.app_language_korean)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_DUTCH, stringResource(R.string.app_language_dutch)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_POLISH, stringResource(R.string.app_language_polish)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_PORTUGUESE, stringResource(R.string.app_language_portuguese)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_ROMANIAN, stringResource(R.string.app_language_romanian)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_RUSSIAN, stringResource(R.string.app_language_russian)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_TURKISH, stringResource(R.string.app_language_turkish)),
+                    ChoiceMenuOption(ANDROID_APP_LANGUAGE_SIMPLIFIED_CHINESE, stringResource(R.string.app_language_simplified_chinese)),
+                )
+                ChoiceMenuRow(
+                    label = stringResource(R.string.settings_app_language),
+                    options = languageOptions,
+                    selectedLabel = if (appLocale.selectedLanguageTag.isBlank()) {
+                        "$systemDefaultLabel (${appLocale.effectiveLanguageTag.ifBlank { "unknown" }})"
+                    } else {
+                        languageOptions.firstOrNull { it.value == appLocale.selectedLanguageTag }?.label
+                            ?: appLocale.selectedLanguageTag
+                    },
+                ) { languageTag ->
+                    setAndroidAppLanguage(context, languageTag)
+                }
+            }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_nerd_mode), "advanced", "advanced options", "nerd", "experimental", "diagnostics", "catalog", "cave", "background", "wallpaper", "image", "custom") {
                 AdvancedOptionsSettings(settings = settings, viewModel = viewModel)
             }
@@ -679,11 +712,11 @@ private fun SettingsContent(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                SettingSwitch("Stream sharpening", settings.stream.streamSharpeningEnabled) {
+                SettingSwitch(stringResource(R.string.stream_panel_sharpening), settings.stream.streamSharpeningEnabled) {
                     viewModel.updateStreamSettings { s -> s.copy(streamSharpeningEnabled = it) }
                 }
                 if (settings.stream.streamSharpeningEnabled) {
-                    NumberSlider("Sharpness amount", settings.stream.streamSharpeningAmount, 0f, 1f, 0.05f) {
+                    NumberSlider(stringResource(R.string.stream_panel_sharpening_amount), settings.stream.streamSharpeningAmount, 0f, 1f, 0.05f) {
                         viewModel.updateStreamSettings { s -> s.copy(streamSharpeningAmount = it) }
                     }
                 }
@@ -749,13 +782,13 @@ private fun SettingsContent(
                         microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
                 }
-                ChoiceOptionRow("Keyboard layout", keyboardLayoutOptions, settings.stream.keyboardLayout) {
+                ChoiceOptionRow(stringResource(R.string.settings_keyboard_layout), keyboardLayoutOptions, settings.stream.keyboardLayout) {
                     viewModel.updateStreamSettings { s -> s.copy(keyboardLayout = it) }
                 }
-                ChoiceOptionRow("Game language", gameLanguageOptions, settings.stream.gameLanguage) {
+                ChoiceOptionRow(stringResource(R.string.settings_game_language), gameLanguageOptions, settings.stream.gameLanguage) {
                     viewModel.updateStreamSettings { s -> s.copy(gameLanguage = it) }
                 }
-                SettingSwitch("Clipboard paste", settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
+                SettingSwitch(stringResource(R.string.settings_clipboard_paste), settings.clipboardPaste) { enabled -> viewModel.updateSettings(settings.copy(clipboardPaste = enabled)) }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_pointer_input), "input", "pointer", "mouse", "lock", "grab", "capture", "fullscreen", "sensitivity", "acceleration", "scroll", "controller mouse", "mode", "native touch", "tap", "stability", "finger", "direct click") {
                 SettingSwitch(
@@ -852,16 +885,16 @@ private fun SettingsContent(
                         }
                     }
                 }
-                SettingSwitch("Finger mouse", settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
+                SettingSwitch(stringResource(R.string.stream_panel_finger_mouse), settings.androidTouch.mousePad) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mousePad = enabled))) }
                 if (settings.androidTouch.mousePad) {
                     Box(Modifier.padding(start = 24.dp)) {
-                        SettingSwitch("Direct click", settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
+                        SettingSwitch(stringResource(R.string.stream_panel_direct_click), settings.androidTouch.mouseDirectClick) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(mouseDirectClick = enabled))) }
                     }
                 }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Input, searchQuery, stringResource(R.string.settings_section_controller_touch), "input", "rumble", "touch", "controller", "style", "layout", "scale", "size", "opacity", "edge", "padding", "offset", "horizontal", "vertical", "controls", "stick", "joystick", "analog", "dynamic", "dead zone", "button") {
-                SettingSwitch("Phone rumble fallback", settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
-                SettingSwitch("Touch controls", settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
+                SettingSwitch(stringResource(R.string.stream_panel_phone_rumble), settings.phoneRumbleFallback) { enabled -> viewModel.updateSettings(settings.copy(phoneRumbleFallback = enabled)) }
+                SettingSwitch(stringResource(R.string.stream_touch_controls_title), settings.androidTouch.enabled) { enabled -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(enabled = enabled))) }
                 val touchStyleOptions = listOf(
                     SettingsChoiceOption(TouchControllerStyle.V1.name, "V1 (Solid)"),
                     SettingsChoiceOption(TouchControllerStyle.V2.name, "V2 (Clean Outline)"),
@@ -871,8 +904,8 @@ private fun SettingsContent(
                     viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(touchControllerStyle = style)))
                 }
                 val joystickModeOptions = listOf(
-                    SettingsChoiceOption(TouchJoystickMode.Fixed.name, "Fixed"),
-                    SettingsChoiceOption(TouchJoystickMode.Dynamic.name, "Dynamic"),
+                    SettingsChoiceOption(TouchJoystickMode.Fixed.name, stringResource(R.string.stream_panel_joystick_fixed)),
+                    SettingsChoiceOption(TouchJoystickMode.Dynamic.name, stringResource(R.string.stream_panel_joystick_dynamic)),
                 )
                 ChoiceOptionRow("Touch joystick", joystickModeOptions, settings.androidTouch.joystickMode.name) { modeName ->
                     val mode = TouchJoystickMode.valueOf(modeName)
@@ -992,7 +1025,7 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.General, searchQuery, "App Data", "app data", "data", "cache", "clear", "reset", "settings", "tutorial", "guide", "wipe", "relaunch", "fresh install") {
                 AppDataSettingsPanel(viewModel = viewModel)
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Account, searchQuery, "Account", "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Account, searchQuery, stringResource(R.string.settings_category_account), "account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription") {
                 AccountSettingsPanel(state = state, viewModel = viewModel)
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Advanced, searchQuery, stringResource(R.string.settings_experimental_streaming), "experimental", "stream", "l4s", "cloud g-sync", "gsync", "vrr", "session", "launch", "failure") {
@@ -1027,7 +1060,7 @@ private fun SettingsContent(
                     BatteryOptimizationPanel()
                 }
     }
-    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, "About", "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_category_about), "about", "version", "build", "app", "github", "developer", "kiefer", "zortos", "opennow", "repository") {
                 AppVersionPanel()
                 OpenNowGitHubPanel()
                 DeveloperPanel()
@@ -1572,7 +1605,7 @@ private fun SettingsDetailHeader(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(
                         painter = painterResource(R.drawable.ic_arrow_back),
-                        contentDescription = "Back",
+                        contentDescription = stringResource(R.string.action_back),
                         tint = SettingsText,
                         modifier = Modifier.size(21.dp),
                     )

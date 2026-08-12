@@ -182,8 +182,8 @@ internal fun StreamKeyboardBar(
             ) {
                 Text(if (applyAction == StreamKeyboardApplyAction.Replace) "Update" else "Type")
             }
-            OutlinedButton(onClick = onEnter, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Enter") }
-            TextButton(onClick = onEsc, contentPadding = PaddingValues(horizontal = 10.dp)) { Text("Esc") }
+            OutlinedButton(onClick = onEnter, contentPadding = PaddingValues(horizontal = 12.dp)) { Text(stringResource(R.string.stream_panel_key_enter)) }
+            TextButton(onClick = onEsc, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(stringResource(R.string.stream_panel_key_esc)) }
             TextButton(
                 onClick = {
                     keyboardController?.hide()
@@ -191,7 +191,7 @@ internal fun StreamKeyboardBar(
                     onDone()
                 },
                 contentPadding = PaddingValues(horizontal = 10.dp),
-            ) { Text("Done") }
+            ) { Text(stringResource(R.string.stream_panel_done)) }
         }
     }
 }
@@ -335,6 +335,8 @@ internal fun ActiveStreamModePill(
     onOpenUpdate: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val appLocale = currentAndroidAppLocale(context)
     val changes = remember(status) { activeStreamModeDisplayChanges(status) }
     if (changes.isEmpty()) return
     val causeAssessment = remember(status, recoveryReason) {
@@ -353,7 +355,7 @@ internal fun ActiveStreamModePill(
     var reportConfirmationOpen by remember(noticeKey) { mutableStateOf(false) }
 
     LaunchedEffect(detailsOpen, update.installSource.isGooglePlay) {
-        if (detailsOpen && update.installSource.isGooglePlay) {
+        if (detailsOpen && appLocale.bugReportsAllowed && update.installSource.isGooglePlay) {
             onBugReportVersionCheck()
         }
     }
@@ -485,7 +487,9 @@ internal fun ActiveStreamModePill(
                         color = TextMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    if (!androidBugReportsAllowed(update, bugReportVersionCheck)) {
+                    if (!appLocale.bugReportsAllowed) {
+                        BugReportLocaleGateCard()
+                    } else if (!androidBugReportsAllowed(update, bugReportVersionCheck)) {
                         BugReportVersionGateCard(
                             update = update,
                             versionCheck = bugReportVersionCheck,
@@ -510,7 +514,12 @@ internal fun ActiveStreamModePill(
                         Text("Sending…")
                     }
                     bugReportSubmission.submitted -> TextButton(onClick = { detailsOpen = false }) {
-                        Text("Done")
+                        Text(stringResource(R.string.stream_panel_done))
+                    }
+                    !appLocale.bugReportsAllowed -> Button(
+                        onClick = { setAndroidAppLanguage(context, ANDROID_APP_LANGUAGE_ENGLISH) },
+                    ) {
+                        Text("Use English for OpenNOW")
                     }
                     !androidBugReportsAllowed(update, bugReportVersionCheck) -> when {
                         update.status == AndroidUpdateStatus.Available ||
@@ -548,7 +557,7 @@ internal fun ActiveStreamModePill(
             dismissButton = {
                 if (!bugReportSubmission.uploading && !bugReportSubmission.submitted) {
                     TextButton(onClick = { detailsOpen = false }) {
-                        Text("Close")
+                        Text(stringResource(R.string.action_close))
                     }
                 }
             },
@@ -590,7 +599,7 @@ internal fun ActiveStreamModePill(
                         detailsOpen = true
                     },
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.action_cancel))
                 }
             },
         )

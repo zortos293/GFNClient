@@ -349,7 +349,7 @@ private fun buildStreamNotification(context: Context, title: String): Notificati
     return builder
         .setSmallIcon(R.drawable.ic_tab_stream)
         .setContentTitle(title)
-        .setContentText("Streaming continues while the screen is off")
+        .setContentText(localizedAndroidContext(context).getString(R.string.stream_background_notification))
         .setSubText("OpenNOW")
         .setCategory(Notification.CATEGORY_TRANSPORT)
         .setVisibility(Notification.VISIBILITY_PUBLIC)

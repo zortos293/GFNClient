@@ -92,7 +92,7 @@ export function desktopBugReportDescriptionError(description: string): string | 
   if (meaningfulCharacters < DESKTOP_BUG_REPORT_MIN_MEANINGFUL_CHARS) {
     return `Describe what happened using at least ${DESKTOP_BUG_REPORT_MIN_MEANINGFUL_CHARS} letters or numbers`;
   }
-  const words = Array.from(trimmed.matchAll(BUG_REPORT_WORD), (match) => match[0].toLocaleLowerCase());
+  const words = Array.from(trimmed.matchAll(BUG_REPORT_WORD), (match) => match[0].toLowerCase());
   if (
     words.length < DESKTOP_BUG_REPORT_MIN_WORDS
     || new Set(words).size < DESKTOP_BUG_REPORT_MIN_UNIQUE_WORDS

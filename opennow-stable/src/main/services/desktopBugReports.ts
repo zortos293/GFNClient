@@ -6,7 +6,10 @@ import { getAppBuildInfo } from "../appBuildInfo";
 import { EMPTY_GPU_BACKEND_INFO, getGpuBackendInfo } from "../gpuInfo";
 import { getOrCreateTelemetryInstallId } from "../installationId";
 import type { SettingsManager } from "../settings";
-import { fetchWithTimeout } from "./requestTimeout";
+import {
+  fetchAndConsumeWithTimeout,
+  readResponseTextWithLimit,
+} from "./requestTimeout";
 import {
   DESKTOP_BUG_REPORT_ENDPOINT,
   buildDesktopBugReportFormData,
@@ -80,7 +83,7 @@ export async function uploadDesktopBugReport(
     metadata,
     files,
   });
-  const response = await fetchWithTimeout(
+  const result = await fetchAndConsumeWithTimeout(
     DESKTOP_BUG_REPORT_ENDPOINT,
     {
       method: "POST",
@@ -92,9 +95,13 @@ export async function uploadDesktopBugReport(
     },
     BUG_REPORT_UPLOAD_TIMEOUT_MS,
     "Bug report upload",
+    async (response) => ({
+      body: await readResponseTextWithLimit(response, MAX_BUG_REPORT_RESPONSE_BYTES),
+      status: response.status,
+      ok: response.ok,
+    }),
   );
-  const body = (await response.text()).slice(0, MAX_BUG_REPORT_RESPONSE_CHARS);
-  return parseDesktopBugReportResponse(body, response.status, response.ok);
+  return parseDesktopBugReportResponse(result.body, result.status, result.ok);
 }
 
 function buildAttachments(input: DesktopBugReportRequest): DesktopBugReportAttachment[] {
@@ -144,7 +151,7 @@ function boundedText(value: string | undefined, maxChars: number): string | unde
 }
 
 const BUG_REPORT_UPLOAD_TIMEOUT_MS = 30_000;
-const MAX_BUG_REPORT_RESPONSE_CHARS = 64 * 1024;
+const MAX_BUG_REPORT_RESPONSE_BYTES = 64 * 1024;
 const MAX_LOG_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_RENDERER_LOG_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const MAX_SESSION_REPORT_ATTACHMENT_BYTES = 1024 * 1024;

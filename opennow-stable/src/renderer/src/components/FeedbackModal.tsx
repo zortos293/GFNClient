@@ -210,6 +210,7 @@ export function FeedbackModal({
           error={error}
           onConsentChange={setConsentChecked}
           onBack={() => {
+            setConsentChecked(false);
             setError(null);
             setReviewing(false);
           }}

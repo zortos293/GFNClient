@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -11,6 +12,129 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import kotlin.math.roundToInt
+
+internal data class AndroidDeviceDiagnosticsSnapshot(
+    val manufacturer: String,
+    val brand: String,
+    val model: String,
+    val deviceCodename: String,
+    val product: String,
+    val hardware: String,
+    val board: String,
+    val androidRelease: String,
+    val androidCodename: String,
+    val androidSdk: Int,
+    val targetSdk: Int,
+    val securityPatch: String,
+    val supportedAbis: List<String>,
+    val is64BitRuntime: Boolean,
+    val processorCount: Int,
+    val totalMemoryMiB: Long?,
+    val lowRamDevice: Boolean?,
+    val displayWidthPixels: Int,
+    val displayHeightPixels: Int,
+    val densityDpi: Int,
+    val smallestScreenWidthDp: Int,
+    val formFactor: String,
+    val emulator: Boolean,
+) {
+    fun debugSummary(): String = buildString {
+        appendLine(
+            "device.identity manufacturer=$manufacturer brand=$brand model=$model " +
+                "codename=$deviceCodename product=$product formFactor=$formFactor emulator=$emulator",
+        )
+        appendLine(
+            "android.os release=$androidRelease codename=$androidCodename sdk=$androidSdk " +
+                "targetSdk=$targetSdk securityPatch=$securityPatch",
+        )
+        appendLine(
+            "device.hardware hardware=$hardware board=$board abis=${supportedAbis.joinToString("|").ifBlank { "unknown" }} " +
+                "runtimeBits=${if (is64BitRuntime) 64 else 32} processors=$processorCount " +
+                "memoryMiB=${totalMemoryMiB ?: "unknown"} lowRam=${lowRamDevice ?: "unknown"}",
+        )
+        append(
+            "device.display pixels=${displayWidthPixels}x$displayHeightPixels densityDpi=$densityDpi " +
+                "smallestWidthDp=$smallestScreenWidthDp",
+        )
+    }
+}
+
+internal object AndroidDeviceDiagnostics {
+    fun snapshot(context: Context): AndroidDeviceDiagnosticsSnapshot {
+        val appContext = context.applicationContext
+        val resources = appContext.resources
+        val configuration = resources.configuration
+        val metrics = resources.displayMetrics
+        val activityManager = appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val totalMemoryMiB = activityManager?.let { manager ->
+            runCatching {
+                val info = ActivityManager.MemoryInfo()
+                manager.getMemoryInfo(info)
+                info.totalMem.takeIf { it > 0L }?.div(DEVICE_BYTES_PER_MEBIBYTE)
+            }.getOrNull()
+        }
+        val smallestWidthDp = configuration.smallestScreenWidthDp.coerceAtLeast(0)
+        val tv = isAndroidTvProfile(appContext)
+        return AndroidDeviceDiagnosticsSnapshot(
+            manufacturer = diagnosticBuildValue(Build.MANUFACTURER),
+            brand = diagnosticBuildValue(Build.BRAND),
+            model = diagnosticBuildValue(Build.MODEL),
+            deviceCodename = diagnosticBuildValue(Build.DEVICE),
+            product = diagnosticBuildValue(Build.PRODUCT),
+            hardware = diagnosticBuildValue(Build.HARDWARE),
+            board = diagnosticBuildValue(Build.BOARD),
+            androidRelease = diagnosticBuildValue(Build.VERSION.RELEASE),
+            androidCodename = diagnosticBuildValue(Build.VERSION.CODENAME),
+            androidSdk = Build.VERSION.SDK_INT,
+            targetSdk = appContext.applicationInfo.targetSdkVersion,
+            securityPatch = diagnosticBuildValue(Build.VERSION.SECURITY_PATCH),
+            supportedAbis = Build.SUPPORTED_ABIS.map(::diagnosticBuildValue),
+            is64BitRuntime = android.os.Process.is64Bit(),
+            processorCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(1),
+            totalMemoryMiB = totalMemoryMiB,
+            lowRamDevice = activityManager?.isLowRamDevice,
+            displayWidthPixels = metrics.widthPixels.coerceAtLeast(0),
+            displayHeightPixels = metrics.heightPixels.coerceAtLeast(0),
+            densityDpi = metrics.densityDpi.coerceAtLeast(0),
+            smallestScreenWidthDp = smallestWidthDp,
+            formFactor = androidDeviceFormFactor(tv, smallestWidthDp),
+            emulator = isProbablyAndroidEmulator(),
+        )
+    }
+}
+
+internal fun androidDeviceFormFactor(androidTv: Boolean, smallestScreenWidthDp: Int): String = when {
+    androidTv -> "tv"
+    smallestScreenWidthDp >= 600 -> "tablet"
+    else -> "phone"
+}
+
+private fun diagnosticBuildValue(value: String?): String =
+    value
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.replace(Regex("\\s+"), "_")
+        ?.take(MAX_DEVICE_DIAGNOSTIC_VALUE_CHARS)
+        ?: "unknown"
+
+private fun isProbablyAndroidEmulator(): Boolean {
+    val fingerprint = Build.FINGERPRINT.lowercase()
+    val model = Build.MODEL.lowercase()
+    val manufacturer = Build.MANUFACTURER.lowercase()
+    val brand = Build.BRAND.lowercase()
+    val device = Build.DEVICE.lowercase()
+    val product = Build.PRODUCT.lowercase()
+    return fingerprint.startsWith("generic") ||
+        fingerprint.startsWith("unknown") ||
+        model.contains("google_sdk") ||
+        model.contains("emulator") ||
+        model.contains("android sdk built for") ||
+        manufacturer.contains("genymotion") ||
+        (brand.startsWith("generic") && device.startsWith("generic")) ||
+        product.contains("sdk") ||
+        product.contains("emulator") ||
+        product.contains("simulator")
+}
 
 internal data class AndroidRuntimeDiagnosticsSnapshot(
     val batteryPercent: Int? = null,
@@ -218,3 +342,6 @@ internal object AndroidRuntimeDiagnostics {
         val wifiFrequencyMhz: Int?,
     )
 }
+
+private const val DEVICE_BYTES_PER_MEBIBYTE = 1024L * 1024L
+private const val MAX_DEVICE_DIAGNOSTIC_VALUE_CHARS = 120

@@ -52,13 +52,18 @@ class BugReportsTest {
     }
 
     @Test
-    fun metadataOnlyIdentifiesTheAdvancedDebugLogExport() {
+    fun metadataIncludesDeviceAndAndroidContextForTriage() {
         val fileName = "opennow-android-logs-20260718-123456.txt"
-        val metadata = buildAndroidBugReportMetadata(fileName)
+        val metadata = buildAndroidBugReportMetadata(fileName, device = testDeviceDiagnostics)
 
         assertTrue(metadata.contains("\"source\":\"settings-advanced-debug-logs\""))
         assertTrue(metadata.contains("\"attachment\":\"$fileName\""))
-        assertFalse(metadata.contains("device"))
+        assertTrue(metadata.contains("\"manufacturer\":\"Google\""))
+        assertTrue(metadata.contains("\"model\":\"Pixel_9_Pro\""))
+        assertTrue(metadata.contains("\"sdk\":35"))
+        assertTrue(metadata.contains("\"targetSdk\":36"))
+        assertTrue(metadata.contains("\"supportedAbis\":[\"arm64-v8a\"]"))
+        assertTrue(metadata.contains("\"widthPixels\":1440"))
         assertFalse(metadata.contains("sessionId"))
     }
 
@@ -72,6 +77,32 @@ class BugReportsTest {
         assertTrue(metadata.contains("\"knownIssueOverride\":true"))
         assertTrue(metadata.contains("\"knownIssueKey\":\"network-2.4ghz\""))
     }
+
+    private val testDeviceDiagnostics = AndroidDeviceDiagnosticsSnapshot(
+        manufacturer = "Google",
+        brand = "google",
+        model = "Pixel_9_Pro",
+        deviceCodename = "komodo",
+        product = "komodo",
+        hardware = "komodo",
+        board = "komodo",
+        androidRelease = "15",
+        androidCodename = "REL",
+        androidSdk = 35,
+        targetSdk = 36,
+        securityPatch = "2026-07-05",
+        supportedAbis = listOf("arm64-v8a"),
+        is64BitRuntime = true,
+        processorCount = 8,
+        totalMemoryMiB = 12_288,
+        lowRamDevice = false,
+        displayWidthPixels = 1440,
+        displayHeightPixels = 3120,
+        densityDpi = 512,
+        smallestScreenWidthDp = 411,
+        formFactor = "phone",
+        emulator = false,
+    )
 
     @Test(expected = IllegalArgumentException::class)
     fun rejectsMoreThanFiveFiles() {

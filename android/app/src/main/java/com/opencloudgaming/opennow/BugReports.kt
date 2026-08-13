@@ -2,10 +2,12 @@ package com.opencloudgaming.opennow
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -114,9 +116,45 @@ internal fun androidBugReportReporterId(stableDeviceId: String): String {
 internal fun buildAndroidBugReportMetadata(
     logFileName: String,
     knownIssueOverrideKey: String? = null,
+    device: AndroidDeviceDiagnosticsSnapshot? = null,
 ): String = buildJsonObject {
     put("source", "settings-advanced-debug-logs")
     put("attachment", logFileName)
+    device?.let { snapshot ->
+        put("device", buildJsonObject {
+            put("manufacturer", snapshot.manufacturer)
+            put("brand", snapshot.brand)
+            put("model", snapshot.model)
+            put("codename", snapshot.deviceCodename)
+            put("product", snapshot.product)
+            put("formFactor", snapshot.formFactor)
+            put("emulator", snapshot.emulator)
+        })
+        put("android", buildJsonObject {
+            put("release", snapshot.androidRelease)
+            put("codename", snapshot.androidCodename)
+            put("sdk", snapshot.androidSdk)
+            put("targetSdk", snapshot.targetSdk)
+            put("securityPatch", snapshot.securityPatch)
+        })
+        put("hardware", buildJsonObject {
+            put("name", snapshot.hardware)
+            put("board", snapshot.board)
+            put("supportedAbis", buildJsonArray {
+                snapshot.supportedAbis.forEach { add(JsonPrimitive(it)) }
+            })
+            put("runtimeBits", if (snapshot.is64BitRuntime) 64 else 32)
+            put("processorCount", snapshot.processorCount)
+            snapshot.totalMemoryMiB?.let { put("totalMemoryMiB", it) }
+            snapshot.lowRamDevice?.let { put("lowRamDevice", it) }
+        })
+        put("display", buildJsonObject {
+            put("widthPixels", snapshot.displayWidthPixels)
+            put("heightPixels", snapshot.displayHeightPixels)
+            put("densityDpi", snapshot.densityDpi)
+            put("smallestWidthDp", snapshot.smallestScreenWidthDp)
+        })
+    }
     knownIssueOverrideKey?.trim()?.takeIf { it.isNotEmpty() }?.let { key ->
         put("knownIssueOverride", true)
         put("knownIssueKey", key)

@@ -3586,25 +3586,20 @@ class NativeStreamClient(
     private fun vibrateController(device: InputDevice, profile: RumbleEffectProfile) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val manager = device.vibratorManager
-            val vibratorIds = manager.vibratorIds.filter { manager.getVibrator(it).hasVibrator() }
-            if (vibratorIds.size >= 2) {
-                val combination = CombinedVibration.startParallel()
-                var addedEffect = false
-                if (profile.strongAmplitude > 0) {
-                    combination.addVibrator(vibratorIds[0], createRumbleEffect(profile.strongAmplitude))
-                    addedEffect = true
-                }
-                if (profile.weakAmplitude > 0) {
-                    combination.addVibrator(vibratorIds[1], createRumbleEffect(profile.weakAmplitude))
-                    addedEffect = true
-                }
-                if (addedEffect) {
-                    manager.vibrate(combination.combine())
-                    return
-                }
+            val vibrators = manager.vibratorIds
+                .map(manager::getVibrator)
+                .filter(Vibrator::hasVibrator)
+            if (vibrators.size >= 2) {
+                // Input-device VibratorManager implementations vary across OEM builds. Drive the
+                // controller motors through their individual Vibrator handles, which is also the
+                // Android game-controller API's documented path, instead of relying on a combined
+                // stereo effect that some devices accept without producing physical rumble.
+                updateControllerVibrator(vibrators[0], profile.strongAmplitude)
+                updateControllerVibrator(vibrators[1], profile.weakAmplitude)
+                return
             }
-            if (vibratorIds.isNotEmpty() && profile.combinedAmplitude > 0) {
-                manager.vibrate(CombinedVibration.createParallel(createRumbleEffect(profile.combinedAmplitude)))
+            if (vibrators.isNotEmpty()) {
+                updateControllerVibrator(vibrators[0], profile.combinedAmplitude)
                 return
             }
         }
@@ -3612,12 +3607,22 @@ class NativeStreamClient(
         device.vibrator.vibrate(createRumbleEffect(profile.combinedAmplitude))
     }
 
+    private fun updateControllerVibrator(vibrator: Vibrator, amplitude: Int) {
+        if (amplitude <= 0) {
+            vibrator.cancel()
+        } else {
+            vibrator.vibrate(createRumbleEffect(amplitude))
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun cancelControllerRumble(device: InputDevice) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val manager = device.vibratorManager
             if (manager.vibratorIds.isNotEmpty()) {
-                manager.cancel()
+                manager.vibratorIds.forEach { vibratorId ->
+                    manager.getVibrator(vibratorId).cancel()
+                }
                 return
             }
         }

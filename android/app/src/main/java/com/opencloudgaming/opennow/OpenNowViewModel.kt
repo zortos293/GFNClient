@@ -644,7 +644,11 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val languageCheck = identifyAndroidBugReportLanguage(title, description)
                 val logFileName = debugLogFileName()
-                val metadata = buildAndroidBugReportMetadata(logFileName, knownIssueOverrideKey)
+                val metadata = buildAndroidBugReportMetadata(
+                    logFileName = logFileName,
+                    knownIssueOverrideKey = knownIssueOverrideKey,
+                    device = AndroidDeviceDiagnostics.snapshot(getApplication()),
+                )
                 val logBytes = withContext(Dispatchers.Default) {
                     sanitizedDebugLogText().toByteArray(Charsets.UTF_8)
                 }
@@ -2984,6 +2988,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         return buildString {
             appendLine("OpenNOW Android diagnostics")
             appendLine(snapshot.androidUpdate.debugHeaderLine())
+            appendLine(AndroidDeviceDiagnostics.snapshot(getApplication()).debugSummary())
             appendLine("page=${snapshot.page} initializing=${snapshot.initializing} loadingGames=${snapshot.loadingGames}")
             appendLine("user=${snapshot.authSession?.user?.displayName.orEmpty()} tier=${snapshot.subscriptionInfo?.membershipTier ?: snapshot.authSession?.user?.membershipTier.orEmpty()} provider=${snapshot.authSession?.provider?.code.orEmpty()}")
             appendLine("streamStatus=${snapshot.streamStatus} launchPhase=${snapshot.launchPhase} queuePosition=${snapshot.queuePosition}")

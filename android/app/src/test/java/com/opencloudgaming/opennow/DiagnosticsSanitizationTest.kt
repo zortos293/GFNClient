@@ -6,6 +6,24 @@ import org.junit.Test
 
 class DiagnosticsSanitizationTest {
     @Test
+    fun exportKeepsNonUniqueDeviceAndAndroidSupportContext() {
+        val raw = """
+            device.identity manufacturer=NVIDIA brand=NVIDIA model=SHIELD_Android_TV codename=mdarcy product=mdarcy formFactor=tv emulator=false
+            android.os release=11 codename=REL sdk=30 targetSdk=36 securityPatch=2025-04-05
+            device.hardware hardware=darcy board=darcy abis=arm64-v8a|armeabi-v7a runtimeBits=64 processors=8 memoryMiB=3072 lowRam=false
+            device.display pixels=3840x2160 densityDpi=320 smallestWidthDp=960
+        """.trimIndent()
+
+        val sanitized = sanitizeDiagnosticExport(raw)
+
+        assertTrue(sanitized.contains("model=SHIELD_Android_TV"))
+        assertTrue(sanitized.contains("sdk=30"))
+        assertTrue(sanitized.contains("securityPatch=2025-04-05"))
+        assertTrue(sanitized.contains("abis=arm64-v8a|armeabi-v7a"))
+        assertTrue(sanitized.contains("pixels=3840x2160"))
+    }
+
+    @Test
     fun exportRemovesNamesTokensIdsAndNetworkAddresses() {
         val raw = """
             user=Jane Example tier=FREE provider=NVIDIA

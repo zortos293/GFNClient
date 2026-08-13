@@ -45,6 +45,30 @@ test("routes legacy session timing aliases from interface to diagnostics", () =>
   }
 });
 
+test("routes OpenNOW console shell settings out of interface and stream scopes", () => {
+  const movedQueries = ["controller mode", "console profile picker", "console shell"];
+
+  for (const query of movedQueries) {
+    assert.equal(settingsScopeMatchesSearch("console", query), true);
+    assert.equal(settingsScopeMatchesSearch("interface", query), false);
+    assert.equal(settingsScopeMatchesSearch("stream-video", query), false);
+  }
+});
+
+test("routes session-only console identity searches to Stream", () => {
+  const movedQueries = [
+    "identify as console",
+    "big picture",
+    "gamepad friendly",
+    "GFN launch mode",
+  ];
+
+  for (const query of movedQueries) {
+    assert.equal(settingsScopeMatchesSearch("stream-video", query), true);
+    assert.equal(settingsScopeMatchesSearch("console", query), false);
+  }
+});
+
 test("matches search tokens by word prefix", () => {
   assert.equal(
     settingsScopeMatchesSearch("stream-diagnostics", "diag over"),

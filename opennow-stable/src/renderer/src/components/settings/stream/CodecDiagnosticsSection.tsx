@@ -58,7 +58,7 @@ export function CodecDiagnosticsSection({
         <p>{t("settings.diagnostics.codecHardwareHint")}</p>
           </div>
       <div className="settings-group-rows">
-                <div className="settings-row">
+                <div className="settings-row settings-row--choice">
           <label className="settings-label">
             {t("settings.video.decoder")}
           </label>
@@ -87,7 +87,7 @@ export function CodecDiagnosticsSection({
                   </div>
                 </div>
 
-                <div className="settings-row">
+                <div className="settings-row settings-row--choice">
           <label className="settings-label">
             {t("settings.video.encoder")}
           </label>
@@ -115,7 +115,7 @@ export function CodecDiagnosticsSection({
                     </span>
                   </div>
                 </div>
-                <div className="settings-row codec-test-row">
+                <div className="settings-row settings-row--simple codec-test-row">
                   <label className="settings-label codec-test-description">
                     {t("settings.codecDiagnostics.description")}
                   </label>

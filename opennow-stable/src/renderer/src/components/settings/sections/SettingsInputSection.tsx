@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
+import { Keyboard } from "lucide-react";
 import type { KeyboardLayout, Settings } from "@shared/gfn";
 import { keyboardLayoutOptions } from "@shared/gfn";
 import { formatShortcutForDisplay, normalizeShortcut, shortcutFromKeyboardEvent } from "../../../shortcuts";
@@ -306,10 +307,17 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
     <section className="settings-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.input")}</div>}
       <div className="settings-section-header">
+        <Keyboard />
         <h2>{t("settings.input.title")}</h2>
       </div>
-      <div className="settings-rows">
-        <div className="settings-row settings-row--column">
+      <div className="settings-rows settings-rows--grouped">
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.input.behavior")}</h3>
+            <p>{t("settings.input.behaviorDescription")}</p>
+          </div>
+          <div className="settings-group-rows">
+        <div className="settings-row settings-row--toggle">
           <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label" htmlFor="settings-input-clipboard-paste">{t("settings.input.clipboardPaste")}</label>
             <label className="settings-toggle">
@@ -324,7 +332,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           </div>
         </div>
 
-        <div className="settings-row settings-row--column">
+        <div className="settings-row settings-row--toggle">
           <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label settings-label--wrap" htmlFor="settings-input-gyroscope-controls">
               <span className="settings-label-title">
@@ -346,7 +354,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
         </div>
 
         {isMac && (
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-input-steam-controller-compatibility">
                 <span className="settings-label-title">
@@ -368,7 +376,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           </div>
         )}
 
-        <div className="settings-row settings-row--column">
+        <div className="settings-row settings-row--toggle">
           <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label settings-label--wrap" htmlFor="settings-input-native-cursor-overlay">
               <span className="settings-label-title">
@@ -389,7 +397,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           <span className="settings-subtle-hint">{t("settings.input.nativeCursorOverlayHint")}</span>
         </div>
 
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label settings-label--wrap" htmlFor="settings-input-keyboard-layout">
             {t("settings.game.keyboardLayout")}
             <span className="settings-hint">{t("settings.input.keyboardLayoutHint")}</span>
@@ -405,8 +413,16 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           </div>
         </div>
 
-        {/* Mouse Sensitivity */}
-        <div className="settings-row settings-row--column">
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.input.mouse")}</h3>
+            <p>{t("settings.input.mouseDescription")}</p>
+          </div>
+          <div className="settings-group-rows">
+        <div className="settings-row settings-row--range">
           <div className="settings-row-top">
             <label id="settings-input-mouse-sensitivity-label" className="settings-label" htmlFor="settings-input-mouse-sensitivity-slider">{t("settings.input.mouseSensitivity")}</label>
             <span className="settings-value-badge">{settings.mouseSensitivity.toFixed(2)}x</span>
@@ -448,7 +464,7 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           <span className="settings-subtle-hint">{t("settings.input.mouseSensitivityHint")}</span>
         </div>
 
-        <div className="settings-row settings-row--column">
+        <div className="settings-row settings-row--range">
           <div className="settings-row-top">
             <label id="settings-input-mouse-acceleration-label" className="settings-label" htmlFor="settings-input-mouse-acceleration-slider">{t("settings.input.mouseAccelerator")}</label>
             <span className="settings-value-badge">{Math.round(settings.mouseAcceleration)}%</span>
@@ -491,8 +507,16 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           <span className="settings-subtle-hint">{t("settings.input.mouseAcceleratorHint")}</span>
         </div>
 
-        {/* Shortcuts */}
-        <div className="settings-row settings-row--column">
+          </div>
+        </div>
+
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.input.shortcuts")}</h3>
+            <p>{t("settings.input.shortcutsDescription")}</p>
+          </div>
+          <div className="settings-group-rows">
+        <div className="settings-row settings-row--complex">
           <div className="settings-row-top">
             <label className="settings-label">{t("settings.input.shortcuts")}</label>
             <div className="settings-shortcut-actions">
@@ -700,6 +724,8 @@ export function SettingsInputSection({ settings, showAll, handleChange, handlePr
           })}
         </span>
       )}
+        </div>
+          </div>
         </div>
       </div>
     </section>

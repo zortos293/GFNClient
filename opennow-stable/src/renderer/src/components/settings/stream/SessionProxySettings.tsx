@@ -28,7 +28,7 @@ export function SessionProxySettings({
 
   return (
     <>
-      <div className="settings-row settings-row--column">
+      <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"

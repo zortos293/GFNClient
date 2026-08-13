@@ -44,7 +44,7 @@ export function BrowserRecordingSection({
         </div>
       </div>
       <div className="settings-rows">
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label
             className="settings-label"
             htmlFor="settings-stream-recording-resolution"
@@ -70,7 +70,7 @@ export function BrowserRecordingSection({
           </div>
         </div>
 
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label">
             {t("settings.video.recordingFps")}
           </label>
@@ -91,7 +91,7 @@ export function BrowserRecordingSection({
           </div>
         </div>
 
-        <div className="settings-row settings-row--column">
+        <div className="settings-row settings-row--range">
           <div className="settings-row-top">
             <label
               className="settings-label"

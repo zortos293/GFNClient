@@ -3301,6 +3301,46 @@ button.game-card-store-chip.owned.active:hover {
   padding: 18px 26px 24px;
 }
 
+.game-detail-membership-warning {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--panel-border));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warning) 10%, var(--chip));
+  color: var(--ink);
+}
+
+.game-detail-membership-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning);
+}
+
+.game-detail-membership-warning > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.game-detail-membership-warning strong {
+  font-size: var(--text-sm);
+  line-height: 1.3;
+}
+
+.game-detail-membership-warning > span:last-child > span {
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
 .game-detail-description-block {
   display: flex;
   flex-direction: column;

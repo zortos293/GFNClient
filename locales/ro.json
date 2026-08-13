@@ -626,6 +626,7 @@
     "saved": "Salvat",
     "searchPlaceholder": "Setări de căutare...",
     "clearSearch": "Clear settings search",
+    "searchResults": "Search results",
     "noMatches": "Nicio setare nu corespunde cu „{{query}}”.",
     "sections": {
       "account": "Account",
@@ -635,12 +636,15 @@
       "game": "Joc",
       "audio": "Audio",
       "input": "Intrare",
+      "console": "Console",
       "interface": "Interfață",
       "about": "Despre",
       "thanks": "Mulțumiri"
     },
     "region": {
       "title": "Regiunea",
+      "serverRegion": "Server Region",
+      "serverRegionHint": "Choose a specific region or let OpenNOW use the lowest-latency route.",
       "autoBest": "Auto (cea mai bună)",
       "searchPlaceholder": "Caută regiuni...",
       "refreshPing": "Reîmprospătați ping-ul",
@@ -755,7 +759,9 @@
       "sessionProxy": "Proxy de sesiune",
       "sessionProxyHint": "Folosit numai pentru crearea sesiunilor Nvidia și interogarea cozii. Traficul de transmisie/semnalizare nu este proxy. Zortos oferă un proxy pentru sponsorii/susținătorii GitHub.",
       "session": "Session & Compatibility",
-      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "sessionHint": "Proxy routing applied to catalog requests, session creation, and queue polling.",
+      "gfnLaunchMode": "GeForce NOW Launch Mode",
+      "gfnLaunchModeHint": "Client identity and feature requests sent only when OpenNOW creates a new GeForce NOW session.",
       "processing": "Video Processing",
       "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
@@ -775,8 +781,8 @@
       "experimentalL4SRequestHint": "Solicitați funcția de streaming GeForce NOW L4S pentru sesiunile nou create. Acest lucru nu schimbă comportamentul WebRTC al browserului în sine și poate fi ignorat de către serviciu sau calea rețelei.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
-      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+      "identifyAsConsole": "Identify as Console",
+      "identifyAsConsoleHint": "Ask GeForce NOW to launch streamed games in gamepad-friendly mode so launchers such as Steam can start in Big Picture. This affects new GFN sessions only; it does not fullscreen OpenNOW or enable its console shell."
     },
     "recording": {
       "title": "Browser Recording",
@@ -855,6 +861,11 @@
     },
     "input": {
       "title": "Intrare",
+      "behavior": "Input Behavior",
+      "behaviorDescription": "Keyboard, controller, clipboard, and cursor behavior during streamed sessions.",
+      "mouse": "Mouse",
+      "mouseDescription": "Pointer sensitivity and acceleration applied while a game has input focus.",
+      "shortcutsDescription": "Keyboard shortcuts for stream controls and common session actions.",
       "mouseAndKeyboard": "Mouse și tastatură",
       "clipboardPaste": "Clipboard Paste",
       "gyroscopeControls": "Gyroscope Controls",
@@ -888,6 +899,11 @@
     },
     "interface": {
       "appearance": "Aspectul",
+      "appearanceDescription": "Language, theme, translucency, and accent presentation across OpenNOW.",
+      "behavior": "App Behavior",
+      "behaviorDescription": "Overlay visibility, reminders, and fullscreen behavior during everyday use.",
+      "libraryAndPresence": "Library & Presence",
+      "libraryAndPresenceDescription": "Library density and how OpenNOW represents your activity outside the app.",
       "appLanguage": "Limbă aplicație",
       "appLanguageHint": "Schimbă limba interfeței OpenNOW. Engleza este folosită pentru șirurile netraduse.",
       "theme": "Theme",
@@ -918,10 +934,6 @@
       "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Ecran complet automat",
       "autoFullScreenHint": "Introduceți automat ecranul complet când vă conectați la sau porniți o sesiune.",
-      "controllerMode": "Controller Mode",
-      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
-      "consoleProfilePicker": "Ask who's playing",
-      "consoleProfilePickerHint": "Show the profile picker when console mode starts. Direct game launches are never interrupted.",
       "escapeExitsFullscreen": "Escape Iese pe ecran complet",
       "escapeExitsFullscreenHint": "Când este activat, apăsând Escape va ieși din ecranul complet. Când este dezactivat (implicit), Escape este redirecționat către joc în timp ce mouse-ul este blocat cu cursorul.",
       "discordRichPresence": "Prezență bogată în Discord",
@@ -948,7 +960,22 @@
       "posTopLeft": "Top left",
       "posTopRight": "Top right"
     },
+    "console": {
+      "title": "Console Experience",
+      "appShell": "App Shell",
+      "appShellDescription": "Controller-first navigation for browsing OpenNOW from a TV or across the room.",
+      "controllerMode": "Controller Mode",
+      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "profilePicker": "Ask who's playing",
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted."
+    },
     "about": {
+      "updates": "Updates",
+      "updatesDescription": "Release notes, update channel, and automatic application update behavior.",
+      "supportAndPrivacy": "Support & Privacy",
+      "supportAndPrivacyDescription": "Diagnostics, feedback, and logs you can share when you need help.",
+      "localData": "Local Data",
+      "localDataDescription": "Cached library artwork and metadata stored on this device.",
       "applicationUpdates": "Actualizări ale aplicației",
       "version": "Versiunea {{version}}",
       "backgroundChecksOn": "Compilările împachetate verifică versiunile GitHub în fundal.",
@@ -992,6 +1019,10 @@
     },
     "nativeStreamer": {
       "title": "Streamer nativ",
+      "runtime": "Runtime",
+      "runtimeDescription": "Enable the experimental streamer and inspect its local GStreamer readiness.",
+      "videoOutput": "Video Output",
+      "videoOutputDescription": "Hardware capability, rendering backend, frame pacing, and window mode.",
       "nativeStreaming": "Streaming nativ",
       "nativeStreamingHint": "Streamingul nativ este experimental și poate avea erori, erori sau erori specifice platformei la Chromium/WebRTC. Activați-l numai dacă vă simțiți confortabil să testați streamerul desktop bazat pe GStreamer pentru sesiuni noi.",
       "enablePromptKicker": "Experimental",

@@ -2776,6 +2776,19 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val activeSessions = sessionRepository.getActiveSessions(token, baseUrl, currentSettings)
                 recordDebugEvent("recovery", "Recovery active sessions count=${activeSessions.size} base=${hostForDebug(baseUrl)}")
+                if (shouldCreateFreshRecoverySession(activeSessions.size)) {
+                    return@runCatching createFreshRecoverySession(
+                        token = token,
+                        auth = auth,
+                        previousSession = previousSession,
+                        active = active,
+                        game = game,
+                        settings = currentSettings,
+                        resolvedAppId = resolvedAppId,
+                        reason = "missing active session",
+                        stopPreviousSession = false,
+                    )
+                }
                 val readyCandidate = activeSessionRecoveryCandidate(
                     sessions = activeSessions,
                     previousSessionId = previousSession.sessionId,
@@ -2866,6 +2879,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         settings: StreamSettings,
         resolvedAppId: String?,
         reason: String,
+        stopPreviousSession: Boolean = true,
     ): SessionInfo {
         val launchAppId = resolvedAppId
             ?: error("Could not resolve appId for fresh stream recovery.")
@@ -2890,17 +2904,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             "Escalating $reason to fresh cloud session old=${previousSession.shortDebugId()} " +
                 "zone=${normalizedZone.orEmpty()} base=${hostForDebug(creationBase)}",
         )
-        runCatching {
-            sessionRepository.stopSession(token, previousSession, settings)
-        }.onSuccess {
-            sessionTimerAnchorStore.clear(previousSession.sessionId)
-            recordDebugEvent("recovery", "Stopped stalled session before fresh recovery ${previousSession.shortDebugId()}")
-        }.onFailure { error ->
-            recordDebugEvent(
-                "recovery",
-                "Failed to stop stalled session before fresh recovery ${previousSession.shortDebugId()} error=${error.debugMessage()}",
-            )
-        }.getOrThrow()
+        if (stopPreviousSession) {
+            runCatching {
+                sessionRepository.stopSession(token, previousSession, settings)
+            }.onSuccess {
+                recordDebugEvent("recovery", "Stopped stalled session before fresh recovery ${previousSession.shortDebugId()}")
+            }.onFailure { error ->
+                recordDebugEvent(
+                    "recovery",
+                    "Failed to stop stalled session before fresh recovery ${previousSession.shortDebugId()} error=${error.debugMessage()}",
+                )
+            }.getOrThrow()
+        } else {
+            recordDebugEvent("recovery", "Skipped stop for missing stalled session ${previousSession.shortDebugId()}")
+        }
+        sessionTimerAnchorStore.clear(previousSession.sessionId)
 
         _state.update { it.copy(activeSession = null, launchPhase = "Creating fresh stream session") }
         val created = sessionRepository.createSession(

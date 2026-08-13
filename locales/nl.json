@@ -626,6 +626,7 @@
     "saved": "Opgeslagen",
     "searchPlaceholder": "Zoekinstellingen...",
     "clearSearch": "Clear settings search",
+    "searchResults": "Search results",
     "noMatches": "Er komen geen instellingen overeen met \"{{query}}\".",
     "sections": {
       "account": "Account",
@@ -635,12 +636,15 @@
       "game": "Spel",
       "audio": "Audio",
       "input": "Invoer",
+      "console": "Console",
       "interface": "Interface",
       "about": "Over",
       "thanks": "Bedankt"
     },
     "region": {
       "title": "Regio",
+      "serverRegion": "Server Region",
+      "serverRegionHint": "Choose a specific region or let OpenNOW use the lowest-latency route.",
       "autoBest": "Automatisch (beste)",
       "searchPlaceholder": "Regio's zoeken...",
       "refreshPing": "Ping vernieuwen",
@@ -755,7 +759,9 @@
       "sessionProxy": "Sessieproxy",
       "sessionProxyHint": "Wordt alleen gebruikt voor het maken van Nvidia-sessies en het pollen van wachtrijen. Streaming-/signaleringsverkeer wordt niet via een proxy verzonden. Zortos biedt een proxy voor GitHub-sponsors/supporters.",
       "session": "Session & Compatibility",
-      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "sessionHint": "Proxy routing applied to catalog requests, session creation, and queue polling.",
+      "gfnLaunchMode": "GeForce NOW Launch Mode",
+      "gfnLaunchModeHint": "Client identity and feature requests sent only when OpenNOW creates a new GeForce NOW session.",
       "processing": "Video Processing",
       "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
@@ -775,8 +781,8 @@
       "experimentalL4SRequestHint": "Vraag de GeForce NOW L4S-streamingfunctie aan voor nieuw gemaakte sessies. Dit verandert op zichzelf het WebRTC-gedrag van de browser niet en kan worden genegeerd door de service of het netwerkpad.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
-      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+      "identifyAsConsole": "Identify as Console",
+      "identifyAsConsoleHint": "Ask GeForce NOW to launch streamed games in gamepad-friendly mode so launchers such as Steam can start in Big Picture. This affects new GFN sessions only; it does not fullscreen OpenNOW or enable its console shell."
     },
     "recording": {
       "title": "Browser Recording",
@@ -855,6 +861,11 @@
     },
     "input": {
       "title": "Invoer",
+      "behavior": "Input Behavior",
+      "behaviorDescription": "Keyboard, controller, clipboard, and cursor behavior during streamed sessions.",
+      "mouse": "Mouse",
+      "mouseDescription": "Pointer sensitivity and acceleration applied while a game has input focus.",
+      "shortcutsDescription": "Keyboard shortcuts for stream controls and common session actions.",
       "mouseAndKeyboard": "Muis en toetsenbord",
       "clipboardPaste": "Klembord plakken",
       "gyroscopeControls": "Gyroscope Controls",
@@ -888,6 +899,11 @@
     },
     "interface": {
       "appearance": "Uiterlijk",
+      "appearanceDescription": "Language, theme, translucency, and accent presentation across OpenNOW.",
+      "behavior": "App Behavior",
+      "behaviorDescription": "Overlay visibility, reminders, and fullscreen behavior during everyday use.",
+      "libraryAndPresence": "Library & Presence",
+      "libraryAndPresenceDescription": "Library density and how OpenNOW represents your activity outside the app.",
       "appLanguage": "App-taal",
       "appLanguageHint": "Verandert de interfacetaal van OpenNOW. Voor onvertaalde tekenreeksen wordt Engels gebruikt.",
       "theme": "Theme",
@@ -918,10 +934,6 @@
       "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Automatisch volledig scherm",
       "autoFullScreenHint": "Ga automatisch naar volledig scherm wanneer u verbinding maakt of een sessie start.",
-      "controllerMode": "Controller Mode",
-      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
-      "consoleProfilePicker": "Ask who's playing",
-      "consoleProfilePickerHint": "Show the profile picker when console mode starts. Direct game launches are never interrupted.",
       "escapeExitsFullscreen": "Ontsnappen Sluit volledig scherm af",
       "escapeExitsFullscreenHint": "Indien ingeschakeld, wordt door op Escape te drukken het volledige scherm afgesloten. Indien uitgeschakeld (standaard), wordt Escape doorgestuurd naar het spel terwijl de muisaanwijzer vergrendeld is.",
       "discordRichPresence": "Onenigheid Rijke aanwezigheid",
@@ -948,7 +960,22 @@
       "posTopLeft": "Top left",
       "posTopRight": "Top right"
     },
+    "console": {
+      "title": "Console Experience",
+      "appShell": "App Shell",
+      "appShellDescription": "Controller-first navigation for browsing OpenNOW from a TV or across the room.",
+      "controllerMode": "Controller Mode",
+      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "profilePicker": "Ask who's playing",
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted."
+    },
     "about": {
+      "updates": "Updates",
+      "updatesDescription": "Release notes, update channel, and automatic application update behavior.",
+      "supportAndPrivacy": "Support & Privacy",
+      "supportAndPrivacyDescription": "Diagnostics, feedback, and logs you can share when you need help.",
+      "localData": "Local Data",
+      "localDataDescription": "Cached library artwork and metadata stored on this device.",
       "applicationUpdates": "Applicatie-updates",
       "version": "Versie {{version}}",
       "backgroundChecksOn": "Verpakte builds controleren GitHub-releases op de achtergrond.",
@@ -992,6 +1019,10 @@
     },
     "nativeStreamer": {
       "title": "Native streamer",
+      "runtime": "Runtime",
+      "runtimeDescription": "Enable the experimental streamer and inspect its local GStreamer readiness.",
+      "videoOutput": "Video Output",
+      "videoOutputDescription": "Hardware capability, rendering backend, frame pacing, and window mode.",
       "nativeStreaming": "Native streaming",
       "nativeStreamingHint": "Native streaming is experimenteel en kan platformspecifieke bugs, problemen of terugval naar Chromium/WebRTC bevatten. Schakel het alleen in als u vertrouwd bent met het testen van de op GStreamer gebaseerde desktopstreamer voor nieuwe sessies.",
       "enablePromptKicker": "Experimenteel",

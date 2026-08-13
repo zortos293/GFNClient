@@ -626,6 +626,7 @@
     "saved": "Сохранено",
     "searchPlaceholder": "Настройки поиска...",
     "clearSearch": "Clear settings search",
+    "searchResults": "Search results",
     "noMatches": "Нет настроек, соответствующих «{{query}}».",
     "sections": {
       "account": "Account",
@@ -635,12 +636,15 @@
       "game": "Игра",
       "audio": "Аудио",
       "input": "Ввод",
+      "console": "Console",
       "interface": "Интерфейс",
       "about": "О",
       "thanks": "Спасибо"
     },
     "region": {
       "title": "Регион",
+      "serverRegion": "Server Region",
+      "serverRegionHint": "Choose a specific region or let OpenNOW use the lowest-latency route.",
       "autoBest": "Авто (Лучший)",
       "searchPlaceholder": "Поиск регионов...",
       "refreshPing": "Обновить пинг",
@@ -755,7 +759,9 @@
       "sessionProxy": "Прокси сеанса",
       "sessionProxyHint": "Используется только для создания сеанса Nvidia и опроса очереди. Потоковый/сигнальный трафик не проксируется. Zortos предоставляет прокси-сервер для спонсоров/сторонников GitHub.",
       "session": "Session & Compatibility",
-      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "sessionHint": "Proxy routing applied to catalog requests, session creation, and queue polling.",
+      "gfnLaunchMode": "GeForce NOW Launch Mode",
+      "gfnLaunchModeHint": "Client identity and feature requests sent only when OpenNOW creates a new GeForce NOW session.",
       "processing": "Video Processing",
       "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
@@ -775,8 +781,8 @@
       "experimentalL4SRequestHint": "Запросите функцию потоковой передачи GeForce NOW L4S во вновь создаваемых сеансах. Это само по себе не меняет поведение WebRTC браузера и может игнорироваться службой или сетевым путем.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
-      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+      "identifyAsConsole": "Identify as Console",
+      "identifyAsConsoleHint": "Ask GeForce NOW to launch streamed games in gamepad-friendly mode so launchers such as Steam can start in Big Picture. This affects new GFN sessions only; it does not fullscreen OpenNOW or enable its console shell."
     },
     "recording": {
       "title": "Browser Recording",
@@ -855,6 +861,11 @@
     },
     "input": {
       "title": "Вход",
+      "behavior": "Input Behavior",
+      "behaviorDescription": "Keyboard, controller, clipboard, and cursor behavior during streamed sessions.",
+      "mouse": "Mouse",
+      "mouseDescription": "Pointer sensitivity and acceleration applied while a game has input focus.",
+      "shortcutsDescription": "Keyboard shortcuts for stream controls and common session actions.",
       "mouseAndKeyboard": "Мышь и клавиатура",
       "clipboardPaste": "Вставить в буфер обмена",
       "gyroscopeControls": "Gyroscope Controls",
@@ -888,6 +899,11 @@
     },
     "interface": {
       "appearance": "Внешний вид",
+      "appearanceDescription": "Language, theme, translucency, and accent presentation across OpenNOW.",
+      "behavior": "App Behavior",
+      "behaviorDescription": "Overlay visibility, reminders, and fullscreen behavior during everyday use.",
+      "libraryAndPresence": "Library & Presence",
+      "libraryAndPresenceDescription": "Library density and how OpenNOW represents your activity outside the app.",
       "appLanguage": "Язык приложения",
       "appLanguageHint": "Изменяет язык интерфейса OpenNOW. Английский используется для непереведенных строк.",
       "theme": "Theme",
@@ -918,10 +934,6 @@
       "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Автоматический полноэкранный режим",
       "autoFullScreenHint": "Автоматический переход в полноэкранный режим при подключении или запуске сеанса.",
-      "controllerMode": "Controller Mode",
-      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
-      "consoleProfilePicker": "Ask who's playing",
-      "consoleProfilePickerHint": "Show the profile picker when console mode starts. Direct game launches are never interrupted.",
       "escapeExitsFullscreen": "Escape Выход из полноэкранного режима",
       "escapeExitsFullscreenHint": "Если эта функция включена, нажатие Escape приведет к выходу из полноэкранного режима. Если отключено (по умолчанию), Escape перенаправляется в игру, пока указатель мыши заблокирован.",
       "discordRichPresence": "Богатое присутствие Discord",
@@ -948,7 +960,22 @@
       "posTopLeft": "Top left",
       "posTopRight": "Top right"
     },
+    "console": {
+      "title": "Console Experience",
+      "appShell": "App Shell",
+      "appShellDescription": "Controller-first navigation for browsing OpenNOW from a TV or across the room.",
+      "controllerMode": "Controller Mode",
+      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "profilePicker": "Ask who's playing",
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted."
+    },
     "about": {
+      "updates": "Updates",
+      "updatesDescription": "Release notes, update channel, and automatic application update behavior.",
+      "supportAndPrivacy": "Support & Privacy",
+      "supportAndPrivacyDescription": "Diagnostics, feedback, and logs you can share when you need help.",
+      "localData": "Local Data",
+      "localDataDescription": "Cached library artwork and metadata stored on this device.",
       "applicationUpdates": "Обновления приложений",
       "version": "Версия {{version}}",
       "backgroundChecksOn": "Упакованные сборки проверяют выпуски GitHub в фоновом режиме.",
@@ -992,6 +1019,10 @@
     },
     "nativeStreamer": {
       "title": "Родной стример",
+      "runtime": "Runtime",
+      "runtimeDescription": "Enable the experimental streamer and inspect its local GStreamer readiness.",
+      "videoOutput": "Video Output",
+      "videoOutputDescription": "Hardware capability, rendering backend, frame pacing, and window mode.",
       "nativeStreaming": "Нативная потоковая передача",
       "nativeStreamingHint": "Встроенная потоковая передача является экспериментальной и может содержать ошибки, сбои или откат к Chromium/WebRTC, специфичные для платформы. Включайте его только в том случае, если вам удобно тестировать настольный стример на основе GStreamer на предмет новых сеансов.",
       "enablePromptKicker": "Экспериментальный",

@@ -626,6 +626,7 @@
     "saved": "Kaydedildi",
     "searchPlaceholder": "Arama ayarları...",
     "clearSearch": "Clear settings search",
+    "searchResults": "Search results",
     "noMatches": "\"{{query}}\" ile eşleşen ayar yok.",
     "sections": {
       "account": "Account",
@@ -635,12 +636,15 @@
       "game": "Oyun",
       "audio": "Ses",
       "input": "Giriş",
+      "console": "Console",
       "interface": "Arayüz",
       "about": "Hakkında",
       "thanks": "teşekkürler"
     },
     "region": {
       "title": "Bölge",
+      "serverRegion": "Server Region",
+      "serverRegionHint": "Choose a specific region or let OpenNOW use the lowest-latency route.",
       "autoBest": "Otomatik (En İyi)",
       "searchPlaceholder": "Bölgeleri ara...",
       "refreshPing": "Ping'i yenile",
@@ -755,7 +759,9 @@
       "sessionProxy": "Oturum proxy'si",
       "sessionProxyHint": "Yalnızca Nvidia oturumu oluşturma ve kuyruk yoklaması için kullanılır. Akış/sinyal trafiğine proxy uygulanmaz. Zortos, GitHub Sponsorları/destekçileri için bir vekil sağlar.",
       "session": "Session & Compatibility",
-      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "sessionHint": "Proxy routing applied to catalog requests, session creation, and queue polling.",
+      "gfnLaunchMode": "GeForce NOW Launch Mode",
+      "gfnLaunchModeHint": "Client identity and feature requests sent only when OpenNOW creates a new GeForce NOW session.",
       "processing": "Video Processing",
       "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
@@ -775,8 +781,8 @@
       "experimentalL4SRequestHint": "Yeni oluşturulan oturumlarda GeForce NOW L4S akış özelliğini talep edin. Bu, tarayıcının WebRTC davranışını tek başına değiştirmez ve hizmet veya ağ yolu tarafından göz ardı edilebilir.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
-      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+      "identifyAsConsole": "Identify as Console",
+      "identifyAsConsoleHint": "Ask GeForce NOW to launch streamed games in gamepad-friendly mode so launchers such as Steam can start in Big Picture. This affects new GFN sessions only; it does not fullscreen OpenNOW or enable its console shell."
     },
     "recording": {
       "title": "Browser Recording",
@@ -855,6 +861,11 @@
     },
     "input": {
       "title": "Giriş",
+      "behavior": "Input Behavior",
+      "behaviorDescription": "Keyboard, controller, clipboard, and cursor behavior during streamed sessions.",
+      "mouse": "Mouse",
+      "mouseDescription": "Pointer sensitivity and acceleration applied while a game has input focus.",
+      "shortcutsDescription": "Keyboard shortcuts for stream controls and common session actions.",
       "mouseAndKeyboard": "Fare ve Klavye",
       "clipboardPaste": "Pano Yapıştır",
       "gyroscopeControls": "Gyroscope Controls",
@@ -888,6 +899,11 @@
     },
     "interface": {
       "appearance": "Görünüm",
+      "appearanceDescription": "Language, theme, translucency, and accent presentation across OpenNOW.",
+      "behavior": "App Behavior",
+      "behaviorDescription": "Overlay visibility, reminders, and fullscreen behavior during everyday use.",
+      "libraryAndPresence": "Library & Presence",
+      "libraryAndPresenceDescription": "Library density and how OpenNOW represents your activity outside the app.",
       "appLanguage": "Uygulama Dili",
       "appLanguageHint": "OpenNOW'in arayüz dilini değiştirir. Çevrilmemiş dizeler için İngilizce kullanılır.",
       "theme": "Theme",
@@ -918,10 +934,6 @@
       "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Otomatik Tam Ekran",
       "autoFullScreenHint": "Bir oturuma bağlanırken veya bir oturum başlatırken otomatik olarak tam ekrana geçin.",
-      "controllerMode": "Controller Mode",
-      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
-      "consoleProfilePicker": "Ask who's playing",
-      "consoleProfilePickerHint": "Show the profile picker when console mode starts. Direct game launches are never interrupted.",
       "escapeExitsFullscreen": "Kaçış Tam Ekrandan Çıkıyor",
       "escapeExitsFullscreenHint": "Etkinleştirildiğinde Escape tuşuna basıldığında tam ekrandan çıkılır. Devre dışı bırakıldığında (varsayılan), fare işaretçi kilitliyken Escape oyuna iletilir.",
       "discordRichPresence": "Discord Zengin Durumu",
@@ -948,7 +960,22 @@
       "posTopLeft": "Top left",
       "posTopRight": "Top right"
     },
+    "console": {
+      "title": "Console Experience",
+      "appShell": "App Shell",
+      "appShellDescription": "Controller-first navigation for browsing OpenNOW from a TV or across the room.",
+      "controllerMode": "Controller Mode",
+      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "profilePicker": "Ask who's playing",
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted."
+    },
     "about": {
+      "updates": "Updates",
+      "updatesDescription": "Release notes, update channel, and automatic application update behavior.",
+      "supportAndPrivacy": "Support & Privacy",
+      "supportAndPrivacyDescription": "Diagnostics, feedback, and logs you can share when you need help.",
+      "localData": "Local Data",
+      "localDataDescription": "Cached library artwork and metadata stored on this device.",
       "applicationUpdates": "Uygulama Güncellemeleri",
       "version": "Sürüm {{version}}",
       "backgroundChecksOn": "Paketlenmiş derlemeler arka planda GitHub Sürümlerini kontrol eder.",
@@ -992,6 +1019,10 @@
     },
     "nativeStreamer": {
       "title": "Yerel Yayıncı",
+      "runtime": "Runtime",
+      "runtimeDescription": "Enable the experimental streamer and inspect its local GStreamer readiness.",
+      "videoOutput": "Video Output",
+      "videoOutputDescription": "Hardware capability, rendering backend, frame pacing, and window mode.",
       "nativeStreaming": "Yerel Akış",
       "nativeStreamingHint": "Yerel akış deneyseldir ve platforma özgü hatalar, aksaklıklar veya Chromium/WebRTC'ye geri dönüşler içerebilir. Yalnızca GStreamer tabanlı masaüstü aktarıcıyı yeni oturumlar için test etme konusunda rahatsanız etkinleştirin.",
       "enablePromptKicker": "Deneysel",

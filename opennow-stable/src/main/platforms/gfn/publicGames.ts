@@ -1,7 +1,7 @@
 import type { GameInfo, GameVariant } from "@shared/gfn";
 import { normalizeGameStore } from "@shared/gfn";
 import { GFN_USER_AGENT } from "./clientHeaders";
-import { fetchWithOptionalProxy } from "./proxyFetch";
+import { fetchCatalogRequest } from "./catalogFetch";
 
 export interface RawPublicGame {
   id?: string | number;
@@ -190,7 +190,7 @@ export function appendPublicGameSearchMatches(
 }
 
 export async function fetchPublicGamesUncached(proxyUrl?: string): Promise<GameInfo[]> {
-  const response = await fetchWithOptionalProxy(
+  const response = await fetchCatalogRequest(
     "https://static.nvidiagrid.net/supported-public-game-list/locales/gfnpc-en-US.json",
     {
       headers: {

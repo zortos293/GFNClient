@@ -8,9 +8,9 @@ import {
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
 } from "./clientHeaders";
+import { fetchCatalogRequest } from "./catalogFetch";
 import { supportsInGameSettingsPersistence } from "./gameFeatures";
 import { fetchLcarsGraphQl } from "./lcarsGraphql";
-import { fetchWithOptionalProxy } from "./proxyFetch";
 import type { AppsPageResponse } from "./paginatedApps";
 
 export const GRAPHQL_URL = "https://games.geforce.com/graphql";
@@ -161,7 +161,7 @@ export async function postGraphQl<T>(
   token?: string,
   proxyUrl?: string,
 ): Promise<T> {
-  const response = await fetchWithOptionalProxy(GRAPHQL_URL, {
+  const response = await fetchCatalogRequest(GRAPHQL_URL, {
     method: "POST",
     headers: buildGfnGraphQlHeaders(token),
     body: JSON.stringify({ query, variables }),
@@ -198,7 +198,7 @@ export async function getVpcId(token: string, providerStreamingBaseUrl?: string,
 
   const serverInfoUrl = new URL("v2/serverInfo", validatedBaseUrl);
 
-  const response = await fetchWithOptionalProxy(serverInfoUrl.toString(), {
+  const response = await fetchCatalogRequest(serverInfoUrl.toString(), {
     headers: buildGfnLcarsHeaders({
       token,
       clientType: "NATIVE",

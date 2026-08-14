@@ -336,6 +336,8 @@
   "gameDetails": {
     "eyebrow": "Game details",
     "details": "About this game",
+    "premiumRequired": "Premium membership required",
+    "freeTierUnavailable": "Not playable on the Free tier. Requires {{tier}} or higher on GeForce NOW.",
     "notOwned": "소유하지 않음",
     "playOn": "Play on {{store}}",
     "storeOption": "{{store}}, {{ownership}}"

@@ -33,7 +33,7 @@ import {
   fetchCloudMatch,
   formatErrorForLog,
   isZoneHostname,
-  normalizeCloudMatchBaseUrl,
+  normalizeTrustedCloudMatchBaseUrl,
   resolveCreateSessionBase,
   resolvePollStopBase,
   resolveStreamingBaseUrl,
@@ -48,7 +48,6 @@ import {
 import {
   buildClaimRequestBody,
   buildSessionRequestBody,
-  createNetworkTestSession,
 } from "./cloudmatchSessionRequest";
 import {
   echoedSessionAppLaunchMode,
@@ -64,6 +63,7 @@ import {
 export {
   appLaunchModeWireValue,
   buildRequestedStreamingFeatures,
+  resolveRequestedCodecWireValue,
   shouldEnableInGameSettingsPersistence,
   shouldRequestReflex,
 } from "./cloudmatchFeatures";
@@ -100,20 +100,12 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
     deviceId,
     input.proxyUrl,
   );
-  const networkTestSessionId = await createNetworkTestSession({
-    base,
-    token: input.token,
-    clientId,
-    deviceId,
-    settings: input.settings,
-    proxyUrl: input.proxyUrl,
-  });
-  const body = buildSessionRequestBody(input, deviceId, networkTestSessionId);
+  const body = buildSessionRequestBody(input, deviceId, null);
   console.log(
     `[CloudMatch] createSession in-game settings persistence: user=${input.enablePersistingInGameSettings === true}, ` +
     `gameSupport=${input.supportsInGameSettingsPersistence === true}, ` +
     `sent=${body.sessionRequestData.enablePersistingInGameSettings}, ` +
-    `networkTestSessionId=${networkTestSessionId ?? "none"}`,
+    "networkTestSessionId=none",
   );
 
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
@@ -299,7 +291,7 @@ export async function getActiveSessions(
     throw new Error("Missing token for getting active sessions");
   }
 
-  const base = normalizeCloudMatchBaseUrl(streamingBaseUrl);
+  const base = normalizeTrustedCloudMatchBaseUrl(streamingBaseUrl);
   const headers = buildGfnCloudMatchHeaders({
     token,
     deviceId: getStableDeviceId(),
@@ -310,7 +302,14 @@ export async function getActiveSessions(
     return primary;
   }
 
-  for (const fallbackBase of await discoverActiveSessionFallbackBases(base, headers)) {
+  for (const discoveredBase of await discoverActiveSessionFallbackBases(base, headers)) {
+    let fallbackBase: string;
+    try {
+      fallbackBase = normalizeTrustedCloudMatchBaseUrl(discoveredBase);
+    } catch {
+      console.warn("[CloudMatch] Ignoring untrusted active-session fallback endpoint");
+      continue;
+    }
     if (fallbackBase === base) {
       continue;
     }

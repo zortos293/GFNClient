@@ -1,8 +1,14 @@
 import { useRef } from "react";
 import type { Dispatch, JSX, RefObject, SetStateAction } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { Gauge, Images, Keyboard, LogOut, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
-import type { MicrophoneMode, SubscriptionInfo, VideoShaderSettings } from "@shared/gfn";
+import { Bug, Gauge, Images, Keyboard, LogOut, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
+import type {
+  MicrophoneMode,
+  RecordingFps,
+  RecordingResolution,
+  SubscriptionInfo,
+  VideoShaderSettings,
+} from "@shared/gfn";
 import SideBar from "../../SideBar";
 import type { StreamDiagnosticsStore } from "../../../utils/streamDiagnosticsStore";
 import { useMicMeter } from "../../../hooks/useMicMeter";
@@ -25,6 +31,7 @@ interface StreamQuickMenuProps {
   activeTab: StreamMenuTab;
   setActiveTab: Dispatch<SetStateAction<StreamMenuTab>>;
   onEndSession: () => void;
+  onReportBug: () => void;
   gameTitle: string;
   platformName: string;
   PlatformIcon: (() => JSX.Element) | null;
@@ -59,6 +66,11 @@ interface StreamQuickMenuProps {
   screenshotGallery: ReturnType<typeof useScreenshotGallery>;
   streamRecorder: ReturnType<typeof useStreamRecorder>;
   recordingBitrateMbps: number | null;
+  recordingResolution: RecordingResolution;
+  recordingFps: RecordingFps;
+  onRecordingResolutionChange: (value: RecordingResolution) => void;
+  onRecordingFpsChange: (value: RecordingFps) => void;
+  onRecordingBitrateMbpsChange: (value: number | null) => void;
 }
 
 export function StreamQuickMenu({
@@ -68,6 +80,7 @@ export function StreamQuickMenu({
   activeTab,
   setActiveTab,
   onEndSession,
+  onReportBug,
   gameTitle,
   platformName,
   PlatformIcon,
@@ -102,6 +115,11 @@ export function StreamQuickMenu({
   screenshotGallery,
   streamRecorder,
   recordingBitrateMbps,
+  recordingResolution,
+  recordingFps,
+  onRecordingResolutionChange,
+  onRecordingFpsChange,
+  onRecordingBitrateMbpsChange,
 }: StreamQuickMenuProps): JSX.Element {
   const micMeterRef = useRef<HTMLCanvasElement | null>(null);
   useMicMeter(micMeterRef, micTrack, open && microphoneMode !== "disabled");
@@ -143,6 +161,14 @@ export function StreamQuickMenu({
                   <span><kbd>B</kbd> Back</span>
                   <span><kbd>LB</kbd><kbd>RB</kbd> Pages</span>
                 </div>
+                <button
+                  type="button"
+                  className="sidebar-report-bug-button"
+                  onClick={onReportBug}
+                >
+                  <Bug size={16} />
+                  <span>Report a stream bug</span>
+                </button>
                 <button
                   type="button"
                   className="sidebar-exit-session-button"
@@ -256,7 +282,13 @@ export function StreamQuickMenu({
                 recordingError={streamRecorder.recordingError}
                 recordingApiAvailable={streamRecorder.recordingApiAvailable}
                 usedMimeType={streamRecorder.usedMimeType}
+                recordingStatus={streamRecorder.recordingStatus}
                 recordingBitrateMbps={recordingBitrateMbps}
+                recordingResolution={recordingResolution}
+                recordingFps={recordingFps}
+                onRecordingResolutionChange={onRecordingResolutionChange}
+                onRecordingFpsChange={onRecordingFpsChange}
+                onRecordingBitrateMbpsChange={onRecordingBitrateMbpsChange}
                 recCarouselRef={streamRecorder.recCarouselRef}
                 onToggleRecording={() => { void streamRecorder.toggleRecording(); }}
                 onDeleteRecording={(id) => { void streamRecorder.deleteRecording(id); }}

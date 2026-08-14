@@ -28,6 +28,8 @@ export class MicrophoneManager {
   private micLevel = 1;
   private onStateChangeCallback: ((state: MicStateChange) => void) | null = null;
   private sampleRate: number = 48000; // Official client uses 48kHz
+  private captureGeneration = 0;
+  private disposed = false;
 
   /** Web Audio graph: raw getUserMedia → GainNode → track sent to WebRTC (`volume` constraints are rarely supported for input). */
   private micProcessCtx: AudioContext | null = null;
@@ -159,6 +161,10 @@ export class MicrophoneManager {
    * Initialize microphone with specified device
    */
   async initialize(): Promise<boolean> {
+    if (this.disposed) {
+      return false;
+    }
+    const generation = ++this.captureGeneration;
     if (!MicrophoneManager.isSupported()) {
       this.setState("unsupported");
       return false;
@@ -166,6 +172,9 @@ export class MicrophoneManager {
 
     // Check current permission state
     const permission = await this.checkPermissionState();
+    if (!this.isCurrentCapture(generation)) {
+      return false;
+    }
     if (permission === "denied") {
       this.setState("permission_denied");
       return false;
@@ -175,9 +184,12 @@ export class MicrophoneManager {
     this.attemptedDevices.clear();
 
     try {
-      await this.startCapture();
-      return true;
+      await this.startCapture(generation);
+      return this.isCurrentCapture(generation) && this.currentState === "started";
     } catch (error) {
+      if (!this.isCurrentCapture(generation)) {
+        return false;
+      }
       console.error("[Microphone] Failed to initialize:", error);
       return false;
     }
@@ -186,7 +198,10 @@ export class MicrophoneManager {
   /**
    * Start microphone capture
    */
-  private async startCapture(): Promise<void> {
+  private async startCapture(generation: number): Promise<void> {
+    if (!this.isCurrentCapture(generation)) {
+      return;
+    }
     this.clearMicStream();
 
     const constraints: MediaStreamConstraints = {
@@ -206,6 +221,10 @@ export class MicrophoneManager {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if (!this.isCurrentCapture(generation)) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       this.attachMicStream(stream);
       const track = stream.getAudioTracks()[0];
 
@@ -229,16 +248,29 @@ export class MicrophoneManager {
         await this.addTrackToPeerConnection(sendTrack);
       }
 
-      this.setState("started", track.label);
+      if (this.isCurrentCapture(generation)) {
+        this.setState("started", track.label);
+      } else {
+        this.clearMicStream();
+      }
     } catch (error) {
-      await this.handleCaptureError(error, constraints);
+      if (this.isCurrentCapture(generation)) {
+        await this.handleCaptureError(error, constraints, generation);
+      }
     }
   }
 
   /**
    * Handle capture errors with fallback logic
    */
-  private async handleCaptureError(error: unknown, constraints: MediaStreamConstraints): Promise<void> {
+  private async handleCaptureError(
+    error: unknown,
+    constraints: MediaStreamConstraints,
+    generation: number,
+  ): Promise<void> {
+    if (!this.isCurrentCapture(generation)) {
+      return;
+    }
     const deviceId = (constraints.audio as MediaTrackConstraints)?.deviceId;
     const attemptedDevice = typeof deviceId === "object" && "exact" in deviceId
       ? deviceId.exact
@@ -263,12 +295,15 @@ export class MicrophoneManager {
 
           try {
             const devices = await navigator.mediaDevices.enumerateDevices();
+            if (!this.isCurrentCapture(generation)) {
+              return;
+            }
             const audioInputs = devices.filter(d => d.kind === "audioinput" && !this.attemptedDevices.has(d.deviceId));
 
             if (audioInputs.length > 0 && audioInputs[0]?.deviceId) {
               console.log("[Microphone] Trying device:", audioInputs[0].label);
               this.deviceId = audioInputs[0].deviceId;
-              await this.startCapture();
+              await this.startCapture(generation);
               return;
             }
           } catch (enumError) {
@@ -283,6 +318,10 @@ export class MicrophoneManager {
           console.warn("[Microphone] Constraints not supported, trying with basic constraints");
           try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            if (!this.isCurrentCapture(generation)) {
+              stream.getTracks().forEach((track) => track.stop());
+              return;
+            }
             this.attachMicStream(stream);
             const track = stream.getAudioTracks()[0];
             if (!track) {
@@ -300,7 +339,11 @@ export class MicrophoneManager {
             if (this.pc && sendTrack) {
               await this.addTrackToPeerConnection(sendTrack);
             }
-            this.setState("started", track?.label);
+            if (this.isCurrentCapture(generation)) {
+              this.setState("started", track.label);
+            } else {
+              this.clearMicStream();
+            }
             return;
           } catch (fallbackError) {
             this.setState("error");
@@ -561,6 +604,7 @@ export class MicrophoneManager {
    */
   stop(): void {
     console.log("[Microphone] Stopping capture");
+    this.captureGeneration++;
 
     if (this.micSender && this.pc) {
       try {
@@ -586,6 +630,7 @@ export class MicrophoneManager {
    * Dispose and cleanup
    */
   dispose(): void {
+    this.disposed = true;
     this.stop();
     if (this.placeholderStream) {
       this.placeholderStream.getTracks().forEach((track) => track.stop());
@@ -594,6 +639,10 @@ export class MicrophoneManager {
     this.micSender = null;
     this.pc = null;
     this.onStateChangeCallback = null;
+  }
+
+  private isCurrentCapture(generation: number): boolean {
+    return !this.disposed && generation === this.captureGeneration;
   }
 
   /**

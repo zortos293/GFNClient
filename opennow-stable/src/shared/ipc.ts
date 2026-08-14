@@ -12,6 +12,10 @@ export const IPC_CHANNELS = {
   AUTH_GET_SAVED_ACCOUNTS: "auth:get-saved-accounts",
   AUTH_SWITCH_ACCOUNT: "auth:switch-account",
   AUTH_REMOVE_ACCOUNT: "auth:remove-account",
+  CONSOLE_PIN_GET_STATUS: "console:pin-get-status",
+  CONSOLE_PIN_SET: "console:pin-set",
+  CONSOLE_PIN_CLEAR: "console:pin-clear",
+  CONSOLE_PIN_VERIFY: "console:pin-verify",
   PING_REGIONS: "gfn:ping-regions",
   SUBSCRIPTION_FETCH: "subscription:fetch",
   PERSISTENT_STORAGE_LOCATIONS_FETCH: "persistent-storage:locations:fetch",
@@ -53,6 +57,8 @@ export const IPC_CHANNELS = {
   TOGGLE_POINTER_LOCK: "window:toggle-pointer-lock",
   POINTER_LOCK_CHANGE: "window:pointer-lock-change",
   EXTERNAL_ESCAPE: "app:external-escape",
+  STREAM_SHORTCUT_ACTION: "app:stream-shortcut-action",
+  STREAM_SHORTCUT_INTERCEPTION_CHANGE: "app:stream-shortcut-interception-change",
   OPEN_EXTERNAL_URL: "app:open-external-url",
   DIRECT_LAUNCH_GET_PENDING: "app:direct-launch:get-pending",
   DIRECT_LAUNCH_REQUEST: "app:direct-launch:request",
@@ -72,6 +78,7 @@ export const IPC_CHANNELS = {
   MICROPHONE_PERMISSION_GET: "microphone:permission:get",
   LOGS_EXPORT: "logs:export",
   LOGS_GET_RENDERER: "logs:get-renderer",
+  BUG_REPORT_SUBMIT: "bug-report:submit",
   SCREENSHOT_SAVE: "screenshot:save",
   SCREENSHOT_LIST: "screenshot:list",
   SCREENSHOT_DELETE: "screenshot:delete",
@@ -105,6 +112,7 @@ export const IPC_CHANNELS = {
   RELEASE_HIGHLIGHTS_GET: "release-highlights:get",
   RELEASE_HIGHLIGHTS_ACK: "release-highlights:ack",
   RELEASE_HIGHLIGHTS_SHOW: "release-highlights:show",
+  GPU_GET_INFO: "gpu:get-info",
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

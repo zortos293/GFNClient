@@ -1,5 +1,9 @@
 import type { NativeStreamStats } from "@shared/gfn";
 
+import {
+  mapServerGpuType,
+  normalizeServerRegion,
+} from "../platforms/gfn/webrtc/sessionDiagnostics";
 import type { StreamDiagnostics } from "../platforms/gfn/webrtcClient";
 
 export function defaultDiagnostics(): StreamDiagnostics {
@@ -10,18 +14,24 @@ export function defaultDiagnostics(): StreamDiagnostics {
     connectedGamepads: 0,
     resolution: "",
     codec: "",
+    requestedCodec: "",
     hardwareAcceleration: "",
     colorCodec: "",
     isHdr: false,
     bitrateKbps: 0,
     targetBitrateKbps: 0,
+    availableBitrateKbps: 0,
     decodeFps: 0,
+    receiveFps: 0,
     renderFps: 0,
+    gameFps: undefined,
     packetsLost: 0,
     packetsReceived: 0,
     packetLossPercent: 0,
     jitterMs: 0,
     rttMs: 0,
+    transportType: "unknown",
+    localCandidateType: "",
     framesReceived: 0,
     framesDecoded: 0,
     framesDropped: 0,
@@ -43,7 +53,11 @@ export function defaultDiagnostics(): StreamDiagnostics {
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
+    serverGpuType: "",
+    sessionId: "",
     serverRegion: "",
+    serverZone: "",
+    serverLocation: "",
     decoderPressureActive: false,
     decoderRecoveryAttempts: 0,
     decoderRecoveryAction: "none",
@@ -84,11 +98,16 @@ export function mergeNativeStreamStats(
     nativeRendererActive: true,
     resolution: stats.resolution || current.resolution,
     codec: stats.codec || current.codec,
+    requestedCodec: current.requestedCodec || stats.codec,
     hardwareAcceleration,
     bitrateKbps: stats.bitrateKbps,
     targetBitrateKbps: stats.targetBitrateKbps,
+    availableBitrateKbps: 0,
     decodeFps: Math.round(stats.decodedFps),
+    receiveFps: 0,
     renderFps: Math.round(stats.renderFps),
+    transportType: "unknown",
+    localCandidateType: "",
     framesReceived: stats.framesDecoded,
     framesDecoded: stats.framesDecoded,
     framesDropped: sinkDropped,
@@ -116,5 +135,12 @@ export function mergeNativeStreamStats(
     nativeTransitionSummary: stats.lastTransitionSummary,
     nativeRequestedStreamingFeaturesSummary: stats.requestedStreamingFeaturesSummary,
     nativeFinalizedStreamingFeaturesSummary: stats.finalizedStreamingFeaturesSummary,
+    serverGpuType: stats.serverGpuType
+      ? mapServerGpuType(stats.serverGpuType)
+      : current.serverGpuType,
+    serverLocation: stats.serverLocation?.trim() || current.serverLocation,
+    serverRegion: stats.serverLocation
+      ? normalizeServerRegion(stats.serverLocation)
+      : current.serverRegion,
   };
 }

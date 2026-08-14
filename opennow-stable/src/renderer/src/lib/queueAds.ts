@@ -128,14 +128,18 @@ export function mergePolledSessionState(previous: SessionInfo, next: SessionInfo
   // Poll responses may omit the echoed appLaunchMode; keep the session-stable value.
   const appLaunchMode = next.appLaunchMode ?? previous.appLaunchMode;
   const appId = next.appId ?? previous.appId;
+  const gpuType = next.gpuType?.trim() || previous.gpuType;
+  const serverLocation = next.serverLocation?.trim() || previous.serverLocation;
   if (isSessionReadyForConnect(next.status)) {
-    return { ...next, appId, appLaunchMode };
+    return { ...next, appId, appLaunchMode, gpuType, serverLocation };
   }
 
   return {
     ...next,
     appId,
     appLaunchMode,
+    gpuType,
+    serverLocation,
     adState: mergeAdState(previous.adState, next.adState),
     mediaConnectionInfo: next.mediaConnectionInfo ?? previous.mediaConnectionInfo,
   };

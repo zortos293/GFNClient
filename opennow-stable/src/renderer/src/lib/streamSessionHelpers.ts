@@ -1,3 +1,4 @@
+import type { SessionInfo } from "@shared/gfn";
 import type { StreamStatus } from "./appTypes";
 import type { GfnWebRtcClient } from "../platforms/gfn/webrtcClient";
 
@@ -26,6 +27,22 @@ export function isExpectedNativeSessionClose(reason: string): boolean {
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+export async function disposeSessionCreatedAfterAbort(
+  aborted: boolean,
+  session: SessionInfo,
+  stopSession: (session: SessionInfo) => Promise<boolean>,
+): Promise<boolean> {
+  if (!aborted) {
+    return false;
+  }
+  try {
+    await stopSession(session);
+  } catch (error) {
+    console.warn("Failed to stop session created after launch cancellation:", error);
+  }
+  return true;
 }
 
 export async function readStreamClipboardText(): Promise<string> {

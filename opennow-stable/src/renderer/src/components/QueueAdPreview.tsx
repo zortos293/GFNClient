@@ -1,7 +1,8 @@
-import { AlertTriangle, Loader2, PauseCircle, PlayCircle, RefreshCcw, XCircle } from "lucide-react";
+import { AlertTriangle, Loader2, PauseCircle, PlayCircle, RefreshCcw, Volume2, VolumeX, XCircle } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type JSX } from "react";
 import { m } from "motion/react";
 import { spinnerTransition } from "./MotionProvider";
+import { useTranslation } from "../i18n";
 
 type QueueAdPlaybackState = "loading" | "playing" | "paused" | "stalled" | "blocked" | "timeout" | "error";
 export type QueueAdPlaybackEvent = "loadstart" | "playing" | "paused" | "ended" | "timeupdate" | "error";
@@ -89,8 +90,10 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
   { mediaUrl, title, onPlaybackEvent }: QueueAdPreviewProps,
   ref,
 ): JSX.Element {
+  const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackStateRef = useRef<QueueAdPlaybackState>("loading");
+  const mutedRef = useRef(false);
   // Guards against firing "ended" twice when the proactive timeupdate path
   // already fired it before the native ended event arrives.
   const finishFiredRef = useRef(false);
@@ -103,6 +106,7 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
     onPlaybackEventRef.current = onPlaybackEvent;
   });
   const [playbackState, setPlaybackState] = useState<QueueAdPlaybackState>("loading");
+  const [muted, setMuted] = useState(false);
 
   const setPlayback = (next: QueueAdPlaybackState): void => {
     playbackStateRef.current = next;
@@ -117,6 +121,21 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
 
     setPlayback("loading");
 
+    if (mutedRef.current) {
+      video.muted = true;
+      try {
+        await video.play();
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "NotAllowedError") {
+          setPlayback("blocked");
+          return;
+        }
+        console.warn("Queue ad playback failed:", error);
+        setPlayback("error");
+      }
+      return;
+    }
+
     // Try audible playback first (matching official client behaviour).
     // Fall back to muted if the autoplay policy blocks audio.
     try {
@@ -129,6 +148,8 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
 
     try {
       video.muted = true;
+      mutedRef.current = true;
+      setMuted(true);
       await video.play();
     } catch (error) {
       if (error instanceof DOMException && error.name === "NotAllowedError") {
@@ -138,6 +159,18 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
       console.warn("Queue ad playback failed:", error);
       setPlayback("error");
     }
+  };
+
+  const toggleMuted = (): void => {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+
+    const nextMuted = !video.muted;
+    video.muted = nextMuted;
+    mutedRef.current = nextMuted;
+    setMuted(nextMuted);
   };
 
   useImperativeHandle(ref, () => ({
@@ -266,6 +299,10 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
   const presentation = getPlaybackPresentation(playbackState);
   const StatusIcon = presentation.icon;
   const showFrameOverlay = playbackState !== "playing";
+  const muteLabel = muted ? t("streamLoading.ads.unmute") : t("streamLoading.ads.mute");
+  const muteButtonLabel = muted
+    ? t("streamLoading.ads.unmuteAdvertisement")
+    : t("streamLoading.ads.muteAdvertisement");
 
   return (
     <div className={`queue-ad-preview queue-ad-preview--${playbackState}`}>
@@ -277,7 +314,9 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
           autoPlay
           playsInline
           preload="auto"
-          aria-label={title ? `${title} advertisement` : "Advertisement"}
+          aria-label={title
+            ? t("streamLoading.ads.titledAdvertisement", { title })
+            : t("streamLoading.ads.advertisement")}
         />
         {showFrameOverlay && (
           <div className="queue-ad-preview-overlay" aria-hidden="true">
@@ -292,6 +331,17 @@ export const QueueAdPreview = forwardRef<QueueAdPreviewHandle, QueueAdPreviewPro
             </div>
           </div>
         )}
+        <button
+          className={`queue-ad-preview-mute${muted ? " queue-ad-preview-mute--active" : ""}`}
+          type="button"
+          onClick={toggleMuted}
+          aria-label={muteButtonLabel}
+          aria-pressed={muted}
+          title={muteButtonLabel}
+        >
+          {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          <span>{muteLabel}</span>
+        </button>
       </div>
       {presentation.retryLabel && (
         <div className="queue-ad-preview-status" aria-live="polite">

@@ -1,9 +1,10 @@
 import type {
+  CodecPreference,
   ColorQuality,
+  FallbackCodecPreference,
   NativeTransitionDiagnostics,
   StreamClientMode,
   VideoAccelerationPreference,
-  VideoCodec,
 } from "./stream";
 import type {
   NativeStreamerBackendPreference,
@@ -14,13 +15,22 @@ import type {
 import { DEFAULT_KEYBOARD_LAYOUT, type GameLanguage, type KeyboardLayout } from "./keyboard";
 import { DEFAULT_VIDEO_SHADER_SETTINGS, type VideoShaderSettings } from "./videoShader";
 import type { UpdateChannel } from "./updater";
-import { normalizeStreamPreferences } from "./stream";
+import { normalizeFallbackCodecPreference, normalizeStreamPreferences } from "./stream";
 
 export type AppAccentColor = "green" | "blue" | "violet" | "amber" | "rose";
 export type AppTheme = "light" | "dark" | "auto";
 export type MicrophoneMode = "disabled" | "push-to-talk" | "voice-activity";
+export type StatsOverlayPosition = "bottom-left" | "bottom-right" | "top-left" | "top-right";
 export type AspectRatio = "16:9" | "16:10" | "21:9" | "32:9";
 export type ErrorReportingConsent = "unset" | "granted" | "denied";
+export const RECORDING_RESOLUTION_OPTIONS = ["720p", "1080p", "1440p"] as const;
+export type RecordingResolution = typeof RECORDING_RESOLUTION_OPTIONS[number];
+export const RECORDING_FPS_OPTIONS = [30, 60] as const;
+export type RecordingFps = typeof RECORDING_FPS_OPTIONS[number];
+export const DEFAULT_RECORDING_RESOLUTION: RecordingResolution = "720p";
+export const DEFAULT_RECORDING_FPS: RecordingFps = 30;
+export const DEFAULT_CUSTOM_RECORDING_BITRATE_MBPS = 8;
+export const MAX_RECORDING_BITRATE_MBPS = 12;
 export type RuntimePlatform =
   | "aix"
   | "android"
@@ -54,6 +64,8 @@ export interface Settings {
   maxBitrateMbps: number;
   /** Recording video bitrate in Mbps; null means let MediaRecorder choose automatically */
   recordingBitrateMbps: number | null;
+  recordingResolution: RecordingResolution;
+  recordingFps: RecordingFps;
   streamClientMode: StreamClientMode;
   nativeStreamerBackend: NativeStreamerBackendPreference;
   nativeVideoBackend: NativeVideoBackendPreference;
@@ -63,7 +75,8 @@ export interface Settings {
   nativeExternalRenderer: boolean;
   transportMode: StreamTransportMode;
   showNativeStreamerStats: boolean;
-  codec: VideoCodec;
+  codec: CodecPreference;
+  fallbackCodec: FallbackCodecPreference;
   decoderPreference: VideoAccelerationPreference;
   encoderPreference: VideoAccelerationPreference;
   colorQuality: ColorQuality;
@@ -91,7 +104,10 @@ export interface Settings {
   microphoneDeviceId: string;
   hideStreamButtons: boolean;
   showAntiAfkIndicator: boolean;
+  antiAfkReminderEveryMinutes: number;
+  antiAfkReminderDurationSeconds: number;
   showStatsOnLaunch: boolean;
+  statsOverlayPosition: StatsOverlayPosition;
   /** Skip the free-tier queue server selection modal and launch with default routing */
   hideServerSelector: boolean;
   /** Desktop UI accent preset */
@@ -102,11 +118,17 @@ export interface Settings {
   translucentUI: boolean;
   /** Use the large-screen controller-oriented shell and library layout */
   controllerMode: boolean;
-  /** Launch fullscreen with Controller Mode enabled, like GeForce NOW's TV mode */
+  /** Permanently suppress the controller-detected suggestion after the user declines it */
+  controllerModePromptDismissed: boolean;
+  /** Request GeForce NOW's gamepad-friendly app launch mode for new sessions */
   launchInConsoleMode: boolean;
+  /** Show the "Who's playing?" profile picker when console mode starts */
+  consoleProfilePickerOnLaunch: boolean;
   autoFullScreen: boolean;
   favoriteGameIds: string[];
   sessionCounterEnabled: boolean;
+  /** Show an evidence-based quality summary after each completed stream. */
+  showSessionReport: boolean;
   /** Also show the session-limit countdown in the stats overlay while streaming */
   showSessionTimeRemainingInStatsOverlay: boolean;
   sessionClockShowEveryMinutes: number;
@@ -147,7 +169,7 @@ export interface Settings {
    * `"unset"` shows the one-time prompt; only `"granted"` enables exception capture.
    */
   errorReportingConsent: ErrorReportingConsent;
-  /** Anonymous install UUID used as PostHog distinct ID (empty until first grant or feedback) */
+  /** Anonymous install UUID used for opt-in telemetry and hashed bug-report abuse control. */
   telemetryInstallId: string;
 }
 
@@ -166,7 +188,7 @@ export type ShortcutSettingKey = typeof SHORTCUT_SETTING_KEYS[number];
 export type ShortcutSettings = Pick<Settings, ShortcutSettingKey>;
 
 export const DEFAULT_SHORTCUT_SETTINGS: Readonly<ShortcutSettings> = Object.freeze({
-  shortcutToggleStats: "F3",
+  shortcutToggleStats: "Ctrl+N",
   shortcutTogglePointerLock: "F8",
   shortcutToggleFullscreen: "F10",
   shortcutStopStream: "Ctrl+Shift+Q",
@@ -206,6 +228,31 @@ export function resolveRuntimePlatform(platform: string): RuntimePlatform {
   return "unknown";
 }
 
+export function normalizeRecordingResolution(raw: unknown): RecordingResolution {
+  return RECORDING_RESOLUTION_OPTIONS.includes(raw as RecordingResolution)
+    ? raw as RecordingResolution
+    : DEFAULT_RECORDING_RESOLUTION;
+}
+
+export function normalizeRecordingFps(raw: unknown): RecordingFps {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return DEFAULT_RECORDING_FPS;
+  }
+  return value > 45 ? 60 : 30;
+}
+
+export function normalizeRecordingBitrateMbps(raw: unknown): number | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(1, Math.min(MAX_RECORDING_BITRATE_MBPS, Math.round(value)));
+}
+
 export function createPlatformShortcutDefaults(platform: string): PlatformShortcutDefaults {
   const isMacOs = resolveRuntimePlatform(platform) === "darwin";
   const sidebarToggle = isMacOs ? "Meta+G" : "Ctrl+G";
@@ -225,6 +272,8 @@ export function createDefaultSettings(platform: string): Settings {
     fps: 60,
     maxBitrateMbps: 75,
     recordingBitrateMbps: null,
+    recordingResolution: DEFAULT_RECORDING_RESOLUTION,
+    recordingFps: DEFAULT_RECORDING_FPS,
     streamClientMode: "web",
     nativeStreamerBackend: "gstreamer",
     nativeVideoBackend: "auto",
@@ -235,6 +284,7 @@ export function createDefaultSettings(platform: string): Settings {
     transportMode: "webrtc",
     showNativeStreamerStats: false,
     codec: DEFAULT_STREAM_PREFERENCES.codec,
+    fallbackCodec: DEFAULT_STREAM_PREFERENCES.fallbackCodec,
     decoderPreference: "auto",
     encoderPreference: "auto",
     colorQuality: DEFAULT_STREAM_PREFERENCES.colorQuality,
@@ -252,16 +302,22 @@ export function createDefaultSettings(platform: string): Settings {
     microphoneDeviceId: "",
     hideStreamButtons: false,
     showAntiAfkIndicator: true,
+    antiAfkReminderEveryMinutes: 15,
+    antiAfkReminderDurationSeconds: 5,
     showStatsOnLaunch: false,
+    statsOverlayPosition: "bottom-left",
     hideServerSelector: false,
     appAccentColor: "green",
     appTheme: "auto",
     translucentUI: false,
     controllerMode: false,
+    controllerModePromptDismissed: false,
     launchInConsoleMode: false,
+    consoleProfilePickerOnLaunch: true,
     autoFullScreen: false,
     favoriteGameIds: [],
     sessionCounterEnabled: false,
+    showSessionReport: true,
     showSessionTimeRemainingInStatsOverlay: false,
     sessionClockShowEveryMinutes: 60,
     sessionClockShowDurationSeconds: 30,
@@ -285,18 +341,20 @@ export function createDefaultSettings(platform: string): Settings {
   };
 }
 
-export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "colorQuality">> = Object.freeze({
-  codec: "H264",
+export const DEFAULT_STREAM_PREFERENCES: Readonly<Pick<Settings, "codec" | "fallbackCodec" | "colorQuality">> = Object.freeze({
+  codec: "auto",
+  fallbackCodec: "auto",
   colorQuality: "8bit_420",
 });
 
-export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "colorQuality"> {
+export function getDefaultStreamPreferences(): Pick<Settings, "codec" | "fallbackCodec" | "colorQuality"> {
   const normalized = normalizeStreamPreferences(
     DEFAULT_STREAM_PREFERENCES.codec,
     DEFAULT_STREAM_PREFERENCES.colorQuality,
   );
   return {
     codec: normalized.codec,
+    fallbackCodec: normalizeFallbackCodecPreference(DEFAULT_STREAM_PREFERENCES.fallbackCodec),
     colorQuality: normalized.colorQuality,
   };
 }

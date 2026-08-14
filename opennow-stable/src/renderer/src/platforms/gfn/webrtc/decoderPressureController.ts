@@ -40,7 +40,7 @@ interface DecoderPressureControllerDependencies {
     backlogFrames: number;
     attempt: number;
   }) => Promise<unknown>;
-  setMaxBitrateKbps: (kbps: number) => Promise<void>;
+  setMaxBitrateKbps: (kbps: number) => Promise<boolean>;
   onStateChange: (state: DecoderPressureState) => void;
   now?: () => number;
 }
@@ -354,7 +354,10 @@ export class DecoderPressureController {
     if (next >= current) {
       return false;
     }
-    await this.dependencies.setMaxBitrateKbps(next);
+    const updated = await this.dependencies.setMaxBitrateKbps(next);
+    if (!updated) {
+      return false;
+    }
     this.currentBitrateCeilingKbps = next;
     this.recoveryAction = "bitrate_step_down";
     this.dependencies.log(

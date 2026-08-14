@@ -92,12 +92,17 @@ export function sortLibraryGames(
     return copy.sort(compareTitle);
   }
   if (sortId === "last_played") {
-    return copy.sort((left, right) => {
-      const leftTime = playtimeLastPlayedMs(left.id) || legacyLastPlayedMs(left);
-      const rightTime = playtimeLastPlayedMs(right.id) || legacyLastPlayedMs(right);
-      if (leftTime === rightTime) return compareTitle(left, right);
-      return rightTime - leftTime;
-    });
+    return copy
+      .map((game) => ({
+        game,
+        lastPlayedMs: playtimeLastPlayedMs(game.id) || legacyLastPlayedMs(game),
+      }))
+      .sort((left, right) => (
+        left.lastPlayedMs === right.lastPlayedMs
+          ? compareTitle(left.game, right.game)
+          : right.lastPlayedMs - left.lastPlayedMs
+      ))
+      .map(({ game }) => game);
   }
   if (sortId === "last_added") {
     // Preserve server-provided order. We do not currently have a trustworthy local "addedAt" field.

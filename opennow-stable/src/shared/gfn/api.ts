@@ -11,6 +11,12 @@ import type {
   AuthSessionResult,
   LoginProvider,
   SavedAccount,
+  ConsolePinClearRequest,
+  ConsolePinMutationResult,
+  ConsolePinSetRequest,
+  ConsolePinStatus,
+  ConsolePinVerifyRequest,
+  ConsolePinVerifyResult,
 } from "./auth";
 import type {
   CatalogBrowseRequest,
@@ -52,6 +58,8 @@ import type {
   MainToRendererSignalingEvent,
   NativeInputPacket,
   NativeRenderSurfaceUpdate,
+  StreamShortcutInterceptionGate,
+  NativeStreamerShortcutAction,
   NativeStreamerShortcutBindings,
   SendAnswerRequest,
   SignalingConnectRequest,
@@ -76,6 +84,17 @@ import type {
   ScreenshotSaveRequest,
 } from "./media";
 import type { PrintedWasteQueueData, PrintedWasteServerMapping } from "./printedWaste";
+import type { DesktopBugReportReceipt, DesktopBugReportRequest } from "../bugReport";
+
+export interface GpuBackendInfo {
+  gpuName: string | null;
+  vendorName: string | null;
+  driverVersion: string | null;
+  decodeAccelerated: boolean | null;
+  encodeAccelerated: boolean | null;
+  hardwareDecodeCodecs: string[];
+  hardwareEncodeCodecs: string[];
+}
 
 export interface OpenNowApi {
   getAuthSession(input?: AuthSessionRequest): Promise<AuthSessionResult>;
@@ -89,8 +108,12 @@ export interface OpenNowApi {
   logout(): Promise<void>;
   logoutAll(): Promise<void>;
   getSavedAccounts(): Promise<SavedAccount[]>;
-  switchAccount(userId: string): Promise<AuthSession>;
+  switchAccount(userId: string, pin?: string): Promise<AuthSession>;
   removeAccount(userId: string): Promise<void>;
+  getConsolePinStatus(userId: string): Promise<ConsolePinStatus>;
+  setConsolePin(input: ConsolePinSetRequest): Promise<ConsolePinMutationResult>;
+  clearConsolePin(input: ConsolePinClearRequest): Promise<ConsolePinMutationResult>;
+  verifyConsolePin(input: ConsolePinVerifyRequest): Promise<ConsolePinVerifyResult>;
   fetchSubscription(input: SubscriptionFetchRequest): Promise<SubscriptionInfo>;
   fetchPersistentStorageLocations(input?: PersistentStorageLocationsFetchRequest): Promise<PersistentStorageLocationsResult>;
   resetPersistentStorage(input?: PersistentStorageResetRequest): Promise<PersistentStorageResetResult>;
@@ -151,11 +174,14 @@ export interface OpenNowApi {
   readClipboardText(): Promise<string>;
   getSettings(): Promise<Settings>;
   setSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
+  getGpuInfo(): Promise<GpuBackendInfo>;
   resetSettings(): Promise<Settings>;
   selectNativeStreamerExecutable(): Promise<string | null>;
   getMicrophonePermission(): Promise<MicrophonePermissionResult>;
   /** Export logs in redacted format */
   exportLogs(format?: "text" | "json"): Promise<string>;
+  /** Submit an explicit, reviewed bug report through the main-process upload owner. */
+  submitBugReport(input: DesktopBugReportRequest): Promise<DesktopBugReportReceipt>;
   /** Ping all regions and return latency results */
   pingRegions(regions: StreamRegion[]): Promise<PingResult[]>;
 
@@ -176,6 +202,10 @@ export interface OpenNowApi {
 
   /** Listen for external Escape events forwarded by the main process */
   onExternalEscape(listener: () => void): () => void;
+
+  /** Listen for stream shortcuts captured before Chromium handles reserved combinations. */
+  onStreamShortcutAction(listener: (action: NativeStreamerShortcutAction) => void): () => void;
+  setStreamShortcutInterceptionGate(gate: StreamShortcutInterceptionGate): void;
 
   /** Open a trusted external URL in the OS default browser */
   openExternalUrl(url: string): Promise<void>;

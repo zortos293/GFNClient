@@ -1,6 +1,7 @@
 import type {
   IceCandidatePayload,
   ColorQuality,
+  FallbackCodecPreference,
   IceServer,
   SessionInfo,
   VideoCodec,
@@ -36,6 +37,8 @@ import {
   fixServerIp,
   mungeAnswerSdp,
   preferCodec,
+  resolveNegotiationCandidates,
+  extractNegotiatedVideoCodec,
   rewriteIceCandidateEndpoint,
   rewriteH265LevelIdByProfile,
   rewriteH265TierFlag,
@@ -51,8 +54,13 @@ import { chooseAdaptiveMouseFlushInterval } from "./webrtc/mouseInput";
 import {
   averageJitterBufferDelayMs,
   codecLabelFromMimeType,
+  computeBitrateDiagnostics,
+  computeIntervalFrameRates,
   detectGpuType,
 } from "./webrtc/streamStatsHelpers";
+import { extractActiveIceTransportStats } from "./webrtc/iceTransportStats";
+import { parseStatsChannelGameFps } from "./webrtc/statsChannel";
+import { deriveStreamSessionDiagnostics } from "./webrtc/sessionDiagnostics";
 import {
   DecoderPressureController,
 } from "./webrtc/decoderPressureController";
@@ -63,6 +71,10 @@ import {
 import { GamepadController } from "./webrtc/gamepadController";
 import { DomInputCaptureController } from "./webrtc/domInputCaptureController";
 import { PeerMediaLifecycleController } from "./webrtc/peerMediaLifecycleController";
+import { updateVideoSenderBitrate } from "./webrtc/senderBitrate";
+import { CODEC_MIME_BY_NAME, buildCodecPreferenceList } from "./webrtc/codecPreferences";
+import { negotiatePeerConnectionCodecAnswer } from "./webrtc/codecNegotiation";
+import { OFFICIAL_MIN_BITRATE_KBPS } from "./sdp/nvstOffer";
 
 export type {
   StreamDiagnostics,
@@ -89,6 +101,12 @@ export {
   type DecoderPressureSample,
   type DecoderPressureSignal,
 } from "./webrtc/decoderPressureController";
+export { parseStatsChannelGameFps } from "./webrtc/statsChannel";
+export {
+  extractActiveIceTransportStats,
+  type ActiveIceTransportStats,
+  type IceTransportType,
+} from "./webrtc/iceTransportStats";
 export {
   canUsePartiallyReliableGamepad,
   canUsePartiallyReliableInput,
@@ -101,6 +119,7 @@ interface OfferSettings {
   resolution: string;
   fps: number;
   maxBitrateKbps: number;
+  fallbackCodec?: FallbackCodecPreference;
   nativeTransitionDiagnostics?: NativeTransitionDiagnostics;
 }
 
@@ -248,6 +267,20 @@ async function toBytes(data: string | Blob | ArrayBuffer): Promise<Uint8Array> {
   return new Uint8Array(arrayBuffer);
 }
 
+type CodecAttemptMicrophoneManager = Pick<
+  MicrophoneManager,
+  "setPeerConnection" | "attachTrackToPeerConnection"
+>;
+
+export async function attachMicrophoneForCodecAttempt(
+  micManager: CodecAttemptMicrophoneManager | null,
+  pc: RTCPeerConnection,
+): Promise<void> {
+  if (!micManager) return;
+  micManager.setPeerConnection(pc);
+  await micManager.attachTrackToPeerConnection();
+}
+
 export class GfnWebRtcClient {
   private readonly inputEncoder = new InputEncoder();
 
@@ -300,10 +333,12 @@ export class GfnWebRtcClient {
     framesDropped: number;
     packetsReceived: number;
     packetsLost: number;
+    totalDecodeTime: number;
     atMs: number;
   } | null = null;
   private renderFpsCounter = { frames: 0, lastUpdate: 0, fps: 0 };
   private lastEmittedDiagnostics: StreamDiagnostics | null = null;
+  private statsChannelVersionLogged = false;
 
   private keyboardLayout?: KeyboardLayout;
   private autoFullScreenEnabled = true;
@@ -339,7 +374,11 @@ export class GfnWebRtcClient {
   private currentResolution = "";
   private isHdr = false;
   private videoDecodeStallWarningSent = false;
+  private sessionId = "";
   private serverRegion = "";
+  private serverZone = "";
+  private serverLocation = "";
+  private serverGpuType = "";
   private gpuType = "";
 
   private diagnostics: StreamDiagnostics = {
@@ -349,18 +388,24 @@ export class GfnWebRtcClient {
     connectedGamepads: 0,
     resolution: "",
     codec: "",
+    requestedCodec: "",
     hardwareAcceleration: "Chromium GPU decode",
     colorCodec: "",
     isHdr: false,
     bitrateKbps: 0,
     targetBitrateKbps: 0,
+    availableBitrateKbps: 0,
     decodeFps: 0,
+    receiveFps: 0,
     renderFps: 0,
+    gameFps: undefined,
     packetsLost: 0,
     packetsReceived: 0,
     packetLossPercent: 0,
     jitterMs: 0,
     rttMs: 0,
+    transportType: "unknown",
+    localCandidateType: "",
     framesReceived: 0,
     framesDecoded: 0,
     framesDropped: 0,
@@ -382,7 +427,11 @@ export class GfnWebRtcClient {
     lagReason: "unknown",
     lagReasonDetail: "Waiting for stream stats",
     gpuType: "",
+    serverGpuType: "",
+    sessionId: "",
     serverRegion: "",
+    serverZone: "",
+    serverLocation: "",
     decoderPressureActive: false,
     decoderRecoveryAttempts: 0,
     decoderRecoveryAction: "none",
@@ -709,52 +758,26 @@ export class GfnWebRtcClient {
     this.domInputController.suppressNextSyntheticEscapeOnPointerLockLoss(durationMs);
   }
 
-  /**
-   * Replace the b=AS bandwidth line in video sections of an SDP string.
-   * Unlike mungeAnswerSdp, this is safe to call on an already-munged SDP
-   * because it replaces the existing line rather than injecting a new one.
-   */
-  private replaceVideoBitrateInSdp(sdp: string, maxBitrateKbps: number): string {
-    const lines = sdp.split("\r\n");
-    let inVideoSection = false;
-    let bitrateReplaced = false;
-    const result: string[] = [];
-    for (const line of lines) {
-      if (line.startsWith("m=")) {
-        inVideoSection = line.startsWith("m=video");
-        bitrateReplaced = false;
-      }
-      if (inVideoSection && !bitrateReplaced && line.startsWith("b=AS:")) {
-        result.push(`b=AS:${maxBitrateKbps}`);
-        bitrateReplaced = true;
-        continue;
-      }
-      result.push(line);
+  public async setMaxBitrateKbps(kbps: number): Promise<boolean> {
+    const normalizedKbps = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(kbps));
+    if (!this.pc) {
+      return false;
     }
-    return result.join("\r\n");
-  }
 
-  /**
-   * Update the maximum receive bitrate ceiling mid-stream by replacing b=AS
-   * in the local SDP and re-applying it. Chrome/Electron honours this change
-   * without requiring a full ICE renegotiation.
-   */
-  public async setMaxBitrateKbps(kbps: number): Promise<void> {
-    if (!this.pc || !this.pc.localDescription) {
-      return;
-    }
-    const updatedSdp = this.replaceVideoBitrateInSdp(
-      this.pc.localDescription.sdp,
-      kbps,
-    );
-    try {
-      await this.pc.setLocalDescription(
-        new RTCSessionDescription({ type: this.pc.localDescription.type, sdp: updatedSdp }),
+    const result = await updateVideoSenderBitrate(this.pc, normalizedKbps);
+    if (result.status === "updated") {
+      this.log(`Bitrate ceiling updated to ${normalizedKbps} kbps via sender parameters`);
+      return true;
+    } else if (result.status === "unavailable") {
+      this.log(
+        `No video sender supports a live bitrate update; ${normalizedKbps} kbps applies on the next session`,
       );
-      this.log(`Bitrate ceiling updated to ${kbps} kbps via local SDP`);
-    } catch (err) {
-      this.log(`setMaxBitrateKbps failed (non-fatal): ${String(err)}`);
+    } else {
+      this.log(
+        `Video sender rejected the live bitrate update (non-fatal): ${String(result.error)}`,
+      );
     }
+    return false;
   }
 
   /**
@@ -794,6 +817,7 @@ export class GfnWebRtcClient {
     this.currentResolution = "";
     this.isHdr = false;
     this.videoDecodeStallWarningSent = false;
+    this.statsChannelVersionLogged = false;
     this.decoderPressureController.reset();
     const mouseDiagnostics = this.domInputController.getMouseDiagnostics();
     this.diagnostics = {
@@ -803,18 +827,24 @@ export class GfnWebRtcClient {
       connectedGamepads: 0,
       resolution: "",
       codec: "",
+      requestedCodec: "",
       hardwareAcceleration: "Chromium GPU decode",
       colorCodec: "",
       isHdr: false,
       bitrateKbps: 0,
       targetBitrateKbps: 0,
+      availableBitrateKbps: 0,
       decodeFps: 0,
+      receiveFps: 0,
       renderFps: 0,
+      gameFps: undefined,
       packetsLost: 0,
       packetsReceived: 0,
       packetLossPercent: 0,
       jitterMs: 0,
       rttMs: 0,
+      transportType: "unknown",
+      localCandidateType: "",
       framesReceived: 0,
       framesDecoded: 0,
       framesDropped: 0,
@@ -836,7 +866,11 @@ export class GfnWebRtcClient {
       lagReason: "unknown",
       lagReasonDetail: "Waiting for stream stats",
       gpuType: this.gpuType,
+      serverGpuType: this.serverGpuType,
+      sessionId: this.sessionId,
       serverRegion: this.serverRegion,
+      serverZone: this.serverZone,
+      serverLocation: this.serverLocation,
       decoderPressureActive: false,
       decoderRecoveryAttempts: 0,
       decoderRecoveryAction: "none",
@@ -880,14 +914,16 @@ export class GfnWebRtcClient {
 
     this.diagnostics.resolution = settings.resolution;
     this.diagnostics.codec = codec;
+    this.diagnostics.requestedCodec = codec;
     this.diagnostics.hardwareAcceleration = nativeRendererActive
       ? describeNativeHardwareAcceleration()
       : "Chromium GPU decode";
     this.diagnostics.colorCodec = describeColorQuality(settings.colorQuality);
     this.diagnostics.isHdr = this.isHdr;
     this.diagnostics.targetBitrateKbps = this.decoderPressureController.targetBitrateKbps;
-    this.diagnostics.decodeFps = settings.fps;
-    this.diagnostics.renderFps = settings.fps;
+    this.diagnostics.decodeFps = nativeRendererActive ? settings.fps : 0;
+    this.diagnostics.receiveFps = 0;
+    this.diagnostics.renderFps = nativeRendererActive ? settings.fps : 0;
     this.domInputController.setFallbackResolution(settings.resolution);
   }
 
@@ -943,7 +979,7 @@ export class GfnWebRtcClient {
       void this.collectStats().finally(() => {
         this.statsPollInFlight = false;
       });
-    }, 500);
+    }, 1000);
   }
 
   private updateRenderFps(): void {
@@ -970,6 +1006,7 @@ export class GfnWebRtcClient {
     let inboundVideo: Record<string, unknown> | null = null;
     let activePair: Record<string, unknown> | null = null;
     const codecs = new Map<string, Record<string, unknown>>();
+    const statsEntries: Record<string, unknown>[] = [];
     let framesReceived = 0;
     let framesDecoded = 0;
     let framesDropped = 0;
@@ -982,15 +1019,10 @@ export class GfnWebRtcClient {
 
     for (const entry of report.values()) {
       const stats = entry as unknown as Record<string, unknown>;
+      statsEntries.push(stats);
 
       if (entry.type === "inbound-rtp" && stats.kind === "video") {
         inboundVideo = stats;
-      }
-
-      if (entry.type === "candidate-pair") {
-        if (stats.state === "succeeded" && stats.nominated === true) {
-          activePair = stats;
-        }
       }
 
       // Collect codec information
@@ -1000,6 +1032,11 @@ export class GfnWebRtcClient {
       }
     }
 
+    const iceTransport = extractActiveIceTransportStats(statsEntries);
+    activePair = iceTransport.activePair;
+    this.diagnostics.transportType = iceTransport.transportType;
+    this.diagnostics.localCandidateType = iceTransport.localCandidateType;
+
     // Process video track stats
     if (inboundVideo) {
       const bytes = Number(inboundVideo.bytesReceived ?? 0);
@@ -1008,6 +1045,7 @@ export class GfnWebRtcClient {
       framesDropped = Number(inboundVideo.framesDropped ?? 0);
       const packetsReceived = Number(inboundVideo.packetsReceived ?? 0);
       const packetsLost = Number(inboundVideo.packetsLost ?? 0);
+      const totalDecodeTime = Number(inboundVideo.totalDecodeTime ?? 0);
       const prevSample = this.lastStatsSample;
 
       // Calculate bitrate
@@ -1018,6 +1056,22 @@ export class GfnWebRtcClient {
           const kbps = (bytesDelta * 8) / (timeDeltaMs / 1000) / 1000;
           this.diagnostics.bitrateKbps = Math.max(0, Math.round(kbps));
         }
+
+        const frameRates = computeIntervalFrameRates({
+          framesReceived,
+          framesDecoded,
+          totalDecodeTime,
+          prevFramesReceived: prevSample.framesReceived,
+          prevFramesDecoded: prevSample.framesDecoded,
+          prevTotalDecodeTime: prevSample.totalDecodeTime,
+          timeDeltaMs,
+          prevReceiveFps: this.diagnostics.receiveFps,
+          prevDecodeFps: this.diagnostics.decodeFps,
+          prevDecodeTimeMs: this.diagnostics.decodeTimeMs,
+        });
+        this.diagnostics.receiveFps = frameRates.receiveFps;
+        this.diagnostics.decodeFps = frameRates.decodeFps;
+        this.diagnostics.decodeTimeMs = frameRates.decodeTimeMs;
 
         // Calculate packet loss percentage over the interval
         const packetsDelta = packetsReceived - prevSample.packetsReceived;
@@ -1038,6 +1092,7 @@ export class GfnWebRtcClient {
         framesDropped,
         packetsReceived,
         packetsLost,
+        totalDecodeTime,
         atMs: now,
       };
 
@@ -1054,9 +1109,6 @@ export class GfnWebRtcClient {
         this.videoDecodeStallWarningSent = true;
         this.log("Warning: inbound video packets received but 0 frames decoded (decoder stall)");
       }
-
-      // Decode FPS
-      this.diagnostics.decodeFps = Math.round(Number(inboundVideo.framesPerSecond ?? 0));
 
       // Cumulative packet stats
       this.diagnostics.packetsLost = packetsLost;
@@ -1104,11 +1156,15 @@ export class GfnWebRtcClient {
       }
 
       // Get decode timing if available
-      const totalDecodeTime = Number(inboundVideo.totalDecodeTime ?? 0);
       const totalInterFrameDelay = Number(inboundVideo.totalInterFrameDelay ?? 0);
       const framesDecodedForTiming = Number(inboundVideo.framesDecoded ?? 1);
 
-      if (framesDecodedForTiming > 0) {
+      if (
+        !prevSample &&
+        framesDecodedForTiming > 0 &&
+        Number.isFinite(totalDecodeTime) &&
+        totalDecodeTime >= 0
+      ) {
         this.diagnostics.decodeTimeMs = Math.round((totalDecodeTime / framesDecodedForTiming) * 1000 * 10) / 10;
       }
 
@@ -1128,6 +1184,13 @@ export class GfnWebRtcClient {
       });
       await this.decoderPressureController.recover(pressureSignal);
     }
+
+    const bitrateDiagnostics = computeBitrateDiagnostics(
+      this.decoderPressureController.targetBitrateKbps,
+      activePair,
+    );
+    this.diagnostics.targetBitrateKbps = bitrateDiagnostics.targetBitrateKbps;
+    this.diagnostics.availableBitrateKbps = bitrateDiagnostics.availableBitrateKbps;
 
     // RTT from active candidate pair
     if (activePair?.currentRoundTripTime !== undefined) {
@@ -1490,7 +1553,32 @@ export class GfnWebRtcClient {
     }
   }
 
+  private handleStatsChannelMessage(buffer: ArrayBuffer): void {
+    const parsed = parseStatsChannelGameFps(buffer);
+    if (!parsed) {
+      return;
+    }
+
+    if (!this.statsChannelVersionLogged) {
+      this.statsChannelVersionLogged = true;
+      this.log(`Stats channel: protocol version ${parsed.version}, gameFps=${parsed.fps}`);
+    }
+    this.diagnostics.gameFps = parsed.fps;
+    this.emitStats();
+  }
+
   private createDataChannels(pc: RTCPeerConnection): void {
+    const statsChannel = pc.createDataChannel("stats_channel", {
+      ordered: false,
+      maxRetransmits: 0,
+    });
+    statsChannel.binaryType = "arraybuffer";
+    statsChannel.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        this.handleStatsChannelMessage(event.data);
+      }
+    };
+
     this.reliableInputChannel = pc.createDataChannel("input_channel_v1", {
       ordered: true,
     });
@@ -1826,6 +1914,8 @@ export class GfnWebRtcClient {
     pc: RTCPeerConnection,
     codec: VideoCodec,
     preferredHevcProfileId?: 1 | 2,
+    keepFallbacks = false,
+    fallbackCodec?: VideoCodec,
   ): void {
     try {
       const transceivers = pc.getTransceivers();
@@ -1845,62 +1935,32 @@ export class GfnWebRtcClient {
 
       const senderCaps = RTCRtpSender.getCapabilities?.("video")?.codecs ?? [];
 
-      // Map our codec name to the MIME type used in WebRTC capabilities
-      const codecMimeMap: Record<string, string> = {
-        H264: "video/H264",
-        H265: "video/H265",
-        AV1: "video/AV1",
-        VP9: "video/VP9",
-        VP8: "video/VP8",
-      };
-      const preferredMime = codecMimeMap[codec];
-      if (!preferredMime) {
-        this.log(`setCodecPreferences: unknown codec "${codec}", skipping`);
-        return;
-      }
-
-      const preferred = receiverCaps.filter(
-        (c) => c.mimeType.toLowerCase() === preferredMime.toLowerCase(),
-      );
-
-      const auxiliary = receiverCaps.filter((c) => {
-        const mime = c.mimeType.toLowerCase();
-        return mime.includes("rtx") || mime.includes("flexfec-03");
+      const codecList = buildCodecPreferenceList(receiverCaps, codec, {
+        preferredHevcProfileId,
+        keepFallbacks,
+        fallbackCodec,
       });
+      const preferredCount = receiverCaps.filter(
+        (entry) => entry.mimeType.toLowerCase() === CODEC_MIME_BY_NAME[codec].toLowerCase(),
+      ).length;
 
-      if (preferred.length === 0) {
-        this.log(`setCodecPreferences: ${codec} (${preferredMime}) not in receiver capabilities, skipping`);
+      if (codecList.length === 0) {
+        this.log(`setCodecPreferences: no usable video codecs for ${codec}, skipping`);
         return;
       }
-
-      // H265 can be exposed with multiple profiles; prefer profile-id=1 first
-      // for maximum decoder compatibility (reduces macroblocking on some GPUs).
-      if (codec === "H265" && preferredHevcProfileId) {
-        preferred.sort((a, b) => {
-          const getScore = (c: RTCRtpCodec): number => {
-            const fmtp = (c.sdpFmtpLine ?? "").toLowerCase();
-            const match = fmtp.match(/(?:^|;)\s*profile-id=(\d+)/);
-            const profile = match?.[1];
-            if (profile === String(preferredHevcProfileId)) return 0;
-            if (!profile) return 1;
-            return 2;
-          };
-          return getScore(a) - getScore(b);
-        });
+      if (preferredCount === 0) {
+        this.log(`setCodecPreferences: ${codec} unavailable; using fallback primaries`);
       }
-
-      let codecList = [...preferred, ...auxiliary];
 
       try {
         videoTransceiver.setCodecPreferences(codecList);
         this.log(
-          `setCodecPreferences: set ${codec} (${preferred.length} preferred + ${auxiliary.length} auxiliary receiver codecs)`,
+          `setCodecPreferences: set ${codec} (${codecList.length} codecs${keepFallbacks ? " with fallbacks" : ""})`,
         );
       } catch (e) {
         this.log(`setCodecPreferences: receiver-only failed (${String(e)}), retrying with sender capabilities`);
         try {
-          codecList = codecList.concat(senderCaps);
-          videoTransceiver.setCodecPreferences(codecList);
+          videoTransceiver.setCodecPreferences(codecList.concat(senderCaps));
           this.log(
             `setCodecPreferences: retry succeeded with sender capabilities (+${senderCaps.length})`,
           );
@@ -1944,17 +2004,12 @@ export class GfnWebRtcClient {
       `Input channel policy: partial reliable threshold=${this.partialReliableThresholdMs}ms${negotiatedPartialReliable === null ? " (fallback)" : ""}, hidMask=0x${this.riInputCapabilities.hidDeviceMask.toString(16)}, prGamepadMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferGamepad.toString(16)}, prHidMask=0x${this.riInputCapabilities.enablePartiallyReliableTransferHid.toString(16)}`,
     );
 
-    // Extract server region from session
-    this.serverRegion = session.signalingServer || session.streamingBaseUrl || "";
-    // Clean up the region string (extract hostname or region name)
-    if (this.serverRegion) {
-      try {
-        const url = new URL(this.serverRegion);
-        this.serverRegion = url.hostname;
-      } catch {
-        // Keep as-is if not a valid URL
-      }
-    }
+    const sessionDiagnostics = deriveStreamSessionDiagnostics(session);
+    this.sessionId = sessionDiagnostics.sessionId;
+    this.serverZone = sessionDiagnostics.serverZone;
+    this.serverLocation = sessionDiagnostics.serverLocation;
+    this.serverGpuType = sessionDiagnostics.serverGpuType;
+    this.serverRegion = sessionDiagnostics.serverRegion;
 
     const rtcConfig: RTCConfiguration = {
       iceServers: toRtcIceServers(session.iceServers),
@@ -1964,13 +2019,10 @@ export class GfnWebRtcClient {
 
     const pc = new RTCPeerConnection(rtcConfig);
     this.pc = pc;
-    this.diagnostics.connectionState = pc.connectionState;
-    this.diagnostics.serverRegion = this.serverRegion;
-    this.diagnostics.gpuType = this.gpuType;
-    this.emitStats();
-
     this.resetInputState();
     this.resetDiagnostics();
+    this.diagnostics.connectionState = pc.connectionState;
+    this.emitStats();
     this.createDataChannels(pc);
     this.domInputController.install(this.options.videoElement);
     this.setupStatsPolling();
@@ -2017,6 +2069,17 @@ export class GfnWebRtcClient {
     pc.ondatachannel = (event) => {
       const channel = event.channel;
       this.log(`Remote data channel received: label=${channel.label}, ordered=${channel.ordered}`);
+
+      if (channel.label === "stats" || channel.label === "stats_channel") {
+        channel.binaryType = "arraybuffer";
+        channel.onmessage = (msgEvent) => {
+          if (msgEvent.data instanceof ArrayBuffer) {
+            this.handleStatsChannelMessage(msgEvent.data);
+          }
+        };
+        return;
+      }
+
       if (channel.label !== "control_channel") {
         return;
       }
@@ -2107,13 +2170,23 @@ export class GfnWebRtcClient {
     }
 
     const preferredHevcProfileId = hevcPreferredProfileId(settings.colorQuality);
-
-    // 3. Filter to preferred codec — but only if the browser actually supports it
     let effectiveCodec = settings.codec;
+    const fallbackVideoCodec = settings.fallbackCodec && settings.fallbackCodec !== "auto"
+      ? settings.fallbackCodec
+      : undefined;
     const supported = this.getSupportedVideoCodecs();
     this.log(`Browser supported video codecs: ${supported.join(", ") || "unknown"}`);
+    const negotiationCandidates = resolveNegotiationCandidates(
+      effectiveCodec,
+      fallbackVideoCodec,
+      supported,
+    );
+    if (negotiationCandidates.length === 0) {
+      throw new Error("Browser receiver capabilities expose no GFN video codec");
+    }
+    this.log(`Negotiation codec candidates: ${negotiationCandidates.join(" -> ")}`);
 
-    if (settings.codec === "H265") {
+    if (negotiationCandidates.includes("H265")) {
       const hevcProfiles = this.getSupportedHevcProfiles();
       if (hevcProfiles.size > 0) {
         this.log(`Browser HEVC profile-id support: ${Array.from(hevcProfiles).join(", ")}`);
@@ -2146,44 +2219,48 @@ export class GfnWebRtcClient {
       }
       if (hevcProfiles.size > 0 && !hevcProfiles.has(String(preferredHevcProfileId))) {
         this.log(
-          `Warning: requested H265 profile-id=${preferredHevcProfileId} not reported in browser capabilities; forcing H265 anyway per user preference`,
+          `Warning: H265 profile-id=${preferredHevcProfileId} not reported in browser capabilities`,
         );
       }
     }
 
-    if (supported.length > 0 && !supported.includes(settings.codec)) {
-      this.log(`Warning: ${settings.codec} not reported in browser codec list; forcing requested codec anyway`);
-    }
-    this.log(`Effective codec: ${effectiveCodec} (preferred HEVC profile-id=${preferredHevcProfileId})`);
     this.applyStreamSettingsDiagnostics(settings, effectiveCodec, false);
     this.emitStats();
-    const filteredOffer = preferCodec(processedOffer, effectiveCodec, {
-      preferHevcProfileId: preferredHevcProfileId,
-    });
-    this.log(`Filtered offer SDP length: ${filteredOffer.length} chars`);
-    this.log("Setting remote description (offer)...");
-    await pc.setRemoteDescription({ type: "offer", sdp: filteredOffer });
-    this.log("Remote description set successfully");
-    await this.flushQueuedCandidates();
+    const negotiation = await negotiatePeerConnectionCodecAnswer(
+      pc,
+      negotiationCandidates,
+      (candidate) => preferCodec(processedOffer, candidate, {
+          preferHevcProfileId: preferredHevcProfileId,
+          keepFallbacks: true,
+          fallbackCodec: fallbackVideoCodec,
+      }),
+      async (candidate, attemptIndex) => {
+        if (attemptIndex > 0) {
+          this.log(`Remote offer rolled back; retrying video negotiation with ${candidate}`);
+        }
+        this.log(`Remote description set for ${candidate}`);
 
-    // Attach microphone track to the correct transceiver after remote description is set
-    if (this.micManager) {
-      this.micManager.setPeerConnection(pc);
-      await this.micManager.attachTrackToPeerConnection();
+        await attachMicrophoneForCodecAttempt(this.micManager, pc);
+
+        this.applyCodecPreferences(
+          pc,
+          candidate,
+          preferredHevcProfileId,
+          true,
+          fallbackVideoCodec,
+        );
+      },
+    );
+
+    const answer = negotiation.answer;
+    effectiveCodec = negotiation.negotiatedCodec;
+    if (effectiveCodec !== settings.codec) {
+      this.log(`Codec fallback: requested ${settings.codec}, negotiated ${effectiveCodec}`);
     }
+    this.currentCodec = effectiveCodec;
+    this.diagnostics.codec = effectiveCodec;
+    this.emitStats();
 
-    // 3b. Apply setCodecPreferences on the video transceiver to reinforce codec choice.
-    //     This is the modern WebRTC API — more reliable than SDP munging alone.
-    //     Must be called after setRemoteDescription (which creates the transceiver)
-    //     but before createAnswer (which generates the answer SDP).
-    this.applyCodecPreferences(pc, effectiveCodec, preferredHevcProfileId);
-
-    // 4. Create answer, munge SDP, and set local description
-    this.log("Creating answer...");
-    const answer = await pc.createAnswer();
-    this.log(`Answer created, SDP length: ${answer.sdp?.length ?? 0} chars`);
-
-    // Munge answer SDP: inject b=AS: bitrate limits and stereo=1 for opus
     if (answer.sdp) {
       answer.sdp = mungeAnswerSdp(answer.sdp, settings.maxBitrateKbps);
       this.log(`Answer SDP munged (b=AS:${settings.maxBitrateKbps}, stereo=1)`);
@@ -2196,41 +2273,18 @@ export class GfnWebRtcClient {
     if (!finalSdp) {
       throw new Error("Missing local SDP after setLocalDescription");
     }
-    this.log(`Immediate local SDP length: ${finalSdp.length} chars`);
-
-    // Debug negotiated video codec/fmtp lines from local answer SDP
-    {
-      const lines = finalSdp.split(/\r?\n/);
-      let inVideo = false;
-      const negotiatedVideoLines: string[] = [];
-      let hasNegotiatedH265 = false;
-      for (const line of lines) {
-        if (line.startsWith("m=video")) {
-          inVideo = true;
-          negotiatedVideoLines.push(line);
-          continue;
-        }
-        if (line.startsWith("m=") && inVideo) {
-          break;
-        }
-        if (inVideo && (line.startsWith("a=rtpmap:") || line.startsWith("a=fmtp:") || line.startsWith("a=rtcp-fb:"))) {
-          negotiatedVideoLines.push(line);
-          if (line.startsWith("a=rtpmap:") && /\sH(?:265|EVC)\//i.test(line)) {
-            hasNegotiatedH265 = true;
-          }
-        }
-      }
-      if (negotiatedVideoLines.length > 0) {
-        this.log("Negotiated local video SDP lines:");
-        for (const l of negotiatedVideoLines) {
-          this.log(`  SDP< ${l}`);
-        }
-      }
-
-      if (effectiveCodec === "H265" && !hasNegotiatedH265) {
-        throw new Error("H265 requested but not negotiated in local SDP (no H265 rtpmap in answer)");
-      }
+    const finalNegotiatedCodec = extractNegotiatedVideoCodec(finalSdp);
+    if (!finalNegotiatedCodec) {
+      throw new Error("Local description rejected the video m-line after codec negotiation");
     }
+    if (finalNegotiatedCodec !== effectiveCodec) {
+      effectiveCodec = finalNegotiatedCodec;
+      this.currentCodec = effectiveCodec;
+      this.diagnostics.codec = effectiveCodec;
+      this.emitStats();
+    }
+    this.log(`Immediate local SDP length: ${finalSdp.length} chars`);
+    await this.flushQueuedCandidates();
 
     const credentials = extractIceCredentials(finalSdp);
     this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);

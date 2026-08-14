@@ -3,6 +3,22 @@ import test from "node:test";
 
 import { buildVideoAccelerationCommandLine } from "./videoAcceleration";
 
+test("enables platform HEVC decode support on Windows unless software decode is forced", () => {
+  const automatic = buildVideoAccelerationCommandLine(
+    { decoderPreference: "auto", encoderPreference: "auto" },
+    "win32",
+    "x64",
+  );
+  const software = buildVideoAccelerationCommandLine(
+    { decoderPreference: "software", encoderPreference: "auto" },
+    "win32",
+    "x64",
+  );
+
+  assert.ok(automatic.enableFeatures.includes("PlatformHEVCDecoderSupport"));
+  assert.equal(software.enableFeatures.includes("PlatformHEVCDecoderSupport"), false);
+});
+
 test("enables NVIDIA VA-API Chromium flags for Linux desktop hardware decode", () => {
   const commandLine = buildVideoAccelerationCommandLine(
     { decoderPreference: "hardware", encoderPreference: "auto" },

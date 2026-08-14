@@ -20,6 +20,8 @@ import type {
   VideoShaderSettings,
 } from "@shared/gfn";
 import { discordGameImageUrl } from "@shared/discord";
+import type { DesktopSessionReport } from "@shared/bugReport";
+import type { FeedbackCategory } from "@shared/telemetry";
 import {
   buildNativeStreamerSessionContext,
   createDefaultSettings,
@@ -46,8 +48,18 @@ import {
 import { useQueueAdRuntime } from "./hooks/useQueueAdRuntime";
 import { usePlaytime } from "./utils/usePlaytime";
 import { createStreamDiagnosticsStore, useStreamDiagnosticsSelector } from "./utils/streamDiagnosticsStore";
+import { StreamSessionReportAccumulator } from "./utils/sessionReport";
+import { nextStatsOverlayMode } from "./utils/streamStatsHud";
+import { isShortcutCaptureTarget } from "./utils/shortcutCaptureFocus";
 import type { StreamStatus } from "./lib/appTypes";
-import { loadStoredCodecResults, saveStoredCodecResults, testCodecSupport, type CodecTestResult } from "./lib/codecDiagnostics";
+import {
+  getCodecToMigrateToAuto,
+  loadStoredCodecResults,
+  resolveStreamProfileCodec,
+  saveStoredCodecResults,
+  testCodecSupport,
+  type CodecTestResult,
+} from "./lib/codecDiagnostics";
 import {
   createSyntheticDirectLaunchGame,
   findDirectLaunchTarget,
@@ -62,7 +74,9 @@ import {
   sortLibraryGames,
 } from "./lib/gameCatalog";
 import { resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
+import { resolveAppLaunchMode } from "./lib/appLaunchMode";
 import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
+import { getStreamPointerLockTarget, isStreamPointerLocked } from "./lib/pointerLock";
 import { normalizeMembershipTier } from "./lib/queueAds";
 import { clearRuntimeSnapshot, type RuntimeSnapshot } from "./lib/runtimeSnapshot";
 import { getEnabledSessionProxyUrl } from "./lib/sessionProxy";
@@ -92,12 +106,21 @@ import { SettingsModalHost } from "./components/SettingsModalHost";
 import { StreamLoading } from "./components/StreamLoading";
 import { StreamView } from "./components/StreamView";
 import { QueueServerSelectModal } from "./components/QueueServerSelectModal";
+import { GameDetailModal } from "./components/GameDetailModal";
 import { ReleaseHighlightsModal } from "./components/ReleaseHighlightsModal";
 import { ErrorReportingConsentModal } from "./components/ErrorReportingConsentModal";
 import { FeedbackModal } from "./components/FeedbackModal";
+import { SessionReportModal } from "./components/SessionReportModal";
+import { ControllerModePromptModal } from "./components/ControllerModePromptModal";
 import { ModalSurface } from "./components/ui/ModalSurface";
 import { overlayMotion, pageTransition, streamRevealTransition } from "./components/MotionProvider";
 import { LazyShaderAtmosphere } from "./components/LazyShaderAtmosphere";
+import { ConsoleProfileGate } from "./components/console/ConsoleProfileGate";
+import { useConsoleShell } from "./hooks/useConsoleShell";
+import {
+  shouldOfferControllerModePrompt,
+  useControllerModePrompt,
+} from "./hooks/useControllerModePrompt";
 import { syncRendererTelemetry } from "./telemetry/posthog";
 
 type AppStyle = CSSProperties & {
@@ -145,6 +168,13 @@ export function App(): JSX.Element {
   const [releaseHighlightsIsAuto, setReleaseHighlightsIsAuto] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackSurfacePresent, setFeedbackSurfacePresent] = useState(false);
+  const [feedbackInitialCategory, setFeedbackInitialCategory] = useState<FeedbackCategory>("bug");
+  const [feedbackSessionReport, setFeedbackSessionReport] = useState<DesktopSessionReport | null>(null);
+  const [latestSessionReport, setLatestSessionReport] = useState<DesktopSessionReport | null>(null);
+  const [sessionReportOpen, setSessionReportOpen] = useState(false);
+  const sessionReportAccumulatorRef = useRef<StreamSessionReportAccumulator | null>(null);
+  const showSessionReportRef = useRef(settings.showSessionReport);
+  const directLaunchConsoleModeRef = useRef(false);
   const [consentSurfacePresent, setConsentSurfacePresent] = useState(false);
   const activeSessionProxyUrl = useMemo(
     () => getEnabledSessionProxyUrl(settings),
@@ -164,7 +194,7 @@ export function App(): JSX.Element {
   const {
     session, setSession,
     streamStatus, setStreamStatus,
-    showStatsOverlay, setShowStatsOverlay,
+    statsMode, setStatsMode,
     antiAfkEnabled, setAntiAfkEnabled,
     antiAfkAckNonce, setAntiAfkAckNonce,
     nativeInputCaptureActive, setNativeInputCaptureActive,
@@ -220,10 +250,20 @@ export function App(): JSX.Element {
 
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: t("app.labels.game") });
   const [settingsFocusSection, setSettingsFocusSection] = useState<"account" | undefined>();
+  const {
+    open: controllerModePromptOpen,
+    dismiss: dismissControllerModePrompt,
+  } = useControllerModePrompt(shouldOfferControllerModePrompt({
+    settingsLoaded,
+    controllerMode: settings.controllerMode,
+    directLaunchConsoleMode,
+    promptDismissed: settings.controllerModePromptDismissed,
+  }));
 
   const { playtime, startSession: startPlaytimeSession, endSession: endPlaytimeSession } = usePlaytime();
   const sessionElapsedSeconds = useElapsedSeconds(sessionStartedAtMs, streamStatus === "streaming");
   const isStreaming = streamStatus === "streaming";
+  const [shortcutCaptureActive, setShortcutCaptureActive] = useState(false);
   // freeTier/session-limit derived state is computed after auth/catalog hooks
 
 
@@ -234,8 +274,69 @@ export function App(): JSX.Element {
     streamingGameRef.current = streamingGame;
   }, [streamingGame]);
 
+  showSessionReportRef.current = settings.showSessionReport;
+  directLaunchConsoleModeRef.current = directLaunchConsoleMode;
+
+  useEffect(() => {
+    if (sessionStartedAtMs === null) return undefined;
+
+    const accumulator = new StreamSessionReportAccumulator({
+      gameTitle: streamingGameRef.current?.title ?? t("app.labels.game"),
+      requestedResolution: settings.resolution,
+      requestedCodec: settings.codec,
+      targetFps: settings.fps,
+    }, sessionStartedAtMs);
+    sessionReportAccumulatorRef.current = accumulator;
+    const record = (): void => accumulator.record(diagnosticsStore.getSnapshot());
+    record();
+    const unsubscribe = diagnosticsStore.subscribe(record);
+
+    return () => {
+      unsubscribe();
+      const report = accumulator.finish();
+      if (sessionReportAccumulatorRef.current === accumulator) {
+        sessionReportAccumulatorRef.current = null;
+      }
+      if (!report) return;
+      setLatestSessionReport(report);
+      if (showSessionReportRef.current && !directLaunchConsoleModeRef.current) {
+        setSessionReportOpen(true);
+      }
+    };
+    // A session keeps the profile captured when its first decoded frame arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- finalize only when this session anchor changes
+  }, [diagnosticsStore, sessionStartedAtMs]);
+
+  useEffect(() => {
+    let active = true;
+    const syncShortcutCaptureFocus = (): void => {
+      if (active) {
+        setShortcutCaptureActive(isShortcutCaptureTarget(document.activeElement));
+      }
+    };
+    const scheduleShortcutCaptureFocusSync = (): void => {
+      queueMicrotask(syncShortcutCaptureFocus);
+    };
+
+    document.addEventListener("focusin", scheduleShortcutCaptureFocusSync);
+    document.addEventListener("focusout", scheduleShortcutCaptureFocusSync);
+    syncShortcutCaptureFocus();
+    return () => {
+      active = false;
+      document.removeEventListener("focusin", scheduleShortcutCaptureFocusSync);
+      document.removeEventListener("focusout", scheduleShortcutCaptureFocusSync);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.openNow.setStreamShortcutInterceptionGate({
+      streamActive: isStreaming,
+      shortcutCaptureActive,
+    });
+  }, [isStreaming, shortcutCaptureActive]);
+
   const resetStatsOverlayToPreference = useCallback((): void => {
-    setShowStatsOverlay(settings.showStatsOnLaunch);
+    setStatsMode(settings.showStatsOnLaunch ? "compact" : "off");
   }, [settings.showStatsOnLaunch]);
 
   const runCodecTest = useCallback(async (): Promise<void> => {
@@ -274,6 +375,7 @@ export function App(): JSX.Element {
   const [logoutConfirmSurfacePresent, setLogoutConfirmSurfacePresent] = useState(false);
   const [removeAccountConfirmSurfacePresent, setRemoveAccountConfirmSurfacePresent] = useState(false);
   const [releaseHighlightsSurfacePresent, setReleaseHighlightsSurfacePresent] = useState(false);
+  const [controllerModePromptSurfacePresent, setControllerModePromptSurfacePresent] = useState(false);
   const streamRevealComplete = streamRevealPhase === "revealed";
   useEffect(() => {
     isStreamingRef.current = streamStatus === "streaming";
@@ -333,6 +435,10 @@ export function App(): JSX.Element {
   }, [feedbackOpen]);
 
   useEffect(() => {
+    if (controllerModePromptOpen) setControllerModePromptSurfacePresent(true);
+  }, [controllerModePromptOpen]);
+
+  useEffect(() => {
     if (settingsLoaded && settings.errorReportingConsent === "unset") {
       setConsentSurfacePresent(true);
     }
@@ -380,10 +486,11 @@ export function App(): JSX.Element {
   });
   const resetLaunchRuntimeRef = useRef<(options?: { keepLaunchError?: boolean; keepStreamingContext?: boolean }) => void>(() => {});
   const refreshNavbarActiveSessionRef = useRef<(sessionOverride?: AuthSession) => Promise<void>>(async () => {});
+  const navbarActiveSessionRefreshIdRef = useRef(0);
 
   const onBootstrapSettings = useCallback((loadedSettings: Settings, _sessionProxyUrl: string | undefined) => {
     setSettings(loadedSettings);
-    setShowStatsOverlay(loadedSettings.showStatsOnLaunch);
+    setStatsMode(loadedSettings.showStatsOnLaunch ? "compact" : "off");
     setSettingsLoaded(true);
   }, []);
 
@@ -407,7 +514,6 @@ export function App(): JSX.Element {
     isLoggingIn,
     activeLoginMode,
     loginError,
-    setLoginError,
     qrLoginChallenge,
     isInitializing,
     startupStatusMessage,
@@ -422,8 +528,10 @@ export function App(): JSX.Element {
     handleCancelQrLogin,
     handleSwitchAccount,
     handleRemoveAccount,
+    removeAccountNow,
     confirmRemoveAccount,
     handleAddAccount,
+    refreshSavedAccounts,
     confirmLogout,
     handleLogout,
     accountToRemoveDisplayName,
@@ -458,7 +566,6 @@ export function App(): JSX.Element {
 
   const {
     games,
-    featuredGames,
     storePanels,
     libraryGames,
     searchQuery,
@@ -483,7 +590,6 @@ export function App(): JSX.Element {
     setRegions,
     subscriptionInfo,
     setSubscriptionInfo,
-    storePanelGames,
     allKnownGames,
     resetStorePanels,
     hydrateCatalogSnapshot,
@@ -631,6 +737,20 @@ export function App(): JSX.Element {
   // launched with a direct-launch argument (frontend / big picture usage).
   const effectiveControllerMode = settings.controllerMode || directLaunchConsoleMode;
 
+  const consoleShell = useConsoleShell({
+    controllerMode: effectiveControllerMode,
+    directLaunchConsoleMode,
+    pickerEnabled: settings.consoleProfilePickerOnLaunch,
+    isInitializing,
+    hasAuthSession: authSession !== null,
+    savedAccounts,
+    activeUserId: authSession?.user.userId ?? null,
+    switchFailedMessage: t("console.profiles.switchFailed"),
+    onSwitchAccount: handleSwitchAccount,
+    onAddAccount: handleAddAccount,
+    onRemoveAccount: removeAccountNow,
+  });
+
   const buildCurrentStreamSettings = useCallback((subscriptionOverride?: SubscriptionInfo | null): StreamSettings => {
     const currentSubscription = subscriptionOverride === undefined ? subscriptionInfo : subscriptionOverride;
     const entitledProfile = resolveEntitledStreamProfile(currentSubscription?.entitledResolutions ?? [], {
@@ -638,13 +758,18 @@ export function App(): JSX.Element {
       fps: settings.fps,
     });
     const streamProfile = entitledProfile ?? SAFE_FALLBACK_STREAM_PROFILE;
+    const codecProfile = resolveStreamProfileCodec(
+      settings.codec,
+      settings.colorQuality,
+      codecResults,
+    );
 
     return {
       resolution: streamProfile.resolution,
       fps: streamProfile.fps,
       maxBitrateMbps: settings.maxBitrateMbps,
-      codec: settings.codec,
-      colorQuality: settings.colorQuality,
+      codec: codecProfile.codec,
+      colorQuality: codecProfile.colorQuality,
       keyboardLayout: settings.keyboardLayout,
       gameLanguage: settings.gameLanguage,
       enableL4S: settings.enableL4S,
@@ -654,14 +779,16 @@ export function App(): JSX.Element {
       transportMode: "webrtc",
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
-      appLaunchMode:
-        settings.controllerMode || settings.launchInConsoleMode || directLaunchConsoleMode
-          ? "gamepadFriendly"
-          : "default",
+      appLaunchMode: resolveAppLaunchMode({
+        controllerMode: settings.controllerMode,
+        requestGamepadFriendlySession: settings.launchInConsoleMode,
+        directLaunchConsoleMode,
+      }),
     };
   }, [
     settings.codec,
     settings.colorQuality,
+    codecResults,
     settings.controllerMode,
     directLaunchConsoleMode,
     settings.enableCloudGsync,
@@ -785,6 +912,7 @@ export function App(): JSX.Element {
     sessionOverride?: AuthSession,
     streamingBaseUrlOverride?: string,
   ): Promise<void> => {
+    const refreshId = ++navbarActiveSessionRefreshIdRef.current;
     const session = sessionOverride ?? authSession;
     if (!session) {
       setNavbarActiveSession(null);
@@ -799,6 +927,7 @@ export function App(): JSX.Element {
     }
     try {
       const activeSessions = await window.openNow.getActiveSessions(token, streamingBaseUrl);
+      if (navbarActiveSessionRefreshIdRef.current !== refreshId) return;
       const snapshot = runtimeSnapshotRef.current;
       const resumableSessions = activeSessions.filter((entry) => entry.status === 3 || entry.status === 2);
       const candidate =
@@ -812,7 +941,9 @@ export function App(): JSX.Element {
         null;
       setNavbarActiveSession(candidate);
     } catch (error) {
-      console.warn("Failed to refresh active sessions:", error);
+      if (navbarActiveSessionRefreshIdRef.current === refreshId) {
+        console.warn("Failed to refresh active sessions:", error);
+      }
     }
   }, [authSession, effectiveStreamingBaseUrl, settings.region]);
 
@@ -874,11 +1005,25 @@ export function App(): JSX.Element {
     if (!authSession || streamStatus !== "idle") {
       return;
     }
-    void refreshNavbarActiveSession();
+    const refresh = async (): Promise<void> => {
+      if (document.visibilityState === "hidden") return;
+      await refreshNavbarActiveSession();
+    };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState !== "hidden") {
+        void refresh();
+      }
+    };
+    void refresh();
     const timer = window.setInterval(() => {
-      void refreshNavbarActiveSession();
+      void refresh();
     }, 10000);
-    return () => window.clearInterval(timer);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      navbarActiveSessionRefreshIdRef.current += 1;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [authSession, refreshNavbarActiveSession, streamStatus]);
 
   useEffect(() => {
@@ -890,8 +1035,17 @@ export function App(): JSX.Element {
     if (codecResults || codecTesting || codecStartupTestAttemptedRef.current) {
       return;
     }
-    codecStartupTestAttemptedRef.current = true;
-    void runCodecTest();
+    const runStartupCodecTest = (): void => {
+      if (codecStartupTestAttemptedRef.current) return;
+      codecStartupTestAttemptedRef.current = true;
+      void runCodecTest();
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const idleCallbackId = window.requestIdleCallback(runStartupCodecTest, { timeout: 4000 });
+      return () => window.cancelIdleCallback(idleCallbackId);
+    }
+    const timer = window.setTimeout(runStartupCodecTest, 1500);
+    return () => window.clearTimeout(timer);
   }, [codecResults, codecTesting, runCodecTest]);
 
   const shortcuts = useMemo(() => {
@@ -996,7 +1150,7 @@ export function App(): JSX.Element {
   }, []);
 
   const requestPointerLockCapture = useCallback(async (target: HTMLVideoElement) => {
-    const lockTarget = (target.parentElement as HTMLElement | null) ?? target;
+    const lockTarget = getStreamPointerLockTarget(target);
     const requestPointerLockCompat = async (
       options?: { unadjustedMovement?: boolean },
     ): Promise<void> => {
@@ -1288,7 +1442,7 @@ export function App(): JSX.Element {
     }
     if (key === "maxBitrateMbps") {
       try {
-        void (clientRef.current as any)?.setMaxBitrateKbps?.((value as number) * 1000);
+        void clientRef.current?.setMaxBitrateKbps((value as number) * 1000);
       } catch {
         // ignore
       }
@@ -1308,6 +1462,20 @@ export function App(): JSX.Element {
       }
     }
   }, [authSession, loadSubscriptionInfo, previewSetting, settingsLoaded]);
+
+  useEffect(() => {
+    if (!settingsLoaded) {
+      return;
+    }
+    const unsupportedCodec = getCodecToMigrateToAuto(settings.codec, codecResults);
+    if (!unsupportedCodec) {
+      return;
+    }
+    console.warn(
+      `[Codec] Saved codec "${unsupportedCodec}" is unavailable for WebRTC decode; migrating to auto`,
+    );
+    void updateSetting("codec", "auto");
+  }, [codecResults, settings.codec, settingsLoaded, updateSetting]);
 
   useEffect(() => {
     if (!settingsLoaded || !subscriptionInfo) {
@@ -1336,13 +1504,6 @@ export function App(): JSX.Element {
   const handleMouseSensitivityChange = useCallback((value: number) => {
     void updateSetting("mouseSensitivity", value);
   }, [updateSetting]);
-
-  const handleToggleFavoriteGame = useCallback((gameId: string): void => {
-    const favorites = settings.favoriteGameIds;
-    const exists = favorites.includes(gameId);
-    const next = exists ? favorites.filter((id) => id !== gameId) : [...favorites, gameId];
-    void updateSetting("favoriteGameIds", next);
-  }, [settings.favoriteGameIds, updateSetting]);
 
   const handleMouseAccelerationChange = useCallback((value: number) => {
     void updateSetting("mouseAcceleration", value);
@@ -1759,6 +1920,7 @@ export function App(): JSX.Element {
     resolveSubscriptionInfoForLaunch,
     settings,
     startPlaytimeSession,
+    stopSessionByTarget,
     subscriptionInfo,
     t,
     variantByGameId,
@@ -1865,8 +2027,19 @@ export function App(): JSX.Element {
     variantByGameId,
   ]);
 
+  const [detailsGame, setDetailsGame] = useState<GameInfo | null>(null);
+  const [detailsSurfacePresent, setDetailsSurfacePresent] = useState(false);
+  const queueModalVariantIdRef = useRef<string | undefined>(undefined);
+  const handleOpenDetails = useCallback((game: GameInfo): void => {
+    setDetailsSurfacePresent(true);
+    setDetailsGame(game);
+  }, []);
+  const handleCloseDetails = useCallback((): void => {
+    setDetailsGame(null);
+  }, []);
+
   // Gate handler: shows queue server modal for FREE-tier users before launching
-  const handleInitiatePlay = useCallback(async (game: GameInfo) => {
+  const handleInitiatePlay = useCallback(async (game: GameInfo, variantId?: string) => {
     const effectiveTier = normalizeMembershipTier(
       subscriptionInfo?.membershipTier ?? authSession?.user.membershipTier,
     );
@@ -1876,12 +2049,14 @@ export function App(): JSX.Element {
     const isAllianceServer = isAllianceStreamingBaseUrl(effectiveStreamingBaseUrl);
     if (!isNvidiaAccount || isAllianceServer) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      queueModalVariantIdRef.current = undefined;
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (settings.hideServerSelector) {
       setQueueModalData(null);
-      void handlePlayGame(game);
+      queueModalVariantIdRef.current = undefined;
+      void handlePlayGame(game, { variantId });
       return;
     }
     if (isFreeUser && streamStatus === "idle" && !launchInFlightRef.current) {
@@ -1900,14 +2075,16 @@ export function App(): JSX.Element {
             },
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         const queueData = queueResult.value;
         if (!queueData || Object.keys(queueData).length === 0) {
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
@@ -1916,32 +2093,39 @@ export function App(): JSX.Element {
             "[QueueServerSelect] No eligible non-nuked PrintedWaste zones available, skipping queue checks.",
           );
           setQueueModalData(null);
-          void handlePlayGame(game);
+          queueModalVariantIdRef.current = undefined;
+          void handlePlayGame(game, { variantId });
           return;
         }
 
         setQueueModalData(queueData);
+        queueModalVariantIdRef.current = variantId;
         setQueueModalGame(game);
       } catch (error) {
         console.warn("[QueueServerSelect] PrintedWaste queue checks failed, launching without modal.", error);
         setQueueModalData(null);
-        void handlePlayGame(game);
+        queueModalVariantIdRef.current = undefined;
+        void handlePlayGame(game, { variantId });
       }
       return;
     }
-    void handlePlayGame(game);
+    queueModalVariantIdRef.current = undefined;
+    void handlePlayGame(game, { variantId });
   }, [subscriptionInfo, authSession, selectedProvider, settings.hideServerSelector, streamStatus, handlePlayGame, effectiveStreamingBaseUrl]);
 
   const handleQueueModalConfirm = useCallback((zoneUrl: string | null) => {
     const game = queueModalGame;
+    const variantId = queueModalVariantIdRef.current;
+    queueModalVariantIdRef.current = undefined;
     setQueueModalGame(null);
     setQueueModalData(null);
     if (game) {
-      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined });
+      void handlePlayGame(game, { streamingBaseUrl: zoneUrl ?? undefined, variantId });
     }
   }, [queueModalGame, handlePlayGame]);
 
   const handleQueueModalCancel = useCallback(() => {
+    queueModalVariantIdRef.current = undefined;
     setQueueModalGame(null);
     setQueueModalData(null);
   }, []);
@@ -2191,7 +2375,7 @@ export function App(): JSX.Element {
   const handleStreamShortcutAction = useCallback((action: NativeStreamerShortcutAction): void => {
     switch (action) {
       case "toggleStats":
-        setShowStatsOverlay((prev) => !prev);
+        setStatsMode(nextStatsOverlayMode);
         return;
       case "togglePointerLock":
         if (nativeStreamingRef.current) {
@@ -2201,7 +2385,7 @@ export function App(): JSX.Element {
         {
           const targetVideo = videoRef.current;
           if (streamStatus === "streaming" && targetVideo) {
-            if (document.pointerLockElement === targetVideo) {
+            if (isStreamPointerLocked(targetVideo)) {
               clientRef.current?.suppressNextSyntheticEscapeOnPointerLockLoss();
               document.exitPointerLock();
             } else {
@@ -2240,6 +2424,10 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     handleStreamShortcutActionRef.current = handleStreamShortcutAction;
+  }, [handleStreamShortcutAction]);
+
+  useEffect(() => {
+    return window.openNow.onStreamShortcutAction(handleStreamShortcutAction);
   }, [handleStreamShortcutAction]);
 
   // Keyboard shortcuts
@@ -2367,6 +2555,10 @@ export function App(): JSX.Element {
       playtime,
     );
   }, [libraryGames, searchQuery, catalogSelectedSortId, playtime]);
+  const librarySortOptions = useMemo(
+    () => catalogSortOptions.filter((option) => option.id !== "relevance"),
+    [catalogSortOptions],
+  );
 
   const activeSessionAppIds = useMemo(
     () => (navbarActiveSession ? [navbarActiveSession.appId] : []),
@@ -2395,6 +2587,12 @@ export function App(): JSX.Element {
     }
     setCurrentPage(nextPage);
   }, [currentPage]);
+  const navigateToPreviousControllerPage = useCallback((): void => {
+    navigateControllerPage(-1);
+  }, [navigateControllerPage]);
+  const navigateToNextControllerPage = useCallback((): void => {
+    navigateControllerPage(1);
+  }, [navigateControllerPage]);
 
   const handleNavigate = useCallback((page: AppPage): void => {
     if (page === "settings" && currentPage !== "settings") {
@@ -2430,6 +2628,47 @@ export function App(): JSX.Element {
     setReleaseHighlightsIsAuto(false);
   }, [releaseHighlightsIsAuto]);
 
+  const handleNavbarResumeSession = useCallback((): void => {
+    void handleResumeFromNavbar();
+  }, [handleResumeFromNavbar]);
+  const handleNavbarTerminateSession = useCallback((): void => {
+    void handleTerminateNavbarSession();
+  }, [handleTerminateNavbarSession]);
+  const handleNavbarRemoveAccount = useCallback((userId: string, restoreFocusTarget?: HTMLElement): void => {
+    accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
+    void handleRemoveAccount(userId);
+  }, [handleRemoveAccount]);
+  const handleNavbarLogoutAll = useCallback((restoreFocusTarget?: HTMLElement): void => {
+    accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
+    handleLogout();
+  }, [handleLogout]);
+  const openFeedback = useCallback((
+    category: FeedbackCategory,
+    report?: DesktopSessionReport | null,
+  ): void => {
+    const currentReport = report !== undefined
+      ? report
+      : sessionReportAccumulatorRef.current
+        ? sessionReportAccumulatorRef.current.finish()
+        : latestSessionReport;
+    setFeedbackInitialCategory(category);
+    setFeedbackSessionReport(currentReport);
+    setFeedbackOpen(true);
+  }, [latestSessionReport]);
+
+  const handleOpenFeedback = useCallback((): void => {
+    openFeedback("bug");
+  }, [openFeedback]);
+
+  const handleOpenStreamBugReport = useCallback((): void => {
+    openFeedback("bug");
+  }, [openFeedback]);
+
+  const handleSessionReportBug = useCallback((report: DesktopSessionReport): void => {
+    setSessionReportOpen(false);
+    openFeedback("bug", report);
+  }, [openFeedback]);
+
   const handleErrorReportingConsent = useCallback(async (granted: boolean): Promise<void> => {
     await updateSetting("errorReportingConsent", granted ? "granted" : "denied");
     try {
@@ -2445,6 +2684,29 @@ export function App(): JSX.Element {
   }, [updateSetting]);
 
   const showErrorReportingConsent = settingsLoaded && settings.errorReportingConsent === "unset";
+
+  const handleAcceptControllerMode = useCallback((): void => {
+    dismissControllerModePrompt();
+    void updateSetting("controllerMode", true).catch((error) => {
+      console.warn("[Controller Mode] Failed to save controller mode:", error);
+    });
+  }, [dismissControllerModePrompt, updateSetting]);
+
+  const handleDeclineControllerMode = useCallback((): void => {
+    dismissControllerModePrompt();
+    void updateSetting("controllerModePromptDismissed", true).catch((error) => {
+      console.warn("[Controller Mode] Failed to save prompt preference:", error);
+    });
+  }, [dismissControllerModePrompt, updateSetting]);
+
+  const controllerModePromptModal = (
+    <ControllerModePromptModal
+      open={controllerModePromptOpen}
+      onAccept={handleAcceptControllerMode}
+      onDecline={handleDeclineControllerMode}
+      onExitComplete={() => setControllerModePromptSurfacePresent(false)}
+    />
+  );
 
   const mainPage: AppPage = currentPage === "settings" ? pageBeforeSettings : currentPage;
 
@@ -2471,6 +2733,7 @@ export function App(): JSX.Element {
           onDismiss={handleDismissReleaseHighlights}
           onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
         />
+        {controllerModePromptModal}
         <ErrorReportingConsentModal
           open={showErrorReportingConsent}
           onAccept={() => {
@@ -2484,6 +2747,8 @@ export function App(): JSX.Element {
         <FeedbackModal
           open={feedbackOpen}
           settings={settings}
+          initialCategory={feedbackInitialCategory}
+          sessionReport={feedbackSessionReport}
           onClose={() => setFeedbackOpen(false)}
           onExitComplete={() => setFeedbackSurfacePresent(false)}
         />
@@ -2502,12 +2767,16 @@ export function App(): JSX.Element {
       ? "connecting"
       : toLoadingStatus(streamStatus);
   const showCatalogAtmosphere = mainPage === "home" || mainPage === "library";
-  const shellBlocked = showLaunchOverlay
+  const consoleGateOpen = consoleShell.stage !== "shell";
+  const shellBlocked = consoleGateOpen
+    || showLaunchOverlay
     || streamSurfacePresent
     || launchSurfacePresent
     || currentPage === "settings"
     || settingsSurfacePresent
     || navbarOverlayBlocking
+    || detailsGame !== null
+    || detailsSurfacePresent
     || queueModalGame !== null
     || releaseHighlightsPayload !== null
     || releaseHighlightsSurfacePresent
@@ -2515,6 +2784,9 @@ export function App(): JSX.Element {
     || consentSurfacePresent
     || feedbackOpen
     || feedbackSurfacePresent
+    || sessionReportOpen
+    || controllerModePromptOpen
+    || controllerModePromptSurfacePresent
     || logoutConfirmOpen
     || logoutConfirmSurfacePresent
     || removeAccountConfirmOpen
@@ -2523,6 +2795,18 @@ export function App(): JSX.Element {
 
   return (
     <div className={`app-container${effectiveControllerMode ? " app-container--controller" : ""}${showCatalogAtmosphere ? " app-container--atmosphere" : ""}`} style={getAppStyle(settings.posterSizeScale)}>
+      {/* Sibling of the shell, not a child: `shellBlocked` already marks the
+          shell inert and suspends its gamepad pollers, so exactly one poller
+          is live while the gate is open. */}
+      <ConsoleProfileGate
+        shell={consoleShell}
+        savedAccounts={savedAccounts}
+        activeUserId={authSession?.user.userId ?? null}
+        onAddAccount={handleAddAccount}
+        onProfilesChanged={async () => { await refreshSavedAccounts(); }}
+        onRemoveAccount={removeAccountNow}
+        onLogoutAll={() => setLogoutConfirmOpen(true)}
+      />
       <div
         className="app-shell"
         inert={shellBlocked ? true : undefined}
@@ -2566,24 +2850,16 @@ export function App(): JSX.Element {
         activeSessionGameTitle={activeSessionGameTitle}
         isResumingSession={isResumingNavbarSession}
         isTerminatingSession={isTerminatingNavbarSession}
-        onResumeSession={() => {
-          void handleResumeFromNavbar();
-        }}
-        onTerminateSession={() => {
-          void handleTerminateNavbarSession();
-        }}
+        onResumeSession={handleNavbarResumeSession}
+        onTerminateSession={handleNavbarTerminateSession}
         savedAccounts={savedAccounts}
+        onOpenProfilePicker={consoleShell.openPicker}
         onSwitchAccount={handleSwitchAccount}
-        onRemoveAccount={(userId, restoreFocusTarget) => {
-          accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
-          void handleRemoveAccount(userId);
-        }}
+        onRemoveAccount={handleNavbarRemoveAccount}
         onAddAccount={handleAddAccount}
-        onLogoutAll={(restoreFocusTarget) => {
-          accountConfirmRestoreFocusRef.current = restoreFocusTarget ?? null;
-          handleLogout();
-        }}
-        onOpenFeedback={() => setFeedbackOpen(true)}
+        onLogoutAll={handleNavbarLogoutAll}
+        onExitApp={handleExitApp}
+        onOpenFeedback={handleOpenFeedback}
         onBlockingOverlayChange={setNavbarOverlayBlocking}
         controllerMode={effectiveControllerMode}
       />
@@ -2608,6 +2884,7 @@ export function App(): JSX.Element {
                 isLoading={effectiveControllerMode ? isLoadingStorePanels : isLoadingCatalog}
                 selectedGameId={selectedGameId}
                 onSelectGame={setSelectedGameId}
+                onOpenDetails={handleOpenDetails}
                 selectedVariantByGameId={variantByGameId}
                 onSelectGameVariant={handleSelectGameVariant}
                 filterGroups={catalogFilterGroups}
@@ -2621,13 +2898,12 @@ export function App(): JSX.Element {
                 controllerMode={effectiveControllerMode}
                 surfaceActive={catalogSurfaceActive}
                 storePanels={storePanels}
-                storeHeroGames={featuredGames}
                 activeSessionAppIds={activeSessionAppIds}
                 onBuyGame={handleBuyGame}
                 onMarkGameOwned={handleMarkGameOwned}
                 markOwnedInFlightByVariantId={markOwnedInFlightByVariantId}
-                onPreviousControllerPage={() => navigateControllerPage(-1)}
-                onNextControllerPage={() => navigateControllerPage(1)}
+                onPreviousControllerPage={navigateToPreviousControllerPage}
+                onNextControllerPage={navigateToNextControllerPage}
               />
             )}
 
@@ -2643,19 +2919,19 @@ export function App(): JSX.Element {
                   isLoading={isLoadingLibrary}
                   selectedGameId={selectedGameId}
                   onSelectGame={setSelectedGameId}
+                  onOpenDetails={handleOpenDetails}
                   selectedVariantByGameId={variantByGameId}
                   onSelectGameVariant={handleSelectGameVariant}
                   libraryCount={libraryGames.length}
-                  sortOptions={catalogSortOptions.filter((option) => option.id !== "relevance")}
+                  sortOptions={librarySortOptions}
                   selectedSortId={catalogSelectedSortId === "relevance" ? "last_played" : catalogSelectedSortId}
                   onSortChange={setCatalogSelectedSortId}
                   controllerMode={effectiveControllerMode}
                   surfaceActive={catalogSurfaceActive}
-                  featuredGames={featuredGames.length > 0 ? featuredGames : games}
                   activeSessionAppIds={activeSessionAppIds}
                   onBuyGame={handleBuyGame}
-                  onPreviousControllerPage={() => navigateControllerPage(-1)}
-                  onNextControllerPage={() => navigateControllerPage(1)}
+                  onPreviousControllerPage={navigateToPreviousControllerPage}
+                  onNextControllerPage={navigateToNextControllerPage}
                 />
               </PageErrorBoundary>
             )}
@@ -2682,7 +2958,8 @@ export function App(): JSX.Element {
               videoRef={videoRef}
               audioRef={audioRef}
               diagnosticsStore={diagnosticsStore}
-              showStats={showStatsOverlay}
+              statsMode={statsMode}
+              statsPosition={settings.statsOverlayPosition}
               showNativeStats={settings.showNativeStreamerStats}
               nativeInputCaptureActive={nativeInputCaptureActive}
               gstreamerEnabled={settings.streamClientMode === "native"}
@@ -2702,6 +2979,8 @@ export function App(): JSX.Element {
               antiAfkEnabled={antiAfkEnabled}
               antiAfkAckNonce={antiAfkAckNonce}
               showAntiAfkIndicator={settings.showAntiAfkIndicator}
+              antiAfkReminderEveryMinutes={settings.antiAfkReminderEveryMinutes}
+              antiAfkReminderDurationSeconds={settings.antiAfkReminderDurationSeconds}
               exitPrompt={exitPrompt}
               sessionStartedAtMs={sessionStartedAtMs}
               sessionCounterEnabled={settings.sessionCounterEnabled}
@@ -2715,6 +2994,17 @@ export function App(): JSX.Element {
               streamRevealComplete={streamRevealComplete}
               isStreaming={isStreaming}
               recordingBitrateMbps={settings.recordingBitrateMbps}
+              recordingResolution={settings.recordingResolution}
+              recordingFps={settings.recordingFps}
+              onRecordingResolutionChange={(value) => {
+                void updateSetting("recordingResolution", value);
+              }}
+              onRecordingFpsChange={(value) => {
+                void updateSetting("recordingFps", value);
+              }}
+              onRecordingBitrateMbpsChange={(value) => {
+                void updateSetting("recordingBitrateMbps", value);
+              }}
               gameTitle={streamingGame?.title ?? t("app.labels.game")}
               platformStore={streamingStore ?? undefined}
               onToggleFullscreen={() => {
@@ -2725,6 +3015,7 @@ export function App(): JSX.Element {
               onEndSession={() => {
                 void handlePromptedStopStream();
               }}
+              onReportBug={handleOpenStreamBugReport}
               onToggleMicrophone={() => {
                 clientRef.current?.toggleMicrophone();
               }}
@@ -2831,6 +3122,20 @@ export function App(): JSX.Element {
       </SettingsModalHost>
       {logoutConfirmModal}
       {removeAccountConfirmModal}
+      <GameDetailModal
+        open={detailsGame !== null}
+        game={detailsGame}
+        selectedVariantId={detailsGame ? variantByGameId[detailsGame.id] : undefined}
+        onSelectVariant={(variantId) => {
+          if (detailsGame) handleSelectGameVariant(detailsGame.id, variantId);
+        }}
+        onPlay={(game, variantId) => {
+          handleCloseDetails();
+          void handleInitiatePlay(game, variantId);
+        }}
+        onClose={handleCloseDetails}
+        onExitComplete={() => setDetailsSurfacePresent(false)}
+      />
       {queueModalGame && streamStatus === "idle" && (
         <QueueServerSelectModal
           game={queueModalGame}
@@ -2844,6 +3149,7 @@ export function App(): JSX.Element {
         onDismiss={handleDismissReleaseHighlights}
         onExitComplete={() => setReleaseHighlightsSurfacePresent(false)}
       />
+      {controllerModePromptModal}
       <ErrorReportingConsentModal
         open={showErrorReportingConsent}
         onAccept={() => {
@@ -2857,8 +3163,19 @@ export function App(): JSX.Element {
       <FeedbackModal
         open={feedbackOpen}
         settings={settings}
+        initialCategory={feedbackInitialCategory}
+        sessionReport={feedbackSessionReport}
         onClose={() => setFeedbackOpen(false)}
         onExitComplete={() => setFeedbackSurfacePresent(false)}
+      />
+      <SessionReportModal
+        open={sessionReportOpen}
+        report={latestSessionReport}
+        onClose={() => setSessionReportOpen(false)}
+        onReportBug={handleSessionReportBug}
+        onShowReportsChange={(show) => {
+          void updateSetting("showSessionReport", show);
+        }}
       />
     </div>
   );

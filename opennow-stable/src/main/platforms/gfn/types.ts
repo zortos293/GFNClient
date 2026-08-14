@@ -67,6 +67,11 @@ export interface CloudMatchRequest {
       hudStreamingMode?: number;
       sdrColorSpace?: number;
       hdrColorSpace?: number;
+      maxBitrateKbps?: number;
+      codec?: number;
+      vsync?: boolean;
+      dynamicStreamingMode?: number;
+      audioChannelCount?: number;
     };
   };
 }
@@ -135,6 +140,7 @@ export interface CloudMatchResponse {
     };
     errorCode?: number;
     gpuType?: string;
+    serverLocation?: string;
     connectionInfo?: Array<{
       ip?: string;
       port: number;

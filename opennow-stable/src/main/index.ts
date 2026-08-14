@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // Screenshot keybind - configurable, handled in renderer
-// F3  - Toggle stats overlay (handled in renderer)
+// Ctrl+N - Cycle stats overlay (handled in renderer)
 // Ctrl+Shift+Q - Stop streaming (handled in renderer)
 // F8  - Toggle mouse/pointer lock (handled in main process via IPC)
 
@@ -58,6 +58,8 @@ import {
   type AppUpdaterController,
 } from "./updater";
 import { registerAccountCatalogIpcHandlers } from "./ipc/accountCatalogHandlers";
+import { registerConsolePinIpcHandlers } from "./ipc/consolePinHandlers";
+import { createSafeStorageAdapter } from "./security/safeStorageAdapter";
 import { registerCoreIpcHandlers } from "./ipc/coreHandlers";
 import { registerSessionIpcHandlers } from "./ipc/sessionHandlers";
 import {
@@ -77,9 +79,19 @@ import { parseDirectLaunchArgs, type DirectLaunchArgs } from "@shared/directLaun
 import { getReleaseHighlightsPayload, shouldShowReleaseHighlights } from "./releaseHighlights";
 import { shutdownMainTelemetry, syncMainTelemetry } from "./telemetry/posthog";
 import { createMainWindow } from "./window/mainWindow";
+import { resolveAppInstanceProfile } from "./appInstance";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+const appInstanceProfile = resolveAppInstanceProfile(
+  process.argv,
+  app.getPath("userData"),
+);
+if (appInstanceProfile.isSecondary) {
+  app.setPath("userData", appInstanceProfile.userDataPath);
+  app.setPath("sessionData", appInstanceProfile.userDataPath);
+}
 
 // Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
@@ -134,8 +146,19 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Remove getUserMedia FPS cap (not strictly needed for receive-only but avoids potential limits)
 app.commandLine.appendSwitch("max-gum-fps", "999");
+/*
+ * Catalog artwork is served with `Cache-Control: max-age=604800`, but a browsed
+ * store plus library is a few thousand images. Chromium's default disk cache is
+ * small enough that the catalog evicts itself, so every launch re-downloaded the
+ * same art. 512 MB comfortably holds a fully browsed catalog at the sizes the
+ * shell actually requests (see lib/consoleImageSizing.ts).
+ */
+app.commandLine.appendSwitch("disk-cache-size", String(512 * 1024 * 1024));
 if (!app.isPackaged && process.env.OPENNOW_REMOTE_DEBUG === "1") {
-  app.commandLine.appendSwitch("remote-debugging-port", "9222");
+  app.commandLine.appendSwitch(
+    "remote-debugging-port",
+    appInstanceProfile.isSecondary ? "9223" : "9222",
+  );
 }
 
 // file:// in &lt;video&gt; is blocked by Chromium for renderer pages; use a privileged custom scheme.
@@ -400,6 +423,7 @@ function emitUpdaterStateToRenderer(state: AppUpdaterState): void {
 function createMainWindowDeps() {
   return {
     mainDir: __dirname,
+    windowTitle: appInstanceProfile.windowTitle,
     settingsManager,
     getMainWindow: () => mainWindow,
     setMainWindow: (window: BrowserWindow | null) => {
@@ -427,6 +451,7 @@ function createMainWindowDeps() {
     setNativeRawInputOwnsEscape: (ownsEscape: boolean) => {
       nativeRawInputOwnsEscapeRuntime = ownsEscape;
     },
+    isAppShutdownRequested: () => isShutdownRequested,
   };
 }
 
@@ -447,6 +472,11 @@ function registerIpcHandlers(): void {
     authService,
     resolveJwt,
     refreshScheduler,
+  });
+
+  registerConsolePinIpcHandlers({
+    getConsoleProfiles: () => authService.getConsoleProfiles(),
+    isSavedAccount: (userId) => authService.getSavedAccounts().some((account) => account.userId === userId),
   });
 
   registerSessionIpcHandlers({
@@ -510,12 +540,17 @@ if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
   // Initialize log capture first to capture all console output
   initLogCapture("main");
+  if (appInstanceProfile.isSecondary) {
+    console.log(`[Main] Secondary instance profile: ${appInstanceProfile.userDataPath}`);
+  }
   initSessionProxyAuth();
 
   await cacheManager.initialize();
 
   authService = new AuthService(
     join(app.getPath("userData"), "auth-state.json"),
+    join(app.getPath("userData"), "console-profiles.json"),
+    createSafeStorageAdapter(),
   );
   await authService.initialize();
 
@@ -525,6 +560,9 @@ app.whenReady().then(async () => {
     onStateChanged: emitUpdaterStateToRenderer,
     automaticChecksEnabled: settingsManager.get("autoCheckForUpdates"),
     updateChannel: settingsManager.get("updateChannel"),
+    disabledReason: appInstanceProfile.isSecondary
+      ? "Updates are managed by the primary OpenNOW instance."
+      : undefined,
     onBeforeQuitAndInstall: () => {
       isUpdaterInstallQuitInProgress = true;
       clearExplicitShutdownFallback();

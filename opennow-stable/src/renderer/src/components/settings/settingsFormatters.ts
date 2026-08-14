@@ -194,7 +194,7 @@ const runtimePlatform = resolveRuntimePlatform(navigator.platform);
 const platformShortcutDefaults = createPlatformShortcutDefaults(runtimePlatform);
 
 export const isMac = runtimePlatform === "darwin";
-export const shortcutExamples = "Examples: F3, Ctrl+Shift+Q, Ctrl+Shift+K";
+export const shortcutExamples = "Examples: Ctrl+N, Ctrl+Shift+Q, Ctrl+Shift+K";
 export const shortcutDefaults = platformShortcutDefaults.bindings;
 
 /** Canonical shortcut for toggling the stream sidebar (must match StreamView key handler). */

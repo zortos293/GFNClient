@@ -67,6 +67,7 @@ export interface SessionCreateRequest {
   existingSessionStrategy?: ExistingSessionStrategy;
   zone: string;
   settings: StreamSettings;
+  supportedCodecs?: readonly VideoCodec[];
   proxyUrl?: string;
 }
 
@@ -228,6 +229,8 @@ export interface SessionInfo {
   serverIp: string;
   signalingServer: string;
   signalingUrl: string;
+  /** CloudMatch-provided server location or zone hostname, when available. */
+  serverLocation?: string;
   gpuType?: string;
   /** Wire appLaunchMode the session runs with, kept session-stable for resumes */
   appLaunchMode?: number;

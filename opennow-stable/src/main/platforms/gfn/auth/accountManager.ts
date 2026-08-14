@@ -1,5 +1,6 @@
 import type { AuthSession, AuthSessionResult, SavedAccount } from "@shared/gfn";
 
+import type { ConsoleProfileStore } from "./consoleProfileStore";
 import type { PersistedAccountState } from "./persistedAccountState";
 
 type EnsureSession = (forceRefresh: boolean, expectedUserId?: string) => Promise<AuthSessionResult>;
@@ -8,6 +9,8 @@ export class AccountManager {
   constructor(
     private readonly state: PersistedAccountState,
     private readonly clearCaches: () => void,
+    /** Optional so callers that never touch console PINs stay unchanged. */
+    private readonly consoleProfiles?: ConsoleProfileStore,
   ) {}
 
   setSession(session: AuthSession | null): void {
@@ -24,7 +27,12 @@ export class AccountManager {
   }
 
   getSavedAccounts(): SavedAccount[] {
-    return this.state.accounts.getSavedAccounts();
+    // The account state has no view of the lock store, so the PIN flag is
+    // decorated here. Only the boolean crosses the process boundary.
+    return this.state.accounts.getSavedAccounts().map((account) => ({
+      ...account,
+      hasPin: this.consoleProfiles?.hasPin(account.userId) ?? false,
+    }));
   }
 
   async saveLoginSession(
@@ -38,10 +46,17 @@ export class AccountManager {
     return this.state.accounts.getSession() as AuthSession;
   }
 
-  async switchAccount(userId: string, ensureSession: EnsureSession): Promise<AuthSession> {
+  async switchAccount(userId: string, ensureSession: EnsureSession, pin?: string): Promise<AuthSession> {
     const target = this.state.accounts.getSessionForUser(userId);
     if (!target) {
       throw new Error("Saved account not found");
+    }
+
+    if (this.consoleProfiles?.hasPin(userId)) {
+      const verification = await this.consoleProfiles.verifyPin(userId, pin ?? "");
+      if (!verification.ok) {
+        throw new Error(verification.reason === "locked_out" ? "Profile PIN is temporarily locked" : "Profile PIN is required or incorrect");
+      }
     }
 
     const previousActiveUserId = this.state.accounts.getActiveUserId();
@@ -90,6 +105,9 @@ export class AccountManager {
     }
     this.clearCaches();
     await this.state.persist();
+    await this.consoleProfiles?.forgetUser(userId).catch((error) => {
+      console.warn("Failed to persist removed account PIN cleanup:", error);
+    });
   }
 
   async logout(): Promise<void> {
@@ -101,11 +119,17 @@ export class AccountManager {
     this.state.accounts.setActiveAccount(this.state.accounts.firstUserId());
     this.clearCaches();
     await this.state.persist();
+    await this.consoleProfiles?.forgetUser(activeUserId).catch((error) => {
+      console.warn("Failed to persist signed-out account PIN cleanup:", error);
+    });
   }
 
   async logoutAll(): Promise<void> {
     this.state.accounts.reset();
     this.clearCaches();
     await this.state.persist();
+    await this.consoleProfiles?.forgetAll().catch((error) => {
+      console.warn("Failed to persist all-account PIN cleanup:", error);
+    });
   }
 }

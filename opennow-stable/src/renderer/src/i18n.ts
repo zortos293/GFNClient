@@ -10,10 +10,12 @@ type TranslationTree = { [key: string]: TranslationLeaf | TranslationTree };
 const FALLBACK_LOCALE = "en";
 const LOCALE_STORAGE_KEY = "opennow.locale";
 
-const localeSources = import.meta.glob<string>("../../../../locales/*.json", {
+const localeSources = import.meta.glob<string>([
+  "../../../../locales/*.json",
+  "!../../../../locales/en.json",
+], {
   query: "?raw",
   import: "default",
-  eager: true,
 });
 
 const fallbackTree = fallbackTranslations as TranslationTree;
@@ -23,6 +25,7 @@ const listeners = new Set<() => void>();
 let activeLocale = FALLBACK_LOCALE;
 let activeTranslations = fallbackTree;
 let snapshotVersion = 0;
+let localeLoadGeneration = 0;
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
@@ -48,11 +51,11 @@ function localeFromPath(path: string): string | null {
   return normalizeLocale(fileName.slice(0, -".json".length));
 }
 
-function getLocaleSource(locale: string): string | null {
+async function getLocaleSource(locale: string): Promise<string | null> {
   const normalized = normalizeLocale(locale);
-  for (const [path, source] of Object.entries(localeSources)) {
+  for (const [path, loadSource] of Object.entries(localeSources)) {
     if (localeFromPath(path) === normalized) {
-      return source;
+      return loadSource();
     }
   }
   return null;
@@ -107,14 +110,14 @@ function parseLocaleJson(locale: string, raw: string): TranslationTree | null {
   }
 }
 
-function loadTranslations(locale: string): TranslationTree | null {
+async function loadTranslations(locale: string): Promise<TranslationTree | null> {
   const normalized = normalizeLocale(locale);
   if (normalized === FALLBACK_LOCALE) return fallbackTree;
 
   const cached = loadedLocales.get(normalized);
   if (cached) return cached;
 
-  const source = getLocaleSource(normalized);
+  const source = await getLocaleSource(normalized);
   if (source === null) return null;
 
   const parsed = parseLocaleJson(normalized, source);
@@ -185,14 +188,18 @@ export function getAvailableLocales(): string[] {
 
 export async function setLocale(locale: string): Promise<void> {
   const normalized = normalizeLocale(locale);
-  const translations = loadTranslations(normalized);
+  const generation = ++localeLoadGeneration;
   writeStoredLocale(normalized);
+  const translations = await loadTranslations(normalized);
+  if (generation !== localeLoadGeneration) return;
   setActiveTranslations(normalized, translations);
 }
 
 export async function initializeLocale(): Promise<void> {
   const initialLocale = getInitialLocale();
-  const translations = loadTranslations(initialLocale);
+  const generation = ++localeLoadGeneration;
+  const translations = await loadTranslations(initialLocale);
+  if (generation !== localeLoadGeneration) return;
   setActiveTranslations(initialLocale, translations);
 }
 

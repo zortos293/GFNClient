@@ -117,6 +117,7 @@ function SignalField({
   pointerRef: RefObject<PointerPosition>;
 }): JSX.Element {
   const materialRef = useRef<ShaderMaterial>(null);
+  const renderBudgetRef = useRef(1 / 30);
   const energy = variant === "controller" ? 0.36 : variant === "queue" ? 0.72 : 1;
   const uniforms = useMemo(
     () => ({
@@ -137,7 +138,12 @@ function SignalField({
       pointerUniform.x += (pointerRef.current.x - pointerUniform.x) * smoothing;
       pointerUniform.y += (pointerRef.current.y - pointerUniform.y) * smoothing;
     }
-  });
+    renderBudgetRef.current += delta;
+    if (renderBudgetRef.current >= (1 / 30) - 0.001) {
+      renderBudgetRef.current %= 1 / 30;
+      state.gl.render(state.scene, state.camera);
+    }
+  }, 1);
 
   return (
     <mesh>

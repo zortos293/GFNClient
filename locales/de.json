@@ -48,6 +48,7 @@
       "markingOwned": "Marking as owned...",
       "ready": "Bereit",
       "saved": "Gespeichert",
+      "sessionActive": "Session active",
       "testing": "Testen...",
       "unknown": "Unbekannt",
       "upToDate": "Auf dem neuesten Stand"
@@ -186,7 +187,58 @@
       "purchaseUnavailable": "Purchase unavailable",
       "playNow": "Play Now",
       "variant": "{{variant}}",
-      "storeCount": "{{count}} stores"
+      "storeCount": "{{count}} stores",
+      "cloudGame": "Cloud Game"
+    }
+  },
+  "console": {
+    "controllerPrompt": {
+      "kicker": "Controller detected",
+      "title": "Switch to Controller Mode?",
+      "description": "Use the console-style layout built for a gamepad. You can switch back anytime in Settings.",
+      "accept": "Switch mode",
+      "decline": "No, don't ask again"
+    },
+    "splash": {
+      "title": "OpenNOW",
+      "subtitle": "Console mode"
+    },
+    "profiles": {
+      "whosPlaying": "Who's playing?",
+      "signedIn": "Signed in",
+      "manage": "Manage profiles",
+      "lockedProfile": "{{name}} (PIN required)",
+      "switchFailed": "Could not switch to that profile."
+    },
+    "pin": {
+      "title": "Enter {{name}}'s PIN",
+      "subtitle": "This profile is locked with a 4-digit PIN.",
+      "enteredDigits": "{{count}} of 4 digits entered",
+      "delete": "Löschen",
+      "incorrect": "Incorrect PIN. {{count}} attempts left.",
+      "incorrect_plural": "Incorrect PIN. {{count}} attempts left.",
+      "lockedOut": "Too many attempts. Try again in {{seconds}}s.",
+      "recoveryHint": "Hold B to remove this profile",
+      "recoveryReady": "Release to choose",
+      "forgotPin": "Forgot PIN?",
+      "recoveryPrompt": "Remove this profile and sign out?",
+      "removeProfile": "Remove this profile"
+    },
+    "manage": {
+      "title": "Manage profiles",
+      "subtitle": "Set a PIN to keep a profile private on a shared TV.",
+      "setPin": "Set PIN",
+      "changePin": "Change PIN",
+      "removePin": "Remove PIN",
+      "pinOn": "PIN on",
+      "currentPin": "Current PIN",
+      "newPin": "New PIN",
+      "wrongPin": "That PIN is incorrect.",
+      "pinFormat": "A PIN must be exactly 4 digits.",
+      "lockedOut": "Too many attempts. Try again shortly.",
+      "noPinSet": "This profile has no PIN.",
+      "pinFailed": "Could not update the PIN.",
+      "securityNote": "A profile PIN keeps accounts separate on a shared TV. It does not encrypt your account, and anyone with access to this device's files can still read the saved sign-in."
     }
   },
   "library": {
@@ -203,7 +255,13 @@
     "clearFilters": "Clear",
     "removeFilter": "Remove {{filter}} filter",
     "allStores": "All Stores",
+    "rows": {
+      "continuePlaying": "Continue playing",
+      "recentlyAdded": "Recently added",
+      "allGames": "All games"
+    },
     "storeFilter": "Store Filter",
+    "changeStore": "Change store",
     "chooseStore": "Choose a Store",
     "storeFilterHint": "Hold Y, use up/down, release Y to apply",
     "moreInfo": "More Info",
@@ -211,6 +269,16 @@
     "storeNotListed": "Store not listed",
     "selectedStore": "Selected Store: {{store}}",
     "loadingGameDetails": "Loading game details...",
+    "detailLabels": {
+      "developer": "Developer",
+      "publisher": "Publisher",
+      "players": "Players",
+      "genres": "Genres",
+      "controls": "Controls",
+      "nvidiaTech": "NVIDIA Tech"
+    },
+    "screenshotNumber": "Screenshot {{index}}",
+    "viewDetails": "Details",
     "developer": "Developer: {{developer}}",
     "publisher": "Publisher: {{publisher}}",
     "players": "Players: {{players}}",
@@ -558,6 +626,7 @@
     "saved": "Gespeichert",
     "searchPlaceholder": "Sucheinstellungen...",
     "clearSearch": "Clear settings search",
+    "searchResults": "Search results",
     "noMatches": "Keine Einstellungen stimmten mit „{{query}}“ überein.",
     "sections": {
       "account": "Account",
@@ -567,12 +636,15 @@
       "game": "Spiel",
       "audio": "Audio",
       "input": "Eingabe",
+      "console": "Console",
       "interface": "Schnittstelle",
       "about": "Über",
       "thanks": "Danke"
     },
     "region": {
       "title": "Region",
+      "serverRegion": "Server Region",
+      "serverRegionHint": "Choose a specific region or let OpenNOW use the lowest-latency route.",
       "autoBest": "Auto (am besten)",
       "searchPlaceholder": "Regionen durchsuchen...",
       "refreshPing": "Ping aktualisieren",
@@ -687,7 +759,9 @@
       "sessionProxy": "Sitzungs-Proxy",
       "sessionProxyHint": "Wird nur für die Nvidia-Sitzungserstellung und Warteschlangenabfrage verwendet. Streaming-/Signalisierungsverkehr wird nicht weitergeleitet. Zortos stellt einen Proxy für GitHub-Sponsoren/Unterstützer bereit.",
       "session": "Session & Compatibility",
-      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "sessionHint": "Proxy routing applied to catalog requests, session creation, and queue polling.",
+      "gfnLaunchMode": "GeForce NOW Launch Mode",
+      "gfnLaunchModeHint": "Client identity and feature requests sent only when OpenNOW creates a new GeForce NOW session.",
       "processing": "Video Processing",
       "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
@@ -707,8 +781,8 @@
       "experimentalL4SRequestHint": "Fordern Sie die GeForce NOW L4S-Streaming-Funktion für neu erstellte Sitzungen an. Dadurch ändert sich das WebRTC-Verhalten des Browsers nicht und kann vom Dienst oder Netzwerkpfad ignoriert werden.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
-      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+      "identifyAsConsole": "Identify as Console",
+      "identifyAsConsoleHint": "Ask GeForce NOW to launch streamed games in gamepad-friendly mode so launchers such as Steam can start in Big Picture. This affects new GFN sessions only; it does not fullscreen OpenNOW or enable its console shell."
     },
     "recording": {
       "title": "Browser Recording",
@@ -787,6 +861,11 @@
     },
     "input": {
       "title": "Eingang",
+      "behavior": "Input Behavior",
+      "behaviorDescription": "Keyboard, controller, clipboard, and cursor behavior during streamed sessions.",
+      "mouse": "Mouse",
+      "mouseDescription": "Pointer sensitivity and acceleration applied while a game has input focus.",
+      "shortcutsDescription": "Keyboard shortcuts for stream controls and common session actions.",
       "mouseAndKeyboard": "Maus und Tastatur",
       "clipboardPaste": "Einfügen in die Zwischenablage",
       "gyroscopeControls": "Gyroscope Controls",
@@ -820,6 +899,11 @@
     },
     "interface": {
       "appearance": "Aussehen",
+      "appearanceDescription": "Language, theme, translucency, and accent presentation across OpenNOW.",
+      "behavior": "App Behavior",
+      "behaviorDescription": "Overlay visibility, reminders, and fullscreen behavior during everyday use.",
+      "libraryAndPresence": "Library & Presence",
+      "libraryAndPresenceDescription": "Library density and how OpenNOW represents your activity outside the app.",
       "appLanguage": "App-Sprache",
       "appLanguageHint": "Ändert die Schnittstellensprache von OpenNOW. Für nicht übersetzte Zeichenfolgen wird Englisch verwendet.",
       "theme": "Theme",
@@ -850,8 +934,6 @@
       "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "Automatischer Vollbildmodus",
       "autoFullScreenHint": "Wechseln Sie automatisch in den Vollbildmodus, wenn Sie eine Verbindung herstellen oder eine Sitzung starten.",
-      "controllerMode": "Controller Mode",
-      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
       "escapeExitsFullscreen": "Escape beendet den Vollbildmodus",
       "escapeExitsFullscreenHint": "Wenn diese Option aktiviert ist, wird durch Drücken der Escape-Taste der Vollbildmodus beendet. Wenn deaktiviert (Standard), wird Escape an das Spiel weitergeleitet, während der Mauszeiger gesperrt ist.",
       "discordRichPresence": "Discord-reiche Präsenz",
@@ -862,6 +944,8 @@
       "showSessionTimeRemainingInStatsOverlayHint": "The session countdown appears in the in-stream sidebar by default. Enable this to also show it in the stats overlay.",
       "sessionElapsedCounter": "Zähler für abgelaufene Sitzungen",
       "sessionElapsedCounterHint": "Aktivieren oder deaktivieren Sie den Zähler für die abgelaufene Live-Sitzung während des Streamings.",
+      "showSessionReport": "Show Session Report",
+      "showSessionReportHint": "Show a measured quality summary after each completed stream.",
       "sessionTimerReappear": "Der Sitzungstimer wird erneut angezeigt",
       "sessionTimerVisibleTime": "Sichtbare Zeit des Sitzungstimers",
       "sessionTimerReappearHint": "Gibt an, wie oft der Sitzungstimer während des Streamings wieder angezeigt wird (0 deaktiviert Wiederholungen).",
@@ -876,7 +960,22 @@
       "posTopLeft": "Top left",
       "posTopRight": "Top right"
     },
+    "console": {
+      "title": "Console Experience",
+      "appShell": "App Shell",
+      "appShellDescription": "Controller-first navigation for browsing OpenNOW from a TV or across the room.",
+      "controllerMode": "Controller Mode",
+      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "profilePicker": "Ask who's playing",
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted."
+    },
     "about": {
+      "updates": "Updates",
+      "updatesDescription": "Release notes, update channel, and automatic application update behavior.",
+      "supportAndPrivacy": "Support & Privacy",
+      "supportAndPrivacyDescription": "Diagnostics, feedback, and logs you can share when you need help.",
+      "localData": "Local Data",
+      "localDataDescription": "Cached library artwork and metadata stored on this device.",
       "applicationUpdates": "Anwendungsaktualisierungen",
       "version": "Version {{version}}",
       "backgroundChecksOn": "Gepackte Builds prüfen GitHub-Releases im Hintergrund.",
@@ -920,6 +1019,10 @@
     },
     "nativeStreamer": {
       "title": "Nativer Streamer",
+      "runtime": "Runtime",
+      "runtimeDescription": "Enable the experimental streamer and inspect its local GStreamer readiness.",
+      "videoOutput": "Video Output",
+      "videoOutputDescription": "Hardware capability, rendering backend, frame pacing, and window mode.",
       "nativeStreaming": "Natives Streaming",
       "nativeStreamingHint": "Natives Streaming ist experimentell und kann plattformspezifische Fehler, Störungen oder Fallbacks auf Chromium/WebRTC aufweisen. Aktivieren Sie es nur, wenn Sie den GStreamer-basierten Desktop-Streamer problemlos für neue Sitzungen testen möchten.",
       "enablePromptKicker": "Experimentell",
@@ -1115,10 +1218,65 @@
     "cancel": "Abbrechen",
     "close": "Schließen",
     "success": "Thanks — your feedback was sent.",
+    "bug": {
+      "kicker": "Diagnostics",
+      "title": "Report a bug",
+      "issueTitle": "Issue title",
+      "issueTitlePlaceholder": "Stream froze after reconnecting",
+      "description": "What happened?",
+      "descriptionPlaceholder": "What were you doing, what went wrong, what did you expect, and can you reproduce it?",
+      "meaningfulCharacters": "{{count}} / {{minimum}} meaningful characters",
+      "includeSystemInfo": "Include extra OS, GPU, and device info",
+      "includeSessionReport": "Include the latest measured session report",
+      "disclosure": "Before anything is uploaded, you can review the report and attachments. Logs are redacted. A selected session report includes the game title and measured quality, but never gameplay, passwords, account tokens, or your library list.",
+      "review": "Review & send",
+      "reviewHint": "Review the report fields and selected attachments before sending them to the PrintedWaste bug-report API.",
+      "appVersionRequired": "App version and build (required by the report API)",
+      "systemMetadata": "OS, GPU, and device metadata",
+      "noAttachments": "No optional diagnostic attachments selected",
+      "consent": "I understand what will be uploaded and consent to send this report to the PrintedWaste API.",
+      "consentRequired": "Confirm that you understand what will be uploaded before sending.",
+      "back": "Zurück",
+      "send": "Send to developer",
+      "success": "Thanks — your bug report was sent to the developer.",
+      "reference": "Reference: {{reference}}"
+    },
     "errors": {
       "empty": "Please enter a message before sending.",
       "notConfigured": "Feedback is unavailable because PostHog is not configured in this build.",
       "sendFailed": "Couldn't send feedback. Please try again."
     }
+  },
+  "sessionReport": {
+    "kicker": "Session quality",
+    "title": "Session report",
+    "scoreLabel": "Session score {{score}} out of 100",
+    "summary": "Measured over {{duration}}",
+    "limitedData": "Limited data: only {{count}} samples were available.",
+    "ratings": {
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "poor": "Needs work"
+    },
+    "connection": "Connection",
+    "metrics": {
+      "latency": "Latency",
+      "speed": "Stream speed",
+      "loss": "Packet loss",
+      "jitter": "Jitter",
+      "fps": "Frame rate",
+      "decode": "Decode time"
+    },
+    "peak": "peak {{value}}",
+    "profile": "Stream profile",
+    "requested": "Requested",
+    "delivered": "Delivered",
+    "route": "Route",
+    "changes": "Changes detected",
+    "recommendations": "Recommendations",
+    "dontShowAgain": "Don't show session reports again",
+    "close": "Schließen",
+    "reportBug": "Experienced a bug? Report it"
   }
 }

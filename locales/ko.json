@@ -48,6 +48,7 @@
       "markingOwned": "소유한 것으로 표시...",
       "ready": "준비",
       "saved": "저장됨",
+      "sessionActive": "Session active",
       "testing": "테스트 중...",
       "unknown": "알 수 없음",
       "upToDate": "최신"
@@ -186,7 +187,58 @@
       "purchaseUnavailable": "구매 불가",
       "playNow": "지금 플레이",
       "variant": "{{variant}}",
-      "storeCount": "{{count}} 스토어"
+      "storeCount": "{{count}} 스토어",
+      "cloudGame": "Cloud Game"
+    }
+  },
+  "console": {
+    "controllerPrompt": {
+      "kicker": "Controller detected",
+      "title": "Switch to Controller Mode?",
+      "description": "Use the console-style layout built for a gamepad. You can switch back anytime in Settings.",
+      "accept": "Switch mode",
+      "decline": "No, don't ask again"
+    },
+    "splash": {
+      "title": "OpenNOW",
+      "subtitle": "Console mode"
+    },
+    "profiles": {
+      "whosPlaying": "Who's playing?",
+      "signedIn": "Signed in",
+      "manage": "Manage profiles",
+      "lockedProfile": "{{name}} (PIN required)",
+      "switchFailed": "Could not switch to that profile."
+    },
+    "pin": {
+      "title": "Enter {{name}}'s PIN",
+      "subtitle": "This profile is locked with a 4-digit PIN.",
+      "enteredDigits": "{{count}} of 4 digits entered",
+      "delete": "삭제",
+      "incorrect": "Incorrect PIN. {{count}} attempts left.",
+      "incorrect_plural": "Incorrect PIN. {{count}} attempts left.",
+      "lockedOut": "Too many attempts. Try again in {{seconds}}s.",
+      "recoveryHint": "Hold B to remove this profile",
+      "recoveryReady": "Release to choose",
+      "forgotPin": "Forgot PIN?",
+      "recoveryPrompt": "Remove this profile and sign out?",
+      "removeProfile": "Remove this profile"
+    },
+    "manage": {
+      "title": "Manage profiles",
+      "subtitle": "Set a PIN to keep a profile private on a shared TV.",
+      "setPin": "Set PIN",
+      "changePin": "Change PIN",
+      "removePin": "Remove PIN",
+      "pinOn": "PIN on",
+      "currentPin": "Current PIN",
+      "newPin": "New PIN",
+      "wrongPin": "That PIN is incorrect.",
+      "pinFormat": "A PIN must be exactly 4 digits.",
+      "lockedOut": "Too many attempts. Try again shortly.",
+      "noPinSet": "This profile has no PIN.",
+      "pinFailed": "Could not update the PIN.",
+      "securityNote": "A profile PIN keeps accounts separate on a shared TV. It does not encrypt your account, and anyone with access to this device's files can still read the saved sign-in."
     }
   },
   "library": {
@@ -203,7 +255,13 @@
     "clearFilters": "초기화",
     "removeFilter": "{{filter}} 필터 제거",
     "allStores": "모든 스토어",
+    "rows": {
+      "continuePlaying": "Continue playing",
+      "recentlyAdded": "Recently added",
+      "allGames": "All games"
+    },
     "storeFilter": "스토어 필터",
+    "changeStore": "Change store",
     "chooseStore": "스토어 선택",
     "storeFilterHint": "Y를 홀드한 후, Up/Down 사용한 후 Y를 놓아서 적용",
     "moreInfo": "자세한 정보",
@@ -211,6 +269,16 @@
     "storeNotListed": "스토어에 리스트되지 않음",
     "selectedStore": "선택된 스토어: {{store}}",
     "loadingGameDetails": "게임 상세정보를 로드하는 중...",
+    "detailLabels": {
+      "developer": "Developer",
+      "publisher": "Publisher",
+      "players": "Players",
+      "genres": "Genres",
+      "controls": "컨트롤",
+      "nvidiaTech": "NVIDIA Tech"
+    },
+    "screenshotNumber": "Screenshot {{index}}",
+    "viewDetails": "Details",
     "developer": "개발자: {{developer}}",
     "publisher": "퍼블리셔: {{publisher}}",
     "players": "플레이어: {{players}}",
@@ -558,6 +626,7 @@
     "saved": "저장됨",
     "searchPlaceholder": "검색 설정...",
     "clearSearch": "Clear settings search",
+    "searchResults": "Search results",
     "noMatches": "\"{{query}}\"와 일치하는 설정이 없습니다.",
     "sections": {
       "account": "Account",
@@ -567,12 +636,15 @@
       "game": "게임",
       "audio": "오디오",
       "input": "입력",
+      "console": "Console",
       "interface": "인터페이스",
       "about": "소개",
       "thanks": "감사합니다"
     },
     "region": {
       "title": "지역",
+      "serverRegion": "Server Region",
+      "serverRegionHint": "Choose a specific region or let OpenNOW use the lowest-latency route.",
       "autoBest": "자동(최상)",
       "searchPlaceholder": "지역 검색...",
       "refreshPing": "핑 새로 고침",
@@ -687,7 +759,9 @@
       "sessionProxy": "세션 프록시",
       "sessionProxyHint": "Nvidia 세션 생성 및 대기열 폴링에만 사용됩니다. 스트리밍/시그널링 트래픽은 프록시되지 않습니다. Zortos는 GitHub 후원자/서포터를 위한 프록시를 제공합니다.",
       "session": "Session & Compatibility",
-      "sessionHint": "Connection routing and launch requests applied when a new stream starts.",
+      "sessionHint": "Proxy routing applied to catalog requests, session creation, and queue polling.",
+      "gfnLaunchMode": "GeForce NOW Launch Mode",
+      "gfnLaunchModeHint": "Client identity and feature requests sent only when OpenNOW creates a new GeForce NOW session.",
       "processing": "Video Processing",
       "processingHint": "Optional local effects applied after the browser decodes each frame.",
       "zortosCommunityProxy": {
@@ -707,8 +781,8 @@
       "experimentalL4SRequestHint": "새로 생성된 세션에서 GeForce NOW L4S 스트리밍 기능을 요청하세요. 이는 브라우저 WebRTC 동작 자체를 변경하지 않으며 서비스 또는 네트워크 경로에서 무시될 수 있습니다.",
       "identifyAsSteamDeck": "Identify as Steam Deck",
       "identifyAsSteamDeckHint": "Identify as the Steam Deck GFN client to unlock Deck-specific resolutions and 90 FPS. Video options refresh automatically.",
-      "launchInConsoleMode": "Console Mode (TV / Big Picture)",
-      "launchInConsoleModeHint": "Start OpenNOW fullscreen with Controller Mode enabled, like GeForce NOW's TV mode. Sessions ask NVIDIA to launch games gamepad-friendly (big picture) while Console Mode or Controller Mode is active."
+      "identifyAsConsole": "Identify as Console",
+      "identifyAsConsoleHint": "Ask GeForce NOW to launch streamed games in gamepad-friendly mode so launchers such as Steam can start in Big Picture. This affects new GFN sessions only; it does not fullscreen OpenNOW or enable its console shell."
     },
     "recording": {
       "title": "Browser Recording",
@@ -787,6 +861,11 @@
     },
     "input": {
       "title": "입력",
+      "behavior": "Input Behavior",
+      "behaviorDescription": "Keyboard, controller, clipboard, and cursor behavior during streamed sessions.",
+      "mouse": "Mouse",
+      "mouseDescription": "Pointer sensitivity and acceleration applied while a game has input focus.",
+      "shortcutsDescription": "Keyboard shortcuts for stream controls and common session actions.",
       "mouseAndKeyboard": "마우스 및 키보드",
       "clipboardPaste": "클립보드 붙여넣기",
       "gyroscopeControls": "Gyroscope Controls",
@@ -820,6 +899,11 @@
     },
     "interface": {
       "appearance": "외관",
+      "appearanceDescription": "Language, theme, translucency, and accent presentation across OpenNOW.",
+      "behavior": "App Behavior",
+      "behaviorDescription": "Overlay visibility, reminders, and fullscreen behavior during everyday use.",
+      "libraryAndPresence": "Library & Presence",
+      "libraryAndPresenceDescription": "Library density and how OpenNOW represents your activity outside the app.",
       "appLanguage": "앱 언어",
       "appLanguageHint": "OpenNOW의 인터페이스 언어를 변경합니다. 번역되지 않은 문자열에는 영어가 사용됩니다.",
       "theme": "Theme",
@@ -850,8 +934,6 @@
       "antiAfkReminderDurationHint": "How long each periodic Anti-AFK activation reminder stays visible.",
       "autoFullScreen": "자동 전체 화면",
       "autoFullScreenHint": "세션에 연결하거나 시작할 때 자동으로 전체 화면으로 전환됩니다.",
-      "controllerMode": "Controller Mode",
-      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
       "escapeExitsFullscreen": "탈출 전체 화면 종료",
       "escapeExitsFullscreenHint": "활성화되면 Esc 키를 누르면 전체 화면이 종료됩니다. 비활성화되면(기본값) 마우스가 포인터로 잠겨 있는 동안 Escape가 게임으로 전달됩니다.",
       "discordRichPresence": "불일치의 풍부한 존재",
@@ -862,6 +944,8 @@
       "showSessionTimeRemainingInStatsOverlayHint": "The session countdown appears in the in-stream sidebar by default. Enable this to also show it in the stats overlay.",
       "sessionElapsedCounter": "세션 경과 카운터",
       "sessionElapsedCounterHint": "스트리밍하는 동안 라이브 세션 경과 카운터를 활성화하거나 비활성화합니다.",
+      "showSessionReport": "Show Session Report",
+      "showSessionReportHint": "Show a measured quality summary after each completed stream.",
       "sessionTimerReappear": "세션 타이머가 다시 나타납니다.",
       "sessionTimerVisibleTime": "세션 타이머 표시 시간",
       "sessionTimerReappearHint": "스트리밍하는 동안 세션 타이머가 다시 나타나는 빈도입니다(0은 반복을 비활성화합니다).",
@@ -876,7 +960,22 @@
       "posTopLeft": "Top left",
       "posTopRight": "Top right"
     },
+    "console": {
+      "title": "Console Experience",
+      "appShell": "App Shell",
+      "appShellDescription": "Controller-first navigation for browsing OpenNOW from a TV or across the room.",
+      "controllerMode": "Controller Mode",
+      "controllerModeHint": "Use a large-screen console-style shell with controller button hints and a horizontal library layout.",
+      "profilePicker": "Ask who's playing",
+      "profilePickerHint": "Show the profile picker when Controller Mode starts. Direct game launches are never interrupted."
+    },
     "about": {
+      "updates": "Updates",
+      "updatesDescription": "Release notes, update channel, and automatic application update behavior.",
+      "supportAndPrivacy": "Support & Privacy",
+      "supportAndPrivacyDescription": "Diagnostics, feedback, and logs you can share when you need help.",
+      "localData": "Local Data",
+      "localDataDescription": "Cached library artwork and metadata stored on this device.",
       "applicationUpdates": "애플리케이션 업데이트",
       "version": "버전 {{version}}",
       "backgroundChecksOn": "패키지된 빌드는 백그라운드에서 GitHub 릴리스를 확인합니다.",
@@ -920,6 +1019,10 @@
     },
     "nativeStreamer": {
       "title": "네이티브 스트리머",
+      "runtime": "Runtime",
+      "runtimeDescription": "Enable the experimental streamer and inspect its local GStreamer readiness.",
+      "videoOutput": "Video Output",
+      "videoOutputDescription": "Hardware capability, rendering backend, frame pacing, and window mode.",
       "nativeStreaming": "네이티브 스트리밍",
       "nativeStreamingHint": "네이티브 스트리밍은 실험적이며 플랫폼별 버그, 결함 또는 Chromium/WebRTC에 대한 폴백이 있을 수 있습니다. 새 세션에 대해 GStreamer 기반 데스크탑 스트리머를 테스트하는 것이 편한 경우에만 활성화하십시오.",
       "enablePromptKicker": "실험적",
@@ -1115,10 +1218,65 @@
     "cancel": "취소",
     "close": "닫기",
     "success": "Thanks — your feedback was sent.",
+    "bug": {
+      "kicker": "Diagnostics",
+      "title": "Report a bug",
+      "issueTitle": "Issue title",
+      "issueTitlePlaceholder": "Stream froze after reconnecting",
+      "description": "What happened?",
+      "descriptionPlaceholder": "What were you doing, what went wrong, what did you expect, and can you reproduce it?",
+      "meaningfulCharacters": "{{count}} / {{minimum}} meaningful characters",
+      "includeSystemInfo": "Include extra OS, GPU, and device info",
+      "includeSessionReport": "Include the latest measured session report",
+      "disclosure": "Before anything is uploaded, you can review the report and attachments. Logs are redacted. A selected session report includes the game title and measured quality, but never gameplay, passwords, account tokens, or your library list.",
+      "review": "Review & send",
+      "reviewHint": "Review the report fields and selected attachments before sending them to the PrintedWaste bug-report API.",
+      "appVersionRequired": "App version and build (required by the report API)",
+      "systemMetadata": "OS, GPU, and device metadata",
+      "noAttachments": "No optional diagnostic attachments selected",
+      "consent": "I understand what will be uploaded and consent to send this report to the PrintedWaste API.",
+      "consentRequired": "Confirm that you understand what will be uploaded before sending.",
+      "back": "뒤로",
+      "send": "Send to developer",
+      "success": "Thanks — your bug report was sent to the developer.",
+      "reference": "Reference: {{reference}}"
+    },
     "errors": {
       "empty": "Please enter a message before sending.",
       "notConfigured": "Feedback is unavailable because PostHog is not configured in this build.",
       "sendFailed": "Couldn't send feedback. Please try again."
     }
+  },
+  "sessionReport": {
+    "kicker": "Session quality",
+    "title": "Session report",
+    "scoreLabel": "Session score {{score}} out of 100",
+    "summary": "Measured over {{duration}}",
+    "limitedData": "Limited data: only {{count}} samples were available.",
+    "ratings": {
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "poor": "Needs work"
+    },
+    "connection": "Connection",
+    "metrics": {
+      "latency": "Latency",
+      "speed": "Stream speed",
+      "loss": "Packet loss",
+      "jitter": "Jitter",
+      "fps": "Frame rate",
+      "decode": "Decode time"
+    },
+    "peak": "peak {{value}}",
+    "profile": "Stream profile",
+    "requested": "Requested",
+    "delivered": "Delivered",
+    "route": "Route",
+    "changes": "Changes detected",
+    "recommendations": "Recommendations",
+    "dontShowAgain": "Don't show session reports again",
+    "close": "닫기",
+    "reportBug": "Experienced a bug? Report it"
   }
 }

@@ -25,6 +25,7 @@ export interface NativeStreamerRuntimeEnvironmentOptions {
   backendPreference: NativeStreamerBackendPreference;
   videoBackendPreference: NativeVideoBackendPreference;
   externalRendererEnabled: boolean;
+  linuxOzonePlatform?: string;
   cloudGsyncMode: NativeStreamerFeatureMode;
   d3dFullscreenMode: NativeStreamerFeatureMode;
 }
@@ -113,6 +114,22 @@ export function linuxInstallInstructions(
   platform = process.platform,
 ): NativeGstreamerInstallInstruction[] | undefined {
   return platform === "linux" ? LINUX_GSTREAMER_INSTALL_INSTRUCTIONS : undefined;
+}
+
+export function isNativeWaylandSession(
+  env: NodeJS.ProcessEnv,
+  ozonePlatform?: string,
+): boolean {
+  const explicitPlatform = ozonePlatform?.trim().toLowerCase();
+  if (explicitPlatform === "x11") return false;
+  if (explicitPlatform === "wayland") return true;
+
+  const environmentHint = env.ELECTRON_OZONE_PLATFORM_HINT?.trim().toLowerCase();
+  if (!explicitPlatform && environmentHint === "x11") return false;
+  if (!explicitPlatform && environmentHint === "wayland") return true;
+
+  return env.XDG_SESSION_TYPE?.trim().toLowerCase() === "wayland"
+    || Boolean(env.WAYLAND_DISPLAY?.trim());
 }
 
 function prependEnvPath(env: NodeJS.ProcessEnv, key: string, directory: string): void {
@@ -211,7 +228,10 @@ export function createNativeStreamerRuntimeEnvironment(
     env.OPENNOW_NATIVE_VIDEO_BACKEND = options.videoBackendPreference;
   }
   if (options.platform === "linux") {
-    env.OPENNOW_NATIVE_EXTERNAL_RENDERER = "0";
+    env.OPENNOW_NATIVE_EXTERNAL_RENDERER = isNativeWaylandSession(
+      options.baseEnv,
+      options.linuxOzonePlatform,
+    ) ? "1" : "0";
     if ((options.arch === "arm64" || options.arch === "arm") && !env.GST_V4L2_ENABLE_PROBE) {
       env.GST_V4L2_ENABLE_PROBE = "1";
     }

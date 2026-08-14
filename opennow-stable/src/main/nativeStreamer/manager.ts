@@ -483,6 +483,8 @@ export class NativeStreamerManager {
       externalRendererEnabled: process.platform === "win32"
         ? this.options.getExternalRendererEnabled()
         : false,
+      linuxOzonePlatform: app.commandLine.getSwitchValue("ozone-platform")
+        || app.commandLine.getSwitchValue("ozone-platform-hint"),
       cloudGsyncMode: this.options.getCloudGsyncMode(),
       d3dFullscreenMode: this.options.getD3dFullscreenMode(),
     });

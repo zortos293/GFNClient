@@ -16,7 +16,7 @@ export function StreamSessionOptions({
 
   return (
     <>
-      <div className="settings-row settings-row--column">
+      <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"
@@ -44,7 +44,7 @@ export function StreamSessionOptions({
         </span>
       </div>
 
-      <div className="settings-row settings-row--column">
+      <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"
@@ -74,19 +74,19 @@ export function StreamSessionOptions({
         </span>
       </div>
 
-      <div className="settings-row settings-row--column">
+      <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"
-            htmlFor="settings-stream-launch-console-mode"
+            htmlFor="settings-stream-identify-console"
           >
             <span className="settings-label-title">
-              {t("settings.video.launchInConsoleMode")}
+              {t("settings.video.identifyAsConsole")}
             </span>
           </label>
           <label className="settings-toggle">
             <input
-              id="settings-stream-launch-console-mode"
+              id="settings-stream-identify-console"
               type="checkbox"
               checked={settings.launchInConsoleMode}
               onChange={(event) => {
@@ -97,10 +97,10 @@ export function StreamSessionOptions({
           </label>
         </div>
         <span className="settings-subtle-hint">
-          {t("settings.video.launchInConsoleModeHint")}
+          {t("settings.video.identifyAsConsoleHint")}
         </span>
       </div>
+
     </>
   );
 }
-

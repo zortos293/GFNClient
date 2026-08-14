@@ -20,7 +20,7 @@ export function StatsOverlayControls({
 
   return (
     <>
-      <div className="settings-row settings-row--column">
+      <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"
@@ -47,7 +47,7 @@ export function StatsOverlayControls({
         </span>
       </div>
 
-      <div className="settings-row">
+      <div className="settings-row settings-row--simple">
         <label
           className="settings-label"
           htmlFor="settings-interface-stats-position"
@@ -86,7 +86,7 @@ export function StatsOverlayControls({
         </div>
       </div>
 
-      <div className="settings-row settings-row--column">
+      <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"
@@ -116,7 +116,7 @@ export function StatsOverlayControls({
         </span>
       </div>
 
-      <div className="settings-row settings-row--column">
+      <div className="settings-row settings-row--toggle">
         <div className="settings-row-top settings-row-top--compact">
           <label
             className="settings-label settings-label--wrap"
@@ -172,7 +172,7 @@ export function StatsOverlayControls({
 
       {settings.sessionCounterEnabled && (
         <>
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top">
               <label
                 className="settings-label"
@@ -207,7 +207,7 @@ export function StatsOverlayControls({
             </span>
           </div>
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top">
               <label
                 className="settings-label"

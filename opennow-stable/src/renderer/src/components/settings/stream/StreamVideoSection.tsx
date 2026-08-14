@@ -65,6 +65,14 @@ export function StreamVideoSection({
               handleChange={handleChange}
               onBlockingOverlayChange={onBlockingOverlayChange}
             />
+          </div>
+        </div>
+        <div className="settings-group">
+          <div className="settings-group-header">
+            <h3>{t("settings.video.gfnLaunchMode")}</h3>
+            <p>{t("settings.video.gfnLaunchModeHint")}</p>
+          </div>
+          <div className="settings-group-rows">
             <StreamSessionOptions settings={settings} handleChange={handleChange} />
           </div>
         </div>

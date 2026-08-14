@@ -78,17 +78,9 @@ export async function createMainWindow(
     mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
   });
 
-  // Console mode (big picture): mirror GeForce NOW's TV mode by launching
-  // fullscreen with the controller-oriented shell enabled.
-  if (settings.launchInConsoleMode && !settings.controllerMode) {
-    deps.settingsManager.set("controllerMode", true);
-  }
-
   // Direct-launch arguments always start fullscreen; the renderer applies the
   // console shell for the run without persisting the Controller Mode setting.
-  const startFullscreen =
-    settings.launchInConsoleMode ||
-    deps.getPendingDirectLaunchRequest() !== null;
+  const startFullscreen = deps.getPendingDirectLaunchRequest() !== null;
   const windowBackgroundColor = applyNativeAppTheme(settings.appTheme, nativeTheme);
   const linuxWindowIcon = process.platform === "linux"
     ? app.isPackaged

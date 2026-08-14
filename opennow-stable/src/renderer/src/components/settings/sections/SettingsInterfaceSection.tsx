@@ -1,4 +1,5 @@
 import { useCallback, useMemo, type JSX } from "react";
+import { Monitor } from "lucide-react";
 import type { AppAccentColor, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
@@ -62,10 +63,17 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
       <section className="settings-section">
         {showAll && <div className="settings-section-context">{t("settings.sections.interface")}</div>}
         <div className="settings-section-header">
-          <h2>{t("settings.interface.appearance")}</h2>
+          <Monitor />
+          <h2>{t("settings.sections.interface")}</h2>
         </div>
-        <div className="settings-rows">
-          <div className="settings-row">
+        <div className="settings-rows settings-rows--grouped">
+          <div className="settings-group">
+            <div className="settings-group-header">
+              <h3>{t("settings.interface.appearance")}</h3>
+              <p>{t("settings.interface.appearanceDescription")}</p>
+            </div>
+            <div className="settings-group-rows">
+          <div className="settings-row settings-row--simple">
             <label className="settings-label" htmlFor="settings-interface-app-language">
               {t("settings.interface.appLanguage")}
               <span className="settings-hint">{t("settings.interface.appLanguageHint")}</span>
@@ -80,7 +88,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             </div>
           </div>
 
-          <div className="settings-row">
+          <div className="settings-row settings-row--simple">
             <label className="settings-label" htmlFor="appTheme">
               {t("settings.interface.theme") || "Theme"}
               <span className="settings-hint">{t("settings.interface.themeHint") || "Choose a light, dark, or system-matching theme."}</span>
@@ -100,7 +108,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             </div>
           </div>
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-translucent-ui">
                 <span className="settings-label-title">{t("settings.interface.translucentUI") || "Translucent UI"}</span>
@@ -118,7 +126,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.translucentUIHint") || "Enable glassmorphism and translucent overlays."}</span>
           </div>
 
-          <div className="settings-row">
+          <div className="settings-row settings-row--simple">
             <label className="settings-label" htmlFor="settings-interface-accent-color">
               {t("settings.interface.accentColor")}
               <span className="settings-hint">{t("settings.interface.accentColorHint")}</span>
@@ -133,8 +141,16 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             </div>
           </div>
 
-          {/* Appearance toggles */}
-          <div className="settings-row settings-row--column">
+            </div>
+          </div>
+
+          <div className="settings-group">
+            <div className="settings-group-header">
+              <h3>{t("settings.interface.behavior")}</h3>
+              <p>{t("settings.interface.behaviorDescription")}</p>
+            </div>
+            <div className="settings-group-rows">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-hide-stream-buttons">
                 <span className="settings-label-title">{t("settings.interface.hideStreamOverlayButtons")}</span>
@@ -152,7 +168,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.hideStreamOverlayButtonsHint")}</span>
           </div>
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-hide-server-selector">
                 <span className="settings-label-title">{t("settings.interface.hideServerSelector")}</span>
@@ -170,7 +186,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.hideServerSelectorHint")}</span>
           </div>
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-show-anti-afk-indicator">
                 <span className="settings-label-title">{t("settings.interface.showAntiAfkIndicator")}</span>
@@ -188,7 +204,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.showAntiAfkIndicatorHint")}</span>
           </div>
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top">
               <label className="settings-label" htmlFor="settings-interface-anti-afk-reminder-interval">
                 {t("settings.interface.antiAfkReminderInterval")}
@@ -213,7 +229,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
           </div>
 
           {settings.antiAfkReminderEveryMinutes > 0 && (
-            <div className="settings-row settings-row--column">
+            <div className="settings-row settings-row--toggle">
               <div className="settings-row-top">
                 <label className="settings-label" htmlFor="settings-interface-anti-afk-reminder-duration">
                   {t("settings.interface.antiAfkReminderDuration")}
@@ -236,7 +252,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             </div>
           )}
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-auto-fullscreen">
                 <span className="settings-label-title">{t("settings.interface.autoFullScreen")}</span>
@@ -254,43 +270,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.autoFullScreenHint")}</span>
           </div>
 
-          <div className="settings-row settings-row--column">
-            <div className="settings-row-top settings-row-top--compact">
-              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-controller-mode">
-                <span className="settings-label-title">{t("settings.interface.controllerMode")}</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  id="settings-interface-controller-mode"
-                  type="checkbox"
-                  checked={settings.controllerMode}
-                  onChange={(e) => handleChange("controllerMode", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-            <span className="settings-subtle-hint">{t("settings.interface.controllerModeHint")}</span>
-          </div>
-
-          <div className="settings-row settings-row--column">
-            <div className="settings-row-top settings-row-top--compact">
-              <label className="settings-label settings-label--wrap" htmlFor="settings-interface-console-profile-picker">
-                <span className="settings-label-title">{t("settings.interface.consoleProfilePicker")}</span>
-              </label>
-              <label className="settings-toggle">
-                <input
-                  id="settings-interface-console-profile-picker"
-                  type="checkbox"
-                  checked={settings.consoleProfilePickerOnLaunch}
-                  onChange={(e) => handleChange("consoleProfilePickerOnLaunch", e.target.checked)}
-                />
-                <span className="settings-toggle-track" />
-              </label>
-            </div>
-            <span className="settings-subtle-hint">{t("settings.interface.consoleProfilePickerHint")}</span>
-          </div>
-
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-escape-exits-fullscreen">
                 <span className="settings-label-title">{t("settings.interface.escapeExitsFullscreen")}</span>
@@ -308,7 +288,16 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.escapeExitsFullscreenHint")}</span>
           </div>
 
-          <div className="settings-row settings-row--column">
+            </div>
+          </div>
+
+          <div className="settings-group">
+            <div className="settings-group-header">
+              <h3>{t("settings.interface.libraryAndPresence")}</h3>
+              <p>{t("settings.interface.libraryAndPresenceDescription")}</p>
+            </div>
+            <div className="settings-group-rows">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top settings-row-top--compact">
               <label className="settings-label settings-label--wrap" htmlFor="settings-interface-discord-rich-presence">
                 <span className="settings-label-title">{t("settings.interface.discordRichPresence")}</span>
@@ -326,7 +315,7 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.discordRichPresenceHint")}</span>
           </div>
 
-          <div className="settings-row settings-row--column">
+          <div className="settings-row settings-row--toggle">
             <div className="settings-row-top">
               <label className="settings-label" htmlFor="settings-interface-poster-size">{t("settings.interface.posterSize")}</label>
               <span className="settings-value-badge">{posterSizePercent}%</span>
@@ -345,6 +334,8 @@ export function SettingsInterfaceSection({ settings, showAll, handleChange, hand
             <span className="settings-subtle-hint">{t("settings.interface.posterSizeHint")}</span>
           </div>
 
+            </div>
+          </div>
         </div>
       </section>
 

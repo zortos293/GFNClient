@@ -28,7 +28,7 @@ export function VideoShaderControls({
   const { t } = useTranslation();
 
   return (
-    <div className="settings-row settings-row--column">
+    <div className="settings-row settings-row--complex">
       <div className="settings-row-top settings-row-top--compact">
         <label
           className="settings-label settings-label--wrap"
@@ -64,7 +64,7 @@ export function VideoShaderControls({
       {settings.videoShader.enabled && (
         <>
           {VIDEO_SHADER_CONTROLS.map((control) => (
-            <div key={control.key} className="settings-row settings-row--column">
+            <div key={control.key} className="settings-row settings-row--range">
               <div className="settings-row-top">
                 <label
                   className="settings-label"

@@ -74,6 +74,7 @@ import {
   sortLibraryGames,
 } from "./lib/gameCatalog";
 import { resolveInstallToPlayStorageRegionUrl } from "./lib/launchOwnership";
+import { resolveAppLaunchMode } from "./lib/appLaunchMode";
 import { hasAnyEligiblePrintedWasteZone, isAllianceStreamingBaseUrl } from "./lib/printedWaste";
 import { getStreamPointerLockTarget, isStreamPointerLocked } from "./lib/pointerLock";
 import { normalizeMembershipTier } from "./lib/queueAds";
@@ -778,10 +779,11 @@ export function App(): JSX.Element {
       transportMode: "webrtc",
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
-      appLaunchMode:
-        settings.controllerMode || settings.launchInConsoleMode || directLaunchConsoleMode
-          ? "gamepadFriendly"
-          : "default",
+      appLaunchMode: resolveAppLaunchMode({
+        controllerMode: settings.controllerMode,
+        requestGamepadFriendlySession: settings.launchInConsoleMode,
+        directLaunchConsoleMode,
+      }),
     };
   }, [
     settings.codec,

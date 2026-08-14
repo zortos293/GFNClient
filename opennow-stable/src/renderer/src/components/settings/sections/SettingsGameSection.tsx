@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { Globe } from "lucide-react";
 import type { GameLanguage, Settings } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import { SelectDropdown } from "../../ui/SelectDropdown";
@@ -19,10 +20,11 @@ export function SettingsGameSection({ settings, showAll, handleChange }: Setting
     <section className="settings-section">
       {showAll && <div className="settings-section-context">{t("settings.sections.game")}</div>}
       <div className="settings-section-header">
+        <Globe />
         <h2>{t("settings.game.title")}</h2>
       </div>
       <div className="settings-rows">
-        <div className="settings-row">
+        <div className="settings-row settings-row--simple">
           <label className="settings-label" htmlFor={gameLanguageId}>
             {t("settings.game.language")}
             <span className="settings-hint">{t("settings.game.inGameLanguageHint")}</span>
@@ -37,7 +39,7 @@ export function SettingsGameSection({ settings, showAll, handleChange }: Setting
             />
           </div>
         </div>
-        <div className="settings-row settings-row--column">
+        <div className="settings-row settings-row--toggle">
           <div className="settings-row-top settings-row-top--compact">
             <label className="settings-label settings-label--wrap" htmlFor={persistSettingsId}>
               <span className="settings-label-title">

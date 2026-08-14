@@ -145,13 +145,13 @@ export function SettingsThanksSection(): JSX.Element {
 
   return (
     <div className="settings-thanks-layout">
-      <section className="settings-section settings-thanks-hero">
-        <div className="settings-thanks-hero-icon">
-          <Heart size={18} />
-        </div>
-        <div className="settings-thanks-hero-copy">
-          <h2>{t("settings.thanks.title")}</h2>
-          <p>{t("settings.thanks.subtitle")}</p>
+      <section className="settings-section">
+        <div className="settings-section-header settings-section-header--with-copy">
+          <Heart />
+          <div>
+            <h2>{t("settings.thanks.title")}</h2>
+            <p className="settings-section-description">{t("settings.thanks.subtitle")}</p>
+          </div>
         </div>
       </section>
 

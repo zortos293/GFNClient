@@ -10,6 +10,7 @@ import {
 } from "../../lib/controllerCatalogUi";
 import { getGameScreenshots } from "../../lib/consoleGameMedia";
 import { withImageWidth } from "../../lib/consoleImageSizing";
+import { getRequiredPaidMembershipTier } from "../../lib/premiumMembership";
 import { useConsoleImageWidths } from "../../hooks/useConsoleImageWidths";
 import { useTranslation } from "../../i18n";
 
@@ -50,6 +51,7 @@ export function ConsoleGameDetails({
   const screenshots = getGameScreenshots(game);
   const players = getPlayerSummary(game);
   const genre = getPrimaryGenre(game);
+  const requiredPaidMembershipTier = getRequiredPaidMembershipTier(game);
 
   const [activeShot, setActiveShot] = useState(0);
   useEffect(() => setActiveShot(0), [game.id]);
@@ -80,7 +82,18 @@ export function ConsoleGameDetails({
             {game.contentRatings?.length ? (
               <span className="console-billboard-meta-chip">{game.contentRatings[0]}</span>
             ) : null}
+            {requiredPaidMembershipTier && (
+              <span className="console-billboard-meta-chip console-billboard-meta-chip--premium">
+                {t("gameDetails.premiumRequired")}
+              </span>
+            )}
           </div>
+
+          {requiredPaidMembershipTier && (
+            <p className="console-details-membership-note">
+              {t("gameDetails.freeTierUnavailable", { tier: requiredPaidMembershipTier })}
+            </p>
+          )}
 
           <p className="console-details-description">
             {game.longDescription || game.description || game.featureLabels?.join(" / ") || t("library.loadingGameDetails")}

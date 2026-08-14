@@ -1,4 +1,4 @@
-import { Check, X } from "lucide-react";
+import { Check, Crown, X } from "lucide-react";
 import {
   useId,
   useLayoutEffect,
@@ -9,6 +9,7 @@ import {
 import type { GameInfo } from "@shared/gfn";
 import { getControllerHeroBackgroundCandidates, getPlayerSummary } from "../lib/controllerCatalogUi";
 import { getActiveStoreOption, getStoreOptions } from "../lib/gameCardStores";
+import { getRequiredPaidMembershipTier } from "../lib/premiumMembership";
 import { useTranslation } from "../i18n";
 import { getStoreDisplayName, getStoreIconComponent } from "./GameCard";
 import { ModalSurface } from "./ui/ModalSurface";
@@ -126,6 +127,7 @@ export function GameDetailModal({
 
   const storeOptions = getStoreOptions(game, selectedVariantId);
   const activeStoreOption = getActiveStoreOption(storeOptions);
+  const requiredPaidMembershipTier = getRequiredPaidMembershipTier(game);
   const playerSummary = getPlayerSummary(game);
   const description = game.description
     || game.longDescription
@@ -181,6 +183,18 @@ export function GameDetailModal({
       </header>
 
       <div className="game-detail-body">
+        {requiredPaidMembershipTier && (
+          <div className="game-detail-membership-warning" role="note">
+            <span className="game-detail-membership-icon" aria-hidden="true">
+              <Crown size={18} strokeWidth={2.2} />
+            </span>
+            <span>
+              <strong>{t("gameDetails.premiumRequired")}</strong>
+              <span>{t("gameDetails.freeTierUnavailable", { tier: requiredPaidMembershipTier })}</span>
+            </span>
+          </div>
+        )}
+
         <ExpandableDescription
           key={game.id}
           descriptionId={descriptionId}

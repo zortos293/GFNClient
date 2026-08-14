@@ -23,6 +23,7 @@ internal class NativeUiTouchRoutingState {
     @Volatile
     private var touchControllerVisible = false
 
+    private val trackedPointerIds = mutableSetOf<Int>()
     private val ownedPointerIds = mutableSetOf<Int>()
 
     @Volatile
@@ -98,28 +99,36 @@ internal class NativeUiTouchRoutingState {
     }
 
     fun beginPointerGesture(pointerId: Int, touchesUi: Boolean) {
+        trackedPointerIds.clear()
         ownedPointerIds.clear()
+        trackedPointerIds += pointerId
         if (touchesUi) ownedPointerIds += pointerId
         syncPassthroughActive()
     }
 
     fun addPointer(pointerId: Int, touchesUi: Boolean) {
+        trackedPointerIds += pointerId
         if (touchesUi) ownedPointerIds += pointerId
         syncPassthroughActive()
     }
 
     fun ownsPointer(pointerId: Int): Boolean = pointerId in ownedPointerIds
 
+    fun classifiesPointerAsUi(pointerId: Int, touchesUiNow: Boolean): Boolean =
+        if (pointerId in trackedPointerIds) ownsPointer(pointerId) else touchesUiNow
+
     fun hasOwnedPointer(): Boolean = ownedPointerIds.isNotEmpty()
 
     fun ownedPointers(): Set<Int> = ownedPointerIds
 
     fun releasePointer(pointerId: Int) {
+        trackedPointerIds.remove(pointerId)
         ownedPointerIds.remove(pointerId)
         syncPassthroughActive()
     }
 
     fun endPointerGesture() {
+        trackedPointerIds.clear()
         ownedPointerIds.clear()
         syncPassthroughActive()
     }
@@ -234,10 +243,9 @@ object NativeStreamInputRouter {
 
     fun detach(next: NativeStreamClient) {
         if (client === next) {
+            releaseTouchMouseForLifecycle()
             client = null
             touchMouseState.forgetCursorPosition()
-            touchSlots.clear()
-            nativeUiTouchRouting.endPointerGesture()
             decodedStreamResolution = 0 to 0
             resetPresentationTransform()
         }
@@ -251,6 +259,7 @@ object NativeStreamInputRouter {
     fun releaseTouchMouseForLifecycle() {
         touchMouseState.reset(client)
         releaseAllNativeTouches()
+        nativeTouchDownPoints.clear()
         nativeUiTouchRouting.endPointerGesture()
     }
 
@@ -951,8 +960,10 @@ object NativeStreamInputRouter {
         }
 
     private fun isNativeUiTouchPointer(event: MotionEvent, index: Int, width: Int, height: Int): Boolean =
-        nativeUiTouchRouting.ownsPointer(event.getPointerId(index)) ||
-            pointerTouchesNativeUi(event, index, width, height)
+        nativeUiTouchRouting.classifiesPointerAsUi(
+            pointerId = event.getPointerId(index),
+            touchesUiNow = pointerTouchesNativeUi(event, index, width, height),
+        )
 
     private fun pointerTouchesNativeUi(event: MotionEvent, index: Int, width: Int, height: Int): Boolean {
         if (index !in 0 until event.pointerCount) return false

@@ -72,6 +72,26 @@ class NativeTouchTest {
     }
 
     @Test
+    fun pointerOwnershipDoesNotChangeWhenFingerCrossesControllerBounds() {
+        val routing = NativeUiTouchRoutingState()
+
+        routing.beginPointerGesture(pointerId = 4, touchesUi = false)
+        assertFalse(routing.classifiesPointerAsUi(pointerId = 4, touchesUiNow = true))
+
+        routing.endPointerGesture()
+        routing.beginPointerGesture(pointerId = 7, touchesUi = true)
+        assertTrue(routing.classifiesPointerAsUi(pointerId = 7, touchesUiNow = false))
+    }
+
+    @Test
+    fun untrackedPointerFallsBackToCurrentUiBounds() {
+        val routing = NativeUiTouchRoutingState()
+
+        assertTrue(routing.classifiesPointerAsUi(pointerId = 9, touchesUiNow = true))
+        assertFalse(routing.classifiesPointerAsUi(pointerId = 9, touchesUiNow = false))
+    }
+
+    @Test
     fun onlyAnOwnedLauncherGestureIsConsumedAfterUiOpens() {
         assertTrue(shouldConsumeNativeUiTransitionTouch(streamUiActive = true, hasOwnedPointer = true))
         assertFalse(shouldConsumeNativeUiTransitionTouch(streamUiActive = false, hasOwnedPointer = true))

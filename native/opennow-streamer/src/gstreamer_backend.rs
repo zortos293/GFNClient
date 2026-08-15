@@ -244,7 +244,23 @@ impl NativeStreamerBackend for GstreamerBackend {
         if let (Some(surface), Some(pipeline)) =
             (self.render_surface.clone(), self.pipeline.as_ref())
         {
-            pipeline.update_render_surface(surface);
+            if let Err(message) = pipeline.update_render_surface(surface) {
+                if let Some(pipeline) = self.pipeline.take() {
+                    let _ = pipeline.stop();
+                }
+                return BackendReply {
+                    events: vec![Event::Error {
+                        code: "native-render-surface-failed".to_owned(),
+                        message: message.clone(),
+                    }],
+                    response: Some(Response::Error {
+                        id: Some(id),
+                        code: "native-render-surface-failed".to_owned(),
+                        message,
+                    }),
+                    should_continue: true,
+                };
+            }
         }
 
         BackendReply {
@@ -499,7 +515,20 @@ impl NativeStreamerBackend for GstreamerBackend {
 
         self.render_surface = Some(surface.clone());
         if let Some(pipeline) = self.pipeline.as_ref() {
-            pipeline.update_render_surface(surface);
+            if let Err(message) = pipeline.update_render_surface(surface) {
+                return BackendReply {
+                    events: vec![Event::Error {
+                        code: "native-render-surface-failed".to_owned(),
+                        message: message.clone(),
+                    }],
+                    response: Some(Response::Error {
+                        id: Some(command.id),
+                        code: "native-render-surface-failed".to_owned(),
+                        message,
+                    }),
+                    should_continue: true,
+                };
+            }
         }
 
         BackendReply::response(Response::Ok { id: command.id })
@@ -570,7 +599,8 @@ mod tests {
     use crate::gstreamer_config::PRESENT_LIMITER_AUTO_SENTINEL;
     use crate::gstreamer_input::parse_input_handshake_version;
     use crate::gstreamer_liveness::{
-        caps_framerate_summary, sink_stats_summary, VideoStallAction, VideoStallTracker,
+        caps_framerate_summary, classify_video_startup_failure, sink_stats_summary,
+        VideoStallAction, VideoStallTracker,
     };
     use crate::gstreamer_pipeline::{
         backend_runs_on_platform, configure_stats_overlay_element,
@@ -594,6 +624,53 @@ mod tests {
             "stun://stun2.l.google.com:19302"
         );
         pipeline.stop().expect("pipeline stops");
+    }
+
+    #[test]
+    fn invalid_internal_render_surface_fails_before_stream_negotiation() {
+        if crate::gstreamer_config::use_external_renderer_window() {
+            return;
+        }
+
+        let pipeline = GstreamerPipeline::build(None, &[]).expect("GStreamer pipeline");
+        let error = pipeline
+            .update_render_surface(NativeRenderSurface {
+                window_handle: Some("not-a-native-handle".to_owned()),
+                rect: Some(crate::protocol::NativeRenderRect {
+                    x: 0,
+                    y: 0,
+                    width: 1280,
+                    height: 720,
+                }),
+                visible: true,
+                device_scale_factor: 1.0,
+                show_stats: false,
+            })
+            .expect_err("invalid native parent handle must fail");
+        assert!(error.contains("Invalid native parent window handle"));
+        pipeline.stop().expect("pipeline stops");
+    }
+
+    #[test]
+    fn classifies_native_video_startup_failure_stage() {
+        assert_eq!(
+            classify_video_startup_failure(0, 0, 0),
+            ("native-video-input-startup-timeout", "RTP video input")
+        );
+        assert_eq!(
+            classify_video_startup_failure(4096, 0, 0),
+            (
+                "native-video-decoder-startup-timeout",
+                "video decoder output"
+            )
+        );
+        assert_eq!(
+            classify_video_startup_failure(4096, 10, 0),
+            (
+                "native-video-renderer-startup-timeout",
+                "video renderer input"
+            )
+        );
     }
 
     #[test]
@@ -877,26 +954,26 @@ mod tests {
     }
 
     #[test]
-    fn explicit_linux_backend_selection_does_not_fall_back() {
+    fn explicit_linux_backend_selection_retains_native_software_fallback() {
         assert_eq!(
             preferred_rtp_video_apis_for("nvdec", Some(120)),
-            vec![RtpVideoApi::Nvdec]
+            vec![RtpVideoApi::Nvdec, RtpVideoApi::Software]
         );
         assert_eq!(
             preferred_rtp_video_apis_for("vaapi", Some(120)),
-            vec![RtpVideoApi::Vaapi]
+            vec![RtpVideoApi::Vaapi, RtpVideoApi::Software]
         );
         assert_eq!(
             preferred_rtp_video_apis_for("v4l2", Some(120)),
-            vec![RtpVideoApi::V4L2]
+            vec![RtpVideoApi::V4L2, RtpVideoApi::Software]
         );
         assert_eq!(
             preferred_rtp_video_apis_for("vulkan", Some(240)),
-            vec![RtpVideoApi::Vulkan]
+            vec![RtpVideoApi::Vulkan, RtpVideoApi::Software]
         );
         assert_eq!(
             preferred_rtp_video_apis_for("vk", Some(120)),
-            vec![RtpVideoApi::Vulkan]
+            vec![RtpVideoApi::Vulkan, RtpVideoApi::Software]
         );
     }
 

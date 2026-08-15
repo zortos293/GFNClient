@@ -5,6 +5,7 @@ import test from "node:test";
 
 import type {
   NativeStreamerCapabilities,
+  NativeStreamerEvent,
   NativeStreamerResponse,
 } from "@shared/nativeStreamer";
 import { NativeStreamerManager } from "./manager";
@@ -44,6 +45,7 @@ interface ManagerInternals {
     timeoutMs: number,
   ): Promise<NativeStreamerResponse>;
   installStdinErrorHandler(child: ChildProcessWithoutNullStreams): void;
+  handleEvent(message: NativeStreamerEvent): void;
 }
 
 function createFakeChild(): FakeChild {
@@ -82,12 +84,43 @@ function createManager(): {
     sendIceCandidate: async () => undefined,
     requestKeyframe: async () => undefined,
     emit: () => undefined,
+    retryWithSoftwareDecoder: () => undefined,
   });
   return {
     manager,
     internals: manager as unknown as ManagerInternals,
   };
 }
+
+test("Linux decoder startup timeout requests one native software retry", () => {
+  if (process.platform !== "linux") return;
+
+  let recoveryMessage = "";
+  const manager = new NativeStreamerManager({
+    mainDir: "",
+    getBackendPreference: () => "auto",
+    getVideoBackendPreference: () => "nvdec",
+    getExecutablePathOverride: () => "",
+    getCloudGsyncMode: () => "auto",
+    getD3dFullscreenMode: () => "auto",
+    getExternalRendererEnabled: () => false,
+    sendAnswer: async () => undefined,
+    sendIceCandidate: async () => undefined,
+    requestKeyframe: async () => undefined,
+    emit: () => undefined,
+    retryWithSoftwareDecoder: (message) => {
+      recoveryMessage = message;
+    },
+  });
+
+  (manager as unknown as ManagerInternals).handleEvent({
+    type: "error",
+    code: "native-video-decoder-startup-timeout",
+    message: "decoder produced no frames",
+  });
+
+  assert.equal(recoveryMessage, "decoder produced no frames");
+});
 
 function writeError(code: string): NodeJS.ErrnoException {
   const error = new Error(`${code}: write failed`) as NodeJS.ErrnoException;

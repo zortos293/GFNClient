@@ -132,6 +132,14 @@ export function isNativeWaylandSession(
     || Boolean(env.WAYLAND_DISPLAY?.trim());
 }
 
+export function shouldDefaultLinuxShellToX11(
+  platform: NodeJS.Platform,
+  ozonePlatform?: string,
+): boolean {
+  const normalized = ozonePlatform?.trim().toLowerCase();
+  return platform === "linux" && (!normalized || normalized === "auto");
+}
+
 function prependEnvPath(env: NodeJS.ProcessEnv, key: string, directory: string): void {
   env[key] = env[key] ? `${directory}${delimiter}${env[key]}` : directory;
 }
@@ -218,6 +226,15 @@ function configureBundledGstreamerRuntime(
 export function createNativeStreamerRuntimeEnvironment(
   options: NativeStreamerRuntimeEnvironmentOptions,
 ): NativeStreamerRuntimeEnvironment {
+  if (
+    options.platform === "linux"
+    && isNativeWaylandSession(options.baseEnv, options.linuxOzonePlatform)
+  ) {
+    throw new Error(
+      "Native Linux video requires Electron to run through X11/XWayland so GStreamer can embed frames in the OpenNOW window. Relaunch with --ozone-platform=x11; pure Wayland native embedding is not supported yet.",
+    );
+  }
+
   const env: NodeJS.ProcessEnv = {
     ...options.baseEnv,
     OPENNOW_NATIVE_STREAMER_PROTOCOL: String(options.protocolVersion),
@@ -228,10 +245,7 @@ export function createNativeStreamerRuntimeEnvironment(
     env.OPENNOW_NATIVE_VIDEO_BACKEND = options.videoBackendPreference;
   }
   if (options.platform === "linux") {
-    env.OPENNOW_NATIVE_EXTERNAL_RENDERER = isNativeWaylandSession(
-      options.baseEnv,
-      options.linuxOzonePlatform,
-    ) ? "1" : "0";
+    env.OPENNOW_NATIVE_EXTERNAL_RENDERER = "0";
     if ((options.arch === "arm64" || options.arch === "arm") && !env.GST_V4L2_ENABLE_PROBE) {
       env.GST_V4L2_ENABLE_PROBE = "1";
     }

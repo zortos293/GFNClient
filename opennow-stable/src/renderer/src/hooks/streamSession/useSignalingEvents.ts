@@ -297,6 +297,10 @@ export function useSignalingEvents({
           }
         } else if (event.type === "native-stream-started") {
           console.log("[App] Native streamer started:", event.message ?? "");
+          diagnosticsStore.set({
+            ...diagnosticsStore.getSnapshot(),
+            nativeRendererActive: true,
+          });
           activateNativeInputForCurrentSession(nativeInputProtocolVersionRef.current ?? undefined);
         } else if (event.type === "native-input-ready") {
           console.log("[App] Native input protocol ready:", event.protocolVersion);
@@ -472,6 +476,7 @@ export function useSignalingEvents({
           }
         } else if (event.type === "error") {
           console.error("Signaling error:", event.message);
+          throw new Error(event.message);
         }
       } catch (error) {
         if (appUnloadingRef.current) {

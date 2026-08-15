@@ -125,9 +125,9 @@ Contributions are welcome. Read the [contributing guide](.github/CONTRIBUTING.md
 
 <a href="https://www.star-history.com/?repos=OpenCloudGaming%2FOpenNOW&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&theme=dark&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=OpenCloudGaming/OpenNOW&type=date&legend=top-left&sealed_token=13YQdHqPNeJl_PZ60Tn1heFHwLWvLm3sH5u-7HePhBdXpG1poEyGeM3QG_jf08kKYWxfy65fe7OZDjBzuhznLOS5gdEMLDUXY6D7NCLdFIpOTHrmG_JN8Q" />
  </picture>
 </a>
 

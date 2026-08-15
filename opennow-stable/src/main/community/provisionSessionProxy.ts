@@ -9,7 +9,9 @@ import { getStableDeviceId } from "../platforms/gfn/deviceId";
 import { normalizeSessionProxyUrl } from "../platforms/gfn/proxyUrl";
 import { fetchWithTimeout } from "../services/requestTimeout";
 
-const PROVISION_TIMEOUT_MS = 15_000;
+const PROVISION_TIMEOUT_MS = 45_000;
+const PROVISION_RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const PROVISION_RETRY_DELAY_MS = 1_500;
 
 interface ProvisionResponseBody {
   proxyUrl?: unknown;
@@ -18,9 +20,8 @@ interface ProvisionResponseBody {
   message?: unknown;
 }
 
-export async function provisionZortosCommunityProxy(): Promise<CommunityProxyProvisionResult> {
-  const clientId = getStableDeviceId();
-  const response = await fetchWithTimeout(
+async function requestCommunityProxyProvision(clientId: string): Promise<Response> {
+  return fetchWithTimeout(
     ZORTOS_COMMUNITY_PROXY_PROVISION_URL,
     {
       method: "POST",
@@ -34,6 +35,15 @@ export async function provisionZortosCommunityProxy(): Promise<CommunityProxyPro
     PROVISION_TIMEOUT_MS,
     "Zortos community proxy provision",
   );
+}
+
+export async function provisionZortosCommunityProxy(): Promise<CommunityProxyProvisionResult> {
+  const clientId = getStableDeviceId();
+  let response = await requestCommunityProxyProvision(clientId);
+  if (!response.ok && PROVISION_RETRY_STATUSES.has(response.status)) {
+    await new Promise((resolve) => setTimeout(resolve, PROVISION_RETRY_DELAY_MS));
+    response = await requestCommunityProxyProvision(clientId);
+  }
 
   if (!response.ok) {
     let detail = "";

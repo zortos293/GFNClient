@@ -1,5 +1,5 @@
 import { buildGfnGraphQlHeaders } from "./clientHeaders";
-import { fetchWithOptionalProxy } from "./proxyFetch";
+import { fetchCatalogRequest } from "./catalogFetch";
 
 export const LCARS_GRAPHQL_URL = "https://apps.gxn.nvidia.com/graphql";
 export const LCARS_CDN_GRAPHQL_URL = "https://games.geforce.com/graphql";
@@ -512,11 +512,11 @@ export async function fetchLcarsGraphQl<T extends GraphQlResponsePayload>(
     "Content-Type": "application/graphql",
   };
 
-  let response = await fetchWithOptionalProxy(`${endpoint}?${params.toString()}`, { headers }, proxyUrl);
+  let response = await fetchCatalogRequest(`${endpoint}?${params.toString()}`, { headers }, proxyUrl);
 
   if (response.status === 400 && query) {
     params.set("query", query);
-    response = await fetchWithOptionalProxy(`${endpoint}?${params.toString()}`, { headers }, proxyUrl);
+    response = await fetchCatalogRequest(`${endpoint}?${params.toString()}`, { headers }, proxyUrl);
   }
 
   if (!response.ok) {
@@ -533,7 +533,7 @@ export async function postLcarsGraphQl<T extends GraphQlResponsePayload>(
   token: string,
   proxyUrl?: string,
 ): Promise<T> {
-  const response = await fetchWithOptionalProxy(LCARS_GRAPHQL_URL, {
+  const response = await fetchCatalogRequest(LCARS_GRAPHQL_URL, {
     method: "POST",
     headers: buildGfnGraphQlHeaders(token),
     body: JSON.stringify({ query, variables }),

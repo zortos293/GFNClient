@@ -40,7 +40,7 @@ interface FramegenRuntime {
 }
 
 function align16(value: number): number {
-  return Math.max(16, Math.floor(value / 16) * 16);
+  return Math.max(16, Math.round(value / 16) * 16);
 }
 
 function resolveModelSize(
@@ -111,17 +111,12 @@ async function loadWeights(): Promise<LoadedWeights> {
       }
       return fetchWeightsFromBase(FRAMEGEN_WEIGHTS_CDN);
     })();
-
-    weightsPromise = pending.then(
-      (weights) => weights,
-      (error) => {
-        // Never sticky-cache a rejected promise across retries.
-        if (weightsPromise === pending || weightsPromise === null) {
-          weightsPromise = null;
-        }
-        throw error;
-      },
-    );
+    weightsPromise = pending;
+    void pending.catch(() => {
+      if (weightsPromise === pending) {
+        weightsPromise = null;
+      }
+    });
   }
   return weightsPromise;
 }
@@ -277,8 +272,16 @@ export class FrameInterpolationPipeline {
       }
     }
 
-    if (this.disposed || this.initFailed || !this.device) {
+    if (
+      this.disposed
+      || this.initFailed
+      || !this.device
+      || !frameInterpolationIsActive(this.settings)
+    ) {
       this.active = false;
+      this.stopLoops();
+      this.canvas.style.display = "none";
+      this.hasRenderedFrame = false;
       return;
     }
 

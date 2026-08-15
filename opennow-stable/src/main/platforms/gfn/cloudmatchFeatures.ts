@@ -1,4 +1,9 @@
-import type { AppLaunchMode, SessionCreateRequest, StreamSettings } from "@shared/gfn";
+import type {
+  AppLaunchMode,
+  SessionCreateRequest,
+  StreamSettings,
+  VideoCodec,
+} from "@shared/gfn";
 import { DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR } from "@shared/cloudGsync";
 
 import type { CloudMatchRequest } from "./types";
@@ -20,6 +25,7 @@ export function buildRequestedStreamingFeatures(
   bitDepth: number,
   chromaFormat: number,
   _hdrEnabled: boolean,
+  supportedCodecs?: readonly VideoCodec[],
 ): CloudMatchRequest["sessionRequestData"]["requestedStreamingFeatures"] {
   const cloudGsync = settings.enableCloudGsync;
 
@@ -36,7 +42,47 @@ export function buildRequestedStreamingFeatures(
     prefilterSharpness: 0,
     prefilterNoiseReduction: 0,
     hudStreamingMode: 0,
+    maxBitrateKbps: Math.round(settings.maxBitrateMbps * 1000),
+    codec: resolveRequestedCodecWireValue(
+      codecWireValue(settings.codec),
+      (supportedCodecs ?? []).map(codecWireValue),
+    ),
+    vsync: false,
+    dynamicStreamingMode: 3,
+    audioChannelCount: 2,
   };
+}
+
+export function codecWireValue(codec: VideoCodec): number {
+  switch (codec) {
+    case "H264":
+      return 1;
+    case "H265":
+      return 2;
+    case "AV1":
+      return 3;
+    default:
+      return 0;
+  }
+}
+
+const OFFICIAL_CODEC_LADDERS: Readonly<Record<number, readonly number[]>> = {
+  0: [0],
+  1: [1],
+  2: [2, 1],
+  3: [3, 2, 1],
+};
+
+export function resolveRequestedCodecWireValue(
+  preferenceWireValue: number,
+  supportedCodecWireValues: readonly number[],
+): number {
+  const ladder = OFFICIAL_CODEC_LADDERS[preferenceWireValue] ?? [preferenceWireValue];
+  if (supportedCodecWireValues.length === 0) {
+    return ladder[0] ?? preferenceWireValue;
+  }
+  const supported = new Set(supportedCodecWireValues);
+  return ladder.find((value) => supported.has(value)) ?? ladder[0] ?? preferenceWireValue;
 }
 
 export function shouldRequestReflex(settings: StreamSettings): boolean {

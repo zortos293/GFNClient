@@ -70,8 +70,9 @@ export interface AuthSessionApi {
   handleLogin: () => Promise<void>;
   handleQrLogin: () => Promise<void>;
   handleCancelQrLogin: () => void;
-  handleSwitchAccount: (userId: string) => Promise<void>;
+  handleSwitchAccount: (userId: string, pin?: string) => Promise<boolean>;
   handleRemoveAccount: (userId: string) => void;
+  removeAccountNow: (userId: string) => Promise<void>;
   confirmRemoveAccount: () => Promise<void>;
   handleAddAccount: () => void;
   confirmLogout: () => Promise<void>;
@@ -327,14 +328,15 @@ export function useAuthSession({
     }
   }, [loadSessionRuntimeData, providerIdpId, qrLoginChallenge, refreshSavedAccounts, t]);
 
-  const handleSwitchAccount = useCallback(async (userId: string) => {
+  const handleSwitchAccount = useCallback(async (userId: string, pin?: string) => {
     try {
-      const session = await window.openNow.switchAccount(userId);
+      const session = await window.openNow.switchAccount(userId, pin);
       setAuthSession(session);
       setProviderIdpId(session.provider.idpId);
       await refreshSavedAccounts();
       await loadSessionRuntimeData(session);
       await refreshNavbarActiveSession(session);
+      return true;
     } catch (error) {
       console.warn("Failed to switch account:", error);
       setLoginError(error instanceof Error ? error.message : t("errors.switchAccountFailed"));
@@ -353,6 +355,7 @@ export function useAuthSession({
       } catch (recoveryError) {
         console.warn("Failed to recover account state after switch failure:", recoveryError);
       }
+      return false;
     }
   }, [
     clearSessionCatalog,
@@ -368,6 +371,24 @@ export function useAuthSession({
     setRemoveAccountConfirmOpen(true);
   }, []);
 
+  const removeAccountNow = useCallback(async (userId: string) => {
+    await window.openNow.removeAccount(userId);
+    const [accounts, sessionResult] = await Promise.all([
+      window.openNow.getSavedAccounts(),
+      window.openNow.getAuthSession(),
+    ]);
+    setSavedAccounts(accounts);
+    setAuthSession(sessionResult.session);
+    if (sessionResult.session) {
+      setProviderIdpId(sessionResult.session.provider.idpId);
+      await loadSessionRuntimeData(sessionResult.session);
+      await refreshNavbarActiveSession(sessionResult.session);
+      return;
+    }
+    clearSessionCatalog("no-session", { clearFeatured: true });
+    setNavbarActiveSession(null);
+  }, [clearSessionCatalog, loadSessionRuntimeData, refreshNavbarActiveSession, setNavbarActiveSession]);
+
   const confirmRemoveAccount = useCallback(async () => {
     if (!accountToRemove || removeAccountInFlightRef.current) return;
     removeAccountInFlightRef.current = true;
@@ -376,30 +397,13 @@ export function useAuthSession({
     setAccountToRemove(null);
 
     try {
-      await window.openNow.removeAccount(targetUserId);
-      const [accounts, sessionResult] = await Promise.all([
-        window.openNow.getSavedAccounts(),
-        window.openNow.getAuthSession(),
-      ]);
-      setSavedAccounts(accounts);
-      setAuthSession(sessionResult.session);
-      if (sessionResult.session) {
-        setProviderIdpId(sessionResult.session.provider.idpId);
-        await loadSessionRuntimeData(sessionResult.session);
-        await refreshNavbarActiveSession(sessionResult.session);
-        return;
-      }
-      clearSessionCatalog("no-session", { clearFeatured: true });
-      setNavbarActiveSession(null);
+      await removeAccountNow(targetUserId);
     } finally {
       removeAccountInFlightRef.current = false;
     }
   }, [
     accountToRemove,
-    clearSessionCatalog,
-    loadSessionRuntimeData,
-    refreshNavbarActiveSession,
-    setNavbarActiveSession,
+    removeAccountNow,
   ]);
 
   const handleAddAccount = useCallback(() => {
@@ -476,6 +480,7 @@ export function useAuthSession({
     handleCancelQrLogin,
     handleSwitchAccount,
     handleRemoveAccount,
+    removeAccountNow,
     confirmRemoveAccount,
     handleAddAccount,
     confirmLogout,

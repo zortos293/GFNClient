@@ -33,7 +33,7 @@ import {
   fetchCloudMatch,
   formatErrorForLog,
   isZoneHostname,
-  normalizeCloudMatchBaseUrl,
+  normalizeTrustedCloudMatchBaseUrl,
   resolveCreateSessionBase,
   resolvePollStopBase,
   resolveStreamingBaseUrl,
@@ -48,8 +48,8 @@ import {
 import {
   buildClaimRequestBody,
   buildSessionRequestBody,
-  createNetworkTestSession,
 } from "./cloudmatchSessionRequest";
+import { createNetworkTestSession } from "./networkTestSession";
 import {
   echoedSessionAppLaunchMode,
   extractAdState,
@@ -64,6 +64,7 @@ import {
 export {
   appLaunchModeWireValue,
   buildRequestedStreamingFeatures,
+  resolveRequestedCodecWireValue,
   shouldEnableInGameSettingsPersistence,
   shouldRequestReflex,
 } from "./cloudmatchFeatures";
@@ -299,7 +300,7 @@ export async function getActiveSessions(
     throw new Error("Missing token for getting active sessions");
   }
 
-  const base = normalizeCloudMatchBaseUrl(streamingBaseUrl);
+  const base = normalizeTrustedCloudMatchBaseUrl(streamingBaseUrl);
   const headers = buildGfnCloudMatchHeaders({
     token,
     deviceId: getStableDeviceId(),
@@ -310,7 +311,14 @@ export async function getActiveSessions(
     return primary;
   }
 
-  for (const fallbackBase of await discoverActiveSessionFallbackBases(base, headers)) {
+  for (const discoveredBase of await discoverActiveSessionFallbackBases(base, headers)) {
+    let fallbackBase: string;
+    try {
+      fallbackBase = normalizeTrustedCloudMatchBaseUrl(discoveredBase);
+    } catch {
+      console.warn("[CloudMatch] Ignoring untrusted active-session fallback endpoint");
+      continue;
+    }
     if (fallbackBase === base) {
       continue;
     }

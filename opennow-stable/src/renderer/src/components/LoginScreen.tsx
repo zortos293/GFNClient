@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from "react";
 import type { JSX } from "react";
-import QRCode from "qrcode";
 import { LogIn, ChevronDown, QrCode } from "lucide-react";
 import { AnimatePresence, m } from "motion/react";
 import type { AuthDeviceLoginChallenge, LoginProvider } from "@shared/gfn";
@@ -68,15 +67,18 @@ export function LoginScreen({
       };
     }
 
-    QRCode.toDataURL(qrLoginChallenge.verificationUriComplete, {
-      errorCorrectionLevel: "M",
-      margin: 1,
-      scale: 8,
-      color: {
-        dark: "#07111f",
-        light: "#ffffff",
+    void import("qrcode").then(({ default: QRCode }) => QRCode.toDataURL(
+      qrLoginChallenge.verificationUriComplete,
+      {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        scale: 8,
+        color: {
+          dark: "#07111f",
+          light: "#ffffff",
+        },
       },
-    }).then((dataUrl) => {
+    )).then((dataUrl) => {
       if (!cancelled) {
         setQrCodeDataUrl(dataUrl);
       }

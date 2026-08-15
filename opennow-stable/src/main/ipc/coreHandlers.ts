@@ -7,6 +7,7 @@ import type {
   Shell,
   SystemPreferences,
 } from "electron";
+import { nativeTheme } from "electron";
 import { IPC_CHANNELS } from "@shared/ipc";
 import type { CommunityProxyProvisionResult } from "@shared/communityProxy";
 import type { DiscordActivityUpdate } from "@shared/discord";
@@ -18,6 +19,7 @@ import type {
   Settings,
   StreamRegion,
   ThankYouDataResult,
+  GpuBackendInfo,
 } from "@shared/gfn";
 import { exportLogs } from "@shared/logger";
 import { provisionZortosCommunityProxy } from "../community/provisionSessionProxy";
@@ -42,6 +44,10 @@ import type { SignalingCoordinator } from "../signaling/signalingCoordinator";
 import { fetchThanksData } from "../thanks/fetchThanksData";
 import { applyTelemetrySettingsChange, syncMainTelemetry } from "../telemetry/posthog";
 import { openExplicitExternalUrl } from "../window/externalUrl";
+import { EMPTY_GPU_BACKEND_INFO, getGpuBackendInfo } from "../gpuInfo";
+import { applyNativeAppTheme } from "../window/windowTheme";
+import type { DesktopBugReportRequest, DesktopBugReportReceipt } from "@shared/bugReport";
+import { uploadDesktopBugReport } from "../services/desktopBugReports";
 
 type DiscordMonitor = {
   start(): void;
@@ -218,6 +224,15 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
     return clipboard.readText();
   });
 
+  ipcMain.handle(IPC_CHANNELS.GPU_GET_INFO, async (): Promise<GpuBackendInfo> => {
+    try {
+      return await getGpuBackendInfo(app);
+    } catch (error) {
+      console.warn("[Main] Failed to collect GPU backend info:", error);
+      return EMPTY_GPU_BACKEND_INFO;
+    }
+  });
+
   ipcMain.handle(
     IPC_CHANNELS.SETTINGS_SET,
     async <K extends keyof Settings>(
@@ -234,6 +249,10 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
         }
         if (key === "updateChannel") {
           deps.getAppUpdater()?.setUpdateChannel(appliedValue as Settings["updateChannel"]);
+        }
+        if (key === "appTheme") {
+          const backgroundColor = applyNativeAppTheme(appliedValue as Settings["appTheme"], nativeTheme);
+          deps.getMainWindow()?.setBackgroundColor(backgroundColor);
         }
         deps.getSignalingCoordinator()?.applySettingsChange(key, appliedValue);
         if (key === "discordRichPresence") {
@@ -253,6 +272,8 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_RESET, async (): Promise<Settings> => {
     const resetSettings = settingsManager.reset();
+    const backgroundColor = applyNativeAppTheme(resetSettings.appTheme, nativeTheme);
+    deps.getMainWindow()?.setBackgroundColor(backgroundColor);
     deps
       .getAppUpdater()
       ?.setAutomaticChecksEnabled(resetSettings.autoCheckForUpdates);
@@ -355,6 +376,19 @@ export function registerCoreIpcHandlers(deps: CoreIpcHandlerDeps): void {
     IPC_CHANNELS.LOGS_EXPORT,
     async (_event, format: "text" | "json" = "text"): Promise<string> => {
       return exportLogs(format);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.BUG_REPORT_SUBMIT,
+    async (_event, input: DesktopBugReportRequest): Promise<DesktopBugReportReceipt> => {
+      try {
+        return await uploadDesktopBugReport({ app, settingsManager }, input);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Bug report upload failed.";
+        console.warn("[BugReport] Upload failed:", message);
+        throw new Error(message);
+      }
     },
   );
 

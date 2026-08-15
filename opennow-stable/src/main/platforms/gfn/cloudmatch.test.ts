@@ -17,7 +17,9 @@ import {
   createSession,
   extractServerInfoRegionBases,
   getActiveSessions,
+  resolveRequestedCodecWireValue,
 } from "./cloudmatch";
+import { buildSessionRequestBody } from "./cloudmatchSessionRequest";
 
 function makeSettings(overrides: Partial<StreamSettings> = {}): StreamSettings {
   return {
@@ -118,7 +120,75 @@ test("CloudMatch uses official streaming feature enum values", () => {
     prefilterSharpness: 0,
     prefilterNoiseReduction: 0,
     hudStreamingMode: 0,
+    maxBitrateKbps: 75000,
+    codec: 2,
+    vsync: false,
+    dynamicStreamingMode: 3,
+    audioChannelCount: 2,
   });
+});
+
+test("CloudMatch resolves codec preferences down the official capability ladder", () => {
+  assert.equal(resolveRequestedCodecWireValue(3, [3, 2, 1]), 3);
+  assert.equal(resolveRequestedCodecWireValue(3, [2, 1]), 2);
+  assert.equal(resolveRequestedCodecWireValue(3, [1]), 1);
+  assert.equal(resolveRequestedCodecWireValue(2, [2, 1]), 2);
+  assert.equal(resolveRequestedCodecWireValue(2, [1]), 1);
+  assert.equal(resolveRequestedCodecWireValue(1, [3, 2]), 1);
+  assert.equal(resolveRequestedCodecWireValue(0, [3, 2, 1]), 0);
+  assert.equal(resolveRequestedCodecWireValue(3, []), 3);
+});
+
+test("CloudMatch streaming features use the supported codec capability list", () => {
+  assert.equal(
+    buildRequestedStreamingFeatures(
+      makeSettings({ codec: "AV1" }),
+      0,
+      0,
+      false,
+      ["AV1", "H265", "H264"],
+    ).codec,
+    3,
+  );
+  assert.equal(
+    buildRequestedStreamingFeatures(
+      makeSettings({ codec: "AV1" }),
+      0,
+      0,
+      false,
+      ["H265", "H264"],
+    ).codec,
+    2,
+  );
+  assert.equal(
+    buildRequestedStreamingFeatures(
+      makeSettings({ codec: "H265" }),
+      0,
+      0,
+      false,
+      ["H264"],
+    ).codec,
+    1,
+  );
+  assert.equal(
+    buildRequestedStreamingFeatures(makeSettings({ codec: "AV1" }), 0, 0, false).codec,
+    3,
+  );
+});
+
+test("CloudMatch session request body carries supported codecs into the wire codec", () => {
+  const body = buildSessionRequestBody(
+    {
+      appId: "1001",
+      internalTitle: "Test Game",
+      zone: "prod",
+      settings: makeSettings({ codec: "AV1" }),
+      supportedCodecs: ["H265", "H264"],
+    },
+    "device-id",
+  );
+
+  assert.equal(body.sessionRequestData.requestedStreamingFeatures.codec, 2);
 });
 
 test("CloudMatch extracts local serverInfo region before fallback regions", () => {
@@ -139,17 +209,10 @@ test("CloudMatch extracts local serverInfo region before fallback regions", () =
   ]);
 });
 
-test("CloudMatch resolves default prod endpoint to serverInfo local region before creating a session", async () => {
+test("CloudMatch pins the resolved region with a network-test session before creating a session", async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
   const calls: string[] = [];
-  type CapturedNetworkTestRequestBody = {
-    netTestRequestData: {
-      netTestProfile: {
-        framesPerSecond: number;
-      };
-    };
-  };
   type CapturedSessionRequestBody = {
     sessionRequestData: {
       networkTestSessionId?: string | null;
@@ -161,11 +224,23 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
       requestedStreamingFeatures: {
         bitDepth?: number;
         chromaFormat?: number;
+        maxBitrateKbps?: number;
+        codec?: number;
+        vsync?: boolean;
+        dynamicStreamingMode?: number;
+        audioChannelCount?: number;
       };
     };
   };
-  let networkTestRequestBody: CapturedNetworkTestRequestBody | null = null;
+  type CapturedNetworkTestRequestBody = {
+    netTestRequestData: {
+      netTestProfile: {
+        framesPerSecond: number;
+      };
+    };
+  };
   let requestBody: CapturedSessionRequestBody | null = null;
+  let networkTestRequestBody: CapturedNetworkTestRequestBody | null = null;
   const expectedSessionUrl = `https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?${new URLSearchParams({
     keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
     languageCode: "en_US",
@@ -193,9 +268,7 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
       return new Response(JSON.stringify({
         requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
         netTestSession: {
-          sessionId: "nettest-1",
-          connectionInfo: [{ ip: "127.0.0.1", port: 443, appLevelProtocol: 5 }],
-          netTestThresholds: {},
+          sessionId: "nettest-lax-1",
         },
       }), { status: 200 });
     }
@@ -255,13 +328,94 @@ test("CloudMatch resolves default prod endpoint to serverInfo local region befor
     assert.equal(capturedRequestBody.sessionRequestData.clientRequestMonitorSettings[0]?.framesPerSecond, 90);
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 1);
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 1);
+    assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.maxBitrateKbps, 75000);
+    assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.codec, 2);
+    assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.vsync, false);
+    assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.dynamicStreamingMode, 3);
+    assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.audioChannelCount, 2);
     assert.equal(capturedRequestBody.sessionRequestData.appLaunchMode, 2);
     assert.equal(capturedRequestBody.sessionRequestData.enablePersistingInGameSettings, false);
-    assert.equal(capturedRequestBody.sessionRequestData.networkTestSessionId, "nettest-1");
+    assert.equal(capturedRequestBody.sessionRequestData.networkTestSessionId, "nettest-lax-1");
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
   }
+});
+
+test("CloudMatch pins a manually selected zone before creating a session", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const calls: string[] = [];
+  let networkTestSessionId: string | null | undefined;
+  const base = "https://np-mia-04.cloudmatchbeta.nvidiagrid.net";
+  const expectedSessionUrl = `${base}/v2/session?${new URLSearchParams({
+    keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
+    languageCode: "en_US",
+  }).toString()}`;
+
+  console.log = () => {};
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  });
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+
+    if (url === `${base}/v2/nettestsession`) {
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-MIA-04" },
+        netTestSession: {
+          sessionId: "nettest-mia-1",
+        },
+      }), { status: 200 });
+    }
+
+    if (url === expectedSessionUrl) {
+      const body = JSON.parse(String(init?.body)) as {
+        sessionRequestData: {
+          networkTestSessionId?: string | null;
+          requestedStreamingFeatures?: unknown;
+        };
+      };
+      networkTestSessionId = body.sessionRequestData.networkTestSessionId;
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-MIA-04" },
+        session: {
+          sessionId: "session-mia-1",
+          status: 1,
+          seatSetupInfo: { seatSetupStep: 0 },
+          sessionControlInfo: { ip: "np-mia-04.cloudmatchbeta.nvidiagrid.net" },
+          connectionInfo: [],
+          iceServerConfiguration: {
+            iceServers: [{ urls: "stun:127.0.0.1:19302" }],
+          },
+          sessionRequestData: {
+            requestedStreamingFeatures: body.sessionRequestData.requestedStreamingFeatures,
+          },
+        },
+      }), { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  await createSession({
+    token: "manual-region-token",
+    streamingBaseUrl: `${base}/`,
+    appId: "1001",
+    internalTitle: "Test Game",
+    accountLinked: true,
+    zone: "prod",
+    settings: makeSettings({ fps: 60 }),
+  });
+
+  assert.deepEqual(calls, [
+    `${base}/v2/nettestsession`,
+    expectedSessionUrl,
+  ]);
+  assert.equal(networkTestSessionId, "nettest-mia-1");
 });
 
 test("CloudMatch retries transient serverInfo failures before creating a session", async () => {
@@ -299,9 +453,7 @@ test("CloudMatch retries transient serverInfo failures before creating a session
       return new Response(JSON.stringify({
         requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
         netTestSession: {
-          sessionId: "nettest-retry",
-          connectionInfo: [{ ip: "127.0.0.1", port: 443, appLevelProtocol: 5 }],
-          netTestThresholds: {},
+          sessionId: "nettest-lax-retry",
         },
       }), { status: 200 });
     }
@@ -381,8 +533,6 @@ test("CloudMatch only sends in-game settings persistence when user opt-in and ga
         requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-TEST" },
         netTestSession: {
           sessionId: "nettest-persistence",
-          connectionInfo: [{ ip: "127.0.0.1", port: 443, appLevelProtocol: 5 }],
-          netTestThresholds: {},
         },
       }), { status: 200 });
     }

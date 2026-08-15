@@ -1,6 +1,6 @@
 import type { ActiveSessionInfo, AuthUser, SavedAccount, SubscriptionInfo } from "@shared/gfn";
-import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon, MessageSquareText } from "lucide-react";
-import { useEffect, useRef, useState, type JSX } from "react";
+import { House, Library, Settings, User, Timer, HardDrive, X, PlayCircle, Square, ChevronDown, Check, Plus, Store as StoreIcon, MessageSquareText, Power } from "lucide-react";
+import { memo, useEffect, useRef, useState, type JSX } from "react";
 import { useTranslation } from "../i18n";
 import { OpenNowLogoMark } from "./OpenNowLogoMark";
 import { MotionSpinner } from "./MotionSpinner";
@@ -22,9 +22,12 @@ interface NavbarProps {
   onRemoveAccount: (userId: string, restoreFocusTarget?: HTMLElement) => void;
   onAddAccount: () => void;
   onLogoutAll: (restoreFocusTarget?: HTMLElement) => void;
+  onExitApp: () => void;
   onOpenFeedback?: () => void;
   onBlockingOverlayChange?: (blocking: boolean) => void;
   controllerMode?: boolean;
+  /** Console mode only — the avatar opens the gamepad-navigable profile picker. */
+  onOpenProfilePicker?: () => void;
 }
 
 type NavbarModalType = "time" | "storage" | null;
@@ -36,7 +39,7 @@ function getTierDisplay(tier: string): { labelKey: string; className: string } {
   return { labelKey: "app.labels.free", className: "tier-free" };
 }
 
-export function Navbar({
+export const Navbar = memo(function Navbar({
   currentPage,
   onNavigate,
   user,
@@ -52,9 +55,11 @@ export function Navbar({
   onRemoveAccount,
   onAddAccount,
   onLogoutAll,
+  onExitApp,
   onOpenFeedback,
   onBlockingOverlayChange,
   controllerMode = false,
+  onOpenProfilePicker,
 }: NavbarProps): JSX.Element {
   const { t } = useTranslation();
   const [modalType, setModalType] = useState<NavbarModalType>(null);
@@ -404,7 +409,30 @@ export function Navbar({
             )}
           </div>
         )}
-        {user ? (
+        {user && controllerMode ? (
+          // The dropdown below is mouse-only — it closes on a document mousedown
+          // and has no keyboard or gamepad path, so it is unreachable with a
+          // controller. In console mode the avatar opens the profile picker
+          // instead, which is fully navigable.
+          <button
+            type="button"
+            className="navbar-user navbar-user--clickable navbar-user--console"
+            onClick={() => onOpenProfilePicker?.()}
+            aria-label={t("auth.accounts.switchAccount")}
+          >
+            {user.avatarUrl ? (
+              <img src={user.avatarUrl} alt="" className="navbar-avatar" />
+            ) : (
+              <div className="navbar-avatar-fallback">
+                <User size={14} />
+              </div>
+            )}
+            <div className="navbar-user-info">
+              <span className="navbar-username">{user.displayName}</span>
+              {tierInfo && <span className={`navbar-tier ${tierInfo.className}`}>{t(tierInfo.labelKey)}</span>}
+            </div>
+          </button>
+        ) : user ? (
           <>
             <div className="navbar-account-container" ref={accountContainerRef}>
               <button
@@ -461,7 +489,8 @@ export function Navbar({
                             role="menuitem"
                             onClick={() => {
                               if (!isActive) {
-                                void onSwitchAccount(account.userId);
+                                if (account.hasPin) onOpenProfilePicker?.();
+                                else void onSwitchAccount(account.userId);
                               }
                               setAccountDropdownOpen(false);
                             }}
@@ -535,6 +564,19 @@ export function Navbar({
                   >
                     {t("auth.accounts.signOutAllAccounts")}
                   </button>
+                  <div className="navbar-account-divider" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="navbar-account-exit"
+                    role="menuitem"
+                    onClick={() => {
+                      setAccountDropdownOpen(false);
+                      onExitApp();
+                    }}
+                  >
+                    <Power size={14} />
+                    <span>{t("app.actions.exit")}</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -549,4 +591,4 @@ export function Navbar({
       {modal}
     </nav>
   );
-}
+});

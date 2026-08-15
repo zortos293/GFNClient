@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { IPC_CHANNELS } from "@shared/ipc";
@@ -14,9 +14,14 @@ import {
 import { captureMainException } from "../telemetry/posthog";
 import { isAppNavigationUrl, openExternalHttpUrl } from "./externalUrl";
 import { shouldReportRendererTermination } from "./rendererLifecycle";
+import type { StreamShortcutInterceptionGate } from "@shared/gfn";
+import { resolveStatsShortcutInterception } from "./streamShortcutInterception";
+import { StreamEscapeShortcutController } from "./streamEscapeShortcut";
+import { applyNativeAppTheme } from "./windowTheme";
 
 export interface CreateMainWindowDeps {
   mainDir: string;
+  windowTitle?: string;
   settingsManager: SettingsManager;
   getMainWindow(): BrowserWindow | null;
   setMainWindow(window: BrowserWindow | null): void;
@@ -38,6 +43,7 @@ export interface CreateMainWindowDeps {
 export async function createMainWindow(
   deps: CreateMainWindowDeps,
 ): Promise<void> {
+  const windowTitle = deps.windowTitle;
   const preloadMjsPath = join(deps.mainDir, "../preload/index.mjs");
   const preloadJsPath = join(deps.mainDir, "../preload/index.js");
   const preloadPath = existsSync(preloadMjsPath)
@@ -45,6 +51,10 @@ export async function createMainWindow(
     : preloadJsPath;
 
   const settings = deps.settingsManager.getAll();
+  let streamShortcutInterceptionGate: StreamShortcutInterceptionGate = {
+    streamActive: false,
+    shortcutCaptureActive: false,
+  };
   let escapeHoldState: EscapeHoldCaptureState = { keyDownCaptured: false, holdFired: false };
   let escapeHoldTimer: NodeJS.Timeout | null = null;
   const clearEscapeHoldTimer = (): void => {
@@ -54,26 +64,40 @@ export async function createMainWindow(
     }
   };
 
-  // Console mode (big picture): mirror GeForce NOW's TV mode by launching
-  // fullscreen with the controller-oriented shell enabled.
-  if (settings.launchInConsoleMode && !settings.controllerMode) {
-    deps.settingsManager.set("controllerMode", true);
-  }
+  const escapeShortcut = new StreamEscapeShortcutController(globalShortcut, () => {
+    const mainWindow = deps.getMainWindow();
+    if (
+      !deps.getPointerLockActive()
+      || deps.settingsManager.get("allowEscapeToExitFullscreen")
+      || !mainWindow
+      || mainWindow.isDestroyed()
+      || !mainWindow.isFocused()
+    ) {
+      return;
+    }
+    mainWindow.webContents.send(IPC_CHANNELS.EXTERNAL_ESCAPE);
+  });
 
   // Direct-launch arguments always start fullscreen; the renderer applies the
   // console shell for the run without persisting the Controller Mode setting.
-  const startFullscreen =
-    settings.launchInConsoleMode ||
-    deps.getPendingDirectLaunchRequest() !== null;
+  const startFullscreen = deps.getPendingDirectLaunchRequest() !== null;
+  const windowBackgroundColor = applyNativeAppTheme(settings.appTheme, nativeTheme);
+  const linuxWindowIcon = process.platform === "linux"
+    ? app.isPackaged
+      ? join(process.resourcesPath, "app-icon.png")
+      : join(deps.mainDir, "../../../logo.png")
+    : undefined;
 
   const window = new BrowserWindow({
+    ...(windowTitle ? { title: windowTitle } : {}),
     width: settings.windowWidth || 1400,
     height: settings.windowHeight || 900,
     minWidth: 1024,
     minHeight: 680,
     ...(startFullscreen ? { fullscreen: true } : {}),
+    ...(linuxWindowIcon ? { icon: linuxWindowIcon } : {}),
     autoHideMenuBar: true,
-    backgroundColor: "#0f172a",
+    backgroundColor: windowBackgroundColor,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -81,7 +105,18 @@ export async function createMainWindow(
       sandbox: false,
     },
   });
+  const syncAutomaticWindowTheme = (): void => {
+    if (deps.settingsManager.get("appTheme") !== "auto" || window.isDestroyed()) return;
+    window.setBackgroundColor(applyNativeAppTheme("auto", nativeTheme));
+  };
+  nativeTheme.on("updated", syncAutomaticWindowTheme);
   deps.setMainWindow(window);
+  if (windowTitle) {
+    window.on("page-title-updated", (event) => {
+      event.preventDefault();
+      window.setTitle(windowTitle);
+    });
+  }
 
   window.webContents.on("render-process-gone", (_event, details) => {
     if (
@@ -164,6 +199,10 @@ export async function createMainWindow(
     (_ev, active: boolean, suppressEscapeFullscreenGrace?: boolean) => {
       const pointerLockActive = Boolean(active);
       deps.setPointerLockActive(pointerLockActive);
+      escapeShortcut.setCaptureActive(
+        pointerLockActive
+        && !deps.settingsManager.get("allowEscapeToExitFullscreen"),
+      );
       deps.setPointerLockEscapeCaptureUntilMs(
         nextPointerLockEscapeCaptureUntilMs(
           pointerLockActive,
@@ -172,6 +211,23 @@ export async function createMainWindow(
         ),
       );
     },
+  );
+
+  const handleStreamShortcutInterceptionChange = (
+    event: Electron.IpcMainEvent,
+    gate: StreamShortcutInterceptionGate,
+  ): void => {
+    if (event.sender !== window.webContents) {
+      return;
+    }
+    streamShortcutInterceptionGate = {
+      streamActive: gate?.streamActive === true,
+      shortcutCaptureActive: gate?.shortcutCaptureActive === true,
+    };
+  };
+  ipcMain.on(
+    IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
+    handleStreamShortcutInterceptionChange,
   );
 
   ipcMain.on(
@@ -192,6 +248,22 @@ export async function createMainWindow(
   window.webContents.on("before-input-event", (event, input) => {
     try {
       const mainWindow = deps.getMainWindow();
+      const statsShortcutDecision = resolveStatsShortcutInterception(
+        streamShortcutInterceptionGate,
+        input,
+        deps.settingsManager.get("shortcutToggleStats"),
+      );
+      if (statsShortcutDecision !== "ignore") {
+        event.preventDefault();
+        if (statsShortcutDecision === "dispatch") {
+          mainWindow?.webContents.send(
+            IPC_CHANNELS.STREAM_SHORTCUT_ACTION,
+            "toggleStats",
+          );
+        }
+        return;
+      }
+
       const resolved = resolveEscapeHoldCaptureAction(
         input,
         {
@@ -252,13 +324,20 @@ export async function createMainWindow(
   } else {
     await window.loadFile(join(deps.mainDir, "../../dist/index.html"));
   }
+  window.on("blur", () => escapeShortcut.dispose());
   const pendingDirectLaunchRequest = deps.getPendingDirectLaunchRequest();
   if (pendingDirectLaunchRequest) {
     deps.emitDirectLaunchRequest(pendingDirectLaunchRequest);
   }
 
   window.on("closed", () => {
+    nativeTheme.off("updated", syncAutomaticWindowTheme);
+    ipcMain.off(
+      IPC_CHANNELS.STREAM_SHORTCUT_INTERCEPTION_CHANGE,
+      handleStreamShortcutInterceptionChange,
+    );
     clearEscapeHoldTimer();
+    escapeShortcut.dispose();
     escapeHoldState = { keyDownCaptured: false, holdFired: false };
     deps.setMainWindow(null);
     deps.setRendererControlledFullscreen(false);

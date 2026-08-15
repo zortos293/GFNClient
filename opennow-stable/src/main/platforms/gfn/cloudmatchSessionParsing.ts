@@ -348,6 +348,22 @@ export function extractNegotiatedStreamProfile(payload: CloudMatchResponse): Neg
   return Object.keys(profile).length > 0 ? profile : undefined;
 }
 
+export function firstZoneHostname(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    const values = Array.isArray(candidate) ? candidate : [candidate];
+    for (const value of values) {
+      if (typeof value !== "string") {
+        continue;
+      }
+      const hostname = value.trim();
+      if (hostname && /[a-z]/i.test(hostname.split(".")[0] ?? "")) {
+        return hostname;
+      }
+    }
+  }
+  return undefined;
+}
+
 export interface ToSessionInfoOptions {
   zone: string;
   streamingBaseUrl: string;
@@ -378,6 +394,11 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
   const finalizedStreamingFeatures = normalizeStreamingFeatures(
     payload.session.finalizedStreamingFeatures,
   );
+  const serverLocation = firstZoneHostname(
+    payload.session.serverLocation,
+    payload.session.sessionControlInfo?.ip,
+    payload.session.connectionInfo?.find((connection) => connection.usage === 14)?.ip,
+  );
   const enablePersistingInGameSettings =
     typeof payload.session.sessionRequestData?.enablePersistingInGameSettings === "boolean"
       ? payload.session.sessionRequestData.enablePersistingInGameSettings
@@ -395,6 +416,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     `[CloudMatch] toSessionInfo: status=${payload.session.status}, ` +
     `seatSetupStep=${seatSetupStep ?? "n/a"}, ` +
     `queuePosition=${queuePosition ?? "n/a"}, ` +
+    `gpuType=${payload.session.gpuType ?? "<empty>"}, ` +
     `connectionInfo=${connections.length} entries, ` +
     `serverIp=${signaling.serverIp}, ` +
     `signalingServer=${signaling.signalingServer}, ` +
@@ -418,6 +440,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     serverIp: signaling.serverIp,
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,
+    serverLocation,
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     enablePersistingInGameSettings,

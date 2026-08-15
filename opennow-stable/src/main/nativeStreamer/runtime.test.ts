@@ -5,11 +5,69 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  createNativeStreamerRuntimeEnvironment,
+  isNativeWaylandSession,
   isPathInside,
   nativeStreamerExecutableName,
   nativeStreamerPlatformKey,
   normalizePathForComparison,
 } from "./runtime";
+
+function createLinuxRuntimeEnvironment(
+  baseEnv: NodeJS.ProcessEnv,
+  linuxOzonePlatform?: string,
+): NodeJS.ProcessEnv {
+  return createNativeStreamerRuntimeEnvironment({
+    executablePath: "/tmp/opennow-streamer",
+    baseEnv,
+    platform: "linux",
+    arch: "arm64",
+    userDataPath: "/tmp/opennow-test",
+    protocolVersion: 4,
+    backendPreference: "auto",
+    videoBackendPreference: "auto",
+    externalRendererEnabled: false,
+    linuxOzonePlatform,
+    cloudGsyncMode: "auto",
+    d3dFullscreenMode: "auto",
+  }).env;
+}
+
+test("native Wayland sessions use the external renderer", () => {
+  assert.equal(isNativeWaylandSession({ WAYLAND_DISPLAY: "wayland-0" }), true);
+  assert.equal(isNativeWaylandSession({ XDG_SESSION_TYPE: "wayland" }), true);
+  assert.equal(isNativeWaylandSession({}, "wayland"), true);
+});
+
+test("explicit X11 keeps Linux child-surface embedding enabled", () => {
+  const waylandEnvironment = {
+    ELECTRON_OZONE_PLATFORM_HINT: "wayland",
+    WAYLAND_DISPLAY: "wayland-0",
+    XDG_SESSION_TYPE: "wayland",
+  };
+
+  assert.equal(isNativeWaylandSession(waylandEnvironment, "x11"), false);
+  assert.equal(isNativeWaylandSession({ XDG_SESSION_TYPE: "x11" }), false);
+  assert.equal(
+    isNativeWaylandSession({ ELECTRON_OZONE_PLATFORM_HINT: "x11" }),
+    false,
+  );
+});
+
+test("Linux runtime selects the renderer for the Electron windowing backend", () => {
+  assert.equal(
+    createLinuxRuntimeEnvironment({ WAYLAND_DISPLAY: "wayland-0" })
+      .OPENNOW_NATIVE_EXTERNAL_RENDERER,
+    "1",
+  );
+  assert.equal(
+    createLinuxRuntimeEnvironment(
+      { WAYLAND_DISPLAY: "wayland-0" },
+      "x11",
+    ).OPENNOW_NATIVE_EXTERNAL_RENDERER,
+    "0",
+  );
+});
 
 test("normalizes real and symlinked paths to the same comparison path", (t) => {
   const root = mkdtempSync(join(tmpdir(), "opennow-native-path-"));

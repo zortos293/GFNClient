@@ -43,8 +43,9 @@ test("LCARS persisted queries retry HTTP 400 with the full query text", async (t
 
   const secondUrl = new URL(calls[1].url);
   assert.match(secondUrl.searchParams.get("query") ?? "", /query GetGameSection/);
-  assert.equal((calls[0].init?.headers as Record<string, string>)["Content-Type"], "application/graphql");
-  assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, "GFNJWT token");
+  const headers = calls[0].init?.headers as Record<string, string> | undefined;
+  assert.equal(headers?.["Content-Type"], "application/graphql");
+  assert.equal(headers?.Authorization, "GFNJWT token");
 });
 
 test("LCARS named mutations post the registered mutation query", async (t) => {

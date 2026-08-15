@@ -31,7 +31,7 @@ test("decoder recovery waits for three pressure polls and clears after six stabl
     requestSignalingKeyframe: async () => {
       keyframeRequests++;
     },
-    setMaxBitrateKbps: async () => {},
+    setMaxBitrateKbps: async () => true,
     onStateChange: (state) => states.push(state),
     now: () => 2_000,
   });
@@ -60,6 +60,60 @@ test("decoder recovery waits for three pressure polls and clears after six stabl
     recoveryAttempts: 0,
     recoveryAction: "none",
   });
+});
+
+test("decoder recovery preserves bitrate state when no wire update is applied", async () => {
+  const states: DecoderPressureState[] = [];
+  const logs: string[] = [];
+  const requestedBitrates: number[] = [];
+  let updateApplied = false;
+  let now = 2_000;
+  const peerConnection = {
+    localDescription: { type: "answer", sdp: "v=0\r\n" },
+    getSenders: () => [],
+  } as unknown as RTCPeerConnection;
+  const controller = new DecoderPressureController({
+    log: (message) => logs.push(message),
+    getPeerConnection: () => peerConnection,
+    getControlChannel: () => null,
+    requestSignalingKeyframe: async () => {
+      throw new Error("unavailable");
+    },
+    setMaxBitrateKbps: async (kbps) => {
+      requestedBitrates.push(kbps);
+      return updateApplied;
+    },
+    onStateChange: (state) => states.push(state),
+    now: () => now,
+  });
+  controller.initializeBitrate(10_000);
+
+  await controller.recover(pressureSignal);
+  await controller.recover(pressureSignal);
+  await controller.recover(pressureSignal);
+
+  assert.deepEqual(requestedBitrates, [8_500]);
+  assert.deepEqual(states.at(-1), {
+    active: true,
+    recoveryAttempts: 0,
+    recoveryAction: "none",
+  });
+  assert.equal(logs.some((message) => message.includes("bitrate ceiling stepped down")), false);
+
+  updateApplied = true;
+  now = 4_000;
+  await controller.recover(pressureSignal);
+
+  assert.deepEqual(requestedBitrates, [8_500, 8_500]);
+  assert.deepEqual(states.at(-1), {
+    active: true,
+    recoveryAttempts: 1,
+    recoveryAction: "bitrate_step_down",
+  });
+  assert.equal(
+    logs.some((message) => message.includes("bitrate ceiling stepped down 10000 -> 8500 kbps")),
+    true,
+  );
 });
 
 test("input policy preserves native, partially-reliable, and fallback routes", () => {

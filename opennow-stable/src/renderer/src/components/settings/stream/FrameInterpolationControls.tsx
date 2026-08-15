@@ -63,9 +63,9 @@ export function FrameInterpolationControls({
         <>
           <div className="settings-row settings-row--column">
             <div className="settings-row-top">
-              <label className="settings-label" htmlFor="settings-stream-frame-interpolation-factor">
+              <span className="settings-label">
                 {t("settings.frameInterpolation.factor")}
-              </label>
+              </span>
               <span className="settings-value-badge">{fi.factor}×</span>
             </div>
             <div className="settings-chip-row">
@@ -73,11 +73,7 @@ export function FrameInterpolationControls({
                 <button
                   key={factor}
                   type="button"
-                  id={
-                    factor === fi.factor
-                      ? "settings-stream-frame-interpolation-factor"
-                      : undefined
-                  }
+                  aria-pressed={fi.factor === factor}
                   className={`settings-chip${fi.factor === factor ? " settings-chip--active" : ""}`}
                   onClick={() => {
                     handleChange("frameInterpolation", { ...fi, factor });
@@ -90,9 +86,9 @@ export function FrameInterpolationControls({
           </div>
           <div className="settings-row settings-row--column">
             <div className="settings-row-top">
-              <label className="settings-label" htmlFor="settings-stream-frame-interpolation-quality">
+              <span className="settings-label">
                 {t("settings.frameInterpolation.quality")}
-              </label>
+              </span>
               <span className="settings-value-badge">{fi.quality}p</span>
             </div>
             <div className="settings-chip-row">
@@ -100,11 +96,7 @@ export function FrameInterpolationControls({
                 <button
                   key={quality}
                   type="button"
-                  id={
-                    quality === fi.quality
-                      ? "settings-stream-frame-interpolation-quality"
-                      : undefined
-                  }
+                  aria-pressed={fi.quality === quality}
                   className={`settings-chip${fi.quality === quality ? " settings-chip--active" : ""}`}
                   onClick={() => {
                     handleChange("frameInterpolation", { ...fi, quality });

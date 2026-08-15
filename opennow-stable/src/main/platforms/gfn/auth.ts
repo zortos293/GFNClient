@@ -18,7 +18,9 @@ import type {
   SubscriptionInfo,
 } from "@shared/gfn";
 
+import type { SafeStorageLike } from "../../security/encryptedJsonFile";
 import { AccountManager } from "./auth/accountManager";
+import { ConsoleProfileStore } from "./auth/consoleProfileStore";
 import { exchangeDeviceCode, requestDeviceAuthorization } from "./auth/deviceLogin";
 import { SubscriptionVpcEnrichmentCaches } from "./auth/enrichmentCaches";
 import {
@@ -56,11 +58,13 @@ export class AuthService {
   private readonly enrichmentCaches: SubscriptionVpcEnrichmentCaches;
   private readonly sessionValidity: SessionValidityCoordinator;
   private readonly accountManager: AccountManager;
+  private readonly consoleProfiles: ConsoleProfileStore;
   private deviceLoginAttempts = new Map<string, DeviceLoginAttempt>();
   private pendingDeviceLoginSessions = new Map<string, AuthSession>();
 
-  constructor(statePath: string) {
+  constructor(statePath: string, consoleProfilesPath: string, secretStorage: SafeStorageLike) {
     this.state = new PersistedAccountState(statePath);
+    this.consoleProfiles = new ConsoleProfileStore(consoleProfilesPath, secretStorage);
     this.providerDiscovery = new ProviderDiscovery();
     this.enrichmentCaches = new SubscriptionVpcEnrichmentCaches({
       getSession: () => this.getSession(),
@@ -76,11 +80,21 @@ export class AuthService {
     this.accountManager = new AccountManager(
       this.state,
       () => this.enrichmentCaches.clearAll(),
+      this.consoleProfiles,
     );
+  }
+
+  /** Console profile PIN locks. Hashes never leave the main process. */
+  getConsoleProfiles(): ConsoleProfileStore {
+    return this.consoleProfiles;
   }
 
   async initialize(): Promise<void> {
     const restoredSession = await this.state.initialize();
+    await this.consoleProfiles.initialize();
+    await this.consoleProfiles.retainUsers(
+      this.state.accounts.getSavedAccounts().map((account) => account.userId),
+    );
     if (restoredSession) {
       this.state.accounts.setSelectedProvider(restoredSession.provider);
       await this.enrichmentCaches.enrichUserTier();
@@ -104,11 +118,12 @@ export class AuthService {
     return this.accountManager.getSavedAccounts();
   }
 
-  async switchAccount(userId: string): Promise<AuthSession> {
+  async switchAccount(userId: string, pin?: string): Promise<AuthSession> {
     return this.accountManager.switchAccount(
       userId,
       (forceRefresh, expectedUserId) =>
         this.ensureValidSessionWithStatus(forceRefresh, expectedUserId),
+      pin,
     );
   }
 

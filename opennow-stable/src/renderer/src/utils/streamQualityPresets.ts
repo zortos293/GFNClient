@@ -39,7 +39,6 @@ export function pickStreamPreset(
   const highRes = byRes[byRes.length - 1]!;
   const midRes = byRes[Math.floor((byRes.length - 1) / 2)]!;
 
-  const lowFps = byFps[0]!;
   const highFps = byFps[byFps.length - 1]!;
   const midFps = byFps[Math.floor((byFps.length - 1) / 2)]!;
 

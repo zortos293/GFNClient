@@ -102,3 +102,97 @@ export function averageJitterBufferDelayMs(
   }
   return Math.round((jitterBufferDelaySeconds / jitterBufferEmittedCount) * 1000 * 10) / 10;
 }
+
+export interface IntervalFrameRates {
+  receiveFps: number;
+  decodeFps: number;
+  decodeTimeMs: number;
+}
+
+export interface BitrateDiagnostics {
+  targetBitrateKbps: number;
+  availableBitrateKbps: number;
+}
+
+export function computeBitrateDiagnostics(
+  targetBitrateKbps: number,
+  activePair: Record<string, unknown> | null,
+): BitrateDiagnostics {
+  const availableBitrate = Number(
+    activePair?.availableIncomingBitrate ?? activePair?.availableOutgoingBitrate ?? 0,
+  );
+  const availableBitrateKbps = Number.isFinite(availableBitrate) && availableBitrate > 0
+    ? Math.round(availableBitrate / 1000)
+    : 0;
+
+  return {
+    targetBitrateKbps,
+    availableBitrateKbps,
+  };
+}
+
+export interface IntervalFrameRateParams {
+  framesReceived: number;
+  framesDecoded: number;
+  totalDecodeTime: number;
+  prevFramesReceived: number;
+  prevFramesDecoded: number;
+  prevTotalDecodeTime: number;
+  timeDeltaMs: number;
+  prevReceiveFps: number;
+  prevDecodeFps: number;
+  prevDecodeTimeMs: number;
+}
+
+function previousIntervalFrameRates(params: IntervalFrameRateParams): IntervalFrameRates {
+  return {
+    receiveFps: params.prevReceiveFps,
+    decodeFps: params.prevDecodeFps,
+    decodeTimeMs: params.prevDecodeTimeMs,
+  };
+}
+
+export function computeIntervalFrameRates(params: IntervalFrameRateParams): IntervalFrameRates {
+  const counters = [
+    params.framesReceived,
+    params.framesDecoded,
+    params.totalDecodeTime,
+    params.prevFramesReceived,
+    params.prevFramesDecoded,
+    params.prevTotalDecodeTime,
+    params.timeDeltaMs,
+  ];
+  if (
+    counters.some((value) => !Number.isFinite(value) || value < 0) ||
+    params.timeDeltaMs === 0 ||
+    params.framesReceived < params.prevFramesReceived ||
+    params.framesDecoded < params.prevFramesDecoded ||
+    params.totalDecodeTime < params.prevTotalDecodeTime
+  ) {
+    return previousIntervalFrameRates(params);
+  }
+
+  const receivedDelta = params.framesReceived - params.prevFramesReceived;
+  const decodedDelta = params.framesDecoded - params.prevFramesDecoded;
+  const receiveFps = receivedDelta > 0
+    ? Math.round((receivedDelta * 1000) / params.timeDeltaMs)
+    : params.prevReceiveFps;
+
+  let decodeFps = params.prevDecodeFps;
+  if (decodedDelta > 0) {
+    decodeFps = Math.round((decodedDelta * 1000) / params.timeDeltaMs);
+  } else if (receivedDelta > 0) {
+    decodeFps = 0;
+  }
+
+  const decodeTimeDelta = params.totalDecodeTime - params.prevTotalDecodeTime;
+  const decodeTimeMs = decodedDelta > 0 && decodeTimeDelta > 0
+    ? Math.round((decodeTimeDelta / decodedDelta) * 10_000) / 10
+    : params.prevDecodeTimeMs;
+
+  return {
+    receiveFps,
+    decodeFps,
+    decodeTimeMs,
+  };
+}

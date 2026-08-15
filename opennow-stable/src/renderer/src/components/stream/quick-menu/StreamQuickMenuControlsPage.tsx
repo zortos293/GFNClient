@@ -1,6 +1,14 @@
 import type { JSX, RefObject } from "react";
-import type { MicrophoneMode, VideoShaderSettings } from "@shared/gfn";
-import { DEFAULT_VIDEO_SHADER_SETTINGS } from "@shared/gfn";
+import type {
+  FrameInterpolationSettings,
+  MicrophoneMode,
+  VideoShaderSettings,
+} from "@shared/gfn";
+import {
+  DEFAULT_VIDEO_SHADER_SETTINGS,
+  FRAME_INTERPOLATION_FACTOR_OPTIONS,
+  FRAME_INTERPOLATION_QUALITY_OPTIONS,
+} from "@shared/gfn";
 import type { StreamDiagnosticsStore } from "../../../utils/streamDiagnosticsStore";
 import { SidebarMicMutedBadge } from "../StreamEmptyStates";
 
@@ -27,6 +35,8 @@ interface StreamQuickMenuControlsPageProps {
   gstreamerEnabled: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
+  frameInterpolation: FrameInterpolationSettings;
+  onFrameInterpolationChange: (value: FrameInterpolationSettings) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   diagnosticsStore: StreamDiagnosticsStore;
@@ -42,6 +52,8 @@ export function StreamQuickMenuControlsPage({
   gstreamerEnabled,
   videoShader,
   onVideoShaderChange,
+  frameInterpolation,
+  onFrameInterpolationChange,
   microphoneMode,
   onMicrophoneModeChange,
   diagnosticsStore,
@@ -101,6 +113,82 @@ export function StreamQuickMenuControlsPage({
           />
           <span className="sidebar-hint">Dynamic turn boost strength (1% = off-like, 150% = strongest).</span>
         </div>
+      </section>
+      <div className="sidebar-separator" aria-hidden="true" />
+      <section className="sidebar-section">
+        <div className="sidebar-section-header">
+          <span>Frame Interpolation</span>
+          <span className="sidebar-section-sub">Experimental Framegen WebGPU processing.</span>
+        </div>
+        {gstreamerEnabled ? (
+          <span className="sidebar-hint">
+            Frame interpolation is unavailable while the native streamer renders the video.
+          </span>
+        ) : (
+          <>
+            <div className="sidebar-row sidebar-row--aligned">
+              <span className="sidebar-label">Enable Interpolation</span>
+              <label className="sidebar-mini-toggle" title="Enable neural frame interpolation" tabIndex={0}>
+                <input
+                  type="checkbox"
+                  name="enable-frame-interpolation"
+                  checked={frameInterpolation.enabled}
+                  aria-label="Enable frame interpolation"
+                  onChange={(event) => onFrameInterpolationChange({
+                    ...frameInterpolation,
+                    enabled: event.target.checked,
+                  })}
+                />
+                <span className="sidebar-mini-toggle-track" />
+              </label>
+            </div>
+            {frameInterpolation.enabled && (
+              <>
+                <div className="sidebar-row sidebar-row--column">
+                  <div className="sidebar-row-top">
+                    <span className="sidebar-label">Frame Factor</span>
+                    <span className="settings-value-badge">{frameInterpolation.factor}×</span>
+                  </div>
+                  <div className="sidebar-chip-row" role="group" aria-label="Frame interpolation factor">
+                    {FRAME_INTERPOLATION_FACTOR_OPTIONS.map((factor) => (
+                      <button
+                        key={factor}
+                        type="button"
+                        className={`sidebar-chip${frameInterpolation.factor === factor ? " sidebar-chip--active" : ""}`}
+                        aria-pressed={frameInterpolation.factor === factor}
+                        onClick={() => onFrameInterpolationChange({ ...frameInterpolation, factor })}
+                      >
+                        <span>{factor}×</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="sidebar-row sidebar-row--column">
+                  <div className="sidebar-row-top">
+                    <span className="sidebar-label">Model Quality</span>
+                    <span className="settings-value-badge">{frameInterpolation.quality}p</span>
+                  </div>
+                  <div className="sidebar-chip-row" role="group" aria-label="Frame interpolation model quality">
+                    {FRAME_INTERPOLATION_QUALITY_OPTIONS.map((quality) => (
+                      <button
+                        key={quality}
+                        type="button"
+                        className={`sidebar-chip${frameInterpolation.quality === quality ? " sidebar-chip--active" : ""}`}
+                        aria-pressed={frameInterpolation.quality === quality}
+                        onClick={() => onFrameInterpolationChange({ ...frameInterpolation, quality })}
+                      >
+                        <span>{quality}p</span>
+                      </button>
+                    ))}
+                  </div>
+                  <span className="sidebar-hint">
+                    Lower quality reduces GPU load. Changes restart the interpolation runtime.
+                  </span>
+                </div>
+              </>
+            )}
+          </>
+        )}
       </section>
       <div className="sidebar-separator" aria-hidden="true" />
       <section className="sidebar-section">

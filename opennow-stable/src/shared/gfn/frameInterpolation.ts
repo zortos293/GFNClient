@@ -10,6 +10,9 @@
 export type FrameInterpolationFactor = 2 | 3 | 4;
 export type FrameInterpolationQuality = 360 | 480 | 720;
 
+export const FRAME_INTERPOLATION_FACTOR_OPTIONS: readonly FrameInterpolationFactor[] = [2, 3, 4];
+export const FRAME_INTERPOLATION_QUALITY_OPTIONS: readonly FrameInterpolationQuality[] = [360, 480, 720];
+
 export interface FrameInterpolationSettings {
   /** Master toggle for the WebGPU frame-interpolation pipeline */
   enabled: boolean;
@@ -28,8 +31,8 @@ export const DEFAULT_FRAME_INTERPOLATION_SETTINGS: Readonly<FrameInterpolationSe
   quality: 480,
 });
 
-const FACTORS = new Set<FrameInterpolationFactor>([2, 3, 4]);
-const QUALITIES = new Set<FrameInterpolationQuality>([360, 480, 720]);
+const FACTORS = new Set(FRAME_INTERPOLATION_FACTOR_OPTIONS);
+const QUALITIES = new Set(FRAME_INTERPOLATION_QUALITY_OPTIONS);
 
 function clampChoice<T extends number>(raw: unknown, allowed: Set<T>, fallback: T): T {
   const value = Number(raw);

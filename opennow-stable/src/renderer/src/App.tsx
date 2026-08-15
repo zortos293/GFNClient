@@ -6,6 +6,7 @@ import type {
   ActiveSessionInfo,
   AuthSession,
   DirectLaunchRequest,
+  FrameInterpolationSettings,
   GameInfo,
   LoginProvider,
   NativeStreamerShortcutAction,
@@ -1511,6 +1512,10 @@ export function App(): JSX.Element {
 
   const handleVideoShaderChange = useCallback((value: VideoShaderSettings) => {
     void updateSetting("videoShader", value);
+  }, [updateSetting]);
+
+  const handleFrameInterpolationChange = useCallback((value: FrameInterpolationSettings) => {
+    void updateSetting("frameInterpolation", value);
   }, [updateSetting]);
 
   const handleExitApp = useCallback(() => {
@@ -3045,6 +3050,7 @@ export function App(): JSX.Element {
               videoShader={settings.videoShader}
               onVideoShaderChange={handleVideoShaderChange}
               frameInterpolation={settings.frameInterpolation}
+              onFrameInterpolationChange={handleFrameInterpolationChange}
             />
           </m.div>
         )}

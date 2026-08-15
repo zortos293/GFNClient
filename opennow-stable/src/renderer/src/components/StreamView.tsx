@@ -123,6 +123,7 @@ interface StreamViewProps {
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
   frameInterpolation: FrameInterpolationSettings;
+  onFrameInterpolationChange: (value: FrameInterpolationSettings) => void;
 }
 
 export function StreamView({
@@ -188,6 +189,7 @@ export function StreamView({
   videoShader,
   onVideoShaderChange,
   frameInterpolation,
+  onFrameInterpolationChange,
 }: StreamViewProps): JSX.Element {
   const [showHints, setShowHints] = useState(true);
   const [showSessionClock, setShowSessionClock] = useState(false);
@@ -783,6 +785,8 @@ export function StreamView({
         gstreamerEnabled={gstreamerEnabled}
         videoShader={videoShader}
         onVideoShaderChange={onVideoShaderChange}
+        frameInterpolation={frameInterpolation}
+        onFrameInterpolationChange={onFrameInterpolationChange}
         microphoneMode={microphoneMode}
         onMicrophoneModeChange={onMicrophoneModeChange}
         diagnosticsStore={diagnosticsStore}

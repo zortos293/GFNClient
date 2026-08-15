@@ -1,15 +1,12 @@
 import { type JSX } from "react";
-import type {
-  FrameInterpolationFactor,
-  FrameInterpolationQuality,
-  Settings,
+import type { Settings } from "@shared/gfn";
+import {
+  DEFAULT_FRAME_INTERPOLATION_SETTINGS,
+  FRAME_INTERPOLATION_FACTOR_OPTIONS,
+  FRAME_INTERPOLATION_QUALITY_OPTIONS,
 } from "@shared/gfn";
-import { DEFAULT_FRAME_INTERPOLATION_SETTINGS } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import type { SettingsChangeHandler } from "./streamSettingsTypes";
-
-const FACTOR_OPTIONS: FrameInterpolationFactor[] = [2, 3, 4];
-const QUALITY_OPTIONS: FrameInterpolationQuality[] = [360, 480, 720];
 
 interface FrameInterpolationControlsProps {
   settings: Settings;
@@ -69,7 +66,7 @@ export function FrameInterpolationControls({
               <span className="settings-value-badge">{fi.factor}×</span>
             </div>
             <div className="settings-chip-row">
-              {FACTOR_OPTIONS.map((factor) => (
+              {FRAME_INTERPOLATION_FACTOR_OPTIONS.map((factor) => (
                 <button
                   key={factor}
                   type="button"
@@ -92,7 +89,7 @@ export function FrameInterpolationControls({
               <span className="settings-value-badge">{fi.quality}p</span>
             </div>
             <div className="settings-chip-row">
-              {QUALITY_OPTIONS.map((quality) => (
+              {FRAME_INTERPOLATION_QUALITY_OPTIONS.map((quality) => (
                 <button
                   key={quality}
                   type="button"

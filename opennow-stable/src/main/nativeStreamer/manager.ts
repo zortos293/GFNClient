@@ -42,7 +42,10 @@ import {
   isNativeStreamerResponse,
   type NativeStreamerCommandInput,
 } from "./protocol";
-import { createNativeStreamerRuntimeEnvironment } from "./runtime";
+import {
+  createNativeStreamerRuntimeEnvironment,
+  nativeStreamerDisplayFallbackReason,
+} from "./runtime";
 import { NativeSurfaceUpdateQueue } from "./surfaceUpdateQueue";
 
 const { app } = electron;
@@ -128,6 +131,15 @@ export class NativeStreamerManager {
   }
 
   async prepareForSession(context: NativeStreamerSessionContext): Promise<void> {
+    const displayFallbackReason = nativeStreamerDisplayFallbackReason(
+      process.platform,
+      process.env,
+      app.commandLine.getSwitchValue("ozone-platform"),
+    );
+    if (displayFallbackReason) {
+      throw new Error(displayFallbackReason);
+    }
+
     if (this.activeSessionId && this.activeSessionId !== context.session.sessionId) {
       await this.stop("new native streamer session");
     }
@@ -483,8 +495,7 @@ export class NativeStreamerManager {
       externalRendererEnabled: process.platform === "win32"
         ? this.options.getExternalRendererEnabled()
         : false,
-      linuxOzonePlatform: app.commandLine.getSwitchValue("ozone-platform")
-        || app.commandLine.getSwitchValue("ozone-platform-hint"),
+      linuxOzonePlatform: app.commandLine.getSwitchValue("ozone-platform"),
       cloudGsyncMode: this.options.getCloudGsyncMode(),
       d3dFullscreenMode: this.options.getD3dFullscreenMode(),
     });

@@ -2876,7 +2876,7 @@ fn link_decoded_media_pad(
             None,
             event_sender,
             streaming_reported,
-            None,
+            Some(video_liveness),
         ),
         DecodedMediaKind::Unknown => Err(format!(
             "Unsupported decoded media caps {:?}; routing to fallback sink.",

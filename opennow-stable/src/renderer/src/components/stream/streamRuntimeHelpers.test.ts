@@ -7,6 +7,7 @@ import {
   fitThumbnailSize,
   getShortcutConflictError,
   selectRecordingMimeType,
+  shouldUseNativeRendererHole,
 } from "./streamRuntimeHelpers";
 
 test("shortcut conflict validation preserves empty, invalid, and conflict errors", () => {
@@ -25,6 +26,12 @@ test("recording MIME selection uses the first supported preference", () => {
     "video/webm;codecs=h264",
   );
   assert.equal(selectRecordingMimeType(() => false), "video/webm");
+});
+
+test("native renderer hole follows the effective session renderer", () => {
+  assert.equal(shouldUseNativeRendererHole(true, false), true);
+  assert.equal(shouldUseNativeRendererHole(true, true), false);
+  assert.equal(shouldUseNativeRendererHole(false, false), false);
 });
 
 test("thumbnail sizing preserves aspect ratio within recording bounds", () => {

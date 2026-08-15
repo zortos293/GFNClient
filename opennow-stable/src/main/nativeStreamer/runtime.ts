@@ -35,6 +35,9 @@ export interface NativeStreamerRuntimeEnvironment {
   runtimeStatus: NativeGstreamerRuntimeStatus;
 }
 
+export const NATIVE_WAYLAND_FALLBACK_REASON =
+  "Native streaming cannot safely present video and capture input in an Electron Wayland session yet. Start OpenNOW with --ozone-platform=x11 to use the native streamer.";
+
 const LINUX_GSTREAMER_INSTALL_INSTRUCTIONS: NativeGstreamerInstallInstruction[] = [
   {
     distro: "Debian / Ubuntu / Mint / Pop!_OS / KDE neon",
@@ -124,12 +127,18 @@ export function isNativeWaylandSession(
   if (explicitPlatform === "x11") return false;
   if (explicitPlatform === "wayland") return true;
 
-  const environmentHint = env.ELECTRON_OZONE_PLATFORM_HINT?.trim().toLowerCase();
-  if (!explicitPlatform && environmentHint === "x11") return false;
-  if (!explicitPlatform && environmentHint === "wayland") return true;
-
   return env.XDG_SESSION_TYPE?.trim().toLowerCase() === "wayland"
     || Boolean(env.WAYLAND_DISPLAY?.trim());
+}
+
+export function nativeStreamerDisplayFallbackReason(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+  ozonePlatform?: string,
+): string | null {
+  return platform === "linux" && isNativeWaylandSession(env, ozonePlatform)
+    ? NATIVE_WAYLAND_FALLBACK_REASON
+    : null;
 }
 
 function prependEnvPath(env: NodeJS.ProcessEnv, key: string, directory: string): void {

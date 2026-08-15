@@ -8,6 +8,7 @@ import {
   createNativeStreamerRuntimeEnvironment,
   isNativeWaylandSession,
   isPathInside,
+  nativeStreamerDisplayFallbackReason,
   nativeStreamerExecutableName,
   nativeStreamerPlatformKey,
   normalizePathForComparison,
@@ -48,9 +49,16 @@ test("explicit X11 keeps Linux child-surface embedding enabled", () => {
 
   assert.equal(isNativeWaylandSession(waylandEnvironment, "x11"), false);
   assert.equal(isNativeWaylandSession({ XDG_SESSION_TYPE: "x11" }), false);
+});
+
+test("current Wayland session indicators override obsolete Ozone hints", () => {
   assert.equal(
-    isNativeWaylandSession({ ELECTRON_OZONE_PLATFORM_HINT: "x11" }),
-    false,
+    isNativeWaylandSession({
+      ELECTRON_OZONE_PLATFORM_HINT: "x11",
+      WAYLAND_DISPLAY: "wayland-0",
+      XDG_SESSION_TYPE: "wayland",
+    }),
+    true,
   );
 });
 
@@ -66,6 +74,32 @@ test("Linux runtime selects the renderer for the Electron windowing backend", ()
       "x11",
     ).OPENNOW_NATIVE_EXTERNAL_RENDERER,
     "0",
+  );
+});
+
+test("native sessions fall back to web only for Linux Wayland", () => {
+  assert.match(
+    nativeStreamerDisplayFallbackReason(
+      "linux",
+      { WAYLAND_DISPLAY: "wayland-0" },
+    ) ?? "",
+    /cannot safely present video and capture input/i,
+  );
+  assert.equal(
+    nativeStreamerDisplayFallbackReason(
+      "linux",
+      { WAYLAND_DISPLAY: "wayland-0" },
+      "x11",
+    ),
+    null,
+  );
+  assert.equal(
+    nativeStreamerDisplayFallbackReason("linux", { XDG_SESSION_TYPE: "x11" }),
+    null,
+  );
+  assert.equal(
+    nativeStreamerDisplayFallbackReason("win32", { WAYLAND_DISPLAY: "wayland-0" }),
+    null,
   );
 });
 

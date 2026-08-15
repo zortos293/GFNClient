@@ -40,6 +40,13 @@ export function selectRecordingMimeType(
   return RECORDING_MIME_TYPES.find(isTypeSupported) ?? "video/webm";
 }
 
+export function shouldUseNativeRendererHole(
+  nativeRendererActive: boolean,
+  nativeExternalRenderer: boolean,
+): boolean {
+  return nativeRendererActive && !nativeExternalRenderer;
+}
+
 export interface ThumbnailSize {
   width: number;
   height: number;

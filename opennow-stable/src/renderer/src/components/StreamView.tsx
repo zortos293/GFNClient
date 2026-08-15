@@ -24,6 +24,7 @@ import { useScreenshotGallery } from "../hooks/useScreenshotGallery";
 import { useStreamMenuNavigation } from "../hooks/useStreamMenuNavigation";
 import { useStreamRecorder } from "../hooks/useStreamRecorder";
 import { formatSessionTimeRemaining, formatWarningSeconds } from "./stream/streamFormatters";
+import { shouldUseNativeRendererHole } from "./stream/streamRuntimeHelpers";
 import { AntiAfkIndicator, MicrophoneIndicator, RecordingIndicator } from "./stream/StreamIndicators";
 import { StreamTitleBar } from "./stream/StreamTitleBar";
 import {
@@ -674,8 +675,10 @@ export function StreamView({
     };
   }, [exitPrompt.open, isConnecting, showSideBar]);
 
-  const nativeInternalHole =
-    (nativeRendererActive || gstreamerEnabled) && !nativeExternalRenderer;
+  const nativeInternalHole = shouldUseNativeRendererHole(
+    nativeRendererActive,
+    nativeExternalRenderer,
+  );
 
   return (
     <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", nativeInternalHole ? "sv--native-hole" : "", className].filter(Boolean).join(" ")}>

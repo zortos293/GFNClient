@@ -244,7 +244,19 @@ object CodecProbe {
         if (!isHardwareCodec(info)) return false
         val name = info.name.lowercase(Locale.US)
         if (name.contains("google") || name.contains("software") || name.contains("sw")) return false
-        if (name.contains("exynos")) return false
+        if (name.contains("exynos")) {
+            val hevcProfiles = runCatching {
+                info.getCapabilitiesForType(HEVC_MIME_TYPE)
+                    .profileLevels
+                    .map { it.profile }
+            }.getOrDefault(emptyList())
+            return isSupportedExynosHevcDecoder(
+                codecName = info.name,
+                sdkInt = Build.VERSION.SDK_INT,
+                supportedTypes = info.supportedTypes.toList(),
+                hevcProfiles = hevcProfiles,
+            )
+        }
         return true
     }
 
@@ -253,9 +265,7 @@ object CodecProbe {
         val name = info.name.lowercase(Locale.US)
         return when (codec) {
             VideoCodec.H264 -> true
-            // Android WebRTC HEVC/AV1 decode is still device-fragile here. Exynos HEVC black-screens
-            // and Google AV1 falls back to a laggy software path even when the codec list advertises it.
-            VideoCodec.H265 -> !name.contains("exynos")
+            VideoCodec.H265 -> !name.contains("exynos") || isOpenNowHardwareDecoderAllowed(info)
             VideoCodec.AV1 -> !name.contains("google")
         }
     }
@@ -267,6 +277,27 @@ object CodecProbe {
             VideoCodec.AV1 -> "video/av01"
         }
 }
+
+internal fun isSupportedExynosHevcDecoder(
+    codecName: String,
+    sdkInt: Int,
+    supportedTypes: Collection<String>,
+    hevcProfiles: Collection<Int>,
+): Boolean {
+    if (!codecName.contains("exynos", ignoreCase = true)) return false
+    if (sdkInt < MIN_EXYNOS_HEVC_SDK) return false
+    if (supportedTypes.none { it.equals(HEVC_MIME_TYPE, ignoreCase = true) }) return false
+    return hevcProfiles.any(SUPPORTED_HEVC_STREAM_PROFILES::contains)
+}
+
+private const val MIN_EXYNOS_HEVC_SDK = 36
+private const val HEVC_MIME_TYPE = "video/hevc"
+private val SUPPORTED_HEVC_STREAM_PROFILES = setOf(
+    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain,
+    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10,
+    MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus,
+)
 
 internal fun isAndroidTvProfile(context: Context): Boolean =
     context.packageManager.hasSystemFeature("android.software.leanback") ||

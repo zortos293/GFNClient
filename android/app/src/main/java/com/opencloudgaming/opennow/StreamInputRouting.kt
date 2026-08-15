@@ -82,6 +82,8 @@ internal class NativeUiTouchRoutingState {
         touchControllerVisible = false
     }
 
+    fun routesTouchMouseThroughCompose(): Boolean = touchControllerVisible
+
     fun touchesRegisteredUi(x: Float, y: Float, width: Int, height: Int): Boolean {
         if (streamChromeBounds?.contains(x, y) == true) return true
         if (streamPanelBounds?.contains(x, y) == true) return true
@@ -487,6 +489,14 @@ object NativeStreamInputRouter {
             return false
         }
         updateNativeUiTouchPointers(event, width, height)
+        if (
+            touchMouseEnabled &&
+            event.isFingerTouchEvent() &&
+            !isNativeTouch &&
+            nativeUiTouchRouting.routesTouchMouseThroughCompose()
+        ) {
+            return false
+        }
         if (!eventHasStreamTouchPointer(event, width, height)) return false
         // The single-pointer restriction below belongs to the cursor paths, where only one finger
         // can drive the pointer. Native touch forwards every finger by definition, so a two-finger

@@ -35,3 +35,7 @@ APK and debug builds check `https://api.printedwaste.com/releases/opennow/latest
 - GFN auth, catalog, subscription, CloudMatch session creation/polling/claim/stop, signaling, and input packet behavior are implemented in Kotlin from the Electron project contracts.
 - Streaming uses Android WebRTC plus hardware MediaCodec probing. The bundled `opennow_native` JNI library exposes native runtime diagnostics and keeps the NDK/CMake path wired for media-sensitive code.
 - Queue ad metadata is preserved in `SessionInfo`; ad playback can use the included Media3 dependency when the server returns an ad media URL.
+
+## Discord Rich Presence
+
+Android Rich Presence is supported by Discord Social SDK 1.10+, but implementation is currently blocked on OpenNOW's Discord Developer Portal setup and the official Android SDK artifact. See [the Android Rich Presence decision and integration prerequisites](docs/discord-rich-presence.md).

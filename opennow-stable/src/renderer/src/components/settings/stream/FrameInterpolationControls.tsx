@@ -25,7 +25,7 @@ export function FrameInterpolationControls({
   const nativeBlocked = settings.streamClientMode === "native";
 
   return (
-    <div className="settings-row settings-row--column">
+    <div className="settings-row settings-row--complex">
       <div className="settings-row-top settings-row-top--compact">
         <label
           className="settings-label settings-label--wrap"

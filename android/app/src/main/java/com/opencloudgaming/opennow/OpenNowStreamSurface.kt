@@ -1613,7 +1613,7 @@ private fun FingerMouseInputLayer(
                     pinchActive = false
                     lastPinchDistance = 0f
                     lastPinchCentroid = Offset.Zero
-                    return@pointerInteropFilter true
+                    return@pointerInteropFilter NativeStreamInputRouter.dispatchTouch(event, width, height)
                 }
                 if (event.pointerCount >= 2) {
                     // 3-finger touch is reserved for the Direct Click toggle gesture

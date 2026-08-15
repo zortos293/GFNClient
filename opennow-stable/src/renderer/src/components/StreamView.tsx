@@ -37,6 +37,7 @@ import { MotionSpinner } from "./MotionSpinner";
 import { isStreamPointerLocked } from "../lib/pointerLock";
 import type { StatsOverlayMode } from "../utils/streamStatsHud";
 import { RecurringReminderScheduler, shouldScheduleAntiAfkReminder } from "./stream/antiAfkReminder";
+import { usesNativeInternalSurface } from "./stream/nativePresentation";
 
 const ANTI_AFK_TOGGLE_ACK_MS = 5000;
 const CONTROLLER_SIDEBAR_SHORTCUT_DISPLAY = "View + Menu";
@@ -436,7 +437,7 @@ export function StreamView({
   useEffect(() => {
     const video = localVideoRef.current;
     if (!video) return;
-    const effective = gstreamerEnabled || nativeRendererActive
+    const effective = nativeRendererActive || (gstreamerEnabled && isConnecting)
       ? { ...videoShader, enabled: false }
       : videoShader;
     if (!shaderPipelineRef.current) {
@@ -445,7 +446,7 @@ export function StreamView({
     } else {
       shaderPipelineRef.current.updateSettings(effective);
     }
-  }, [videoShader, gstreamerEnabled, nativeRendererActive]);
+  }, [videoShader, gstreamerEnabled, isConnecting, nativeRendererActive]);
 
   useEffect(() => () => {
     shaderPipelineRef.current?.dispose();
@@ -674,8 +675,12 @@ export function StreamView({
     };
   }, [exitPrompt.open, isConnecting, showSideBar]);
 
-  const nativeInternalHole =
-    (nativeRendererActive || gstreamerEnabled) && !nativeExternalRenderer;
+  const nativeInternalHole = usesNativeInternalSurface({
+    nativeRendererActive,
+    nativeStreamingEnabled: gstreamerEnabled,
+    connecting: isConnecting,
+    externalRenderer: nativeExternalRenderer === true,
+  });
 
   return (
     <div className={["sv", streamVideoReady ? "sv--video-ready" : "sv--video-pending", nativeInternalHole ? "sv--native-hole" : "", className].filter(Boolean).join(" ")}>

@@ -33,6 +33,8 @@ export class SignalingCoordinator {
   private nativeStreamerManager: NativeStreamerManager | null = null;
   private nativeStreamerContext: NativeStreamerSessionContext | null = null;
   private nativeStreamerFallbackSessionId: string | null = null;
+  private nativeSoftwareRetrySessionId: string | null = null;
+  private lastSignalingPayload: SignalingConnectRequest | null = null;
 
   constructor(private readonly deps: SignalingCoordinatorDeps) {}
 
@@ -179,10 +181,13 @@ export class SignalingCoordinator {
     }
     this.signalingClient = null;
     this.signalingClientKey = null;
+    this.nativeStreamerManager?.setVideoBackendOverride(null);
     this.nativeStreamerManager?.dispose(options.reason);
     this.nativeStreamerManager = null;
     this.nativeStreamerContext = null;
     this.nativeStreamerFallbackSessionId = null;
+    this.nativeSoftwareRetrySessionId = null;
+    this.lastSignalingPayload = null;
   }
 
   stopNativeStreamer(reason: string): void {
@@ -192,6 +197,9 @@ export class SignalingCoordinator {
   resetNativeStreamerContext(): void {
     this.nativeStreamerContext = null;
     this.nativeStreamerFallbackSessionId = null;
+    this.nativeSoftwareRetrySessionId = null;
+    this.lastSignalingPayload = null;
+    this.nativeStreamerManager?.setVideoBackendOverride(null);
   }
 
   nativeStreamerHasActiveSession(): boolean {
@@ -248,6 +256,8 @@ export class SignalingCoordinator {
       this.resetNativeStreamerContext();
     }
     if (key === "nativeVideoBackend") {
+      this.nativeSoftwareRetrySessionId = null;
+      this.nativeStreamerManager?.setVideoBackendOverride(null);
       if (this.nativeStreamerHasActiveSession()) {
         console.log(
           "[NativeStreamer] Native video backend changed; active session will keep its current backend until the next native streamer restart.",
@@ -262,6 +272,14 @@ export class SignalingCoordinator {
   }
 
   private async connectSignaling(payload: SignalingConnectRequest): Promise<void> {
+    if (
+      this.lastSignalingPayload
+      && this.lastSignalingPayload.sessionId !== payload.sessionId
+    ) {
+      this.nativeSoftwareRetrySessionId = null;
+      this.nativeStreamerManager?.setVideoBackendOverride(null);
+    }
+    this.lastSignalingPayload = payload;
     const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
     this.nativeStreamerContext = payload.nativeStreamer ?? null;
     this.nativeStreamerFallbackSessionId = null;
@@ -319,8 +337,11 @@ export class SignalingCoordinator {
 
   private async disconnectSignaling(): Promise<void> {
     await this.nativeStreamerManager?.stop("signaling disconnect");
+    this.nativeStreamerManager?.setVideoBackendOverride(null);
     this.nativeStreamerContext = null;
     this.nativeStreamerFallbackSessionId = null;
+    this.nativeSoftwareRetrySessionId = null;
+    this.lastSignalingPayload = null;
     this.signalingClient?.disconnect();
     this.signalingClient = null;
     this.signalingClientKey = null;
@@ -382,8 +403,58 @@ export class SignalingCoordinator {
         }
         await this.signalingClient.requestKeyframe(payload);
       },
+      retryWithSoftwareDecoder: (message) => {
+        void this.retryNativeWithSoftwareDecoder(message);
+      },
     });
     return this.nativeStreamerManager;
+  }
+
+  private async retryNativeWithSoftwareDecoder(message: string): Promise<void> {
+    const context = this.nativeStreamerContext;
+    const payload = this.lastSignalingPayload;
+    const manager = this.nativeStreamerManager;
+    if (!context || !payload || !manager) {
+      this.emitToRenderer({
+        type: "error",
+        message: `Native software decoder recovery could not start: ${message}`,
+      });
+      return;
+    }
+
+    const sessionId = context.session.sessionId;
+    if (
+      this.nativeSoftwareRetrySessionId === sessionId
+      || this.deps.settingsManager.get("nativeVideoBackend") === "software"
+    ) {
+      this.emitToRenderer({
+        type: "error",
+        message: `Native software decoder failed to produce video: ${message}`,
+      });
+      return;
+    }
+
+    this.nativeSoftwareRetrySessionId = sessionId;
+    manager.setVideoBackendOverride("software");
+    this.emitToRenderer({
+      type: "log",
+      message: "Native hardware decoding produced no frames; reconnecting once with the native software decoder.",
+    });
+
+    this.signalingClient?.disconnect();
+    this.signalingClient = null;
+    this.signalingClientKey = null;
+    await manager.stop("retrying native video with software decoding").catch(() => undefined);
+
+    try {
+      await this.connectSignaling(payload);
+    } catch (error) {
+      const recoveryMessage = error instanceof Error ? error.message : String(error);
+      this.emitToRenderer({
+        type: "error",
+        message: `Native software decoder recovery failed: ${recoveryMessage}`,
+      });
+    }
   }
 
   private isNativeStreamerSelected(): boolean {

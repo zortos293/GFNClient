@@ -983,22 +983,54 @@ fn maybe_recover_video_startup(
     if audio_active_ms >= VIDEO_STARTUP_FATAL_MS
         && !state.startup_fatal_reported.swap(true, Ordering::Relaxed)
     {
+        let (code, failure_stage) = classify_video_startup_failure(
+            state.encoded_bytes_total.load(Ordering::Relaxed),
+            decoded_total,
+            sink_total,
+        );
         send_log(
             event_sender,
             "error",
             format!(
-                "Native video startup still has no rendered frame after {audio_active_ms}ms of active audio; startupAge={now_ms}ms encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}. Treating startup as failed instead of restarting the WebRTC pipeline."
+                "Native video startup still has no rendered frame after {audio_active_ms}ms of active audio; stage={failure_stage} startupAge={now_ms}ms encodedAge={encoded_age} decoded={decoded_total} sink={sink_total}."
             ),
         );
         request_upstream_key_unit(state, event_sender);
         if let Some(event_sender) = event_sender {
             let _ = event_sender.send(Event::Error {
-                code: "native-video-startup-timeout".to_owned(),
-                message: "Native video startup timed out before the first rendered frame."
-                    .to_owned(),
+                code: code.to_owned(),
+                message: format!(
+                    "Native video startup timed out before the first rendered frame ({failure_stage})."
+                ),
             });
         }
     }
+}
+
+pub(crate) fn classify_video_startup_failure(
+    encoded_bytes: u64,
+    decoded_frames: u64,
+    sink_frames: u64,
+) -> (&'static str, &'static str) {
+    if encoded_bytes == 0 {
+        return ("native-video-input-startup-timeout", "RTP video input");
+    }
+    if decoded_frames == 0 {
+        return (
+            "native-video-decoder-startup-timeout",
+            "video decoder output",
+        );
+    }
+    if sink_frames == 0 {
+        return (
+            "native-video-renderer-startup-timeout",
+            "video renderer input",
+        );
+    }
+    (
+        "native-video-presentation-startup-timeout",
+        "native presentation",
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

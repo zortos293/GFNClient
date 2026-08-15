@@ -52,6 +52,7 @@ interface NativeStreamerCallbacks {
   sendIceCandidate(candidate: IceCandidatePayload): Promise<void>;
   requestKeyframe(payload: KeyframeRequest): Promise<void>;
   emit(event: MainToRendererSignalingEvent): void;
+  retryWithSoftwareDecoder(message: string): void;
 }
 
 interface NativeStreamerManagerOptions extends NativeStreamerCallbacks {
@@ -111,6 +112,8 @@ export class NativeStreamerManager {
   private queuedRemoteIceSessionId: string | null = null;
   private queuedRemoteIce: IceCandidatePayload[] = [];
   private readonly surfaceUpdates: NativeSurfaceUpdateQueue;
+  private videoBackendOverride: NativeVideoBackendPreference | null = null;
+  private suppressNextStoppedEvent = false;
 
   constructor(private readonly options: NativeStreamerManagerOptions) {
     this.surfaceUpdates = new NativeSurfaceUpdateQueue(
@@ -125,6 +128,10 @@ export class NativeStreamerManager {
 
   hasActiveSession(): boolean {
     return this.activeSessionId !== null;
+  }
+
+  setVideoBackendOverride(value: NativeVideoBackendPreference | null): void {
+    this.videoBackendOverride = value;
   }
 
   async prepareForSession(context: NativeStreamerSessionContext): Promise<void> {
@@ -361,6 +368,9 @@ export class NativeStreamerManager {
   }
 
   async stop(reason = "stopped"): Promise<void> {
+    if (reason === "retrying native video with software decoding") {
+      this.suppressNextStoppedEvent = true;
+    }
     const child = this.child;
     this.activeSessionId = null;
     this.capabilities = null;
@@ -377,6 +387,7 @@ export class NativeStreamerManager {
       console.warn("[NativeStreamer] Stop request failed:", error);
     } finally {
       this.terminateProcess();
+      this.suppressNextStoppedEvent = false;
     }
   }
 
@@ -468,7 +479,8 @@ export class NativeStreamerManager {
   ): Promise<void> {
     console.log("[NativeStreamer] Starting:", executablePath);
     console.log("[NativeStreamer] Backend preference:", backendPreference);
-    const videoBackendPreference = this.options.getVideoBackendPreference();
+    const videoBackendPreference = this.videoBackendOverride
+      ?? this.options.getVideoBackendPreference();
     console.log("[NativeStreamer] Video backend preference:", videoBackendPreference);
 
     const { env: childEnv, runtimeStatus } = createNativeStreamerRuntimeEnvironment({
@@ -777,12 +789,30 @@ export class NativeStreamerManager {
       if (message.status === "streaming") {
         this.options.emit({ type: "native-stream-started", message: message.message });
       } else if (message.status === "stopped") {
+        if (this.suppressNextStoppedEvent) {
+          this.suppressNextStoppedEvent = false;
+          return;
+        }
         this.options.emit({ type: "native-stream-stopped", reason: message.message });
       }
       return;
     }
 
     if (message.type === "error") {
+      if (
+        process.platform === "linux"
+        && message.code === "native-video-decoder-startup-timeout"
+      ) {
+        console.warn(
+          `[NativeStreamer] ${message.message} Restarting the native session with software decoding.`,
+        );
+        this.options.emit({
+          type: "log",
+          message: `[NativeStreamer] ${message.message} Retrying the native session with software decoding.`,
+        });
+        this.options.retryWithSoftwareDecoder(message.message);
+        return;
+      }
       this.options.emit({ type: "error", message: `Native streamer error: ${message.message}` });
     }
   }

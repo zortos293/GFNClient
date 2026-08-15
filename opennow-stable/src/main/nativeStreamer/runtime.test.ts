@@ -11,6 +11,7 @@ import {
   nativeStreamerExecutableName,
   nativeStreamerPlatformKey,
   normalizePathForComparison,
+  shouldDefaultLinuxShellToX11,
 } from "./runtime";
 
 function createLinuxRuntimeEnvironment(
@@ -33,7 +34,7 @@ function createLinuxRuntimeEnvironment(
   }).env;
 }
 
-test("native Wayland sessions use the external renderer", () => {
+test("detects native Wayland sessions", () => {
   assert.equal(isNativeWaylandSession({ WAYLAND_DISPLAY: "wayland-0" }), true);
   assert.equal(isNativeWaylandSession({ XDG_SESSION_TYPE: "wayland" }), true);
   assert.equal(isNativeWaylandSession({}, "wayland"), true);
@@ -54,11 +55,10 @@ test("explicit X11 keeps Linux child-surface embedding enabled", () => {
   );
 });
 
-test("Linux runtime selects the renderer for the Electron windowing backend", () => {
-  assert.equal(
-    createLinuxRuntimeEnvironment({ WAYLAND_DISPLAY: "wayland-0" })
-      .OPENNOW_NATIVE_EXTERNAL_RENDERER,
-    "1",
+test("Linux native runtime rejects unmanaged pure Wayland presentation", () => {
+  assert.throws(
+    () => createLinuxRuntimeEnvironment({ WAYLAND_DISPLAY: "wayland-0" }),
+    /requires Electron to run through X11\/XWayland/,
   );
   assert.equal(
     createLinuxRuntimeEnvironment(
@@ -67,6 +67,14 @@ test("Linux runtime selects the renderer for the Electron windowing backend", ()
     ).OPENNOW_NATIVE_EXTERNAL_RENDERER,
     "0",
   );
+});
+
+test("Linux shell defaults to X11 unless an Ozone backend was explicit", () => {
+  assert.equal(shouldDefaultLinuxShellToX11("linux", ""), true);
+  assert.equal(shouldDefaultLinuxShellToX11("linux", undefined), true);
+  assert.equal(shouldDefaultLinuxShellToX11("linux", "auto"), true);
+  assert.equal(shouldDefaultLinuxShellToX11("linux", "wayland"), false);
+  assert.equal(shouldDefaultLinuxShellToX11("win32", ""), false);
 });
 
 test("normalizes real and symlinked paths to the same comparison path", (t) => {

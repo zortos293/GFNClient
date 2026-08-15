@@ -330,30 +330,36 @@ impl Default for GstreamerRenderState {
 }
 
 impl GstreamerRenderState {
-    fn set_surface(&self, surface: NativeRenderSurface, event_sender: &Option<Sender<Event>>) {
+    fn set_surface(
+        &self,
+        surface: NativeRenderSurface,
+        event_sender: &Option<Sender<Event>>,
+    ) -> Result<(), String> {
         if let Ok(mut current) = self.surface.lock() {
             *current = Some(surface);
         }
-        self.apply(event_sender);
+        self.apply(event_sender)
     }
 
-    fn set_video_sink(&self, sink: gst::Element, event_sender: &Option<Sender<Event>>) {
+    fn set_video_sink(
+        &self,
+        sink: gst::Element,
+        event_sender: &Option<Sender<Event>>,
+    ) -> Result<(), String> {
         if let Ok(mut current) = self.video_sink.lock() {
             *current = Some(sink.clone());
         }
         if use_internal_renderer() {
-            if let Err(message) = self.internal_renderer.set_video_sink(sink) {
-                send_log(event_sender, "warn", message);
-            }
+            self.internal_renderer.set_video_sink(sink)?;
         }
-        self.apply(event_sender);
+        self.apply(event_sender)
     }
 
-    fn apply(&self, event_sender: &Option<Sender<Event>>) {
+    fn apply(&self, event_sender: &Option<Sender<Event>>) -> Result<(), String> {
         if use_external_renderer_window() {
             let sink_ready = self.video_sink.lock().ok().and_then(|sink| sink.clone());
             let Some(_sink) = sink_ready else {
-                return;
+                return Ok(());
             };
 
             if let Some(surface) = self.surface.lock().ok().and_then(|surface| surface.clone()) {
@@ -379,17 +385,12 @@ impl GstreamerRenderState {
                     ),
                 );
             }
-            return;
+            return Ok(());
         }
-
-        let sink_ready = self.video_sink.lock().ok().and_then(|sink| sink.clone());
-        let Some(_sink) = sink_ready else {
-            return;
-        };
 
         let surface = self.surface.lock().ok().and_then(|surface| surface.clone());
         let Some(surface) = surface else {
-            return;
+            return Ok(());
         };
 
         if !self.internal_renderer_logged.swap(true, Ordering::SeqCst) {
@@ -402,9 +403,7 @@ impl GstreamerRenderState {
             );
         }
 
-        if let Err(message) = self.internal_renderer.apply_surface(&surface) {
-            send_log(event_sender, "warn", message);
-        }
+        self.internal_renderer.apply_surface(&surface)?;
 
         // Keep ClipCursor / capture rect aligned with the StreamView hole, and
         // (re)arm RawInput if the child HWND was recreated on parent change.
@@ -416,6 +415,8 @@ impl GstreamerRenderState {
                 let _ = arm_internal_child_input(hwnd);
             }
         }
+
+        Ok(())
     }
 
     fn stop_external_renderer_window_guard(&self) {
@@ -723,7 +724,10 @@ impl GstreamerPipeline {
             }
 
             self.render_state
-                .set_video_sink(sink.clone(), &self.event_sender);
+                .set_video_sink(sink.clone(), &self.event_sender)
+                .map_err(|error| {
+                    format!("Failed to attach NVST video sink to native surface: {error}")
+                })?;
             install_present_limiter(
                 sink,
                 self.present_max_fps.clone(),
@@ -1122,10 +1126,10 @@ impl GstreamerPipeline {
         }
     }
 
-    pub(crate) fn update_render_surface(&self, surface: NativeRenderSurface) {
+    pub(crate) fn update_render_surface(&self, surface: NativeRenderSurface) -> Result<(), String> {
         self.video_liveness
             .set_stats_overlay_visible(surface.visible && surface.show_stats);
-        self.render_state.set_surface(surface, &self.event_sender);
+        self.render_state.set_surface(surface, &self.event_sender)
     }
 
     pub(crate) fn stop(mut self) -> Result<(), String> {
@@ -1956,10 +1960,12 @@ pub(crate) fn preferred_rtp_video_apis_for(
         "d3d11" => vec![RtpVideoApi::D3D11],
         "d3d12" => vec![RtpVideoApi::D3D12],
         "videotoolbox" | "vt" => vec![RtpVideoApi::VideoToolbox],
-        "nvdec" | "nvcodec" | "nvidia" => vec![RtpVideoApi::Nvdec],
-        "vaapi" | "va" => vec![RtpVideoApi::Vaapi],
-        "v4l2" | "v4l2stateless" => vec![RtpVideoApi::V4L2],
-        "vulkan" | "vk" => vec![RtpVideoApi::Vulkan],
+        "nvdec" | "nvcodec" | "nvidia" => {
+            vec![RtpVideoApi::Nvdec, RtpVideoApi::Software]
+        }
+        "vaapi" | "va" => vec![RtpVideoApi::Vaapi, RtpVideoApi::Software],
+        "v4l2" | "v4l2stateless" => vec![RtpVideoApi::V4L2, RtpVideoApi::Software],
+        "vulkan" | "vk" => vec![RtpVideoApi::Vulkan, RtpVideoApi::Software],
         "software" | "sw" => vec![RtpVideoApi::Software],
         _ => default_rtp_video_api_priority(requested_fps),
     }
@@ -2702,7 +2708,11 @@ fn link_rtp_video_pad(
             video_liveness.set_decoder(decoder.clone());
             watch_video_caps_transitions(decoder, "decoder", event_sender, video_liveness.clone());
         }
-        render_state.set_video_sink(sink.clone(), event_sender);
+        render_state
+            .set_video_sink(sink.clone(), event_sender)
+            .map_err(|error| {
+                format!("Failed to attach RTP {encoding} video sink to native surface: {error}")
+            })?;
         install_present_limiter(
             sink,
             present_max_fps,
@@ -2876,7 +2886,7 @@ fn link_decoded_media_pad(
             None,
             event_sender,
             streaming_reported,
-            None,
+            Some(video_liveness),
         ),
         DecodedMediaKind::Unknown => Err(format!(
             "Unsupported decoded media caps {:?}; routing to fallback sink.",
@@ -2985,7 +2995,11 @@ fn link_media_chain(
     if let Some(sink) = elements.last() {
         if media_label == "video" {
             if let Some(render_state) = render_state {
-                render_state.set_video_sink(sink.clone(), event_sender);
+                render_state
+                    .set_video_sink(sink.clone(), event_sender)
+                    .map_err(|error| {
+                        format!("Failed to attach decoded video sink to native surface: {error}")
+                    })?;
             }
         }
         watch_first_sink_buffer(sink, media_label, event_sender, streaming_reported);

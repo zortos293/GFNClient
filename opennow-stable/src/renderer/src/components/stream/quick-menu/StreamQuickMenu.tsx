@@ -3,6 +3,7 @@ import type { Dispatch, JSX, RefObject, SetStateAction } from "react";
 import { AnimatePresence, m } from "motion/react";
 import { Bug, Gauge, Images, Keyboard, LogOut, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
 import type {
+  FrameInterpolationSettings,
   MicrophoneMode,
   RecordingFps,
   RecordingResolution,
@@ -55,6 +56,8 @@ interface StreamQuickMenuProps {
   gstreamerEnabled: boolean;
   videoShader: VideoShaderSettings;
   onVideoShaderChange: (value: VideoShaderSettings) => void;
+  frameInterpolation: FrameInterpolationSettings;
+  onFrameInterpolationChange: (value: FrameInterpolationSettings) => void;
   microphoneMode: MicrophoneMode;
   onMicrophoneModeChange: (value: MicrophoneMode) => void;
   diagnosticsStore: StreamDiagnosticsStore;
@@ -104,6 +107,8 @@ export function StreamQuickMenu({
   gstreamerEnabled,
   videoShader,
   onVideoShaderChange,
+  frameInterpolation,
+  onFrameInterpolationChange,
   microphoneMode,
   onMicrophoneModeChange,
   diagnosticsStore,
@@ -256,6 +261,8 @@ export function StreamQuickMenu({
                 gstreamerEnabled={gstreamerEnabled}
                 videoShader={videoShader}
                 onVideoShaderChange={onVideoShaderChange}
+                frameInterpolation={frameInterpolation}
+                onFrameInterpolationChange={onFrameInterpolationChange}
                 microphoneMode={microphoneMode}
                 onMicrophoneModeChange={onMicrophoneModeChange}
                 diagnosticsStore={diagnosticsStore}

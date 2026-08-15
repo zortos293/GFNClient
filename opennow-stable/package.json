@@ -19,7 +19,7 @@
     "node": ">=22.22.0"
   },
   "scripts": {
-    "postinstall": "node scripts/ensure-electron-installed.mjs",
+    "postinstall": "node scripts/ensure-electron-installed.mjs && node scripts/copy-framegen-weights.mjs",
     "electron:install": "node scripts/ensure-electron-installed.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -36,6 +36,7 @@
   "dependencies": {
     "discord-rpc": "^4.0.1",
     "electron-updater": "^6.8.9",
+    "framegen": "^1.4.0",
     "posthog-node": "^5.48.1",
     "ws": "^8.21.3"
   },
@@ -50,6 +51,7 @@
     "@types/three": "^0.185.4",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.2.0",
+    "@webgpu/types": "^0.1.71",
     "cross-env": "^10.1.0",
     "electron": "^43.3.0",
     "electron-builder": "^26.15.3",

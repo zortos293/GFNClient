@@ -7,6 +7,7 @@ import type { SettingsChangeHandler } from "./streamSettingsTypes";
 import { StreamQualityControls } from "./StreamQualityControls";
 import { SessionProxySettings } from "./SessionProxySettings";
 import { VideoShaderControls } from "./VideoShaderControls";
+import { FrameInterpolationControls } from "./FrameInterpolationControls";
 import { StreamSessionOptions } from "./StreamSessionOptions";
 
 interface StreamVideoSectionProps {
@@ -86,6 +87,10 @@ export function StreamVideoSection({
               settings={settings}
               handleChange={handleChange}
               handlePreview={handlePreview}
+            />
+            <FrameInterpolationControls
+              settings={settings}
+              handleChange={handleChange}
             />
           </div>
         </div>

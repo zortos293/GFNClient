@@ -45,12 +45,15 @@ test("creates fresh mutable nested settings defaults", () => {
   assert.notStrictEqual(first, second);
   assert.notStrictEqual(first.favoriteGameIds, second.favoriteGameIds);
   assert.notStrictEqual(first.videoShader, second.videoShader);
+  assert.notStrictEqual(first.frameInterpolation, second.frameInterpolation);
 
   first.favoriteGameIds.push("game-1");
   first.videoShader.sharpen = 0;
+  first.frameInterpolation.enabled = true;
 
   assert.deepEqual(second.favoriteGameIds, []);
   assert.equal(second.videoShader.sharpen, 40);
+  assert.equal(second.frameInterpolation.enabled, false);
 });
 
 test("uses brief recurring Anti-AFK reminder defaults", () => {

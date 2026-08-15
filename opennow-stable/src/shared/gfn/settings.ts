@@ -14,6 +14,10 @@ import type {
 } from "./nativeStreamer";
 import { DEFAULT_KEYBOARD_LAYOUT, type GameLanguage, type KeyboardLayout } from "./keyboard";
 import { DEFAULT_VIDEO_SHADER_SETTINGS, type VideoShaderSettings } from "./videoShader";
+import {
+  DEFAULT_FRAME_INTERPOLATION_SETTINGS,
+  type FrameInterpolationSettings,
+} from "./frameInterpolation";
 import type { UpdateChannel } from "./updater";
 import { normalizeFallbackCodecPreference, normalizeStreamPreferences } from "./stream";
 
@@ -164,6 +168,11 @@ export interface Settings {
   lastSeenReleaseHighlightsVersion: string;
   /** Client-side GPU post-processing shaders applied to the stream (web client mode) */
   videoShader: VideoShaderSettings;
+  /**
+   * Experimental client-side neural frame interpolation (Framegen WebGPU runtime).
+   * Web client mode only; adds display latency in exchange for smoother motion.
+   */
+  frameInterpolation: FrameInterpolationSettings;
   /**
    * First-run consent for anonymous error reporting.
    * `"unset"` shows the one-time prompt; only `"granted"` enables exception capture.
@@ -336,6 +345,7 @@ export function createDefaultSettings(platform: string): Settings {
     allowEscapeToExitFullscreen: false,
     lastSeenReleaseHighlightsVersion: "",
     videoShader: { ...DEFAULT_VIDEO_SHADER_SETTINGS },
+    frameInterpolation: { ...DEFAULT_FRAME_INTERPOLATION_SETTINGS },
     errorReportingConsent: "unset",
     telemetryInstallId: "",
   };

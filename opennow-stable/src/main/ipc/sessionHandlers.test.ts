@@ -352,3 +352,56 @@ test("CREATE_SESSION preserves a launching session when persistence is not echoe
   assert.deepEqual(createBodies, []);
   assert.equal((result as { sessionId?: string }).sessionId, "sess-unknown");
 });
+
+test("GET_ACTIVE_SESSIONS honors the renderer's selected region", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+  const calls: string[] = [];
+  const selectedRegion = "https://np-mia-04.cloudmatchbeta.nvidiagrid.net/";
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+  });
+
+  console.warn = () => {};
+
+  globalThis.fetch = (async (input) => {
+    calls.push(String(input));
+    return new Response(JSON.stringify({
+      requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
+      sessions: [],
+    }), { status: 200 });
+  }) as typeof fetch;
+
+  const ipcMain = {
+    handle(channel: string, handler: (...args: unknown[]) => Promise<unknown>): void {
+      handlers.set(channel, handler);
+    },
+  } as unknown as IpcMain;
+
+  registerSessionIpcHandlers({
+    ipcMain,
+    authService: {
+      getSelectedProvider: () => ({ streamingServiceUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/" }),
+    } as never,
+    settingsManager: {
+      get: () => false,
+    } as never,
+    resolveJwt: async () => "token",
+    setActivity: async () => {},
+    clearActivity: async () => {},
+    dialog: {
+      showMessageBox: async () => ({ response: 2, checkboxChecked: false }),
+    } as never,
+    getMainWindow: () => null,
+  });
+
+  const getActiveSessionsHandler = handlers.get(IPC_CHANNELS.GET_ACTIVE_SESSIONS);
+  assert.ok(getActiveSessionsHandler);
+
+  await getActiveSessionsHandler(null, "renderer-token", selectedRegion);
+
+  assert.deepEqual(calls, ["https://np-mia-04.cloudmatchbeta.nvidiagrid.net/v2/session"]);
+});

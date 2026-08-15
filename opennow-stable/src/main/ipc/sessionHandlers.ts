@@ -286,9 +286,11 @@ export function registerSessionIpcHandlers(deps: SessionIpcHandlerDeps): void {
 
   ipcMain.handle(
     IPC_CHANNELS.GET_ACTIVE_SESSIONS,
-    async (_event, token?: string, _streamingBaseUrl?: string) => {
+    async (_event, token?: string, streamingBaseUrl?: string) => {
       const jwt = await resolveJwt(token);
-      const baseUrl = authService.getSelectedProvider().streamingServiceUrl;
+      const baseUrl =
+        streamingBaseUrl ??
+        authService.getSelectedProvider().streamingServiceUrl;
       return getActiveSessions(jwt, baseUrl);
     },
   );

@@ -49,6 +49,7 @@ import {
   buildClaimRequestBody,
   buildSessionRequestBody,
 } from "./cloudmatchSessionRequest";
+import { createNetworkTestSession } from "./networkTestSession";
 import {
   echoedSessionAppLaunchMode,
   extractAdState,
@@ -100,12 +101,20 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
     deviceId,
     input.proxyUrl,
   );
-  const body = buildSessionRequestBody(input, deviceId, null);
+  const networkTestSessionId = await createNetworkTestSession({
+    base,
+    token: input.token,
+    clientId,
+    deviceId,
+    settings: input.settings,
+    proxyUrl: input.proxyUrl,
+  });
+  const body = buildSessionRequestBody(input, deviceId, networkTestSessionId);
   console.log(
     `[CloudMatch] createSession in-game settings persistence: user=${input.enablePersistingInGameSettings === true}, ` +
     `gameSupport=${input.supportsInGameSettingsPersistence === true}, ` +
     `sent=${body.sessionRequestData.enablePersistingInGameSettings}, ` +
-    "networkTestSessionId=none",
+    `networkTestSessionId=${networkTestSessionId ?? "none"}`,
   );
 
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);

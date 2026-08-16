@@ -596,6 +596,9 @@ internal fun StreamScreen(
                 settings = streamSettings,
                 viewportSettings = requestedStreamSettings,
                 decodedResolution = streamStats.resolution,
+                serverNegotiatedResolution = session.monitorSnapshot?.returnedResolution
+                    ?: session.negotiatedStreamProfile?.resolution,
+                serverFinalSelectedResolution = session.monitorSnapshot?.finalSelectedResolution,
                 androidTouch = state.settings.androidTouch,
                 hideExternalMousePointer = externalMousePointerCaptureActive,
                 touchMouseEnabled =
@@ -1235,6 +1238,8 @@ private fun StreamVideoSurface(
     settings: StreamSettings,
     viewportSettings: StreamSettings,
     decodedResolution: String?,
+    serverNegotiatedResolution: String?,
+    serverFinalSelectedResolution: String?,
     androidTouch: AndroidTouchSettings,
     hideExternalMousePointer: Boolean,
     touchMouseEnabled: Boolean,
@@ -1252,8 +1257,19 @@ private fun StreamVideoSurface(
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var zoomOffset by remember { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
-    val streamAspectRatio = remember(viewportSettings.resolution, viewportSettings.aspectRatio) {
-        streamRendererAspectRatio(viewportSettings)
+    val streamAspectRatio = remember(
+        viewportSettings.resolution,
+        viewportSettings.aspectRatio,
+        decodedResolution,
+        serverNegotiatedResolution,
+        serverFinalSelectedResolution,
+    ) {
+        streamRendererAspectRatio(
+            settings = viewportSettings,
+            decodedResolution = decodedResolution,
+            serverNegotiatedResolution = serverNegotiatedResolution,
+            serverFinalSelectedResolution = serverFinalSelectedResolution,
+        )
     }
     val stretchContentAspectRatio = remember(decodedResolution, streamAspectRatio) {
         streamStretchContentAspectRatio(
@@ -1460,12 +1476,16 @@ private fun StreamVideoSurface(
 
 internal fun streamRendererAspectRatio(
     settings: StreamSettings,
+    decodedResolution: String? = null,
+    serverNegotiatedResolution: String? = null,
+    serverFinalSelectedResolution: String? = null,
 ): Float {
-    // Keep the visible viewport locked to the profile the user selected. The host may
-    // briefly emit a launcher/bootstrap size or change its game output mode even though
-    // dynamic stream-resolution control is disabled in the NVST SDP. Decoded dimensions
-    // are still retained for diagnostics and input mapping, but must not resize the UI.
-    return streamAspectRatioForPixels(streamResolutionPixels(settings))
+    val selectedAspectRatio = streamAspectRatioForPixels(streamResolutionPixels(settings))
+    val decodedPixels = parseResolutionPixelsOrNull(decodedResolution) ?: return selectedAspectRatio
+    val authoritativeServerPixels = listOf(serverFinalSelectedResolution, serverNegotiatedResolution)
+        .mapNotNull(::parseResolutionPixelsOrNull)
+    if (decodedPixels !in authoritativeServerPixels) return selectedAspectRatio
+    return streamAspectRatioForPixels(decodedPixels)
 }
 
 internal fun streamStretchContentAspectRatio(
@@ -1603,7 +1623,7 @@ private fun FingerMouseInputLayer(
                     pinchActive = false
                     lastPinchDistance = 0f
                     lastPinchCentroid = Offset.Zero
-                    return@pointerInteropFilter true
+                    return@pointerInteropFilter NativeStreamInputRouter.dispatchTouch(event, width, height)
                 }
                 if (event.pointerCount >= 2) {
                     // 3-finger touch is reserved for the Direct Click toggle gesture

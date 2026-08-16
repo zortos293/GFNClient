@@ -265,6 +265,21 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun streamRendererUsesAuthoritativeServerFallbackAspectRatio() {
+        val settings = StreamSettings(resolution = "5120x2160", aspectRatio = "21:9")
+
+        assertEquals(
+            1920f / 1080f,
+            streamRendererAspectRatio(
+                settings = settings,
+                decodedResolution = "1920x1080",
+                serverNegotiatedResolution = "1920x1080",
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test
     fun fixedSizeSurfaceRemainsEnabledForSmallerDecodedFrames() {
         assertTrue(
             shouldUseFixedSizeStreamSurface(
@@ -283,6 +298,36 @@ class StreamResolutionTest {
                 viewWidth = 2560,
                 viewHeight = 1440,
             ),
+        )
+    }
+
+    @Test
+    fun transientDecodedGeometryDoesNotResizeSelectedViewport() {
+        val settings = StreamSettings(resolution = "5120x2160", aspectRatio = "21:9")
+
+        assertEquals(
+            5120f / 2160f,
+            streamRendererAspectRatio(
+                settings = settings,
+                decodedResolution = "1920x1080",
+                serverNegotiatedResolution = "2560x1080",
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test
+    fun a56NegotiatedUltrawideFallbackKeepsItsSourceAspectRatio() {
+        val settings = StreamSettings(resolution = "5120x2160", aspectRatio = "21:9")
+
+        assertEquals(
+            2560f / 1080f,
+            streamRendererAspectRatio(
+                settings = settings,
+                decodedResolution = "2560x1080",
+                serverNegotiatedResolution = "2560x1080",
+            ),
+            0.0001f,
         )
     }
 
@@ -787,6 +832,12 @@ class StreamResolutionTest {
                 settings = safeFallback,
             ),
         )
+    }
+
+    @Test
+    fun recoveryCreatesFreshSessionWhenProviderNoLongerListsTheOldOne() {
+        assertEquals(true, shouldCreateFreshRecoverySession(activeSessionCount = 0))
+        assertEquals(false, shouldCreateFreshRecoverySession(activeSessionCount = 1))
     }
 
     @Test

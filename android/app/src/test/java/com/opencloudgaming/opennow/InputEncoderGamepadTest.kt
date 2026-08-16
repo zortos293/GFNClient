@@ -495,11 +495,19 @@ class InputEncoderGamepadTest {
     }
 
     @Test
-    fun backAlwaysOpensOverlayOnAndroidTvEvenForControllerSource() {
-        assertTrue(
+    fun controllerBackStaysInGameOnAndroidTvWhileRemoteBackOpensOverlay() {
+        assertFalse(
             NativeStreamInputRouter.shouldHandleStreamExitKey(
                 KeyEvent.KEYCODE_BACK,
                 controllerInputDevice = true,
+                hardwareKeyboardSource = false,
+                androidTvProfile = true,
+            ),
+        )
+        assertTrue(
+            NativeStreamInputRouter.shouldHandleStreamExitKey(
+                KeyEvent.KEYCODE_BACK,
+                controllerInputDevice = false,
                 hardwareKeyboardSource = false,
                 androidTvProfile = true,
             ),

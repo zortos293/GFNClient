@@ -72,6 +72,51 @@ class NativeTouchTest {
     }
 
     @Test
+    fun visibleControllerKeepsFingerMouseGestureInComposeForEitherPointerOrder() {
+        val routing = NativeUiTouchRoutingState()
+        assertFalse(routing.routesTouchMouseThroughCompose())
+
+        routing.setTouchControllerVisible(true)
+        routing.setTouchControllerBound("left-stick", left = 20, top = 450, right = 260, bottom = 700)
+
+        assertTrue(routing.routesTouchMouseThroughCompose())
+
+        routing.beginPointerGesture(pointerId = 1, touchesUi = false)
+        routing.addPointer(pointerId = 2, touchesUi = true)
+        assertFalse(routing.ownsPointer(1))
+        assertTrue(routing.ownsPointer(2))
+
+        routing.endPointerGesture()
+        routing.beginPointerGesture(pointerId = 2, touchesUi = true)
+        routing.addPointer(pointerId = 1, touchesUi = false)
+        assertFalse(routing.ownsPointer(1))
+        assertTrue(routing.ownsPointer(2))
+
+        routing.setTouchControllerVisible(false)
+        assertFalse(routing.routesTouchMouseThroughCompose())
+    }
+
+    @Test
+    fun pointerOwnershipDoesNotChangeWhenFingerCrossesControllerBounds() {
+        val routing = NativeUiTouchRoutingState()
+
+        routing.beginPointerGesture(pointerId = 4, touchesUi = false)
+        assertFalse(routing.classifiesPointerAsUi(pointerId = 4, touchesUiNow = true))
+
+        routing.endPointerGesture()
+        routing.beginPointerGesture(pointerId = 7, touchesUi = true)
+        assertTrue(routing.classifiesPointerAsUi(pointerId = 7, touchesUiNow = false))
+    }
+
+    @Test
+    fun untrackedPointerFallsBackToCurrentUiBounds() {
+        val routing = NativeUiTouchRoutingState()
+
+        assertTrue(routing.classifiesPointerAsUi(pointerId = 9, touchesUiNow = true))
+        assertFalse(routing.classifiesPointerAsUi(pointerId = 9, touchesUiNow = false))
+    }
+
+    @Test
     fun onlyAnOwnedLauncherGestureIsConsumedAfterUiOpens() {
         assertTrue(shouldConsumeNativeUiTransitionTouch(streamUiActive = true, hasOwnedPointer = true))
         assertFalse(shouldConsumeNativeUiTransitionTouch(streamUiActive = false, hasOwnedPointer = true))

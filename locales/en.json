@@ -1182,6 +1182,8 @@
     "switchAccountFailed": "Failed to switch account",
     "nativeStreamerStoppedTitle": "Native Streamer Stopped",
     "nativeStreamerStoppedDescription": "The native streaming process stopped and could not be restored automatically. Try resuming the session again from the app.",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "Session Connection Lost",
     "resumeAttachFailedDescription": "Resume attach failed before media handshake. Try resuming once again.",
     "sessionConnectionLostDescription": "The connection to your running session was lost and could not be restored automatically. Try resuming it again from the app.",

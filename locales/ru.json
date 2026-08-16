@@ -1182,6 +1182,8 @@
     "switchAccountFailed": "Не удалось переключить аккаунт",
     "nativeStreamerStoppedTitle": "Родной стример остановлен",
     "nativeStreamerStoppedDescription": "Собственный процесс потоковой передачи остановлен и не может быть восстановлен автоматически. Попробуйте возобновить сеанс еще раз из приложения.",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "Соединение с сеансом потеряно",
     "resumeAttachFailedDescription": "Не удалось возобновить присоединение до установления связи с носителем. Попробуйте возобновить еще раз.",
     "sessionConnectionLostDescription": "Соединение с запущенным сеансом было потеряно и не может быть восстановлено автоматически. Попробуйте возобновить его еще раз из приложения.",

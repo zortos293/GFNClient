@@ -122,6 +122,30 @@ test("disconnect recovery honors remote ICE grace and controlled disconnect orde
   }), "recover");
 });
 
+test("disconnect recovery only treats explicit remote peer termination as a session end", () => {
+  for (const reason of ["BYE", "peerRemoved", "peer removed"]) {
+    assert.equal(decideSignalingDisconnect({
+      appUnloading: false,
+      streamStatus: "streaming",
+      reason,
+      hasConfirmedRemoteIce: true,
+      iceState: "failed",
+      pendingControlledDisconnects: 0,
+    }), "expected-session-close");
+  }
+
+  for (const reason of ["socket closed", "signaling disconnected: socket closed"]) {
+    assert.equal(decideSignalingDisconnect({
+      appUnloading: false,
+      streamStatus: "streaming",
+      reason,
+      hasConfirmedRemoteIce: true,
+      iceState: "failed",
+      pendingControlledDisconnects: 0,
+    }), "recover");
+  }
+});
+
 test("recovery candidate stays on the same session before app or persisted fallbacks", () => {
   const result = selectRecoveryCandidate([
     { sessionId: "other", appId: 42, status: 2, serverIp: "10.0.0.3" },

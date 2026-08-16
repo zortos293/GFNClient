@@ -2,7 +2,7 @@ import type { ActiveSessionInfo } from "@shared/gfn";
 
 import type { StreamStatus } from "./appTypes";
 import type { RuntimeSnapshot } from "./runtimeSnapshot";
-import { isExpectedNativeSessionClose } from "./streamSessionHelpers";
+import { isRemoteSessionEndReason } from "./streamSessionHelpers";
 
 export type SignalingDisconnectDecision =
   | "ignore-app-unloading"
@@ -30,7 +30,7 @@ export function decideSignalingDisconnect({
   pendingControlledDisconnects,
 }: SignalingDisconnectInput): SignalingDisconnectDecision {
   if (appUnloading) return "ignore-app-unloading";
-  if (streamStatus !== "idle" && isExpectedNativeSessionClose(reason)) {
+  if (streamStatus !== "idle" && isRemoteSessionEndReason(reason)) {
     return "expected-session-close";
   }
   if (

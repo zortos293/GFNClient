@@ -3,7 +3,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { isStreamVideoReady, toLaunchErrorState } from "./sessionState";
+import {
+  isStreamVideoReady,
+  shouldSurfaceRemoteSessionEnd,
+  toLaunchErrorState,
+  toRemoteSessionEndedError,
+} from "./sessionState";
 
 const translations: Record<string, string> = {
   "errors.duplicateSessionTitle": "Duplicate Session Detected",
@@ -13,6 +18,8 @@ const translations: Record<string, string> = {
   "errors.insufficientPlayabilityTierDescription": "This game requires {{tier}} on GeForce NOW. Upgrade your membership to play it.",
   "errors.launchFailedTitle": "Launch Failed",
   "errors.launchUnknown": "The game could not start. Please try again.",
+  "errors.remoteSessionEndedTitle": "Remote Session Ended",
+  "errors.remoteSessionEndedDescription": "GeForce NOW ended the remote stream.",
   "errors.userStorageUnavailableTitle": "Persistent Storage Unavailable",
   "errors.userStorageUnavailableDescription": "NVIDIA reported that Persistent Storage is unavailable for this account or storage location. Open Settings → Account → Persistent Storage, then use NVIDIA Storage Manager to reset or move the storage location. If it still fails, check NVIDIA server status.",
   "errors.userStorageUnavailableAction": "Open Storage Settings",
@@ -77,4 +84,23 @@ test("stream video stays covered until the session is streaming and a frame sour
   assert.equal(isStreamVideoReady("streaming", false, false), false);
   assert.equal(isStreamVideoReady("streaming", true, false), true);
   assert.equal(isStreamVideoReady("streaming", false, true), true);
+});
+
+test("explicit remote session termination produces an actionable launch error", () => {
+  assert.deepEqual(toRemoteSessionEndedError(t, "streaming", "BYE"), {
+    stage: "connecting",
+    title: "Remote Session Ended",
+    description: "GeForce NOW ended the remote stream.",
+    codeLabel: "RemoteSessionEnded (BYE)",
+  });
+  assert.equal(
+    toRemoteSessionEndedError(t, "connecting", "peerRemoved").codeLabel,
+    "RemoteSessionEnded (PeerRemoved)",
+  );
+});
+
+test("remote session termination is surfaced only during launch or immediately after first video", () => {
+  assert.equal(shouldSurfaceRemoteSessionEnd(null, 120_000), true);
+  assert.equal(shouldSurfaceRemoteSessionEnd(100_000, 159_999), true);
+  assert.equal(shouldSurfaceRemoteSessionEnd(100_000, 160_000), false);
 });

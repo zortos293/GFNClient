@@ -42,6 +42,7 @@ import { useSignalingEvents } from "./hooks/streamSession/useSignalingEvents";
 import {
   RECOVERABLE_STREAM_STATUSES,
   SIGNALING_RECOVERY_ATTEMPT_DELAYS_MS,
+  remoteSessionEndCode,
   sendStreamClipboardPaste,
   sleep,
   useStreamSession,
@@ -89,6 +90,8 @@ import {
 } from "./lib/sessionWarnings";
 import {
   isStreamVideoReady,
+  shouldSurfaceRemoteSessionEnd,
+  toRemoteSessionEndedError,
   toLoadingStatus,
 } from "./lib/sessionState";
 import { defaultDiagnostics } from "./lib/streamDiagnostics";
@@ -1878,8 +1881,28 @@ export function App(): JSX.Element {
     resolveSubscriptionInfoForLaunch,
   ]);
 
-  const handleExpectedNativeSessionClose = useCallback((reason: string): void => {
-    console.log("[Recovery] Treating signaling close as ended session:", reason);
+  const handleRemoteSessionEnd = useCallback((reason: string): void => {
+    if (signalingRecoveryRef.current.explicitShutdown) {
+      console.log("[Session] Ignoring duplicate remote end after shutdown");
+      return;
+    }
+    const status = streamStatusRef.current;
+    const activeSession = sessionRef.current;
+    const reasonCode = remoteSessionEndCode(reason) ?? "RemoteSessionEnded";
+    const endedAtMs = Date.now();
+    const streamedForMs = sessionStartedAtMs === null
+      ? null
+      : Math.max(0, endedAtMs - sessionStartedAtMs);
+    const premature = shouldSurfaceRemoteSessionEnd(sessionStartedAtMs, endedAtMs);
+    console.warn("[Session] Remote stream ended without a local stop request", {
+      reason: reasonCode,
+      phase: status,
+      sessionId: activeSession?.sessionId ?? null,
+      appId: activeSession?.appId ?? null,
+      receivedFirstFrame: sessionStartedAtMs !== null,
+      streamedForMs,
+      premature,
+    });
     const activeGameId = streamingGameRef.current?.id;
     if (activeGameId) {
       endPlaytimeSession(activeGameId);
@@ -1888,15 +1911,20 @@ export function App(): JSX.Element {
     clientRef.current?.dispose();
     clientRef.current = null;
     launchInFlightRef.current = false;
-    resetLaunchRuntime();
+    if (premature) {
+      setLaunchError(toRemoteSessionEndedError(t, status, reason));
+      resetLaunchRuntime({ keepLaunchError: true, keepStreamingContext: true });
+    } else {
+      resetLaunchRuntime();
+    }
     void refreshNavbarActiveSession();
-  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime]);
+  }, [endPlaytimeSession, markExplicitSignalingShutdown, refreshNavbarActiveSession, resetLaunchRuntime, sessionStartedAtMs, t]);
 
   useSignalingEvents({
     runtime: streamRuntime,
     attemptSessionRecovery,
     diagnosticsStore,
-    handleExpectedNativeSessionClose,
+    handleRemoteSessionEnd,
     markDiscordStreamStarted,
     refreshNavbarActiveSession,
     resetLaunchRuntime,

@@ -16,13 +16,22 @@ export const SIGNALING_RECOVERY_STABLE_RESET_DELAY_MS = 15000;
 export const SIGNALING_REMOTE_ICE_GRACE_MS = 5000;
 export const ICE_DISCONNECTED_RECOVERY_GRACE_MS = 7000;
 
-export function isExpectedNativeSessionClose(reason: string): boolean {
+export function isRemoteSessionEndReason(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
   return normalized === "bye" ||
     normalized === "peerremoved" ||
-    normalized === "peer removed" ||
-    normalized === "socket closed" ||
-    normalized === "signaling disconnected: socket closed";
+    normalized === "peer removed";
+}
+
+export function remoteSessionEndCode(reason: string): string | undefined {
+  const normalized = reason.trim().toLowerCase();
+  if (normalized === "bye") {
+    return "RemoteSessionEnded (BYE)";
+  }
+  if (normalized === "peerremoved" || normalized === "peer removed") {
+    return "RemoteSessionEnded (PeerRemoved)";
+  }
+  return undefined;
 }
 
 export function sleep(ms: number): Promise<void> {

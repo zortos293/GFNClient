@@ -6,8 +6,11 @@ import {
 } from "@shared/gfn";
 
 import type { LaunchErrorState, StreamLoadingStatus, StreamStatus } from "./appTypes";
+import { remoteSessionEndCode } from "./streamSessionHelpers";
 
 type TranslateFunction = typeof import("../i18n").t;
+
+export const PREMATURE_REMOTE_SESSION_END_WINDOW_MS = 60_000;
 
 const GFN_SESSION_LIMIT_EXCEEDED_CODE = 3237093643;
 const GFN_INSUFFICIENT_PLAYABILITY_CODE = 3237093718;
@@ -228,4 +231,25 @@ export function streamStatusToLoadingStage(status: StreamStatus): StreamLoadingS
     return status;
   }
   return "connecting";
+}
+
+export function toRemoteSessionEndedError(
+  t: TranslateFunction,
+  status: StreamStatus,
+  reason: string,
+): LaunchErrorState {
+  return {
+    stage: streamStatusToLoadingStage(status),
+    title: t("errors.remoteSessionEndedTitle"),
+    description: t("errors.remoteSessionEndedDescription"),
+    codeLabel: remoteSessionEndCode(reason),
+  };
+}
+
+export function shouldSurfaceRemoteSessionEnd(
+  sessionStartedAtMs: number | null,
+  endedAtMs: number,
+): boolean {
+  return sessionStartedAtMs === null ||
+    endedAtMs - sessionStartedAtMs < PREMATURE_REMOTE_SESSION_END_WINDOW_MS;
 }

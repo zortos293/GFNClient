@@ -6,7 +6,7 @@ import {
   ICE_DISCONNECTED_RECOVERY_GRACE_MS,
   RECOVERABLE_STREAM_STATUSES,
   SIGNALING_REMOTE_ICE_GRACE_MS,
-  isExpectedNativeSessionClose,
+  isRemoteSessionEndReason,
   readStreamClipboardText,
   sendStreamClipboardPaste,
 } from "../../lib/streamSessionHelpers";
@@ -29,7 +29,7 @@ export interface SignalingEventOptions {
   runtime: StreamRuntimeState;
   attemptSessionRecovery: (reason: string) => Promise<boolean>;
   diagnosticsStore: StreamDiagnosticsStore;
-  handleExpectedNativeSessionClose: (reason: string) => void;
+  handleRemoteSessionEnd: (reason: string) => void;
   markDiscordStreamStarted: () => void;
   refreshNavbarActiveSession: () => Promise<void>;
   resetLaunchRuntime: ResetLaunchRuntime;
@@ -42,7 +42,7 @@ export function useSignalingEvents({
   runtime,
   attemptSessionRecovery,
   diagnosticsStore,
-  handleExpectedNativeSessionClose,
+  handleRemoteSessionEnd,
   markDiscordStreamStarted,
   refreshNavbarActiveSession,
   resetLaunchRuntime,
@@ -361,8 +361,8 @@ export function useSignalingEvents({
             console.log("[Recovery] Ignoring native streamer stop during app shutdown");
             return;
           }
-          if (streamStatusRef.current === "streaming" && isExpectedNativeSessionClose(reason)) {
-            handleExpectedNativeSessionClose(reason);
+          if (streamStatusRef.current !== "idle" && isRemoteSessionEndReason(reason)) {
+            handleRemoteSessionEnd(reason);
             return;
           }
           if (
@@ -418,7 +418,7 @@ export function useSignalingEvents({
             return;
           }
           if (decision === "expected-session-close") {
-            handleExpectedNativeSessionClose(event.reason);
+            handleRemoteSessionEnd(event.reason);
             return;
           }
           if (decision === "ignore-active-ice") {
@@ -506,6 +506,6 @@ export function useSignalingEvents({
     });
 
     return () => unsubscribe();
-  }, [attemptSessionRecovery, diagnosticsStore, handleExpectedNativeSessionClose, markDiscordStreamStarted, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
+  }, [attemptSessionRecovery, diagnosticsStore, handleRemoteSessionEnd, markDiscordStreamStarted, nativeInputBridgeReady, refreshNavbarActiveSession, resetLaunchRuntime, scheduleStableRecoveryReset, settings, streamMicLevel, streamVolume, t]);
 
 }

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 
-import { LogCapture } from "./logger";
+import { LogCapture, redactSensitiveData } from "./logger";
 
 type ConsoleOutputStreams = NonNullable<ConstructorParameters<typeof LogCapture>[1]>;
 
@@ -114,5 +114,52 @@ test("leaves unrelated asynchronous stream errors to existing reporters", async 
   } finally {
     capture.restoreConsole();
     console.warn = originalWarn;
+  }
+});
+
+test("exports retained diagnostic context before categorized events", () => {
+  const capture = new LogCapture("renderer", {});
+  capture.setContext("stream.latest", {
+    streamKey: "0123...6789ab",
+    phase: "streaming",
+    codec: "H265",
+  });
+  capture.addEntry("warn", "NativeStreamer", "Decoder recovery started", []);
+
+  const exported = capture.exportRedacted();
+
+  assert.match(exported, /^OpenNOW Desktop diagnostics/m);
+  assert.match(exported, /context\.stream\.latest\.streamKey=0123\.\.\.6789ab/);
+  assert.match(exported, /events\.count=1 max=5000/);
+  assert.match(exported, /WARN \[NativeStreamer\] Decoder recovery started/);
+});
+
+test("appends a bounded previous-run snapshot only to the full export", () => {
+  const capture = new LogCapture("main", {});
+  capture.setPreviousRunSnapshot({ capturedAt: 1234, text: "prior diagnostic evidence" });
+
+  assert.doesNotMatch(capture.exportCurrentRedacted(), /previousAppRun/);
+  assert.match(capture.exportRedacted(), /previousAppRun\.capturedAt=1970-01-01T00:00:01\.234Z/);
+  assert.match(capture.exportRedacted(), /prior diagnostic evidence/);
+});
+
+test("redacts unlabelled UUIDs, IPv6 addresses, credentials, and user-home paths", () => {
+  const raw = [
+    "session 01234567-89ab-4cde-8fab-0123456789ab",
+    "ipv6=2001:db8::1234",
+    "a=ice-pwd:private-credential",
+    "Bearer header.payload.signature",
+    "/Users/example/OpenNOW/native-streamer",
+  ].join("\n");
+  const redacted = redactSensitiveData(raw);
+
+  for (const sensitive of [
+    "01234567-89ab-4cde-8fab-0123456789ab",
+    "2001:db8::1234",
+    "private-credential",
+    "header.payload.signature",
+    "/Users/example",
+  ]) {
+    assert.doesNotMatch(redacted, new RegExp(sensitive.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });

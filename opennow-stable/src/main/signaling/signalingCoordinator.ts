@@ -13,6 +13,8 @@ import type {
   Settings,
   SignalingConnectRequest,
 } from "@shared/gfn";
+import { streamDiagnosticId } from "@shared/gfn";
+import { setLogContext } from "@shared/logger";
 import { GfnSignalingClient } from "../platforms/gfn/signaling";
 import { NativeStreamerManager } from "../nativeStreamer/manager";
 import { normalizeNativeInputPacket } from "../nativeStreamer/input";
@@ -35,8 +37,19 @@ export class SignalingCoordinator {
   private nativeStreamerFallbackSessionId: string | null = null;
   private nativeSoftwareRetrySessionId: string | null = null;
   private lastSignalingPayload: SignalingConnectRequest | null = null;
+  private sessionDiagnosticState: Record<string, unknown> = {
+    phase: "idle",
+  };
 
   constructor(private readonly deps: SignalingCoordinatorDeps) {}
+
+  private retainSessionState(values: Record<string, unknown>): void {
+    this.sessionDiagnosticState = {
+      ...this.sessionDiagnosticState,
+      ...values,
+    };
+    setLogContext("session.latest", this.sessionDiagnosticState);
+  }
 
   registerIpcHandlers(): void {
     const { ipcMain } = this.deps;
@@ -176,6 +189,10 @@ export class SignalingCoordinator {
     emitDisconnectEvent: boolean;
     reason: string;
   }): void {
+    this.retainSessionState({
+      phase: "shutdown",
+      stopReason: options.reason,
+    });
     if (options.emitDisconnectEvent) {
       this.signalingClient?.disconnect();
     }
@@ -283,11 +300,32 @@ export class SignalingCoordinator {
     const nextKey = `${payload.sessionId}|${payload.signalingServer}|${payload.signalingUrl ?? ""}`;
     this.nativeStreamerContext = payload.nativeStreamer ?? null;
     this.nativeStreamerFallbackSessionId = null;
+    const nativeContext = this.nativeStreamerContext;
+    this.retainSessionState({
+      streamKey: streamDiagnosticId(payload.sessionId),
+      phase: "signaling-connect",
+      appId: nativeContext?.session.appId ?? "unknown",
+      sessionStatus: nativeContext?.session.status ?? "unknown",
+      queuePosition: nativeContext?.session.queuePosition ?? 0,
+      seatSetupStep: nativeContext?.session.seatSetupStep ?? 0,
+      zone: nativeContext?.session.zone ?? "unknown",
+      serverLocation: nativeContext?.session.serverLocation ?? "unknown",
+      serverGpuType: nativeContext?.session.gpuType ?? "unknown",
+      streamer: nativeContext ? "native" : "web",
+      requestedResolution: nativeContext?.settings.resolution ?? "renderer-owned",
+      requestedFps: nativeContext?.settings.fps ?? "renderer-owned",
+      requestedCodec: nativeContext?.settings.codec ?? "renderer-owned",
+      negotiatedResolution: nativeContext?.session.negotiatedStreamProfile?.resolution ?? "unknown",
+      negotiatedFps: nativeContext?.session.negotiatedStreamProfile?.fps ?? "unknown",
+      negotiatedCodec: nativeContext?.session.negotiatedStreamProfile?.codec ?? "unknown",
+      transportMode: nativeContext?.settings.transportMode ?? "webrtc",
+      connectedAt: new Date().toISOString(),
+    });
     if (this.nativeStreamerContext) {
       console.log(
         "[NativeStreamer] Signaling connect context:",
         JSON.stringify({
-          sessionId: this.nativeStreamerContext.session.sessionId,
+          streamKey: streamDiagnosticId(this.nativeStreamerContext.session.sessionId),
           resolution: this.nativeStreamerContext.settings.resolution,
           fps: this.nativeStreamerContext.settings.fps,
           codec: this.nativeStreamerContext.settings.codec,
@@ -325,7 +363,12 @@ export class SignalingCoordinator {
     this.signalingClient.onEvent((event) => this.routeSignalingEvent(event));
     try {
       await this.signalingClient.connect();
+      this.retainSessionState({ phase: "signaling-connected" });
     } catch (error) {
+      this.retainSessionState({
+        phase: "signaling-connect-failed",
+        lastError: error instanceof Error ? error.message : String(error),
+      });
       await this.nativeStreamerManager
         ?.stop("signaling connect failed")
         .catch(() => undefined);
@@ -336,6 +379,10 @@ export class SignalingCoordinator {
   }
 
   private async disconnectSignaling(): Promise<void> {
+    this.retainSessionState({
+      phase: "disconnecting",
+      stopReason: "renderer signaling disconnect",
+    });
     await this.nativeStreamerManager?.stop("signaling disconnect");
     this.nativeStreamerManager?.setVideoBackendOverride(null);
     this.nativeStreamerContext = null;
@@ -345,6 +392,7 @@ export class SignalingCoordinator {
     this.signalingClient?.disconnect();
     this.signalingClient = null;
     this.signalingClientKey = null;
+    this.retainSessionState({ phase: "disconnected" });
   }
 
   private emitToRenderer(event: MainToRendererSignalingEvent): void {
@@ -463,6 +511,10 @@ export class SignalingCoordinator {
 
   private routeSignalingEvent(event: MainToRendererSignalingEvent): void {
     if (event.type === "disconnected") {
+      this.retainSessionState({
+        phase: "remote-disconnected",
+        stopReason: event.reason,
+      });
       void this.nativeStreamerManager?.stop(
         `signaling disconnected: ${event.reason}`,
       );
@@ -511,6 +563,11 @@ export class SignalingCoordinator {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn("[NativeStreamer] Falling back to web streamer:", message);
+      this.retainSessionState({
+        streamer: "web-fallback",
+        phase: "native-fallback",
+        lastError: message,
+      });
       this.nativeStreamerFallbackSessionId = context.session.sessionId;
       const queuedRemoteIce =
         this.nativeStreamerManager?.drainQueuedRemoteIce(
@@ -562,6 +619,11 @@ export class SignalingCoordinator {
         "[NativeStreamer] Pre-attach startup failed; falling back to web streamer:",
         message,
       );
+      this.retainSessionState({
+        streamer: "web-fallback",
+        phase: "native-pre-attach-fallback",
+        lastError: message,
+      });
       this.nativeStreamerFallbackSessionId = context.session.sessionId;
       await this.nativeStreamerManager
         ?.stop("native streamer pre-attach fallback")

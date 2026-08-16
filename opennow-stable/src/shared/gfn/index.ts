@@ -24,3 +24,4 @@ export * from "./media";
 export * from "./printedWaste";
 export * from "./endpoints";
 export * from "./sdpValidation";
+export * from "./diagnostics";

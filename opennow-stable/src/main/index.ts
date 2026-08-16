@@ -12,6 +12,7 @@ import {
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { cpus, totalmem } from "node:os";
 
 // Keyboard shortcuts reference (matching Rust implementation):
 // Screenshot keybind - configurable, handled in renderer
@@ -21,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 import { IPC_CHANNELS } from "@shared/ipc";
 import { registerOpenNowMediaProtocol } from "./mediaPaths";
-import { initLogCapture } from "@shared/logger";
+import { initLogCapture, setLogContext } from "@shared/logger";
 import { cacheManager } from "./services/cacheManager";
 import { refreshScheduler } from "./services/refreshScheduler";
 import { cacheEventBus } from "./services/cacheEventBus";
@@ -81,6 +82,10 @@ import { shutdownMainTelemetry, syncMainTelemetry } from "./telemetry/posthog";
 import { createMainWindow } from "./window/mainWindow";
 import { resolveAppInstanceProfile } from "./appInstance";
 import { shouldDefaultLinuxShellToX11 } from "./nativeStreamer/runtime";
+import {
+  DiagnosticHistoryController,
+  DiagnosticHistoryStore,
+} from "./services/diagnosticHistory";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -93,6 +98,24 @@ if (appInstanceProfile.isSecondary) {
   app.setPath("userData", appInstanceProfile.userDataPath);
   app.setPath("sessionData", appInstanceProfile.userDataPath);
 }
+
+// Capture bootstrap decisions as well as app-ready/runtime output. Android's
+// diagnostic export follows the same full-lifecycle model.
+const mainLogCapture = initLogCapture("main");
+const cpuInfo = cpus();
+setLogContext("application.main", {
+  version: app.getVersion(),
+  packaged: app.isPackaged,
+  platform: process.platform,
+  architecture: process.arch,
+  electron: process.versions.electron,
+  chromium: process.versions.chrome,
+  node: process.versions.node,
+  cpuModel: cpuInfo[0]?.model ?? "unknown",
+  processorCount: cpuInfo.length,
+  memoryMiB: Math.round(totalmem() / (1024 * 1024)),
+  secondaryInstance: appInstanceProfile.isSecondary,
+});
 
 // Configure Chromium video, WebRTC, and input behavior before app.whenReady().
 
@@ -192,6 +215,7 @@ let signalingCoordinator: SignalingCoordinator | null = null;
 let authService: AuthService;
 let settingsManager: SettingsManager;
 let appUpdater: AppUpdaterController | null = null;
+let diagnosticHistoryController: DiagnosticHistoryController | null = null;
 const EXPLICIT_SHUTDOWN_FORCE_EXIT_DELAY_MS = 2000;
 let isShutdownRequested = false;
 let isShutdownCleanupComplete = false;
@@ -277,6 +301,10 @@ function runShutdownCleanup(reason = "app-quit"): void {
   void shutdownMainTelemetry();
   appUpdater?.dispose();
   appUpdater = null;
+  diagnosticHistoryController?.stop();
+  void diagnosticHistoryController?.flush().catch((error) => {
+    console.warn("[Diagnostics] Failed to flush shutdown diagnostic snapshot:", error);
+  });
 
   const windowToClose = mainWindow;
   if (windowToClose && !windowToClose.isDestroyed()) {
@@ -549,8 +577,16 @@ if (!gotSingleInstanceLock) {
 
 if (gotSingleInstanceLock) {
 app.whenReady().then(async () => {
-  // Initialize log capture first to capture all console output
-  initLogCapture("main");
+  diagnosticHistoryController = new DiagnosticHistoryController(
+    new DiagnosticHistoryStore(app.getPath("userData")),
+    mainLogCapture,
+  );
+  try {
+    await diagnosticHistoryController.start();
+  } catch (error) {
+    console.warn("[Diagnostics] Failed to initialize previous-run history:", error);
+    diagnosticHistoryController = null;
+  }
   if (appInstanceProfile.isSecondary) {
     console.log(`[Main] Secondary instance profile: ${appInstanceProfile.userDataPath}`);
   }

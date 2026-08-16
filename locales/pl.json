@@ -1182,6 +1182,8 @@
     "switchAccountFailed": "Nie udało się zmienić konta",
     "nativeStreamerStoppedTitle": "Natywny Streamer zatrzymany",
     "nativeStreamerStoppedDescription": "Natywny proces streamowania został zatrzymany i nie mógł zostać automatycznie przywrócony. Spróbuj wznowić sesję ponownie z poziomu aplikacji.",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "Utracono połączenie sesji",
     "resumeAttachFailedDescription": "Ponowne podłączenie nie powiodło się przed uzgodnieniem połączenia multimedialnego. Spróbuj wznowić sesję jeszcze raz.",
     "sessionConnectionLostDescription": "Połączenie z uruchomioną sesją zostało utracone i nie mogło zostać przywrócone automatycznie. Spróbuj wznowić je ponownie z aplikacji.",

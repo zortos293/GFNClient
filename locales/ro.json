@@ -1182,6 +1182,8 @@
     "switchAccountFailed": "Nu s-a putut schimba contul",
     "nativeStreamerStoppedTitle": "Streamerul nativ oprit",
     "nativeStreamerStoppedDescription": "Procesul de streaming nativ s-a oprit și nu a putut fi restabilit automat. Încercați să reluați sesiunea din aplicație.",
+    "remoteSessionEndedTitle": "Remote Session Ended",
+    "remoteSessionEndedDescription": "GeForce NOW ended the remote stream. This usually means the game or launcher exited, rather than OpenNOW timing out an idle session. Try launching the game again. If it closes again, include the OpenNOW logs in a bug report.",
     "sessionConnectionLostTitle": "Conexiunea la sesiune pierdută",
     "resumeAttachFailedDescription": "Reluarea atașării a eșuat înainte de strângere de mână media. Încercați să reluați încă o dată.",
     "sessionConnectionLostDescription": "Conexiunea la sesiunea dvs. de rulare a fost pierdută și nu a putut fi restabilită automat. Încercați să o reluați din aplicație.",

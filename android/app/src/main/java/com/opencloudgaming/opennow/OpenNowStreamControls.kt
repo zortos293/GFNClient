@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -1844,7 +1845,7 @@ internal fun BugReportFormInputs(
             onValueChange = onDescriptionChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(128.dp),
+                .heightIn(min = 128.dp),
             enabled = !submission.uploading,
             minLines = 4,
             maxLines = 7,
@@ -1858,6 +1859,10 @@ internal fun BugReportFormInputs(
             },
             isError = description.isNotEmpty() && descriptionError != null,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+        )
+        BugReportDescriptionFeedback(
+            description = description,
+            error = descriptionError,
         )
         Row(
             modifier = Modifier
@@ -1930,6 +1935,45 @@ internal fun BugReportFormInputs(
 }
 
 @Composable
+internal fun BugReportDescriptionFeedback(
+    description: String,
+    error: String?,
+    modifier: Modifier = Modifier,
+) {
+    if (description.isEmpty() || error == null) return
+
+    val meaningfulCharacters = androidBugReportMeaningfulCharacterCount(description)
+    val missingCharacters = (ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS - meaningfulCharacters).coerceAtLeast(0)
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
+        contentColor = TextPrimary,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.48f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                if (missingCharacters > 0) "Add more detail" else "Description needs attention",
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                if (missingCharacters > 0) {
+                    "$meaningfulCharacters / $ANDROID_BUG_REPORT_MIN_MEANINGFUL_CHARS meaningful characters. Add $missingCharacters more letters or numbers before sending."
+                } else {
+                    error
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+}
+
+@Composable
 private fun StreamBugReporter(
     submission: BugReportSubmissionState,
     versionCheck: AndroidBugReportVersionCheckState,
@@ -1983,6 +2027,10 @@ private fun StreamBugReporter(
             )
             return@ControlSection
         }
+
+        DiscordCommunityLink(
+            summary = stringResource(R.string.discord_community_bug_report_summary),
+        )
 
         if (submission.submitted) {
             Surface(

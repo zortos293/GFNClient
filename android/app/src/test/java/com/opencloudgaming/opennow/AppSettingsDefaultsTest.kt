@@ -15,6 +15,8 @@ class AppSettingsDefaultsTest {
         assertTrue(settings.showStatsOnLaunch)
         assertFalse(settings.hideStreamButtons)
         assertTrue(settings.externalMousePointerLock)
+        assertFalse(settings.showFavoriteIconOnGameCards)
+        assertTrue(settings.liveSelectedOutlines)
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
         assertTrue(metrics.fps)
         assertTrue(metrics.ping)
@@ -42,10 +44,34 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.analyticsConsentAsked)
         assertTrue(settings.analyticsOptOut)
         assertFalse(settings.analyticsSharingEnabled)
+        assertFalse(settings.showFavoriteIconOnGameCards)
+        assertTrue(settings.liveSelectedOutlines)
         assertTrue(settings.showSessionReportAfterStream)
         assertEquals(TouchJoystickMode.Fixed, settings.androidTouch.joystickMode)
         assertEquals(TouchAimMode.LockJoystick, settings.androidTouch.aimMode)
         assertEquals(0f, settings.androidTouch.joystickDeadZone, 0.0001f)
+    }
+
+    @Test
+    fun favoriteIconDefaultsOffAndPreservesExplicitOptIn() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedIn = OpenNowJson.decodeFromString<AppSettings>(
+            """{"showFavoriteIconOnGameCards":true}""",
+        )
+
+        assertFalse(defaulted.showFavoriteIconOnGameCards)
+        assertTrue(optedIn.showFavoriteIconOnGameCards)
+    }
+
+    @Test
+    fun liveSelectedOutlinesDefaultOnAndPreserveOptOut() {
+        val defaulted = OpenNowJson.decodeFromString<AppSettings>("{}")
+        val optedOut = OpenNowJson.decodeFromString<AppSettings>(
+            """{"liveSelectedOutlines":false}""",
+        )
+
+        assertTrue(defaulted.liveSelectedOutlines)
+        assertFalse(optedOut.liveSelectedOutlines)
     }
 
     @Test

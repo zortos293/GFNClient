@@ -240,6 +240,62 @@ class BugReportPreflightTest {
     }
 
     @Test
+    fun lagReportAboveDetectedRecommendationRequiresExplicitOverride() {
+        val recommended = settings
+        val selected = settings.copy(
+            resolution = "2560x1440",
+            fps = 120,
+            maxBitrateMbps = 75,
+        )
+        val deck = buildBugReportPreflightDeck(
+            BugReportPreflightEvidence(
+                requestedSettings = selected,
+                recommendedSettings = recommended,
+                runtimeStats = StreamRuntimeStats(
+                    bitrateKbps = 32_000,
+                    pingMs = 20,
+                    fps = 72,
+                    resolution = "2560x1440",
+                    codec = "H264",
+                    jitterMs = 2.0,
+                    packetLossPct = 0.0,
+                ),
+                runtimeDiagnostics = AndroidRuntimeDiagnosticsSnapshot(
+                    thermalStatus = AndroidThermalStatus.None,
+                    networkKind = AndroidNetworkKind.Ethernet,
+                    networkDownstreamKbps = 500_000,
+                ),
+            ),
+        )
+
+        val video = deck.cards[1]
+        assertEquals(BugReportPreflightTone.Warning, video.tone)
+        assertEquals("Selected settings exceed the device recommendation", video.title)
+        assertTrue(video.facts.any { it.startsWith("Detected Recommended 1920x1080@60") })
+        assertTrue(video.recommendations.any { it.title == "Use the detected Recommended profile" })
+
+        val block = requireNotNull(
+            bugReportKnownIssueBlock(
+                title = "Lag and low FPS",
+                description = "The stream stutters and feels slow while I play.",
+                deck = deck,
+            ),
+        )
+        assertEquals("device-profile-override", block.key)
+        assertTrue(block.title.contains("exceeds this device's recommendation"))
+        assertFalse(bugReportKnownIssueAllowsSubmission(block, null))
+        assertTrue(bugReportKnownIssueAllowsSubmission(block, block.key))
+        assertEquals(
+            null,
+            bugReportKnownIssueBlock(
+                title = "Wrong game artwork",
+                description = "The store card uses the wrong image after refresh.",
+                deck = deck,
+            ),
+        )
+    }
+
+    @Test
     fun inputCardDistinguishesCapturedMouseFromMissingEvidence() {
         val missing = buildBugReportPreflightDeck(
             BugReportPreflightEvidence(requestedSettings = settings),

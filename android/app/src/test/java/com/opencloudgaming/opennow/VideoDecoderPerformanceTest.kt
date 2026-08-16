@@ -29,6 +29,38 @@ class VideoDecoderPerformanceTest {
     }
 
     @Test
+    fun mediaTekStandardLowLatencyRequiresAdvertisedSupportAtSixtyFps() {
+        assertTrue(
+            shouldEnableMediaTekStandardLowLatency(
+                decoderImplementationName = "c2.mtk.avc.decoder",
+                requestedFps = 60,
+                featureAdvertised = true,
+            ),
+        )
+        assertFalse(
+            shouldEnableMediaTekStandardLowLatency(
+                decoderImplementationName = "c2.mtk.avc.decoder",
+                requestedFps = 30,
+                featureAdvertised = true,
+            ),
+        )
+        assertFalse(
+            shouldEnableMediaTekStandardLowLatency(
+                decoderImplementationName = "c2.mtk.hevc.decoder",
+                requestedFps = 60,
+                featureAdvertised = false,
+            ),
+        )
+        assertFalse(
+            shouldEnableMediaTekStandardLowLatency(
+                decoderImplementationName = "c2.qti.avc.decoder",
+                requestedFps = 60,
+                featureAdvertised = true,
+            ),
+        )
+    }
+
+    @Test
     fun approvedHardwareDecoderGetsMediaCodecTuning() {
         val hardwareDecoder = fakeDecoder()
 

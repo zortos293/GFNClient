@@ -329,7 +329,11 @@ data class AppSettings(
     val showGameStoreLabels: Boolean = true,
     /** Game titles under the poster in the catalog grid. Off makes the grid pure box art. */
     val showCardTitles: Boolean = true,
+    /** Optional favorite affordance over catalogue artwork on mobile, handheld, and TV layouts. */
+    val showFavoriteIconOnGameCards: Boolean = false,
     val expressiveUi: Boolean = true,
+    /** Animated active-state frames across navigation, game details, server choice, and themes. */
+    val liveSelectedOutlines: Boolean = true,
     val dynamicColor: Boolean = false,
     val uiAccent: UiAccent = UiAccent.OpenNow,
     val launchPage: AppLaunchPage = AppLaunchPage.Store,

@@ -37,6 +37,11 @@ internal fun shouldShowEnhancedControllerFocus(
     controllerActionMode: Boolean,
 ): Boolean = focused && (tvProfile || controllerActionMode)
 
+internal fun shouldShowActiveSelectionOutline(
+    selected: Boolean,
+    enabled: Boolean,
+): Boolean = selected && enabled
+
 private fun controllerFocusLoopProgress(progress: Float): Float {
     val clamped = progress.coerceIn(0f, 1f)
     return if (clamped >= 1f) 0f else clamped
@@ -65,6 +70,7 @@ internal fun controllerFocusFlickerAlpha(progress: Float): Float {
 internal fun BoxScope.ControllerFocusFrame(
     visible: Boolean,
     cornerRadius: Dp,
+    tint: Color? = null,
 ) {
     if (!visible) return
     val reduceMotion = LocalReduceMotion.current
@@ -140,8 +146,12 @@ internal fun BoxScope.ControllerFocusFrame(
             )
         }
 
-        drawEnergyArc(FireOrange, FireHot, fireArc, fireStatic)
-        drawEnergyArc(ElectricBlue, ElectricBlueHot, blueArc, blueStatic)
+        val firstColor = tint ?: FireOrange
+        val firstHotColor = tint?.focusHighlight() ?: FireHot
+        val secondColor = tint?.focusShade() ?: ElectricBlue
+        val secondHotColor = tint ?: ElectricBlueHot
+        drawEnergyArc(firstColor, firstHotColor, fireArc, fireStatic)
+        drawEnergyArc(secondColor, secondHotColor, blueArc, blueStatic)
 
         val sparkOn = 1.4.dp.toPx()
         val sparkOff = 8.6.dp.toPx()
@@ -162,3 +172,17 @@ internal fun BoxScope.ControllerFocusFrame(
         )
     }
 }
+
+private fun Color.focusShade(): Color = Color(
+    red = red * 0.62f,
+    green = green * 0.62f,
+    blue = blue * 0.62f,
+    alpha = alpha,
+)
+
+private fun Color.focusHighlight(): Color = Color(
+    red = red + (1f - red) * 0.42f,
+    green = green + (1f - green) * 0.42f,
+    blue = blue + (1f - blue) * 0.42f,
+    alpha = alpha,
+)

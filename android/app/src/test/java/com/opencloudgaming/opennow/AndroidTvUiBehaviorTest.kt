@@ -94,10 +94,32 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun catalogCardActionsStayHiddenOnTouchOnlyMobile() {
-        assertFalse(shouldShowCatalogCardActions(tvProfile = false, controllerActionMode = false))
-        assertTrue(shouldShowCatalogCardActions(tvProfile = true, controllerActionMode = false))
-        assertTrue(shouldShowCatalogCardActions(tvProfile = false, controllerActionMode = true))
+    fun catalogFavoriteIconIsOptInForEveryDeviceLayout() {
+        assertFalse(shouldShowCatalogFavoriteIcon(AppSettings()))
+        assertTrue(shouldShowCatalogFavoriteIcon(AppSettings(showFavoriteIconOnGameCards = true)))
+    }
+
+    @Test
+    fun liveSelectionOutlineRequiresBothSelectionAndUserOptIn() {
+        assertTrue(shouldShowActiveSelectionOutline(selected = true, enabled = true))
+        assertFalse(shouldShowActiveSelectionOutline(selected = false, enabled = true))
+        assertFalse(shouldShowActiveSelectionOutline(selected = true, enabled = false))
+    }
+
+    @Test
+    fun controllerBackMinimizesOnlyPendingStreamLaunches() {
+        assertTrue(canMinimizeStreamLaunch(streamStatus = "queue", sessionReady = false))
+        assertTrue(canMinimizeStreamLaunch(streamStatus = "connecting", sessionReady = false))
+        assertFalse(canMinimizeStreamLaunch(streamStatus = "idle", sessionReady = false))
+        assertFalse(canMinimizeStreamLaunch(streamStatus = "connecting", sessionReady = true))
+    }
+
+    @Test
+    fun activeLogoSpinsQuicklyThenRestsForTheRemainderOfItsCycle() {
+        assertEquals(0f, activeLogoSpinProgress(0f), 0f)
+        assertEquals(0.5f, activeLogoSpinProgress(0.09f), 0.0001f)
+        assertEquals(1f, activeLogoSpinProgress(0.18f), 0f)
+        assertEquals(1f, activeLogoSpinProgress(0.9f), 0f)
     }
 
     @Test

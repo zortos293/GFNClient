@@ -617,6 +617,7 @@ fun OpenNowApp(
                             buildBugReportPreflightDeck(
                                 BugReportPreflightEvidence(
                                     requestedSettings = state.settings.stream,
+                                    recommendedSettings = state.recommendedStreamSettings,
                                     nativeLowLatencyDecoderEnabled = state.settings.nativeLowLatencyDecoder,
                                     runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
                                     sessionReport = state.sessionReport,
@@ -872,7 +873,6 @@ private fun MainShell(
                         AppNavigationRail(
                             state = state,
                             activeSearchTarget = visibleSearchTarget,
-                            showAppIcon = showNavigationRail && horizontalChrome,
                             largeIcons = phoneLandscapeChrome,
                             showSettingsBack = shouldShowSettingsBackRail(
                                 tvProfile = tvProfile,
@@ -904,9 +904,10 @@ private fun MainShell(
                                 TopStatusBar(
                                     state = state,
                                     onResumeActiveSession = viewModel::resumeActiveSession,
+                                    onOpenAccountSettings = viewModel::openAccountSettings,
                                     onOpenStreamSettings = viewModel::openStreamSettings,
                                     musicControl = musicControl,
-                                    showLogo = portraitChrome,
+                                    showChromeScrim = portraitChrome,
                                 ) {
                                     if (storeControlsInTopBar) {
                                         StoreCatalogToolbar(
@@ -1017,6 +1018,7 @@ private fun MainShell(
                             defaultVariantId = state.settings.defaultGameVariantIds[game.id],
                             fullScreen = tvProfile,
                             safeAreaPadding = screenEdgePadding,
+                            liveSelectedOutlines = state.settings.liveSelectedOutlines,
                             onPlay = viewModel::play,
                             onChooseStore = viewModel::chooseStore,
                             onFavorite = viewModel::updateFavorites,
@@ -1057,7 +1059,6 @@ internal fun shouldRestoreTvNavigationFocus(
 private fun AppNavigationRail(
     state: OpenNowUiState,
     activeSearchTarget: SearchTarget?,
-    showAppIcon: Boolean,
     largeIcons: Boolean,
     showSettingsBack: Boolean,
     showCatalogControllerActions: Boolean,
@@ -1081,25 +1082,6 @@ private fun AppNavigationRail(
         ) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val canFitCatalogControllerActions = maxHeight >= 440.dp
-                if (showAppIcon) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .fillMaxWidth()
-                            .focusProperties { canFocus = false }
-                            .clickable { onNavigate(AppPage.Home) }
-                            .padding(top = 12.dp, bottom = 8.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        OpenNowAppIcon(
-                            size = if (largeIcons) 44.dp else 34.dp,
-                            animate = shouldAnimateOpenNowAppIcon(
-                                codecReport = state.codecReport,
-                                reduceMotion = LocalReduceMotion.current,
-                            ),
-                        )
-                    }
-                }
                 Column(
                     modifier = Modifier
                         .align(if (showSettingsBack) Alignment.BottomCenter else Alignment.Center)
@@ -1107,9 +1089,6 @@ private fun AppNavigationRail(
                         .padding(bottom = if (showSettingsBack) 8.dp else 0.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (!showAppIcon) {
-                        Spacer(Modifier.height(8.dp))
-                    }
                     AppNavigationRailItem(
                         selected = state.page == AppPage.Home,
                         onClick = { onNavigate(AppPage.Home) },
@@ -1269,40 +1248,42 @@ private data class TopBarMusicControl(
 )
 
 @Composable
-private fun RowScope.BottomNavItem(selected: Boolean, onClick: () -> Unit, iconRes: Int, label: String) {
-    NavigationBarItem(
-        selected = selected,
-        onClick = onClick,
-        colors = NavigationBarItemDefaults.colors(
-            selectedIconColor = MaterialTheme.colorScheme.primary,
-            selectedTextColor = MaterialTheme.colorScheme.primary,
-            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-            unselectedIconColor = TextMuted,
-            unselectedTextColor = TextMuted,
-        ),
-        icon = {
-            Icon(
-                painter = painterResource(iconRes),
-                contentDescription = null,
-                modifier = Modifier.size(24.dp),
-            )
-        },
-        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-    )
-}
+private fun RowScope.BottomNavItem(
+    selected: Boolean,
+    onClick: () -> Unit,
+    iconRes: Int,
+    label: String,
+) = NavigationBarItem(
+    selected = selected,
+    onClick = onClick,
+    colors = NavigationBarItemDefaults.colors(
+        selectedIconColor = MaterialTheme.colorScheme.primary,
+        selectedTextColor = MaterialTheme.colorScheme.primary,
+        indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+        unselectedIconColor = TextMuted,
+        unselectedTextColor = TextMuted,
+    ),
+    icon = {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            modifier = Modifier.size(24.dp),
+        )
+    },
+    label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+)
 
 @Composable
 private fun TopStatusBar(
     state: OpenNowUiState,
     onResumeActiveSession: () -> Unit,
+    onOpenAccountSettings: () -> Unit,
     onOpenStreamSettings: () -> Unit,
     musicControl: TopBarMusicControl,
-    showLogo: Boolean = true,
+    showChromeScrim: Boolean = true,
     content: @Composable RowScope.() -> Unit = {},
 ) {
-    val displayName = state.authSession?.user?.displayName ?: "OpenNOW"
-    val tier = state.subscriptionInfo?.membershipTier ?: state.authSession?.user?.membershipTier ?: "GFN"
-    val barScrim = if (showLogo) ChromeScrim else Color.Transparent
+    val barScrim = if (showChromeScrim) ChromeScrim else Color.Transparent
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1316,24 +1297,16 @@ private fun TopStatusBar(
             Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (showLogo) {
-                OpenNowMark(30.dp)
-                Spacer(Modifier.width(8.dp))
-            }
+            TopBarProfileMenu(
+                state = state,
+                onOpenAccountSettings = onOpenAccountSettings,
+            )
+            Spacer(Modifier.width(8.dp))
             Row(
                 Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    listOf(displayName, tier).filter { it.isNotBlank() }.joinToString(" • "),
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
                 content()
                 if (state.settings.nerdMode) {
                     TopStatusDetails(state, onOpenStreamSettings)
@@ -1353,6 +1326,115 @@ private fun TopStatusBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TopBarProfileMenu(
+    state: OpenNowUiState,
+    onOpenAccountSettings: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    BackHandler(enabled = expanded) { expanded = false }
+    var focused by remember { mutableStateOf(false) }
+    val currentUser = state.authSession?.user
+    val savedAccount = state.savedAccounts.firstOrNull { it.userId == currentUser?.userId }
+        ?: state.savedAccounts.firstOrNull()
+    val displayName = currentUser?.displayName?.takeIf { it.isNotBlank() }
+        ?: savedAccount?.displayName?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.profile_not_available)
+    val tier = state.subscriptionInfo?.membershipTier?.takeIf { it.isNotBlank() }
+        ?: currentUser?.membershipTier?.takeIf { it.isNotBlank() }
+        ?: savedAccount?.membershipTier?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.profile_not_available)
+    val email = currentUser?.email?.takeIf { it.isNotBlank() }
+        ?: savedAccount?.email?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.profile_not_available)
+    val profileDescription = stringResource(R.string.profile_menu_description)
+    val shape = RoundedCornerShape(14.dp)
+
+    Box {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .onFocusChanged { focused = it.isFocused }
+                .semantics {
+                    contentDescription = profileDescription
+                    role = Role.Button
+                }
+                .clickable { expanded = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .border(
+                        width = 1.dp,
+                        color = if (focused) Color.Transparent else Color.White.copy(alpha = 0.14f),
+                        shape = shape,
+                    ),
+            )
+            OpenNowAppIcon(
+                size = 32.dp,
+                animate = shouldAnimateOpenNowAppIcon(
+                    codecReport = state.codecReport,
+                    reduceMotion = LocalReduceMotion.current,
+                ),
+            )
+            ControllerFocusFrame(
+                visible = focused,
+                cornerRadius = 14.dp,
+                tint = Color.White,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .widthIn(min = 250.dp, max = 300.dp)
+                .background(Panel),
+        ) {
+            Column(
+                Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ProfileMenuValue(stringResource(R.string.profile_username), displayName)
+                ProfileMenuValue(stringResource(R.string.profile_tier), tier)
+                ProfileMenuValue(stringResource(R.string.profile_email), email)
+            }
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(R.string.profile_account_options),
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
+                onClick = {
+                    expanded = false
+                    onOpenAccountSettings()
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProfileMenuValue(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            label,
+            color = TextMuted,
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Text(
+            value,
+            color = TextPrimary,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

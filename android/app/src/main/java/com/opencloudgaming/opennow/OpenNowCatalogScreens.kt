@@ -214,7 +214,7 @@ internal fun HomeScreen(
                         end = 12.dp,
                         bottom = 12.dp,
                     ),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 AnimatedVisibility(visible = showSearch) {
                     NativeSearchField(
@@ -246,7 +246,7 @@ internal fun HomeScreen(
                         },
                 ) {
                     if (state.loadingGames && visibleGames.isEmpty()) {
-                        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             StoreScrollableControls(
                                 state = state,
                                 onSortChange = viewModel::setCatalogSort,
@@ -311,7 +311,7 @@ private fun StoreScrollableControls(
     val hasSelectedFilters = state.catalogFilterIds.isNotEmpty()
     val hasError = !state.error.isNullOrBlank()
     if (!showToolbar && !hasSelectedFilters && !hasError) return
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (showToolbar) {
             StoreCatalogToolbar(
                 state = state,
@@ -846,7 +846,7 @@ private fun GameGridSkeleton(
                 gridItems(placeholderItems, key = { it }) {
                     GameCardSkeleton(
                         squareCard = gridSpec.squareCards,
-                        thumbnailFavoriteOverlay = shouldShowCatalogCardActions(tvProfile, controllerActionMode),
+                        thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
                         showStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -880,6 +880,7 @@ private fun StoreStartRailsSkeleton(
                 tvProfile = tvProfile,
                 landscapeLayout = landscapeLayout,
                 cardScale = settings.posterSizeScale,
+                showFavoriteIcon = shouldShowCatalogFavoriteIcon(settings),
             )
         }
     }
@@ -891,6 +892,7 @@ private fun StoreRailSectionSkeleton(
     tvProfile: Boolean,
     landscapeLayout: Boolean,
     cardScale: Float,
+    showFavoriteIcon: Boolean,
 ) {
     val spacing = 10.dp
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -919,6 +921,7 @@ private fun StoreRailSectionSkeleton(
                         width = fittedCardWidth,
                         expressiveUi = expressiveUi,
                         portraitCard = !tvProfile,
+                        showFavoriteIcon = showFavoriteIcon,
                     )
                 }
             }
@@ -931,6 +934,7 @@ private fun StoreRailGameCardSkeleton(
     width: Dp,
     expressiveUi: Boolean,
     portraitCard: Boolean,
+    showFavoriteIcon: Boolean,
 ) {
     val shape = RoundedCornerShape(if (expressiveUi) 12.dp else 8.dp)
     Surface(
@@ -945,11 +949,11 @@ private fun StoreRailGameCardSkeleton(
     ) {
         Box(Modifier.fillMaxSize().clip(shape)) {
             LoadingShimmer(Modifier.fillMaxSize())
-            if (portraitCard) {
+            if (showFavoriteIcon) {
                 SkeletonCircle(
-                    size = 44.dp,
+                    size = 34.dp,
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
+                        .align(Alignment.TopStart)
                         .padding(6.dp),
                 )
             }
@@ -1119,7 +1123,7 @@ private fun GameGrid(
                             enabled = settings.showCardTitles,
                         ),
                         squareCard = gridSpec.squareCards,
-                        thumbnailFavoriteOverlay = true,
+                        thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
                         controllerActionMode = controllerActionMode,
                         onSelect = onSelect,
                         onFavorite = onFavorite,
@@ -1237,7 +1241,7 @@ private fun StoreGameGrid(
                             enabled = settings.showCardTitles,
                         ),
                         squareCard = gridSpec.squareCards,
-                        thumbnailFavoriteOverlay = true,
+                        thumbnailFavoriteOverlay = shouldShowCatalogFavoriteIcon(settings),
                         controllerActionMode = controllerActionMode,
                         onSelect = onSelect,
                         onFavorite = onFavorite,
@@ -1453,7 +1457,7 @@ private fun StoreComingNextCarousel(
                             color = when {
                                 enhancedControllerFocus -> Color.Transparent
                                 focused -> Color.White
-                                else -> Color.White.copy(alpha = 0.08f)
+                                else -> Color.White.copy(alpha = 0.14f)
                             },
                             shape = shape,
                         )
@@ -1544,7 +1548,7 @@ private fun StoreComingNextCarousel(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                        if (shouldShowCatalogFavoriteIcon(settings)) {
                             FavoriteIconButton(
                                 favorite = featured.id in favoriteIds,
                                 onClick = { onFavorite(featured.id) },
@@ -1557,6 +1561,7 @@ private fun StoreComingNextCarousel(
                 ControllerFocusFrame(
                     visible = enhancedControllerFocus,
                     cornerRadius = if (settings.expressiveUi) 24.dp else 16.dp,
+                    tint = Color.White,
                 )
             }
         }
@@ -1608,6 +1613,7 @@ private fun StoreRailSection(
                             favorite = game.id in favoriteIds,
                             tvProfile = tvProfile,
                             expressiveUi = settings.expressiveUi,
+                            showFavoriteIcon = shouldShowCatalogFavoriteIcon(settings),
                             width = cardWidth,
                             controllerActionMode = controllerActionMode,
                             onSelect = onSelect,
@@ -1629,6 +1635,7 @@ private fun StoreRailGameCard(
     favorite: Boolean,
     tvProfile: Boolean,
     expressiveUi: Boolean,
+    showFavoriteIcon: Boolean,
     width: Dp,
     controllerActionMode: Boolean,
     onSelect: (GameInfo) -> Unit,
@@ -1690,7 +1697,7 @@ private fun StoreRailGameCard(
                     color = when {
                         enhancedControllerFocus -> Color.Transparent
                         focused -> MaterialTheme.colorScheme.primary
-                        else -> Color.White.copy(alpha = 0.08f)
+                        else -> Color.White.copy(alpha = 0.14f)
                     },
                     shape = shape,
                 )
@@ -1731,7 +1738,7 @@ private fun StoreRailGameCard(
                 if (shouldOverlayCatalogCardTitle(tvProfile)) {
                     GameCardTitleOverlay(game.title)
                 }
-                if (shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                if (showFavoriteIcon) {
                     FavoriteIconButton(
                         favorite = favorite,
                         onClick = { onFavorite(game.id) },
@@ -1746,6 +1753,7 @@ private fun StoreRailGameCard(
         ControllerFocusFrame(
             visible = enhancedControllerFocus,
             cornerRadius = if (expressiveUi) 12.dp else 8.dp,
+            tint = Color.White,
         )
     }
 }
@@ -2108,7 +2116,7 @@ private fun GameCard(
                         color = when {
                             enhancedControllerFocus -> Color.Transparent
                             focused -> MaterialTheme.colorScheme.primary
-                            else -> Color.Transparent
+                            else -> Color.White.copy(alpha = 0.14f)
                         },
                         shape = cardShape,
                     )
@@ -2155,7 +2163,7 @@ private fun GameCard(
                     if (shouldOverlayCatalogCardTitle(tvProfile)) {
                         GameCardTitleOverlay(game.title)
                     }
-                    if (thumbnailFavoriteOverlay && shouldShowCatalogCardActions(tvProfile, controllerActionMode)) {
+                    if (thumbnailFavoriteOverlay) {
                         FavoriteIconButton(
                             favorite = favorite,
                             onClick = { onFavorite(game.id) },
@@ -2170,6 +2178,7 @@ private fun GameCard(
             ControllerFocusFrame(
                 visible = enhancedControllerFocus,
                 cornerRadius = if (expressiveUi) OpenNowRadius.md else OpenNowRadius.sm,
+                tint = Color.White,
             )
         }
         if (showCaption) {
@@ -2222,8 +2231,8 @@ internal fun shouldOverlayCatalogCardTitle(tvProfile: Boolean): Boolean = false
 internal fun shouldUseArtworkOnlyCatalogCards(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
     tvProfile || controllerActionMode
 
-internal fun shouldShowCatalogCardActions(tvProfile: Boolean, controllerActionMode: Boolean): Boolean =
-    tvProfile || controllerActionMode
+internal fun shouldShowCatalogFavoriteIcon(settings: AppSettings): Boolean =
+    settings.showFavoriteIconOnGameCards
 
 internal fun shouldShowGameStoreLabels(tvProfile: Boolean, enabled: Boolean): Boolean =
     enabled && !tvProfile
@@ -2408,6 +2417,7 @@ internal fun GameDetailsSheet(
     defaultVariantId: String?,
     fullScreen: Boolean,
     safeAreaPadding: Dp,
+    liveSelectedOutlines: Boolean,
     onPlay: (GameInfo) -> Unit,
     onChooseStore: (GameInfo) -> Unit,
     onFavorite: (String) -> Unit,
@@ -2512,6 +2522,7 @@ internal fun GameDetailsSheet(
                         playFocusRequester = playFocusRequester,
                         shortHeight = maxHeight <= 620.dp,
                         imageActionsOverlay = phoneLandscapeLayout,
+                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 } else {
                     GameDetailsScrollableContent(
@@ -2526,6 +2537,7 @@ internal fun GameDetailsSheet(
                         onDismiss = onDismiss,
                         gameFocusRequester = gameFocusRequester,
                         playFocusRequester = playFocusRequester,
+                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 }
             }
@@ -2556,6 +2568,7 @@ private fun GameDetailsLandscapeContent(
     playFocusRequester: FocusRequester,
     shortHeight: Boolean,
     imageActionsOverlay: Boolean,
+    liveSelectedOutlines: Boolean,
 ) {
     val description = gameDescriptionForDetails(game)
     val context = LocalContext.current
@@ -2569,6 +2582,7 @@ private fun GameDetailsLandscapeContent(
         horizontalArrangement = Arrangement.spacedBy(if (shortHeight) 16.dp else 22.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val imageShape = RoundedCornerShape(20.dp)
         Box(
             Modifier
                 .weight(0.92f)
@@ -2576,66 +2590,80 @@ private fun GameDetailsLandscapeContent(
                 .focusRequester(gameFocusRequester)
                 .focusProperties { right = playFocusRequester }
                 .onFocusChanged { gameFocused = it.isFocused }
-                .border(
-                    width = if (gameFocused) 3.dp else 1.dp,
-                    color = if (gameFocused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f),
-                    shape = RoundedCornerShape(20.dp),
-                )
-                .clip(RoundedCornerShape(20.dp))
                 .clickable {
                     onDismiss()
                     onPlay(game)
                 },
         ) {
-            UrlImage(gameHeroImageUrl(context, game), Modifier.fillMaxSize())
-            GameImageTitleOverlay(
-                game = game,
-                compact = shortHeight,
-                reserveEndSpace = imageActionsOverlay,
-                modifier = Modifier.align(Alignment.BottomStart),
-            )
-            if (imageActionsOverlay) {
-                ImageCloseButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(10.dp),
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .border(
+                        width = if (gameFocused && !liveSelectedOutlines) 3.dp else 1.dp,
+                        color = when {
+                            liveSelectedOutlines -> Color.Transparent
+                            gameFocused -> MaterialTheme.colorScheme.primary
+                            else -> Color.White.copy(alpha = 0.12f)
+                        },
+                        shape = imageShape,
+                    )
+                    .clip(imageShape),
+            ) {
+                UrlImage(gameHeroImageUrl(context, game), Modifier.fillMaxSize())
+                GameImageTitleOverlay(
+                    game = game,
+                    compact = shortHeight,
+                    reserveEndSpace = imageActionsOverlay,
+                    modifier = Modifier.align(Alignment.BottomStart),
                 )
-            }
-            if (imageActionsOverlay) {
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(14.dp)
-                        .width(150.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    connectedTvName?.let { tvName ->
-                        OutlinedButton(
-                            onClick = {
-                                onDismiss()
-                                onPlayOnTv(game)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(stringResource(R.string.action_play_on_tv_generic), maxLines = 1)
-                        }
-                    }
-                    LongPressPlayButton(
-                        onClick = {
-                            onDismiss()
-                            onPlay(game)
-                        },
-                        onLongClick = {
-                            onDismiss()
-                            onChooseStore(game)
-                        },
+                if (imageActionsOverlay) {
+                    ImageCloseButton(
+                        onClick = onDismiss,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(playFocusRequester),
+                            .align(Alignment.TopStart)
+                            .padding(10.dp),
                     )
                 }
+                if (imageActionsOverlay) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(14.dp)
+                            .width(150.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        connectedTvName?.let {
+                            OutlinedButton(
+                                onClick = {
+                                    onDismiss()
+                                    onPlayOnTv(game)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(stringResource(R.string.action_play_on_tv_generic), maxLines = 1)
+                            }
+                        }
+                        LongPressPlayButton(
+                            onClick = {
+                                onDismiss()
+                                onPlay(game)
+                            },
+                            onLongClick = {
+                                onDismiss()
+                                onChooseStore(game)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(playFocusRequester),
+                        )
+                    }
+                }
             }
+            ControllerFocusFrame(
+                visible = liveSelectedOutlines,
+                cornerRadius = 20.dp,
+                tint = Color.White,
+            )
         }
 
         Column(
@@ -2655,6 +2683,7 @@ private fun GameDetailsLandscapeContent(
                         game = game,
                         defaultVariantId = defaultVariantId,
                         description = description,
+                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 }
             } else {
@@ -2669,6 +2698,7 @@ private fun GameDetailsLandscapeContent(
                         game = game,
                         defaultVariantId = defaultVariantId,
                         description = description,
+                        liveSelectedOutlines = liveSelectedOutlines,
                     )
                 }
                 Row(
@@ -2728,11 +2758,16 @@ private fun GameDetailsCompactInfoContent(
     game: GameInfo,
     defaultVariantId: String?,
     description: String?,
+    liveSelectedOutlines: Boolean,
 ) {
     OwnershipStatusRow(game = game, compact = true)
     GameGenreChips(game = game, compact = true)
     GameScreenshotGallery(game = game, compact = true)
-    GameDescriptionDisclosure(description = description, compact = true)
+    GameDescriptionDisclosure(
+        description = description,
+        compact = true,
+        liveSelectedOutlines = liveSelectedOutlines,
+    )
     CompactDetailRows(game)
     LaunchOptionsList(
         game = game,
@@ -2755,6 +2790,7 @@ private fun GameDetailsScrollableContent(
     onDismiss: () -> Unit,
     gameFocusRequester: FocusRequester,
     playFocusRequester: FocusRequester,
+    liveSelectedOutlines: Boolean,
 ) {
     val context = LocalContext.current
     var gameFocused by remember(game.id) { mutableStateOf(false) }
@@ -2765,6 +2801,7 @@ private fun GameDetailsScrollableContent(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             item {
+                val imageShape = RoundedCornerShape(OpenNowRadius.lg)
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -2775,37 +2812,51 @@ private fun GameDetailsScrollableContent(
                         .focusRequester(gameFocusRequester)
                         .focusProperties { down = playFocusRequester }
                         .onFocusChanged { gameFocused = it.isFocused }
-                        .border(
-                            width = if (gameFocused) 3.dp else 1.dp,
-                            color = if (gameFocused) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.12f),
-                            shape = RoundedCornerShape(OpenNowRadius.lg),
-                        )
-                        .clip(RoundedCornerShape(OpenNowRadius.lg))
                         .clickable {
                             onDismiss()
                             onPlay(game)
                         },
                 ) {
-                    UrlImage(
-                        gameHeroImageUrl(context, game),
-                        Modifier.fillMaxSize(),
-                    )
-                    // Guarantees the title overlay stays legible over bright key art.
                     Box(
                         Modifier
-                            .matchParentSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    0.4f to Color.Transparent,
-                                    1f to Color.Black.copy(alpha = 0.75f),
+                            .fillMaxSize()
+                            .border(
+                                width = if (gameFocused && !liveSelectedOutlines) 3.dp else 1.dp,
+                                color = when {
+                                    liveSelectedOutlines -> Color.Transparent
+                                    gameFocused -> MaterialTheme.colorScheme.primary
+                                    else -> Color.White.copy(alpha = 0.12f)
+                                },
+                                shape = imageShape,
+                            )
+                            .clip(imageShape),
+                    ) {
+                        UrlImage(
+                            gameHeroImageUrl(context, game),
+                            Modifier.fillMaxSize(),
+                        )
+                        // Guarantees the title overlay stays legible over bright key art.
+                        Box(
+                            Modifier
+                                .matchParentSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        0.4f to Color.Transparent,
+                                        1f to Color.Black.copy(alpha = 0.75f),
+                                    ),
                                 ),
-                            ),
-                    )
-                    GameImageTitleOverlay(
-                        game = game,
-                        compact = false,
-                        reserveEndSpace = false,
-                        modifier = Modifier.align(Alignment.BottomStart),
+                        )
+                        GameImageTitleOverlay(
+                            game = game,
+                            compact = false,
+                            reserveEndSpace = false,
+                            modifier = Modifier.align(Alignment.BottomStart),
+                        )
+                    }
+                    ControllerFocusFrame(
+                        visible = liveSelectedOutlines,
+                        cornerRadius = OpenNowRadius.lg,
+                        tint = Color.White,
                     )
                 }
             }
@@ -2815,7 +2866,11 @@ private fun GameDetailsScrollableContent(
                     OwnershipStatusRow(game = game, compact = false)
                     GameGenreChips(game = game, compact = false)
                     GameScreenshotGallery(game = game, compact = false)
-                    GameDescriptionDisclosure(description = description, compact = false)
+                    GameDescriptionDisclosure(
+                        description = description,
+                        compact = false,
+                        liveSelectedOutlines = liveSelectedOutlines,
+                    )
                     DetailRows(game)
                     LaunchOptionsList(
                         game = game,
@@ -3326,60 +3381,67 @@ private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
 }
 
 @Composable
-private fun GameDescriptionDisclosure(description: String?, compact: Boolean) {
+private fun GameDescriptionDisclosure(
+    description: String?,
+    compact: Boolean,
+    liveSelectedOutlines: Boolean,
+) {
     var expanded by remember(description) { mutableStateOf(true) }
     val text = description?.takeIf { it.isNotBlank() } ?: stringResource(R.string.catalog_no_description)
     var focused by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(if (compact) 12.dp else 14.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .border(
-                width = 1.dp,
-                color = if (focused) accent else Color.Transparent,
-                shape = RoundedCornerShape(if (compact) 12.dp else 14.dp)
-            )
-            .clickable { expanded = !expanded },
-        shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
-        color = if (focused) PanelAlt.copy(alpha = 0.85f) else PanelAlt,
-        tonalElevation = 0.dp,
-    ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Description",
-                    color = TextPrimary,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f),
-                )
-                IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_chevron_right),
-                        contentDescription = if (expanded) {
-                            stringResource(R.string.control_hide_description)
-                        } else {
-                            stringResource(R.string.control_show_description)
-                        },
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .size(20.dp)
-                            .graphicsLayer(rotationZ = if (expanded) 90f else 0f),
+    val shape = RoundedCornerShape(if (compact) 12.dp else 14.dp)
+    Box(Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { focused = it.isFocused }
+                .clickable { expanded = !expanded },
+            shape = shape,
+            color = if (focused) PanelAlt.copy(alpha = 0.85f) else PanelAlt,
+            border = if (focused && !liveSelectedOutlines) BorderStroke(1.dp, accent) else null,
+            tonalElevation = 0.dp,
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 8.dp else 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Description",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_chevron_right),
+                            contentDescription = if (expanded) {
+                                stringResource(R.string.control_hide_description)
+                            } else {
+                                stringResource(R.string.control_show_description)
+                            },
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .graphicsLayer(rotationZ = if (expanded) 90f else 0f),
+                        )
+                    }
+                }
+                if (expanded) {
+                    Text(
+                        text,
+                        color = if (description == null) TextMuted else TextPrimary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = if (compact) 8 else Int.MAX_VALUE,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
-            if (expanded) {
-                Text(
-                    text,
-                    color = if (description == null) TextMuted else TextPrimary,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = if (compact) 8 else Int.MAX_VALUE,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
         }
+        ControllerFocusFrame(
+            visible = liveSelectedOutlines,
+            cornerRadius = if (compact) 12.dp else 14.dp,
+            tint = Color.White,
+        )
     }
 }
 

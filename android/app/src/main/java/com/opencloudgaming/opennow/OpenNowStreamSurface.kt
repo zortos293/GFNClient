@@ -803,6 +803,7 @@ internal fun StreamScreen(
                         buildBugReportPreflightDeck(
                             BugReportPreflightEvidence(
                                 requestedSettings = requestedStreamSettings,
+                                recommendedSettings = state.recommendedStreamSettings,
                                 nativeLowLatencyDecoderEnabled = state.settings.nativeLowLatencyDecoder,
                                 runtimeStats = streamStats,
                                 runtimeDiagnostics = AndroidRuntimeDiagnostics.snapshot(context),
@@ -1079,22 +1080,11 @@ internal fun StreamScreen(
                 ) {
                     StreamKeyboardBar(
                         value = keyboardValue,
-                        syncedText = keyboardSyncedText,
                         onValueChange = { next ->
                             if (next.text.length <= MAX_STREAM_KEYBOARD_TEXT_LENGTH) {
+                                client.syncText(keyboardSyncedText, next.text)
                                 keyboardValue = next
-                            }
-                        },
-                        onSend = {
-                            val text = keyboardValue.text
-                            val action = streamKeyboardApplyAction(keyboardSyncedText, text)
-                            when (action) {
-                                StreamKeyboardApplyAction.Type -> client.sendText(text)
-                                StreamKeyboardApplyAction.Replace -> client.replaceText(text)
-                                StreamKeyboardApplyAction.None -> Unit
-                            }
-                            if (action != StreamKeyboardApplyAction.None) {
-                                keyboardSyncedText = text
+                                keyboardSyncedText = next.text
                             }
                         },
                         onEnter = {

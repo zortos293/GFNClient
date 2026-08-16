@@ -20,6 +20,7 @@ import org.webrtc.VideoCodecInfo
 import org.webrtc.VideoDecoder
 import org.webrtc.VideoDecoderFactory
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 
 object NativeCodecProbe {
@@ -327,6 +328,17 @@ internal class OpenNowVideoDecoderFactory(
         }
         val exactRequestedFps = requestedFps().coerceAtLeast(1)
         val hardwareDecoderImplementation = hardwareDecoder?.getImplementationName()
+        val standardLowLatencyAdvertised = codec?.let { selectedCodec ->
+            supportsStandardLowLatencyDecoder(
+                codecName = hardwareDecoderImplementation,
+                mimeType = selectedCodec.mediaMimeType(),
+            )
+        } == true
+        val standardLowLatencyEnabled = shouldEnableMediaTekStandardLowLatency(
+            decoderImplementationName = hardwareDecoderImplementation,
+            requestedFps = exactRequestedFps,
+            featureAdvertised = standardLowLatencyAdvertised,
+        )
         val bypassDecoderPerformanceTuning = shouldBypassMediaCodecPerformanceTuning(
             codec = codec,
             decoderImplementationName = hardwareDecoderImplementation,
@@ -348,6 +360,8 @@ internal class OpenNowVideoDecoderFactory(
                 "native MediaCodec decoder selected codec=${codec.name} " +
                     "implementation=$hardwareDecoderImplementation requestedFps=$exactRequestedFps " +
                     "performanceTuning=$tuneDecoderPerformance lowLatency=$nativeLowLatencyDecoderEnabled " +
+                    "standardLowLatencyAdvertised=$standardLowLatencyAdvertised " +
+                    "standardLowLatency=$standardLowLatencyEnabled " +
                     "qualcommH264Guard=$bypassDecoderPerformanceTuning",
             )
         } else if (codec != null && decoder != null && (nativeLowLatencyDecoderEnabled || tuneDecoderPerformance)) {
@@ -361,6 +375,7 @@ internal class OpenNowVideoDecoderFactory(
                 delegate = decoder,
                 requestedFps = exactRequestedFps,
                 lowLatencyEnabled = nativeLowLatencyDecoderEnabled,
+                standardLowLatencyEnabled = standardLowLatencyEnabled,
             )
         } else {
             decoder
@@ -392,6 +407,44 @@ private fun String.toOpenNowVideoCodec(): VideoCodec? =
         "AV01", "AV1" -> VideoCodec.AV1
         else -> null
     }
+
+private fun VideoCodec.mediaMimeType(): String = when (this) {
+    VideoCodec.H264 -> "video/avc"
+    VideoCodec.H265 -> "video/hevc"
+    VideoCodec.AV1 -> "video/av01"
+}
+
+private fun supportsStandardLowLatencyDecoder(codecName: String?, mimeType: String): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || codecName.isNullOrBlank()) return false
+    val cacheKey = "${codecName.lowercase(Locale.US)}|${mimeType.lowercase(Locale.US)}"
+    return standardLowLatencySupportCache.getOrPut(cacheKey) {
+        val codecInfo = runCatching {
+            MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.firstOrNull {
+                it.name.equals(codecName, ignoreCase = true)
+            }
+        }.getOrNull() ?: return@getOrPut false
+        runCatching {
+            codecInfo.getCapabilitiesForType(mimeType)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+        }.getOrDefault(false)
+    }
+}
+
+private val standardLowLatencySupportCache = ConcurrentHashMap<String, Boolean>()
+
+internal fun isMediaTekMediaCodecDecoder(codecName: String?): Boolean {
+    val normalized = codecName?.lowercase(Locale.US).orEmpty()
+    return normalized.contains("mtk") || normalized.contains("mediatek")
+}
+
+internal fun shouldEnableMediaTekStandardLowLatency(
+    decoderImplementationName: String?,
+    requestedFps: Int,
+    featureAdvertised: Boolean,
+): Boolean =
+    requestedFps >= 60 &&
+        featureAdvertised &&
+        isMediaTekMediaCodecDecoder(decoderImplementationName)
 
 internal fun VideoCodec.webRtcCodecName(): String =
     when (this) {

@@ -2,6 +2,7 @@ package com.opencloudgaming.opennow
 
 import android.app.ActivityManager
 import android.content.Context
+import android.os.Build
 import kotlin.math.abs
 
 internal data class AndroidDeviceRecommendation(
@@ -33,17 +34,51 @@ internal fun recommendedAndroidStreamProfile(
         info.totalMem.takeIf { it > 0L }?.div(1024L * 1024L)
     }.getOrNull()
     val tvProfile = report?.androidTvProfile ?: isAndroidTvProfile(context)
+    val shieldTv = isNvidiaShieldTvDevice(
+        androidTvProfile = tvProfile,
+        manufacturer = Build.MANUFACTURER,
+        model = Build.MODEL,
+    )
+    return recommendedAndroidStreamProfile(
+        displayWidth = displayWidth,
+        displayHeight = displayHeight,
+        processorCount = processorCount,
+        totalMemoryMiB = totalMemoryMiB,
+        androidTvProfile = tvProfile,
+        nvidiaShieldTv = shieldTv,
+        report = report,
+    )
+}
+
+internal fun recommendedAndroidStreamProfile(
+    displayWidth: Int,
+    displayHeight: Int,
+    processorCount: Int,
+    totalMemoryMiB: Long?,
+    androidTvProfile: Boolean,
+    nvidiaShieldTv: Boolean = false,
+    report: RuntimeCodecReport?,
+): AndroidDeviceRecommendation {
+    val safeDisplayWidth = displayWidth.coerceAtLeast(1)
+    val safeDisplayHeight = displayHeight.coerceAtLeast(1)
+    val safeProcessorCount = processorCount.coerceAtLeast(1)
+    val noVerifiedHardwareDecoder = report != null && report.capabilities.none { capability ->
+        capability.streamingDecoderUsableForLaunch() && capability.streamingHardwareDecoderAvailable()
+    }
     val lowPower = report?.lowPowerGpuProfile == true ||
         totalMemoryMiB?.let { it < 3_000L } == true ||
-        processorCount <= 4
+        safeProcessorCount <= 4 ||
+        noVerifiedHardwareDecoder
 
     val maxHeight = when {
+        report?.constrainedRuntimeProfile == true -> 720
         lowPower -> 720
-        tvProfile -> 1080
-        totalMemoryMiB?.let { it >= 6_000L } == true && processorCount >= 8 -> 1440
+        nvidiaShieldTv -> 2160
+        androidTvProfile -> 1080
+        totalMemoryMiB?.let { it >= 6_000L } == true && safeProcessorCount >= 8 -> 1440
         else -> 1080
     }
-    val deviceAspect = displayWidth.toDouble() / displayHeight.toDouble()
+    val deviceAspect = safeDisplayWidth.toDouble() / safeDisplayHeight.toDouble()
     val aspectRatio = streamAspectRatioOptions().minByOrNull { option ->
         val parts = option.split(':')
         val optionAspect = parts.getOrNull(0)?.toDoubleOrNull()
@@ -52,23 +87,30 @@ internal fun recommendedAndroidStreamProfile(
         abs(deviceAspect - optionAspect)
     } ?: "16:9"
     val choices = streamResolutionChoicesForAspect(aspectRatio)
-    val selected = choices
-        .filter { it.width <= displayWidth && it.height <= displayHeight && it.height <= maxHeight }
-        .maxByOrNull { it.width * it.height }
-        ?: choices
-            .filter { it.height <= maxHeight }
-            .maxByOrNull { it.width * it.height }
-        ?: streamResolutionChoicesForAspect("16:9").first()
+    val displaySizedChoices = choices
+        .filter { it.width <= safeDisplayWidth && it.height <= safeDisplayHeight && it.height <= maxHeight }
+        .ifEmpty { choices.filter { it.height <= maxHeight } }
+        .sortedByDescending { it.width * it.height }
+    val fallbackChoice = streamResolutionChoicesForAspect("16:9").first()
+    val selectedWithCodec = displaySizedChoices.firstNotNullOfOrNull { choice ->
+        recommendedCodecForResolution(choice, lowPower, report)?.let { codec -> choice to codec }
+    } ?: (displaySizedChoices.firstOrNull() ?: fallbackChoice) to VideoCodec.H264
+    val (selected, selectedCodec) = selectedWithCodec
 
-    val h265Ready = report?.capabilities
-        ?.firstOrNull { it.codec == VideoCodec.H265 }
-        ?.streamingDecoderUsableForLaunch() == true
-    val preferH265 = !lowPower && !tvProfile && maxHeight >= 1440 && h265Ready
-    val fps = if (report?.constrainedRuntimeProfile == true || (lowPower && processorCount <= 4)) 30 else 60
+    val fps = if (
+        report?.constrainedRuntimeProfile == true ||
+        noVerifiedHardwareDecoder ||
+        (lowPower && safeProcessorCount <= 4)
+    ) {
+        30
+    } else {
+        60
+    }
     val bitrate = when {
         lowPower -> if (fps <= 30) 12 else 18
+        selected.height >= 2160 -> 75
         selected.height >= 1440 -> 45
-        tvProfile -> 30
+        androidTvProfile -> 30
         else -> 35
     }
     val stream = StreamSettings(
@@ -76,17 +118,83 @@ internal fun recommendedAndroidStreamProfile(
         aspectRatio = selected.aspectRatio,
         fps = fps,
         maxBitrateMbps = bitrate,
-        codec = if (preferH265) VideoCodec.H265 else VideoCodec.H264,
+        codec = selectedCodec,
         colorQuality = ColorQuality.EightBit420,
     ).adjustedForDevice(report)
 
     return AndroidDeviceRecommendation(
         stream = stream,
-        displayWidth = displayWidth,
-        displayHeight = displayHeight,
-        processorCount = processorCount,
+        displayWidth = safeDisplayWidth,
+        displayHeight = safeDisplayHeight,
+        processorCount = safeProcessorCount,
         totalMemoryMiB = totalMemoryMiB,
-        androidTvProfile = tvProfile,
+        androidTvProfile = androidTvProfile,
         lowPowerProfile = lowPower,
     )
 }
+
+private fun recommendedCodecForResolution(
+    resolution: StreamResolutionChoice,
+    lowPower: Boolean,
+    report: RuntimeCodecReport?,
+): VideoCodec? {
+    if (report == null) return VideoCodec.H264
+    val codecOrder = if (!lowPower && resolution.height >= 1440) {
+        listOf(VideoCodec.H265, VideoCodec.H264)
+    } else {
+        listOf(VideoCodec.H264, VideoCodec.H265)
+    }
+    return codecOrder.firstOrNull { codec ->
+        report.capabilities
+            .firstOrNull { it.codec == codec }
+            ?.supportsRecommendedResolution(resolution) == true
+    }
+}
+
+private fun CodecCapability.supportsRecommendedResolution(resolution: StreamResolutionChoice): Boolean {
+    if (!streamingDecoderUsableForLaunch() || !streamingHardwareDecoderAvailable()) return false
+    val maxWidth = maxSupportedWidth
+    val maxHeight = maxSupportedHeight
+    return maxWidth == null || maxHeight == null ||
+        (resolution.width <= maxWidth && resolution.height <= maxHeight)
+}
+
+internal fun StreamSettings.performanceOverridesComparedTo(
+    recommended: StreamSettings?,
+    report: RuntimeCodecReport?,
+): List<String> {
+    recommended ?: return emptyList()
+    val selectedResolution = normalizeStreamResolutionForAspect(resolution, aspectRatio)
+    val recommendedResolution = normalizeStreamResolutionForAspect(recommended.resolution, recommended.aspectRatio)
+    val selectedPixels = parseResolutionPixelsOrNull(selectedResolution)
+    val recommendedPixels = parseResolutionPixelsOrNull(recommendedResolution)
+    val selectedPixelCount = selectedPixels?.let { (width, height) -> width.toLong() * height }
+    val recommendedPixelCount = recommendedPixels?.let { (width, height) -> width.toLong() * height }
+    val codecCapability = report?.capabilities?.firstOrNull { it.codec == codec }
+
+    return buildList {
+        if (
+            selectedPixelCount != null && recommendedPixelCount != null &&
+            selectedPixelCount > recommendedPixelCount
+        ) {
+            add("$selectedResolution resolution (recommended $recommendedResolution)")
+        }
+        if (fps > recommended.fps) add("$fps FPS (recommended ${recommended.fps})")
+        if (maxBitrateMbps > recommended.maxBitrateMbps) {
+            add("$maxBitrateMbps Mbps bitrate (recommended ${recommended.maxBitrateMbps})")
+        }
+        if (hdrEnabled && !recommended.hdrEnabled) add("HDR")
+        if (usesTenBitStreamProfile() && !recommended.usesTenBitStreamProfile()) add("10-bit color")
+        if (streamSharpeningEnabled && !recommended.streamSharpeningEnabled) add("stream sharpening")
+        if (
+            codec != recommended.codec &&
+            codecCapability != null &&
+            (!codecCapability.streamingDecoderUsableForLaunch() || !codecCapability.streamingHardwareDecoderAvailable())
+        ) {
+            add("${codec.name} without a verified real-time hardware decoder")
+        }
+    }.distinct()
+}
+
+internal fun StreamSettings.recommendationSummary(): String =
+    "$resolution@$fps ${codec.name}, $maxBitrateMbps Mbps"

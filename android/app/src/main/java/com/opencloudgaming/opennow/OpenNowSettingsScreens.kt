@@ -231,6 +231,7 @@ internal fun SettingsScreen(
     LaunchedEffect(state.settingsRouteTarget) {
         val routeTarget = state.settingsRouteTarget ?: return@LaunchedEffect
         val routeCategory = when (routeTarget) {
+            SettingsRouteTarget.Account -> SettingsCategory.Account
             SettingsRouteTarget.General -> SettingsCategory.General
             SettingsRouteTarget.Stream -> SettingsCategory.Stream
         }
@@ -526,12 +527,31 @@ private fun SettingsContent(
                         )
                     },
                     selectedLabel = streamPresetLabel(settings.streamPreset),
+                    description = stringResource(R.string.settings_stream_preset_desc),
                 ) { value ->
                     viewModel.applyStreamPreset(StreamPreset.valueOf(value))
                 }
+                state.recommendedStreamSettings?.let { recommended ->
+                    Text(
+                        stringResource(
+                            R.string.settings_detected_recommendation,
+                            recommended.recommendationSummary(),
+                        ),
+                        color = SettingsTextMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                val recommendationOverrides = settings.stream.performanceOverridesComparedTo(
+                    recommended = state.recommendedStreamSettings,
+                    report = state.codecReport,
+                )
                 val performanceWarningReasons = settings.stream.lowPowerPerformanceWarningReasons(state.codecReport)
-                if (performanceWarningReasons.isNotEmpty()) {
-                    LowPowerStreamWarning(performanceWarningReasons)
+                val performanceWarnings = recommendationOverrides.ifEmpty { performanceWarningReasons }
+                if (performanceWarnings.isNotEmpty()) {
+                    DeviceStreamRecommendationWarning(
+                        reasons = performanceWarnings,
+                        recommended = state.recommendedStreamSettings,
+                    )
                 }
                 val resolutionChoices = streamResolutionChoicesForAspect(settings.stream.aspectRatio).ifEmpty {
                     streamResolutionChoicesForAspect("16:9")
@@ -554,6 +574,7 @@ private fun SettingsContent(
                         )
                     },
                     selectedLabel = resolutionChoices.firstOrNull { it.value == selectedResolution }?.label ?: selectedResolution,
+                    description = stringResource(R.string.settings_resolution_desc),
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(resolution = it) }
                 }
@@ -570,6 +591,7 @@ private fun SettingsContent(
                         )
                     },
                     selectedLabel = settings.stream.aspectRatio,
+                    description = stringResource(R.string.settings_aspect_ratio_desc),
                 ) {
                     viewModel.updateStreamSettings { s ->
                         s.copy(
@@ -583,7 +605,11 @@ private fun SettingsContent(
                         )
                     }
                 }
-                SettingSwitch(stringResource(R.string.settings_stretch_stream_to_fit), settings.stretchStreamToFit) { enabled ->
+                SettingSwitch(
+                    label = stringResource(R.string.settings_stretch_stream_to_fit),
+                    checked = settings.stretchStreamToFit,
+                    description = stringResource(R.string.settings_stretch_stream_to_fit_desc),
+                ) { enabled ->
                     viewModel.updateSettings(
                         settings.copy(
                             legacyCropStreamToFill = false,
@@ -592,7 +618,15 @@ private fun SettingsContent(
                     )
                 }
                 val maxFps = maxStreamFpsFor(state.subscriptionInfo, fallbackMembershipTier)
-                NumberSlider(stringResource(R.string.settings_fps), settings.stream.fps.coerceAtMost(maxFps).toFloat(), 30f, maxFps.toFloat(), 30f, unit = "FPS") {
+                NumberSlider(
+                    label = stringResource(R.string.settings_fps),
+                    value = settings.stream.fps.coerceAtMost(maxFps).toFloat(),
+                    min = 30f,
+                    max = maxFps.toFloat(),
+                    step = 30f,
+                    unit = "FPS",
+                    description = stringResource(R.string.settings_fps_desc),
+                ) {
                     val fps = it.roundToInt().coerceIn(30, maxFps)
                     viewModel.updateStreamSettings { s -> s.copy(fps = fps) }
                 }
@@ -602,7 +636,8 @@ private fun SettingsContent(
                     min = 1f,
                     max = 150f,
                     step = 1f,
-                    descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) }
+                    description = stringResource(R.string.settings_bitrate_desc),
+                    descriptionProvider = { mbps -> streamBitrateUsageEstimate(mbps) },
                 ) {
                     viewModel.updateStreamSettings { s -> s.copy(maxBitrateMbps = it.roundToInt()) }
                 }
@@ -639,6 +674,7 @@ private fun SettingsContent(
                     } else {
                         "${settings.stream.codec.name} -> ${effectiveCodec.name}"
                     },
+                    description = stringResource(R.string.settings_codec_desc),
                 ) { value ->
                     val selectedCodec = VideoCodec.valueOf(value)
                     val downgradedTenBit = selectedCodec == VideoCodec.AV1 &&
@@ -675,6 +711,7 @@ private fun SettingsContent(
                     } else {
                         "${settings.stream.colorQuality.label} -> ${effectiveColorQuality.label}"
                     },
+                    description = stringResource(R.string.settings_color_desc),
                 ) { value ->
                     viewModel.updateStreamSettings { s ->
                         s.copy(colorQuality = ColorQuality.valueOf(value)).withCodecColorCompatibility()
@@ -690,9 +727,10 @@ private fun SettingsContent(
                 val hdrAvailable = hasHdrStreamingPlan(state.subscriptionInfo, fallbackMembershipTier) &&
                     settingsAvailableStream.hdrAvailableForAndroid(state.androidTvProfile)
                 SettingSwitch(
-                    stringResource(R.string.settings_hdr),
-                    settings.stream.hdrEnabled && hdrAvailable,
+                    label = stringResource(R.string.settings_hdr),
+                    checked = settings.stream.hdrEnabled && hdrAvailable,
                     enabled = hdrAvailable,
+                    description = stringResource(R.string.settings_hdr_desc),
                 ) { enabled ->
                     viewModel.updateStreamSettings { s ->
                         s.copy(
@@ -712,11 +750,22 @@ private fun SettingsContent(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                SettingSwitch(stringResource(R.string.stream_panel_sharpening), settings.stream.streamSharpeningEnabled) {
+                SettingSwitch(
+                    label = stringResource(R.string.stream_panel_sharpening),
+                    checked = settings.stream.streamSharpeningEnabled,
+                    description = stringResource(R.string.settings_stream_sharpening_desc),
+                ) {
                     viewModel.updateStreamSettings { s -> s.copy(streamSharpeningEnabled = it) }
                 }
                 if (settings.stream.streamSharpeningEnabled) {
-                    NumberSlider(stringResource(R.string.stream_panel_sharpening_amount), settings.stream.streamSharpeningAmount, 0f, 1f, 0.05f) {
+                    NumberSlider(
+                        label = stringResource(R.string.stream_panel_sharpening_amount),
+                        value = settings.stream.streamSharpeningAmount,
+                        min = 0f,
+                        max = 1f,
+                        step = 0.05f,
+                        description = stringResource(R.string.settings_stream_sharpening_amount_desc),
+                    ) {
                         viewModel.updateStreamSettings { s -> s.copy(streamSharpeningAmount = it) }
                     }
                 }
@@ -936,7 +985,12 @@ private fun SettingsContent(
     CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "tv", "safe area", "screen padding", "overscan") {
                 val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
-                ChoiceRow(stringResource(R.string.settings_accent), accentOptions.map { it.second }, accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second) { label ->
+                ChoiceRow(
+                    label = stringResource(R.string.settings_accent),
+                    options = accentOptions.map { it.second },
+                    selected = accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second,
+                    activeOutlineColor = settings.uiAccent.color.takeIf { settings.liveSelectedOutlines },
+                ) { label ->
                     accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
                         viewModel.updateSettings(settings.copy(uiAccent = accent))
                     }
@@ -948,11 +1002,18 @@ private fun SettingsContent(
                 ) {
                     viewModel.updateSettings(settings.copy(expressiveUi = it))
                 }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_live_selected_outlines),
+                    checked = settings.liveSelectedOutlines,
+                    description = stringResource(R.string.settings_live_selected_outlines_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(liveSelectedOutlines = enabled))
+                }
                 NumberSlider(stringResource(R.string.settings_tv_safe_area), settings.tvSafeAreaPaddingDp, 0f, 72f, 2f, unit = "dp") { value ->
                     viewModel.updateSettings(settings.copy(tvSafeAreaPaddingDp = value))
                 }
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "store labels", "game card size", "server selector") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_library_navigation), "interface", "launch page", "default page", "store", "library", "compact", "cards", "titles", "store labels", "favorites", "favourites", "save", "icon", "game card size", "server selector") {
                 val launchPageOptions = AppLaunchPage.entries.map { page -> page to appLaunchPageLabel(page) }
                 ChoiceRow(
                     stringResource(R.string.settings_launch_page),
@@ -967,6 +1028,13 @@ private fun SettingsContent(
                 SettingSwitch(stringResource(R.string.settings_compact_cards), settings.compactGameCards) { viewModel.updateSettings(settings.copy(compactGameCards = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_card_titles), settings.showCardTitles) { viewModel.updateSettings(settings.copy(showCardTitles = it)) }
                 SettingSwitch(stringResource(R.string.settings_show_store_labels), settings.showGameStoreLabels) { viewModel.updateSettings(settings.copy(showGameStoreLabels = it)) }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_show_favorite_icon),
+                    checked = settings.showFavoriteIconOnGameCards,
+                    description = stringResource(R.string.settings_show_favorite_icon_desc),
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(showFavoriteIconOnGameCards = enabled))
+                }
                 NumberSlider(stringResource(R.string.settings_card_size), settings.posterSizeScale, MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 0.05f) { value ->
                     viewModel.updateSettings(settings.copy(posterSizeScale = value))
                 }
@@ -1073,14 +1141,17 @@ private fun SettingsContent(
                 OpenNowGitHubPanel()
                 DeveloperPanel()
             }
-    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "donate", "paypal", "printedwaste") {
+    CategorySettingsSection(selectedCategory, SettingsCategory.About, searchQuery, stringResource(R.string.settings_section_thanks), "thanks", "credits", "contributors", "darkevilpt", "discord", "community", "support", "donate", "paypal", "printedwaste") {
                 ThanksPanel()
             }
     }
 }
 
 @Composable
-private fun LowPowerStreamWarning(reasons: List<String>) {
+private fun DeviceStreamRecommendationWarning(
+    reasons: List<String>,
+    recommended: StreamSettings?,
+) {
     val warningColor = Color(0xffffc266)
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1094,7 +1165,7 @@ private fun LowPowerStreamWarning(reasons: List<String>) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                "This device may struggle with these settings",
+                "These settings are above the detected recommendation",
                 color = warningColor,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.labelLarge,
@@ -1105,7 +1176,9 @@ private fun LowPowerStreamWarning(reasons: List<String>) {
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                "OpenNOW won't lower these settings just because this device is low-powered. The Recommended preset is the safer option.",
+                recommended?.let {
+                    "Use Recommended (${it.recommendationSummary()}) and restart the stream before reporting lag. You can still use Custom and send a report after acknowledging the warning."
+                } ?: "The Recommended preset is the safer option for lag troubleshooting.",
                 color = SettingsTextMuted,
                 style = MaterialTheme.typography.bodySmall,
             )

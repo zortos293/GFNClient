@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Base64
 import androidx.browser.customtabs.CustomTabsIntent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -102,7 +103,7 @@ private const val CLIENT_ID = "ZU7sPN-miLujMD95LfOQ453IB0AtjM8sMyvgJ9wCXEQ"
 private const val DEVICE_CODE_CLIENT_ID = "q61ddeJrVt7O90Nl-P-N7I36yctih4Ml6FyXLrb6j-U"
 private const val DEFAULT_IDP_ID = "PDiAhv2kJTFeQ7WOPqiQ2tRZ7lGhR2X11dXvM4TZSxg"
 private const val SCOPES = "openid consent email tk_client age"
-private const val PANELS_QUERY_HASH = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
+private const val PANELS_QUERY_HASH = "46ec15f267a056e7d5e46e629efa929529e5e7542a4850faece90b9f8fa5f810"
 private const val APP_METADATA_QUERY_HASH = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
 
 private data class CloudMatchClientIdentity(
@@ -278,6 +279,10 @@ private const val DEFAULT_CATALOG_FETCH_COUNT = 120
 private const val MAX_CATALOG_PAGES = 3
 private const val MAX_CATALOG_REQUEST_PAGES = 50
 private const val DEFAULT_SORT_ID = "relevance"
+private const val LIBRARY_APPS_FETCH_COUNT = 200
+private const val MAX_LIBRARY_APPS_PAGES = 25
+private const val LIBRARY_APPS_SORT_ORDER =
+    "variants.gfn.library.lastPlayedDate:DESC,computedValues.libraryAddedDate:DESC,sortName:ASC"
 private const val SESSION_MODIFY_ACTION_AD_UPDATE = 6
 internal const val OPENNOW_STREAM_SETTINGS_METADATA_KEY = "OpenNOWStreamSettingsSignature"
 private const val STORAGE_ADDON_TYPE = "STORAGE"
@@ -1695,6 +1700,18 @@ internal fun libraryBrowseSpec(payload: JsonObject): LibraryBrowseSpec? =
             }
         }
 
+internal fun libraryAppsFilter(): JsonObject = buildJsonObject {
+    putJsonObject("variants") {
+        putJsonObject("gfn") {
+            putJsonObject("library") {
+                putJsonObject("status") {
+                    put("notEquals", "NOT_OWNED")
+                }
+            }
+        }
+    }
+}
+
 internal fun hasFreeToPlayPaymentModel(paymentModels: JsonArray?): Boolean =
     paymentModels.orEmpty().any { model ->
         val name = model.asObject()?.string("__typename") ?: model.asString()
@@ -1756,6 +1773,30 @@ class GfnCatalogRepository(
         includeSupplementalPublicVariants: Boolean = true,
     ): List<GameInfo> {
         val vpcId = getVpcId(token, providerStreamingBaseUrl)
+        val paginatedLibrary = try {
+            val page = fetchCatalogAppsPages(
+                token = token,
+                vpcId = vpcId,
+                searchQuery = "",
+                sortOrder = LIBRARY_APPS_SORT_ORDER,
+                fetchCount = LIBRARY_APPS_FETCH_COUNT,
+                filters = libraryAppsFilter(),
+                maxPages = MAX_LIBRARY_APPS_PAGES,
+            )
+            enrichGamesWithMetadata(token, vpcId, dedupeGames(page.apps.map(::appToGame)))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }
+        if (paginatedLibrary != null) {
+            return if (includeSupplementalPublicVariants) {
+                mergePublicGameVariants(paginatedLibrary, fetchPublicGames())
+            } else {
+                paginatedLibrary
+            }
+        }
+
         val panels = runCatching { fetchPanels(token, listOf("LIBRARY"), vpcId, withLibraryTime = true) }
             .getOrElse { fetchPanels(token, listOf("LIBRARY"), vpcId, withLibraryTime = false) }
         val panelGames = enrichGamesWithMetadata(token, vpcId, flattenPanels(panels))
@@ -1796,6 +1837,47 @@ class GfnCatalogRepository(
                 acc.putAll(obj)
                 acc
             }
+        val page = fetchCatalogAppsPages(
+            token = token,
+            vpcId = vpcId,
+            searchQuery = searchQuery,
+            sortOrder = selectedSort.orderBy,
+            fetchCount = DEFAULT_CATALOG_FETCH_COUNT,
+            filters = JsonObject(filters),
+            maxPages = maxPages,
+        )
+        val publicGames = if (includeSupplementalPublicVariants) fetchPublicGames() else emptyList()
+        val games = dedupeGames(page.apps.map(::appToGame))
+        val withSearchFallbacks = if (searchQuery.isBlank() || publicGames.isEmpty()) {
+            games
+        } else {
+            dedupeGames(games + publicGames.filter { it.matchesSearch(searchQuery) })
+        }
+        val merged = if (publicGames.isEmpty()) withSearchFallbacks else mergePublicGameVariants(withSearchFallbacks, publicGames)
+        return CatalogBrowseResult(
+            games = merged,
+            numberReturned = page.numberReturned,
+            numberSupported = max(page.numberSupported, merged.size),
+            totalCount = max(page.totalCount, merged.size),
+            hasNextPage = page.hasNextPage,
+            endCursor = page.endCursor?.takeIf { it.isNotBlank() },
+            searchQuery = searchQuery,
+            selectedSortId = selectedSort.id,
+            selectedFilterIds = selectedFilters,
+            filterGroups = definitions.filterGroups,
+            sortOptions = definitions.sortOptions,
+        )
+    }
+
+    private suspend fun fetchCatalogAppsPages(
+        token: String,
+        vpcId: String,
+        searchQuery: String,
+        sortOrder: String,
+        fetchCount: Int,
+        filters: JsonObject,
+        maxPages: Int,
+    ): CatalogAppsPage {
         val query = catalogQuery(searchQuery.isNotBlank())
         val collectedApps = mutableListOf<JsonObject>()
         var numberReturned = 0
@@ -1810,10 +1892,10 @@ class GfnCatalogRepository(
                 variables = buildJsonObject {
                     put("vpcId", vpcId)
                     put("locale", requestLocale())
-                    put("sortString", selectedSort.orderBy)
-                    put("fetchCount", DEFAULT_CATALOG_FETCH_COUNT)
+                    put("sortString", sortOrder)
+                    put("fetchCount", fetchCount)
                     put("cursor", cursor)
-                    put("filters", JsonObject(filters))
+                    put("filters", filters)
                     if (searchQuery.isNotBlank()) put("searchString", searchQuery.trim())
                 },
                 token = token,
@@ -1829,26 +1911,13 @@ class GfnCatalogRepository(
             if (!hasNextPage || endCursor.isNullOrBlank()) break
             cursor = endCursor.orEmpty()
         }
-        val publicGames = if (includeSupplementalPublicVariants) fetchPublicGames() else emptyList()
-        val games = dedupeGames(collectedApps.map(::appToGame))
-        val withSearchFallbacks = if (searchQuery.isBlank() || publicGames.isEmpty()) {
-            games
-        } else {
-            dedupeGames(games + publicGames.filter { it.matchesSearch(searchQuery) })
-        }
-        val merged = if (publicGames.isEmpty()) withSearchFallbacks else mergePublicGameVariants(withSearchFallbacks, publicGames)
-        return CatalogBrowseResult(
-            games = merged,
+        return CatalogAppsPage(
+            apps = collectedApps,
             numberReturned = numberReturned,
-            numberSupported = max(numberSupported, merged.size),
-            totalCount = max(totalCount, merged.size),
+            numberSupported = numberSupported,
+            totalCount = totalCount,
             hasNextPage = hasNextPage,
-            endCursor = endCursor?.takeIf { it.isNotBlank() },
-            searchQuery = searchQuery,
-            selectedSortId = selectedSort.id,
-            selectedFilterIds = selectedFilters,
-            filterGroups = definitions.filterGroups,
-            sortOptions = definitions.sortOptions,
+            endCursor = endCursor,
         )
     }
 
@@ -2225,7 +2294,7 @@ class GfnCatalogRepository(
               publisherName
               images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
               computedValues { paymentModels { __typename } }
-              variants { id appStore supportedControls paymentModels { __typename } gfn { status library { status selected } } }
+              variants { id appStore supportedControls paymentModels { __typename } gfn { status library { status selected lastPlayedDate } } }
               gfn { playType playabilityState minimumMembershipTierLabel catalogSkuStrings { SKU_BASED_TAG } }
               itemMetadata { campaignIds }
             }
@@ -2280,6 +2349,15 @@ class GfnCatalogRepository(
         val filterGroups: List<CatalogFilterGroup>,
         val sortOptions: List<CatalogSortOption>,
         val filterPayloadById: Map<String, JsonElement>,
+    )
+
+    private data class CatalogAppsPage(
+        val apps: List<JsonObject>,
+        val numberReturned: Int,
+        val numberSupported: Int,
+        val totalCount: Int,
+        val hasNextPage: Boolean,
+        val endCursor: String?,
     )
 }
 

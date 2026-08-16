@@ -1408,6 +1408,9 @@ internal fun ThanksPanel() {
             Text(stringResource(R.string.settings_thanks_darkevilpt_note), color = SettingsTextMuted, style = MaterialTheme.typography.bodySmall)
         }
     }
+    DiscordCommunityLink(
+        summary = stringResource(R.string.discord_community_credits_summary),
+    )
     Button(
         onClick = {
             openExternalUrlOrCopy(context, clipboard, DONATE_URL, context.getString(R.string.settings_donate_link_copied))

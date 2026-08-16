@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="profile_menu_description">Open account profile</string>
+    <string name="profile_username">Username</string>
+    <string name="profile_tier">Tier</string>
+    <string name="profile_email">Email</string>
+    <string name="profile_account_options">Account options</string>
+    <string name="profile_not_available">Not available</string>
     <string name="app_name">OpenNOW</string>
     <string name="status_starting_opennow">Starting OpenNOW</string>
     <string name="login_with_provider">Sign in with %1$s</string>
@@ -273,6 +279,11 @@
     <string name="bug_report_dialog_title">Report a bug</string>
     <string name="bug_report_open_label">Report a stream bug</string>
     <string name="bug_report_open_summary">Send an issue and redacted diagnostics</string>
+    <string name="discord_community_title">Discord community</string>
+    <string name="discord_community_bug_report_summary">Get help and follow up on bug reports with the OpenNOW community.</string>
+    <string name="discord_community_credits_summary">Community support and bug-report follow-up</string>
+    <string name="discord_community_action">Join</string>
+    <string name="discord_community_link_copied">Discord invite copied</string>
 
     <!-- Shared settings/stream control rows -->
     <string name="control_show_description">Show description</string>
@@ -329,21 +340,30 @@
     <string name="settings_section_nerd_tools">Advanced tools</string>
     <string name="settings_section_thanks">Thanks</string>
     <string name="settings_resolution">Resolution</string>
+    <string name="settings_resolution_desc">The number of pixels sent by the cloud PC. Higher resolutions look sharper but require more decoder, GPU, and network capacity.</string>
     <string name="settings_aspect_ratio">Aspect ratio</string>
+    <string name="settings_aspect_ratio_desc">Matches the stream shape to the display. A mismatched ratio can add black bars or stretching; it does not make the decoder faster.</string>
     <string name="settings_stream_preset">Stream preset</string>
+    <string name="settings_stream_preset_desc">Recommended uses this device\'s display, memory, processor count, Android profile, and verified WebRTC hardware decoders. Custom keeps your manual choices.</string>
+    <string name="settings_detected_recommendation">Detected Recommended: %1$s</string>
     <string name="stream_preset_recommended">Recommended</string>
     <string name="stream_preset_custom">Custom</string>
     <string name="stream_preset_low_data_saver">Low (data saver)</string>
     <string name="stream_preset_medium">Medium</string>
     <string name="stream_preset_high">High</string>
     <string name="settings_fps">FPS</string>
+    <string name="settings_fps_desc">Frames per second controls motion smoothness. Higher FPS gives the decoder less time per frame and can cause stutter on slower hardware.</string>
     <string name="settings_bitrate">Bitrate Mbps</string>
+    <string name="settings_bitrate_desc">The maximum video data rate. Higher bitrate can improve detail, but only when the connection has enough stable capacity; it does not increase FPS.</string>
     <string name="settings_codec">Codec</string>
+    <string name="settings_codec_desc">H.264 is the most compatible. H.265 uses bandwidth more efficiently and is preferred for high resolution when a verified hardware decoder exists. AV1 is 8-bit here and is used only on devices with a compatible hardware path.</string>
     <string name="settings_color">Color</string>
+    <string name="settings_color_desc">8-bit 4:2:0 is the lightest and most compatible. 10-bit improves gradients but adds decoder and bandwidth requirements. Android normalizes unsupported combinations automatically.</string>
     <string name="settings_av1_ten_bit_badge">H.264/H.265 only</string>
     <string name="settings_av1_ten_bit_hint">AV1 uses 8-bit color. Choose H.265 for 10-bit; HDR is limited to compatible Android TV modes.</string>
     <string name="settings_av1_ten_bit_downgraded">AV1 uses 8-bit color in OpenNOW. Switched to 8-bit and disabled HDR. Choose H.265 or H.264 to use 10-bit.</string>
     <string name="settings_hdr">HDR (Performance &amp; Ultimate)</string>
+    <string name="settings_hdr_desc">HDR needs a compatible Android TV display, H.265, 10-bit video, and a supported membership. It adds processing load and is not recommended for lag troubleshooting.</string>
     <string name="settings_hdr_android_handheld_hint">HDR streaming is not available on Android handhelds. 10-bit SDR remains available with H.265.</string>
     <string name="settings_hdr_android_tv_compatibility_hint">HDR on Android TV requires H.265 at 60 FPS or lower and a resolution up to 3840 x 2160.</string>
     <string name="settings_region">Region</string>
@@ -377,6 +397,8 @@
     <string name="settings_nerd_mode_desc">Shows experimental catalog and tuning options. The Advanced diagnostics tab stays available.</string>
     <string name="settings_expressive_ui">Expressive card styling</string>
     <string name="settings_expressive_ui_desc">Uses brighter card surfaces and softer corners. Turn it off for a flatter, quieter Material style.</string>
+    <string name="settings_live_selected_outlines">Live selected outlines</string>
+    <string name="settings_live_selected_outlines_desc">Animates the active menu item, game details, server choice, and selected colour theme. Turn it off for quieter selection styling.</string>
     <string name="settings_nerd_catalog_background">Catalog background</string>
     <string name="settings_nerd_catalog_background_desc">Shows a background image behind Store and Library on handheld screens.</string>
     <string name="settings_catalog_background_image">Background image</string>
@@ -390,6 +412,8 @@
     <string name="settings_tv_safe_area">Screen edge padding</string>
     <string name="settings_compact_cards">Compact game cards</string>
     <string name="settings_show_store_labels">Show store labels</string>
+    <string name="settings_show_favorite_icon">Show favorite icon on game cards</string>
+    <string name="settings_show_favorite_icon_desc">Shows a favorite button on mobile, handheld, and TV game cards.</string>
     <string name="settings_card_size">Game card size</string>
     <string name="settings_hide_stream_buttons">Hide stream buttons</string>
     <string name="settings_stream_keyboard_button">On-screen keyboard button</string>
@@ -406,6 +430,9 @@
     <string name="settings_queue_ready_music">Play music when queue finishes</string>
     <string name="action_mute_music">Mute music</string>
     <string name="settings_stretch_stream_to_fit">Stretch stream to fill</string>
+    <string name="settings_stretch_stream_to_fit_desc">Stretches the decoded picture to the display bounds. This can distort the image when the stream and screen use different aspect ratios.</string>
+    <string name="settings_stream_sharpening_desc">Applies an extra GPU filter after decoding. It can improve perceived detail but may add rendering load on slower devices.</string>
+    <string name="settings_stream_sharpening_amount_desc">Controls the strength of the post-processing sharpening filter. It does not change the source stream resolution.</string>
     <string name="settings_session_counter">Smart session timer</string>
     <string name="settings_thanks_body">Thanks to the people helping improve OpenNOW for everyone.</string>
     <string name="settings_thanks_darkevilpt">DarkevilPT</string>

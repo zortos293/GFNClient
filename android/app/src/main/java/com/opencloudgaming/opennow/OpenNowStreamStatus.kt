@@ -105,9 +105,7 @@ import com.opencloudgaming.opennow.ui.theme.tint
 @Composable
 internal fun StreamKeyboardBar(
     value: TextFieldValue,
-    syncedText: String?,
     onValueChange: (TextFieldValue) -> Unit,
-    onSend: () -> Unit,
     onEnter: () -> Unit,
     onEsc: () -> Unit,
     onDone: () -> Unit,
@@ -116,14 +114,6 @@ internal fun StreamKeyboardBar(
     val inputFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    val applyAction = streamKeyboardApplyAction(syncedText, value.text)
-    val sendIfReady = {
-        if (applyAction != StreamKeyboardApplyAction.None) {
-            onSend()
-            keyboardController?.hide()
-            focusManager.clearFocus(force = true)
-        }
-    }
     LaunchedEffect(Unit) {
         delay(80)
         runCatching { inputFocusRequester.requestFocus() }
@@ -173,15 +163,8 @@ internal fun StreamKeyboardBar(
                     unfocusedContainerColor = Color.Black.copy(alpha = 0.42f),
                 ),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { sendIfReady() }),
+                keyboardActions = KeyboardActions(onSend = { onEnter() }),
             )
-            Button(
-                onClick = sendIfReady,
-                enabled = applyAction != StreamKeyboardApplyAction.None,
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-            ) {
-                Text(if (applyAction == StreamKeyboardApplyAction.Replace) "Update" else "Type")
-            }
             OutlinedButton(onClick = onEnter, contentPadding = PaddingValues(horizontal = 12.dp)) { Text(stringResource(R.string.stream_panel_key_enter)) }
             TextButton(onClick = onEsc, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(stringResource(R.string.stream_panel_key_esc)) }
             TextButton(
@@ -197,19 +180,6 @@ internal fun StreamKeyboardBar(
 }
 
 internal const val MAX_STREAM_KEYBOARD_TEXT_LENGTH = 4096
-
-internal enum class StreamKeyboardApplyAction {
-    None,
-    Type,
-    Replace,
-}
-
-internal fun streamKeyboardApplyAction(syncedText: String?, draft: String): StreamKeyboardApplyAction = when {
-    syncedText == draft -> StreamKeyboardApplyAction.None
-    syncedText != null -> StreamKeyboardApplyAction.Replace
-    draft.isNotEmpty() -> StreamKeyboardApplyAction.Type
-    else -> StreamKeyboardApplyAction.None
-}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -783,7 +753,7 @@ private fun StreamStatsMetricItems(
             StreamStatsText(
                 value = stringResource(R.string.stream_stats_decode, "%.1f".format(Locale.US, decode)),
                 modifier = itemModifier,
-                quality = StreamQuality.decode(decode, targetFps),
+                quality = StreamQuality.decode(decode, targetFps, streamStats.fps?.toDouble()),
                 contentDescription = stringResource(R.string.stream_stats_cd_decode, "%.1f".format(Locale.US, decode)),
             )
         }

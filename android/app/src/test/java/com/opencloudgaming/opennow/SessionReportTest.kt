@@ -39,6 +39,13 @@ class SessionReportTest {
     }
 
     @Test
+    fun pipelinedDecoderAtTargetThroughputIsNotMarkedPoor() {
+        assertEquals(StreamQualityLevel.Fair, StreamQuality.decode(23.0, 60, 59.3))
+        assertEquals(StreamQualityLevel.Fair, StreamQuality.decode(23.0, 60, 54.1))
+        assertEquals(StreamQualityLevel.Poor, StreamQuality.decode(23.0, 60, 35.0))
+    }
+
+    @Test
     fun accumulatorUsesPacketDeltasAndAddsContextualWifiAdvice() {
         val settings = StreamSettings(
             resolution = "1920x1080",

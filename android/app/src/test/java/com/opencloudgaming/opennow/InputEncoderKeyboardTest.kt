@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import android.view.KeyEvent
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
@@ -73,6 +74,27 @@ class InputEncoderKeyboardTest {
         assertEquals(0x32, atSign?.keycode)
         assertEquals(0x0003, atSign?.scancode)
         assertEquals(true, atSign?.shift)
+    }
+
+    @Test
+    fun encodesUnicodeTextWithOfficialSendUnicodeFraming() {
+        val packet = InputEncoder().encodeTextInput("язык 🙂 ß").single()
+
+        assertEquals(0x22, packet[0].toInt())
+        assertEquals(
+            InputEncoder.INPUT_TEXT,
+            java.nio.ByteBuffer.wrap(packet).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(1),
+        )
+        assertArrayEquals("язык 🙂 ß".toByteArray(Charsets.UTF_8), packet.copyOfRange(5, packet.size))
+    }
+
+    @Test
+    fun chunksUnicodeTextWithoutSplittingUtf8Characters() {
+        val packets = InputEncoder().encodeTextInput("a".repeat(1015) + "🙂b")
+
+        assertEquals(2, packets.size)
+        assertEquals("a".repeat(1015), packets[0].copyOfRange(5, packets[0].size).toString(Charsets.UTF_8))
+        assertEquals("🙂b", packets[1].copyOfRange(5, packets[1].size).toString(Charsets.UTF_8))
     }
 
 }

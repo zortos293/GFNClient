@@ -1,6 +1,7 @@
 package com.opencloudgaming.opennow
 
 import android.view.View
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
@@ -84,6 +85,13 @@ import kotlin.math.sin
 
 @Composable
 internal fun QueueLoadingScreen(state: OpenNowUiState, viewModel: OpenNowViewModel) {
+    BackHandler(
+        enabled = canMinimizeStreamLaunch(
+            streamStatus = state.streamStatus,
+            sessionReady = state.streamSession?.isReadyForStream() == true,
+        ),
+        onBack = viewModel::minimizeStreamLaunch,
+    )
     val session = state.streamSession
     val game = state.streamGame
     val ads = sessionAdItems(session?.adState)

@@ -110,4 +110,64 @@ class StreamSignalingFailureTest {
             ),
         )
     }
+
+    @Test
+    fun peerNativeOperationsRequireTheCurrentGenerationAndPeerIdentity() {
+        val currentPeer = Any()
+
+        assertTrue(
+            isCurrentPeerOperation(
+                operationGeneration = 7,
+                currentGeneration = 7,
+                expectedPeer = currentPeer,
+                activePeer = currentPeer,
+            ),
+        )
+        assertFalse(
+            isCurrentPeerOperation(
+                operationGeneration = 6,
+                currentGeneration = 7,
+                expectedPeer = currentPeer,
+                activePeer = currentPeer,
+            ),
+        )
+        assertFalse(
+            isCurrentPeerOperation(
+                operationGeneration = 7,
+                currentGeneration = 7,
+                expectedPeer = Any(),
+                activePeer = currentPeer,
+            ),
+        )
+        assertFalse(
+            isCurrentPeerOperation(
+                operationGeneration = 7,
+                currentGeneration = 7,
+                expectedPeer = currentPeer,
+                activePeer = null,
+            ),
+        )
+    }
+
+    @Test
+    fun unboundPeerOperationCanAcquireOnlyTheCurrentActivePeer() {
+        val currentPeer = Any()
+
+        assertTrue(
+            isCurrentPeerOperation(
+                operationGeneration = 12,
+                currentGeneration = 12,
+                expectedPeer = null,
+                activePeer = currentPeer,
+            ),
+        )
+        assertFalse(
+            isCurrentPeerOperation(
+                operationGeneration = 11,
+                currentGeneration = 12,
+                expectedPeer = null,
+                activePeer = currentPeer,
+            ),
+        )
+    }
 }

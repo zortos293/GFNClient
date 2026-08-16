@@ -164,11 +164,13 @@ internal fun ControlSliderRow(
     modifier: Modifier = Modifier,
     unit: String? = null,
     valueFormatter: ((Float) -> String)? = null,
+    description: String? = null,
     descriptionProvider: ((Float) -> String?)? = null,
     onChangePreview: ((Float) -> Unit)? = null,
     style: ControlRowStyle = controlRowStyle(),
 ) {
     var local by remember(value) { mutableFloatStateOf(value) }
+    var descriptionExpanded by remember(label) { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
     val showFocus = style.showFocusRing && focused
@@ -193,6 +195,30 @@ internal fun ControlSliderRow(
                 color = style.supportingColor,
                 // Tabular figures so the readout does not reflow while the thumb is dragged.
                 style = MaterialTheme.typography.labelLarge.numeric(),
+            )
+            if (!description.isNullOrBlank()) {
+                IconButton(
+                    onClick = { descriptionExpanded = !descriptionExpanded },
+                    modifier = Modifier.width(40.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_help),
+                        contentDescription = stringResource(
+                            if (descriptionExpanded) R.string.control_hide_description
+                            else R.string.control_show_description,
+                        ),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+        if (descriptionExpanded && !description.isNullOrBlank()) {
+            Text(
+                description,
+                color = style.supportingColor.copy(alpha = 0.86f),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         Slider(

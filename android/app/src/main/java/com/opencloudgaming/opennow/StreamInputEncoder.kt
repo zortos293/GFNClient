@@ -112,6 +112,29 @@ class InputEncoder {
         return wrapSingle(bytes)
     }
 
+    /** Official GFN SendUnicode framing. These packets are already single-message framed. */
+    fun encodeTextInput(text: String): List<ByteArray> {
+        val utf8 = text.toByteArray(Charsets.UTF_8)
+        val chunks = mutableListOf<ByteArray>()
+        var offset = 0
+        while (offset < utf8.size) {
+            val chunkLength = textInputChunkLength(utf8, offset)
+            if (chunkLength <= 0) break
+            val bytes = ByteArray(TEXT_INPUT_HEADER_BYTES + chunkLength)
+            bytes[0] = 0x22
+            ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(1, INPUT_TEXT)
+            utf8.copyInto(
+                destination = bytes,
+                destinationOffset = TEXT_INPUT_HEADER_BYTES,
+                startIndex = offset,
+                endIndex = offset + chunkLength,
+            )
+            chunks += bytes
+            offset += chunkLength
+        }
+        return chunks
+    }
+
     fun encodeGamepadState(
         controllerId: Int,
         buttons: Int,
@@ -231,6 +254,7 @@ class InputEncoder {
         const val INPUT_MOUSE_WHEEL = 10
         const val INPUT_GAMEPAD = 12
         const val INPUT_HAPTICS_ENABLED = 13
+        const val INPUT_TEXT = 23
 
         /**
          * Native multi-touch. The host turns these into a Windows digitizer, which is what makes
@@ -342,6 +366,21 @@ class InputEncoder {
             '?' to KeyEvent.KEYCODE_SLASH,
             '~' to KeyEvent.KEYCODE_GRAVE,
         )
+
+        private fun textInputChunkLength(bytes: ByteArray, offset: Int): Int {
+            val remaining = bytes.size - offset
+            if (remaining <= TEXT_INPUT_CHUNK_MAX_BYTES) return remaining
+
+            var end = offset + TEXT_INPUT_CHUNK_MAX_BYTES
+            repeat(4) {
+                if ((bytes[end].toInt() and 0xc0) != 0x80) return end - offset
+                end -= 1
+            }
+            return 0
+        }
+
+        private const val TEXT_INPUT_CHUNK_MAX_BYTES = 1016
+        private const val TEXT_INPUT_HEADER_BYTES = 5
 
         private fun virtualKey(keyCode: Int, unicode: Int): Int? =
             when (keyCode) {
@@ -536,7 +575,6 @@ internal const val STEAM_MENU_MODIFIER_DELAY_MS = 40L
 internal const val STREAM_TEXT_SEND_MAX_CHARS = 4096
 internal const val STREAM_TEXT_SEND_ATTEMPTS = 3
 internal const val STREAM_TEXT_PACKET_DELAY_MS = 4L
-internal const val STREAM_TEXT_KEY_DELAY_MS = 10L
 internal const val STREAM_TEXT_RETRY_DELAY_MS = 16L
 internal const val BYTES_PER_MEBIBYTE = 1024L * 1024L
 internal const val LOW_POWER_TV_MEMORY_LIMIT_BYTES = 3L * 1024L * BYTES_PER_MEBIBYTE

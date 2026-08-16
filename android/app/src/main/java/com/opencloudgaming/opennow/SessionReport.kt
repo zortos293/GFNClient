@@ -248,7 +248,7 @@ internal fun sessionQualityScore(
         packetLossPct?.let { add(weightedScore(packetLossScore(it), 30)) }
         averageJitterMs?.let { add(weightedScore(jitterScore(it), 15)) }
         averageFps?.let { add(weightedScore(frameRateScore(it, targetFps), 15)) }
-        averageDecodeMs?.let { add(weightedScore(decodeScore(it, targetFps), 5)) }
+        averageDecodeMs?.let { add(weightedScore(decodeScore(it, targetFps, averageFps), 5)) }
     }
     if (components.isEmpty()) return 50
     val weightedTotal = components.sumOf { it.first }
@@ -284,7 +284,8 @@ object StreamQuality {
     fun latency(ms: Int): StreamQualityLevel = qualityLevelOf(latencyScore(ms))
     fun packetLoss(pct: Double): StreamQualityLevel = qualityLevelOf(packetLossScore(pct))
     fun jitter(ms: Double): StreamQualityLevel = qualityLevelOf(jitterScore(ms))
-    fun decode(ms: Double, targetFps: Int): StreamQualityLevel = qualityLevelOf(decodeScore(ms, targetFps))
+    fun decode(ms: Double, targetFps: Int, actualFps: Double? = null): StreamQualityLevel =
+        qualityLevelOf(decodeScore(ms, targetFps, actualFps))
     fun frameRate(fps: Double, targetFps: Int): StreamQualityLevel = qualityLevelOf(frameRateScore(fps, targetFps))
 }
 
@@ -327,15 +328,23 @@ internal fun frameRateScore(value: Double, targetFps: Int): Int {
     }
 }
 
-internal fun decodeScore(value: Double, targetFps: Int): Int {
+internal fun decodeScore(value: Double, targetFps: Int, actualFps: Double? = null): Int {
     val frameBudgetMs = 1000.0 / targetFps.coerceAtLeast(1).toDouble()
     val ratio = value / frameBudgetMs
-    return when {
+    val latencyScore = when {
         ratio <= 0.50 -> 100
         ratio <= 0.75 -> 90
         ratio <= 1.00 -> 75
         ratio <= 1.50 -> 45
         else -> 15
+    }
+    val throughputRatio = actualFps?.div(targetFps.coerceAtLeast(1).toDouble()) ?: return latencyScore
+    // totalDecodeTime is input-to-output latency, not serial decoder throughput. Hardware decoders
+    // can pipeline frames, so latency may exceed one display interval while cadence stays healthy.
+    return when {
+        throughputRatio >= 0.98 -> maxOf(latencyScore, 75)
+        throughputRatio >= 0.90 -> maxOf(latencyScore, 55)
+        else -> latencyScore
     }
 }
 

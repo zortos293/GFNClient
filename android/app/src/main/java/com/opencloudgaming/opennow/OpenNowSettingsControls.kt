@@ -1,5 +1,6 @@
 package com.opencloudgaming.opennow
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +12,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -22,11 +25,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.ui.controls.ControlRow
+import com.opencloudgaming.opennow.ui.controls.ControlRowLabels
 import com.opencloudgaming.opennow.ui.controls.ControlSection
 import com.opencloudgaming.opennow.ui.controls.ControlSliderRow
 import com.opencloudgaming.opennow.ui.controls.ControlSwitchRow
@@ -144,6 +150,7 @@ internal fun NumberSlider(
     unit: String? = null,
     /** Full control over the readout when neither the percent nor the unit default fits. */
     valueFormatter: ((Float) -> String)? = null,
+    description: String? = null,
     descriptionProvider: ((Float) -> String?)? = null,
     onChange: (Float) -> Unit,
 ) {
@@ -156,16 +163,24 @@ internal fun NumberSlider(
         onChange = onChange,
         unit = unit,
         valueFormatter = valueFormatter,
+        description = description,
         descriptionProvider = descriptionProvider,
     )
 }
 
 @Composable
-internal fun ChoiceRow(label: String, options: List<String>, selected: String, onSelect: (String) -> Unit) {
+internal fun ChoiceRow(
+    label: String,
+    options: List<String>,
+    selected: String,
+    activeOutlineColor: Color? = null,
+    onSelect: (String) -> Unit,
+) {
     ChoiceMenuRow(
         label = label,
         options = options.map { ChoiceMenuOption(value = it, label = it) },
         selectedLabel = selected,
+        activeOutlineColor = activeOutlineColor,
         onSelect = onSelect,
     )
 }
@@ -175,48 +190,85 @@ internal fun ChoiceMenuRow(
     label: String,
     options: List<ChoiceMenuOption>,
     selectedLabel: String,
+    description: String? = null,
+    activeOutlineColor: Color? = null,
     onSelect: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var descriptionExpanded by remember(label) { mutableStateOf(false) }
+    BackHandler(enabled = expanded) { expanded = false }
     val autoLabel = stringResource(R.string.option_auto)
     // Outer chrome comes from the shared row; the dropdown body below is specific to this control.
     ControlRow(onClick = { expanded = true }) {
-        Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        ControlRowLabels(
+            label = label,
+            value = null,
+            expandedDescription = description?.takeIf { descriptionExpanded },
+            enabled = true,
+            style = com.opencloudgaming.opennow.ui.controls.controlRowStyle(),
+        )
+        if (!description.isNullOrBlank()) {
+            IconButton(
+                onClick = { descriptionExpanded = !descriptionExpanded },
+                modifier = Modifier.padding(horizontal = 2.dp),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_help),
+                    contentDescription = stringResource(
+                        if (descriptionExpanded) R.string.control_hide_description
+                        else R.string.control_show_description,
+                    ),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
         Box {
             OutlinedButton(onClick = { expanded = true }) { Text(selectedLabel.ifBlank { autoLabel }, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            ControllerFocusFrame(
+                visible = activeOutlineColor != null,
+                cornerRadius = 20.dp,
+                tint = activeOutlineColor,
+            )
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { option ->
-                    DropdownMenuItem(
-                        text = {
-                            val disabledAlpha = if (option.enabled) 1f else 0.48f
-                            val badgeAlpha = if (option.enabled) 0.7f else 0.48f
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    option.label,
-                                    color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = disabledAlpha),
-                                )
-                                option.badge?.let { badge ->
+                    Box {
+                        DropdownMenuItem(
+                            text = {
+                                val disabledAlpha = if (option.enabled) 1f else 0.48f
+                                val badgeAlpha = if (option.enabled) 0.7f else 0.48f
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
                                     Text(
-                                        badge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = badgeAlpha),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier
-                                            .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (option.enabled) 0.3f else 0.2f), RoundedCornerShape(3.dp))
-                                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                                        option.label,
+                                        color = if (option.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = disabledAlpha),
                                     )
+                                    option.badge?.let { badge ->
+                                        Text(
+                                            badge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = badgeAlpha),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier
+                                                .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (option.enabled) 0.3f else 0.2f), RoundedCornerShape(3.dp))
+                                                .padding(horizontal = 4.dp, vertical = 1.dp),
+                                        )
+                                    }
                                 }
-                            }
-                        },
-                        enabled = option.enabled,
-                        onClick = {
-                            expanded = false
-                            onSelect(option.value)
-                        },
-                    )
+                            },
+                            enabled = option.enabled,
+                            onClick = {
+                                expanded = false
+                                onSelect(option.value)
+                            },
+                        )
+                        ControllerFocusFrame(
+                            visible = option.label == selectedLabel && activeOutlineColor != null,
+                            cornerRadius = 4.dp,
+                            tint = activeOutlineColor,
+                        )
+                    }
                 }
             }
         }

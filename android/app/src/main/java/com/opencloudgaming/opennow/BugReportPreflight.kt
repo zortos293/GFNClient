@@ -42,6 +42,7 @@ internal data class BugReportPreflightDeck(
 
 internal data class BugReportPreflightEvidence(
     val requestedSettings: StreamSettings,
+    val recommendedSettings: StreamSettings? = null,
     val nativeLowLatencyDecoderEnabled: Boolean = false,
     val runtimeStats: StreamRuntimeStats = StreamRuntimeStats(),
     val runtimeDiagnostics: AndroidRuntimeDiagnosticsSnapshot = AndroidRuntimeDiagnosticsSnapshot(),
@@ -237,8 +238,24 @@ private fun buildVideoDevicePreflightCard(
         AndroidThermalStatus.Emergency,
         AndroidThermalStatus.Shutdown,
     )
+    val recommendationOverrides = evidence.requestedSettings.performanceOverridesComparedTo(
+        recommended = evidence.recommendedSettings,
+        report = evidence.codecReport,
+    )
     val videoRecommendations = buildList {
         addAll(recommendations.filter { it.kind == SessionReportFindingKind.Warning })
+        if (recommendationOverrides.isNotEmpty()) {
+            val recommended = requireNotNull(evidence.recommendedSettings)
+            add(
+                SessionReportFinding(
+                    title = DEVICE_RECOMMENDATION_ACTION_TITLE,
+                    detail =
+                        "Switch to Recommended (${recommended.recommendationSummary()}), restart the stream, and reproduce the lag before reporting it. " +
+                            "This session used ${recommendationOverrides.joinToString()}.",
+                    kind = SessionReportFindingKind.Warning,
+                ),
+            )
+        }
         if (thermalWarning) {
             add(
                 SessionReportFinding(
@@ -266,6 +283,10 @@ private fun buildVideoDevicePreflightCard(
     val facts = buildList {
         add("Requested $requestedResolution@${evidence.requestedSettings.fps}")
         add("Requested max ${evidence.requestedSettings.maxBitrateMbps} Mbps")
+        evidence.recommendedSettings?.let { add("Detected Recommended ${it.recommendationSummary()}") }
+        if (recommendationOverrides.isNotEmpty()) {
+            add("Above recommendation: ${recommendationOverrides.joinToString()}")
+        }
         deliveredResolution?.let { add("Delivered $it") }
         add("Codec $deliveredCodec")
         hardwareDecoder?.let { add(if (it) "Hardware decoder" else "Software decoder") }
@@ -289,6 +310,7 @@ private fun buildVideoDevicePreflightCard(
     }
     val title = when {
         resolutionChanged || codecChanged -> "The delivered stream changed"
+        recommendationOverrides.isNotEmpty() -> "Selected settings exceed the device recommendation"
         tone == BugReportPreflightTone.Warning -> "The device or decoder needs attention"
         tone == BugReportPreflightTone.Healthy -> "The video path looks healthy"
         else -> "Video evidence is limited"
@@ -296,6 +318,8 @@ private fun buildVideoDevicePreflightCard(
     val summary = when {
         resolutionChanged || codecChanged ->
             "The requested and delivered profiles differ. That difference will be included in the report automatically."
+        recommendationOverrides.isNotEmpty() ->
+            "OpenNOW detected a safer profile for this hardware. Higher settings can add decoder, GPU, or network load, so reproduce with Recommended before assigning the lag to the app."
         videoRecommendations.isNotEmpty() ->
             "Only checks that match the current decoder and thermal state are shown below."
         tone == BugReportPreflightTone.Healthy ->
@@ -427,10 +451,18 @@ internal fun bugReportKnownIssueBlock(
         it.area == BugReportPreflightArea.VideoDevice && it.tone == BugReportPreflightTone.Warning
     }
     if (video != null && reportText.containsAnyWholeTerm(BUG_REPORT_VIDEO_SYMPTOM_PATTERNS)) {
+        val recommendationOverride = video.recommendations.firstOrNull {
+            it.title == DEVICE_RECOMMENDATION_ACTION_TITLE
+        }
         return BugReportKnownIssueBlock(
-            key = "video-device-measured",
-            title = "Local video issue detected",
-            action = video.recommendations.firstOrNull()?.compactPreflightAction()
+            key = if (recommendationOverride != null) "device-profile-override" else "video-device-measured",
+            title = if (recommendationOverride != null) {
+                "Selected profile exceeds this device's recommendation"
+            } else {
+                "Local video issue detected"
+            },
+            action = recommendationOverride?.compactPreflightAction()
+                ?: video.recommendations.firstOrNull()?.compactPreflightAction()
                 ?: "Apply the video or device fix shown above, then reproduce the issue.",
         )
     }
@@ -479,6 +511,8 @@ private val BUG_REPORT_INPUT_SYMPTOM_PATTERNS = bugReportTermPatterns(
     "input", "mouse", "keyboard", "controller", "gamepad", "touch", "button", "joystick",
     "stick", "click", "cursor",
 )
+
+private const val DEVICE_RECOMMENDATION_ACTION_TITLE = "Use the detected Recommended profile"
 
 private fun streamResolutionLabelForPreflight(settings: StreamSettings): String {
     val (width, height) = streamResolutionPixels(settings)

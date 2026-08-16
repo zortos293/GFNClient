@@ -243,6 +243,50 @@ class StreamResolutionTest {
     }
 
     @Test
+    fun fixedSizeSurfaceIsDisabledWhenDecodedFrameReachesViewportBoundary() {
+        assertFalse(
+            shouldUseFixedSizeStreamSurface(
+                videoWidth = 2560,
+                videoHeight = 1440,
+                rotation = 0,
+                viewWidth = 2994,
+                viewHeight = 1440,
+            ),
+        )
+        assertFalse(
+            shouldUseFixedSizeStreamSurface(
+                videoWidth = 2560,
+                videoHeight = 1440,
+                rotation = 0,
+                viewWidth = 2340,
+                viewHeight = 1080,
+            ),
+        )
+    }
+
+    @Test
+    fun fixedSizeSurfaceRemainsEnabledForSmallerDecodedFrames() {
+        assertTrue(
+            shouldUseFixedSizeStreamSurface(
+                videoWidth = 1920,
+                videoHeight = 1080,
+                rotation = 0,
+                viewWidth = 2560,
+                viewHeight = 1440,
+            ),
+        )
+        assertTrue(
+            shouldUseFixedSizeStreamSurface(
+                videoWidth = 1080,
+                videoHeight = 1920,
+                rotation = 90,
+                viewWidth = 2560,
+                viewHeight = 1440,
+            ),
+        )
+    }
+
+    @Test
     fun widePhoneStretchScalesOnlyWidthWithoutCropping() {
         val scale = streamStretchScale(
             enabled = true,

@@ -246,7 +246,9 @@ private fun SessionReportConnection(report: SessionReport) {
                 label = stringResource(R.string.session_report_metric_decode),
                 value = report.averageDecodeMs?.let { "%.1f ms".format(Locale.US, it) },
                 detail = stringResource(R.string.session_report_decode_detail),
-                quality = report.averageDecodeMs?.let { StreamQuality.decode(it, report.targetFps) },
+                quality = report.averageDecodeMs?.let {
+                    StreamQuality.decode(it, report.targetFps, report.averageFps)
+                },
             ),
         ),
     )
@@ -355,6 +357,9 @@ internal fun CompletedSessionBugReportDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                DiscordCommunityLink(
+                    summary = stringResource(R.string.discord_community_bug_report_summary),
+                )
                 when {
                     submission.submitted -> {
                         Icon(Icons.Rounded.Check, contentDescription = null, tint = Green)
@@ -394,7 +399,7 @@ internal fun CompletedSessionBugReportDialog(
                                 description = value
                                 if (submission.error != null) onReset()
                             },
-                            modifier = Modifier.fillMaxWidth().height(128.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 128.dp),
                             enabled = !submission.uploading,
                             minLines = 4,
                             maxLines = 7,
@@ -407,6 +412,10 @@ internal fun CompletedSessionBugReportDialog(
                             },
                             isError = description.isNotEmpty() &&
                                 androidBugReportDescriptionError(description) != null,
+                        )
+                        BugReportDescriptionFeedback(
+                            description = description,
+                            error = androidBugReportDescriptionError(description),
                         )
                         BugReportDataDisclosure(includeTypedTextWarning = true)
                         Row(

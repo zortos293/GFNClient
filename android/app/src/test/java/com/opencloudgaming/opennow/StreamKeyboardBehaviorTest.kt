@@ -6,26 +6,36 @@ import org.junit.Test
 class StreamKeyboardBehaviorTest {
     @Test
     fun emptyNewDraftHasNothingToType() {
-        assertEquals(StreamKeyboardApplyAction.None, streamKeyboardApplyAction(null, ""))
+        assertEquals(StreamKeyboardEdit.None, streamKeyboardEdit(null, ""))
     }
 
     @Test
-    fun newDraftIsTypedIntoTheRemoteField() {
-        assertEquals(StreamKeyboardApplyAction.Type, streamKeyboardApplyAction(null, "hello"))
+    fun newDraftIsAppendedToTheRemoteField() {
+        assertEquals(StreamKeyboardEdit.Append("hello"), streamKeyboardEdit(null, "hello"))
     }
 
     @Test
     fun unchangedMirroredTextIsNotDuplicated() {
-        assertEquals(StreamKeyboardApplyAction.None, streamKeyboardApplyAction("hello", "hello"))
+        assertEquals(StreamKeyboardEdit.None, streamKeyboardEdit("hello", "hello"))
     }
 
     @Test
-    fun editedMirroredTextReplacesTheRemoteField() {
-        assertEquals(StreamKeyboardApplyAction.Replace, streamKeyboardApplyAction("hello", "hello there"))
+    fun typingAtTheEndOnlyAppendsTheNewSuffix() {
+        assertEquals(StreamKeyboardEdit.Append(" there"), streamKeyboardEdit("hello", "hello there"))
     }
 
     @Test
-    fun clearingMirroredTextClearsTheRemoteField() {
-        assertEquals(StreamKeyboardApplyAction.Replace, streamKeyboardApplyAction("hello", ""))
+    fun deletingAtTheEndUsesBackspace() {
+        assertEquals(StreamKeyboardEdit.Backspace(2), streamKeyboardEdit("hello", "hel"))
+    }
+
+    @Test
+    fun deletingAnEmojiUsesOneRemoteBackspace() {
+        assertEquals(StreamKeyboardEdit.Backspace(1), streamKeyboardEdit("hello 🙂", "hello "))
+    }
+
+    @Test
+    fun editingInTheMiddleReplacesTheRemoteField() {
+        assertEquals(StreamKeyboardEdit.Replace("hallo"), streamKeyboardEdit("hello", "hallo"))
     }
 }

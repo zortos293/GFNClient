@@ -17,6 +17,7 @@ class LowLatencyVideoDecoder(
     private val delegate: VideoDecoder,
     private val requestedFps: Int,
     private val lowLatencyEnabled: Boolean,
+    private val standardLowLatencyEnabled: Boolean = false,
 ) : VideoDecoder {
 
     private var patched = false
@@ -24,7 +25,8 @@ class LowLatencyVideoDecoder(
     override fun initDecode(settings: VideoDecoder.Settings?, decodeCallback: VideoDecoder.Callback?): VideoCodecStatus {
         NativeInputDiagnostics.add(
             "MediaCodecVideoDecoder initDecode delegate=${delegate.javaClass.name} " +
-                "requestedFps=$requestedFps lowLatency=$lowLatencyEnabled",
+                "requestedFps=$requestedFps lowLatency=$lowLatencyEnabled " +
+                "standardLowLatency=$standardLowLatencyEnabled",
         )
         patchMediaCodecWrapperFactory()
         return delegate.initDecode(settings, decodeCallback)
@@ -39,7 +41,11 @@ class LowLatencyVideoDecoder(
     }
 
     override fun getImplementationName(): String {
-        val suffix = if (lowLatencyEnabled) "low-latency" else "performance"
+        val suffix = when {
+            lowLatencyEnabled -> "low-latency"
+            standardLowLatencyEnabled -> "platform-low-latency"
+            else -> "performance"
+        }
         return delegate.implementationName + "+opennow-$suffix"
     }
 
@@ -75,6 +81,7 @@ class LowLatencyVideoDecoder(
                     delegateFactory = originalFactory,
                     requestedFps = requestedFps,
                     lowLatencyEnabled = lowLatencyEnabled,
+                    standardLowLatencyEnabled = standardLowLatencyEnabled,
                 )
             )
             factoryField.set(delegate, proxyFactory)
@@ -107,6 +114,7 @@ class LowLatencyVideoDecoder(
         private val delegateFactory: Any,
         private val requestedFps: Int,
         private val lowLatencyEnabled: Boolean,
+        private val standardLowLatencyEnabled: Boolean,
     ) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
             val originalCodecName = if ("createByCodecName" == method.name && args != null && args.isNotEmpty() && args[0] is String) {
@@ -161,6 +169,7 @@ class LowLatencyVideoDecoder(
                     codecName = codecName,
                     requestedFps = requestedFps,
                     lowLatencyEnabled = lowLatencyEnabled,
+                    standardLowLatencyEnabled = standardLowLatencyEnabled,
                 )
             )
         }
@@ -171,22 +180,32 @@ class LowLatencyVideoDecoder(
         private val codecName: String,
         private val requestedFps: Int,
         private val lowLatencyEnabled: Boolean,
+        private val standardLowLatencyEnabled: Boolean,
     ) : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
             if ("configure" == method.name && args != null && args.isNotEmpty() && args[0] is MediaFormat) {
                 val format = args[0] as MediaFormat
                 NativeInputDiagnostics.add(
                     "MediaCodecVideoDecoder: configure codec=$codecName requestedFps=$requestedFps " +
-                        "lowLatency=$lowLatencyEnabled before=$format",
+                        "lowLatency=$lowLatencyEnabled standardLowLatency=$standardLowLatencyEnabled before=$format",
                 )
-                applyDecoderPerformanceFormat(format, requestedFps, lowLatencyEnabled)
+                applyDecoderPerformanceFormat(
+                    format = format,
+                    requestedFps = requestedFps,
+                    lowLatencyEnabled = lowLatencyEnabled,
+                    standardLowLatencyEnabled = standardLowLatencyEnabled,
+                )
                 if (lowLatencyEnabled) applyLowLatencyFormat(format, codecName)
                 NativeInputDiagnostics.add("MediaCodecVideoDecoder: configured format=$format")
             }
             val result = invokeDelegate(delegateCodec, method, args)
-            if ("start" == method.name && lowLatencyEnabled) {
+            if ("start" == method.name && (lowLatencyEnabled || standardLowLatencyEnabled)) {
                 NativeInputDiagnostics.add("LowLatencyVideoDecoder: Intercepted start() for codec=$codecName")
-                applyLowLatencyParameters(delegateCodec)
+                applyLowLatencyParameters(
+                    delegateCodec = delegateCodec,
+                    standardLowLatencyEnabled = standardLowLatencyEnabled || lowLatencyEnabled,
+                    vendorLowLatencyEnabled = lowLatencyEnabled,
+                )
             }
             return result
         }
@@ -200,6 +219,7 @@ class LowLatencyVideoDecoder(
             format: MediaFormat,
             requestedFps: Int,
             lowLatencyEnabled: Boolean,
+            standardLowLatencyEnabled: Boolean,
         ) {
             val exactTargetFps = mediaCodecPerformanceTargetFps(requestedFps)
             if (exactTargetFps != null) {
@@ -212,6 +232,9 @@ class LowLatencyVideoDecoder(
                     MediaFormat.KEY_OPERATING_RATE,
                     if (lowLatencyEnabled) OPERATING_RATE else exactTargetFps!!,
                 )
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && standardLowLatencyEnabled) {
+                putInt(format, MediaFormat.KEY_LOW_LATENCY, 1)
             }
         }
 
@@ -355,27 +378,33 @@ class LowLatencyVideoDecoder(
             }
         }
 
-        private fun applyLowLatencyParameters(delegateCodec: Any) {
+        private fun applyLowLatencyParameters(
+            delegateCodec: Any,
+            standardLowLatencyEnabled: Boolean,
+            vendorLowLatencyEnabled: Boolean,
+        ) {
             try {
                 val field = findMediaCodecField(delegateCodec.javaClass) ?: return
                 field.isAccessible = true
                 val mediaCodec = field.get(delegateCodec) as? android.media.MediaCodec ?: return
                 
                 val bundle = android.os.Bundle()
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && standardLowLatencyEnabled) {
                     bundle.putInt(android.media.MediaCodec.PARAMETER_KEY_LOW_LATENCY, 1)
                 }
-                bundle.putInt("vendor.mtk-dec-low-latency", 1)
-                bundle.putInt("vendor.mtk-dec-lowlatency", 1)
-                bundle.putInt("vendor.mtk-ext-dec-low-latency.enable", 1)
-                bundle.putInt("vendor.mtk-ext-dec-lowlatency.enable", 1)
-                bundle.putInt("vendor.mtk-vdec-lowlatency", 1)
-                bundle.putInt("vendor.mtk-vdec-low-latency", 1)
-                bundle.putInt("vendor.mtk.vdec.lowlatency", 1)
-                bundle.putInt("vendor.mtk.vdec.low-latency", 1)
-                bundle.putInt("vendor.mtk.dec.lowlatency", 1)
-                bundle.putInt("vendor.mtk.dec.low-latency", 1)
-                bundle.putInt("vendor.mtk.ext.dec.lowlatency.enable", 1)
+                if (vendorLowLatencyEnabled) {
+                    bundle.putInt("vendor.mtk-dec-low-latency", 1)
+                    bundle.putInt("vendor.mtk-dec-lowlatency", 1)
+                    bundle.putInt("vendor.mtk-ext-dec-low-latency.enable", 1)
+                    bundle.putInt("vendor.mtk-ext-dec-lowlatency.enable", 1)
+                    bundle.putInt("vendor.mtk-vdec-lowlatency", 1)
+                    bundle.putInt("vendor.mtk-vdec-low-latency", 1)
+                    bundle.putInt("vendor.mtk.vdec.lowlatency", 1)
+                    bundle.putInt("vendor.mtk.vdec.low-latency", 1)
+                    bundle.putInt("vendor.mtk.dec.lowlatency", 1)
+                    bundle.putInt("vendor.mtk.dec.low-latency", 1)
+                    bundle.putInt("vendor.mtk.ext.dec.lowlatency.enable", 1)
+                }
 
                 mediaCodec.setParameters(bundle)
                 Log.i(TAG, "LowLatencyVideoDecoder: Successfully set MediaCodec parameters: $bundle")

@@ -66,6 +66,16 @@ class GfnApiTest {
     }
 
     @Test
+    fun libraryAppsFilterRequestsEveryOwnedLibraryStatus() {
+        val variants = libraryAppsFilter().getValue("variants").jsonObject
+        val gfn = variants.getValue("gfn").jsonObject
+        val library = gfn.getValue("library").jsonObject
+        val status = library.getValue("status").jsonObject
+
+        assertEquals("NOT_OWNED", status.getValue("notEquals").jsonPrimitive.content)
+    }
+
+    @Test
     fun freeToPlayPaymentModelUsesGraphQlTypeName() {
         val models = buildJsonObject {
             putJsonArray("models") {

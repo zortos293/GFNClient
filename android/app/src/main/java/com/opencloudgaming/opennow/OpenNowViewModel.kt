@@ -43,9 +43,13 @@ enum class AppPage {
 }
 
 enum class SettingsRouteTarget {
+    Account,
     General,
     Stream,
 }
+
+internal fun canMinimizeStreamLaunch(streamStatus: String, sessionReady: Boolean): Boolean =
+    streamStatus != "idle" && !sessionReady
 
 private const val ANDROID_UPDATE_LAUNCH_CHECK_DELAY_MS = 5_000L
 internal const val ANDROID_UPDATE_PERIODIC_CHECK_INTERVAL_MS = 6L * 60L * 60L * 1000L
@@ -169,6 +173,7 @@ data class OpenNowUiState(
     val settings: AppSettings = AppSettings(),
     val androidTvProfile: Boolean = false,
     val codecReport: RuntimeCodecReport? = null,
+    val recommendedStreamSettings: StreamSettings? = null,
     val selectedGame: GameInfo? = null,
     val activeSession: ActiveSessionInfo? = null,
     val activeSessionDecision: ActiveSessionDecision? = null,
@@ -495,6 +500,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             _state.update {
                 it.copy(
                     codecReport = codecReport,
+                    recommendedStreamSettings = recommendation.stream,
                     settings = settingsStore.settings.value,
                     initializing = false,
                 )
@@ -967,6 +973,16 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 page = AppPage.Settings,
                 selectedGame = null,
                 settingsRouteTarget = SettingsRouteTarget.General,
+            )
+        }
+    }
+
+    fun openAccountSettings() {
+        _state.update {
+            it.copy(
+                page = AppPage.Settings,
+                selectedGame = null,
+                settingsRouteTarget = SettingsRouteTarget.Account,
             )
         }
     }
@@ -2087,7 +2103,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     fun minimizeStreamLaunch() {
         recordDebugEvent("queue", "Minimize launch requested status=${state.value.streamStatus} phase=${state.value.launchPhase}")
         _state.update { current ->
-            if (current.streamStatus == "idle" || current.streamSession?.isReadyForStream() == true) {
+            if (!canMinimizeStreamLaunch(current.streamStatus, current.streamSession?.isReadyForStream() == true)) {
                 current
             } else {
                 current.copy(streamLaunchMinimized = true, page = current.streamReturnPage ?: AppPage.Home)

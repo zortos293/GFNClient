@@ -107,6 +107,7 @@ internal fun SortPicker(
     val labels = options.ifEmpty { listOf(CatalogSortOption("relevance", "Relevance", "")) }
     val selectedLabel = labels.firstOrNull { it.id == selected }?.label ?: labels.first().label
     var expanded by remember { mutableStateOf(false) }
+    BackHandler(enabled = expanded) { expanded = false }
     val controlShape = RoundedCornerShape(999.dp)
     val controlColor = Color.White.copy(alpha = 0.1f)
     Box(modifier) {
@@ -508,6 +509,7 @@ private fun PrintedWasteOptionsColumn(
                         selected = isCurrent,
                         focused = isCurrent && listFocused,
                         listFocused = listFocused,
+                        liveSelectedOutlines = state.settings.liveSelectedOutlines,
                         onClick = { onSelectZone(zoneOption.zoneId) },
                     )
                 }
@@ -571,63 +573,65 @@ private fun PrintedWasteZoneRow(
     selected: Boolean,
     focused: Boolean,
     listFocused: Boolean,
+    liveSelectedOutlines: Boolean,
     onClick: () -> Unit,
 ) {
     val zone = zoneOption.zone
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusProperties { canFocus = false }
-            .clip(RoundedCornerShape(12.dp))
-            .border(
-                width = 2.dp,
-                color = if (focused) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .clickable { onClick() },
-        shape = RoundedCornerShape(12.dp),
-        color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
-        tonalElevation = if (selected) 2.dp else 0.dp,
-        border = if (selected && listFocused) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-    ) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val compact = maxWidth < 520.dp
-            if (compact) {
-                Column(
-                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Box(Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusProperties { canFocus = false }
+                .clickable { onClick() },
+            shape = RoundedCornerShape(12.dp),
+            color = if (focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else PanelAlt,
+            tonalElevation = if (selected) 2.dp else 0.dp,
+            border = if (selected && listFocused && !liveSelectedOutlines) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        ) {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val compact = maxWidth < 520.dp
+                if (compact) {
+                    Column(
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
+                                Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (selected) {
+                                Text(stringResource(R.string.store_selector_selected), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
+                            QueueMetricPill(stringResource(R.string.queue_metric_ahead), zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
+                            zone.eta?.let { QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it)) }
+                        }
+                    }
+                } else {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         Column(Modifier.weight(1f)) {
                             Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
                             Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
                         }
-                        if (selected) {
-                            Text(stringResource(R.string.store_selector_selected), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
                         QueueMetricPill(stringResource(R.string.queue_metric_ahead), zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
                         zone.eta?.let { QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it)) }
                     }
                 }
-            } else {
-                Row(
-                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(zoneOption.zoneId, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else TextPrimary)
-                        Text(regionLabel(zone.Region), color = TextMuted, style = MaterialTheme.typography.bodySmall)
-                    }
-                    QueueMetricPill(stringResource(R.string.stream_statusbar_metric_ping), zoneOption.pingMs?.let { "$it ms" } ?: "--", zoneOption.pingMs?.let(::pingColor) ?: TextMuted)
-                    QueueMetricPill(stringResource(R.string.queue_metric_ahead), zone.QueuePosition.toString(), queueColor(zone.QueuePosition))
-                    zone.eta?.let { QueueMetricPill(stringResource(R.string.queue_metric_wait), formatPrintedWasteWait(it)) }
-                }
             }
         }
+        ControllerFocusFrame(
+            visible = shouldShowActiveSelectionOutline(selected, liveSelectedOutlines),
+            cornerRadius = 12.dp,
+            tint = Color.White,
+        )
     }
 }
 
@@ -727,6 +731,7 @@ private fun regionLabel(region: String): String = when (region) {
 @Composable
 internal fun ProviderPicker(providers: List<LoginProvider>, selected: LoginProvider, onSelect: (LoginProvider) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
+    BackHandler(enabled = expanded) { expanded = false }
     Box {
         OutlinedButton(onClick = { expanded = true }) { Text(selected.displayName) }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -932,32 +937,31 @@ internal fun OpenNowAppIcon(
     size: androidx.compose.ui.unit.Dp,
     animate: Boolean = false,
 ) {
-    val glide = if (animate) {
-        val transition = rememberInfiniteTransition(label = "app-icon-glide")
+    val spin = if (animate) {
+        val transition = rememberInfiniteTransition(label = "active-app-icon")
         transition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 2_600, easing = LinearEasing),
+                animation = tween(durationMillis = 3_000, easing = LinearEasing),
             ),
-            label = "app-icon-glide-phase",
+            label = "active-app-icon-phase",
         )
     } else {
         null
     }
-    val glideDistancePx = with(LocalDensity.current) { (size * 0.055f).toPx() }
-    val motionModifier = if (glide == null) {
+    val motionModifier = if (spin == null) {
         Modifier
     } else {
         // Read the animation state in the layer block so each frame only updates this GPU layer;
         // it does not remeasure the navigation rail or recompose the surrounding chrome.
         Modifier.graphicsLayer {
-            val radians = glide.value * (2f * PI.toFloat())
-            val horizontalGlide = sin(radians)
-            translationX = horizontalGlide * glideDistancePx
-            translationY = sin(radians * 2f - PI.toFloat() / 2f) * glideDistancePx * 0.24f
-            rotationZ = -horizontalGlide * 0.85f
-            scaleX = 1f + max(0f, horizontalGlide) * 0.018f
+            val spinProgress = activeLogoSpinProgress(spin.value)
+            val pulse = sin(spinProgress * PI.toFloat()).coerceAtLeast(0f)
+            rotationY = spinProgress * 360f
+            cameraDistance = 12f * density
+            scaleX = 1f + pulse * 0.035f
+            scaleY = scaleX
         }
     }
     Image(
@@ -969,6 +973,9 @@ internal fun OpenNowAppIcon(
         contentScale = ContentScale.Fit,
     )
 }
+
+internal fun activeLogoSpinProgress(cycleProgress: Float): Float =
+    (cycleProgress.coerceIn(0f, 1f) / 0.18f).coerceIn(0f, 1f)
 
 internal val ColorQuality.label: String
     get() = when (this) {

@@ -95,6 +95,38 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+internal fun shouldUseFixedSizeStreamSurface(
+    videoWidth: Int,
+    videoHeight: Int,
+    rotation: Int,
+    viewWidth: Int,
+    viewHeight: Int,
+): Boolean {
+    if (videoWidth <= 0 || videoHeight <= 0 || viewWidth <= 0 || viewHeight <= 0) return false
+    val quarterTurns = ((rotation % 360) + 360) % 360
+    val rotatedWidth = if (quarterTurns == 90 || quarterTurns == 270) videoHeight else videoWidth
+    val rotatedHeight = if (quarterTurns == 90 || quarterTurns == 270) videoWidth else videoHeight
+    val frameLongEdge = max(rotatedWidth, rotatedHeight)
+    val frameShortEdge = min(rotatedWidth, rotatedHeight)
+    val viewLongEdge = max(viewWidth, viewHeight)
+    val viewShortEdge = min(viewWidth, viewHeight)
+
+    // A fixed-size Surface is useful when SurfaceFlinger can upscale a smaller decoded buffer.
+    // At or above either viewport edge, some OEM compositors crop the fixed buffer instead of
+    // fitting it. Let the EGL renderer draw into the layout-sized Surface for those modes.
+    return frameLongEdge < viewLongEdge && frameShortEdge < viewShortEdge
+}
+
+internal fun isCurrentPeerOperation(
+    operationGeneration: Int,
+    currentGeneration: Int,
+    expectedPeer: Any?,
+    activePeer: Any?,
+): Boolean =
+    activePeer != null &&
+        operationGeneration == currentGeneration &&
+        (expectedPeer == null || expectedPeer === activePeer)
+
 class NativeStreamClient(
     context: Context,
     private val onState: (String) -> Unit,
@@ -169,6 +201,12 @@ class NativeStreamClient(
             )
             .createAudioDeviceModule()
     private var factory: PeerConnectionFactory? = null
+    /**
+     * Owned by [nativeLifecycleExecutor]. Volatile reads are used only for cheap readiness checks;
+     * every JNI call and the final close/dispose run on that same executor so a native handle
+     * cannot be freed while another thread is entering libwebrtc.
+     */
+    @Volatile
     private var peerConnection: PeerConnection? = null
     private var signaling: GfnSignalingClient? = null
     @Volatile
@@ -206,6 +244,7 @@ class NativeStreamClient(
     private var offerTimeoutJob: Job? = null
     internal var settings: StreamSettings = StreamSettings()
     private var session: SessionInfo? = null
+    @Volatile
     private var transportGeneration = 0
     private var reconnectAttempts = 0
     private var transientSignalingFailures = 0
@@ -358,6 +397,32 @@ class NativeStreamClient(
         }
     }
 
+    /** Must be called from [nativeLifecycleExecutor] before entering a PeerConnection JNI method. */
+    private fun activePeerConnection(generation: Int, expected: PeerConnection? = null): PeerConnection? {
+        val active = peerConnection
+        return active.takeIf {
+            isCurrentPeerOperation(
+                operationGeneration = generation,
+                currentGeneration = transportGeneration,
+                expectedPeer = expected,
+                activePeer = active,
+            )
+        }
+    }
+
+    private fun dispatchPeerFailure(
+        diagnostic: String,
+        message: String,
+        generation: Int,
+        expected: PeerConnection,
+    ) {
+        scope.launch {
+            if (!isCurrentPeerOperation(generation, transportGeneration, expected, peerConnection)) return@launch
+            recordStreamDiagnostic(diagnostic)
+            failStream(message, generation)
+        }
+    }
+
     init {
         WebRtcRuntime.ensureInitialized(appContext)
         val lowLatencyEnabled = SettingsStore(appContext).settings.value.nativeLowLatencyDecoder
@@ -376,11 +441,20 @@ class NativeStreamClient(
     }
 
     fun createRenderer(context: Context, settings: StreamSettings): SurfaceViewRenderer =
-        SurfaceViewRenderer(context).also {
+        SurfaceViewRenderer(context).also { rendererView ->
             renderer?.let { oldRenderer ->
                 releaseRendererInternal(oldRenderer)
             }
             firstVideoFrameWatchdog.reset()
+            val requestedResolution = streamResolutionPixels(settings)
+            val displayMetrics = context.resources.displayMetrics
+            var fixedSizeSurface = shouldUseFixedSizeStreamSurface(
+                videoWidth = requestedResolution.first,
+                videoHeight = requestedResolution.second,
+                rotation = 0,
+                viewWidth = displayMetrics.widthPixels,
+                viewHeight = displayMetrics.heightPixels,
+            )
             val rendererEvents = object : RendererCommon.RendererEvents {
                 override fun onFirstFrameRendered() {
                     firstVideoFrameWatchdog.markRendered()
@@ -392,6 +466,31 @@ class NativeStreamClient(
                     NativeInputDiagnostics.add("video renderer resolution=${videoWidth}x$videoHeight rotation=$rotation")
                     if (videoWidth > 0 && videoHeight > 0) {
                         NativeStreamInputRouter.setDecodedStreamResolution(videoWidth, videoHeight)
+                    }
+                    rendererView.post {
+                        if (
+                            renderer !== rendererView ||
+                            rendererView.width <= 0 ||
+                            rendererView.height <= 0
+                        ) {
+                            return@post
+                        }
+                        val nextFixedSizeSurface = shouldUseFixedSizeStreamSurface(
+                            videoWidth = videoWidth,
+                            videoHeight = videoHeight,
+                            rotation = rotation,
+                            viewWidth = rendererView.width,
+                            viewHeight = rendererView.height,
+                        )
+                        if (nextFixedSizeSurface != fixedSizeSurface) {
+                            fixedSizeSurface = nextFixedSizeSurface
+                            rendererView.setEnableHardwareScaler(nextFixedSizeSurface)
+                            NativeInputDiagnostics.add(
+                                "video renderer surface fixed=$nextFixedSizeSurface " +
+                                    "decoded=${videoWidth}x$videoHeight rotation=$rotation " +
+                                    "view=${rendererView.width}x${rendererView.height}",
+                            )
+                        }
                     }
                 }
             }
@@ -407,32 +506,37 @@ class NativeStreamClient(
                 )
             }
             rendererSharpnessDrawer = sharpnessDrawer
-            it.init(eglBase.eglBaseContext, rendererEvents, EglBase.CONFIG_PLAIN, sharpnessDrawer)
-            // Let SurfaceViewRenderer keep a fixed native surface sized to the decoded frame.
-            // Using the Compose layout size for the backing surface caused some OEM compositors
-            // to display only the upper-left portion of an otherwise correctly decoded frame.
-            it.setEnableHardwareScaler(true)
-            it.setMirror(false)
+            rendererView.init(eglBase.eglBaseContext, rendererEvents, EglBase.CONFIG_PLAIN, sharpnessDrawer)
+            rendererView.setEnableHardwareScaler(fixedSizeSurface)
+            NativeInputDiagnostics.add(
+                "video renderer surface fixed=$fixedSizeSurface requested=${settings.resolution} " +
+                    "display=${displayMetrics.widthPixels}x${displayMetrics.heightPixels}",
+            )
+            rendererView.setMirror(false)
             // Do not give SurfaceViewRenderer an opaque View background. Its decoded
             // frames are presented by a separate Surface layer, so a normal View
             // background can cover every rendered frame on physical devices. The
             // Compose stream container already supplies the black pre-frame backdrop.
-            it.setStreamScaling()
-            renderer = it
+            rendererView.setStreamScaling()
+            renderer = rendererView
             rendererSurfaceCallback = object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {
-                    attachRendererSinkIfAvailable(it)
+                    attachRendererSinkIfAvailable(rendererView)
                 }
 
                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                    attachRendererSinkIfAvailable(it)
+                    NativeInputDiagnostics.add(
+                        "video renderer surface changed=${width}x$height " +
+                            "view=${rendererView.width}x${rendererView.height} fixed=$fixedSizeSurface",
+                    )
+                    attachRendererSinkIfAvailable(rendererView)
                 }
 
                 override fun surfaceDestroyed(holder: SurfaceHolder) {
-                    detachRendererSink(it)
+                    detachRendererSink(rendererView)
                 }
-            }.also(it.holder::addCallback)
-            attachRendererSinkIfAvailable(it)
+            }.also(rendererView.holder::addCallback)
+            attachRendererSinkIfAvailable(rendererView)
         }
 
     fun releaseRenderer(candidate: SurfaceViewRenderer) {
@@ -445,9 +549,17 @@ class NativeStreamClient(
     private fun attachRendererSinkIfAvailable(candidate: SurfaceViewRenderer) {
         if (renderer !== candidate || candidate.holder.surface?.isValid != true) return
         val track = videoTrack ?: return
-        if (!rendererSinkLifecycle.requestAttach()) return
-        firstVideoFrameWatchdog.reset()
+        val generation = transportGeneration
         enqueueNativeLifecycleOperation("renderer-sink-attach") {
+            if (
+                activePeerConnection(generation) == null ||
+                videoTrack !== track ||
+                renderer !== candidate
+            ) {
+                return@enqueueNativeLifecycleOperation
+            }
+            if (!rendererSinkLifecycle.requestAttach()) return@enqueueNativeLifecycleOperation
+            firstVideoFrameWatchdog.reset()
             track.addSink(candidate)
             recordStreamDiagnostic("video renderer sink attached")
         }
@@ -456,8 +568,10 @@ class NativeStreamClient(
     private fun detachRendererSink(candidate: SurfaceViewRenderer) {
         if (renderer !== candidate || !rendererSinkLifecycle.requestDetach()) return
         val attachedTrack = videoTrack
+        val generation = transportGeneration
         val surfaceValid = candidate.holder.surface?.isValid == true
         enqueueNativeLifecycleOperation("renderer-sink-detach") {
+            if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
             attachedTrack?.removeSink(candidate)
             recordStreamDiagnostic("video renderer sink detached surface=$surfaceValid")
         }
@@ -1130,23 +1244,23 @@ class NativeStreamClient(
         )
     }
 
-    fun sendText(text: String) {
-        if (text.isEmpty()) return
-        val textToSend = text.take(STREAM_TEXT_SEND_MAX_CHARS)
+    /** Applies each Android IME edit immediately while preserving input packet order. */
+    fun syncText(syncedText: String?, draft: String) {
+        val edit = streamKeyboardEdit(syncedText, draft)
+        if (edit == StreamKeyboardEdit.None) return
         scope.launch {
             textSendMutex.withLock {
-                sendTextLocked(textToSend)
-            }
-        }
-    }
-
-    /** Rewrites the focused remote field while the in-app editor still owns input focus. */
-    fun replaceText(text: String) {
-        val textToSend = text.take(STREAM_TEXT_SEND_MAX_CHARS)
-        scope.launch {
-            textSendMutex.withLock {
-                if (!selectAllAndDeleteRemoteText()) return@withLock
-                sendTextLocked(textToSend)
+                when (edit) {
+                    StreamKeyboardEdit.None -> Unit
+                    is StreamKeyboardEdit.Append -> sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS))
+                    is StreamKeyboardEdit.Backspace -> repeat(edit.count.coerceAtMost(STREAM_TEXT_SEND_MAX_CHARS)) {
+                        if (!sendTextKeyStroke(KeyEvent.KEYCODE_DEL)) return@withLock
+                    }
+                    is StreamKeyboardEdit.Replace -> {
+                        if (!selectAllAndDeleteRemoteText()) return@withLock
+                        sendTextLocked(edit.text.take(STREAM_TEXT_SEND_MAX_CHARS))
+                    }
+                }
             }
         }
     }
@@ -1161,7 +1275,9 @@ class NativeStreamClient(
     }
 
     private suspend fun sendTextLocked(text: String) {
-        text.forEach { char -> sendTextChar(char) }
+        inputEncoder.encodeTextInput(text).forEach { packet ->
+            if (!sendTextPacketWithRetry(packet)) return
+        }
     }
 
     private suspend fun selectAllAndDeleteRemoteText(): Boolean {
@@ -1191,18 +1307,18 @@ class NativeStreamClient(
     private fun sendKeyboardPayload(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean =
         sendReliableInput(if (isDown) inputEncoder.encodeKeyDown(payload) else inputEncoder.encodeKeyUp(payload))
 
-    private suspend fun sendTextChar(char: Char) {
-        val spec = InputEncoder.mapTextCharToKeySpec(char) ?: return
-        if (spec.shift) {
-            sendKeyboardPayloadWithRetry(InputEncoder.shiftLeftPayload(modifiers = 0x01), isDown = true)
+    private suspend fun sendTextPacketWithRetry(packet: ByteArray): Boolean {
+        repeat(STREAM_TEXT_SEND_ATTEMPTS) { attempt ->
+            if (sendReliableInput(packet)) {
+                delay(STREAM_TEXT_PACKET_DELAY_MS)
+                return true
+            }
+            if (attempt < STREAM_TEXT_SEND_ATTEMPTS - 1) delay(STREAM_TEXT_RETRY_DELAY_MS)
         }
-        val modifiers = if (spec.shift) 0x01 else 0
-        sendKeyboardPayloadWithRetry(spec.toKeyboardPayload(modifiers), isDown = true)
-        sendKeyboardPayloadWithRetry(spec.toKeyboardPayload(modifiers), isDown = false)
-        if (spec.shift) {
-            sendKeyboardPayloadWithRetry(InputEncoder.shiftLeftPayload(modifiers = 0), isDown = false)
-        }
-        delay(STREAM_TEXT_KEY_DELAY_MS)
+        NativeInputDiagnostics.add(
+            "overlay keyboard dropped unicode bytes=${packet.size} ${inputChannelStateSummary()}",
+        )
+        return false
     }
 
     private suspend fun sendKeyboardPayloadWithRetry(payload: InputEncoder.KeyboardPayload, isDown: Boolean): Boolean {
@@ -1224,13 +1340,21 @@ class NativeStreamClient(
     fun setAudioMuted(muted: Boolean) {
         audioMuted = muted
         audioDeviceModule.setSpeakerMute(muted)
-        audioTrack?.setEnabled(!muted)
+        val generation = transportGeneration
+        enqueueNativeLifecycleOperation("audio-track-mute") {
+            if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
+            audioTrack?.setEnabled(!muted)
+        }
     }
 
     fun setMicrophoneEnabled(enabled: Boolean) {
         microphoneMuted = !enabled
         audioDeviceModule.setMicrophoneMute(!enabled)
-        microphoneTrack?.setEnabled(enabled)
+        val generation = transportGeneration
+        enqueueNativeLifecycleOperation("microphone-track-mute") {
+            if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
+            microphoneTrack?.setEnabled(enabled)
+        }
         recordStreamDiagnostic("microphone ${if (enabled) "enabled" else "muted"}")
     }
 
@@ -1243,34 +1367,52 @@ class NativeStreamClient(
      */
     fun updateBitrateLimit(maxBitrateKbps: Int) {
         if (appliedBitrateLimitKbps == maxBitrateKbps) return
-        val pc = peerConnection ?: return
-        val current = pc.localDescription ?: return
-        val updated = SdpTools.replaceVideoBitrateInSdp(current.description, maxBitrateKbps)
-        if (updated == current.description) {
-            // No b=AS line to update; should not happen once mungeAnswerSdp ran at session start.
-            appliedBitrateLimitKbps = maxBitrateKbps
-            liveBitrateLimitKbps = maxBitrateKbps
-            return
-        }
+        if (peerConnection == null) return
+        val generation = transportGeneration
         // Optimistic dedup so a slider drag does not queue a setLocalDescription per tick;
         // on failure we revert the guard so the same value can be retried (e.g. transient error).
         val previous = appliedBitrateLimitKbps
         appliedBitrateLimitKbps = maxBitrateKbps
         liveBitrateLimitKbps = maxBitrateKbps
-        pc.setLocalDescription(
-            object : SimpleSdpObserver() {
-                override fun onSetSuccess() {
-                    recordStreamDiagnostic("live bitrate limit applied $maxBitrateKbps kbps")
-                }
+        enqueueNativeLifecycleOperation("live-bitrate-limit") {
+            val pc = activePeerConnection(generation) ?: run {
+                restoreBitrateLimit(maxBitrateKbps, previous, generation)
+                return@enqueueNativeLifecycleOperation
+            }
+            val current = pc.localDescription ?: run {
+                restoreBitrateLimit(maxBitrateKbps, previous, generation)
+                return@enqueueNativeLifecycleOperation
+            }
+            val updated = SdpTools.replaceVideoBitrateInSdp(current.description, maxBitrateKbps)
+            if (updated == current.description) {
+                // No b=AS line to update; should not happen once mungeAnswerSdp ran at session start.
+                return@enqueueNativeLifecycleOperation
+            }
+            pc.setLocalDescription(
+                object : SimpleSdpObserver() {
+                    override fun onSetSuccess() {
+                        scope.launch {
+                            if (generation != transportGeneration) return@launch
+                            recordStreamDiagnostic("live bitrate limit applied $maxBitrateKbps kbps")
+                        }
+                    }
 
-                override fun onSetFailure(error: String?) {
-                    appliedBitrateLimitKbps = previous
-                    liveBitrateLimitKbps = previous.takeIf { it > 0 }
-                    recordStreamDiagnostic("live bitrate limit failed error=${error.orEmpty()} (applies next session)")
-                }
-            },
-            SessionDescription(current.type, updated),
-        )
+                    override fun onSetFailure(error: String?) {
+                        restoreBitrateLimit(maxBitrateKbps, previous, generation)
+                        recordStreamDiagnostic("live bitrate limit failed error=${error.orEmpty()} (applies next session)")
+                    }
+                },
+                SessionDescription(current.type, updated),
+            )
+        }
+    }
+
+    private fun restoreBitrateLimit(expected: Int, previous: Int, generation: Int) {
+        scope.launch {
+            if (generation != transportGeneration || appliedBitrateLimitKbps != expected) return@launch
+            appliedBitrateLimitKbps = previous
+            liveBitrateLimitKbps = previous.takeIf { it > 0 }
+        }
     }
 
     fun setTouchMouseButton(pressed: Boolean): Boolean {
@@ -1488,7 +1630,10 @@ class NativeStreamClient(
         )
         emitState(if (reconnectAttempts > 0) "Reconnecting signaling" else "Connecting signaling")
         signaling = GfnSignalingClient(session, settings = settings) { event ->
-            handleSignaling(event, generation)
+            // OkHttp invokes WebSocket callbacks on its own threads. Keep transport state on the
+            // existing main-owner scope; offer parsing and all PeerConnection JNI work are handed
+            // to nativeLifecycleExecutor below so this does not add UI-thread SDP work.
+            scope.launch { handleSignaling(event, generation) }
         }.also { it.connect() }
     }
 
@@ -1520,11 +1665,8 @@ class NativeStreamClient(
         lastIceState = null
         livenessWatchdog.reset()
         val closingSignaling = signaling
-        val closingVideoTrack = videoTrack
         val closingRenderer = renderer
         val closingRendererSinkAttached = rendererSinkLifecycle.requestDetach()
-        val closingMicrophone = takeMicrophoneResources()
-        val closingPeerConnection = peerConnection
         signaling = null
         reliableInput = null
         partiallyReliableInput = null
@@ -1538,10 +1680,26 @@ class NativeStreamClient(
         hapticsAdvertised = null
         lastHapticsAdvertisementAtMs = 0L
         if (clearInputState) resetInputState()
-        videoTrack = null
-        audioTrack = null
-        peerConnection = null
         enqueueNativeLifecycleOperation("transport-close") {
+            // Peer creation, SDP/ICE/stats JNI calls, and this detach/dispose step share this one
+            // executor. Capturing the peer here (instead of on the caller thread) closes the race
+            // where a stale offer could create a peer after teardown had already captured null.
+            val closingMicrophone = takeMicrophoneResources()
+            val closingPeerConnection = peerConnection
+            val closingVideoTrack = videoTrack
+            peerConnection = null
+            videoTrack = null
+            audioTrack = null
+            // Repeat the fast caller-thread detach after all earlier native operations. A callback
+            // already running on this executor may have attached a channel just before close was
+            // queued; clearing again prevents that stale wrapper from escaping this generation.
+            reliableInput = null
+            partiallyReliableInput = null
+            reliableInputState = null
+            partiallyReliableInputState = null
+            statsChannel = null
+            lastParsedGameFps = null
+            partiallyReliableGamepadMask = 0
             runCatching { closingSignaling?.disconnect() }
                 .onFailure { error -> recordStreamDiagnostic("signaling disconnect failed error=${error.message.orEmpty()}") }
             if (closingRendererSinkAttached && closingRenderer != null) {
@@ -1626,20 +1784,32 @@ class NativeStreamClient(
             }
             is SignalingEvent.Log -> recordStreamDiagnostic(event.message)
             is SignalingEvent.RemoteIce -> {
-                val added = peerConnection?.addIceCandidate(event.candidate)
-                recordStreamDiagnostic("remote ICE add requested accepted=${added ?: false} pcReady=${peerConnection != null} ${event.candidate.diagnosticSummary()}")
+                enqueueNativeLifecycleOperation("remote-ice") {
+                    val pc = activePeerConnection(generation)
+                    val added = pc?.addIceCandidate(event.candidate)
+                    recordStreamDiagnostic(
+                        "remote ICE add requested accepted=${added ?: false} pcReady=${pc != null} ${event.candidate.diagnosticSummary()}",
+                    )
+                }
             }
-            is SignalingEvent.Offer -> handleOffer(event.sdp, generation)
+            is SignalingEvent.Offer -> {
+                // A new offer brings a fresh local answer; let the first live bitrate update
+                // re-apply, and stop the main-owned offer watchdog before native negotiation.
+                appliedBitrateLimitKbps = 0
+                liveBitrateLimitKbps = null
+                offerTimeoutJob?.cancel()
+                offerTimeoutJob = null
+                enqueueNativeLifecycleOperation("remote-offer") {
+                    handleOffer(event.sdp, generation)
+                }
+            }
         }
     }
 
+    /** Runs on [nativeLifecycleExecutor], preserving native handle ownership through SDP setup. */
     private fun handleOffer(rawOffer: String, generation: Int) {
+        if (generation != transportGeneration) return
         val currentSession = session ?: return
-        // A new offer brings a fresh local answer; let the first live bitrate update re-apply.
-        appliedBitrateLimitKbps = 0
-        liveBitrateLimitKbps = null
-        offerTimeoutJob?.cancel()
-        offerTimeoutJob = null
         recordStreamDiagnostic(sdpDiagnosticSummary("raw offer", rawOffer))
         val fixed = prepareRemoteOffer(rawOffer, currentSession)
         val preferred = SdpTools.preferCodec(fixed, settings)
@@ -1650,6 +1820,7 @@ class NativeStreamClient(
             recordStreamDiagnostic(sdpDiagnosticSummary("preferred offer", preferred))
         }
         val pc = ensurePeerConnection(currentSession, generation)
+        if (activePeerConnection(generation, pc) == null) return
         ensureInputDataChannels(pc, preferred)
         inputEncoder.setProtocolVersion(SdpTools.parseInputProtocolVersion(preferred))
         partiallyReliableGamepadMask = SdpTools.parsePartiallyReliableGamepadMask(preferred)
@@ -1657,76 +1828,130 @@ class NativeStreamClient(
         pc.setRemoteDescription(
             object : SimpleSdpObserver() {
                 override fun onSetSuccess() {
-                    if (generation != transportGeneration || peerConnection !== pc) return
-                    recordStreamDiagnostic("remote description set")
-                    // WebRTC disposes previously returned transceiver wrappers whenever
-                    // getTransceivers() refreshes its cache. Share one snapshot so the
-                    // microphone sender remains valid through transport teardown.
-                    val transceivers = pc.transceivers
-                    applyVideoCodecPreferences(transceivers)
-                    attachMicrophoneTrack(pc, transceivers)
-                    pc.createAnswer(
-                        object : SimpleSdpObserver() {
-                            override fun onCreateSuccess(description: SessionDescription?) {
-                                if (generation != transportGeneration) return
-                                val rawDescription = description ?: run {
-                                    failStream("WebRTC returned an empty answer", generation)
-                                    return
-                                }
-                                val munged = SdpTools.mungeAnswerSdp(rawDescription.description, settings.maxBitrateMbps * 1000)
-                                recordStreamDiagnostic(sdpDiagnosticSummary("created answer", munged))
-                                if (settings.codec != VideoCodec.H264 && !SdpTools.negotiatesCodec(munged, settings.codec)) {
-                                    NativeInputDiagnostics.add("local answer did not negotiate requested codec=${settings.codec}; requesting safe fallback")
-                                    if (
-                                        requestSafeVideoFallback(
-                                            message = "${settings.codec} was requested but WebRTC did not negotiate it; restarting with safe H264 profile",
-                                            diagnosticReason = "codec negotiation",
-                                        )
-                                    ) {
-                                        return
-                                    }
-                                    failStream("${settings.codec} requested but not negotiated in local SDP", generation)
-                                    return
-                                }
-                                val answer = SessionDescription(SessionDescription.Type.ANSWER, munged)
-                                pc.setLocalDescription(
-                                    object : SimpleSdpObserver() {
-                                        override fun onSetSuccess() {
-                                            if (generation != transportGeneration) return
-                                            val nvst = SdpTools.buildNvstSdp(
-                                                offerSdp = preferred,
-                                                settings = settings,
-                                                localAnswer = munged,
+                    enqueueNativeLifecycleOperation("remote-description-set") remoteDescription@ {
+                        val active = activePeerConnection(generation, pc) ?: return@remoteDescription
+                        recordStreamDiagnostic("remote description set")
+                        // WebRTC disposes previously returned transceiver wrappers whenever
+                        // getTransceivers() refreshes its cache. Share one snapshot so the
+                        // microphone sender remains valid through transport teardown.
+                        val transceivers = active.transceivers
+                        applyVideoCodecPreferences(transceivers)
+                        attachMicrophoneTrack(active, transceivers)
+                        active.createAnswer(
+                            object : SimpleSdpObserver() {
+                                override fun onCreateSuccess(description: SessionDescription?) {
+                                    enqueueNativeLifecycleOperation("answer-created") answerCreated@ {
+                                        val answerPeer = activePeerConnection(generation, pc)
+                                            ?: return@answerCreated
+                                        val rawDescription = description ?: run {
+                                            dispatchPeerFailure(
+                                                diagnostic = "answer create returned empty description",
+                                                message = "WebRTC returned an empty answer",
+                                                generation = generation,
+                                                expected = pc,
                                             )
-                                            signaling?.sendAnswer(munged, nvst)
-                                            recordStreamDiagnostic("local description set and answer sent")
-                                            emitState("Streaming")
-                                            startHeartbeat()
-                                            startGamepadKeepalive()
-                                            startStatsPolling()
+                                            return@answerCreated
                                         }
-
-                                        override fun onSetFailure(error: String?) {
-                                            recordStreamDiagnostic("local description failed error=${error.orEmpty()}")
-                                            failStream(error ?: "Failed to set local description", generation)
+                                        val munged = SdpTools.mungeAnswerSdp(
+                                            rawDescription.description,
+                                            settings.maxBitrateMbps * 1000,
+                                        )
+                                        recordStreamDiagnostic(sdpDiagnosticSummary("created answer", munged))
+                                        if (
+                                            settings.codec != VideoCodec.H264 &&
+                                            !SdpTools.negotiatesCodec(munged, settings.codec)
+                                        ) {
+                                            scope.launch {
+                                                if (!isCurrentPeerOperation(generation, transportGeneration, pc, peerConnection)) {
+                                                    return@launch
+                                                }
+                                                NativeInputDiagnostics.add(
+                                                    "local answer did not negotiate requested codec=${settings.codec}; requesting safe fallback",
+                                                )
+                                                if (
+                                                    requestSafeVideoFallback(
+                                                        message = "${settings.codec} was requested but WebRTC did not negotiate it; restarting with safe H264 profile",
+                                                        diagnosticReason = "codec negotiation",
+                                                    )
+                                                ) {
+                                                    return@launch
+                                                }
+                                                failStream(
+                                                    "${settings.codec} requested but not negotiated in local SDP",
+                                                    generation,
+                                                )
+                                            }
+                                            return@answerCreated
                                         }
-                                    },
-                                    answer,
-                                )
-                            }
+                                        val answer = SessionDescription(SessionDescription.Type.ANSWER, munged)
+                                        answerPeer.setLocalDescription(
+                                            object : SimpleSdpObserver() {
+                                                override fun onSetSuccess() {
+                                                    enqueueNativeLifecycleOperation("local-description-set") localDescription@ {
+                                                        if (activePeerConnection(generation, pc) == null) {
+                                                            return@localDescription
+                                                        }
+                                                        val nvst = SdpTools.buildNvstSdp(
+                                                            offerSdp = preferred,
+                                                            settings = settings,
+                                                            localAnswer = munged,
+                                                        )
+                                                        scope.launch {
+                                                            if (
+                                                                !isCurrentPeerOperation(
+                                                                    generation,
+                                                                    transportGeneration,
+                                                                    pc,
+                                                                    peerConnection,
+                                                                )
+                                                            ) {
+                                                                return@launch
+                                                            }
+                                                            signaling?.sendAnswer(munged, nvst)
+                                                            recordStreamDiagnostic("local description set and answer sent")
+                                                            emitState("Streaming")
+                                                            startHeartbeat()
+                                                            startGamepadKeepalive()
+                                                            startStatsPolling()
+                                                        }
+                                                    }
+                                                }
 
-                            override fun onCreateFailure(error: String?) {
-                                recordStreamDiagnostic("answer create failed error=${error.orEmpty()}")
-                                failStream(error ?: "Failed to create WebRTC answer", generation)
-                            }
-                        },
-                        MediaConstraints(),
-                    )
+                                                override fun onSetFailure(error: String?) {
+                                                    dispatchPeerFailure(
+                                                        diagnostic = "local description failed error=${error.orEmpty()}",
+                                                        message = error ?: "Failed to set local description",
+                                                        generation = generation,
+                                                        expected = pc,
+                                                    )
+                                                }
+                                            },
+                                            answer,
+                                        )
+                                    }
+                                }
+
+                                override fun onCreateFailure(error: String?) {
+                                    dispatchPeerFailure(
+                                        diagnostic = "answer create failed error=${error.orEmpty()}",
+                                        message = error ?: "Failed to create WebRTC answer",
+                                        generation = generation,
+                                        expected = pc,
+                                    )
+                                }
+                            },
+                            MediaConstraints(),
+                        )
+                    }
                 }
 
                 override fun onSetFailure(error: String?) {
-                    recordStreamDiagnostic("remote description failed error=${error.orEmpty()}")
-                    failStream(error ?: "Failed to apply server offer", generation)
+                    dispatchPeerFailure(
+                        diagnostic = "remote description failed error=${error.orEmpty()}",
+                        message = error ?: "Failed to apply server offer",
+                        generation = generation,
+                        expected = pc,
+                    )
                 }
             },
             SessionDescription(SessionDescription.Type.OFFER, preferred),
@@ -1960,54 +2185,64 @@ class NativeStreamClient(
                 recordStreamDiagnostic("ice gathering state=${state?.name ?: "null"} generation=$generation")
             }
             override fun onIceCandidate(candidate: IceCandidate?) {
-                if (generation != transportGeneration) return
-                if (candidate != null) {
-                    recordStreamDiagnostic("local ICE candidate gathered ${candidate.diagnosticSummary()}")
-                    signaling?.sendIceCandidate(candidate)
-                } else {
-                    recordStreamDiagnostic("local ICE candidate gathering complete")
+                scope.launch {
+                    if (generation != transportGeneration) return@launch
+                    if (candidate != null) {
+                        recordStreamDiagnostic("local ICE candidate gathered ${candidate.diagnosticSummary()}")
+                        signaling?.sendIceCandidate(candidate)
+                    } else {
+                        recordStreamDiagnostic("local ICE candidate gathering complete")
+                    }
                 }
             }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {
                 recordStreamDiagnostic("ice candidates removed count=${candidates?.size ?: 0}")
             }
             override fun onAddStream(stream: MediaStream?) {
-                if (generation != transportGeneration) return
-                recordStreamDiagnostic("media stream added video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
-                stream?.videoTracks?.firstOrNull()?.let(::attachVideo)
-                stream?.audioTracks?.firstOrNull()?.let {
-                    audioTrack = it
-                    it.setEnabled(!audioMuted)
+                enqueueNativeLifecycleOperation("media-stream-added") {
+                    if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
+                    recordStreamDiagnostic("media stream added video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
+                    stream?.videoTracks?.firstOrNull()?.let(::attachVideo)
+                    stream?.audioTracks?.firstOrNull()?.let {
+                        audioTrack = it
+                        it.setEnabled(!audioMuted)
+                    }
                 }
             }
             override fun onRemoveStream(stream: MediaStream?) {
                 recordStreamDiagnostic("media stream removed video=${stream?.videoTracks?.size ?: 0} audio=${stream?.audioTracks?.size ?: 0}")
             }
             override fun onDataChannel(channel: DataChannel?) {
-                if (generation != transportGeneration) return
-                if (channel != null) attachDataChannel(channel)
+                enqueueNativeLifecycleOperation("data-channel-added") {
+                    if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
+                    if (channel != null) attachDataChannel(channel)
+                }
             }
             override fun onRenegotiationNeeded() {
                 recordStreamDiagnostic("renegotiation needed")
             }
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-                if (generation != transportGeneration) return
-                val track = receiver?.track()
-                recordStreamDiagnostic("track added kind=${track?.kind().orEmpty()} streams=${streams?.size ?: 0}")
-                if (track is VideoTrack) attachVideo(track)
-                if (track is AudioTrack) {
-                    audioTrack = track
-                    track.setEnabled(!audioMuted)
+                enqueueNativeLifecycleOperation("receiver-track-added") {
+                    if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
+                    val track = receiver?.track()
+                    recordStreamDiagnostic("track added kind=${track?.kind().orEmpty()} streams=${streams?.size ?: 0}")
+                    if (track is VideoTrack) attachVideo(track)
+                    if (track is AudioTrack) {
+                        audioTrack = track
+                        track.setEnabled(!audioMuted)
+                    }
                 }
             }
             override fun onTrack(transceiver: RtpTransceiver?) {
-                if (generation != transportGeneration) return
-                val track = transceiver?.receiver?.track()
-                recordStreamDiagnostic("transceiver track kind=${track?.kind().orEmpty()} media=${transceiver?.mediaType?.name ?: "unknown"}")
-                if (track is VideoTrack) attachVideo(track)
-                if (track is AudioTrack) {
-                    audioTrack = track
-                    track.setEnabled(!audioMuted)
+                enqueueNativeLifecycleOperation("transceiver-track-added") {
+                    if (activePeerConnection(generation) == null) return@enqueueNativeLifecycleOperation
+                    val track = transceiver?.receiver?.track()
+                    recordStreamDiagnostic("transceiver track kind=${track?.kind().orEmpty()} media=${transceiver?.mediaType?.name ?: "unknown"}")
+                    if (track is VideoTrack) attachVideo(track)
+                    if (track is AudioTrack) {
+                        audioTrack = track
+                        track.setEnabled(!audioMuted)
+                    }
                 }
             }
         }) ?: error("Failed to create PeerConnection")
@@ -2432,27 +2667,29 @@ class NativeStreamClient(
     }
 
     private fun pollRuntimeStats() {
-        val pc = peerConnection ?: return
         val generation = transportGeneration
-        pc.getStats(RTCStatsCollectorCallback { report ->
-            if (generation != transportGeneration) return@RTCStatsCollectorCallback
-            val cpuSample = processCpuSampler.sample()
-            cpuSample?.let(ProcessCpuDiagnostics::record)
-            val snapshot = buildRuntimeStatsSnapshot(
-                timestampMs = report.timestampUs / 1000.0,
-                stats = report.statsMap.values,
-                cpuSample = cpuSample,
-            )
-            scope.launch {
-                if (generation != transportGeneration) return@launch
-                if (handleCatastrophicFirstDecodedResolution(snapshot)) {
+        enqueueNativeLifecycleOperation("runtime-stats") {
+            val pc = activePeerConnection(generation) ?: return@enqueueNativeLifecycleOperation
+            pc.getStats(RTCStatsCollectorCallback { report ->
+                if (generation != transportGeneration) return@RTCStatsCollectorCallback
+                val cpuSample = processCpuSampler.sample()
+                cpuSample?.let(ProcessCpuDiagnostics::record)
+                val snapshot = buildRuntimeStatsSnapshot(
+                    timestampMs = report.timestampUs / 1000.0,
+                    stats = report.statsMap.values,
+                    cpuSample = cpuSample,
+                )
+                scope.launch {
+                    if (generation != transportGeneration) return@launch
+                    if (handleCatastrophicFirstDecodedResolution(snapshot)) {
+                        onStats(snapshot.stats)
+                        return@launch
+                    }
+                    handleMediaLiveness(snapshot)
                     onStats(snapshot.stats)
-                    return@launch
                 }
-                handleMediaLiveness(snapshot)
-                onStats(snapshot.stats)
-            }
-        })
+            })
+        }
     }
 
     private fun buildRuntimeStatsSnapshot(

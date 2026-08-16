@@ -768,13 +768,7 @@ object NativeStreamInputRouter {
         androidTvProfile: Boolean = false,
         dpadSource: Boolean = false,
     ): Boolean =
-        // On Android TV the back/exit key must always open the stream overlay: some TV remotes
-        // are reported as controller devices (joystick source), which would otherwise route BACK
-        // into the game and leave the user with no way to open the controls menu. Gamepads keep
-        // their own B button (KEYCODE_BUTTON_B) for in-game back, so stealing KEYCODE_BACK is
-        // safe on TV.
-        (androidTvProfile && keyCode == KeyEvent.KEYCODE_BACK) ||
-            (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
+        (keyCode == KeyEvent.KEYCODE_BACK && !controllerInputDevice) ||
             (androidTvProfile &&
                 dpadSource &&
                 keyCode == KeyEvent.KEYCODE_BUTTON_B &&

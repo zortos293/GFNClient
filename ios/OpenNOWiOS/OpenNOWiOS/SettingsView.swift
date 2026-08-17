@@ -15,6 +15,7 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
     case interface
     case advanced
     case account
+    case about
 
     var id: String { rawValue }
 
@@ -26,17 +27,19 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .interface: return "Interface"
         case .advanced: return "Advanced"
         case .account: return "Account"
+        case .about: return "About"
         }
     }
 
     var summary: String {
         switch self {
-        case .general: return "Updates, privacy, cache, and reset"
-        case .stream: return "Resolution, FPS, codec, HDR, proxy"
-        case .input: return "Mouse, keyboard, touch controls, rumble"
-        case .interface: return "Color, cards, stats, controller UI"
-        case .advanced: return "Diagnostics, debug logs, nerd tools"
+        case .general: return "Language, privacy, and app data"
+        case .stream: return "Resolution, codec, HDR, region"
+        case .input: return "Mouse, keyboard, touch, controller"
+        case .interface: return "Accent, cards, stats HUD, sound"
+        case .advanced: return "Experimental features and diagnostics"
         case .account: return "Sign-in, storage, connected stores"
+        case .about: return "Version, links, and thanks"
         }
     }
 
@@ -45,26 +48,29 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .general: return "gearshape"
         case .stream: return "play.rectangle"
         case .input: return "keyboard"
-        case .interface: return "rectangle.grid.2x2"
-        case .advanced: return "stethoscope"
+        case .interface: return "paintpalette"
+        case .advanced: return "flask"
         case .account: return "person.crop.circle"
+        case .about: return "info.circle"
         }
     }
 
     var keywords: [String] {
         switch self {
         case .general:
-            return ["general", "updates", "privacy", "cache", "reset", "data"]
+            return ["general", "language", "locale", "privacy", "analytics", "telemetry", "usage", "cache", "reset", "data", "tutorial", "updates"]
         case .stream:
-            return ["stream", "preset", "resolution", "aspect ratio", "fps", "bitrate", "codec", "color", "hdr", "sharpening", "sharpness", "region", "session proxy", "proxy", "l4s", "cloud g-sync"]
+            return ["stream", "preset", "recommended", "resolution", "aspect ratio", "fps", "frame rate", "bitrate", "data", "codec", "color", "hdr", "sharpening", "sharpness", "region", "server", "session proxy", "proxy", "native decoder", "stretch"]
         case .input:
-            return ["input", "mouse", "sensitivity", "acceleration", "keyboard", "layout", "language", "touch", "controller", "rumble", "tutorial", "guide", "replay"]
+            return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "clipboard", "paste", "microphone", "mic", "voice", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
         case .interface:
-            return ["interface", "ui", "cards", "launch page", "stats", "server selector", "queue", "live activities", "catalog", "wallpaper", "background", "photo"]
+            return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "keyboard button", "server selector", "queue", "live activities", "catalog", "wallpaper", "background", "photo", "sound", "music", "intro", "session report", "counter"]
         case .advanced:
-            return ["advanced", "diagnostics", "debug", "logs", "codec", "native", "h264", "h265", "hevc", "av1"]
+            return ["advanced", "experimental", "l4s", "cloud g-sync", "gsync", "diagnostics", "debug", "logs", "codec", "probe", "native", "h264", "h265", "hevc", "av1"]
         case .account:
-            return ["account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription", "storage", "stores"]
+            return ["account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription", "storage", "hours", "play time", "stores", "steam", "epic", "xbox"]
+        case .about:
+            return ["about", "version", "build", "github", "repository", "developer", "kiefer", "zortos", "thanks", "credits", "contributors", "community", "licence", "license"]
         }
     }
 
@@ -117,8 +123,6 @@ struct SettingsView: View {
             List {
                 accountLandingSection
                 settingsCategorySection
-                aboutSection
-                thanksSection
             }
             .navigationTitle("Settings")
             .searchable(text: $searchText, prompt: "Search settings")
@@ -250,16 +254,24 @@ struct SettingsView: View {
     private func settingsDetailContent(for category: SettingsCategory) -> some View {
         switch category {
         case .general:
-            appUpdatesSection
+            languageSection
             privacySection
             dataSection
         case .stream:
-            streamingSection
+            streamQualitySection
+            streamVideoSection
+            streamConnectionSection
         case .input:
-            inputSection
+            inputAudioKeyboardSection
+            inputPointerSection
+            inputTouchControllerSection
         case .interface:
-            interfaceSection
+            interfaceAppearanceSection
+            interfaceCatalogSection
+            interfaceStatsSection
+            interfaceSoundSessionSection
         case .advanced:
+            experimentalSection
             advancedSection
         case .account:
             savedAccountsSection
@@ -267,6 +279,9 @@ struct SettingsView: View {
             playTimeSection
             storageAddonSection
             accountConnectorsSection
+        case .about:
+            aboutSection
+            thanksSection
         }
     }
 
@@ -474,22 +489,13 @@ struct SettingsView: View {
         }
     }
 
-    private var streamingSection: some View {
+    // MARK: Stream
+
+    private var streamQualitySection: some View {
         Section {
             Picker("Preset", selection: streamPresetBinding) {
                 ForEach(StreamPreset.allCases) { preset in
                     Text(preset.label).tag(preset)
-                }
-            }
-
-            Picker("Region", selection: $store.settings.preferredRegion) {
-                Text("Automatic").tag("")
-                if !store.settings.preferredRegion.isEmpty,
-                   !store.availableRegions.contains(where: { $0.url == store.settings.preferredRegion }) {
-                    Text("Saved Region").tag(store.settings.preferredRegion)
-                }
-                ForEach(store.availableRegions) { region in
-                    Text(region.name).tag(region.url)
                 }
             }
 
@@ -510,7 +516,7 @@ struct SettingsView: View {
                 }
             }
 
-            Picker("Target FPS", selection: customStreamBinding(\.preferredFPS)) {
+            Picker("Frame Rate", selection: customStreamBinding(\.preferredFPS)) {
                 ForEach(fpsValues, id: \.self) { Text("\($0) fps").tag($0) }
             }
 
@@ -518,6 +524,26 @@ struct SettingsView: View {
                 ForEach(qualityValues, id: \.self) { Text($0).tag($0) }
             }
 
+            Picker("Max Bitrate", selection: customStreamBinding(\.maxBitrateMbps)) {
+                ForEach(StreamSettingsResolver.bitrateOptionsMbps, id: \.self) { bitrate in
+                    Text(bitrateLabel(for: bitrate)).tag(bitrate)
+                }
+            }
+
+            Toggle("Stretch to Fill", isOn: $store.settings.streamerPreferences.stretchStreamToFill)
+        } header: {
+            Text("Quality")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(store.settings.streamPreset.detail)
+                Text("Streaming at \(headerSummary) uses about \(dataUsageEstimate).")
+                Text("Resolutions above your plan stay visible but cannot be selected.")
+            }
+        }
+    }
+
+    private var streamVideoSection: some View {
+        Section {
             Picker("Codec", selection: codecSelectionBinding) {
                 ForEach(codecValues, id: \.self) { Text($0).tag($0) }
             }
@@ -528,18 +554,8 @@ struct SettingsView: View {
                 }
             }
 
-            Picker("Max Bitrate", selection: customStreamBinding(\.maxBitrateMbps)) {
-                ForEach(StreamSettingsResolver.bitrateOptionsMbps, id: \.self) { bitrate in
-                    Text(bitrateLabel(for: bitrate)).tag(bitrate)
-                }
-            }
-
             Toggle("HDR", isOn: $store.settings.hdrEnabled)
                 .disabled(!hdrAvailable)
-
-            Toggle("Cloud G-Sync", isOn: $store.settings.enableCloudGsync)
-
-            Toggle("L4S Low Latency", isOn: $store.settings.enableL4S)
 
             Toggle("Stream Sharpening", isOn: $store.settings.streamSharpeningEnabled)
 
@@ -549,16 +565,38 @@ struct SettingsView: View {
                         "Sharpness",
                         value: "\(Int((store.settings.streamSharpeningAmount * 100).rounded()))%"
                     )
-                    Slider(
-                        value: $store.settings.streamSharpeningAmount,
-                        in: 0...1,
-                        step: 0.05
-                    )
-                    .accessibilityLabel("Sharpness amount")
+                    .monospacedDigit()
+                    Slider(value: $store.settings.streamSharpeningAmount, in: 0...1, step: 0.05)
+                        .accessibilityLabel("Sharpness amount")
+                        .accessibilityValue("\(Int((store.settings.streamSharpeningAmount * 100).rounded())) percent")
                 }
             }
 
-            Toggle("Stretch to Fill", isOn: $store.settings.streamerPreferences.stretchStreamToFill)
+            Toggle("Native Low-Latency Decoder", isOn: $store.settings.nativeStreamerEnabled)
+        } header: {
+            Text("Video")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                if !hdrAvailable {
+                    Text(hdrUnavailableReason)
+                }
+                Text("The native decoder cuts a frame or two of latency. Turn it off if the picture tears or stutters.")
+            }
+        }
+    }
+
+    private var streamConnectionSection: some View {
+        Section {
+            Picker("Region", selection: $store.settings.preferredRegion) {
+                Text("Automatic").tag("")
+                if !store.settings.preferredRegion.isEmpty,
+                   !store.availableRegions.contains(where: { $0.url == store.settings.preferredRegion }) {
+                    Text("Saved Region").tag(store.settings.preferredRegion)
+                }
+                ForEach(store.availableRegions) { region in
+                    Text(region.name).tag(region.url)
+                }
+            }
 
             Toggle("Session Proxy", isOn: $store.settings.sessionProxyEnabled)
 
@@ -567,32 +605,47 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
+                    .accessibilityLabel("Session proxy address")
             }
         } header: {
-            Text("Stream")
+            Text("Connection")
         } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Resolutions above your current plan are shown but unavailable.")
-                if !hdrAvailable {
-                    Text("HDR requires an Ultimate-capable account.")
-                }
-            }
+            Text("A session proxy routes launch requests through a server you control. Leave it off unless you know you need it — a wrong address stops games from starting.")
         }
     }
 
-    private var inputSection: some View {
-        Section("Input") {
-            LabeledContent {
-                Slider(value: $store.settings.mouseSensitivity, in: 0.25...3, step: 0.05)
-                    .frame(maxWidth: 180)
-            } label: {
-                Text("Mouse Sensitivity")
-            }
+    /// Bitrate in megabits per second converted to the number people are actually billed on.
+    private var dataUsageEstimate: String {
+        let profile = StreamSettingsResolver.profile(for: store.settings, membershipTier: currentMembershipTier)
+        let mbps = store.settings.maxBitrateMbps > 0
+            ? Double(store.settings.maxBitrateMbps)
+            : Double(profile.maxBitrateKbps) / 1_000
+        guard mbps > 0 else { return "an automatic amount of data" }
+        let gbPerHour = mbps * 3_600 / 8 / 1_000
+        return String(format: "%.1f GB per hour", gbPerHour)
+    }
 
-            Picker("Mouse Acceleration", selection: $store.settings.mouseAcceleration) {
-                Text("Off").tag(0)
-                Text("Standard").tag(1)
-                Text("High").tag(2)
+    private var hdrUnavailableReason: String {
+        if !StreamSettingsResolver.isHDRAvailable(
+            subscription: store.subscription,
+            fallbackMembershipTier: store.user?.membershipTier
+        ) {
+            return "HDR needs a Performance or Ultimate membership."
+        }
+        if NativeStreamCodecProbe.report().capability(for: .h265)?.launchSafe != true {
+            return "HDR needs an H.265 stream, and this device cannot decode one safely."
+        }
+        return "This display cannot show HDR."
+    }
+
+    // MARK: Input
+
+    private var inputAudioKeyboardSection: some View {
+        Section {
+            Picker("Microphone", selection: $store.settings.microphoneMode) {
+                ForEach(MicrophoneMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
             }
 
             Picker("Keyboard Layout", selection: $store.settings.keyboardLayout) {
@@ -607,63 +660,272 @@ struct SettingsView: View {
                 }
             }
 
+            Toggle("Paste Into Games", isOn: $store.settings.clipboardPasteEnabled)
+        } header: {
+            Text("Audio & Keyboard")
+        } footer: {
+            Text("Turning the microphone on asks for permission the first time. The keyboard layout has to match the one the game expects, not the one on your device.")
+        }
+    }
+
+    private var inputPointerSection: some View {
+        Section {
+            settingsSlider(
+                "Mouse Sensitivity",
+                value: $store.settings.mouseSensitivity,
+                range: 0.25...3,
+                step: 0.05,
+                format: { String(format: "%.2f×", $0) }
+            )
+
+            Picker("Mouse Acceleration", selection: $store.settings.mouseAcceleration) {
+                Text("Off").tag(0)
+                Text("Standard").tag(1)
+                Text("High").tag(2)
+            }
+
+            settingsSlider(
+                "Scroll Sensitivity",
+                value: Binding(
+                    get: { Double(store.settings.mouseScrollSensitivity) },
+                    set: { store.settings.mouseScrollSensitivity = Int($0.rounded()) }
+                ),
+                range: 10...100,
+                step: 5,
+                format: { _ in scrollSensitivityLabel }
+            )
+
             #if !os(tvOS)
             Toggle("Finger Mouse", isOn: $store.settings.fingerMouseEnabled)
-            Toggle("Fortnite Mobile Touch", isOn: $store.settings.fortnitePrefersNativeTouch)
-            Toggle("Touch Controller", isOn: $store.settings.streamerPreferences.touchControllerVisible)
-            Toggle("Phone Rumble Fallback", isOn: $store.settings.phoneRumbleFallback)
-            touchLayoutSlider("Touch Layout Scale", keyPath: \.scale, range: 0.6...1.4, step: 0.05)
-            touchLayoutSlider("Touch Button Size", keyPath: \.buttonScale, range: 0.65...1.5, step: 0.05)
-            touchLayoutSlider("Touch Stick Size", keyPath: \.stickScale, range: 0.65...1.5, step: 0.05)
-            touchLayoutSlider("Touch Opacity", keyPath: \.opacity, range: 0.15...1, step: 0.05)
+
+            if store.settings.fingerMouseEnabled {
+                Toggle("Tap Clicks Where You Touch", isOn: $store.settings.touch.mouseDirectClick)
+            }
             #endif
 
-            LabeledContent("Physical Controller", value: "Detected Automatically")
-            LabeledContent(
-                "Stream Tutorial",
-                value: store.settings.streamTutorialCompleted ? "Completed" : "Shows on Next Stream"
-            )
+            Toggle("Controller Mouse Mode", isOn: $store.settings.controllerMouseEmulation)
+        } header: {
+            Text("Pointer")
+        } footer: {
+            Text("Controller mouse mode maps the left stick to the cursor, the right stick to scrolling, A to click and B to right-click. You can also switch it on for a single session from the stream controls.")
+        }
+    }
+
+    private var inputTouchControllerSection: some View {
+        Section {
+            #if !os(tvOS)
+            Picker("Touch Mode", selection: $store.settings.touch.nativeTouchMode) {
+                ForEach(NativeTouchMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+
+            if store.settings.touch.nativeTouchMode != .never {
+                settingsSlider(
+                    "Touch Scroll Speed",
+                    value: $store.settings.touch.nativeTouchScrollScale,
+                    range: 0.25...2,
+                    step: 0.05,
+                    format: { _ in touchScrollSpeedLabel }
+                )
+                settingsSlider(
+                    "Tap Stability",
+                    value: $store.settings.touch.nativeTouchJitterThreshold,
+                    range: 0...24,
+                    step: 1,
+                    format: { "\(Int($0)) pt" }
+                )
+            }
+
+            Toggle("Touch Controller", isOn: $store.settings.streamerPreferences.touchControllerVisible)
+
+            if store.settings.streamerPreferences.touchControllerVisible {
+                Picker("Style", selection: $store.settings.touch.style) {
+                    ForEach(TouchControllerStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                Picker("Joystick", selection: $store.settings.touch.joystickMode) {
+                    ForEach(TouchJoystickMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                Picker("Aim Lock", selection: $store.settings.touch.aimMode) {
+                    ForEach(TouchAimMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                settingsSlider(
+                    "Dead Zone",
+                    value: $store.settings.touch.joystickDeadZone,
+                    range: 0...0.3,
+                    step: 0.01,
+                    format: { String(format: "%.0f%%", $0 * 100) }
+                )
+                touchLayoutSlider("Layout Scale", keyPath: \.scale, range: 0.6...1.4, step: 0.05)
+                touchLayoutSlider("Button Size", keyPath: \.buttonScale, range: 0.65...1.5, step: 0.05)
+                touchLayoutSlider("Stick Size", keyPath: \.stickScale, range: 0.65...1.5, step: 0.05)
+                touchLayoutSlider("Opacity", keyPath: \.opacity, range: 0.15...1, step: 0.05)
+                settingsSlider(
+                    "Edge Padding",
+                    value: $store.settings.touch.edgePadding,
+                    range: 0...72,
+                    step: 1,
+                    format: { "\(Int($0)) pt" }
+                )
+                settingsSlider(
+                    "Bottom Padding",
+                    value: $store.settings.touch.bottomPadding,
+                    range: 0...120,
+                    step: 1,
+                    format: { "\(Int($0)) pt" }
+                )
+                Button("Reset Touch Layout") {
+                    store.settings.touch.resetLayout()
+                }
+            }
+
+            Toggle("Rumble", isOn: $store.settings.phoneRumbleFallback)
+            #endif
+
+            LabeledContent("Physical Controller", value: "Detected automatically")
             Button {
                 store.setStreamTutorialCompleted(false)
             } label: {
                 Label("Replay Stream Tutorial", systemImage: "questionmark.circle")
             }
             .disabled(!store.settings.streamTutorialCompleted)
+        } header: {
+            Text("Touch & Controller")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Currently: \(resolvedTouchMode.label).")
+                Text("Automatic sends real touch only to games known to support it. Everything else gets a cursor or the on-screen controller.")
+                Text("Rumble uses the phone's own motor when a paired controller has none.")
+            }
         }
     }
 
-    private var interfaceSection: some View {
-        let hasCustomCatalogWallpaper = store.settings.catalogWallpaperFilename != nil
-        return Section("Interface") {
+    /// The end state the routing settings actually add up to. Showing this is the difference
+    /// between three comprehensible pickers and three confusing ones.
+    private var resolvedTouchMode: ResolvedTouchMode {
+        switch store.settings.touch.nativeTouchMode {
+        case .always:
+            return .nativeTouch
+        case .automatic, .never:
+            if store.settings.fingerMouseEnabled {
+                return .trackpadCursor(directClick: store.settings.touch.mouseDirectClick)
+            }
+            if store.settings.streamerPreferences.touchControllerVisible {
+                return .virtualGamepad
+            }
+            return .inert
+        }
+    }
+
+    private var scrollSensitivityLabel: String {
+        switch store.settings.mouseScrollSensitivity {
+        case ...20: return "Very fast"
+        case 21...40: return "Standard"
+        case 41...60: return "Precise"
+        default: return "Slow"
+        }
+    }
+
+    private var touchScrollSpeedLabel: String {
+        switch store.settings.touch.nativeTouchScrollScale {
+        case ..<0.5: return "Very slow"
+        case 0.5..<0.8: return "Slow"
+        case 0.8..<1.2: return "Normal"
+        case 1.2..<1.6: return "Fast"
+        default: return "Very fast"
+        }
+    }
+
+    /// One slider row shape, so a label, its value and its accessibility value never drift apart.
+    /// Stacks at accessibility sizes rather than letting the label and slider collide.
+    private func settingsSlider(
+        _ title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        format: @escaping (Double) -> String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer(minLength: 12)
+                Text(format(value.wrappedValue))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: value, in: range, step: step)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(format(value.wrappedValue))
+    }
+
+    // MARK: Interface
+
+    private var interfaceAppearanceSection: some View {
+        Section {
+            Picker("Accent", selection: $store.settings.uiAccent) {
+                ForEach(UIAccent.allCases) { accent in
+                    Label {
+                        Text(accent.label)
+                    } icon: {
+                        Circle().fill(accent.color)
+                    }
+                    .tag(accent)
+                }
+            }
+
+            Toggle("Expressive Surfaces", isOn: $store.settings.expressiveUI)
+            Toggle("Animated Selection", isOn: $store.settings.liveSelectedOutlines)
             Toggle("Nerd Mode", isOn: $store.settings.nerdMode)
-            Toggle("Stats Overlay", isOn: $store.settings.showStatsOverlay)
-            Picker("Stats Style", selection: $store.settings.streamerPreferences.statsStyle) {
-                ForEach(StreamStatsStyle.allCases) { style in
-                    Text(style.label).tag(style)
-                }
-            }
-            Picker("Stats Position", selection: $store.settings.streamerPreferences.statsPosition) {
-                ForEach(StreamStatsPosition.allCases) { position in
-                    Text(position.label).tag(position)
-                }
-            }
-            Toggle("Session Counter", isOn: $store.settings.sessionCounterEnabled)
+        } header: {
+            Text("Appearance")
+        } footer: {
+            Text("Expressive surfaces add the gradient washes and softer cards. Turning both off gives a flatter interface that costs less to draw. Nerd Mode reveals the Advanced category and the technical readouts.")
+        }
+    }
+
+    private var interfaceCatalogSection: some View {
+        let hasCustomCatalogWallpaper = store.settings.catalogWallpaperFilename != nil
+        return Section {
             Picker("Open App To", selection: $store.settings.launchPage) {
                 ForEach(AppLaunchPage.allCases) { page in
                     Text(page.label).tag(page)
                 }
             }
-            Toggle("Compact Game Cards", isOn: $store.settings.compactGameCards)
-            Toggle("Show Store Labels", isOn: $store.settings.showGameStoreLabels)
+            Toggle("Compact Cards", isOn: $store.settings.compactGameCards)
+            Toggle("Card Titles", isOn: $store.settings.showCardTitles)
+            Toggle("Store Labels", isOn: $store.settings.showGameStoreLabels)
+            Toggle("Favourite Badge", isOn: $store.settings.showFavoriteIconOnGameCards)
+            settingsSlider(
+                "Card Size",
+                value: $store.settings.posterSizeScale,
+                range: 0.75...1.4,
+                step: 0.05,
+                format: { String(format: "%.0f%%", $0 * 100) }
+            )
+            Toggle("Skip Server Selector", isOn: $store.settings.hideServerSelector)
+
             #if os(iOS)
             Toggle("Catalog Wallpaper", isOn: $store.settings.catalogWallpaperEnabled)
             if store.settings.catalogWallpaperEnabled {
-                LabeledContent("Wallpaper", value: catalogWallpaperDescription)
+                if !hasCustomCatalogWallpaper {
+                    Picker("Wallpaper", selection: $store.settings.catalogWallpaperPreset) {
+                        ForEach(CatalogWallpaperPreset.allCases) { preset in
+                            Text(preset.label).tag(preset)
+                        }
+                    }
+                } else {
+                    LabeledContent("Wallpaper", value: "Custom image")
+                }
 
-                PhotosPicker(
-                    selection: $selectedCatalogWallpaperItem,
-                    matching: .images
-                ) {
+                PhotosPicker(selection: $selectedCatalogWallpaperItem, matching: .images) {
                     Label(
                         hasCustomCatalogWallpaper ? "Replace Image" : "Choose Image",
                         systemImage: "photo.on.rectangle"
@@ -678,13 +940,12 @@ struct SettingsView: View {
                 if catalogWallpaperImportInProgress {
                     HStack(spacing: 10) {
                         ProgressView()
-                        Text("Preparing wallpaper…")
-                            .foregroundStyle(.secondary)
+                        Text("Preparing wallpaper…").foregroundStyle(.secondary)
                     }
                 }
 
                 if hasCustomCatalogWallpaper {
-                    Button("Use OpenNOW Gradient") {
+                    Button("Use a Built-in Wallpaper") {
                         resetCatalogWallpaperImage()
                     }
                 }
@@ -692,20 +953,65 @@ struct SettingsView: View {
                 if let catalogWallpaperImportError {
                     Text(catalogWallpaperImportError)
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(OpenNOWPalette.statusPoor)
                 }
             }
             #endif
-            LabeledContent {
-                Slider(value: $store.settings.posterSizeScale, in: 0.75...1.4, step: 0.05)
-                    .frame(maxWidth: 180)
-            } label: {
-                Text("Game Card Size")
+        } header: {
+            Text("Catalog")
+        } footer: {
+            Text("Turning card titles off leaves the grid as pure box art. The favourite badge puts a heart on artwork you have starred.")
+        }
+    }
+
+    private var interfaceStatsSection: some View {
+        Section {
+            Toggle("Show Stats While Streaming", isOn: $store.settings.showStatsOverlay)
+
+            if store.settings.showStatsOverlay {
+                Picker("Style", selection: $store.settings.streamerPreferences.statsStyle) {
+                    ForEach(StreamStatsStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                Picker("Position", selection: $store.settings.streamerPreferences.statsPosition) {
+                    ForEach(StreamStatsPosition.allCases) { position in
+                        Text(position.label).tag(position)
+                    }
+                }
+                NavigationLink {
+                    StatsMetricsPicker(metrics: $store.settings.streamStatsMetrics)
+                } label: {
+                    LabeledContent("Metrics", value: "\(store.settings.streamStatsMetrics.enabledCount) shown")
+                }
             }
+
+            Toggle("Keyboard Button", isOn: Binding(
+                get: { !store.settings.hideStreamButtons },
+                set: { store.settings.hideStreamButtons = !$0 }
+            ))
+            Toggle("Anti-AFK Indicator", isOn: $store.settings.showAntiAfkIndicator)
+        } header: {
+            Text("Stats HUD")
+        } footer: {
+            Text("The HUD sits over the game, so keep it to the numbers you actually watch. Values in the normal range stay untinted on purpose — amber and red are what should catch your eye.")
+        }
+    }
+
+    private var interfaceSoundSessionSection: some View {
+        Section {
+            Toggle("Session Counter", isOn: $store.settings.sessionCounterEnabled)
+            Toggle("Session Report", isOn: $store.settings.showSessionReportAfterStream)
             #if !os(tvOS)
             Toggle("Queue Live Activities", isOn: $store.settings.queueLiveActivitiesEnabled)
             #endif
-            Toggle("Skip Server Selector", isOn: $store.settings.hideServerSelector)
+            Toggle("Launch Sound", isOn: $store.settings.streamIntroSound)
+            Toggle("Queue Ready Sound", isOn: $store.settings.queueReadySound)
+            Toggle("Navigation Clicks", isOn: $store.settings.controllerUISounds)
+        } header: {
+            Text("Sound & Sessions")
+        } footer: {
+            Text("The session report appears after a stream ends and scores how the connection held up. The queue ready sound plays when a rig frees up, so you can put the phone down while you wait.")
         }
     }
 
@@ -714,24 +1020,59 @@ struct SettingsView: View {
         if store.settings.nerdMode {
             categories.append(.advanced)
         }
+        categories.append(.about)
         return categories
     }
 
-    private var appUpdatesSection: some View {
-        Section("App Updates") {
-            LabeledContent("Version", value: appVersion)
-            LabeledContent("Build", value: buildNumber)
+    private var languageSection: some View {
+        Section {
+            Picker("App Language", selection: $store.settings.appLanguage) {
+                ForEach(AppLanguage.supported, id: \.tag) { entry in
+                    Text(entry.label).tag(entry.tag)
+                }
+            }
+        } header: {
+            Text("Language")
+        } footer: {
+            Text(store.settings.appLanguage.isEmpty
+                 ? "OpenNOW follows your iPhone's language."
+                 : "Changing this takes effect the next time OpenNOW launches.")
         }
     }
 
     private var privacySection: some View {
-        Section("Privacy") {
-            LabeledContent("Usage Analytics", value: "Not Collected")
+        Section {
+            Toggle("Share Usage Analytics", isOn: analyticsSharingBinding)
             NavigationLink {
                 OpenNOWPrivacyPolicyView()
             } label: {
                 Label("Privacy Policy", systemImage: "hand.raised")
             }
+        } header: {
+            Text("Privacy")
+        } footer: {
+            Text("Anonymous counts of which screens and stream settings get used. Never game titles, account details, or anything that identifies you. Off by default.")
+        }
+    }
+
+    private var analyticsSharingBinding: Binding<Bool> {
+        Binding(
+            get: { store.settings.analyticsConsent.isSharing },
+            set: { sharing in
+                store.settings.analyticsConsentAsked = true
+                store.settings.analyticsOptOut = !sharing
+            }
+        )
+    }
+
+    private var experimentalSection: some View {
+        Section {
+            Toggle("L4S Low Latency", isOn: $store.settings.enableL4S)
+            Toggle("Cloud G-Sync", isOn: $store.settings.enableCloudGsync)
+        } header: {
+            Text("Experimental")
+        } footer: {
+            Text("Both are negotiated with the server and may be refused. If a game stops launching after you turn one on, turn it off again first.")
         }
     }
 
@@ -1304,6 +1645,51 @@ struct SettingsView: View {
                 store.settings = settings
             }
         )
+    }
+}
+
+/// Ten toggles for the in-stream HUD. Split into two groups because "how the stream is doing" and
+/// "what the stream is" are two different questions, and people want the second one far less often.
+private struct StatsMetricsPicker: View {
+    @Binding var metrics: StreamStatsMetrics
+
+    var body: some View {
+        Form {
+            Section("Connection") {
+                metricToggle("Frame Rate", \.fps)
+                metricToggle("Ping", \.ping)
+                metricToggle("Latency", \.latency)
+                metricToggle("Bitrate", \.bitrate)
+                metricToggle("Packet Loss", \.packetLoss)
+            }
+
+            Section {
+                metricToggle("Resolution", \.resolution)
+                metricToggle("Codec", \.codec)
+                metricToggle("Server", \.location)
+                metricToggle("Battery", \.battery)
+                metricToggle("Network Type", \.connection)
+            } header: {
+                Text("Session")
+            } footer: {
+                Text("At least one metric stays on. To hide the HUD entirely, turn off Show Stats While Streaming.")
+            }
+        }
+        .navigationTitle("Stats Metrics")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func metricToggle(_ title: String, _ keyPath: WritableKeyPath<StreamStatsMetrics, Bool>) -> some View {
+        let isLastEnabled = metrics[keyPath: keyPath] && metrics.enabledCount == 1
+        return Toggle(title, isOn: Binding(
+            get: { metrics[keyPath: keyPath] },
+            set: { newValue in
+                // Never let the HUD empty out — there is no way to recover from inside a stream.
+                guard newValue || metrics.enabledCount > 1 else { return }
+                metrics[keyPath: keyPath] = newValue
+            }
+        ))
+        .disabled(isLastEnabled)
     }
 }
 

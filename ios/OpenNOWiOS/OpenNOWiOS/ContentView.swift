@@ -197,6 +197,38 @@ struct MainTabView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        // The report is presented over the tab surface rather than the streamer, so it survives
+        // the streamer being torn down and never competes with the video layer for the screen.
+        .confirmationDialog(
+            store.pendingLaunchConflict?.title ?? "",
+            isPresented: Binding(
+                get: { store.pendingLaunchConflict != nil },
+                set: { if !$0 { store.cancelPendingLaunch() } }
+            ),
+            titleVisibility: .visible,
+            presenting: store.pendingLaunchConflict
+        ) { conflict in
+            Button("End and Play \(conflict.request.game.title)", role: .destructive) {
+                Haptics.medium()
+                store.confirmPendingLaunch()
+            }
+            Button("Keep Playing \(conflict.runningGame.title)", role: .cancel) {
+                store.cancelPendingLaunch()
+            }
+        } message: { conflict in
+            Text(conflict.message)
+        }
+        .sheet(item: Binding(
+            get: { store.sessionReport },
+            set: { if $0 == nil { store.dismissSessionReport() } }
+        )) { report in
+            SessionReportView(report: report) { disableFutureReports in
+                store.dismissSessionReport(disableFutureReports: disableFutureReports)
+            }
+            .environmentObject(store)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
     }
 
     private func streamerSurface(session: ActiveSession) -> some View {
@@ -233,9 +265,13 @@ struct MainTabView: View {
                 streamerAutoRetryCount = 0
             },
             onSafeVideoFallbackRequired: { reason in
+                store.recordStreamRecovery(reason: reason)
                 store.restartStreamWithSafeVideoProfile(reason: reason)
             },
             onNativeFallbackRequiresFreshEndpoint: { _ in },
+            onRuntimeSample: { sample in
+                store.recordStreamRuntimeSample(sample)
+            },
             onClose: {
                 presentedStreamerSession = nil
                 streamerAutoRetryCount = 0
@@ -520,10 +556,25 @@ extension View {
     }
 }
 
-let brandAccent = Color(red: 0.46, green: 0.72, blue: 0.0)
+/// The default accent, and the fallback for views that have not yet been migrated to
+/// `@Environment(\.openNowAccent)`. Now matches the Android build's default (`#6AF0A0`); the
+/// previous olive is still available to users as the "Classic" accent in Settings → Interface.
+///
+/// New code should read the environment instead, so the user's choice is honoured. The root
+/// applies `.tint()` from the same value, which already carries most system controls.
+let brandAccent = UIAccent.openNow.color
+
+/// Gradient built from the accent so it tracks the user's choice where it is used dynamically.
+func brandGradient(for accent: UIAccent) -> LinearGradient {
+    LinearGradient(
+        colors: [accent.color, accent.color.opacity(0.55)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+}
 
 let brandGradient = LinearGradient(
-    colors: [Color(red: 0.46, green: 0.72, blue: 0.0), Color(red: 0.0, green: 0.72, blue: 0.55)],
+    colors: [UIAccent.openNow.color, Color(hex: 0x00B78C)],
     startPoint: .topLeading,
     endPoint: .bottomTrailing
 )

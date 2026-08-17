@@ -750,7 +750,9 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
         XCTAssertEqual(settings.touchLayout(for: "fortnite-mobile"), .fortniteMobile)
 
-        settings.fortnitePrefersNativeTouch = false
+        // The Fortnite-only switch has been replaced by the touch-mode picker ported from
+        // Android. Turning touch off entirely must still fall back to the default layout.
+        settings.touch.nativeTouchMode = .never
         XCTAssertEqual(
             streamTouchLayoutProfile(gameTitle: "FORTNITE", settings: settings),
             "default"
@@ -758,6 +760,488 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(
             streamTouchLayoutProfile(gameTitle: "Aimlabs", settings: AppSettings.default),
             "default"
+        )
+    }
+
+    func testLegacyFortniteTouchFlagMigratesToTouchMode() throws {
+        // Payload from a build that predates the touch-mode picker: it has the Fortnite switch
+        // and no `touch` object at all. Someone who turned that switch off must not have touch
+        // silently re-enabled by the upgrade.
+        let legacyOff = Data(#"{"fortnitePrefersNativeTouch":false}"#.utf8)
+        let migratedOff = try JSONDecoder().decode(AppSettings.self, from: legacyOff)
+        XCTAssertEqual(migratedOff.touch.nativeTouchMode, .never)
+        XCTAssertFalse(migratedOff.fortnitePrefersNativeTouch)
+
+        let legacyOn = Data(#"{"fortnitePrefersNativeTouch":true}"#.utf8)
+        let migratedOn = try JSONDecoder().decode(AppSettings.self, from: legacyOn)
+        XCTAssertEqual(migratedOn.touch.nativeTouchMode, .automatic)
+        XCTAssertTrue(migratedOn.fortnitePrefersNativeTouch)
+
+        // An explicit `touch` object always wins over the legacy flag.
+        let explicit = Data(#"{"fortnitePrefersNativeTouch":false,"touch":{"nativeTouchMode":"always"}}"#.utf8)
+        let migratedExplicit = try JSONDecoder().decode(AppSettings.self, from: explicit)
+        XCTAssertEqual(migratedExplicit.touch.nativeTouchMode, .always)
+        XCTAssertTrue(migratedExplicit.fortnitePrefersNativeTouch)
+    }
+
+    func testNativeTouchFollowsCatalogCapabilityRatherThanTitle() {
+        let touchGame = OpenNOWiOSParityTests.makeGame(
+            title: "Genshin Impact",
+            controls: ["GAMEPAD", "TOUCHSCREEN"]
+        )
+        let desktopGame = OpenNOWiOSParityTests.makeGame(
+            title: "Cyberpunk 2077",
+            controls: ["GAMEPAD", "KEYBOARD_MOUSE"]
+        )
+
+        XCTAssertTrue(NativeTouchSupport.catalogClaimsTouchSupport(touchGame))
+        XCTAssertFalse(NativeTouchSupport.catalogClaimsTouchSupport(desktopGame))
+
+        XCTAssertTrue(NativeTouchSupport.shouldUseNativeTouch(mode: .automatic, game: touchGame))
+        XCTAssertFalse(NativeTouchSupport.shouldUseNativeTouch(mode: .automatic, game: desktopGame))
+        XCTAssertTrue(NativeTouchSupport.shouldUseNativeTouch(mode: .always, game: desktopGame))
+        XCTAssertFalse(NativeTouchSupport.shouldUseNativeTouch(mode: .never, game: touchGame))
+
+        // A session-level choice to use the on-screen controller beats the catalog hint.
+        XCTAssertFalse(
+            NativeTouchSupport.shouldUseNativeTouchForStream(
+                mode: .automatic,
+                game: touchGame,
+                preferVirtualController: true
+            )
+        )
+    }
+
+    func testAutomaticTouchDoesNotDowngradeAHighQualityRequest() {
+        let touchGame = OpenNOWiOSParityTests.makeGame(
+            title: "Genshin Impact",
+            controls: ["TOUCHSCREEN"]
+        )
+        let hd = StreamVideoProfile(width: 1_920, height: 1_080, fps: 60, maxBitrateKbps: 35_000)
+        let qhd = StreamVideoProfile(width: 2_560, height: 1_440, fps: 60, maxBitrateKbps: 45_000)
+        let highRefresh = StreamVideoProfile(width: 1_920, height: 1_080, fps: 120, maxBitrateKbps: 75_000)
+
+        // Inside the mobile allocation envelope, automatic takes the mobile identity so the game
+        // sees a digitizer.
+        XCTAssertTrue(
+            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: hd, hdrEnabled: false)
+        )
+        // Outside it, the resolution the user asked for wins — touch is optional, 1440p is not.
+        XCTAssertFalse(
+            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: qhd, hdrEnabled: false)
+        )
+        XCTAssertFalse(
+            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: highRefresh, hdrEnabled: false)
+        )
+        XCTAssertFalse(
+            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: hd, hdrEnabled: true)
+        )
+        // "Always" is an explicit instruction and is honoured regardless.
+        XCTAssertTrue(
+            NativeTouchSupport.prefersMobileIdentity(mode: .always, game: touchGame, profile: qhd, hdrEnabled: false)
+        )
+    }
+
+    // MARK: - Launch conflict
+
+    func testLaunchOverALiveSessionAsksBeforeDiscardingIt() {
+        let running = Self.makeGame(title: "Halo Infinite", controls: ["GAMEPAD"])
+        let wanted = Self.makeGame(title: "Cyberpunk 2077", controls: ["GAMEPAD"])
+        let request = PendingLaunchRequest(game: wanted, zoneUrl: nil, launchOption: nil)
+
+        // Queued, setting up and ready all hold a rig, so all three must confirm.
+        for status in 1...3 {
+            let conflict = LaunchConflict.between(
+                active: Self.makeActiveSession(game: running, status: status),
+                request: request
+            )
+            XCTAssertNotNil(conflict, "status \(status) holds a rig and must warn before being discarded")
+            XCTAssertTrue(conflict?.message.contains("Halo Infinite") ?? false)
+            XCTAssertTrue(conflict?.message.contains("Cyberpunk 2077") ?? false)
+        }
+    }
+
+    func testLaunchConflictStaysQuietWhenThereIsNothingToLose() {
+        let running = Self.makeGame(title: "Halo Infinite", controls: ["GAMEPAD"])
+        let wanted = Self.makeGame(title: "Cyberpunk 2077", controls: ["GAMEPAD"])
+
+        // No session at all.
+        XCTAssertNil(
+            LaunchConflict.between(
+                active: nil,
+                request: PendingLaunchRequest(game: wanted, zoneUrl: nil, launchOption: nil)
+            )
+        )
+
+        // Relaunching the same game claims the existing session rather than replacing it.
+        XCTAssertNil(
+            LaunchConflict.between(
+                active: Self.makeActiveSession(game: running, status: 2),
+                request: PendingLaunchRequest(game: running, zoneUrl: nil, launchOption: nil)
+            )
+        )
+
+        // A session that has already released its rig is not worth a dialog.
+        for status in [0, 4, 5, 6, 7] {
+            XCTAssertNil(
+                LaunchConflict.between(
+                    active: Self.makeActiveSession(game: running, status: status),
+                    request: PendingLaunchRequest(game: wanted, zoneUrl: nil, launchOption: nil)
+                ),
+                "status \(status) no longer holds a rig"
+            )
+        }
+    }
+
+    private static func makeActiveSession(game: CloudGame, status: Int) -> ActiveSession {
+        ActiveSession(
+            id: "session-\(game.id)",
+            game: game,
+            startedAt: Date(timeIntervalSince1970: 1_000_000),
+            status: status,
+            queuePosition: nil,
+            seatSetupStep: nil,
+            serverIp: nil,
+            mediaIp: nil,
+            mediaPort: 0,
+            signalingServer: nil,
+            signalingUrl: nil,
+            iceServers: [],
+            zone: "test",
+            streamingBaseUrl: "https://example.invalid",
+            clientId: "client",
+            deviceId: "device",
+            adState: nil
+        )
+    }
+
+    // MARK: - Queue trend
+
+    func testQueueEstimateStaysSilentUntilItHasEvidence() {
+        var estimator = QueueTrendEstimator()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+
+        // One reading says nothing.
+        estimator.record(position: 50, at: start)
+        XCTAssertEqual(estimator.trend(now: start), .unknown)
+        XCTAssertNil(estimator.estimate(now: start))
+        XCTAssertNil(estimator.supportLine(now: start))
+
+        // Two more readings twenty seconds apart is still under the observation floor.
+        estimator.record(position: 48, at: start.addingTimeInterval(10))
+        estimator.record(position: 46, at: start.addingTimeInterval(20))
+        XCTAssertEqual(estimator.trend(now: start.addingTimeInterval(20)), .unknown)
+        XCTAssertNil(estimator.estimate(now: start.addingTimeInterval(20)))
+    }
+
+    func testQueueEstimateIsARangeDerivedFromObservedMovement() {
+        var estimator = QueueTrendEstimator()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        // Twelve positions consumed over two minutes = six per minute, eighteen left.
+        for step in 0...4 {
+            estimator.record(position: 30 - step * 3, at: start.addingTimeInterval(Double(step) * 30))
+        }
+        let now = start.addingTimeInterval(120)
+
+        guard case .moving(let perMinute) = estimator.trend(now: now) else {
+            return XCTFail("Expected a moving trend")
+        }
+        XCTAssertEqual(perMinute, 6, accuracy: 0.01)
+
+        let estimate = estimator.estimate(now: now)
+        XCTAssertNotNil(estimate)
+        // 18 remaining at 6/min is 3 minutes; the band is deliberately wide around it.
+        XCTAssertLessThanOrEqual(estimate?.lowMinutes ?? 0, 3)
+        XCTAssertGreaterThanOrEqual(estimate?.highMinutes ?? 0, 3)
+        XCTAssertGreaterThan(estimate?.highMinutes ?? 0, estimate?.lowMinutes ?? 0)
+        XCTAssertTrue(estimator.supportLine(now: now)?.contains("Moving") ?? false)
+    }
+
+    func testQueueEstimateWithdrawsWhenTheQueueStalls() {
+        var estimator = QueueTrendEstimator()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        for step in 0...4 {
+            estimator.record(position: 30 - step * 3, at: start.addingTimeInterval(Double(step) * 30))
+        }
+        // Nothing changes for two more minutes.
+        let stalled = start.addingTimeInterval(240)
+        estimator.record(position: 18, at: stalled)
+
+        XCTAssertEqual(estimator.trend(now: stalled), .holding)
+        XCTAssertNil(estimator.estimate(now: stalled), "A stalled queue must not keep publishing an ETA")
+        XCTAssertEqual(estimator.supportLine(now: stalled), "Queue is holding")
+    }
+
+    func testQueueSlippingBackwardsIsNamedRatherThanHidden() {
+        var estimator = QueueTrendEstimator()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        estimator.record(position: 20, at: start)
+        estimator.record(position: 18, at: start.addingTimeInterval(30))
+        estimator.record(position: 26, at: start.addingTimeInterval(60))
+
+        XCTAssertEqual(estimator.trend(now: start.addingTimeInterval(60)), .slipped)
+        XCTAssertNil(estimator.estimate(now: start.addingTimeInterval(60)))
+        XCTAssertTrue(estimator.supportLine(now: start.addingTimeInterval(60))?.contains("moved back") ?? false)
+    }
+
+    func testQueueEstimatorDropsSamplesOlderThanItsWindow() {
+        var estimator = QueueTrendEstimator()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        estimator.record(position: 500, at: start)
+        // Twenty minutes later the first reading describes a queue that no longer exists.
+        for step in 0...4 {
+            estimator.record(position: 20 - step * 2, at: start.addingTimeInterval(1_200 + Double(step) * 30))
+        }
+        XCTAssertFalse(
+            estimator.samples.contains { $0.position == 500 },
+            "Samples outside the window must be pruned or the rate is nonsense"
+        )
+    }
+
+    func testQueuePhaseCopyNamesEachStage() {
+        XCTAssertEqual(
+            QueuePhaseCopy.heroSupport(position: nil, seatSetupStep: nil, status: 1, isLaunching: true),
+            "Asking for a rig"
+        )
+        XCTAssertEqual(
+            QueuePhaseCopy.heroSupport(position: 1, seatSetupStep: nil, status: 1, isLaunching: false),
+            "You're next"
+        )
+        XCTAssertEqual(
+            QueuePhaseCopy.heroSupport(position: 40, seatSetupStep: nil, status: 1, isLaunching: false),
+            "In the queue"
+        )
+        XCTAssertEqual(
+            QueuePhaseCopy.heroSupport(position: nil, seatSetupStep: 2, status: 2, isLaunching: false),
+            "Preparing your rig — step 2 of 4"
+        )
+        XCTAssertEqual(
+            QueuePhaseCopy.heroSupport(position: nil, seatSetupStep: nil, status: 3, isLaunching: false),
+            "Connecting"
+        )
+    }
+
+    // MARK: - Session report
+
+    func testSessionScoreLaddersMatchAndroidValues() {
+        // Values lifted directly from SessionReport.kt so the two platforms cannot drift.
+        XCTAssertEqual(StreamQualityLadder.latencyScore(30), 100)
+        XCTAssertEqual(StreamQualityLadder.latencyScore(31), 92)
+        XCTAssertEqual(StreamQualityLadder.latencyScore(80), 80)
+        XCTAssertEqual(StreamQualityLadder.latencyScore(120), 60)
+        XCTAssertEqual(StreamQualityLadder.latencyScore(181), 10)
+
+        XCTAssertEqual(StreamQualityLadder.packetLossScore(0.1), 100)
+        XCTAssertEqual(StreamQualityLadder.packetLossScore(0.5), 90)
+        XCTAssertEqual(StreamQualityLadder.packetLossScore(1.0), 75)
+        XCTAssertEqual(StreamQualityLadder.packetLossScore(2.0), 55)
+        XCTAssertEqual(StreamQualityLadder.packetLossScore(6.0), 5)
+
+        XCTAssertEqual(StreamQualityLadder.jitterScore(5), 100)
+        XCTAssertEqual(StreamQualityLadder.jitterScore(20), 70)
+        XCTAssertEqual(StreamQualityLadder.jitterScore(51), 5)
+
+        XCTAssertEqual(StreamQualityLadder.frameRateScore(60, targetFps: 60), 100)
+        XCTAssertEqual(StreamQualityLadder.frameRateScore(57, targetFps: 60), 95)
+        XCTAssertEqual(StreamQualityLadder.frameRateScore(48, targetFps: 60), 60)
+        XCTAssertEqual(StreamQualityLadder.frameRateScore(30, targetFps: 60), 10)
+    }
+
+    func testDecodeScoreCreditsHealthyCadenceOverPipelineLatency() {
+        // A hardware decoder that pipelines frames can exceed one display interval of latency
+        // while still delivering every frame. Android floors that case; iOS must too.
+        let laggy = StreamQualityLadder.decodeScore(20, targetFps: 60, actualFps: nil)
+        XCTAssertEqual(laggy, 45)
+        XCTAssertEqual(StreamQualityLadder.decodeScore(20, targetFps: 60, actualFps: 60), 75)
+        XCTAssertEqual(StreamQualityLadder.decodeScore(20, targetFps: 60, actualFps: 55), 55)
+        XCTAssertEqual(StreamQualityLadder.decodeScore(20, targetFps: 60, actualFps: 30), 45)
+    }
+
+    func testSessionQualityScoreWeightsAndRatingBands() {
+        let perfect = StreamSessionReportAccumulator.qualityScore(
+            averagePingMs: 20,
+            packetLossPercent: 0.0,
+            averageJitterMs: 2,
+            averageFps: 60,
+            targetFps: 60,
+            averageDecodeMs: 4
+        )
+        XCTAssertEqual(perfect, 100)
+        XCTAssertEqual(SessionReportRating.forScore(perfect), .excellent)
+
+        let rough = StreamSessionReportAccumulator.qualityScore(
+            averagePingMs: 150,
+            packetLossPercent: 3.0,
+            averageJitterMs: 35,
+            averageFps: 40,
+            targetFps: 60,
+            averageDecodeMs: 14
+        )
+        XCTAssertLessThan(rough, 60)
+        XCTAssertEqual(SessionReportRating.forScore(rough), .poor)
+
+        // Missing metrics must not be scored as zero — only the captured ones carry weight.
+        let latencyOnly = StreamSessionReportAccumulator.qualityScore(
+            averagePingMs: 20,
+            packetLossPercent: nil,
+            averageJitterMs: nil,
+            averageFps: nil,
+            targetFps: 60,
+            averageDecodeMs: nil
+        )
+        XCTAssertEqual(latencyOnly, 100)
+
+        // Nothing captured at all is explicitly neutral rather than a confident-looking zero.
+        XCTAssertEqual(
+            StreamSessionReportAccumulator.qualityScore(
+                averagePingMs: nil,
+                packetLossPercent: nil,
+                averageJitterMs: nil,
+                averageFps: nil,
+                targetFps: 60,
+                averageDecodeMs: nil
+            ),
+            50
+        )
+    }
+
+    func testAccumulatorProducesNoReportWithoutMeasurements() {
+        let accumulator = StreamSessionReportAccumulator(launchProfile: Self.launchProfile())
+        XCTAssertNil(accumulator.finish())
+
+        // A sample carrying nothing measurable must not count either.
+        accumulator.record(StreamRuntimeSample(timestamp: 0, resolution: "1920x1080"))
+        XCTAssertNil(accumulator.finish())
+    }
+
+    func testAccumulatorPrefersPacketDeltasOverCumulativeRatios() {
+        let accumulator = StreamSessionReportAccumulator(launchProfile: Self.launchProfile())
+        // Twenty clean windows then one bad one: the average must reflect the whole session,
+        // not the single spike, but the peak must still record the spike.
+        for _ in 0..<20 {
+            accumulator.record(
+                StreamRuntimeSample(timestamp: 0, pingMs: 20, packetsLostDelta: 0, packetsReceivedDelta: 1_000)
+            )
+        }
+        accumulator.record(
+            StreamRuntimeSample(timestamp: 0, pingMs: 20, packetsLostDelta: 100, packetsReceivedDelta: 900)
+        )
+
+        let report = try? XCTUnwrap(accumulator.finish())
+        XCTAssertNotNil(report)
+        guard let report else { return }
+        // 100 lost out of 21,000 total.
+        XCTAssertEqual(report.packetLossPercent ?? 0, 100.0 / 21_000.0 * 100, accuracy: 0.001)
+        XCTAssertEqual(report.peakPacketLossPercent ?? 0, 10.0, accuracy: 0.001)
+        XCTAssertFalse(report.limitedData)
+    }
+
+    func testShortSessionsAreMarkedAsLimitedData() {
+        let accumulator = StreamSessionReportAccumulator(launchProfile: Self.launchProfile())
+        for _ in 0..<3 {
+            accumulator.record(StreamRuntimeSample(timestamp: 0, pingMs: 25, fps: 60))
+        }
+        let report = accumulator.finish()
+        XCTAssertEqual(report?.sampleCount, 3)
+        XCTAssertEqual(report?.limitedData, true)
+        XCTAssertFalse(report?.showsTrendChart ?? true, "A three-point chart is a lie and must be suppressed")
+    }
+
+    func testRecommendationsNameTheActualProblem() {
+        let cellular = StreamSessionReportAccumulator.buildRecommendations(
+            averagePingMs: 120,
+            packetLossPercent: 2.5,
+            averageJitterMs: 30,
+            averageFps: 58,
+            averageDecodeMs: nil,
+            targetFps: 60,
+            targetBitrateKbps: 35_000,
+            averageBitrateKbps: 30_000,
+            networkKind: .cellular
+        )
+        XCTAssertTrue(cellular.contains { $0.title.contains("Wi-Fi") })
+        XCTAssertTrue(cellular.contains { $0.title.contains("packet loss") })
+        XCTAssertTrue(cellular.contains { $0.title.contains("latency") })
+        XCTAssertLessThanOrEqual(cellular.count, 4, "The list has to stay short enough to act on")
+
+        let healthy = StreamSessionReportAccumulator.buildRecommendations(
+            averagePingMs: 18,
+            packetLossPercent: 0.05,
+            averageJitterMs: 3,
+            averageFps: 60,
+            averageDecodeMs: 3,
+            targetFps: 60,
+            targetBitrateKbps: 35_000,
+            averageBitrateKbps: 34_000,
+            networkKind: .wifi
+        )
+        XCTAssertEqual(healthy.count, 1)
+        XCTAssertEqual(healthy.first?.kind, .info)
+    }
+
+    func testDowngradesNameWhereTheProfileWasReduced() {
+        let selected = StreamVideoProfile(width: 2_560, height: 1_440, fps: 120, maxBitrateKbps: 75_000)
+        let eligible = StreamVideoProfile(width: 1_920, height: 1_080, fps: 60, maxBitrateKbps: 35_000)
+        let findings = StreamSessionReportAccumulator.buildDowngrades(
+            launchProfile: StreamReportLaunchProfile(
+                gameTitle: "Test",
+                selectedProfile: selected,
+                eligibleProfile: eligible,
+                initialProfile: eligible,
+                requestedCodec: "AV1",
+                eligibleCodec: "H265",
+                hdrRequested: false
+            ),
+            finalProfile: eligible,
+            finalCodec: "H265",
+            deliveredResolution: "1920x1080",
+            deliveredCodec: "H265",
+            recoveryReason: nil
+        )
+        XCTAssertTrue(findings.contains { $0.title == "Limited by your plan" })
+        XCTAssertTrue(findings.contains { $0.title == "Codec changed for this device" })
+        // Delivered matches the request, so there must be no spurious "different resolution".
+        XCTAssertFalse(findings.contains { $0.title == "Delivered a different resolution" })
+    }
+
+    private static func launchProfile(
+        target: StreamVideoProfile = StreamVideoProfile(width: 1_920, height: 1_080, fps: 60, maxBitrateKbps: 35_000)
+    ) -> StreamReportLaunchProfile {
+        StreamReportLaunchProfile(
+            gameTitle: "Test Game",
+            selectedProfile: target,
+            eligibleProfile: target,
+            initialProfile: target,
+            requestedCodec: "H265",
+            eligibleCodec: "H265",
+            hdrRequested: false
+        )
+    }
+
+    private static func makeGame(title: String, controls: [String]) -> CloudGame {
+        CloudGame(
+            id: title.lowercased(),
+            title: title,
+            genre: "Action",
+            platform: "STEAM",
+            icon: "",
+            imageUrl: nil,
+            launchAppId: "1",
+            launchOptions: [GameLaunchOption(storefront: "STEAM", appId: "1", supportedControls: controls)],
+            uuid: nil,
+            summary: nil,
+            longDescription: nil,
+            publisher: nil,
+            developer: nil,
+            releaseDate: nil,
+            featureLabels: nil,
+            tags: nil,
+            stores: nil,
+            playType: nil,
+            membershipTierLabel: nil,
+            catalogSectionId: nil,
+            catalogSectionTitle: nil,
+            contentRatings: nil
         )
     }
 

@@ -236,9 +236,7 @@ struct StreamSessionWarningTracker: Equatable {
 }
 
 func streamTouchLayoutProfile(gameTitle: String, settings: AppSettings) -> String {
-    settings.fortnitePrefersNativeTouch && gameTitle.localizedCaseInsensitiveContains("fortnite")
-        ? "fortnite-mobile"
-        : "default"
+    NativeTouchSupport.touchLayoutProfile(gameTitle: gameTitle, settings: settings)
 }
 
 #if os(iOS) && canImport(WebRTC)
@@ -294,6 +292,17 @@ fileprivate enum NativeStreamNetworkTransport: Equatable, Sendable {
         case .offline: return "network.slash"
         }
     }
+
+    /// The coarser classification the session report reasons about. "Other" and "offline" both
+    /// become unknown: neither tells the report anything it can turn into advice.
+    var sessionNetworkKind: SessionNetworkKind {
+        switch self {
+        case .wifi: return .wifi
+        case .cellular: return .cellular
+        case .ethernet: return .wired
+        case .other, .offline: return .unknown
+        }
+    }
 }
 #endif
 
@@ -325,6 +334,7 @@ struct StreamerView: View {
         onTransportStable: @escaping () -> Void = {},
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
+        onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)? = nil
     ) {
@@ -343,6 +353,7 @@ struct StreamerView: View {
                 onStatsOverlayChange: onStatsOverlayChange,
                 onTransportStable: onTransportStable,
                 onSafeVideoFallbackRequired: onSafeVideoFallbackRequired,
+                onRuntimeSample: onRuntimeSample,
                 onClose: onClose,
                 onRetry: onRetry
             )
@@ -384,43 +395,32 @@ struct StreamerView: View {
                 }
 
                 VStack {
+                    // Three stats positions, so the HUD can be moved off whichever corner the
+                    // current game already uses. The overlay buttons take the opposite side.
                     HStack(alignment: .top, spacing: 10) {
-                        if coordinator.showStatsOverlay,
-                           coordinator.streamerPreferences.statsPosition == .left {
-                            NativeStreamStatsPill(
-                                gameTitle: coordinator.gameTitle,
-                                status: coordinator.statusText,
-                                snapshot: coordinator.statsSnapshot,
-                                preferences: coordinator.streamerPreferences,
-                                deviceStatus: coordinator.deviceStatus,
-                                style: coordinator.statsDisplayStyle,
-                                sessionDurationText: coordinator.sessionDurationText
-                            )
-                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        let statsPosition = coordinator.streamerPreferences.statsPosition
+
+                        if coordinator.showStatsOverlay, statsPosition == .left {
+                            streamStatsPill
                         }
 
-                        if coordinator.streamerPreferences.statsPosition == .right {
+                        if statsPosition != .left {
                             streamOverlayButtons
                         }
 
                         Spacer(minLength: 10)
 
-                        if coordinator.streamerPreferences.statsPosition == .left {
+                        if coordinator.showStatsOverlay, statsPosition == .center {
+                            streamStatsPill
+                            Spacer(minLength: 10)
+                        }
+
+                        if statsPosition == .left {
                             streamOverlayButtons
                         }
 
-                        if coordinator.showStatsOverlay,
-                           coordinator.streamerPreferences.statsPosition == .right {
-                            NativeStreamStatsPill(
-                                gameTitle: coordinator.gameTitle,
-                                status: coordinator.statusText,
-                                snapshot: coordinator.statsSnapshot,
-                                preferences: coordinator.streamerPreferences,
-                                deviceStatus: coordinator.deviceStatus,
-                                style: coordinator.statsDisplayStyle,
-                                sessionDurationText: coordinator.sessionDurationText
-                            )
-                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        if coordinator.showStatsOverlay, statsPosition == .right {
+                            streamStatsPill
                         }
                     }
                     .padding(.top, max(22, proxy.safeAreaInsets.top + 8))
@@ -497,6 +497,20 @@ struct StreamerView: View {
     }
 
     @ViewBuilder
+    private var streamStatsPill: some View {
+        NativeStreamStatsPill(
+            gameTitle: coordinator.gameTitle,
+            status: coordinator.statusText,
+            snapshot: coordinator.statsSnapshot,
+            preferences: coordinator.streamerPreferences,
+            metrics: coordinator.statsMetrics,
+            deviceStatus: coordinator.deviceStatus,
+            style: coordinator.statsDisplayStyle,
+            sessionDurationText: coordinator.sessionDurationText
+        )
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
     private var streamOverlayButtons: some View {
         HStack(spacing: 10) {
             if coordinator.pictureInPictureAvailable {
@@ -533,6 +547,7 @@ struct StreamerView: View {
         onTransportStable: @escaping () -> Void = {},
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
+        onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)? = nil
     ) {
@@ -552,6 +567,7 @@ struct StreamerView: View {
         _ = onTransportStable
         _ = onSafeVideoFallbackRequired
         _ = onNativeFallbackRequiresFreshEndpoint
+        _ = onRuntimeSample
         _ = onRetry
     }
 
@@ -591,10 +607,23 @@ private struct NativeStreamStatsSnapshot: Equatable {
     var dropped = 0
     var lossPercent = 0.0
     var jitterMs: Int?
+    /// Input-to-output decode latency for the last window, in milliseconds.
+    var decodeMs: Double?
+    /// The zone the session is running in, for the HUD's Server metric.
+    var serverLabel: String?
+    var targetFps: Int = 60
     var inputSummary = "r0/p0"
     var detail = ""
 
     static let empty = NativeStreamStatsSnapshot()
+
+    var decodeText: String {
+        decodeMs.map { String(format: "%.1fms", $0) } ?? "--"
+    }
+
+    var lossText: String {
+        String(format: "%.1f%%", lossPercent)
+    }
 
     var fpsText: String {
         fps.map(String.init) ?? "--"
@@ -731,99 +760,240 @@ private struct NativeStreamOverlayButton: View {
     }
 }
 
+/// The in-stream stats HUD.
+///
+/// Two rules govern everything here. First, a reading in the normal range renders in plain white —
+/// tinting the healthy case is what makes the unhealthy one hard to spot. Second, the whole view
+/// reads a throttled snapshot, never the live stats stream: it must not re-render on the video's
+/// timeline, because a HUD that costs four percent of a frame budget costs the player two frames
+/// a second.
 private struct NativeStreamStatsPill: View {
     let gameTitle: String
     let status: String
     let snapshot: NativeStreamStatsSnapshot
     let preferences: StreamerPreferences
+    let metrics: StreamStatsMetrics
     let deviceStatus: NativeStreamDeviceStatus
     let style: StreamStatsStyle
     let sessionDurationText: String?
 
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+
+    private struct Readout: Identifiable {
+        let id: String
+        let label: String
+        let compact: String
+        let detailed: String
+        var level: StreamQualityLevel = .good
+        var symbol: String?
+    }
+
     var body: some View {
-        if style == .compact {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    statusIndicators(showBatteryPercent: false)
-                    Text("FPS \(snapshot.fpsText)")
-                    Text(snapshot.pingText)
-                    Text(snapshot.compactBitrateText)
-                    if let sessionDurationText {
-                        Text(sessionDurationText)
-                    }
-                }
-                HStack(spacing: 7) {
-                    statusIndicators(showBatteryPercent: false)
-                    Text("\(snapshot.fpsText) fps")
-                    Text(snapshot.pingText)
-                    if let sessionDurationText {
-                        Text(sessionDurationText)
-                    }
-                }
-                HStack(spacing: 6) {
-                    statusIndicators(showBatteryPercent: false)
-                    Text("\(snapshot.fpsText) fps")
-                }
+        Group {
+            if style == .compact {
+                compactPill
+            } else {
+                detailedPanel
             }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.50), in: Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 1))
-        } else {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(gameTitle)
-                    .font(.caption.weight(.bold))
-                    .lineLimit(1)
-                Text("FPS \(snapshot.fpsText)  Bitrate \(snapshot.bitrateText)  Ping \(snapshot.pingText)  Codec \(snapshot.codec)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.white.opacity(0.76))
-                    .lineLimit(1)
-                Text("\(snapshot.resolution)  decoded \(snapshot.decoded) rendered \(snapshot.rendered) drop \(snapshot.dropped) loss \(String(format: "%.1f%%", snapshot.lossPercent))")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.white.opacity(0.76))
-                    .lineLimit(1)
-                HStack(spacing: 8) {
-                    statusIndicators(showBatteryPercent: true)
-                    if let sessionDurationText {
-                        Label(sessionDurationText, systemImage: "stopwatch")
-                    }
-                    Text([status == "Streaming" ? nil : status, preferences.audioMuted ? "audio muted" : "audio on"].compactMap { $0 }.joined(separator: "  "))
-                        .lineLimit(1)
-                }
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.66))
+        }
+        // The HUD sits under a thumb and updates every second, which makes it hostile to
+        // VoiceOver's swipe navigation. The same numbers are readable in the control panel.
+        .accessibilityHidden(true)
+    }
+
+    private var compactPill: some View {
+        ViewThatFits(in: .horizontal) {
+            readoutRow(readouts, spacing: 8)
+            readoutRow(Array(readouts.prefix(4)), spacing: 7)
+            readoutRow(Array(readouts.prefix(2)), spacing: 6)
+        }
+        .font(.caption2.weight(.semibold).monospacedDigit())
+        .lineLimit(1)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.50), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 1))
+    }
+
+    private func readoutRow(_ items: [Readout], spacing: CGFloat) -> some View {
+        HStack(spacing: spacing) {
+            if let sessionDurationText {
+                Text(sessionDurationText).foregroundStyle(.white)
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: 460, alignment: .leading)
-            .background(.black.opacity(0.70), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
+            ForEach(items) { item in
+                HStack(spacing: 3) {
+                    if let symbol = item.symbol {
+                        Image(systemName: symbol)
+                    }
+                    if differentiateWithoutColor, let glyph = item.level.glyph, item.level != .good {
+                        Image(systemName: glyph)
+                    }
+                    Text(item.compact)
+                }
+                .foregroundStyle(item.level.tint ?? Color.white)
+            }
         }
     }
 
-    @ViewBuilder
-    private func statusIndicators(showBatteryPercent: Bool) -> some View {
-        if preferences.showStatsClock {
-            Text(deviceStatus.timeText)
-        }
-        if preferences.showStatsCellular {
-            Label(
-                deviceStatus.networkTransport.shortLabel,
-                systemImage: deviceStatus.networkTransport.systemImage
-            )
-            .accessibilityLabel(deviceStatus.networkTransport.accessibilityLabel)
-        }
-        if preferences.showStatsBattery {
-            HStack(spacing: 3) {
-                Image(systemName: deviceStatus.batterySymbol)
-                if showBatteryPercent, let batteryPercent = deviceStatus.batteryPercent {
-                    Text("\(batteryPercent)%")
+    private var detailedPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(gameTitle)
+                .font(.caption.weight(.bold))
+                .lineLimit(1)
+
+            ForEach(readouts) { item in
+                HStack(spacing: 8) {
+                    Text(item.label)
+                        .foregroundStyle(.white.opacity(0.66))
+                    Spacer(minLength: 12)
+                    if differentiateWithoutColor, let glyph = item.level.glyph, item.level != .good {
+                        Image(systemName: glyph).font(.caption2)
+                    }
+                    Text(item.detailed)
+                        .foregroundStyle(item.level.tint ?? Color.white)
                 }
+                .font(.caption2.monospacedDigit())
+                .lineLimit(1)
             }
+
+            if let sessionDurationText {
+                HStack(spacing: 8) {
+                    Label(sessionDurationText, systemImage: "stopwatch")
+                    if status != "Streaming" { Text(status).lineLimit(1) }
+                    if preferences.audioMuted { Text("muted") }
+                }
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.66))
+                .padding(.top, 2)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(minWidth: 168, maxWidth: 300, alignment: .leading)
+        .background(.black.opacity(0.70), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
+    }
+
+    /// Built in a fixed order so the HUD never reshuffles between samples — a readout that moves
+    /// is a readout nobody can glance at.
+    private var readouts: [Readout] {
+        var items: [Readout] = []
+
+        if metrics.fps {
+            let level = snapshot.fps.map {
+                StreamQuality.frameRate(Double($0), targetFps: snapshot.targetFps)
+            } ?? .good
+            items.append(Readout(
+                id: "fps",
+                label: "Frame rate",
+                compact: "\(snapshot.fpsText) fps",
+                detailed: "\(snapshot.fpsText) / \(snapshot.targetFps)",
+                level: level
+            ))
+        }
+        if metrics.ping {
+            let level = snapshot.pingMs.map(StreamQuality.latency) ?? .good
+            items.append(Readout(
+                id: "ping",
+                label: "Ping",
+                compact: snapshot.pingText,
+                detailed: snapshot.pingText,
+                level: level
+            ))
+        }
+        if metrics.latency {
+            let level = snapshot.decodeMs.map {
+                StreamQuality.decode($0, targetFps: snapshot.targetFps, actualFps: snapshot.fps.map(Double.init))
+            } ?? .good
+            items.append(Readout(
+                id: "decode",
+                label: "Decode",
+                compact: snapshot.decodeText,
+                detailed: snapshot.decodeText,
+                level: level
+            ))
+        }
+        if metrics.bitrate {
+            items.append(Readout(
+                id: "bitrate",
+                label: "Bitrate",
+                compact: snapshot.compactBitrateText,
+                detailed: snapshot.bitrateText
+            ))
+        }
+        if metrics.packetLoss {
+            items.append(Readout(
+                id: "loss",
+                label: "Loss",
+                compact: snapshot.lossText,
+                detailed: snapshot.lossText,
+                level: StreamQuality.packetLoss(snapshot.lossPercent)
+            ))
+        }
+        if metrics.resolution {
+            items.append(Readout(
+                id: "resolution",
+                label: "Resolution",
+                compact: snapshot.resolution,
+                detailed: snapshot.resolution
+            ))
+        }
+        if metrics.codec {
+            items.append(Readout(
+                id: "codec",
+                label: "Codec",
+                compact: snapshot.codec,
+                detailed: snapshot.codec
+            ))
+        }
+        if metrics.location, let server = snapshot.serverLabel, !server.isEmpty {
+            items.append(Readout(
+                id: "server",
+                label: "Server",
+                compact: server,
+                detailed: server
+            ))
+        }
+        if metrics.connection {
+            items.append(Readout(
+                id: "network",
+                label: "Network",
+                compact: deviceStatus.networkTransport.shortLabel,
+                detailed: deviceStatus.networkTransport.shortLabel,
+                symbol: deviceStatus.networkTransport.systemImage
+            ))
+        }
+        if metrics.battery {
+            let percent = deviceStatus.batteryPercent.map { "\($0)%" } ?? "--"
+            items.append(Readout(
+                id: "battery",
+                label: "Battery",
+                compact: percent,
+                detailed: percent,
+                // Below 20% and not charging is worth flagging: the stream is the reason.
+                level: batteryLevel,
+                symbol: deviceStatus.batterySymbol
+            ))
+        }
+        if preferences.showStatsClock {
+            items.append(Readout(
+                id: "clock",
+                label: "Time",
+                compact: deviceStatus.timeText,
+                detailed: deviceStatus.timeText
+            ))
+        }
+        return items
+    }
+
+    private var batteryLevel: StreamQualityLevel {
+        guard deviceStatus.batteryState != .charging, deviceStatus.batteryState != .full,
+              let percent = deviceStatus.batteryPercent else { return .good }
+        switch percent {
+        case ..<10: return .poor
+        case ..<20: return .fair
+        default: return .good
         }
     }
 }
@@ -1528,6 +1698,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @Published var controlsPanelVisible = false
     @Published fileprivate var touchLayoutEditing = false
     @Published fileprivate var statsDisplayStyle: StreamStatsStyle = .compact
+    @Published fileprivate var statsMetrics: StreamStatsMetrics = .default
     @Published var streamerPreferences: StreamerPreferences
     @Published fileprivate var streamSharpeningEnabled: Bool
     @Published fileprivate var streamSharpeningAmount: Double
@@ -1563,6 +1734,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private let onStatsOverlayChange: (Bool) -> Void
     private let onTransportStable: () -> Void
     private let onSafeVideoFallbackRequired: (String) -> Void
+    /// Fired roughly once a second with the numbers behind the HUD, so the store can accumulate
+    /// them into a session report. Deliberately a plain closure rather than a Combine publisher —
+    /// nothing in the view hierarchy should observe it.
+    private let onRuntimeSample: (StreamRuntimeSample) -> Void
     private let onClose: () -> Void
     private let onRetry: (() -> Void)?
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "NativeStreamer")
@@ -1613,6 +1788,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var lastStatsFramesDecoded: Int?
     private var lastStatsFramesRendered: Int?
     private var lastStatsBytesReceived: Int?
+    private var lastStatsTotalDecodeTime: Double?
+    private var lastStatsPacketsLost: Int?
+    private var lastStatsPacketsReceived: Int?
     private var mediaTransportConnected = false
     private var mediaLivenessWatchdog = NativeStreamLivenessWatchdog()
     private var recoveryProgressTracker = NativeStreamRecoveryProgressTracker()
@@ -1648,6 +1826,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         onStatsOverlayChange: @escaping (Bool) -> Void,
         onTransportStable: @escaping () -> Void,
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
+        onRuntimeSample: @escaping (StreamRuntimeSample) -> Void,
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)?
     ) {
@@ -1681,11 +1860,13 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.onStatsOverlayChange = onStatsOverlayChange
         self.onTransportStable = onTransportStable
         self.onSafeVideoFallbackRequired = onSafeVideoFallbackRequired
+        self.onRuntimeSample = onRuntimeSample
         self.onClose = onClose
         self.onRetry = onRetry
         self.streamProfile = Self.effectiveProfile(for: session, settings: settings)
         self.showStatsOverlay = settings.showStatsOverlay
         self.statsDisplayStyle = settings.streamerPreferences.statsStyle
+        self.statsMetrics = settings.streamStatsMetrics
         self.streamTutorialCompleted = settings.streamTutorialCompleted
         self.controllerTouchPromptDismissed = settings.controllerTouchPromptDismissed
         self.sessionDurationText = settings.sessionCounterEnabled
@@ -2932,6 +3113,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         var packetsReceived: Int?
         var jitterMs: Double?
         var rttMs: Double?
+        var totalDecodeTimeSeconds: Double?
         var selectedPairValues: [String: NSObject]?
         var candidateStats: [String: [String: NSObject]] = [:]
 
@@ -2953,6 +3135,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
                 packetsReceived = (stat.values["packetsReceived"] as? NSNumber)?.intValue ?? packetsReceived
                 if let jitter = stat.values["jitter"] as? NSNumber {
                     jitterMs = jitter.doubleValue * 1000
+                }
+                // Cumulative seconds spent decoding. Divided by the frames decoded in the same
+                // window it gives per-frame decode latency, which is the number worth showing.
+                if let total = stat.values["totalDecodeTime"] as? NSNumber {
+                    totalDecodeTimeSeconds = total.doubleValue
                 }
             } else if stat.type == "local-candidate" || stat.type == "remote-candidate" {
                 candidateStats[stat.id] = stat.values
@@ -3011,6 +3198,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             negotiationDebugText,
             icePath
         ].compactMap { $0 }.joined(separator: "  ")
+        // Per-frame decode latency for this window only. Cumulative totals divided by cumulative
+        // frames would keep reporting the first thirty seconds forever.
+        let decodeMs: Double? = {
+            guard let total = totalDecodeTimeSeconds, let decoded = framesDecoded else { return nil }
+            guard let previousTotal = lastStatsTotalDecodeTime,
+                  let previousDecoded = lastStatsFramesDecoded else { return nil }
+            let frameDelta = decoded - previousDecoded
+            let timeDelta = total - previousTotal
+            guard frameDelta > 0, timeDelta >= 0 else { return nil }
+            return timeDelta / Double(frameDelta) * 1_000
+        }()
+
         statsSnapshot = NativeStreamStatsSnapshot(
             codec: selectedCodec.rawValue.uppercased(),
             resolution: resolution,
@@ -3022,13 +3221,41 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             dropped: framesDropped ?? 0,
             lossPercent: packetLossPercent,
             jitterMs: jitterMs.map { Int($0.rounded()) },
+            decodeMs: decodeMs,
+            serverLabel: session.zone.isEmpty ? nil : session.zone,
+            targetFps: streamProfile.fps,
             inputSummary: "r\(reliableInputPackets)/p\(partiallyReliableInputPackets)",
             detail: statsText
         )
+
+        onRuntimeSample(
+            StreamRuntimeSample(
+                timestamp: now,
+                pingMs: rttMs.map { Int($0.rounded()) },
+                bitrateKbps: derivedBitrate,
+                jitterMs: jitterMs,
+                fps: derivedFPS,
+                decodeMs: decodeMs,
+                packetsLostDelta: (packetsLost).flatMap { current in
+                    lastStatsPacketsLost.map { max(0, current - $0) }
+                },
+                packetsReceivedDelta: (packetsReceived).flatMap { current in
+                    lastStatsPacketsReceived.map { max(0, current - $0) }
+                },
+                packetLossPercent: packetLossPercent,
+                resolution: resolution,
+                codec: selectedCodec.rawValue.uppercased(),
+                networkKind: deviceStatus.networkTransport.sessionNetworkKind
+            )
+        )
+
         lastStatsSampleAt = now
         lastStatsFramesDecoded = framesDecoded
         lastStatsFramesRendered = framesRendered
         lastStatsBytesReceived = bytesReceived
+        lastStatsTotalDecodeTime = totalDecodeTimeSeconds
+        lastStatsPacketsLost = packetsLost
+        lastStatsPacketsReceived = packetsReceived
     }
 
     private func handleMediaLiveness(

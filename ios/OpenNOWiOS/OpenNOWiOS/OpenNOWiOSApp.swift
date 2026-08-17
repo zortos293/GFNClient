@@ -29,6 +29,10 @@ struct OpenNOWiOSApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                // One place applies the whole theme: accent tint plus the two appearance
+                // switches. Views read `\.openNowAccent` rather than a global constant so a
+                // change in Settings propagates without a relaunch.
+                .openNowTheme(store.settings)
                 .task {
                     store.handleScenePhase(scenePhase)
                 }

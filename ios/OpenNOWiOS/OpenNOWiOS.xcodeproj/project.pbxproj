@@ -23,6 +23,12 @@
 		BB0000000000000000000004 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000014 /* LibraryView.swift */; };
 		BB0000000000000000000005 /* SessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000015 /* SessionView.swift */; };
 		BB0000000000000000000006 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000016 /* SettingsView.swift */; };
+		DE0000000000000000000002 /* OpenNOWSettingsTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000012 /* OpenNOWSettingsTypes.swift */; };
+		DE0000000000000000000003 /* NativeTouchSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000013 /* NativeTouchSupport.swift */; };
+		DE0000000000000000000005 /* SessionReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000015 /* SessionReportView.swift */; };
+		DE0000000000000000000006 /* QueueTrendEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000016 /* QueueTrendEstimator.swift */; };
+		DE0000000000000000000004 /* SessionReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000014 /* SessionReport.swift */; };
+		DE0000000000000000000001 /* OpenNOWDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000011 /* OpenNOWDesign.swift */; };
 		BB0000000000000000000007 /* StreamLoadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* StreamLoadingView.swift */; };
 		BB0000000000000000000008 /* PrintedWasteQueueView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000018 /* PrintedWasteQueueView.swift */; };
 		BB0000000000000000000009 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000019 /* NotificationManager.swift */; };
@@ -105,6 +111,12 @@
 		BB0000000000000000000014 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000015 /* SessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000016 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		DE0000000000000000000012 /* OpenNOWSettingsTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWSettingsTypes.swift; sourceTree = "<group>"; };
+		DE0000000000000000000013 /* NativeTouchSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTouchSupport.swift; sourceTree = "<group>"; };
+		DE0000000000000000000015 /* SessionReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReportView.swift; sourceTree = "<group>"; };
+		DE0000000000000000000016 /* QueueTrendEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueTrendEstimator.swift; sourceTree = "<group>"; };
+		DE0000000000000000000014 /* SessionReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReport.swift; sourceTree = "<group>"; };
+		DE0000000000000000000011 /* OpenNOWDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWDesign.swift; sourceTree = "<group>"; };
 		BB0000000000000000000017 /* StreamLoadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamLoadingView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000018 /* PrintedWasteQueueView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrintedWasteQueueView.swift; sourceTree = "<group>"; };
 		BB0000000000000000000019 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
@@ -175,6 +187,12 @@
 				AB0000000000000000000011 /* DiagnosticsSupport.swift */,
 				AC0000000000000000000011 /* AccountStateSupport.swift */,
 				0A1B2C3D4E5F6A7B8C9D2006 /* OpenNOWStore.swift */,
+				DE0000000000000000000012 /* OpenNOWSettingsTypes.swift */,
+				DE0000000000000000000013 /* NativeTouchSupport.swift */,
+				DE0000000000000000000015 /* SessionReportView.swift */,
+				DE0000000000000000000016 /* QueueTrendEstimator.swift */,
+				DE0000000000000000000014 /* SessionReport.swift */,
+				DE0000000000000000000011 /* OpenNOWDesign.swift */,
 				BB0000000000000000000011 /* LoginView.swift */,
 				BB0000000000000000000012 /* HomeView.swift */,
 				BB0000000000000000000013 /* BrowseView.swift */,
@@ -373,6 +391,12 @@
 				AB0000000000000000000001 /* DiagnosticsSupport.swift in Sources */,
 				AC0000000000000000000001 /* AccountStateSupport.swift in Sources */,
 				0A1B2C3D4E5F6A7B8C9D1005 /* OpenNOWStore.swift in Sources */,
+				DE0000000000000000000002 /* OpenNOWSettingsTypes.swift in Sources */,
+				DE0000000000000000000003 /* NativeTouchSupport.swift in Sources */,
+				DE0000000000000000000005 /* SessionReportView.swift in Sources */,
+				DE0000000000000000000006 /* QueueTrendEstimator.swift in Sources */,
+				DE0000000000000000000004 /* SessionReport.swift in Sources */,
+				DE0000000000000000000001 /* OpenNOWDesign.swift in Sources */,
 				74417F2A2F8C848000233AC1 /* BrandLogoView.swift in Sources */,
 				BB000000000000000000000B /* Haptics.swift in Sources */,
 				BB0000000000000000000001 /* LoginView.swift in Sources */,

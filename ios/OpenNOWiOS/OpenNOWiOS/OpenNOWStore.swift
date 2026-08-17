@@ -483,19 +483,31 @@ enum SessionLaunchRecoveryPolicy {
 }
 
 enum StreamPreset: String, Codable, CaseIterable, Identifiable {
-    case custom
+    case recommended
     case lowDataSaver = "low_data_saver"
     case medium
     case high
+    case custom
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .custom: return "Custom"
+        case .recommended: return "Recommended"
         case .lowDataSaver: return "Low Data Saver"
         case .medium: return "Medium"
         case .high: return "High"
+        case .custom: return "Custom"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .recommended: return "Tuned to this device and connection"
+        case .lowDataSaver: return "720p · 30 fps · 12 Mb/s"
+        case .medium: return "1080p · 60 fps · 35 Mb/s"
+        case .high: return "Highest your plan allows"
+        case .custom: return "Your own settings below"
         }
     }
 }
@@ -518,10 +530,26 @@ enum StreamStatsStyle: String, Codable, CaseIterable, Identifiable {
 
 enum StreamStatsPosition: String, Codable, CaseIterable, Identifiable {
     case left
+    case center
     case right
 
     var id: String { rawValue }
-    var label: String { self == .left ? "Left" : "Right" }
+
+    var label: String {
+        switch self {
+        case .left: return "Left"
+        case .center: return "Center"
+        case .right: return "Right"
+        }
+    }
+
+    var alignment: Alignment {
+        switch self {
+        case .left: return .topLeading
+        case .center: return .top
+        case .right: return .topTrailing
+        }
+    }
 }
 
 struct StreamingFeatures: Codable, Equatable {
@@ -672,6 +700,39 @@ func removeSessionAdItem(_ adState: SessionAdState?, adId: String) -> SessionAdS
     )
 }
 
+/// A launch the user asked for, held so it can be replayed after a confirmation.
+struct PendingLaunchRequest: Equatable {
+    let game: CloudGame
+    let zoneUrl: String?
+    let launchOption: GameLaunchOption?
+}
+
+/// A launch that would end a session already running on another game.
+struct LaunchConflict: Identifiable, Equatable {
+    let runningGame: CloudGame
+    let request: PendingLaunchRequest
+
+    var id: String { "\(runningGame.id)->\(request.game.id)" }
+
+    var title: String { "End your \(runningGame.title) session?" }
+
+    var message: String {
+        "\(request.game.title) needs the rig that \(runningGame.title) is using. "
+            + "Any unsaved progress in \(runningGame.title) will be lost."
+    }
+
+    /// Pure so the rule can be tested without standing up a store.
+    ///
+    /// Statuses 1–3 are queued, setting up and ready — all of them hold a rig. Anything else has
+    /// already released it, and re-confirming would be a dialog with nothing behind it. Relaunching
+    /// the *same* game is not a conflict: the launch path claims the existing session instead.
+    static func between(active: ActiveSession?, request: PendingLaunchRequest) -> LaunchConflict? {
+        guard let active, (1...3).contains(active.status) else { return nil }
+        guard active.game.id != request.game.id else { return nil }
+        return LaunchConflict(runningGame: active.game, request: request)
+    }
+}
+
 struct AppSettings: Codable, Equatable {
     var preferredRegion: String
     var preferredAspectRatio: String = "16:9"
@@ -718,6 +779,57 @@ struct AppSettings: Codable, Equatable {
     var favoriteGameIds: [String]
     var defaultGameVariantIds: [String: String] = [:]
 
+    // MARK: Parity fields
+    //
+    // Everything below closes a gap against `AppSettings` in the Android build
+    // (`android/app/src/main/java/com/opencloudgaming/opennow/Models.kt`). Each one decodes with a
+    // default so existing installs migrate without touching stored JSON.
+
+    // Appearance
+    var uiAccent: UIAccent = .openNow
+    var expressiveUI: Bool = true
+    var liveSelectedOutlines: Bool = true
+
+    // Catalog presentation
+    var showCardTitles: Bool = true
+    var showFavoriteIconOnGameCards: Bool = false
+    var catalogWallpaperPreset: CatalogWallpaperPreset = .colorfulAbstract
+
+    // Stream HUD
+    var streamStatsMetrics: StreamStatsMetrics = .default
+    var hideStreamButtons: Bool = false
+    var streamKeyboardButtonPosition: NormalizedPoint = .trailingCenter
+    var showAntiAfkIndicator: Bool = false
+
+    // Sessions
+    var showSessionReportAfterStream: Bool = true
+    var sessionClockShowEveryMinutes: Int = 60
+    var sessionClockShowDurationSeconds: Int = 30
+
+    // Input
+    var microphoneMode: MicrophoneMode = .disabled
+    var mouseScrollSensitivity: Int = 30
+    var controllerMouseEmulation: Bool = false
+    var clipboardPasteEnabled: Bool = true
+    var touch: TouchSettings = .default
+
+    // Sound. Controller UI tones default off on iOS: the system already provides keyboard and
+    // selection feedback, and a second sound layer reads as a bug rather than a feature.
+    var controllerUISounds: Bool = false
+    var streamIntroSound: Bool = false
+    var queueReadySound: Bool = false
+
+    // Privacy
+    var analyticsOptOut: Bool = true
+    var analyticsConsentAsked: Bool = false
+
+    // Localization. Empty string means "follow the system".
+    var appLanguage: String = AppLanguage.systemDefault
+
+    var analyticsConsent: AnalyticsConsent {
+        AnalyticsConsent(asked: analyticsConsentAsked, optOut: analyticsOptOut)
+    }
+
     enum CodingKeys: String, CodingKey {
         case preferredRegion
         case preferredAspectRatio
@@ -763,6 +875,30 @@ struct AppSettings: Codable, Equatable {
         case streamerPreferences
         case favoriteGameIds
         case defaultGameVariantIds
+        case uiAccent
+        case expressiveUI
+        case liveSelectedOutlines
+        case showCardTitles
+        case showFavoriteIconOnGameCards
+        case catalogWallpaperPreset
+        case streamStatsMetrics
+        case hideStreamButtons
+        case streamKeyboardButtonPosition
+        case showAntiAfkIndicator
+        case showSessionReportAfterStream
+        case sessionClockShowEveryMinutes
+        case sessionClockShowDurationSeconds
+        case microphoneMode
+        case mouseScrollSensitivity
+        case controllerMouseEmulation
+        case clipboardPasteEnabled
+        case touch
+        case controllerUISounds
+        case streamIntroSound
+        case queueReadySound
+        case analyticsOptOut
+        case analyticsConsentAsked
+        case appLanguage
     }
 
     init(
@@ -859,6 +995,44 @@ struct AppSettings: Codable, Equatable {
             ?? .default
         favoriteGameIds = try container.decodeIfPresent([String].self, forKey: .favoriteGameIds) ?? []
         defaultGameVariantIds = try container.decodeIfPresent([String: String].self, forKey: .defaultGameVariantIds) ?? [:]
+
+        uiAccent = try container.decodeIfPresent(UIAccent.self, forKey: .uiAccent) ?? .openNow
+        expressiveUI = try container.decodeIfPresent(Bool.self, forKey: .expressiveUI) ?? true
+        liveSelectedOutlines = try container.decodeIfPresent(Bool.self, forKey: .liveSelectedOutlines) ?? true
+        showCardTitles = try container.decodeIfPresent(Bool.self, forKey: .showCardTitles) ?? true
+        showFavoriteIconOnGameCards = try container.decodeIfPresent(Bool.self, forKey: .showFavoriteIconOnGameCards) ?? false
+        catalogWallpaperPreset = try container.decodeIfPresent(CatalogWallpaperPreset.self, forKey: .catalogWallpaperPreset) ?? .colorfulAbstract
+        streamStatsMetrics = try container.decodeIfPresent(StreamStatsMetrics.self, forKey: .streamStatsMetrics) ?? .default
+        hideStreamButtons = try container.decodeIfPresent(Bool.self, forKey: .hideStreamButtons) ?? false
+        streamKeyboardButtonPosition = try container.decodeIfPresent(NormalizedPoint.self, forKey: .streamKeyboardButtonPosition) ?? .trailingCenter
+        showAntiAfkIndicator = try container.decodeIfPresent(Bool.self, forKey: .showAntiAfkIndicator) ?? false
+        showSessionReportAfterStream = try container.decodeIfPresent(Bool.self, forKey: .showSessionReportAfterStream) ?? true
+        sessionClockShowEveryMinutes = try container.decodeIfPresent(Int.self, forKey: .sessionClockShowEveryMinutes) ?? 60
+        sessionClockShowDurationSeconds = try container.decodeIfPresent(Int.self, forKey: .sessionClockShowDurationSeconds) ?? 30
+        // `keepMicEnabled` predates the three-state mode. Carry a true value forward as
+        // voice-activity rather than silently turning someone's microphone off on upgrade.
+        microphoneMode = try container.decodeIfPresent(MicrophoneMode.self, forKey: .microphoneMode)
+            ?? (keepMicEnabled ? .voiceActivity : .disabled)
+        mouseScrollSensitivity = try container.decodeIfPresent(Int.self, forKey: .mouseScrollSensitivity) ?? 30
+        controllerMouseEmulation = try container.decodeIfPresent(Bool.self, forKey: .controllerMouseEmulation) ?? false
+        clipboardPasteEnabled = try container.decodeIfPresent(Bool.self, forKey: .clipboardPasteEnabled) ?? true
+        if let storedTouch = try container.decodeIfPresent(TouchSettings.self, forKey: .touch) {
+            touch = storedTouch
+        } else {
+            // Installs that predate the touch-mode picker only had the Fortnite switch. Carry an
+            // explicit "off" forward rather than silently re-enabling touch for someone who
+            // turned it off on purpose.
+            var seeded = TouchSettings.default
+            if !fortnitePrefersNativeTouch { seeded.nativeTouchMode = .never }
+            touch = seeded
+        }
+        controllerUISounds = try container.decodeIfPresent(Bool.self, forKey: .controllerUISounds) ?? false
+        streamIntroSound = try container.decodeIfPresent(Bool.self, forKey: .streamIntroSound) ?? false
+        queueReadySound = try container.decodeIfPresent(Bool.self, forKey: .queueReadySound) ?? false
+        analyticsOptOut = try container.decodeIfPresent(Bool.self, forKey: .analyticsOptOut) ?? true
+        analyticsConsentAsked = try container.decodeIfPresent(Bool.self, forKey: .analyticsConsentAsked) ?? false
+        appLanguage = try container.decodeIfPresent(String.self, forKey: .appLanguage) ?? AppLanguage.systemDefault
+
         migrateLegacyTouchControlDefaults()
         normalizeStreamDefaults()
     }
@@ -915,6 +1089,19 @@ struct AppSettings: Codable, Equatable {
         maxBitrateMbps = StreamSettingsResolver.normalizedBitratePreset(maxBitrateMbps)
         posterSizeScale = min(max(posterSizeScale, 0.75), 1.4)
         sessionProxyUrl = sessionProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        mouseScrollSensitivity = min(max(mouseScrollSensitivity, 10), 100)
+        sessionClockShowEveryMinutes = min(max(sessionClockShowEveryMinutes, 5), 240)
+        sessionClockShowDurationSeconds = min(max(sessionClockShowDurationSeconds, 5), 120)
+        touch.normalize()
+        // Keep the legacy flag consistent with the picker so anything still reading it agrees.
+        fortnitePrefersNativeTouch = touch.nativeTouchMode != .never
+        // A HUD with every metric off cannot be recovered from inside the stream, so restore the
+        // defaults rather than persisting an empty overlay.
+        if !streamStatsMetrics.isMinimallyPopulated {
+            streamStatsMetrics = .default
+        }
+        // Keep the legacy flag in step so any code still reading it stays correct.
+        keepMicEnabled = microphoneMode.isEnabled
         if preferredRegion == "Auto" {
             preferredRegion = ""
         } else if !preferredRegion.isEmpty,
@@ -1544,7 +1731,7 @@ enum StreamSettingsResolver {
         switch preset {
         case .custom: maxHeight = .max
         case .lowDataSaver: maxHeight = 800
-        case .medium: maxHeight = 1_200
+        case .recommended, .medium: maxHeight = 1_200
         case .high: maxHeight = 1_600
         }
         let maxPlan = profilePlanLimit(for: membershipTier)
@@ -1570,7 +1757,7 @@ enum StreamSettingsResolver {
             updated.preferredFPS = 30
             updated.maxBitrateMbps = 12
             updated.preferredQuality = "Data Saver"
-        case .medium:
+        case .recommended, .medium:
             updated.preferredFPS = 60
             updated.maxBitrateMbps = 35
             updated.preferredQuality = "Balanced"
@@ -3432,7 +3619,7 @@ private actor GFNAPIClient {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let baseSource = streamingBaseUrl ?? session.provider.streamingServiceUrl
         let base = baseSource.hasSuffix("/") ? String(baseSource.dropLast()) : baseSource
-        let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
+        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings, profile: streamProfile)
         let sessionQuery = URLQueryItemEncoder.encode([
             "keyboardLayout": StreamSettingsResolver.normalizedKeyboardLayout(settings.keyboardLayout),
             "languageCode": StreamSettingsResolver.normalizedGameLanguage(settings.gameLanguage)
@@ -3799,8 +3986,8 @@ private actor GFNAPIClient {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let clientId = UUID().uuidString
         let claimDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? UUID().uuidString : deviceId
-        let deviceProfile = Self.streamDeviceProfile(for: game.title, settings: settings)
         let streamProfile = StreamSettingsResolver.profile(for: settings, membershipTier: session.user.membershipTier)
+        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings, profile: streamProfile)
         let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
         var effectiveServerIp = Self.remoteSessionTargetHost(
             serverIp: candidate.serverIp,
@@ -5268,13 +5455,24 @@ private actor GFNAPIClient {
         ]
     }
 
-    private static func streamDeviceProfile(for gameTitle: String, settings: AppSettings) -> StreamDeviceProfile {
-        guard settings.fortnitePrefersNativeTouch else { return .desktop }
-        let normalized = gameTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.contains("fortnite") {
-            return .mobileTouch
-        }
-        return .desktop
+    /// Whether to ask CloudMatch for a session under the mobile identity, which is what makes a
+    /// Windows build see a digitizer and switch to its touch UI.
+    ///
+    /// Previously this matched the literal string "fortnite", which missed every other touch title
+    /// in the catalog. It now reads the catalog's own `TOUCHSCREEN` capability, the same signal the
+    /// official client uses — and declines the mobile identity when the user has asked for a
+    /// profile the mobile allocation matrix would downgrade.
+    private static func streamDeviceProfile(
+        for game: CloudGame,
+        settings: AppSettings,
+        profile: StreamVideoProfile
+    ) -> StreamDeviceProfile {
+        NativeTouchSupport.prefersMobileIdentity(
+            mode: settings.touch.nativeTouchMode,
+            game: game,
+            profile: profile,
+            hdrEnabled: settings.hdrEnabled
+        ) ? .mobileTouch : .desktop
     }
 
     private static func generatePKCE() -> (verifier: String, challenge: String) {
@@ -5394,6 +5592,17 @@ final class OpenNOWStore: ObservableObject {
     @Published var lastError: String?
     @Published var isBootstrapping: Bool = true
     @Published private(set) var activeStreamSettings: AppSettings?
+
+    /// Set once a stream ends and cleared when the report sheet is dismissed. Nil the rest of the
+    /// time, which is what the presentation binding keys off.
+    @Published private(set) var sessionReport: SessionReport?
+
+    /// Observed queue movement for the current launch. Drives the trend line and the estimated
+    /// wait; both disappear when it has nothing honest to report.
+    @Published private(set) var queueTrend = QueueTrendEstimator()
+
+    /// A launch that is waiting on the user to confirm ending the session it would replace.
+    @Published private(set) var pendingLaunchConflict: LaunchConflict?
     #if os(tvOS)
     @Published private(set) var tvAuthLogs: [String] = []
     #endif
@@ -5405,6 +5614,9 @@ final class OpenNOWStore: ObservableObject {
     private var sessionElapsedTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
+    private var sessionReportAccumulator: StreamSessionReportAccumulator?
+    private var sessionReportSessionId: String?
+    private var queueTrendSessionId: String?
     private var accountRefreshTask: Task<Void, Never>?
     private var backgroundRefreshingAccountUserId: String?
     #if os(tvOS)
@@ -6388,8 +6600,50 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func scheduleLaunch(game: CloudGame, zoneUrl: String? = nil, launchOption: GameLaunchOption? = nil) {
+        let request = PendingLaunchRequest(game: game, zoneUrl: zoneUrl, launchOption: launchOption)
+        // Starting a second game silently discards the rig the first one is holding, which on the
+        // free tier also burns the hour. Ask first — this is the one confirmation in the launch
+        // path that is worth the interruption.
+        if let conflict = launchConflict(for: request) {
+            pendingLaunchConflict = conflict
+            return
+        }
+        performScheduledLaunch(request)
+    }
+
+    /// The live session a new launch would displace, if there is one.
+    func launchConflict(for request: PendingLaunchRequest) -> LaunchConflict? {
+        LaunchConflict.between(active: activeSession, request: request)
+    }
+
+    func confirmPendingLaunch() {
+        guard let conflict = pendingLaunchConflict else { return }
+        pendingLaunchConflict = nil
         launchTask?.cancel()
-        launchTask = Task { await self.launch(game: game, zoneUrl: zoneUrl, launchOption: launchOption) }
+        launchTask = Task {
+            await self.endSession()
+            guard !Task.isCancelled else { return }
+            await self.launch(
+                game: conflict.request.game,
+                zoneUrl: conflict.request.zoneUrl,
+                launchOption: conflict.request.launchOption
+            )
+        }
+    }
+
+    func cancelPendingLaunch() {
+        pendingLaunchConflict = nil
+    }
+
+    private func performScheduledLaunch(_ request: PendingLaunchRequest) {
+        launchTask?.cancel()
+        launchTask = Task {
+            await self.launch(
+                game: request.game,
+                zoneUrl: request.zoneUrl,
+                launchOption: request.launchOption
+            )
+        }
     }
 
     func handleIncomingURL(_ url: URL) {
@@ -6753,6 +7007,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func clearLocalSessionState(reason: String) {
+        finalizeSessionReport(reason: reason)
         activeSession = nil
         activeStreamSettings = nil
         setStreamSession(nil, reason: reason)
@@ -6982,10 +7237,73 @@ final class OpenNOWStore: ObservableObject {
     }
 
     func dismissStreamer() {
+        finalizeSessionReport(reason: "dismissStreamer")
         setStreamSession(nil, reason: "dismissStreamer")
         // Note: poll task stays cancelled (stopped in handoff).
         // The queue banner reflects last known activeSession state.
         // User can reopen via the banner tap.
+    }
+
+    // MARK: - Session report
+    //
+    // The accumulator is a plain object rather than published state: it is written to about once a
+    // second for as long as the session lasts, and invalidating the view hierarchy at that rate
+    // over live video is exactly the cost the HUD is designed to avoid.
+
+    /// Begins collecting telemetry for a stream. Safe to call again for the same session — a
+    /// reconnect must not throw away the measurements taken before it.
+    func beginSessionReport(for session: ActiveSession) {
+        guard sessionReportSessionId != session.id else { return }
+        sessionReportSessionId = session.id
+        let settings = currentStreamerSettings
+        let tier = subscription?.membershipTier ?? user?.membershipTier
+        let eligible = StreamSettingsResolver.profile(for: settings, membershipTier: tier)
+        sessionReportAccumulator = StreamSessionReportAccumulator(
+            launchProfile: StreamReportLaunchProfile(
+                gameTitle: session.game.title,
+                selectedProfile: StreamSettingsResolver.profile(for: settings, membershipTier: nil),
+                eligibleProfile: eligible,
+                initialProfile: eligible,
+                requestedCodec: settings.preferredCodec,
+                eligibleCodec: settings.preferredCodec,
+                hdrRequested: settings.hdrEnabled
+            )
+        )
+    }
+
+    func recordStreamRuntimeSample(_ sample: StreamRuntimeSample) {
+        sessionReportAccumulator?.record(sample)
+    }
+
+    func recordStreamRecovery(reason: String) {
+        let settings = currentStreamerSettings
+        let tier = subscription?.membershipTier ?? user?.membershipTier
+        sessionReportAccumulator?.recordRecovery(
+            reason: reason,
+            profile: StreamSettingsResolver.profile(for: settings, membershipTier: tier),
+            codec: settings.preferredCodec
+        )
+    }
+
+    /// Turns whatever was collected into a report. Produces nothing when the session never
+    /// delivered a measurable frame — an empty report is worse than no report.
+    func finalizeSessionReport(reason: String) {
+        guard let accumulator = sessionReportAccumulator else { return }
+        sessionReportAccumulator = nil
+        sessionReportSessionId = nil
+        guard settings.showSessionReportAfterStream, let report = accumulator.finish() else { return }
+        logger.notice(
+            "session report reason=\(reason, privacy: .public) score=\(report.score) samples=\(report.sampleCount)"
+        )
+        sessionReport = report
+    }
+
+    func dismissSessionReport(disableFutureReports: Bool = false) {
+        if disableFutureReports {
+            settings.showSessionReportAfterStream = false
+            persistSettings()
+        }
+        sessionReport = nil
     }
 
     private func restoreActiveSessionSurface(_ session: ActiveSession) {
@@ -7879,6 +8197,7 @@ final class OpenNOWStore: ObservableObject {
 
     private func syncTrackedSessionSurface() {
         let active = activeSession
+        updateQueueTrend(for: active)
         persistActiveSession(active)
         persistActiveStreamSettings(active == nil ? nil : activeStreamSettings)
         let state = settings.queueLiveActivitiesEnabled ? active.flatMap(queueActivityState(for:)) : nil
@@ -7890,6 +8209,22 @@ final class OpenNOWStore: ObservableObject {
                 state: state
             )
         }
+    }
+
+    /// Feeds the trend estimator, and resets it when the queue is no longer the thing on screen.
+    /// A stale trend from the previous launch is worse than no trend at all.
+    private func updateQueueTrend(for session: ActiveSession?) {
+        guard let session, session.status < 2, let position = session.queuePosition else {
+            if !queueTrend.samples.isEmpty {
+                queueTrend.reset()
+            }
+            return
+        }
+        if queueTrendSessionId != session.id {
+            queueTrendSessionId = session.id
+            queueTrend.reset()
+        }
+        queueTrend.record(position: position)
     }
 
     private func queueActivityStoreName(for session: ActiveSession) -> String {
@@ -7981,6 +8316,9 @@ final class OpenNOWStore: ObservableObject {
             "streamSession reason=\(reason, privacy: .public) \(oldId, privacy: .public) -> \(newId, privacy: .public) callsite=\(self.streamSessionChangeCallsite(), privacy: .public)"
         )
         streamSession = session
+        if let session {
+            beginSessionReport(for: session)
+        }
         syncTrackedSessionSurface()
     }
 

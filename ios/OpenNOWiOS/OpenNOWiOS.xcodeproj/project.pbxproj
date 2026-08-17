@@ -51,6 +51,7 @@
 		DD0000000000000000000002 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000012 /* WebRTC.xcframework */; };
 		DD0000000000000000000003 /* WebRTC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000012 /* WebRTC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EE0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000011 /* PrivacyInfo.xcprivacy */; };
+		DE000000000000000000000A /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DE000000000000000000001A /* Localizable.xcstrings */; };
 		F10000000000000000000001 /* OpenNOWiOSParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000011 /* OpenNOWiOSParityTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -141,6 +142,7 @@
 		CC0000000000000000000017 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DD0000000000000000000012 /* WebRTC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = WebRTC.xcframework; sourceTree = "<group>"; };
 		EE0000000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		DE000000000000000000001A /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		F10000000000000000000011 /* OpenNOWiOSParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWiOSParityTests.swift; sourceTree = "<group>"; };
 		F10000000000000000000012 /* OpenNOWiOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenNOWiOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -221,6 +223,7 @@
 				CC0000000000000000000011 /* QueueActivityAttributes.swift */,
 				CC0000000000000000000012 /* QueueLiveActivityManager.swift */,
 				EE0000000000000000000011 /* PrivacyInfo.xcprivacy */,
+				DE000000000000000000001A /* Localizable.xcstrings */,
 				0A1B2C3D4E5F6A7B8C9D2004 /* Assets.xcassets */,
 			);
 			path = OpenNOWiOS;
@@ -370,6 +373,7 @@
 			files = (
 				0A1B2C3D4E5F6A7B8C9D1004 /* Assets.xcassets in Resources */,
 				EE0000000000000000000001 /* PrivacyInfo.xcprivacy in Resources */,
+				DE000000000000000000000A /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

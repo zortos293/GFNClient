@@ -220,8 +220,11 @@ struct MainTabView: View {
         }
         // The report is presented over the tab surface rather than the streamer, so it survives
         // the streamer being torn down and never competes with the video layer for the screen.
+        // `Text(verbatim:)` because the title is composed from a game name at runtime. Passing a
+        // dynamic string as a LocalizedStringKey puts an empty key in the string catalog and
+        // gives translators nothing to work with.
         .confirmationDialog(
-            store.pendingLaunchConflict?.title ?? "",
+            Text(verbatim: store.pendingLaunchConflict?.title ?? ""),
             isPresented: Binding(
                 get: { store.pendingLaunchConflict != nil },
                 set: { if !$0 { store.cancelPendingLaunch() } }

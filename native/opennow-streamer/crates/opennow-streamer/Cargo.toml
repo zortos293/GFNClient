@@ -7,5 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 opennow-streamer-core = { path = "../opennow-streamer-core" }
+opennow-streamer-platform = { path = "../opennow-streamer-platform" }
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 serde_json.workspace = true

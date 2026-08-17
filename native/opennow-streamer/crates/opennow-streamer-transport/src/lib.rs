@@ -11,6 +11,7 @@ use opennow_streamer_protocol::{IceCandidate, IceServer, MediaConnectionInfo, Se
 use str0m::change::SdpOffer;
 use str0m::channel::{ChannelConfig, ChannelId, Reliability};
 use str0m::crypto::from_feature_flags;
+use str0m::media::{KeyframeRequestKind, Mid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 use thiserror::Error;
@@ -121,6 +122,9 @@ enum TransportCommand {
         bytes: Vec<u8>,
         partially_reliable: bool,
     },
+    RequestKeyframe {
+        mid: String,
+    },
     Stop,
 }
 
@@ -137,7 +141,18 @@ pub struct TransportSession {
     input_ready: Arc<AtomicBool>,
 }
 
+#[derive(Clone)]
+pub struct TransportControl {
+    commands: Sender<TransportCommand>,
+}
+
 impl TransportSession {
+    pub fn control(&self) -> TransportControl {
+        TransportControl {
+            commands: self.commands.clone(),
+        }
+    }
+
     pub fn add_remote_candidate(&self, candidate: &IceCandidate) -> Result<(), TransportError> {
         let candidate = normalize_remote_candidate(&candidate.candidate, self.media_endpoint);
         let candidate = candidate.strip_prefix("a=").unwrap_or(&candidate);
@@ -169,6 +184,14 @@ impl TransportSession {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
+    }
+}
+
+impl TransportControl {
+    pub fn request_keyframe(&self, mid: impl Into<String>) -> Result<(), TransportError> {
+        self.commands
+            .send(TransportCommand::RequestKeyframe { mid: mid.into() })
+            .map_err(|_| TransportError::Closed)
     }
 }
 
@@ -518,6 +541,29 @@ fn run_transport(
                         if let Some(mut channel) = rtc.channel(channel_id) {
                             let _ = channel.write(true, &bytes);
                         }
+                    }
+                }
+                Ok(TransportCommand::RequestKeyframe { mid }) => {
+                    let mid = Mid::from(mid.as_str());
+                    let Some(mut writer) = rtc.writer(mid) else {
+                        let _ = outputs.events.send(TransportEvent::Log(format!(
+                            "Unable to request keyframe for unknown media id {mid}"
+                        )));
+                        continue;
+                    };
+                    let kind = if writer.is_request_keyframe_possible(KeyframeRequestKind::Pli) {
+                        Some(KeyframeRequestKind::Pli)
+                    } else if writer.is_request_keyframe_possible(KeyframeRequestKind::Fir) {
+                        Some(KeyframeRequestKind::Fir)
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = kind
+                        && let Err(error) = writer.request_keyframe(None, kind)
+                    {
+                        let _ = outputs.events.send(TransportEvent::Log(format!(
+                            "Failed to request keyframe for {mid}: {error}"
+                        )));
                     }
                 }
                 Ok(TransportCommand::Stop) | Err(TryRecvError::Disconnected) => {

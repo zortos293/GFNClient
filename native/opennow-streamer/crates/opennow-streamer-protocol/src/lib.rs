@@ -22,7 +22,7 @@ pub struct Command {
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
-    pub surface: Option<Value>,
+    pub surface: Option<RenderSurface>,
     #[serde(default)]
     pub max_bitrate_kbps: Option<u32>,
     #[serde(default)]
@@ -50,6 +50,43 @@ pub struct NativeInput {
     pub payload_base64: String,
     #[serde(default)]
     pub partially_reliable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderSurface {
+    #[serde(default)]
+    pub rect: Option<RenderSurfaceRect>,
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default = "default_device_scale_factor")]
+    pub device_scale_factor: f32,
+    #[serde(default)]
+    pub window_handle: Option<String>,
+}
+
+impl Default for RenderSurface {
+    fn default() -> Self {
+        Self {
+            rect: None,
+            visible: false,
+            device_scale_factor: default_device_scale_factor(),
+            window_handle: None,
+        }
+    }
+}
+
+fn default_device_scale_factor() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderSurfaceRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
@@ -105,13 +142,16 @@ pub struct MediaConnectionInfo {
 pub struct Capabilities {
     pub protocol_version: u64,
     pub backend: &'static str,
-    pub fallback_reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<&'static str>,
     pub supports_offer_answer: bool,
     pub supports_remote_ice: bool,
     pub supports_local_ice: bool,
     pub supports_input: bool,
     pub supports_video_decode: bool,
     pub supports_video_present: bool,
+    pub supports_audio_decode: bool,
+    pub supports_audio_output: bool,
     pub video_backends: Vec<VideoBackendCapability>,
 }
 

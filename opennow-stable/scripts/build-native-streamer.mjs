@@ -82,7 +82,15 @@ if (!nativeTarget || platformKey === hostPlatformKey) {
     JSON.stringify({
       id: "verify-start",
       type: "start",
-      context: { session: { sessionId: "build-verification" } },
+      context: {
+        session: {
+          sessionId: "build-verification",
+          serverIp: "127.0.0.1",
+          iceServers: [],
+        },
+        settings: { codec: "H264" },
+        shortcuts: {},
+      },
     }),
     JSON.stringify({ id: "stop", type: "stop", reason: "build verification" }),
     "",
@@ -90,6 +98,11 @@ if (!nativeTarget || platformKey === hostPlatformKey) {
   const verify = spawnSync(platformBinary, [], {
     cwd: packageRoot,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      SDL_AUDIODRIVER: "dummy",
+      SDL_VIDEODRIVER: "dummy",
+    },
     input,
     timeout: 15_000,
   });
@@ -101,13 +114,14 @@ if (!nativeTarget || platformKey === hostPlatformKey) {
     .filter(Boolean)
     .map((line) => JSON.parse(line));
   const ready = messages.find((message) => message.id === "verify" && message.type === "ready");
-  const unavailable = messages.find((message) =>
-    message.id === "verify-start"
-    && message.type === "error"
-    && message.code === "transport-unavailable",
-  );
   const stopped = messages.find((message) => message.id === "stop" && message.type === "ok");
-  if (!ready || !unavailable || !stopped) {
+  const started = messages.find((message) => message.id === "verify-start" && message.type === "ok");
+  const capabilitiesComplete = ready?.capabilities?.supportsOfferAnswer === true
+    && ready.capabilities.supportsVideoDecode === true
+    && ready.capabilities.supportsVideoPresent === true
+    && ready.capabilities.supportsAudioDecode === true
+    && ready.capabilities.supportsAudioOutput === true;
+  if (!capabilitiesComplete || !started || !stopped) {
     throw new Error(`Native streamer verification returned an incomplete handshake: ${verify.stdout}`);
   }
 }

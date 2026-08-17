@@ -2,7 +2,7 @@
 
 This workspace is the clean replacement for the former GStreamer-based native streamer.
 
-The workspace owns the local process protocol, lifecycle state machine, standards-based WebRTC transport, and platform capability boundary. Platform decoders and presenters sit behind explicit capabilities; an unavailable backend is never reported as usable.
+The workspace owns the local process protocol, lifecycle state machine, standards-based WebRTC transport, and media output path. The baseline backend links OpenH264, Opus, and SDL from source, so it does not require a GStreamer or FFmpeg runtime.
 
 The executable retains the versioned JSON-lines process contract used by OpenNOW while the app shell is migrated away from Electron. It does not load or redistribute NVIDIA client libraries.
 
@@ -11,7 +11,7 @@ The executable retains the versioned JSON-lines process contract used by OpenNOW
 - `opennow-streamer-protocol`: versioned local IPC DTOs.
 - `opennow-streamer-core`: session lifecycle and command routing.
 - `opennow-streamer-transport`: ICE, DTLS-SRTP, RTP/RTCP, and SCTP data channels.
-- `opennow-streamer-platform`: platform decoder/presenter capability boundary.
+- `opennow-streamer-platform`: bounded media queues, OpenH264/Opus decode, SDL audio/video output, and platform-native Electron surface ownership.
 - `opennow-streamer`: process entry point.
 
 ## Checks
@@ -27,6 +27,12 @@ The Electron app's build wrapper also checks protocol-version parity, copies the
 npm --prefix opennow-stable run native:build
 ```
 
+## Platform integration
+
+The SDL presentation window is created hidden on the process main thread. Windows and X11/XWayland reparent it as an input-transparent child of the Electron native window. macOS keeps it as a non-activating, mouse-ignoring child `NSWindow` and converts renderer-relative surface rectangles through the Electron `NSView`. The executable runs `MainThreadHost` on its real main thread; stdin, WebRTC, and codec work run on named workers. This is required by AppKit and is checked with `pthread_main_np()` on macOS.
+
+Wayland does not provide a portable foreign-surface parenting protocol, so native presentation requires Electron's X11/XWayland mode on Linux. Hardware decoder entries remain unavailable until their implementations are linked; the built software backend advertises H.264 only.
+
 ## macOS validation
 
 Run the checks natively on each architecture rather than treating a Linux cross-check as macOS proof:
@@ -40,6 +46,6 @@ npm --prefix opennow-stable run native:build
 
 The CI package matrix runs this build on both Apple Silicon and Intel macOS runners before producing the DMG and ZIP. Release validation must additionally inspect the app bundle, verify its signature, launch the packaged child executable, and confirm fallback behavior on real hardware.
 
-## Current readiness gate
+## Runtime validation
 
-The app-facing executable, lifecycle boundary, ICE/DTLS-SRTP/RTP/SCTP transport implementation, and cross-platform build path are present. Decoded video presentation and audio output are not implemented, so the process deliberately reports the native backend as unavailable and OpenNOW uses Chromium WebRTC. Do not enable the native media path until decoder/presenter capabilities and authorized live-session conformance tests pass on Windows, Linux, and macOS.
+Unit tests synthesize and decode H.264 and Opus frames, verify drop-oldest queue behavior, and exercise pause/stop lifecycle. Release validation must additionally run an authorized live session on Windows, Linux/XWayland, Intel macOS, and Apple Silicon to validate WebRTC interoperability, A/V timing, Electron child-surface stacking, and device-specific audio output.

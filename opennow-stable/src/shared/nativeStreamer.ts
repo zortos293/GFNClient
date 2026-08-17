@@ -25,6 +25,8 @@ export interface NativeStreamerCapabilities {
   supportsInput: boolean;
   supportsVideoDecode: boolean;
   supportsVideoPresent: boolean;
+  supportsAudioDecode?: boolean;
+  supportsAudioOutput?: boolean;
   videoBackends?: NativeVideoBackendCapability[];
 }
 

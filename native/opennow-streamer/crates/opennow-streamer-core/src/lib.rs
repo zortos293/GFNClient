@@ -1,13 +1,18 @@
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use opennow_streamer_platform::video_backends;
+use opennow_streamer_platform::{
+    EncodedFrame, MediaCodec, MediaFeedback, MediaRuntime, MediaSession, MediaSink, PushOutcome,
+    supports_audio_decode, supports_audio_output, video_backends,
+};
 use opennow_streamer_protocol::{
     Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
 };
-use opennow_streamer_transport::{TransportEvent, TransportSession, negotiate};
+use opennow_streamer_transport::{TransportControl, TransportEvent, TransportSession, negotiate};
 use serde_json::{Value, json};
 
 pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
@@ -20,14 +25,18 @@ enum State {
     Connected,
 }
 
-const TRANSPORT_UNAVAILABLE: &str =
-    "Native streamer v2 transport is not ready for decoded presentation; web fallback is required";
+const ENCODED_MEDIA_QUEUE_CAPACITY: usize = 8;
 
 pub struct Engine {
     lifecycle: Arc<Mutex<Lifecycle>>,
     transport: Option<TransportSession>,
     events: Sender<Value>,
     media_consumer: Option<MediaConsumer>,
+    media_runtime: Option<MediaRuntime>,
+    media_session: Option<MediaSession>,
+    media_worker: Option<JoinHandle<()>>,
+    media_feedback: Option<Receiver<MediaFeedback>>,
+    feedback_worker: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug)]
@@ -48,6 +57,11 @@ impl Engine {
             transport: None,
             events,
             media_consumer: None,
+            media_runtime: None,
+            media_session: None,
+            media_worker: None,
+            media_feedback: None,
+            feedback_worker: None,
         }
     }
 
@@ -61,6 +75,29 @@ impl Engine {
             transport: None,
             events,
             media_consumer: Some(media_consumer),
+            media_runtime: None,
+            media_session: None,
+            media_worker: None,
+            media_feedback: None,
+            feedback_worker: None,
+        }
+    }
+
+    pub fn with_media_runtime(events: Sender<Value>, media_runtime: MediaRuntime) -> Self {
+        Self {
+            lifecycle: Arc::new(Mutex::new(Lifecycle {
+                state: State::Idle,
+                context: None,
+                generation: 0,
+            })),
+            transport: None,
+            events,
+            media_consumer: None,
+            media_runtime: Some(media_runtime),
+            media_session: None,
+            media_worker: None,
+            media_feedback: None,
+            feedback_worker: None,
         }
     }
 
@@ -72,7 +109,9 @@ impl Engine {
             "offer" => self.offer(command),
             "remote-ice" => self.remote_ice(command),
             "input" => self.input(command),
-            "input-paused" | "surface" | "bitrate" | "update-shortcuts" => Err(error(
+            "input-paused" => self.set_paused(command),
+            "surface" => self.update_surface(command),
+            "bitrate" | "update-shortcuts" => Err(error(
                 Some(&id),
                 "unsupported-command",
                 format!(
@@ -106,17 +145,21 @@ impl Engine {
             ));
         }
         let backends = video_backends();
-        let video_ready = backends.iter().any(|backend| backend.available);
+        let media_ready = self.media_runtime.is_some();
+        let video_ready = media_ready && backends.iter().any(|backend| backend.available);
         let capabilities = Capabilities {
             protocol_version: PROTOCOL_VERSION,
             backend: "native",
-            fallback_reason: TRANSPORT_UNAVAILABLE,
-            supports_offer_answer: false,
-            supports_remote_ice: false,
-            supports_local_ice: false,
-            supports_input: false,
+            fallback_reason: (!media_ready)
+                .then_some("Native streamer v2 requires an in-process decoded media runtime"),
+            supports_offer_answer: media_ready,
+            supports_remote_ice: media_ready,
+            supports_local_ice: media_ready,
+            supports_input: media_ready,
             supports_video_decode: video_ready,
             supports_video_present: video_ready,
+            supports_audio_decode: media_ready && supports_audio_decode(),
+            supports_audio_output: media_ready && supports_audio_output(),
             video_backends: backends,
         };
         Ok(vec![json!({
@@ -129,23 +172,75 @@ impl Engine {
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
         let context = parse_context(command.context, &command.id)?;
         validate_context(&context, &command.id)?;
-
         {
-            let mut lifecycle = lock_lifecycle(&self.lifecycle);
+            let lifecycle = lock_lifecycle(&self.lifecycle);
             if lifecycle.state != State::Idle {
                 return Err(invalid_state(&command.id, "start", lifecycle.state, "Idle"));
             }
-            lifecycle.generation = lifecycle.generation.wrapping_add(1);
-            lifecycle.context = Some(context);
-            lifecycle.state = State::Prepared;
+        }
+        if self.media_runtime.is_some()
+            && context
+                .settings
+                .get("codec")
+                .and_then(Value::as_str)
+                .is_some_and(|codec| !codec.eq_ignore_ascii_case("h264"))
+        {
+            return Err(error(
+                Some(&command.id),
+                "unsupported-video-codec",
+                "Native streamer v2 was built with H.264 decode only",
+            ));
         }
 
         if let Some(transport) = self.transport.take() {
             transport.stop();
         }
+        self.stop_media_resources();
+        if let Some(runtime) = self.media_runtime.clone() {
+            let (feedback_sender, feedback_receiver) = std::sync::mpsc::channel();
+            let session = runtime
+                .start(feedback_sender)
+                .map_err(|message| error(Some(&command.id), "media-output-unavailable", message))?;
+            let sink = session.sink();
+            let (media_consumer, media_receiver) =
+                std::sync::mpsc::sync_channel(ENCODED_MEDIA_QUEUE_CAPACITY);
+            let output = self.events.clone();
+            let media_worker = match thread::Builder::new()
+                .name("opennow-media-consumer".to_owned())
+                .spawn(move || consume_encoded_media(&output, media_receiver, sink))
+            {
+                Ok(worker) => worker,
+                Err(spawn_error) => {
+                    session.stop();
+                    return Err(error(
+                        Some(&command.id),
+                        "media-worker-failed",
+                        spawn_error.to_string(),
+                    ));
+                }
+            };
+            self.media_consumer = Some(media_consumer);
+            self.media_session = Some(session);
+            self.media_worker = Some(media_worker);
+            self.media_feedback = Some(feedback_receiver);
+        }
+
+        {
+            let mut lifecycle = lock_lifecycle(&self.lifecycle);
+            lifecycle.generation = lifecycle.generation.wrapping_add(1);
+            lifecycle.context = Some(context);
+            lifecycle.state = State::Prepared;
+        }
         let _ = self.events.send(event(
             "status",
-            json!({ "status": "ready", "message": "Native WebRTC session prepared" }),
+            json!({
+                "status": "ready",
+                "message": if self.media_runtime.is_some() {
+                    "H.264 video and Opus audio media path initialized"
+                } else {
+                    "Native WebRTC session prepared"
+                }
+            }),
         ));
         Ok(vec![response(command.id, "ok")])
     }
@@ -245,9 +340,35 @@ impl Engine {
         })?;
         let output = self.events.clone();
         let lifecycle = self.lifecycle.clone();
-        std::thread::spawn(move || {
-            while let Ok(event_value) = receiver.recv() {
-                forward_transport_event(&output, &lifecycle, generation, event_value);
+        let transport_control = negotiated.session.control();
+        let media_feedback = self.media_feedback.take();
+        let feedback_worker = thread::Builder::new()
+            .name("opennow-media-events".to_owned())
+            .spawn(move || {
+                forward_session_events(
+                    &output,
+                    &lifecycle,
+                    generation,
+                    receiver,
+                    media_feedback,
+                    transport_control,
+                );
+            });
+        self.feedback_worker = Some(match feedback_worker {
+            Ok(worker) => worker,
+            Err(spawn_error) => {
+                negotiated.session.stop();
+                let mut lifecycle = lock_lifecycle(&self.lifecycle);
+                if lifecycle.generation == generation && lifecycle.state == State::Negotiating {
+                    lifecycle.state = State::Prepared;
+                }
+                drop(lifecycle);
+                self.stop_media_resources();
+                return Err(error(
+                    Some(&command.id),
+                    "media-worker-failed",
+                    spawn_error.to_string(),
+                ));
             }
         });
         self.transport = Some(negotiated.session);
@@ -336,6 +457,51 @@ impl Engine {
         Ok(Vec::new())
     }
 
+    fn set_paused(&self, command: Command) -> Result<Vec<Value>, Value> {
+        let Some(runtime) = self.media_runtime.as_ref() else {
+            return Err(error(
+                Some(&command.id),
+                "unsupported-command",
+                "Native streamer has no media runtime for input-paused",
+            ));
+        };
+        let paused = command.paused.ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "missing-paused",
+                "Pause command does not include paused state",
+            )
+        })?;
+        runtime
+            .set_paused(paused)
+            .map_err(|message| error(Some(&command.id), "media-host-unavailable", message))?;
+        if let Some(media) = self.media_session.as_ref() {
+            media.set_paused(paused);
+        }
+        Ok(vec![response(command.id, "ok")])
+    }
+
+    fn update_surface(&self, command: Command) -> Result<Vec<Value>, Value> {
+        let Some(runtime) = self.media_runtime.as_ref() else {
+            return Err(error(
+                Some(&command.id),
+                "unsupported-command",
+                "Native streamer has no media runtime for surface",
+            ));
+        };
+        let surface = command.surface.ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "missing-surface",
+                "Surface command does not include a render surface",
+            )
+        })?;
+        runtime
+            .update_surface(surface)
+            .map_err(|message| error(Some(&command.id), "media-host-unavailable", message))?;
+        Ok(vec![response(command.id, "ok")])
+    }
+
     fn stop(&mut self, reason: &str) {
         let was_active = {
             let mut lifecycle = lock_lifecycle(&self.lifecycle);
@@ -348,11 +514,28 @@ impl Engine {
         if let Some(transport) = self.transport.take() {
             transport.stop();
         }
+        self.stop_media_resources();
         if was_active {
             let _ = self.events.send(event(
                 "status",
                 json!({ "status": "stopped", "message": reason }),
             ));
+        }
+    }
+
+    fn stop_media_resources(&mut self) {
+        if self.media_runtime.is_some() {
+            self.media_consumer = None;
+            if let Some(session) = self.media_session.take() {
+                session.stop();
+            }
+            if let Some(worker) = self.media_worker.take() {
+                let _ = worker.join();
+            }
+            self.media_feedback = None;
+        }
+        if let Some(worker) = self.feedback_worker.take() {
+            let _ = worker.join();
         }
     }
 }
@@ -492,6 +675,136 @@ fn forward_transport_event(
         }
     };
     let _ = output.send(value);
+}
+
+fn consume_encoded_media(
+    output: &Sender<Value>,
+    receiver: Receiver<EncodedMediaFrame>,
+    sink: MediaSink,
+) {
+    while let Ok(frame) = receiver.recv() {
+        let codec = if frame.codec.eq_ignore_ascii_case("h264") {
+            MediaCodec::H264
+        } else if frame.codec.eq_ignore_ascii_case("opus") {
+            MediaCodec::Opus { channels: 2 }
+        } else {
+            MediaCodec::Unsupported(frame.codec)
+        };
+        match sink.push(EncodedFrame {
+            mid: frame.mid,
+            codec,
+            data: frame.payload,
+            keyframe: frame.keyframe,
+            contiguous: frame.contiguous,
+        }) {
+            PushOutcome::Unsupported => {
+                let _ = output.send(event(
+                    "log",
+                    json!({
+                        "level": "warn",
+                        "message": "Dropping a frame for a codec not built into native streamer v2"
+                    }),
+                ));
+            }
+            PushOutcome::Closed => break,
+            PushOutcome::Queued | PushOutcome::DroppedOldest | PushOutcome::Paused => {}
+        }
+    }
+}
+
+fn forward_session_events(
+    output: &Sender<Value>,
+    lifecycle: &Mutex<Lifecycle>,
+    generation: u64,
+    transport_events: Receiver<TransportEvent>,
+    media_feedback: Option<Receiver<MediaFeedback>>,
+    transport: TransportControl,
+) {
+    let mut dropped = 0;
+    let mut last_drop_report = Instant::now();
+    loop {
+        if let Some(feedback) = media_feedback.as_ref() {
+            while let Ok(feedback) = feedback.try_recv() {
+                forward_media_feedback(
+                    output,
+                    lifecycle,
+                    generation,
+                    &transport,
+                    feedback,
+                    &mut dropped,
+                    &mut last_drop_report,
+                );
+            }
+        }
+        match transport_events.recv_timeout(Duration::from_millis(5)) {
+            Ok(transport_event) => {
+                let disconnected = matches!(transport_event, TransportEvent::Disconnected(_));
+                forward_transport_event(output, lifecycle, generation, transport_event);
+                if disconnected {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn forward_media_feedback(
+    output: &Sender<Value>,
+    lifecycle: &Mutex<Lifecycle>,
+    generation: u64,
+    transport: &TransportControl,
+    feedback: MediaFeedback,
+    dropped: &mut usize,
+    last_drop_report: &mut Instant,
+) {
+    if lock_lifecycle(lifecycle).generation != generation {
+        return;
+    }
+    match feedback {
+        MediaFeedback::RequestKeyframe { mid, reason } => {
+            let request_result = transport.request_keyframe(mid);
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "level": if request_result.is_ok() { "info" } else { "warn" },
+                    "message": format!("Requested a video keyframe: {reason}")
+                }),
+            ));
+        }
+        MediaFeedback::DecoderError { codec, message } => {
+            let _ = output.send(event(
+                "error",
+                json!({
+                    "code": "media-decode-error",
+                    "message": format!("{codec} decoder error: {message}")
+                }),
+            ));
+        }
+        MediaFeedback::OutputError { message } => {
+            let _ = output.send(event(
+                "error",
+                json!({ "code": "media-output-error", "message": message }),
+            ));
+        }
+        MediaFeedback::QueueDropped { media, count } => {
+            *dropped = dropped.saturating_add(count);
+            if last_drop_report.elapsed() >= Duration::from_secs(1) {
+                let _ = output.send(event(
+                    "log",
+                    json!({
+                        "level": "debug",
+                        "message": format!(
+                            "Low-latency {media} queues dropped {dropped} stale samples/frames"
+                        )
+                    }),
+                ));
+                *dropped = 0;
+                *last_drop_report = Instant::now();
+            }
+        }
+    }
 }
 
 #[cfg(test)]

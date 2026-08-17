@@ -879,7 +879,7 @@ export function App(): JSX.Element {
       enableL4S: settings.enableL4S,
       enableCloudGsync: settings.enableCloudGsync,
       clientMode: settings.streamClientMode,
-      transportMode: "webrtc",
+      transportMode: settings.transportMode,
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
       appLaunchMode: resolveAppLaunchMode({
@@ -905,6 +905,7 @@ export function App(): JSX.Element {
     settings.nativeTransitionDiagnostics,
     settings.resolution,
     settings.streamClientMode,
+    settings.transportMode,
     subscriptionInfo?.entitledResolutions,
   ]);
 

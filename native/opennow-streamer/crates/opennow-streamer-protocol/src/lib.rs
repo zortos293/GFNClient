@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 pub const PROTOCOL_VERSION: u64 = 4;
 
@@ -50,6 +50,54 @@ pub struct NativeInput {
     pub payload_base64: String,
     #[serde(default)]
     pub partially_reliable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContext {
+    pub session: Session,
+    pub settings: Value,
+    pub shortcuts: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvst_video: Option<Value>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    pub session_id: String,
+    pub server_ip: String,
+    #[serde(default)]
+    pub ice_servers: Vec<IceServer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_connection_info: Option<MediaConnectionInfo>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaConnectionInfo {
+    pub ip: String,
+    pub port: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<u32>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -143,5 +191,33 @@ mod tests {
         let value = error(None, "invalid-command", "bad JSON");
         assert!(value.get("id").is_none());
         assert_eq!(value["type"], "error");
+    }
+
+    #[test]
+    fn session_context_round_trips_required_and_forward_compatible_fields() {
+        let fixture = serde_json::json!({
+            "session": {
+                "sessionId": "synthetic-session",
+                "serverIp": "127-0-0-1.synthetic.invalid",
+                "iceServers": [],
+                "mediaConnectionInfo": {
+                    "ip": "198.51.100.20",
+                    "port": 18_784,
+                    "usage": 17,
+                    "futureEndpointField": true
+                },
+                "futureSessionField": "preserved"
+            },
+            "settings": { "codec": "H264", "fps": 60 },
+            "shortcuts": { "stopStream": "Ctrl+Shift+Q" },
+            "futureContextField": 42
+        });
+
+        let context: SessionContext = serde_json::from_value(fixture.clone()).expect("context");
+        assert_eq!(context.session.session_id, "synthetic-session");
+        assert_eq!(
+            serde_json::to_value(context).expect("serializable context"),
+            fixture
+        );
     }
 }

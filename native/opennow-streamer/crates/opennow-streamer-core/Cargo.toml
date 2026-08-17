@@ -11,3 +11,6 @@ opennow-streamer-platform = { path = "../opennow-streamer-platform" }
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 opennow-streamer-transport = { path = "../opennow-streamer-transport" }
 serde_json.workspace = true
+
+[dev-dependencies]
+str0m.workspace = true

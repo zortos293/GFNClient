@@ -1,36 +1,66 @@
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use opennow_streamer_platform::video_backends;
-use opennow_streamer_protocol::{Capabilities, Command, PROTOCOL_VERSION, error, event, response};
+use opennow_streamer_protocol::{
+    Capabilities, Command, PROTOCOL_VERSION, SessionContext, error, event, response,
+};
 use opennow_streamer_transport::{TransportEvent, TransportSession, negotiate};
 use serde_json::{Value, json};
+
+pub use opennow_streamer_transport::{EncodedMediaFrame, MediaConsumer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Idle,
     Prepared,
     Negotiating,
+    Connected,
 }
 
 const TRANSPORT_UNAVAILABLE: &str =
     "Native streamer v2 transport is not ready for decoded presentation; web fallback is required";
 
 pub struct Engine {
-    state: State,
-    context: Option<Value>,
+    lifecycle: Arc<Mutex<Lifecycle>>,
     transport: Option<TransportSession>,
     events: Sender<Value>,
+    media_consumer: Option<MediaConsumer>,
+}
+
+#[derive(Debug)]
+struct Lifecycle {
+    state: State,
+    context: Option<SessionContext>,
+    generation: u64,
 }
 
 impl Engine {
     pub fn new(events: Sender<Value>) -> Self {
         Self {
-            state: State::Idle,
-            context: None,
+            lifecycle: Arc::new(Mutex::new(Lifecycle {
+                state: State::Idle,
+                context: None,
+                generation: 0,
+            })),
             transport: None,
             events,
+            media_consumer: None,
+        }
+    }
+
+    pub fn with_media_consumer(events: Sender<Value>, media_consumer: MediaConsumer) -> Self {
+        Self {
+            lifecycle: Arc::new(Mutex::new(Lifecycle {
+                state: State::Idle,
+                context: None,
+                generation: 0,
+            })),
+            transport: None,
+            events,
+            media_consumer: Some(media_consumer),
         }
     }
 
@@ -42,9 +72,14 @@ impl Engine {
             "offer" => self.offer(command),
             "remote-ice" => self.remote_ice(command),
             "input" => self.input(command),
-            "input-paused" | "surface" | "bitrate" | "update-shortcuts" => {
-                Ok(vec![response(id, "ok")])
-            }
+            "input-paused" | "surface" | "bitrate" | "update-shortcuts" => Err(error(
+                Some(&id),
+                "unsupported-command",
+                format!(
+                    "Native streamer v2 cannot apply the {} command",
+                    command.kind
+                ),
+            )),
             "stop" => {
                 self.stop(command.reason.as_deref().unwrap_or("stopped"));
                 Ok(vec![response(id, "ok")])
@@ -92,41 +127,30 @@ impl Engine {
     }
 
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
-        Err(error(
-            Some(&command.id),
-            "transport-unavailable",
-            TRANSPORT_UNAVAILABLE,
-        ))
+        let context = parse_context(command.context, &command.id)?;
+        validate_context(&context, &command.id)?;
+
+        {
+            let mut lifecycle = lock_lifecycle(&self.lifecycle);
+            if lifecycle.state != State::Idle {
+                return Err(invalid_state(&command.id, "start", lifecycle.state, "Idle"));
+            }
+            lifecycle.generation = lifecycle.generation.wrapping_add(1);
+            lifecycle.context = Some(context);
+            lifecycle.state = State::Prepared;
+        }
+
+        if let Some(transport) = self.transport.take() {
+            transport.stop();
+        }
+        let _ = self.events.send(event(
+            "status",
+            json!({ "status": "ready", "message": "Native WebRTC session prepared" }),
+        ));
+        Ok(vec![response(command.id, "ok")])
     }
 
     fn offer(&mut self, command: Command) -> Result<Vec<Value>, Value> {
-        if self.state == State::Idle {
-            return Err(error(
-                Some(&command.id),
-                "not-started",
-                "Start must be sent before offer",
-            ));
-        }
-        let context = command
-            .context
-            .or_else(|| self.context.clone())
-            .ok_or_else(|| {
-                error(
-                    Some(&command.id),
-                    "missing-context",
-                    "Offer requires session context",
-                )
-            })?;
-        let server_ip = context
-            .pointer("/session/serverIp")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                error(
-                    Some(&command.id),
-                    "missing-server-ip",
-                    "Session context does not include serverIp",
-                )
-            })?;
         let offer_sdp = command.sdp.as_deref().ok_or_else(|| {
             error(
                 Some(&command.id),
@@ -134,28 +158,99 @@ impl Engine {
                 "Offer command does not include SDP",
             )
         })?;
+        let offered_context = command
+            .context
+            .map(|context| parse_context(Some(context), &command.id))
+            .transpose()?;
+        if let Some(context) = &offered_context {
+            validate_context(context, &command.id)?;
+        }
+        let (context, generation) = {
+            let mut lifecycle = lock_lifecycle(&self.lifecycle);
+            if lifecycle.state == State::Idle {
+                return Err(error(
+                    Some(&command.id),
+                    "not-started",
+                    "Start must be sent before offer",
+                ));
+            }
+            if lifecycle.state != State::Prepared {
+                return Err(invalid_state(
+                    &command.id,
+                    "offer",
+                    lifecycle.state,
+                    "Prepared",
+                ));
+            }
+            let Some(stored_context) = lifecycle.context.as_ref() else {
+                lifecycle.state = State::Idle;
+                return Err(error(
+                    Some(&command.id),
+                    "invalid-state",
+                    "Prepared lifecycle is missing its session context",
+                ));
+            };
+            let stored_session_id = stored_context.session.session_id.clone();
+            if let Some(context) = offered_context {
+                if context.session.session_id != stored_session_id {
+                    return Err(error(
+                        Some(&command.id),
+                        "session-mismatch",
+                        "Offer context does not match the prepared session",
+                    ));
+                }
+                lifecycle.context = Some(context);
+            }
+            let Some(context) = lifecycle.context.clone() else {
+                lifecycle.state = State::Idle;
+                return Err(error(
+                    Some(&command.id),
+                    "invalid-state",
+                    "Prepared lifecycle is missing its session context",
+                ));
+            };
+            lifecycle.state = State::Negotiating;
+            (context, lifecycle.generation)
+        };
+        let Some(media_consumer) = self.media_consumer.clone() else {
+            let mut lifecycle = lock_lifecycle(&self.lifecycle);
+            if lifecycle.generation == generation && lifecycle.state == State::Negotiating {
+                lifecycle.state = State::Prepared;
+            }
+            return Err(error(
+                Some(&command.id),
+                "media-consumer-unavailable",
+                "No in-process encoded media consumer is configured",
+            ));
+        };
         let threshold = partial_reliable_threshold(offer_sdp).unwrap_or(300);
         let (transport_events, receiver) = std::sync::mpsc::channel();
+        let negotiated = negotiate(
+            offer_sdp,
+            &context.session,
+            threshold,
+            transport_events,
+            media_consumer,
+        )
+        .map_err(|transport_error| {
+            let mut lifecycle = lock_lifecycle(&self.lifecycle);
+            if lifecycle.generation == generation && lifecycle.state == State::Negotiating {
+                lifecycle.state = State::Prepared;
+            }
+            error(
+                Some(&command.id),
+                transport_error.code(),
+                transport_error.to_string(),
+            )
+        })?;
         let output = self.events.clone();
+        let lifecycle = self.lifecycle.clone();
         std::thread::spawn(move || {
             while let Ok(event_value) = receiver.recv() {
-                forward_transport_event(&output, event_value);
+                forward_transport_event(&output, &lifecycle, generation, event_value);
             }
         });
-
-        self.state = State::Negotiating;
-        let negotiated = negotiate(offer_sdp, server_ip, threshold, transport_events).map_err(
-            |error_value| {
-                self.state = State::Prepared;
-                error(
-                    Some(&command.id),
-                    "webrtc-negotiation-failed",
-                    error_value.to_string(),
-                )
-            },
-        )?;
         self.transport = Some(negotiated.session);
-        self.context = Some(context);
         let _ = self.events.send(event(
             "local-ice",
             json!({ "candidate": negotiated.local_candidate }),
@@ -168,6 +263,15 @@ impl Engine {
     }
 
     fn remote_ice(&self, command: Command) -> Result<Vec<Value>, Value> {
+        let state = lock_lifecycle(&self.lifecycle).state;
+        if !matches!(state, State::Negotiating | State::Connected) {
+            return Err(invalid_state(
+                &command.id,
+                "remote-ice",
+                state,
+                "Negotiating or Connected",
+            ));
+        }
         let transport = self.transport.as_ref().ok_or_else(|| {
             error(
                 Some(&command.id),
@@ -187,7 +291,7 @@ impl Engine {
             .map_err(|transport_error| {
                 error(
                     Some(&command.id),
-                    "remote-ice-failed",
+                    transport_error.code(),
                     transport_error.to_string(),
                 )
             })?;
@@ -195,6 +299,15 @@ impl Engine {
     }
 
     fn input(&self, command: Command) -> Result<Vec<Value>, Value> {
+        let state = lock_lifecycle(&self.lifecycle).state;
+        if state != State::Connected {
+            return Err(invalid_state(
+                &command.id,
+                "input",
+                state,
+                "Connected with an initialized input channel",
+            ));
+        }
         let transport = self.transport.as_ref().ok_or_else(|| {
             error(
                 Some(&command.id),
@@ -216,7 +329,7 @@ impl Engine {
             .map_err(|transport_error| {
                 error(
                     Some(&command.id),
-                    "input-send-failed",
+                    transport_error.code(),
                     transport_error.to_string(),
                 )
             })?;
@@ -224,17 +337,23 @@ impl Engine {
     }
 
     fn stop(&mut self, reason: &str) {
+        let was_active = {
+            let mut lifecycle = lock_lifecycle(&self.lifecycle);
+            let was_active = lifecycle.state != State::Idle;
+            lifecycle.generation = lifecycle.generation.wrapping_add(1);
+            lifecycle.context = None;
+            lifecycle.state = State::Idle;
+            was_active
+        };
         if let Some(transport) = self.transport.take() {
             transport.stop();
         }
-        if self.state != State::Idle {
+        if was_active {
             let _ = self.events.send(event(
                 "status",
                 json!({ "status": "stopped", "message": reason }),
             ));
         }
-        self.context = None;
-        self.state = State::Idle;
     }
 }
 
@@ -252,7 +371,110 @@ fn partial_reliable_threshold(sdp: &str) -> Option<u16> {
     })
 }
 
-fn forward_transport_event(output: &Sender<Value>, transport_event: TransportEvent) {
+fn parse_context(context: Option<Value>, id: &str) -> Result<SessionContext, Value> {
+    let context = context.ok_or_else(|| {
+        error(
+            Some(id),
+            "missing-context",
+            "Command requires session context",
+        )
+    })?;
+    serde_json::from_value(context).map_err(|context_error| {
+        error(
+            Some(id),
+            "invalid-context",
+            format!("Invalid session context: {context_error}"),
+        )
+    })
+}
+
+fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
+    if context.session.session_id.trim().is_empty() {
+        return Err(error(
+            Some(id),
+            "invalid-context",
+            "Session context requires a non-empty sessionId",
+        ));
+    }
+    if context.session.server_ip.trim().is_empty() {
+        return Err(error(
+            Some(id),
+            "invalid-context",
+            "Session context requires a non-empty serverIp endpoint",
+        ));
+    }
+    if !context.settings.is_object() || !context.shortcuts.is_object() {
+        return Err(error(
+            Some(id),
+            "invalid-context",
+            "Session context settings and shortcuts must be objects",
+        ));
+    }
+    if context
+        .session
+        .ice_servers
+        .iter()
+        .any(|server| server.urls.is_empty() || server.urls.iter().any(|url| url.trim().is_empty()))
+    {
+        return Err(error(
+            Some(id),
+            "invalid-context",
+            "Every ICE server requires at least one non-empty URL",
+        ));
+    }
+    if let Some(endpoint) = &context.session.media_connection_info {
+        if endpoint.ip.trim().is_empty() || endpoint.port == 0 || endpoint.port > u16::MAX.into() {
+            return Err(error(
+                Some(id),
+                "invalid-context",
+                "mediaConnectionInfo requires a hostname and a port in 1..=65535",
+            ));
+        }
+    }
+    serde_json::to_value(context).map_err(|context_error| {
+        error(
+            Some(id),
+            "invalid-context",
+            format!("Session context is not serializable: {context_error}"),
+        )
+    })?;
+    Ok(())
+}
+
+fn invalid_state(id: &str, command: &str, state: State, required: &str) -> Value {
+    error(
+        Some(id),
+        "invalid-state",
+        format!("Cannot apply {command} while lifecycle is {state:?}; required state: {required}"),
+    )
+}
+
+fn lock_lifecycle(lifecycle: &Mutex<Lifecycle>) -> MutexGuard<'_, Lifecycle> {
+    lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn forward_transport_event(
+    output: &Sender<Value>,
+    lifecycle: &Mutex<Lifecycle>,
+    generation: u64,
+    transport_event: TransportEvent,
+) {
+    {
+        let mut lifecycle = lock_lifecycle(lifecycle);
+        if lifecycle.generation != generation {
+            return;
+        }
+        match &transport_event {
+            TransportEvent::Connected => lifecycle.state = State::Connected,
+            TransportEvent::Disconnected(_) => {
+                lifecycle.context = None;
+                lifecycle.state = State::Idle;
+            }
+            _ => {}
+        }
+    }
     let value = match transport_event {
         TransportEvent::Connected => event(
             "status",
@@ -265,21 +487,6 @@ fn forward_transport_event(output: &Sender<Value>, transport_event: TransportEve
             "input-ready",
             json!({ "protocolVersion": protocol_version }),
         ),
-        TransportEvent::MediaFrame {
-            mid,
-            codec,
-            bytes,
-            keyframe,
-            contiguous,
-        } => event(
-            "log",
-            json!({
-                "level": "debug",
-                "message": format!(
-                    "Received {codec} frame on {mid}: {bytes} bytes, keyframe={keyframe}, contiguous={contiguous}"
-                ),
-            }),
-        ),
         TransportEvent::Log(message) => {
             event("log", json!({ "level": "warn", "message": message }))
         }
@@ -290,17 +497,59 @@ fn forward_transport_event(output: &Sender<Value>, transport_event: TransportEve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+    use str0m::media::{Direction, MediaKind};
+    use str0m::{Candidate, RtcConfig};
+
+    fn command(value: Value) -> Command {
+        serde_json::from_value(value).expect("command")
+    }
+
+    fn synthetic_context(session_id: &str, ice_servers: Value) -> Value {
+        json!({
+            "session": {
+                "sessionId": session_id,
+                "serverIp": "127-0-0-1.synthetic.invalid",
+                "iceServers": ice_servers,
+                "mediaConnectionInfo": {
+                    "ip": "127-0-0-1.media.synthetic.invalid",
+                    "port": 18_784,
+                    "usage": 17
+                },
+                "syntheticExtension": "preserved"
+            },
+            "settings": { "codec": "H264", "fps": 60 },
+            "shortcuts": { "stopStream": "Ctrl+Shift+Q" },
+            "syntheticContextExtension": true
+        })
+    }
+
+    fn synthetic_offer() -> String {
+        opennow_streamer_transport::install_crypto();
+        let mut offerer = RtcConfig::new().build(Instant::now());
+        offerer.add_local_candidate(
+            Candidate::host("127.0.0.1:49152".parse().expect("candidate address"), "udp")
+                .expect("local candidate"),
+        );
+        let mut change = offerer.sdp_api();
+        change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+        let (offer, _pending) = change.apply().expect("synthetic offer");
+        offer.to_sdp_string()
+    }
+
+    fn lifecycle_state(engine: &Engine) -> State {
+        lock_lifecycle(&engine.lifecycle).state
+    }
 
     #[test]
     fn hello_reports_honest_transport_only_capabilities() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
-        let command: Command = serde_json::from_value(json!({
+        let command = command(json!({
             "id": "hello",
             "type": "hello",
             "protocolVersion": PROTOCOL_VERSION,
-        }))
-        .expect("command");
+        }));
         let (responses, _) = engine.handle(command);
         assert_eq!(responses[0]["type"], "ready");
         assert_eq!(responses[0]["capabilities"]["supportsOfferAnswer"], false);
@@ -316,18 +565,275 @@ mod tests {
     }
 
     #[test]
-    fn start_fails_closed_until_media_is_implemented() {
-        let (sender, _receiver) = std::sync::mpsc::channel();
+    fn start_validates_stores_context_and_prepares_session() {
+        let (sender, receiver) = std::sync::mpsc::channel();
         let mut engine = Engine::new(sender);
-        let command: Command = serde_json::from_value(json!({
+        let context = synthetic_context("synthetic-session", json!([]));
+        let start = command(json!({
             "id": "start",
             "type": "start",
-            "context": { "session": { "sessionId": "session" } },
-        }))
-        .expect("command");
-        let (responses, _) = engine.handle(command);
+            "context": context,
+        }));
+        let (responses, _) = engine.handle(start);
+
+        assert_eq!(responses[0]["type"], "ok");
+        let lifecycle = lock_lifecycle(&engine.lifecycle);
+        assert_eq!(lifecycle.state, State::Prepared);
+        let stored = serde_json::to_value(lifecycle.context.as_ref().expect("stored context"))
+            .expect("serializable stored context");
+        assert_eq!(stored["session"]["sessionId"], "synthetic-session");
+        assert_eq!(stored["session"]["syntheticExtension"], "preserved");
+        assert_eq!(stored["syntheticContextExtension"], true);
+        drop(lifecycle);
+        let status = receiver.recv().expect("ready status");
+        assert_eq!(status["status"], "ready");
+    }
+
+    #[test]
+    fn start_rejects_invalid_and_duplicate_sessions() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let invalid = command(json!({
+            "id": "invalid",
+            "type": "start",
+            "context": {
+                "session": { "sessionId": "", "serverIp": "host", "iceServers": [] },
+                "settings": {},
+                "shortcuts": {}
+            }
+        }));
+        let (responses, _) = engine.handle(invalid);
+        assert_eq!(responses[0]["code"], "invalid-context");
+        assert_eq!(lifecycle_state(&engine), State::Idle);
+
+        for id in ["first", "duplicate"] {
+            let start = command(json!({
+                "id": id,
+                "type": "start",
+                "context": synthetic_context("synthetic-session", json!([])),
+            }));
+            let (responses, _) = engine.handle(start);
+            if id == "first" {
+                assert_eq!(responses[0]["type"], "ok");
+            } else {
+                assert_eq!(responses[0]["code"], "invalid-state");
+            }
+        }
+    }
+
+    #[test]
+    fn offer_is_reachable_and_reports_typed_ice_server_limitation() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
+        let mut engine = Engine::with_media_consumer(sender, media_sender);
+        let context = synthetic_context(
+            "synthetic-session",
+            json!([{
+                "urls": ["stun:stun.synthetic.invalid:3478", "turn:turn.synthetic.invalid:3478"],
+                "username": "synthetic-user",
+                "credential": "synthetic-credential"
+            }]),
+        );
+        let (responses, _) = engine.handle(command(json!({
+            "id": "start",
+            "type": "start",
+            "context": context.clone(),
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "offer",
+            "type": "offer",
+            "context": context,
+            "sdp": "v=0\r\n"
+        })));
         assert_eq!(responses[0]["type"], "error");
-        assert_eq!(responses[0]["code"], "transport-unavailable");
-        assert_eq!(engine.state, State::Idle);
+        assert_eq!(responses[0]["code"], "ice-servers-unsupported");
+        assert!(
+            responses[0]["message"]
+                .as_str()
+                .is_some_and(|message| { message.contains("stun") && message.contains("turn") })
+        );
+        assert_eq!(lifecycle_state(&engine), State::Prepared);
+    }
+
+    #[test]
+    fn offer_fails_typed_when_no_in_process_media_consumer_exists() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let context = synthetic_context("synthetic-session", json!([]));
+        let (responses, _) = engine.handle(command(json!({
+            "id": "start",
+            "type": "start",
+            "context": context.clone(),
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "offer",
+            "type": "offer",
+            "context": context,
+            "sdp": "v=0\r\n"
+        })));
+
+        assert_eq!(responses[0]["code"], "media-consumer-unavailable");
+        assert_eq!(lifecycle_state(&engine), State::Prepared);
+    }
+
+    #[test]
+    fn prepared_session_negotiates_synthetic_offer_for_typed_media_consumer() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
+        let mut engine = Engine::with_media_consumer(sender, media_sender);
+        let context = synthetic_context("synthetic-session", json!([]));
+        let (responses, _) = engine.handle(command(json!({
+            "id": "start",
+            "type": "start",
+            "context": context.clone(),
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "offer",
+            "type": "offer",
+            "context": context,
+            "sdp": synthetic_offer()
+        })));
+
+        assert_eq!(responses[0]["type"], "answer");
+        assert!(
+            responses[0]["answer"]["sdp"]
+                .as_str()
+                .is_some_and(|sdp| sdp.contains("m=video") && !sdp.contains("m=video 0"))
+        );
+        assert_eq!(lifecycle_state(&engine), State::Negotiating);
+        assert!(
+            receiver
+                .try_iter()
+                .any(|value| value["type"] == "local-ice")
+        );
+    }
+
+    #[test]
+    fn disconnect_clears_context_and_stale_disconnect_cannot_clear_new_session() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender.clone());
+        let (responses, _) = engine.handle(command(json!({
+            "id": "first",
+            "type": "start",
+            "context": synthetic_context("first-session", json!([])),
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+        let first_generation = lock_lifecycle(&engine.lifecycle).generation;
+        forward_transport_event(
+            &sender,
+            &engine.lifecycle,
+            first_generation,
+            TransportEvent::Disconnected("synthetic disconnect".to_owned()),
+        );
+        {
+            let lifecycle = lock_lifecycle(&engine.lifecycle);
+            assert_eq!(lifecycle.state, State::Idle);
+            assert!(lifecycle.context.is_none());
+        }
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "second",
+            "type": "start",
+            "context": synthetic_context("second-session", json!([])),
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+        forward_transport_event(
+            &sender,
+            &engine.lifecycle,
+            first_generation,
+            TransportEvent::Disconnected("late stale disconnect".to_owned()),
+        );
+        let lifecycle = lock_lifecycle(&engine.lifecycle);
+        assert_eq!(lifecycle.state, State::Prepared);
+        assert_eq!(
+            lifecycle
+                .context
+                .as_ref()
+                .map(|value| value.session.session_id.as_str()),
+            Some("second-session")
+        );
+        drop(lifecycle);
+
+        let events = receiver.try_iter().collect::<Vec<_>>();
+        assert!(events.iter().any(|value| value["status"] == "stopped"));
+        assert!(
+            !events
+                .iter()
+                .any(|value| value["message"] == "late stale disconnect")
+        );
+    }
+
+    #[test]
+    fn encoded_media_consumer_is_typed_in_process_and_preserves_arc_payload() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (media_sender, media_receiver) = std::sync::mpsc::sync_channel(4);
+        let mut engine = Engine::with_media_consumer(sender, media_sender);
+        let (responses, _) = engine.handle(command(json!({
+            "id": "start",
+            "type": "start",
+            "context": synthetic_context("synthetic-session", json!([])),
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+        let payload: Arc<[u8]> = Arc::from([1_u8, 2, 3]);
+        engine
+            .media_consumer
+            .as_ref()
+            .expect("media consumer")
+            .send(EncodedMediaFrame {
+                mid: "video-0".to_owned(),
+                codec: "H264".to_owned(),
+                payload: payload.clone(),
+                rtp_timestamp: 90_000,
+                clock_rate_hz: 90_000,
+                received_at_us: 1_500,
+                keyframe: true,
+                contiguous: true,
+            })
+            .expect("frame delivery");
+
+        let frame = media_receiver.recv().expect("encoded frame");
+        assert!(Arc::ptr_eq(&frame.payload, &payload));
+        assert_eq!(frame.rtp_timestamp, 90_000);
+        assert_eq!(frame.clock_rate_hz, 90_000);
+        assert_eq!(frame.received_at_us, 1_500);
+        assert!(
+            receiver
+                .try_iter()
+                .all(|value| value["type"] != "encoded-media")
+        );
+    }
+
+    #[test]
+    fn unapplied_commands_are_rejected_and_stop_clears_context() {
+        let (sender, _receiver) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(sender);
+        let (responses, _) = engine.handle(command(json!({
+            "id": "surface",
+            "type": "surface",
+            "surface": {}
+        })));
+        assert_eq!(responses[0]["code"], "unsupported-command");
+
+        let (responses, _) = engine.handle(command(json!({
+            "id": "start",
+            "type": "start",
+            "context": synthetic_context("synthetic-session", json!([])),
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+        let (responses, _) = engine.handle(command(json!({
+            "id": "stop",
+            "type": "stop",
+            "reason": "synthetic test complete"
+        })));
+        assert_eq!(responses[0]["type"], "ok");
+        let lifecycle = lock_lifecycle(&engine.lifecycle);
+        assert_eq!(lifecycle.state, State::Idle);
+        assert!(lifecycle.context.is_none());
     }
 }

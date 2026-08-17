@@ -17,3 +17,6 @@ str0m = { workspace = true, features = ["apple-crypto"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 str0m = { workspace = true, features = ["rust-crypto"] }
+
+[dev-dependencies]
+serde_json.workspace = true

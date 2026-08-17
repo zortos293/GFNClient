@@ -340,6 +340,19 @@ jobs:
         with:
           arch: arm64
 
+      - name: Configure Windows ARM64 CMake generator
+        if: matrix.native_target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: '"CMAKE_GENERATOR=NMake Makefiles" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+
+      - name: Pin CMake for bundled SDL2
+        if: matrix.native_build == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/pip" install --disable-pip-version-check cmake==3.31.6
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
+
       - name: Install Rust target
         if: matrix.native_build == 'true' && matrix.native_target != ''
         run: rustup target add ${{ matrix.native_target }}

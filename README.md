@@ -68,6 +68,12 @@ OpenNOW is a community-built Electron app for playing GeForce NOW from an open-s
 
 Grab the latest desktop build from [GitHub Releases](https://github.com/OpenCloudGaming/OpenNOW/releases).
 
+### Desktop updates
+
+Packaged desktop builds include update controls under **Settings → About**. Automatic checks are enabled by default and query the selected Stable or Nightly GitHub Releases channel after startup and periodically while OpenNOW is running. OpenNOW does not silently download or install an update: use **Download Update**, then **Restart to Install**, when a new version is available.
+
+Updates are disabled in development builds and secondary Windows instances. On Linux, in-app updates require either a writable AppImage location or a Debian-compatible system with `dpkg` or `apt`; other installations must update manually from GitHub Releases.
+
 ### Run two instances on Windows
 
 OpenNOW remains single-instance by default. To open one additional, independent client, start the installed executable with the `--secondary` switch from PowerShell or a shortcut:

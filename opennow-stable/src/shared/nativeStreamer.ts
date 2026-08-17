@@ -23,6 +23,8 @@ export interface NativeStreamerCapabilities {
   supportsRemoteIce: boolean;
   supportsLocalIce: boolean;
   supportsInput: boolean;
+  supportsVideoDecode: boolean;
+  supportsVideoPresent: boolean;
   videoBackends?: NativeVideoBackendCapability[];
 }
 

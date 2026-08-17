@@ -152,7 +152,6 @@ test("buildNativeStreamerSessionContext forwards requested/finalized streaming f
       enableL4S: true,
       enableCloudGsync: true,
       clientMode: "native",
-      nativeStreamerBackend: "gstreamer",
       nativeCloudGsyncMode: "auto",
       nativeTransitionDiagnostics: {
         forceQueueMode: "adaptive",
@@ -249,10 +248,10 @@ test("isNativeExternalRendererSupported is Windows-only", () => {
 
   const status = createUnsupportedNativeStreamerStatus();
   assert.equal(status.detected, false);
-  assert.equal(status.gstreamerAvailable, false);
+  assert.equal(status.available, false);
   assert.equal(status.supportsOfferAnswer, false);
   assert.equal(status.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
-  assert.equal(status.gstreamerRuntime.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
+  assert.equal(status.runtime.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
 });
 
 test("NVST transport stays disabled and normalizes to WebRTC", () => {

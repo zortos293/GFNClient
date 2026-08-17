@@ -1,0 +1,11 @@
+[package]
+name = "opennow-streamer-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+str0m.workspace = true
+thiserror.workspace = true

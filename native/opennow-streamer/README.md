@@ -1,14 +1,45 @@
-# OpenNOW Native Streamer
+# OpenNOW Native Streamer v2
 
-This crate contains OpenNOW's native Rust streaming infrastructure.
+This workspace is the clean replacement for the former GStreamer-based native streamer.
 
-> [!NOTE]
-> Native streamer / native streaming is experimental. Issues can be platform-specific and users may see fallback to Chromium/WebRTC; report problems on [GitHub Issues](https://github.com/OpenCloudGaming/OpenNOW/issues) or [Discord](https://discord.gg/8EJYaJcNfD).
+The workspace owns the local process protocol, lifecycle state machine, standards-based WebRTC transport, and platform capability boundary. Platform decoders and presenters sit behind explicit capabilities; an unavailable backend is never reported as usable.
 
-Canonical native streamer, WebRTC, GStreamer, packaging, and development documentation lives at [opennow.zortos.me](https://opennow.zortos.me). This README is intentionally only a pointer so repository docs do not drift from the site.
+The executable retains the versioned JSON-lines process contract used by OpenNOW while the app shell is migrated away from Electron. It does not load or redistribute NVIDIA client libraries.
 
-## Linux runtime requirements
+## Crates
 
-Linux native video is embedded into the Electron window through an X11 child surface and `GstVideoOverlay`. OpenNOW defaults its Linux Electron shell to X11, which also works on Wayland desktops through XWayland. An explicit pure-Wayland launch is rejected with a diagnostic instead of starting an unmanaged GStreamer window that can remain invisible behind Electron.
+- `opennow-streamer-protocol`: versioned local IPC DTOs.
+- `opennow-streamer-core`: session lifecycle and command routing.
+- `opennow-streamer-transport`: ICE, DTLS-SRTP, RTP/RTCP, and SCTP data channels.
+- `opennow-streamer-platform`: platform decoder/presenter capability boundary.
+- `opennow-streamer`: process entry point.
 
-The distro GStreamer runtime must provide WebRTC, the selected codec parser/depayloader, a compatible X11 video sink, and at least one decoder. Hardware decode is preferred, but unavailable hardware plugins fall back to the native GStreamer software decoder. If a hardware decoder starts but produces no frames while audio and RTP remain active, OpenNOW reconnects the same native session once with software decoding.
+## Checks
+
+```sh
+cargo test --manifest-path native/opennow-streamer/Cargo.toml
+cargo build --manifest-path native/opennow-streamer/Cargo.toml --release
+```
+
+The Electron app's build wrapper also checks protocol-version parity, copies the executable into the platform package directory, and runs a JSON-lines `hello`/`stop` process smoke test:
+
+```sh
+npm --prefix opennow-stable run native:build
+```
+
+## macOS validation
+
+Run the checks natively on each architecture rather than treating a Linux cross-check as macOS proof:
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+OPENNOW_NATIVE_STREAMER_TARGET="$(rustc -vV | sed -n 's/^host: //p')" \
+OPENNOW_NATIVE_STREAMER_PLATFORM_KEY="darwin-$(uname -m | sed 's/arm64/arm64/;s/x86_64/x64/')" \
+npm --prefix opennow-stable run native:build
+```
+
+The CI package matrix runs this build on both Apple Silicon and Intel macOS runners before producing the DMG and ZIP. Release validation must additionally inspect the app bundle, verify its signature, launch the packaged child executable, and confirm fallback behavior on real hardware.
+
+## Current readiness gate
+
+The app-facing executable, lifecycle boundary, ICE/DTLS-SRTP/RTP/SCTP transport implementation, and cross-platform build path are present. Decoded video presentation and audio output are not implemented, so the process deliberately reports the native backend as unavailable and OpenNOW uses Chromium WebRTC. Do not enable the native media path until decoder/presenter capabilities and authorized live-session conformance tests pass on Windows, Linux, and macOS.

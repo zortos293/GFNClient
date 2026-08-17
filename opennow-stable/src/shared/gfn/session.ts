@@ -8,7 +8,6 @@ import type {
   VideoCodec,
 } from "./stream";
 import type {
-  NativeStreamerBackendPreference,
   NativeStreamerFeatureMode,
   StreamTransportMode,
 } from "./nativeStreamer";
@@ -34,7 +33,6 @@ export interface StreamSettings {
   /** Renderer-selected client path; main uses this to apply native-only Cloud G-Sync gating. */
   clientMode?: StreamClientMode;
   /** Selected native streamer backend; stub cannot support Cloud G-Sync presentation. */
-  nativeStreamerBackend?: NativeStreamerBackendPreference;
   /** Native media transport; legacy NVST values normalize to WebRTC. */
   transportMode?: StreamTransportMode;
   /** Native-only override for Cloud G-Sync display detection. */

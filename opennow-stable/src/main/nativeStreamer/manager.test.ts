@@ -74,7 +74,6 @@ function createManager(): {
 } {
   const manager = new NativeStreamerManager({
     mainDir: "",
-    getBackendPreference: () => "auto",
     getVideoBackendPreference: () => "auto",
     getExecutablePathOverride: () => "",
     getCloudGsyncMode: () => "auto",
@@ -98,7 +97,6 @@ test("Linux decoder startup timeout requests one native software retry", () => {
   let recoveryMessage = "";
   const manager = new NativeStreamerManager({
     mainDir: "",
-    getBackendPreference: () => "auto",
     getVideoBackendPreference: () => "nvdec",
     getExecutablePathOverride: () => "",
     getCloudGsyncMode: () => "auto",
@@ -175,11 +173,13 @@ test("input writes tolerate a child exit race but still throw unrelated failures
   internals.activeSessionId = "session";
   internals.capabilities = {
     protocolVersion: 4,
-    backend: "gstreamer",
+    backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
     supportsLocalIce: true,
     supportsInput: true,
+    supportsVideoDecode: true,
+    supportsVideoPresent: true,
   };
   fake.stdin.writeImpl = () => {
     throw writeError("ERR_STREAM_DESTROYED");
@@ -200,11 +200,13 @@ test("input writes tolerate a child exit race but still throw unrelated failures
   internals.activeSessionId = "session";
   internals.capabilities = {
     protocolVersion: 4,
-    backend: "gstreamer",
+    backend: "native",
     supportsOfferAnswer: true,
     supportsRemoteIce: true,
     supportsLocalIce: true,
     supportsInput: true,
+    supportsVideoDecode: true,
+    supportsVideoPresent: true,
   };
 
   assert.throws(

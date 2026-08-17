@@ -879,7 +879,6 @@ export function App(): JSX.Element {
       enableL4S: settings.enableL4S,
       enableCloudGsync: settings.enableCloudGsync,
       clientMode: settings.streamClientMode,
-      nativeStreamerBackend: "gstreamer",
       transportMode: "webrtc",
       nativeCloudGsyncMode: settings.nativeCloudGsyncMode,
       nativeTransitionDiagnostics: settings.nativeTransitionDiagnostics,
@@ -3095,7 +3094,7 @@ export function App(): JSX.Element {
               statsPosition={settings.statsOverlayPosition}
               showNativeStats={settings.showNativeStreamerStats}
               nativeInputCaptureActive={nativeInputCaptureActive}
-              gstreamerEnabled={settings.streamClientMode === "native"}
+              nativeStreamingEnabled={settings.streamClientMode === "native"}
               nativeExternalRenderer={settings.nativeExternalRenderer}
               shortcuts={{
                 toggleStats: formatShortcutForDisplay(settings.shortcutToggleStats, isMac),

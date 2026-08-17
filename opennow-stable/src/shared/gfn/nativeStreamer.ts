@@ -1,7 +1,6 @@
 import type { StreamClientMode } from "./stream";
 
-export type NativeStreamerBackend = "stub" | "gstreamer";
-export type NativeStreamerBackendPreference = "auto" | NativeStreamerBackend;
+export type NativeStreamerBackend = "native";
 export type NativeStreamerFeatureMode = "auto" | "disabled" | "forced";
 export type NativeVideoBackendPreference =
   | "auto"
@@ -66,25 +65,18 @@ export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureM
   }
 }
 
-export type NativeGstreamerRuntimeSource = "bundled" | "system" | "missing" | "unknown";
+export type NativeStreamerRuntimeSource = "self-contained" | "missing" | "unknown";
 
-export interface NativeGstreamerInstallInstruction {
-  distro: string;
-  command: string;
-  note?: string;
-}
-
-export interface NativeGstreamerRuntimeStatus {
-  source: NativeGstreamerRuntimeSource;
-  bundled: boolean;
+export interface NativeStreamerRuntimeStatus {
+  source: NativeStreamerRuntimeSource;
+  selfContained: boolean;
   path?: string;
   message: string;
-  installInstructions?: NativeGstreamerInstallInstruction[];
 }
 
 export interface NativeStreamerStatus {
   detected: boolean;
-  gstreamerAvailable: boolean;
+  available: boolean;
   supportsOfferAnswer: boolean;
   backend?: NativeStreamerBackend;
   fallbackReason?: string;
@@ -92,18 +84,18 @@ export interface NativeStreamerStatus {
   activeVideoBackend?: NativeVideoBackendCapability;
   codecSummary?: string;
   zeroCopySummary?: string;
-  gstreamerRuntime: NativeGstreamerRuntimeStatus;
+  runtime: NativeStreamerRuntimeStatus;
   message: string;
 }
 
 export function createUnsupportedNativeStreamerStatus(): NativeStreamerStatus {
   return {
     detected: false,
-    gstreamerAvailable: false,
+    available: false,
     supportsOfferAnswer: false,
-    gstreamerRuntime: {
+    runtime: {
       source: "unknown",
-      bundled: false,
+      selfContained: false,
       message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,
     },
     message: NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE,

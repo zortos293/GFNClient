@@ -248,7 +248,6 @@ export class SignalingCoordinator {
   ): void {
     if (
       (key === "streamClientMode" && value !== "native") ||
-      key === "nativeStreamerBackend" ||
       key === "nativeStreamerExecutablePath" ||
       key === "nativeCloudGsyncMode" ||
       key === "nativeD3dFullscreenMode" ||
@@ -256,9 +255,7 @@ export class SignalingCoordinator {
       key === "transportMode"
     ) {
       this.stopNativeStreamer(
-        key === "nativeStreamerBackend"
-          ? "native streamer backend changed"
-          : key === "nativeStreamerExecutablePath"
+        key === "nativeStreamerExecutablePath"
             ? "native streamer executable changed"
             : key === "nativeCloudGsyncMode"
               ? "native Cloud G-Sync mode changed"
@@ -421,7 +418,6 @@ export class SignalingCoordinator {
   private getNativeStreamerManager(): NativeStreamerManager {
     this.nativeStreamerManager ??= new NativeStreamerManager({
       mainDir: this.deps.mainDir,
-      getBackendPreference: () => "gstreamer",
       getVideoBackendPreference: () =>
         this.deps.settingsManager?.get("nativeVideoBackend") ?? "auto",
       getExecutablePathOverride: () =>

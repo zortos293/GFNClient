@@ -9,11 +9,11 @@ import {
 } from "@shared/gfn";
 import { useTranslation } from "../../../i18n";
 import {
-  formatGstreamerRuntimeLabel,
+  formatNativeRuntimeLabel,
   formatNativeVideoCodec,
   formatNativeVideoBackendName,
   getAvailableNativeCodecLabels,
-  getGstreamerRuntimeBadgeClass,
+  getNativeRuntimeBadgeClass,
   nativeVideoBackendOptions,
 } from "../settingsFormatters";
 import { MotionSpinner } from "../../MotionSpinner";
@@ -68,11 +68,11 @@ export function SettingsNativeStreamerSection({
   ).length;
   const activeVideoBackendId = nativeStreamerStatus?.activeVideoBackend?.backend;
   const primaryStatusMessage = nativeStreamerStatus?.message.trim() ?? "";
-  const runtimeStatusMessage = nativeStreamerStatus?.gstreamerRuntime.message.trim() ?? "";
+  const runtimeStatusMessage = nativeStreamerStatus?.runtime.message.trim() ?? "";
   const distinctRuntimeStatusMessage = runtimeStatusMessage && runtimeStatusMessage !== primaryStatusMessage
     ? runtimeStatusMessage
     : "";
-  const runtimePath = nativeStreamerStatus?.gstreamerRuntime.path?.trim() ?? "";
+  const runtimePath = nativeStreamerStatus?.runtime.path?.trim() ?? "";
 
   const refreshNativeStreamerStatus = useCallback(async () => {
     if (!isNativeStreamerPlatform) {
@@ -88,12 +88,12 @@ export function SettingsNativeStreamerSection({
       console.warn("[Settings] Failed to detect native streamer:", error);
       setNativeStreamerStatus({
         detected: false,
-        gstreamerAvailable: false,
+        available: false,
         supportsOfferAnswer: false,
-        gstreamerRuntime: {
+        runtime: {
           source: "unknown",
-          bundled: false,
-          message: "GStreamer runtime could not be checked.",
+          selfContained: false,
+          message: "Native runtime could not be checked.",
         },
         message: "Native streamer status could not be checked.",
       });
@@ -263,19 +263,19 @@ export function SettingsNativeStreamerSection({
                     className={`settings-inline-badge ${
                       nativeStreamerStatusLoading
                         ? "settings-inline-badge--codec-testing"
-                        : nativeStreamerStatus?.gstreamerAvailable
+                        : nativeStreamerStatus?.available
                           ? "settings-inline-badge--codec-gpu"
                           : "settings-inline-badge--updater-error"
                     }`}
                   >
                     {nativeStreamerStatusLoading
                       ? t("app.status.checking")
-                      : nativeStreamerStatus?.gstreamerAvailable
-                        ? t("settings.nativeStreamer.gstreamerReady")
+                      : nativeStreamerStatus?.available
+                        ? t("settings.nativeStreamer.nativeRuntimeReady")
                         : t("settings.nativeStreamer.notReady")}
                   </span>
-                  <span className={`settings-inline-badge ${getGstreamerRuntimeBadgeClass(nativeStreamerStatus)}`}>
-                    {formatGstreamerRuntimeLabel(nativeStreamerStatus)}
+                  <span className={`settings-inline-badge ${getNativeRuntimeBadgeClass(nativeStreamerStatus)}`}>
+                    {formatNativeRuntimeLabel(nativeStreamerStatus)}
                   </span>
                 </div>
                 <span className="settings-subtle-hint">
@@ -287,26 +287,12 @@ export function SettingsNativeStreamerSection({
                 {runtimePath ? (
                   <span className="settings-native-runtime-path">
                     <strong>
-                      {nativeStreamerStatus?.gstreamerRuntime.bundled
-                        ? t("settings.nativeStreamer.bundledPathDetected")
-                        : t("settings.nativeStreamer.gstreamerRuntime")}
+                      {nativeStreamerStatus?.runtime.selfContained
+                        ? t("settings.nativeStreamer.nativeExecutablePath")
+                        : t("settings.nativeStreamer.nativeRuntime")}
                     </strong>
                     <code>{runtimePath}</code>
                   </span>
-                ) : null}
-                {!nativeStreamerStatus?.gstreamerAvailable && nativeStreamerStatus?.gstreamerRuntime.installInstructions?.length ? (
-                  <div className="settings-install-steps">
-                    <span className="settings-subtle-hint">
-                      {t("settings.nativeStreamer.linuxRuntimeHint")}
-                    </span>
-                    {nativeStreamerStatus.gstreamerRuntime.installInstructions.map((instruction) => (
-                      <div key={instruction.distro} className="settings-install-step">
-                        <span className="settings-install-step-title">{instruction.distro}</span>
-                        <code>{instruction.command}</code>
-                        {instruction.note ? <span className="settings-subtle-hint">{instruction.note}</span> : null}
-                      </div>
-                    ))}
-                  </div>
                 ) : null}
               </div>
 
@@ -395,7 +381,7 @@ export function SettingsNativeStreamerSection({
                   </span>
                 )}
 
-                {(!nativeStreamerStatus?.gstreamerAvailable || hostVideoBackends.length === 0) && (
+                {(!nativeStreamerStatus?.available || hostVideoBackends.length === 0) && (
                   <span className="settings-subtle-hint">
                     {nativeStreamerStatus?.activeVideoBackend?.reason
                       ?? t("settings.nativeStreamer.capabilityProbeHint")}

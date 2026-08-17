@@ -108,7 +108,7 @@ impl AudioCallback for StreamAudioCallback {
     }
 }
 
-pub(crate) struct ActiveOutput {
+pub(crate) struct SoftwareOutput {
     _sdl: sdl2::Sdl,
     canvas: WindowCanvas,
     texture: Option<Texture>,
@@ -121,8 +121,8 @@ pub(crate) struct ActiveOutput {
     paused: bool,
 }
 
-impl ActiveOutput {
-    pub(crate) fn initialize(output: Arc<OutputBuffers>) -> Result<Self, String> {
+impl SoftwareOutput {
+    fn initialize(output: Arc<OutputBuffers>) -> Result<Self, String> {
         let sdl = sdl2::init().map_err(|error| format!("SDL initialization failed: {error}"))?;
         let video = sdl
             .video()
@@ -188,7 +188,7 @@ impl ActiveOutput {
         })
     }
 
-    pub(crate) fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
+    fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
         self.paused = false;
         self.output.clear();
         self.audio.resume();
@@ -198,7 +198,7 @@ impl ActiveOutput {
         Ok(())
     }
 
-    pub(crate) fn set_paused(&mut self, paused: bool) {
+    fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
         if paused {
             self.audio.pause();
@@ -208,7 +208,7 @@ impl ActiveOutput {
         }
     }
 
-    pub(crate) fn stop(&mut self) {
+    fn stop(&mut self) {
         self.audio.pause();
         self.output.clear();
         if let Ok(surface) = self.native_surface.as_mut() {
@@ -220,7 +220,7 @@ impl ActiveOutput {
         self.texture_size = None;
     }
 
-    pub(crate) fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
+    fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
         let Some(rect) = surface.rect.filter(|_| surface.visible) else {
             if let Ok(native_surface) = self.native_surface.as_mut() {
                 native_surface.hide();
@@ -245,7 +245,10 @@ impl ActiveOutput {
         Ok(())
     }
 
-    pub(crate) fn pump(&mut self) -> Result<(), String> {
+    fn pump(&mut self) -> Result<(), String> {
+        if let Ok(surface) = self.native_surface.as_mut() {
+            surface.refresh_ordering()?;
+        }
         for event in self.event_pump.poll_iter() {
             if matches!(event, sdl2::event::Event::Quit { .. }) {
                 if let Ok(surface) = self.native_surface.as_mut() {
@@ -281,6 +284,80 @@ impl ActiveOutput {
         self.canvas.copy(texture, None, target)?;
         self.canvas.present();
         Ok(())
+    }
+}
+
+pub(crate) enum ActiveOutput {
+    Software(SoftwareOutput),
+    #[cfg(target_os = "macos")]
+    Mac(crate::macos_backend::MacOutput),
+}
+
+impl ActiveOutput {
+    pub(crate) fn initialize(
+        output: Arc<OutputBuffers>,
+        use_macos_hardware: bool,
+    ) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        if use_macos_hardware {
+            return Ok(Self::Mac(crate::macos_backend::MacOutput::initialize()));
+        }
+        let _ = use_macos_hardware;
+        SoftwareOutput::initialize(output).map(Self::Software)
+    }
+
+    pub(crate) fn start(&mut self, surface: Option<&RenderSurface>) -> Result<(), String> {
+        match self {
+            Self::Software(output) => output.start(surface),
+            #[cfg(target_os = "macos")]
+            Self::Mac(output) => output.start(surface),
+        }
+    }
+
+    pub(crate) fn set_paused(&mut self, paused: bool) -> Result<(), String> {
+        match self {
+            Self::Software(output) => {
+                output.set_paused(paused);
+                Ok(())
+            }
+            #[cfg(target_os = "macos")]
+            Self::Mac(output) => output.set_paused(paused),
+        }
+    }
+
+    pub(crate) fn stop(&mut self) {
+        match self {
+            Self::Software(output) => output.stop(),
+            #[cfg(target_os = "macos")]
+            Self::Mac(output) => output.stop(),
+        }
+    }
+
+    pub(crate) fn update_surface(&mut self, surface: &RenderSurface) -> Result<(), String> {
+        match self {
+            Self::Software(output) => output.update_surface(surface),
+            #[cfg(target_os = "macos")]
+            Self::Mac(output) => output.update_surface(surface),
+        }
+    }
+
+    pub(crate) fn pump(&mut self) -> Result<(), String> {
+        match self {
+            Self::Software(output) => output.pump(),
+            #[cfg(target_os = "macos")]
+            Self::Mac(output) => output.pump(),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn configure_macos_h264(
+        &mut self,
+        parameter_sets: opennow_streamer_platform_macos::H264ParameterSets,
+    ) -> Result<opennow_streamer_platform_macos::StreamSink, String> {
+        match self {
+            Self::Mac(output) => output.configure_h264(parameter_sets),
+            Self::Software(_) => Err("VideoToolbox is not the selected media backend".to_owned()),
+        }
     }
 }
 

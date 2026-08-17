@@ -14,6 +14,12 @@ const HOST_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
 const HOST_CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[cfg(target_os = "macos")]
+pub(crate) enum MacH264Configuration {
+    Hardware(opennow_streamer_platform_macos::StreamSink),
+    SoftwareFallback { reason: String },
+}
+
 pub(crate) enum HostCommand {
     Start {
         reply: Sender<Result<(), String>>,
@@ -27,6 +33,11 @@ pub(crate) enum HostCommand {
         surface: RenderSurface,
         reply: Sender<Result<(), String>>,
     },
+    #[cfg(target_os = "macos")]
+    ConfigureMacH264 {
+        parameter_sets: opennow_streamer_platform_macos::H264ParameterSets,
+        reply: Sender<Result<MacH264Configuration, String>>,
+    },
     Stop,
     Shutdown,
 }
@@ -36,6 +47,7 @@ pub struct MediaRuntime {
     commands: Sender<HostCommand>,
     output: Arc<OutputBuffers>,
     paused: Arc<AtomicBool>,
+    use_macos_hardware: Arc<AtomicBool>,
 }
 
 impl MediaRuntime {
@@ -50,7 +62,12 @@ impl MediaRuntime {
         response
             .recv_timeout(HOST_START_TIMEOUT)
             .map_err(|_| "native media host did not start on the UI thread".to_owned())??;
-        match MediaSession::spawn(Arc::clone(&self.output), feedback, self.commands.clone()) {
+        match MediaSession::spawn(
+            Arc::clone(&self.output),
+            feedback,
+            self.commands.clone(),
+            self.use_macos_hardware.load(Ordering::Acquire),
+        ) {
             Ok(session) => {
                 if self.paused.load(Ordering::Acquire) {
                     session.set_paused(true);
@@ -97,6 +114,7 @@ pub struct MainThreadHost {
     commands: Receiver<HostCommand>,
     output: Arc<OutputBuffers>,
     _not_send: PhantomData<Rc<()>>,
+    use_macos_hardware: Arc<AtomicBool>,
 }
 
 impl MainThreadHost {
@@ -114,7 +132,10 @@ impl MainThreadHost {
                     if let Some(output) = active.as_mut() {
                         output.stop();
                     }
-                    match ActiveOutput::initialize(Arc::clone(&self.output)) {
+                    match ActiveOutput::initialize(
+                        Arc::clone(&self.output),
+                        self.use_macos_hardware.load(Ordering::Acquire),
+                    ) {
                         Ok(mut output) => {
                             if let Err(error) = output.start(surface.as_ref()) {
                                 output.stop();
@@ -123,7 +144,13 @@ impl MainThreadHost {
                                 let _ = reply.send(Err(error));
                                 continue;
                             }
-                            output.set_paused(paused);
+                            if let Err(error) = output.set_paused(paused) {
+                                output.stop();
+                                active = None;
+                                feedback = None;
+                                let _ = reply.send(Err(error));
+                                continue;
+                            }
                             active = Some(output);
                             feedback = Some(session_feedback);
                             let _ = reply.send(Ok(()));
@@ -139,12 +166,14 @@ impl MainThreadHost {
                     paused: new_paused,
                     reply,
                 }) => {
-                    if let Some(output) = active.as_mut() {
-                        output.set_paused(new_paused);
+                    let result = active
+                        .as_mut()
+                        .map_or(Ok(()), |output| output.set_paused(new_paused));
+                    if result.is_ok() {
+                        paused = new_paused;
                     }
-                    paused = new_paused;
                     if let Some(reply) = reply {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.send(result);
                     }
                 }
                 Ok(HostCommand::Surface {
@@ -170,6 +199,51 @@ impl MainThreadHost {
                     }
                     surface = Some(new_surface);
                     let _ = reply.send(result);
+                }
+                #[cfg(target_os = "macos")]
+                Ok(HostCommand::ConfigureMacH264 {
+                    parameter_sets,
+                    reply,
+                }) => {
+                    let hardware_result = active
+                        .as_mut()
+                        .ok_or_else(|| "native media output is not active".to_owned())
+                        .and_then(|output| output.configure_macos_h264(parameter_sets));
+                    match hardware_result {
+                        Ok(sink) => {
+                            let _ = reply.send(Ok(MacH264Configuration::Hardware(sink)));
+                        }
+                        Err(hardware_error) => {
+                            self.use_macos_hardware.store(false, Ordering::Release);
+                            crate::macos_backend::disable();
+                            if let Some(output) = active.as_mut() {
+                                output.stop();
+                            }
+                            let fallback =
+                                ActiveOutput::initialize(Arc::clone(&self.output), false).and_then(
+                                    |mut output| {
+                                        output.start(surface.as_ref())?;
+                                        output.set_paused(paused)?;
+                                        Ok(output)
+                                    },
+                                );
+                            match fallback {
+                                Ok(output) => {
+                                    active = Some(output);
+                                    let _ =
+                                        reply.send(Ok(MacH264Configuration::SoftwareFallback {
+                                            reason: hardware_error,
+                                        }));
+                                }
+                                Err(fallback_error) => {
+                                    active = None;
+                                    let _ = reply.send(Err(format!(
+                                        "VideoToolbox startup failed ({hardware_error}); software output fallback also failed: {fallback_error}"
+                                    )));
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(HostCommand::Stop) => {
                     if let Some(output) = active.as_mut() {
@@ -202,6 +276,7 @@ impl MainThreadHost {
 
 pub fn create_runtime() -> Result<(MainThreadHost, MediaRuntime), String> {
     ensure_macos_main_thread()?;
+    let use_macos_hardware = Arc::new(AtomicBool::new(use_macos_hardware()));
     let (commands, receiver) = mpsc::channel();
     let output = Arc::new(OutputBuffers::new());
     let paused = Arc::new(AtomicBool::new(false));
@@ -210,13 +285,25 @@ pub fn create_runtime() -> Result<(MainThreadHost, MediaRuntime), String> {
             commands: receiver,
             output: Arc::clone(&output),
             _not_send: PhantomData,
+            use_macos_hardware: Arc::clone(&use_macos_hardware),
         },
         MediaRuntime {
             commands,
             output,
             paused,
+            use_macos_hardware,
         },
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn use_macos_hardware() -> bool {
+    crate::macos_backend::available()
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn use_macos_hardware() -> bool {
+    false
 }
 
 #[cfg(target_os = "macos")]

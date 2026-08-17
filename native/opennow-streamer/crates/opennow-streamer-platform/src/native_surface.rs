@@ -28,6 +28,10 @@ impl NativeSurface {
     pub(crate) fn hide(&mut self) {
         self.inner.hide();
     }
+
+    pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
+        self.inner.refresh_ordering()
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -142,6 +146,10 @@ mod platform {
                 ShowWindow(self.child, SW_HIDE);
             }
         }
+
+        pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
+            Ok(())
+        }
     }
 }
 
@@ -228,20 +236,32 @@ mod platform {
                 (self.xlib.XFlush)(self.display);
             }
         }
+
+        pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
+            Ok(())
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
 mod platform {
+    use std::time::{Duration, Instant};
+
     use objc2::rc::Retained;
-    use objc2_app_kit::{NSView, NSWindow};
+    use objc2_app_kit::{NSView, NSWindow, NSWorkspace};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     use super::*;
 
+    const ORDERING_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
     pub(crate) struct Surface {
         child: Retained<NSWindow>,
         raw_window: *mut sdl2::sys::SDL_Window,
+        parent_pid: libc::pid_t,
+        requested_visible: bool,
+        ordered: bool,
+        last_ordering_check: Option<Instant>,
     }
 
     impl Surface {
@@ -263,6 +283,10 @@ mod platform {
             Ok(Self {
                 child,
                 raw_window: window.raw(),
+                parent_pid: unsafe { libc::getppid() },
+                requested_visible: false,
+                ordered: false,
+                last_ordering_check: None,
             })
         }
 
@@ -283,16 +307,52 @@ mod platform {
             unsafe {
                 sdl2::sys::SDL_SetWindowPosition(self.raw_window, screen_rect.x, screen_rect.y);
                 sdl2::sys::SDL_SetWindowSize(self.raw_window, width, height);
-                sdl2::sys::SDL_ShowWindow(self.raw_window);
             }
-            self.child.orderFrontRegardless();
-            Ok(())
+            self.requested_visible = true;
+            self.last_ordering_check = None;
+            self.refresh_ordering()
         }
 
         pub(crate) fn hide(&mut self) {
-            unsafe {
-                sdl2::sys::SDL_HideWindow(self.raw_window);
+            self.requested_visible = false;
+            if self.ordered {
+                unsafe {
+                    sdl2::sys::SDL_HideWindow(self.raw_window);
+                }
+                self.ordered = false;
             }
+        }
+
+        pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
+            if self
+                .last_ordering_check
+                .is_some_and(|last| last.elapsed() < ORDERING_POLL_INTERVAL)
+            {
+                return Ok(());
+            }
+            self.last_ordering_check = Some(Instant::now());
+            let should_order = self.requested_visible && self.parent_is_frontmost();
+            if should_order == self.ordered {
+                return Ok(());
+            }
+            unsafe {
+                if should_order {
+                    sdl2::sys::SDL_ShowWindow(self.raw_window);
+                } else {
+                    sdl2::sys::SDL_HideWindow(self.raw_window);
+                }
+            }
+            if should_order {
+                self.child.orderFrontRegardless();
+            }
+            self.ordered = should_order;
+            Ok(())
+        }
+
+        fn parent_is_frontmost(&self) -> bool {
+            NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .is_some_and(|application| application.processIdentifier() == self.parent_pid)
         }
     }
 }
@@ -319,5 +379,9 @@ mod platform {
         }
 
         pub(crate) fn hide(&mut self) {}
+
+        pub(crate) fn refresh_ordering(&mut self) -> Result<(), String> {
+            Ok(())
+        }
     }
 }

@@ -950,6 +950,24 @@ fn forward_nvst_media_feedback(
         return;
     }
     match feedback {
+        MediaFeedback::PlaybackStarted { backend } => {
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "level": "info",
+                    "message": format!("{backend} presented the first video frame")
+                }),
+            ));
+        }
+        MediaFeedback::BackendFallback { from, to, reason } => {
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "level": "warn",
+                    "message": format!("{from} startup failed; using {to}: {reason}")
+                }),
+            ));
+        }
         MediaFeedback::RequestKeyframe { reason, .. } => {
             let _ = output.send(event(
                 "error",
@@ -1008,6 +1026,8 @@ fn consume_encoded_media(
             mid: frame.mid,
             codec,
             data: frame.payload,
+            timestamp: frame.rtp_timestamp,
+            clock_rate_hz: frame.clock_rate_hz,
             keyframe: frame.keyframe,
             contiguous: frame.contiguous,
         }) {
@@ -1077,6 +1097,24 @@ fn forward_media_feedback(
         return;
     }
     match feedback {
+        MediaFeedback::PlaybackStarted { backend } => {
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "level": "info",
+                    "message": format!("{backend} presented the first video frame")
+                }),
+            ));
+        }
+        MediaFeedback::BackendFallback { from, to, reason } => {
+            let _ = output.send(event(
+                "log",
+                json!({
+                    "level": "warn",
+                    "message": format!("{from} startup failed; using {to}: {reason}")
+                }),
+            ));
+        }
         MediaFeedback::RequestKeyframe { mid, reason } => {
             let request_result = transport.request_keyframe(mid);
             let _ = output.send(event(

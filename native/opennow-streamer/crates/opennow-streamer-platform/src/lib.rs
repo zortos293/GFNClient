@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod macos_backend;
 mod media;
 mod native_surface;
 mod output;
@@ -32,11 +34,34 @@ fn hardware_backend() -> VideoBackendCapability {
 
 #[cfg(target_os = "macos")]
 fn hardware_backend() -> VideoBackendCapability {
-    unavailable_backend(
-        "videotoolbox",
-        "macos",
-        "VideoToolbox hardware decode is not built into this binary",
-    )
+    const UNAVAILABLE: &str = "VideoToolbox H.264 hardware decode or Metal is unavailable";
+    let available = macos_backend::available();
+    VideoBackendCapability {
+        backend: "videotoolbox",
+        platform: "macos",
+        codecs: vec![
+            CodecCapability {
+                codec: "h264",
+                available,
+                reason: (!available).then_some(UNAVAILABLE),
+            },
+            CodecCapability {
+                codec: "h265",
+                available: false,
+                reason: Some("H.265 VideoToolbox decode is not implemented"),
+            },
+            CodecCapability {
+                codec: "av1",
+                available: false,
+                reason: Some("AV1 VideoToolbox decode is not implemented"),
+            },
+        ],
+        zero_copy_modes: available
+            .then_some(vec!["cvpixelbuffer-iosurface-metal"])
+            .unwrap_or_default(),
+        available,
+        reason: (!available).then_some(UNAVAILABLE),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -80,6 +105,7 @@ fn software_backend() -> VideoBackendCapability {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn unavailable_backend(
     backend: &'static str,
     platform: &'static str,
@@ -129,11 +155,35 @@ mod tests {
                 .filter(|codec| codec.codec != "h264")
                 .all(|codec| !codec.available)
         );
+        #[cfg(not(target_os = "macos"))]
         assert!(
             backends
                 .iter()
                 .filter(|backend| backend.backend != "software")
                 .all(|backend| !backend.available)
         );
+        #[cfg(target_os = "macos")]
+        {
+            let hardware = backends
+                .iter()
+                .find(|backend| backend.backend == "videotoolbox")
+                .expect("VideoToolbox backend");
+            assert!(
+                hardware
+                    .codecs
+                    .iter()
+                    .filter(|codec| codec.codec != "h264")
+                    .all(|codec| !codec.available)
+            );
+            assert_eq!(
+                hardware.available,
+                hardware
+                    .codecs
+                    .iter()
+                    .find(|codec| codec.codec == "h264")
+                    .expect("h264")
+                    .available
+            );
+        }
     }
 }

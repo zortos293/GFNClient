@@ -8,6 +8,13 @@ import type {
   MainToRendererSignalingEvent,
   SendAnswerRequest,
 } from "@shared/gfn";
+import {
+  iceCandidateDiagnosticSummary,
+  sdpDiagnosticSummary,
+  signalingUrlForDiagnostics,
+  streamDiagnosticId,
+} from "@shared/gfn";
+import { setLogContext } from "@shared/logger";
 import { GFN_PLAY_ORIGIN, GFN_USER_AGENT } from "./clientHeaders";
 
 interface SignalingMessage {
@@ -57,9 +64,7 @@ export class GfnSignalingClient {
     signInUrl.searchParams.set("peer_role", "1");
     signInUrl.searchParams.set("pairing_id", this.sessionId);
 
-    const url = signInUrl.toString();
-    console.log("[Signaling] URL:", url, "(server:", this.signalingServer, ", signalingUrl:", this.signalingUrl, ")");
-    return url;
+    return signInUrl.toString();
   }
 
   onEvent(listener: (event: MainToRendererSignalingEvent) => void): () => void {
@@ -78,11 +83,23 @@ export class GfnSignalingClient {
     return this.ackCounter;
   }
 
-  private sendJson(payload: unknown): void {
+  private sendJson(payload: unknown): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      return;
+      return false;
     }
     this.ws.send(JSON.stringify(payload));
+    return true;
+  }
+
+  private retainState(state: string, details: Record<string, unknown> = {}): void {
+    setLogContext("signaling.latest", {
+      streamKey: streamDiagnosticId(this.sessionId),
+      state,
+      server: this.signalingServer,
+      url: signalingUrlForDiagnostics(this.signalingUrl, this.sessionId),
+      heartbeatIntervalMs: 5000,
+      ...details,
+    });
   }
 
   private setupHeartbeat(): void {
@@ -125,9 +142,10 @@ export class GfnSignalingClient {
     const protocol = `x-nv-sessionid.${this.sessionId}`;
     const generation = ++this.connectionGeneration;
 
-    console.log("[Signaling] Connecting to:", url);
-    console.log("[Signaling] Session ID:", this.sessionId);
-    console.log("[Signaling] Protocol:", protocol);
+    this.retainState("connecting");
+    console.log(
+      `[Signaling] Connecting session=${streamDiagnosticId(this.sessionId)} url=${signalingUrlForDiagnostics(url, this.sessionId)}`,
+    );
 
     await new Promise<void>((resolve, reject) => {
       // Extract host:port for the Host header (matching Rust behavior)
@@ -150,6 +168,13 @@ export class GfnSignalingClient {
         if (!isCurrentSocket()) {
           return;
         }
+        this.retainState("connect-failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        console.warn(
+          `[Signaling] Connect failed session=${streamDiagnosticId(this.sessionId)}:`,
+          error,
+        );
         this.emit({ type: "error", message: `Signaling connect failed: ${String(error)}` });
         reject(error);
       });
@@ -160,6 +185,10 @@ export class GfnSignalingClient {
         }
         this.sendPeerInfo();
         this.setupHeartbeat();
+        this.retainState("connected", { protocol: `x-nv-sessionid.${streamDiagnosticId(this.sessionId)}` });
+        console.log(
+          `[Signaling] Connected session=${streamDiagnosticId(this.sessionId)} heartbeatMs=5000`,
+        );
         this.emit({ type: "connected" });
         resolve();
       });
@@ -172,7 +201,7 @@ export class GfnSignalingClient {
         this.handleMessage(text);
       });
 
-      ws.on("close", (_code, reason) => {
+      ws.on("close", (code, reason) => {
         this.clearHeartbeat();
 
         if (!isCurrentSocket()) {
@@ -182,6 +211,10 @@ export class GfnSignalingClient {
         this.ws = null;
 
         const reasonText = typeof reason === "string" ? reason : reason.toString("utf8");
+        this.retainState("closed", { closeCode: code, closeReason: reasonText || "socket closed" });
+        console.warn(
+          `[Signaling] Closed session=${streamDiagnosticId(this.sessionId)} code=${code} reason=${reasonText || "none"}`,
+        );
         this.emit({ type: "disconnected", reason: reasonText || "socket closed" });
       });
     });
@@ -246,8 +279,7 @@ export class GfnSignalingClient {
     }
 
     if (peerPayload.type === "offer" && typeof peerPayload.sdp === "string") {
-      console.log(`[Signaling] Received OFFER SDP (${peerPayload.sdp.length} chars), first 500 chars:`);
-      console.log(peerPayload.sdp.slice(0, 500));
+      console.log(`[Signaling] ${sdpDiagnosticSummary("Received offer", peerPayload.sdp)}`);
       this.emit({ type: "offer", sdp: peerPayload.sdp });
       return;
     }
@@ -257,23 +289,22 @@ export class GfnSignalingClient {
         typeof peerPayload.sdpMLineIndex === "number" || peerPayload.sdpMLineIndex === null
           ? peerPayload.sdpMLineIndex
           : 0;
-      console.log(
-        `[Signaling] Received remote ICE candidate: ${peerPayload.candidate} (sdpMLineIndex=${sdpMLineIndex})`,
-      );
+      const candidate = {
+        candidate: peerPayload.candidate,
+        sdpMid:
+          typeof peerPayload.sdpMid === "string" || peerPayload.sdpMid === null
+            ? peerPayload.sdpMid
+            : undefined,
+        sdpMLineIndex,
+        usernameFragment:
+          typeof peerPayload.usernameFragment === "string" || peerPayload.usernameFragment === null
+            ? peerPayload.usernameFragment
+            : undefined,
+      } satisfies IceCandidatePayload;
+      console.log(`[Signaling] Received remote ICE candidate ${iceCandidateDiagnosticSummary(candidate)}`);
       this.emit({
         type: "remote-ice",
-        candidate: {
-          candidate: peerPayload.candidate,
-          sdpMid:
-            typeof peerPayload.sdpMid === "string" || peerPayload.sdpMid === null
-              ? peerPayload.sdpMid
-              : undefined,
-          sdpMLineIndex,
-          usernameFragment:
-            typeof peerPayload.usernameFragment === "string" || peerPayload.usernameFragment === null
-              ? peerPayload.usernameFragment
-              : undefined,
-        },
+        candidate,
       });
       return;
     }
@@ -283,11 +314,11 @@ export class GfnSignalingClient {
   }
 
   async sendAnswer(payload: SendAnswerRequest): Promise<void> {
-    console.log(`[Signaling] Sending ANSWER SDP (${payload.sdp.length} chars), first 500 chars:`);
-    console.log(payload.sdp.slice(0, 500));
+    console.log(`[Signaling] ${sdpDiagnosticSummary("Sending answer", payload.sdp)}`);
     if (payload.nvstSdp) {
-      console.log(`[Signaling] Sending nvstSdp (${payload.nvstSdp.length} chars):`);
-      console.log(payload.nvstSdp);
+      console.log(
+        `[Signaling] Sending NVST SDP lines=${payload.nvstSdp.split(/\r?\n/).filter(Boolean).length} bytes=${payload.nvstSdp.length}`,
+      );
     }
     const answer = {
       type: "answer",
@@ -308,11 +339,11 @@ export class GfnSignalingClient {
 
   async sendIceCandidate(candidate: IceCandidatePayload): Promise<void> {
     if (isTcpIceCandidate(candidate.candidate)) {
-      console.log(`[Signaling] Dropping TCP local ICE candidate: ${candidate.candidate}`);
+      console.log(`[Signaling] Dropping TCP local ICE candidate ${iceCandidateDiagnosticSummary(candidate)}`);
       return;
     }
 
-    console.log(`[Signaling] Sending local ICE candidate: ${candidate.candidate} (sdpMid=${candidate.sdpMid})`);
+    console.log(`[Signaling] Sending local ICE candidate ${iceCandidateDiagnosticSummary(candidate)}`);
     console.log(`[Signaling] Sending ICE peer_msg from=${this.peerId} to=${this.remotePeerId}`);
     this.sendJson({
       peer_msg: {
@@ -356,6 +387,8 @@ export class GfnSignalingClient {
       this.ws = null;
       socket.close();
     }
+    this.retainState("client-disconnect");
+    console.log(`[Signaling] Client disconnect session=${streamDiagnosticId(this.sessionId)}`);
   }
 }
 

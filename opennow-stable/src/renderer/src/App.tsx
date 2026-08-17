@@ -30,7 +30,9 @@ import {
   resolveEntitledStreamProfile,
   resolveRuntimePlatform,
   SAFE_FALLBACK_STREAM_PROFILE,
+  streamDiagnosticId,
 } from "@shared/gfn";
+import { setLogContext } from "@shared/logger";
 import { formatShortcutForDisplay, isShortcutMatch, normalizeShortcut } from "./shortcuts";
 import { dispatchStreamShortcutAction } from "./streamShortcutActions";
 import { useElapsedSeconds } from "./utils/useElapsedSeconds";
@@ -251,6 +253,104 @@ export function App(): JSX.Element {
     scheduleStableRecoveryReset,
   } = recovery;
   const { persistRuntimeSnapshotNow } = snapshot;
+
+  useEffect(() => {
+    setLogContext("application.renderer", {
+      locale,
+      platform: navigator.platform,
+      userAgent: navigator.userAgent,
+    });
+  }, [locale]);
+
+  useEffect(() => {
+    setLogContext("application.state", {
+      page: currentPage,
+      streamPhase: streamStatus,
+      settingsLoaded,
+      queuePosition: queuePosition ?? 0,
+      hasActiveSession: session !== null,
+      launchError: launchError?.codeLabel ?? launchError?.title ?? "none",
+    });
+  }, [currentPage, launchError, queuePosition, session, settingsLoaded, streamStatus]);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    setLogContext("stream.settings", {
+      resolution: settings.resolution,
+      fps: settings.fps,
+      codec: settings.codec,
+      colorQuality: settings.colorQuality,
+      maxBitrateMbps: settings.maxBitrateMbps,
+      clientMode: settings.streamClientMode,
+      nativeVideoBackend: settings.nativeVideoBackend,
+      transportMode: settings.transportMode,
+      keyboardLayout: settings.keyboardLayout,
+      microphoneMode: settings.microphoneMode,
+      cloudGsync: settings.enableCloudGsync,
+    });
+  }, [settings, settingsLoaded]);
+
+  useEffect(() => {
+    const retainLatestStream = (): void => {
+      const stats = diagnosticsStore.getSnapshot();
+      const hasStreamEvidence = streamStatus !== "idle"
+        || session !== null
+        || stats.connectionState !== "closed"
+        || stats.nativeRendererActive;
+      if (!hasStreamEvidence) return;
+
+      setLogContext("stream.latest", {
+        streamKey: streamDiagnosticId(session?.sessionId),
+        phase: streamStatus,
+        appId: session?.appId ?? "unknown",
+        sessionStatus: session?.status ?? "unknown",
+        queuePosition: session?.queuePosition ?? queuePosition ?? 0,
+        seatSetupStep: session?.seatSetupStep ?? 0,
+        zone: session?.zone ?? "unknown",
+        serverLocation: stats.serverLocation || session?.serverLocation || "unknown",
+        serverRegion: stats.serverRegion || "unknown",
+        serverGpuType: stats.serverGpuType || session?.gpuType || "unknown",
+        streamer: stats.nativeRendererActive || settings.streamClientMode === "native" ? "native" : "web",
+        requestedResolution: settings.resolution,
+        requestedFps: settings.fps,
+        requestedCodec: settings.codec,
+        negotiatedResolution: session?.negotiatedStreamProfile?.resolution ?? "unknown",
+        negotiatedFps: session?.negotiatedStreamProfile?.fps ?? "unknown",
+        negotiatedCodec: (session?.negotiatedStreamProfile?.codec ?? stats.codec) || "unknown",
+        activeResolution: stats.resolution || "unknown",
+        activeCodec: stats.codec || "unknown",
+        connectionState: stats.connectionState,
+        transportType: stats.transportType,
+        hardwareAcceleration: stats.hardwareAcceleration || "unknown",
+        bitrateKbps: stats.bitrateKbps,
+        targetBitrateKbps: stats.targetBitrateKbps,
+        availableBitrateKbps: stats.availableBitrateKbps,
+        receiveFps: stats.receiveFps,
+        decodeFps: stats.decodeFps,
+        renderFps: stats.renderFps,
+        framesReceived: stats.framesReceived,
+        framesDecoded: stats.framesDecoded,
+        framesDropped: stats.framesDropped,
+        packetLossPercent: stats.packetLossPercent,
+        jitterMs: stats.jitterMs,
+        jitterBufferDelayMs: stats.jitterBufferDelayMs,
+        rttMs: stats.rttMs,
+        inputReady: stats.inputReady,
+        inputQueueDropCount: stats.inputQueueDropCount,
+        decoderPressureActive: stats.decoderPressureActive,
+        decoderRecoveryAttempts: stats.decoderRecoveryAttempts,
+        lagReason: stats.lagReason,
+        lagReasonDetail: stats.lagReasonDetail,
+        nativeQueueMode: stats.nativeQueueMode ?? "unknown",
+        nativePartialFlushCount: stats.nativePartialFlushCount ?? 0,
+        nativeCompleteFlushCount: stats.nativeCompleteFlushCount ?? 0,
+        nativeTransition: stats.nativeTransitionSummary ?? "none",
+        capturedAt: new Date().toISOString(),
+      });
+    };
+    retainLatestStream();
+    return diagnosticsStore.subscribe(retainLatestStream);
+  }, [diagnosticsStore, queuePosition, session, settings, streamStatus]);
 
   const [exitPrompt, setExitPrompt] = useState<ExitPromptState>({ open: false, gameTitle: t("app.labels.game") });
   const [settingsFocusSection, setSettingsFocusSection] = useState<"account" | undefined>();

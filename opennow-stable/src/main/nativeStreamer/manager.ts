@@ -2,6 +2,7 @@ import electron from "electron";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { basename } from "node:path";
 
 import {
   createUnsupportedNativeStreamerStatus,
@@ -19,6 +20,7 @@ import {
   type NativeRenderSurface,
   type NativeStreamerSessionContext,
   type SendAnswerRequest,
+  streamDiagnosticId,
 } from "@shared/gfn";
 import {
   NATIVE_STREAMER_PROTOCOL_VERSION,
@@ -29,7 +31,7 @@ import {
   type NativeStreamerMessage,
   type NativeStreamerResponse,
 } from "@shared/nativeStreamer";
-import { isTerminalBrokenWriteError } from "@shared/logger";
+import { isTerminalBrokenWriteError, setLogContext } from "@shared/logger";
 import type { NativeStreamerShortcutBindings } from "@shared/gfn";
 import {
   createNativeStreamerDetectionFailureStatus,
@@ -114,6 +116,10 @@ export class NativeStreamerManager {
   private readonly surfaceUpdates: NativeSurfaceUpdateQueue;
   private videoBackendOverride: NativeVideoBackendPreference | null = null;
   private suppressNextStoppedEvent = false;
+  private diagnosticState: Record<string, unknown> = {
+    processState: "not-started",
+    sessionState: "idle",
+  };
 
   constructor(private readonly options: NativeStreamerManagerOptions) {
     this.surfaceUpdates = new NativeSurfaceUpdateQueue(
@@ -130,6 +136,14 @@ export class NativeStreamerManager {
     return this.activeSessionId !== null;
   }
 
+  private retainDiagnosticState(values: Record<string, unknown>): void {
+    this.diagnosticState = {
+      ...this.diagnosticState,
+      ...values,
+    };
+    setLogContext("nativeStreamer.latest", this.diagnosticState);
+  }
+
   setVideoBackendOverride(value: NativeVideoBackendPreference | null): void {
     this.videoBackendOverride = value;
   }
@@ -139,6 +153,14 @@ export class NativeStreamerManager {
       await this.stop("new native streamer session");
     }
     this.prepareRemoteIceQueue(context.session.sessionId);
+    this.retainDiagnosticState({
+      streamKey: streamDiagnosticId(context.session.sessionId),
+      sessionState: "preparing",
+      requestedResolution: context.settings.resolution,
+      requestedFps: context.settings.fps,
+      requestedCodec: context.settings.codec,
+      transportMode: context.settings.transportMode ?? "webrtc",
+    });
 
     await this.ensureProcess();
 
@@ -157,6 +179,7 @@ export class NativeStreamerManager {
       context,
     }, SESSION_START_TIMEOUT_MS);
     this.activeSessionId = context.session.sessionId;
+    this.retainDiagnosticState({ sessionState: "ready" });
     await this.flushQueuedRemoteIce(context.session.sessionId);
   }
 
@@ -165,7 +188,7 @@ export class NativeStreamerManager {
     console.log(
       "[NativeStreamer] Session context:",
       JSON.stringify({
-        sessionId: context.session.sessionId,
+        streamKey: streamDiagnosticId(context.session.sessionId),
         requestedResolution: context.settings.resolution,
         requestedFps: context.settings.fps,
         requestedCodec: context.settings.codec,
@@ -178,6 +201,12 @@ export class NativeStreamerManager {
     );
 
     await this.prepareForSession(context);
+    this.retainDiagnosticState({
+      sessionState: "negotiating-offer",
+      negotiatedResolution: negotiatedProfile?.resolution ?? "unknown",
+      negotiatedFps: negotiatedProfile?.fps ?? "unknown",
+      negotiatedCodec: negotiatedProfile?.codec ?? context.settings.codec,
+    });
 
     if (!this.capabilities?.supportsOfferAnswer) {
       console.warn(
@@ -204,6 +233,10 @@ export class NativeStreamerManager {
         throw new Error("Native streamer answer rejected the video m-line.");
       }
       console.log(`[NativeStreamer] Answer negotiated video codec: ${negotiatedCodec}`);
+      this.retainDiagnosticState({
+        sessionState: "answer-sent",
+        negotiatedCodec,
+      });
       await this.options.sendAnswer(response.answer);
       this.answerInFlight = false;
       await this.flushQueuedLocalIce();
@@ -372,12 +405,23 @@ export class NativeStreamerManager {
       this.suppressNextStoppedEvent = true;
     }
     const child = this.child;
+    const streamKey = streamDiagnosticId(this.activeSessionId);
+    this.retainDiagnosticState({
+      streamKey,
+      sessionState: "stopping",
+      stopReason: reason,
+    });
     this.activeSessionId = null;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
 
     if (!child) {
+      this.retainDiagnosticState({
+        processState: "stopped",
+        sessionState: "stopped",
+        stopReason: reason,
+      });
       return;
     }
 
@@ -388,10 +432,21 @@ export class NativeStreamerManager {
     } finally {
       this.terminateProcess();
       this.suppressNextStoppedEvent = false;
+      this.retainDiagnosticState({
+        processState: "stopped",
+        sessionState: "stopped",
+        stopReason: reason,
+      });
     }
   }
 
   dispose(reason = "disposed"): void {
+    this.retainDiagnosticState({
+      streamKey: streamDiagnosticId(this.activeSessionId),
+      processState: "disposed",
+      sessionState: "disposed",
+      stopReason: reason,
+    });
     this.activeSessionId = null;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
@@ -449,6 +504,11 @@ export class NativeStreamerManager {
           return;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
+          this.retainDiagnosticState({
+            processState: "initialization-failed",
+            sessionState: "failed",
+            lastError: formatError(lastError),
+          });
           console.warn(
             `[NativeStreamer] Failed to initialize ${executablePath}: ${formatError(lastError)}`,
           );
@@ -477,10 +537,16 @@ export class NativeStreamerManager {
     executablePath: string,
     backendPreference: NativeStreamerBackendPreference,
   ): Promise<void> {
+    this.retainDiagnosticState({
+      processState: "starting",
+      executable: basename(executablePath),
+      backendPreference,
+    });
     console.log("[NativeStreamer] Starting:", executablePath);
     console.log("[NativeStreamer] Backend preference:", backendPreference);
     const videoBackendPreference = this.videoBackendOverride
       ?? this.options.getVideoBackendPreference();
+    this.retainDiagnosticState({ videoBackendPreference });
     console.log("[NativeStreamer] Video backend preference:", videoBackendPreference);
 
     const { env: childEnv, runtimeStatus } = createNativeStreamerRuntimeEnvironment({
@@ -501,6 +567,10 @@ export class NativeStreamerManager {
       d3dFullscreenMode: this.options.getD3dFullscreenMode(),
     });
     this.gstreamerRuntime = runtimeStatus;
+    this.retainDiagnosticState({
+      runtimeBundled: runtimeStatus.bundled,
+      runtimeState: runtimeStatus.message,
+    });
     if (runtimeStatus.bundled) {
       console.log("[NativeStreamer] Using bundled GStreamer runtime:", runtimeStatus.path);
     } else {
@@ -555,6 +625,13 @@ export class NativeStreamerManager {
     }
 
     this.capabilities = response.capabilities;
+    this.retainDiagnosticState({
+      processState: "ready",
+      backend: response.capabilities.backend,
+      protocolVersion: response.capabilities.protocolVersion,
+      supportsOfferAnswer: response.capabilities.supportsOfferAnswer,
+      supportsInput: response.capabilities.supportsInput,
+    });
     console.log("[NativeStreamer] Capabilities:", response.capabilities);
     if (response.capabilities.protocolVersion !== NATIVE_STREAMER_PROTOCOL_VERSION) {
       throw new Error(
@@ -777,6 +854,28 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "stats") {
+      this.retainDiagnosticState({
+        sessionState: "streaming",
+        statsCapturedAt: new Date().toISOString(),
+        codec: message.stats.codec,
+        resolution: message.stats.resolution,
+        hardwareAcceleration: message.stats.hardwareAcceleration,
+        memoryMode: message.stats.memoryMode ?? "unknown",
+        zeroCopy: message.stats.zeroCopy ?? false,
+        bitrateKbps: message.stats.bitrateKbps,
+        targetBitrateKbps: message.stats.targetBitrateKbps,
+        decodedFps: message.stats.decodedFps,
+        renderFps: message.stats.renderFps,
+        framesDecoded: message.stats.framesDecoded,
+        framesRendered: message.stats.framesRendered,
+        sinkDropped: message.stats.sinkDropped ?? 0,
+        queueMode: message.stats.queueMode ?? "unknown",
+        partialFlushCount: message.stats.partialFlushCount ?? 0,
+        completeFlushCount: message.stats.completeFlushCount ?? 0,
+        lastTransition: message.stats.lastTransitionSummary ?? "none",
+        serverGpuType: message.stats.serverGpuType ?? "unknown",
+        serverLocation: message.stats.serverLocation ?? "unknown",
+      });
       this.options.emit({
         type: "native-stream-stats",
         stats: message.stats,
@@ -786,6 +885,10 @@ export class NativeStreamerManager {
 
     if (message.type === "status") {
       console.log(`[NativeStreamer] Status: ${message.status}${message.message ? ` (${message.message})` : ""}`);
+      this.retainDiagnosticState({
+        sessionState: message.status,
+        statusMessage: message.message ?? "",
+      });
       if (message.status === "streaming") {
         this.options.emit({ type: "native-stream-started", message: message.message });
       } else if (message.status === "stopped") {
@@ -858,6 +961,13 @@ export class NativeStreamerManager {
     const hadActiveSession = this.activeSessionId !== null;
     const stoppedReason = `process ended (${reason})`;
     console.warn(`[NativeStreamer] Process ended (${reason})${tail}`);
+    this.retainDiagnosticState({
+      streamKey: streamDiagnosticId(this.activeSessionId),
+      processState: "ended",
+      sessionState: hadActiveSession ? "interrupted" : "idle",
+      processEndReason: reason,
+      recentStderr: tail || "none",
+    });
     this.child = null;
     this.stdoutBuffer = "";
     this.stderrTail = [];

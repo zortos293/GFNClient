@@ -41,7 +41,9 @@ interface NvstParams {
 // into sdp.rs; native mode works with its current profile.
 export function buildNvstSdp(params: NvstParams): string {
   console.log(`[SDP] buildNvstSdp: ${params.width}x${params.height}@${params.fps}fps, codec=${params.codec}, colorQuality=${params.colorQuality}, maxBitrate=${params.maxBitrateKbps}kbps`);
-  console.log(`[SDP] buildNvstSdp: ICE ufrag=${params.credentials.ufrag}, pwd=${params.credentials.pwd.slice(0, 8)}..., fingerprint=${params.credentials.fingerprint.slice(0, 20)}...`);
+  console.log(
+    `[SDP] buildNvstSdp: ICE credentials present ufragBytes=${params.credentials.ufrag.length}, pwdBytes=${params.credentials.pwd.length}, fingerprintBytes=${params.credentials.fingerprint.length}`,
+  );
   const maxBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.floor(params.maxBitrateKbps));
   const startupBitrate = Math.max(OFFICIAL_MIN_BITRATE_KBPS, Math.round(maxBitrate / 4));
   const isHighFps = params.fps >= 90;

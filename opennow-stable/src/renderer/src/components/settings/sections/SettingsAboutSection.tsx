@@ -1,6 +1,7 @@
 import { Info, MessageSquareText, RefreshCcw, Download, FileDown, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState, type JSX } from "react";
 import type { AppUpdaterState, Settings } from "@shared/gfn";
+import { getLogCapture } from "@shared/logger";
 import { useTranslation } from "../../../i18n";
 import { formatBytes, formatUpdaterTimestamp, getUpdaterBadgeLabel } from "../settingsFormatters";
 import { MotionSpinner } from "../../MotionSpinner";
@@ -296,7 +297,16 @@ export function SettingsAboutSection({
             className="settings-export-logs-btn"
             onClick={async () => {
               try {
-                const logs = await window.openNow.exportLogs("text");
+                const mainLogs = await window.openNow.exportLogs("text");
+                const rendererLogs = getLogCapture()?.exportRedacted() ?? "[renderer logs unavailable]";
+                const logs = [
+                  "===== MAIN =====",
+                  mainLogs.trimEnd(),
+                  "",
+                  "===== RENDERER =====",
+                  rendererLogs.trimEnd(),
+                  "",
+                ].join("\n");
                 const blob = new Blob([logs], { type: "text/plain" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");

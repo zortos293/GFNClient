@@ -9,6 +9,12 @@ import type {
   NativeTransitionDiagnostics,
   KeyboardLayout,
 } from "@shared/gfn";
+import {
+  iceCandidateDiagnosticSummary,
+  sdpDiagnosticSummary,
+  signalingUrlForDiagnostics,
+  streamDiagnosticId,
+} from "@shared/gfn";
 
 import {
   InputEncoder,
@@ -1977,8 +1983,8 @@ export class GfnWebRtcClient {
     this.cleanupPeerConnection();
     this.remoteIceEndpoint = session.mediaConnectionInfo ?? null;
     this.log("=== handleOffer START ===");
-    this.log(`Session: id=${session.sessionId}, status=${session.status}, serverIp=${session.serverIp}`);
-    this.log(`Signaling: server=${session.signalingServer}, url=${session.signalingUrl}`);
+    this.log(`Session: key=${streamDiagnosticId(session.sessionId)}, status=${session.status}, serverIp=${session.serverIp}`);
+    this.log(`Signaling: server=${session.signalingServer}, url=${signalingUrlForDiagnostics(session.signalingUrl, session.sessionId)}`);
     this.log(`MediaConnectionInfo: ${session.mediaConnectionInfo ? `ip=${session.mediaConnectionInfo.ip}, port=${session.mediaConnectionInfo.port}` : "NONE"}`);
     this.log(
       `Settings: codec=${settings.codec}, colorQuality=${settings.colorQuality}, resolution=${settings.resolution}, fps=${settings.fps}, maxBitrate=${settings.maxBitrateKbps}kbps`,
@@ -1987,13 +1993,7 @@ export class GfnWebRtcClient {
       this.log(`Negotiated stream profile override: ${JSON.stringify(session.negotiatedStreamProfile)}`);
     }
     this.log(`ICE servers: ${session.iceServers.length} (${session.iceServers.map(s => s.urls.join(",")).join(" | ")})`);
-    this.log(`Offer SDP length: ${offerSdp.length} chars`);
-    // Log full offer SDP for ICE debugging
-    this.log(`=== FULL OFFER SDP START ===`);
-    for (const line of offerSdp.split(/\r?\n/)) {
-      this.log(`  SDP> ${line}`);
-    }
-    this.log(`=== FULL OFFER SDP END ===`);
+    this.log(sdpDiagnosticSummary("Received offer", offerSdp));
 
     this.riInputCapabilities = parseRiInputCapabilities(offerSdp);
     this.inputChannelPolicyController.updateCapabilities(this.riInputCapabilities);
@@ -2044,13 +2044,13 @@ export class GfnWebRtcClient {
       if (!payload.candidate) {
         return;
       }
-      this.log(`Local ICE candidate: ${payload.candidate}`);
       const candidate: IceCandidatePayload = {
         candidate: payload.candidate,
         sdpMid: payload.sdpMid,
         sdpMLineIndex: payload.sdpMLineIndex,
         usernameFragment: payload.usernameFragment,
       };
+      this.log(`Local ICE candidate ${iceCandidateDiagnosticSummary(candidate)}`);
       if (!answerSent) {
         queuedLocalIce.push(candidate);
         this.log("Queued local ICE candidate until answer is sent");
@@ -2114,7 +2114,9 @@ export class GfnWebRtcClient {
       const hostCandidate = "hostCandidate" in e
         ? (e as RTCPeerConnectionIceErrorEvent & { hostCandidate?: string }).hostCandidate
         : undefined;
-      this.log(`ICE candidate error: ${e.errorCode} ${e.errorText} (${e.url ?? "no url"}) hostCandidate=${hostCandidate ?? "?"}`);
+      this.log(
+        `ICE candidate error: ${e.errorCode} ${e.errorText} url=${signalingUrlForDiagnostics(e.url, session.sessionId)} hostCandidate=${hostCandidate ?? "?"}`,
+      );
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -2283,11 +2285,13 @@ export class GfnWebRtcClient {
       this.diagnostics.codec = effectiveCodec;
       this.emitStats();
     }
-    this.log(`Immediate local SDP length: ${finalSdp.length} chars`);
+    this.log(sdpDiagnosticSummary("Created answer", finalSdp));
     await this.flushQueuedCandidates();
 
     const credentials = extractIceCredentials(finalSdp);
-    this.log(`Extracted ICE credentials: ufrag=${credentials.ufrag}, pwd=${credentials.pwd.slice(0, 8)}...`);
+    this.log(
+      `Extracted ICE credentials: ufragBytes=${credentials.ufrag.length}, pwdBytes=${credentials.pwd.length}`,
+    );
     const { width, height } = parseResolution(settings.resolution);
 
     const nvstSdp = buildNvstSdp({
@@ -2329,7 +2333,7 @@ export class GfnWebRtcClient {
   async addRemoteCandidate(candidate: IceCandidatePayload): Promise<void> {
     const sdpMLineIndex = candidate.sdpMLineIndex ?? (candidate.sdpMid == null ? 0 : undefined);
     this.log(
-      `Remote ICE candidate received: ${candidate.candidate} (sdpMid=${candidate.sdpMid}, sdpMLineIndex=${sdpMLineIndex})`,
+      `Remote ICE candidate received ${iceCandidateDiagnosticSummary({ ...candidate, sdpMLineIndex })}`,
     );
     const init: RTCIceCandidateInit = {
       candidate: candidate.candidate,

@@ -537,6 +537,8 @@ struct CachedRemoteImage<Content: View, Placeholder: View, Failure: View>: View 
 struct CatalogWallpaperBackdrop: View {
     let isEnabled: Bool
     let managedFilename: String?
+    /// Ignored when a custom image is set — a chosen photo always wins over a preset.
+    var preset: CatalogWallpaperPreset = .colorfulAbstract
 
     @State private var image: UIImage?
 
@@ -553,7 +555,7 @@ struct CatalogWallpaperBackdrop: View {
                                 .scaledToFill()
                                 .transition(.opacity)
                         } else {
-                            brandGradient
+                            presetGradient
                         }
 
                         LinearGradient(
@@ -576,6 +578,32 @@ struct CatalogWallpaperBackdrop: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+
+    /// Three built-in backdrops. They sit behind box art the whole time, so all of them stay
+    /// dark and low-contrast — a wallpaper that competes with the artwork is a wallpaper that
+    /// makes the catalog harder to scan.
+    private var presetGradient: LinearGradient {
+        switch preset {
+        case .colorfulAbstract:
+            return LinearGradient(
+                colors: [
+                    UIAccent.openNow.onDarkColor.opacity(0.55),
+                    Color(hex: 0x1B3A6B).opacity(0.75),
+                    Color(hex: 0x0A0E14)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .original:
+            return brandGradient
+        case .absoluteCinema:
+            return LinearGradient(
+                colors: [Color(hex: 0x101215), Color(hex: 0x05070A)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 
     @MainActor
@@ -645,7 +673,8 @@ struct HomeView: View {
             .background {
                 CatalogWallpaperBackdrop(
                     isEnabled: store.settings.catalogWallpaperEnabled,
-                    managedFilename: store.settings.catalogWallpaperFilename
+                    managedFilename: store.settings.catalogWallpaperFilename,
+                    preset: store.settings.catalogWallpaperPreset
                 )
             }
         }
@@ -1128,6 +1157,8 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                                 compact: store.settings.compactGameCards,
                                 favorite: favorite,
                                 canLaunch: canLaunch,
+                                showsTitle: store.settings.showCardTitles,
+                                alwaysShowsFavorite: store.settings.showFavoriteIconOnGameCards,
                                 onToggleFavorite: { store.toggleFavorite(game) },
                                 onOpenDetails: { onOpenDetails(game) },
                                 onPlay: { onPlay(game) }
@@ -1154,12 +1185,21 @@ private struct GameCatalogGridCard: View {
     let compact: Bool
     let favorite: Bool
     let canLaunch: Bool
+    /// Title caption under the artwork. Off leaves the grid as pure box art.
+    var showsTitle: Bool = true
+    /// Whether the heart is on every card. When off it appears only on games already favourited
+    /// or on the focused card — the long-press menu still reaches it, so nothing is lost.
+    var alwaysShowsFavorite: Bool = true
     let onToggleFavorite: () -> Void
     let onOpenDetails: () -> Void
     let onPlay: () -> Void
 
     private var controlSize: CGFloat {
         compact ? 36 : 42
+    }
+
+    private var showsFavoriteControl: Bool {
+        alwaysShowsFavorite || favorite || isPosterVisuallyFocused
     }
 
     private var isPosterVisuallyFocused: Bool {
@@ -1183,6 +1223,53 @@ private struct GameCatalogGridCard: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            poster
+            if showsTitle {
+                caption
+            }
+        }
+        // Long-press reaches every action the card offers, including the favourite toggle when
+        // the heart is hidden. `preview:` shows the artwork at size rather than a cropped cell.
+        .contextMenu {
+            if canLaunch {
+                Button { play() } label: { Label("Play", systemImage: "play.fill") }
+            }
+            Button { toggleFavorite() } label: {
+                Label(
+                    favorite ? "Remove from Favourites" : "Add to Favourites",
+                    systemImage: favorite ? "heart.slash" : "heart"
+                )
+            }
+            Button { openDetails() } label: { Label("Details", systemImage: "info.circle") }
+        }
+        // The buttons on the artwork are already exposed individually; repeating them as custom
+        // actions would make VoiceOver read the same card three times.
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var caption: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(game.title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 2)
+        // The poster button already announces the title; repeating it here would double it.
+        .accessibilityHidden(true)
+    }
+
+    private var poster: some View {
         ZStack(alignment: .bottom) {
             Button(action: openDetails) {
                 GameCatalogPosterContent(
@@ -1205,18 +1292,20 @@ private struct GameCatalogGridCard: View {
             .accessibilityLabel("Open details for \(game.title)")
 
             HStack(alignment: .bottom) {
-                Button(action: toggleFavorite) {
-                    Image(systemName: favorite ? "heart.fill" : "heart")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(favorite ? Color.red : Color.white)
-                        .frame(width: controlSize, height: controlSize)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
+                if showsFavoriteControl {
+                    Button(action: toggleFavorite) {
+                        Image(systemName: favorite ? "heart.fill" : "heart")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(favorite ? Color.red : Color.white)
+                            .frame(width: controlSize, height: controlSize)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
+                    }
+                    .buttonStyle(.plain)
+                    .controllerFocusableCompat(fallbackActivation: toggleFavorite)
+                    .contentShape(Circle())
+                    .accessibilityLabel(favorite ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
                 }
-                .buttonStyle(.plain)
-                .controllerFocusableCompat(fallbackActivation: toggleFavorite)
-                .contentShape(Circle())
-                .accessibilityLabel(favorite ? "Remove \(game.title) from favorites" : "Add \(game.title) to favorites")
 
                 Spacer(minLength: 8)
 
@@ -1887,11 +1976,13 @@ private struct CatalogPosterRail: View {
                             && !store.launchOptions(for: game).isEmpty
                         GameCatalogGridCard(
                             game: game,
-                            subtitle: gameCatalogSubtitle(for: game),
+                            subtitle: store.settings.showGameStoreLabels ? gameCatalogSubtitle(for: game) : nil,
                             badgeSystemImage: nil,
                             compact: store.settings.compactGameCards,
                             favorite: favorite,
                             canLaunch: canLaunch,
+                            showsTitle: store.settings.showCardTitles,
+                            alwaysShowsFavorite: store.settings.showFavoriteIconOnGameCards,
                             onToggleFavorite: { store.toggleFavorite(game) },
                             onOpenDetails: { onOpenDetails(game) },
                             onPlay: { onPlay(game) }

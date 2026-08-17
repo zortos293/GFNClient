@@ -58,13 +58,13 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
     var keywords: [String] {
         switch self {
         case .general:
-            return ["general", "language", "locale", "privacy", "analytics", "telemetry", "usage", "cache", "reset", "data", "tutorial", "updates"]
+            return ["general", "privacy", "analytics", "telemetry", "usage", "cache", "reset", "data", "tutorial", "updates"]
         case .stream:
             return ["stream", "preset", "recommended", "resolution", "aspect ratio", "fps", "frame rate", "bitrate", "data", "codec", "color", "hdr", "sharpening", "sharpness", "region", "server", "session proxy", "proxy", "native decoder", "stretch"]
         case .input:
-            return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "clipboard", "paste", "microphone", "mic", "voice", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
+            return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
         case .interface:
-            return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "keyboard button", "server selector", "queue", "live activities", "catalog", "wallpaper", "background", "photo", "sound", "music", "intro", "session report", "counter"]
+            return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "server selector", "queue", "live activities", "catalog", "wallpaper", "background", "photo", "session report", "counter"]
         case .advanced:
             return ["advanced", "experimental", "l4s", "cloud g-sync", "gsync", "diagnostics", "debug", "logs", "codec", "probe", "native", "h264", "h265", "hevc", "av1"]
         case .account:
@@ -280,7 +280,6 @@ struct SettingsView: View {
     private func settingsDetailContent(for category: SettingsCategory) -> some View {
         switch category {
         case .general:
-            languageSection
             privacySection
             dataSection
         case .stream:
@@ -669,12 +668,6 @@ struct SettingsView: View {
 
     private var inputAudioKeyboardSection: some View {
         Section {
-            Picker("Microphone", selection: $store.settings.microphoneMode) {
-                ForEach(MicrophoneMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-
             Picker("Keyboard Layout", selection: $store.settings.keyboardLayout) {
                 ForEach(StreamSettingsResolver.keyboardLayoutOptions, id: \.value) { option in
                     Text(option.label).tag(option.value)
@@ -687,11 +680,10 @@ struct SettingsView: View {
                 }
             }
 
-            Toggle("Paste Into Games", isOn: $store.settings.clipboardPasteEnabled)
         } header: {
-            Text("Audio & Keyboard")
+            Text("Keyboard")
         } footer: {
-            Text("Turning the microphone on asks for permission the first time. The keyboard layout has to match the one the game expects, not the one on your device.")
+            Text("The keyboard layout has to match the one the game expects, not the one on your device. Microphone input is not available yet — GeForce NOW's stream offer carries no upstream audio track.")
         }
     }
 
@@ -1013,11 +1005,6 @@ struct SettingsView: View {
                 }
             }
 
-            Toggle("Keyboard Button", isOn: Binding(
-                get: { !store.settings.hideStreamButtons },
-                set: { store.settings.hideStreamButtons = !$0 }
-            ))
-            Toggle("Anti-AFK Indicator", isOn: $store.settings.showAntiAfkIndicator)
         } header: {
             Text("Stats HUD")
         } footer: {
@@ -1032,13 +1019,10 @@ struct SettingsView: View {
             #if !os(tvOS)
             Toggle("Queue Live Activities", isOn: $store.settings.queueLiveActivitiesEnabled)
             #endif
-            Toggle("Launch Sound", isOn: $store.settings.streamIntroSound)
-            Toggle("Queue Ready Sound", isOn: $store.settings.queueReadySound)
-            Toggle("Navigation Clicks", isOn: $store.settings.controllerUISounds)
         } header: {
-            Text("Sound & Sessions")
+            Text("Sessions")
         } footer: {
-            Text("The session report appears after a stream ends and scores how the connection held up. The queue ready sound plays when a rig frees up, so you can put the phone down while you wait.")
+            Text("The session report appears after a stream ends and scores how the connection held up.")
         }
     }
 
@@ -1049,22 +1033,6 @@ struct SettingsView: View {
         }
         categories.append(.about)
         return categories
-    }
-
-    private var languageSection: some View {
-        Section {
-            Picker("App Language", selection: $store.settings.appLanguage) {
-                ForEach(AppLanguage.supported, id: \.tag) { entry in
-                    Text(entry.label).tag(entry.tag)
-                }
-            }
-        } header: {
-            Text("Language")
-        } footer: {
-            Text(store.settings.appLanguage.isEmpty
-                 ? "OpenNOW follows your iPhone's language."
-                 : "Changing this takes effect the next time OpenNOW launches.")
-        }
     }
 
     private var privacySection: some View {

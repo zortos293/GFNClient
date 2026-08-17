@@ -801,7 +801,10 @@ struct AppSettings: Codable, Equatable {
 
     // Catalog presentation
     var showCardTitles: Bool = true
-    var showFavoriteIconOnGameCards: Bool = false
+    /// True keeps the heart on every card (the behaviour iOS shipped with). False declutters
+    /// the grid: the heart then appears only on games already favourited or on the focused card,
+    /// and the long-press menu still reaches the toggle either way.
+    var showFavoriteIconOnGameCards: Bool = true
     var catalogWallpaperPreset: CatalogWallpaperPreset = .colorfulAbstract
 
     // Stream HUD
@@ -1009,7 +1012,7 @@ struct AppSettings: Codable, Equatable {
         expressiveUI = try container.decodeIfPresent(Bool.self, forKey: .expressiveUI) ?? true
         liveSelectedOutlines = try container.decodeIfPresent(Bool.self, forKey: .liveSelectedOutlines) ?? true
         showCardTitles = try container.decodeIfPresent(Bool.self, forKey: .showCardTitles) ?? true
-        showFavoriteIconOnGameCards = try container.decodeIfPresent(Bool.self, forKey: .showFavoriteIconOnGameCards) ?? false
+        showFavoriteIconOnGameCards = try container.decodeIfPresent(Bool.self, forKey: .showFavoriteIconOnGameCards) ?? true
         catalogWallpaperPreset = try container.decodeIfPresent(CatalogWallpaperPreset.self, forKey: .catalogWallpaperPreset) ?? .colorfulAbstract
         streamStatsMetrics = try container.decodeIfPresent(StreamStatsMetrics.self, forKey: .streamStatsMetrics) ?? .default
         hideStreamButtons = try container.decodeIfPresent(Bool.self, forKey: .hideStreamButtons) ?? false

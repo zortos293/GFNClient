@@ -42,7 +42,8 @@ struct LibraryView: View {
             .background {
                 CatalogWallpaperBackdrop(
                     isEnabled: store.settings.catalogWallpaperEnabled,
-                    managedFilename: store.settings.catalogWallpaperFilename
+                    managedFilename: store.settings.catalogWallpaperFilename,
+                    preset: store.settings.catalogWallpaperPreset
                 )
             }
         }

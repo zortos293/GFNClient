@@ -388,6 +388,7 @@ struct StreamerView: View {
                     NativeStreamVirtualControllerOverlay(
                         inputBridge: coordinator.inputBridge,
                         layout: coordinator.touchLayout,
+                        touchSettings: coordinator.liveSettings.touch,
                         editing: coordinator.touchLayoutEditing,
                         inputEnabled: coordinator.virtualControllerInputEnabled,
                         onPositionChange: coordinator.setTouchLayoutPosition,
@@ -5036,6 +5037,8 @@ private enum NativeStreamTouchControlGroup: CaseIterable {
 private struct NativeStreamVirtualControllerOverlay: View {
     let inputBridge: NativeStreamInputBridge
     let layout: TouchControlLayout
+    /// Behaviour that is not geometry: dead zone, follow-finger, and the outline style.
+    var touchSettings: TouchSettings = .default
     let editing: Bool
     let inputEnabled: Bool
     let onPositionChange: (NativeStreamTouchControlGroup, TouchControlPoint) -> Void
@@ -5122,6 +5125,9 @@ private struct NativeStreamVirtualControllerOverlay: View {
                         NativeStreamVirtualStickView(
                             label: "L",
                             size: stickSize,
+                            deadZone: touchSettings.joystickDeadZone,
+                            followsFinger: touchSettings.joystickMode == .dynamic,
+                            outlineStyle: touchSettings.style == .outline,
                             changed: { x, y in inputBridge.setVirtualStick(.left, x: x, y: y) },
                             pressed: { inputBridge.setVirtualButton(.leftStick, pressed: $0) }
                         )
@@ -5139,6 +5145,9 @@ private struct NativeStreamVirtualControllerOverlay: View {
                         NativeStreamVirtualStickView(
                             label: "R",
                             size: stickSize,
+                            deadZone: touchSettings.joystickDeadZone,
+                            followsFinger: touchSettings.joystickMode == .dynamic,
+                            outlineStyle: touchSettings.style == .outline,
                             changed: { x, y in inputBridge.setVirtualStick(.right, x: x, y: y) },
                             pressed: { inputBridge.setVirtualButton(.rightStick, pressed: $0) }
                         )
@@ -5508,19 +5517,28 @@ private struct NativeStreamVirtualHoldButton: View {
 private struct NativeStreamVirtualStickView: View {
     let label: String
     let size: CGFloat
+    /// Fraction of travel ignored around centre. Rests at 0 — a resting thumb on a stick with no
+    /// dead zone still sends tiny deflections, which reads as drift in games that poll raw axes.
+    var deadZone: Double = 0
+    /// `.dynamic` re-centres the stick under wherever the thumb lands rather than pinning it to
+    /// the drawn circle, which is what most touch shooters expect.
+    var followsFinger: Bool = false
+    var outlineStyle: Bool = false
     let changed: (CGFloat, CGFloat) -> Void
     let pressed: (Bool) -> Void
 
     @State private var knobOffset = CGSize.zero
+    @State private var origin: CGPoint?
     @State private var moved = false
 
     var body: some View {
         ZStack {
             Circle()
-                .fill(.ultraThinMaterial)
-                .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 1))
+                .fill(outlineStyle ? AnyShapeStyle(Color.black.opacity(0.18)) : AnyShapeStyle(.ultraThinMaterial))
+                .overlay(Circle().stroke(Color.white.opacity(outlineStyle ? 0.42 : 0.22), lineWidth: outlineStyle ? 1.5 : 1))
             Circle()
-                .fill(Color.white.opacity(0.30))
+                .fill(Color.white.opacity(outlineStyle ? 0.14 : 0.30))
+                .overlay(Circle().strokeBorder(Color.white.opacity(outlineStyle ? 0.55 : 0), lineWidth: 1.5))
                 .frame(width: size * 0.48, height: size * 0.48)
                 .overlay(Text(label).font(.caption2.bold()).foregroundStyle(.white))
                 .offset(knobOffset)
@@ -5531,16 +5549,28 @@ private struct NativeStreamVirtualStickView: View {
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     let radius = max(1, size * 0.34)
-                    let raw = CGSize(width: value.translation.width, height: value.translation.height)
+                    // In follow-finger mode the first touch becomes the centre, so the very first
+                    // move is relative to where the thumb landed rather than to the drawn circle.
+                    if origin == nil { origin = followsFinger ? value.startLocation : nil }
+                    let base = origin ?? value.startLocation
+                    let raw = followsFinger
+                        ? CGSize(width: value.location.x - base.x, height: value.location.y - base.y)
+                        : CGSize(width: value.translation.width, height: value.translation.height)
                     let magnitude = hypot(raw.width, raw.height)
                     let scale = magnitude > radius ? radius / magnitude : 1
                     knobOffset = CGSize(width: raw.width * scale, height: raw.height * scale)
                     moved = moved || magnitude > 5
-                    changed(knobOffset.width / radius, -knobOffset.height / radius)
+                    let (x, y) = Self.applyDeadZone(
+                        x: knobOffset.width / radius,
+                        y: -knobOffset.height / radius,
+                        deadZone: deadZone
+                    )
+                    changed(x, y)
                 }
                 .onEnded { _ in
                     changed(0, 0)
                     knobOffset = .zero
+                    origin = nil
                     if !moved {
                         pressed(true)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { pressed(false) }
@@ -5558,6 +5588,18 @@ private struct NativeStreamVirtualStickView: View {
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { changed(0, 0) }
         }
+    }
+
+    /// Rescales the remaining travel so the stick still reaches full deflection at the rim —
+    /// simply zeroing inside the threshold would cost the player the top of their range.
+    static func applyDeadZone(x: CGFloat, y: CGFloat, deadZone: Double) -> (CGFloat, CGFloat) {
+        let threshold = CGFloat(min(max(deadZone, 0), 0.9))
+        guard threshold > 0 else { return (x, y) }
+        let magnitude = hypot(x, y)
+        guard magnitude > threshold else { return (0, 0) }
+        let scaled = (magnitude - threshold) / (1 - threshold)
+        let factor = scaled / magnitude
+        return (x * factor, y * factor)
     }
 }
 

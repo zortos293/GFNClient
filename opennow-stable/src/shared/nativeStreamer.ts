@@ -97,6 +97,7 @@ export type NativeStreamerResponse =
   | {
       id: string;
       type: "ok";
+      transport?: "webrtc" | "nvst";
     }
   | {
       id: string;

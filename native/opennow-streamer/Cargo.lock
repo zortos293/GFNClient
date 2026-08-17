@@ -938,9 +938,15 @@ dependencies = [
 name = "opennow-streamer-transport"
 version = "0.2.0"
 dependencies = [
+ "aes",
+ "aes-gcm",
+ "ctr",
+ "hmac",
  "opennow-streamer-protocol",
  "serde_json",
+ "sha1",
  "str0m",
+ "subtle",
  "thiserror",
 ]
 

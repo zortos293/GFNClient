@@ -105,6 +105,7 @@ export class NativeStreamerManager {
   private pending = new Map<string, PendingRequest>();
   private capabilities: NativeStreamerCapabilities | null = null;
   private activeSessionId: string | null = null;
+  private activeTransport: "webrtc" | "nvst" | null = null;
   private inputBackpressureWarned = false;
   private answerInFlight = false;
   private queuedLocalIce: IceCandidatePayload[] = [];
@@ -131,6 +132,10 @@ export class NativeStreamerManager {
 
   hasActiveSession(): boolean {
     return this.activeSessionId !== null;
+  }
+
+  isNvstSessionActive(sessionId: string): boolean {
+    return this.activeSessionId === sessionId && this.activeTransport === "nvst";
   }
 
   private retainDiagnosticState(values: Record<string, unknown>): void {
@@ -171,11 +176,15 @@ export class NativeStreamerManager {
       );
     }
 
-    await this.request({
+    const response = await this.request({
       type: "start",
       context,
     }, SESSION_START_TIMEOUT_MS);
+    if (response.type !== "ok") {
+      throw new Error(`Native streamer returned ${response.type} instead of ok.`);
+    }
     this.activeSessionId = context.session.sessionId;
+    this.activeTransport = response.transport === "nvst" ? "nvst" : "webrtc";
     this.retainDiagnosticState({ sessionState: "ready" });
     await this.flushQueuedRemoteIce(context.session.sessionId);
   }
@@ -409,6 +418,7 @@ export class NativeStreamerManager {
       stopReason: reason,
     });
     this.activeSessionId = null;
+    this.activeTransport = null;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -445,6 +455,7 @@ export class NativeStreamerManager {
       stopReason: reason,
     });
     this.activeSessionId = null;
+    this.activeTransport = null;
     this.capabilities = null;
     this.surfaceUpdates.markNotReady();
     this.clearQueuedRemoteIce();
@@ -932,6 +943,7 @@ export class NativeStreamerManager {
     this.stdoutBuffer = "";
     this.stderrTail = [];
     this.activeSessionId = null;
+    this.activeTransport = null;
     this.capabilities = null;
     this.inputBackpressureWarned = false;
     this.surfaceUpdates.markNotReady();

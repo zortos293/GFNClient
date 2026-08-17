@@ -574,6 +574,16 @@ export class SignalingCoordinator {
       return;
     }
 
+    const nativeNvstActive = this.nativeStreamerManager
+      ?.isNvstSessionActive(context.session.sessionId) ?? false;
+
+    if (
+      nativeNvstActive
+      && (event.type === "offer" || event.type === "remote-ice")
+    ) {
+      return;
+    }
+
     if (event.type === "offer") {
       void this.handleNativeStreamerOffer(event.sdp, context);
       return;

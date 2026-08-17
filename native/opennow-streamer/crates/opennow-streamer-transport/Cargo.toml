@@ -6,7 +6,14 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+aes.workspace = true
+aes-gcm.workspace = true
+ctr.workspace = true
+hmac.workspace = true
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
+serde_json.workspace = true
+sha1.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]

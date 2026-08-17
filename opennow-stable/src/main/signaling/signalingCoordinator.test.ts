@@ -35,6 +35,7 @@ interface CoordinatorInternals {
   nativeStreamerContext: NativeStreamerSessionContext | null;
   nativeStreamerManager: NativeStreamerManager | null;
   prepareNativeStreamerBeforeSignaling(): Promise<void>;
+  routeSignalingEvent(event: { type: "offer"; sdp: string } | { type: "remote-ice"; candidate: string }): void;
 }
 
 function createCoordinator(
@@ -142,4 +143,30 @@ test("coordinator tears down NVST when native startup fails", async () => {
     "native-stop:native streamer pre-attach fallback",
     "nvst-release:native streamer pre-attach fallback",
   ]);
+});
+
+test("coordinator does not renegotiate WebRTC after native NVST starts", () => {
+  const owner: GfnNvstRtspOwner = {
+    prepare: async (context) => context,
+    release: async () => undefined,
+  };
+  const { internals } = createCoordinator(owner);
+  const context = createContext();
+  context.nvstVideo = {
+    clientUdpPort: 45000,
+    videoPeerIp: "192.0.2.20",
+    videoPeerPort: 5004,
+    srtpAesKeyHex: "AA".repeat(32),
+    srtpKeyId: 42,
+    srtpSaltHex: `${"00".repeat(11)}2A`,
+  };
+  internals.nativeStreamerContext = context;
+  internals.nativeStreamerManager = {
+    isNvstSessionActive: (sessionId: string) => sessionId === "gfn-session",
+    handleOffer: async () => assert.fail("NVST must not handle a WebRTC offer"),
+    addRemoteIce: async () => assert.fail("NVST must not handle WebRTC ICE"),
+  } as unknown as NativeStreamerManager;
+
+  internals.routeSignalingEvent({ type: "offer", sdp: "v=0\r\n" });
+  internals.routeSignalingEvent({ type: "remote-ice", candidate: "candidate:synthetic" });
 });

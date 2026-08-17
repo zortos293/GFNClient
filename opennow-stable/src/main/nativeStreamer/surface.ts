@@ -32,6 +32,7 @@ export function normalizeNativeRenderSurface(
     ? Math.min(8, Math.max(0.25, input.deviceScaleFactor))
     : 1;
   const rect = input.rect;
+  const contentBounds = window.getContentBounds();
   const visible =
     input.visible === true &&
     rect !== null &&
@@ -55,5 +56,13 @@ export function normalizeNativeRenderSurface(
           height: Math.max(2, Math.round(rect.height)),
         }
       : null,
+    screenRect: visible
+      ? {
+          x: contentBounds.x + Math.round(rect.x),
+          y: contentBounds.y + Math.round(rect.y),
+          width: Math.max(2, Math.round(rect.width)),
+          height: Math.max(2, Math.round(rect.height)),
+        }
+      : undefined,
   };
 }

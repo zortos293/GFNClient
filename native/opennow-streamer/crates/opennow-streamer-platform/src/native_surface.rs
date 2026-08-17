@@ -18,9 +18,11 @@ impl NativeSurface {
         &mut self,
         parent_handle: &str,
         rect: RenderSurfaceRect,
+        screen_rect: Option<RenderSurfaceRect>,
         scale: f32,
     ) -> Result<(), String> {
-        self.inner.attach_and_show(parent_handle, rect, scale)
+        self.inner
+            .attach_and_show(parent_handle, rect, screen_rect, scale)
     }
 
     pub(crate) fn hide(&mut self) {
@@ -93,6 +95,7 @@ mod platform {
             &mut self,
             parent_handle: &str,
             rect: RenderSurfaceRect,
+            _screen_rect: Option<RenderSurfaceRect>,
             scale: f32,
         ) -> Result<(), String> {
             let parent = parse_handle(parent_handle)? as _;
@@ -198,6 +201,7 @@ mod platform {
             &mut self,
             parent_handle: &str,
             rect: RenderSurfaceRect,
+            _screen_rect: Option<RenderSurfaceRect>,
             scale: f32,
         ) -> Result<(), String> {
             let parent = parse_handle(parent_handle)? as xlib::Window;
@@ -229,15 +233,14 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     use objc2::rc::Retained;
-    use objc2_app_kit::{NSView, NSWindow, NSWindowOrderingMode};
-    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use objc2_app_kit::{NSView, NSWindow};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     use super::*;
 
     pub(crate) struct Surface {
         child: Retained<NSWindow>,
-        parent: Option<Retained<NSWindow>>,
+        raw_window: *mut sdl2::sys::SDL_Window,
     }
 
     impl Surface {
@@ -258,58 +261,41 @@ mod platform {
             child.setIgnoresMouseEvents(true);
             Ok(Self {
                 child,
-                parent: None,
+                raw_window: window.raw(),
             })
         }
 
         pub(crate) fn attach_and_show(
             &mut self,
-            parent_handle: &str,
-            rect: RenderSurfaceRect,
+            _parent_handle: &str,
+            _rect: RenderSurfaceRect,
+            screen_rect: Option<RenderSurfaceRect>,
             _scale: f32,
         ) -> Result<(), String> {
-            let parent_pointer = parse_handle(parent_handle)? as *const NSView;
-            let parent_view = unsafe { &*parent_pointer };
-            let parent_window = parent_view
-                .window()
-                .ok_or_else(|| "Electron AppKit view has no window".to_owned())?;
-            if self
-                .parent
-                .as_ref()
-                .is_none_or(|current| current != &parent_window)
-            {
-                if let Some(current) = self.parent.take() {
-                    current.removeChildWindow(&self.child);
+            let screen_rect = screen_rect.ok_or_else(|| {
+                "macOS native surface is missing absolute screen bounds".to_owned()
+            })?;
+            let width = i32::try_from(screen_rect.width)
+                .map_err(|_| "macOS native surface width is out of range".to_owned())?;
+            let height = i32::try_from(screen_rect.height)
+                .map_err(|_| "macOS native surface height is out of range".to_owned())?;
+            unsafe {
+                sdl2::sys::SDL_SetWindowPosition(self.raw_window, screen_rect.x, screen_rect.y);
+                if sdl2::sys::SDL_SetWindowSize(self.raw_window, width, height) != 0 {
+                    return Err(format!(
+                        "failed to size macOS native surface: {}",
+                        sdl2::get_error()
+                    ));
                 }
-                unsafe {
-                    parent_window.addChildWindow_ordered(&self.child, NSWindowOrderingMode::Above);
-                }
-                self.parent = Some(parent_window.clone());
+                sdl2::sys::SDL_ShowWindow(self.raw_window);
             }
-            let bounds = parent_view.bounds();
-            let local = NSRect::new(
-                NSPoint::new(
-                    rect.x as f64,
-                    bounds.size.height - rect.y as f64 - rect.height as f64,
-                ),
-                NSSize::new(rect.width as f64, rect.height as f64),
-            );
-            let parent_window_rect = parent_view.convertRect_toView(local, None);
-            let screen_rect = parent_window.convertRectToScreen(parent_window_rect);
-            self.child.setFrame_display(screen_rect, true);
-            self.child.orderFront(None);
+            self.child.orderFrontRegardless();
             Ok(())
         }
 
         pub(crate) fn hide(&mut self) {
-            self.child.orderOut(None);
-        }
-    }
-
-    impl Drop for Surface {
-        fn drop(&mut self) {
-            if let Some(parent) = self.parent.take() {
-                parent.removeChildWindow(&self.child);
+            unsafe {
+                sdl2::sys::SDL_HideWindow(self.raw_window);
             }
         }
     }
@@ -330,6 +316,7 @@ mod platform {
             &mut self,
             _parent_handle: &str,
             _rect: RenderSurfaceRect,
+            _screen_rect: Option<RenderSurfaceRect>,
             _scale: f32,
         ) -> Result<(), String> {
             Err("native presentation is unsupported on this operating system".to_owned())

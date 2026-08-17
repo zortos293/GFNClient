@@ -138,6 +138,7 @@ export interface NativeRenderSurfaceUpdate {
 
 export interface NativeRenderSurface extends NativeRenderSurfaceUpdate {
   windowHandle?: string;
+  screenRect?: NativeRenderSurfaceRect;
 }
 
 export interface KeyframeRequest {

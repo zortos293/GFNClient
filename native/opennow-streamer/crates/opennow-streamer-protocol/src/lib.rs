@@ -63,6 +63,8 @@ pub struct RenderSurface {
     pub device_scale_factor: f32,
     #[serde(default)]
     pub window_handle: Option<String>,
+    #[serde(default)]
+    pub screen_rect: Option<RenderSurfaceRect>,
 }
 
 impl Default for RenderSurface {
@@ -72,6 +74,7 @@ impl Default for RenderSurface {
             visible: false,
             device_scale_factor: default_device_scale_factor(),
             window_handle: None,
+            screen_rect: None,
         }
     }
 }

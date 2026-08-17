@@ -235,7 +235,12 @@ impl ActiveOutput {
         self.native_surface
             .as_mut()
             .map_err(|error| error.clone())?
-            .attach_and_show(parent_handle, rect, surface.device_scale_factor)?;
+            .attach_and_show(
+                parent_handle,
+                rect,
+                surface.screen_rect,
+                surface.device_scale_factor,
+            )?;
         self.visible = true;
         Ok(())
     }

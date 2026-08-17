@@ -222,6 +222,33 @@ export function SettingsNativeStreamerSection({
                 </div>
               </div>
 
+              {settings.streamClientMode === "native" && (
+                <div className="settings-row settings-row--choice">
+                  <label className="settings-label">{t("settings.nativeStreamer.transportMode")}</label>
+                  <div className="settings-chip-row">
+                    <button
+                      type="button"
+                      className={`settings-chip ${settings.transportMode === "webrtc" ? "active" : ""}`}
+                      aria-pressed={settings.transportMode === "webrtc"}
+                      onClick={() => handleChange("transportMode", "webrtc")}
+                    >
+                      <span>{t("settings.nativeStreamer.transportModeWebrtc")}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`settings-chip ${settings.transportMode === "nvst" ? "active" : ""}`}
+                      aria-pressed={settings.transportMode === "nvst"}
+                      onClick={() => handleChange("transportMode", "nvst")}
+                    >
+                      <span>{t("settings.nativeStreamer.transportModeNvst")}</span>
+                    </button>
+                  </div>
+                  <span className="settings-subtle-hint">
+                    {t("settings.nativeStreamer.transportModeHint")}
+                  </span>
+                </div>
+              )}
+
               <div className="settings-row settings-row--toggle">
                 <div className="settings-row-top settings-row-top--compact">
                   <label className="settings-label settings-label--wrap" htmlFor="settings-native-show-stats">

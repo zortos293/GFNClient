@@ -1092,7 +1092,7 @@
       "transportMode": "Transport Mode",
       "transportModeWebrtc": "WebRTC (Default)",
       "transportModeNvst": "NVST (Experimental)",
-      "transportModeHint": "WebRTC is the supported path. NVST (experimental) uses classic RTSPS + UDP video (Moonlight-hypothesis scaffold) while keyboard/mouse/controller stay on WebRTC SCTP datachannels. First live sessions may need SRTP/pcap validation.",
+      "transportModeHint": "WebRTC uses Chromium for media. NVST sends H.264 video through the native UDP/SRTP decoder while audio and input continue over WebRTC. Select NVST to test native hardware video decoding.",
       "transportModeWindowsOnlyHint": "NVST transport is Windows-only for now. This platform always uses WebRTC."
     },
     "thanks": {

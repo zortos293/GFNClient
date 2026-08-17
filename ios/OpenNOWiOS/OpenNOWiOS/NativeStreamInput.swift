@@ -572,10 +572,16 @@ final class NativeStreamInputBridge {
     private var lastGamepadStates: [Int: NativeStreamGamepadState] = [:]
     private var gamepadKeepaliveTimer: Timer?
     private var heartbeatTimer: Timer?
+    private var mouseEmulationTimer: Timer?
+    private var mouseEmulationEnabled = false
+    /// Latched so the click can be released even if the button state changes in the same frame.
+    private var mouseEmulationHeldButtons: Set<Int> = []
+    private var mouseEmulationScrollRemainder: CGFloat = 0
     private var lastHapticsAdvertisementAt: TimeInterval = -.infinity
     private var mouseAccumulator = CGPoint.zero
     private var mouseFlushScheduled = false
     private var mouseSensitivity: CGFloat = 1
+    private var mouseScrollSensitivity: CGFloat = 30
     private var mouseAccelerationLevel = 1
     private var phoneRumbleFallbackEnabled = true
     private var physicalControllerPassthroughEnabled = true
@@ -608,10 +614,14 @@ final class NativeStreamInputBridge {
         mouseSensitivity: Double,
         mouseAcceleration: Int,
         phoneRumbleFallback: Bool,
-        physicalControllerPassthrough: Bool
+        physicalControllerPassthrough: Bool,
+        controllerMouseEmulation: Bool = false,
+        mouseScrollSensitivity: Int = 30
     ) {
         self.mouseSensitivity = CGFloat(min(max(mouseSensitivity, 0.25), 3))
         mouseAccelerationLevel = min(max(mouseAcceleration, 0), 2)
+        self.mouseScrollSensitivity = CGFloat(min(max(mouseScrollSensitivity, 10), 100))
+        setControllerMouseEmulation(controllerMouseEmulation)
         if phoneRumbleFallbackEnabled, !phoneRumbleFallback {
             stopPhoneRumble(shutdown: true)
         }
@@ -705,6 +715,10 @@ final class NativeStreamInputBridge {
         heartbeatTimer = nil
         gamepadKeepaliveTimer?.invalidate()
         gamepadKeepaliveTimer = nil
+        mouseEmulationTimer?.invalidate()
+        mouseEmulationTimer = nil
+        mouseEmulationEnabled = false
+        mouseEmulationHeldButtons.removeAll()
         stopAllRumble()
         lastHapticsAdvertisementAt = -.infinity
     }
@@ -966,6 +980,95 @@ final class NativeStreamInputBridge {
         }
     }
 
+    /// Turns a physical controller into a pointer.
+    ///
+    /// Games that only accept mouse and keyboard are otherwise unplayable from a couch, and GFN
+    /// offers no server-side equivalent. Left stick drives the cursor, right stick scrolls, and
+    /// A / B become the two mouse buttons — the mapping Android uses, so muscle memory carries
+    /// across.
+    ///
+    /// While it is on, those inputs are *withheld* from the gamepad state the host receives.
+    /// Sending both would make the game see a stick push and a cursor move at once, which is how
+    /// a menu ends up scrolling twice per press.
+    func setControllerMouseEmulation(_ enabled: Bool) {
+        guard mouseEmulationEnabled != enabled else { return }
+        mouseEmulationEnabled = enabled
+        mouseEmulationTimer?.invalidate()
+        mouseEmulationTimer = nil
+        mouseEmulationScrollRemainder = 0
+
+        // Release anything held, or the host keeps a button down forever after a mode switch.
+        for button in mouseEmulationHeldButtons {
+            sendMouseButton(button, pressed: false)
+        }
+        mouseEmulationHeldButtons.removeAll()
+
+        guard enabled else {
+            // Re-send the true controller state so the host stops seeing a centred stick.
+            controllersBySlot.keys.forEach { sendGamepad(slot: $0, force: true) }
+            return
+        }
+
+        mouseEmulationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.stepControllerMouseEmulation()
+        }
+    }
+
+    var isControllerMouseEmulationEnabled: Bool { mouseEmulationEnabled }
+
+    private func stepControllerMouseEmulation() {
+        guard mouseEmulationEnabled,
+              let slot = controllersBySlot.keys.min(),
+              let gamepad = controllersBySlot[slot]?.extendedGamepad else { return }
+
+        // A resting stick is never exactly zero, and at 60 Hz even a tiny bias walks the cursor
+        // across the screen in a few seconds.
+        let deadZone: Float = 0.12
+        let x = Self.curvedStickAxis(gamepad.leftThumbstick.xAxis.value, deadZone: deadZone)
+        let y = Self.curvedStickAxis(gamepad.leftThumbstick.yAxis.value, deadZone: deadZone)
+        if x != 0 || y != 0 {
+            // 18 px per frame at full deflection lands close to a comfortable trackpad flick
+            // once the shared sensitivity curve is applied on top.
+            let speed: CGFloat = 18
+            coalesceMouse(dx: CGFloat(x) * speed, dy: CGFloat(-y) * speed)
+        }
+
+        let scrollAxis = Self.curvedStickAxis(gamepad.rightThumbstick.yAxis.value, deadZone: deadZone)
+        if scrollAxis != 0 {
+            // Higher sensitivity numbers mean slower scrolling, matching the settings copy.
+            mouseEmulationScrollRemainder += CGFloat(scrollAxis) * (120 / mouseScrollSensitivity)
+            let steps = Int(mouseEmulationScrollRemainder)
+            if steps != 0 {
+                mouseEmulationScrollRemainder -= CGFloat(steps)
+                sendMouseWheel(delta: steps)
+            }
+        } else {
+            mouseEmulationScrollRemainder = 0
+        }
+
+        updateEmulatedMouseButton(0, pressed: gamepad.buttonA.isPressed)
+        updateEmulatedMouseButton(1, pressed: gamepad.buttonB.isPressed)
+    }
+
+    private func updateEmulatedMouseButton(_ button: Int, pressed: Bool) {
+        let held = mouseEmulationHeldButtons.contains(button)
+        guard held != pressed else { return }
+        if pressed {
+            mouseEmulationHeldButtons.insert(button)
+        } else {
+            mouseEmulationHeldButtons.remove(button)
+        }
+        sendMouseButton(button, pressed: pressed)
+    }
+
+    /// Squares the deflection past the dead zone: fine aiming near centre, full speed at the rim.
+    static func curvedStickAxis(_ value: Float, deadZone: Float) -> Float {
+        let magnitude = abs(value)
+        guard magnitude > deadZone else { return 0 }
+        let scaled = (magnitude - deadZone) / (1 - deadZone)
+        return (value < 0 ? -1 : 1) * scaled * scaled
+    }
+
     private func coalesceMouse(dx: CGFloat, dy: CGFloat) {
         let adjusted = adjustedMouseDelta(dx: dx, dy: dy)
         mouseAccumulator.x += adjusted.x
@@ -1064,6 +1167,8 @@ final class NativeStreamInputBridge {
 
     private func sendGamepad(slot: Int, force: Bool) {
         guard let gamepad = controllersBySlot[slot]?.extendedGamepad else { return }
+        // While the sticks are driving a cursor, the host must not also see them as sticks.
+        let emulatingMouse = mouseEmulationEnabled && slot == controllersBySlot.keys.min()
         var buttons: UInt16 = 0
         if gamepad.dpad.up.isPressed { buttons |= 0x0001 }
         if gamepad.dpad.down.isPressed { buttons |= 0x0002 }
@@ -1076,8 +1181,8 @@ final class NativeStreamInputBridge {
         if gamepad.leftShoulder.isPressed { buttons |= 0x0100 }
         if gamepad.rightShoulder.isPressed { buttons |= 0x0200 }
         if gamepad.buttonHome?.isPressed == true { buttons |= 0x0400 }
-        if gamepad.buttonA.isPressed { buttons |= 0x1000 }
-        if gamepad.buttonB.isPressed { buttons |= 0x2000 }
+        if gamepad.buttonA.isPressed && !emulatingMouse { buttons |= 0x1000 }
+        if gamepad.buttonB.isPressed && !emulatingMouse { buttons |= 0x2000 }
         if gamepad.buttonX.isPressed { buttons |= 0x4000 }
         if gamepad.buttonY.isPressed { buttons |= 0x8000 }
 
@@ -1086,10 +1191,10 @@ final class NativeStreamInputBridge {
             buttons: buttons,
             leftTrigger: uint8(gamepad.leftTrigger.value),
             rightTrigger: uint8(gamepad.rightTrigger.value),
-            leftStickX: int16Axis(gamepad.leftThumbstick.xAxis.value),
-            leftStickY: int16Axis(gamepad.leftThumbstick.yAxis.value),
-            rightStickX: int16Axis(gamepad.rightThumbstick.xAxis.value),
-            rightStickY: int16Axis(gamepad.rightThumbstick.yAxis.value),
+            leftStickX: emulatingMouse ? 0 : int16Axis(gamepad.leftThumbstick.xAxis.value),
+            leftStickY: emulatingMouse ? 0 : int16Axis(gamepad.leftThumbstick.yAxis.value),
+            rightStickX: emulatingMouse ? 0 : int16Axis(gamepad.rightThumbstick.xAxis.value),
+            rightStickY: emulatingMouse ? 0 : int16Axis(gamepad.rightThumbstick.yAxis.value),
             connected: true
         )
         let state = virtualControllerEnabled && slot == primaryPhysicalControllerSlot
@@ -1395,7 +1500,9 @@ final class NativeStreamInputBridge {
     weak var sink: NativeStreamInputSink?
     var onPhysicalControllerAvailabilityChanged: ((Bool) -> Void)?
     func configure(protocolVersion: Int, partiallyReliableGamepadMask: Int) {}
-    func configureUserPreferences(mouseSensitivity: Double, mouseAcceleration: Int, phoneRumbleFallback: Bool, physicalControllerPassthrough: Bool) {}
+    func configureUserPreferences(mouseSensitivity: Double, mouseAcceleration: Int, phoneRumbleFallback: Bool, physicalControllerPassthrough: Bool, controllerMouseEmulation: Bool = false, mouseScrollSensitivity: Int = 30) {}
+    func setControllerMouseEmulation(_ enabled: Bool) {}
+    var isControllerMouseEmulationEnabled: Bool { false }
     func setPhysicalControllerPassthrough(_ enabled: Bool) {}
     func setPhoneRumbleFallback(_ enabled: Bool) {}
     func attach() {}

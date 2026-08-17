@@ -842,6 +842,111 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
+    // MARK: - In-stream behaviour
+
+    func testModeChangeNoticeOnlyFiresOnARealDifference() {
+        let requested = StreamVideoProfile(width: 1_920, height: 1_080, fps: 60, maxBitrateKbps: 35_000)
+
+        // Same geometry: silence.
+        XCTAssertNil(
+            StreamModeChangeNotice.between(requested: requested, deliveredResolution: "1920x1080", reason: .serverNegotiated)
+        )
+        // No decoded frame yet.
+        XCTAssertNil(
+            StreamModeChangeNotice.between(requested: requested, deliveredResolution: nil, reason: .serverNegotiated)
+        )
+        // CloudMatch's provisional monitor profile is below any real stream and must not surface.
+        XCTAssertNil(
+            StreamModeChangeNotice.between(requested: requested, deliveredResolution: "16x16", reason: .serverNegotiated)
+        )
+        XCTAssertNil(
+            StreamModeChangeNotice.between(requested: requested, deliveredResolution: "garbage", reason: .serverNegotiated)
+        )
+
+        let notice = StreamModeChangeNotice.between(
+            requested: requested,
+            deliveredResolution: "1600x900",
+            reason: .serverNegotiated
+        )
+        XCTAssertNotNil(notice)
+        XCTAssertTrue(notice?.message.contains("1600x900") ?? false)
+        XCTAssertTrue(notice?.message.contains("1920x1080") ?? false)
+    }
+
+    func testModeChangeNoticeBlamesTheRightParty() {
+        let requested = StreamVideoProfile(width: 2_560, height: 1_440, fps: 60, maxBitrateKbps: 45_000)
+        let recovered = StreamModeChangeNotice.between(
+            requested: requested,
+            deliveredResolution: "1920x1080",
+            reason: .safeRecovery("H265 stalled.")
+        )
+        // When OpenNOW dropped the profile itself, the copy must not imply the server did it.
+        XCTAssertTrue(recovered?.message.contains("keep the stream up") ?? false)
+        XCTAssertFalse(recovered?.message.contains("Server chose") ?? true)
+
+        let negotiated = StreamModeChangeNotice.between(
+            requested: requested,
+            deliveredResolution: "1920x1080",
+            reason: .serverNegotiated
+        )
+        XCTAssertTrue(negotiated?.message.contains("Server chose") ?? false)
+    }
+
+    func testStickDeadZoneRescalesRatherThanClips() {
+        // Inside the threshold the stick is silent.
+        var result = TouchStickMath.applyDeadZone(x: 0.05, y: 0, deadZone: 0.2)
+        XCTAssertEqual(result.0, 0, accuracy: 0.0001)
+        XCTAssertEqual(result.1, 0, accuracy: 0.0001)
+
+        // Full deflection still reaches full output — clipping would cost the top of the range.
+        result = TouchStickMath.applyDeadZone(x: 1, y: 0, deadZone: 0.2)
+        XCTAssertEqual(result.0, 1, accuracy: 0.0001)
+
+        // Halfway past the threshold lands halfway through the remaining travel.
+        result = TouchStickMath.applyDeadZone(x: 0.6, y: 0, deadZone: 0.2)
+        XCTAssertEqual(result.0, 0.5, accuracy: 0.0001)
+
+        // Zero threshold is a straight pass-through.
+        result = TouchStickMath.applyDeadZone(x: 0.03, y: -0.04, deadZone: 0)
+        XCTAssertEqual(result.0, 0.03, accuracy: 0.0001)
+        XCTAssertEqual(result.1, -0.04, accuracy: 0.0001)
+    }
+
+    func testControllerCursorCurveKeepsPrecisionNearCentre() {
+        // A resting stick must produce nothing, or the cursor walks across the screen.
+        XCTAssertEqual(NativeStreamInputBridge.curvedStickAxis(0.1, deadZone: 0.12), 0, accuracy: 0.0001)
+        // Full deflection is full speed.
+        XCTAssertEqual(NativeStreamInputBridge.curvedStickAxis(1, deadZone: 0.12), 1, accuracy: 0.0001)
+        // Squared response: half the travel is a quarter of the speed, which is what makes fine
+        // aiming possible with a thumbstick.
+        let half = NativeStreamInputBridge.curvedStickAxis(0.56, deadZone: 0.12)
+        XCTAssertEqual(half, 0.25, accuracy: 0.01)
+        // Sign is preserved.
+        XCTAssertLessThan(NativeStreamInputBridge.curvedStickAxis(-1, deadZone: 0.12), 0)
+    }
+
+    func testQueueReadyChimeAnnouncesOncePerSession() {
+        QueueReadyAlert.reset()
+        QueueReadyAlert.announceIfNeeded(sessionId: "a", isReady: true, enabled: true)
+        XCTAssertTrue(QueueReadyAlert.hasAnnounced(sessionId: "a"))
+
+        // Repeated ready polls must not chime again.
+        QueueReadyAlert.announceIfNeeded(sessionId: "a", isReady: true, enabled: true)
+        XCTAssertTrue(QueueReadyAlert.hasAnnounced(sessionId: "a"))
+
+        // Not ready, or disabled, records nothing.
+        QueueReadyAlert.announceIfNeeded(sessionId: "b", isReady: false, enabled: true)
+        XCTAssertFalse(QueueReadyAlert.hasAnnounced(sessionId: "b"))
+        QueueReadyAlert.announceIfNeeded(sessionId: "c", isReady: true, enabled: false)
+        XCTAssertFalse(QueueReadyAlert.hasAnnounced(sessionId: "c"))
+
+        // A relaunch of the same session id can chime again once it has been forgotten.
+        QueueReadyAlert.forget(sessionId: "a")
+        QueueReadyAlert.announceIfNeeded(sessionId: "a", isReady: true, enabled: true)
+        XCTAssertTrue(QueueReadyAlert.hasAnnounced(sessionId: "a"))
+        QueueReadyAlert.reset()
+    }
+
     // MARK: - Bug reports
 
     func testBugReportDescriptionNeedsSubstanceNotJustLength() {

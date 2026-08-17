@@ -7041,6 +7041,7 @@ final class OpenNOWStore: ObservableObject {
 
     private func clearLocalSessionState(reason: String) {
         finalizeSessionReport(reason: reason)
+        if let id = activeSession?.id { QueueReadyAlert.forget(sessionId: id) }
         activeSession = nil
         activeStreamSettings = nil
         setStreamSession(nil, reason: reason)
@@ -8380,6 +8381,13 @@ final class OpenNOWStore: ObservableObject {
     private func syncTrackedSessionSurface() {
         let active = activeSession
         updateQueueTrend(for: active)
+        if let active {
+            QueueReadyAlert.announceIfNeeded(
+                sessionId: active.id,
+                isReady: isReadyForStreamer(active) || active.status == 3,
+                enabled: settings.queueReadySound
+            )
+        }
         persistActiveSession(active)
         persistActiveStreamSettings(active == nil ? nil : activeStreamSettings)
         let state = settings.queueLiveActivitiesEnabled ? active.flatMap(queueActivityState(for:)) : nil
@@ -8437,7 +8445,17 @@ final class OpenNOWStore: ObservableObject {
             let detail: String
             let queueLabel: String
             if let queue = session.queuePosition {
-                detail = queue == 1 ? "Next in queue" : "Queue #\(queue)"
+                // The Live Activity is glanced at from the lock screen, so the estimate matters
+                // more here than anywhere: it is the difference between checking every minute and
+                // putting the phone down. It only appears when the estimator has earned it.
+                let position = queue == 1 ? "Next in queue" : "Queue #\(queue)"
+                if let estimate = queueTrend.estimate() {
+                    detail = "\(position) · \(estimate.label)"
+                } else if case .holding = queueTrend.trend() {
+                    detail = "\(position) · holding"
+                } else {
+                    detail = position
+                }
                 queueLabel = queue == 1 ? "Soon" : "Q\(queue)"
             } else {
                 detail = "Waiting in queue"

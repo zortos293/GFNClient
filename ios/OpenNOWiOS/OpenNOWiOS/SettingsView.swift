@@ -62,11 +62,11 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .stream:
             return ["stream", "preset", "recommended", "resolution", "aspect ratio", "fps", "frame rate", "bitrate", "data", "codec", "color", "hdr", "sharpening", "sharpness", "region", "server", "session proxy", "proxy", "native decoder", "stretch"]
         case .input:
-            return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
+            return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "clipboard", "paste", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
         case .interface:
-            return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "server selector", "queue", "live activities", "catalog", "wallpaper", "background", "photo", "session report", "counter"]
+            return ["interface", "ui", "accent", "color", "theme", "expressive", "outline", "cards", "titles", "favorites", "favourites", "store labels", "card size", "launch page", "stats", "hud", "metrics", "position", "afk", "idle", "keep awake", "server selector", "queue", "live activities", "sound", "chime", "ready", "catalog", "wallpaper", "background", "photo", "session report", "counter"]
         case .advanced:
-            return ["advanced", "experimental", "l4s", "cloud g-sync", "gsync", "diagnostics", "debug", "logs", "codec", "probe", "native", "h264", "h265", "hevc", "av1"]
+            return ["advanced", "experimental", "l4s", "cloud g-sync", "gsync", "diagnostics", "debug", "logs", "codec", "probe", "decoder", "decoders", "hardware", "native", "h264", "h265", "hevc", "av1"]
         case .account:
             return ["account", "login", "logout", "sign in", "saved", "provider", "membership", "subscription", "storage", "hours", "play time", "stores", "steam", "epic", "xbox"]
         case .about:
@@ -680,10 +680,11 @@ struct SettingsView: View {
                 }
             }
 
+            Toggle("Paste Into Games", isOn: $store.settings.clipboardPasteEnabled)
         } header: {
             Text("Keyboard")
         } footer: {
-            Text("The keyboard layout has to match the one the game expects, not the one on your device. Microphone input is not available yet — GeForce NOW's stream offer carries no upstream audio track.")
+            Text("Paste sends your clipboard to the game as typed text, from the stream controls. The keyboard layout has to match the one the game expects, not the one on your device. Microphone input is not available yet — GeForce NOW's stream offer carries no upstream audio track.")
         }
     }
 
@@ -798,6 +799,34 @@ struct SettingsView: View {
                     range: 0...120,
                     step: 1,
                     format: { "\(Int($0)) pt" }
+                )
+                settingsSlider(
+                    "Left Controls Across",
+                    value: $store.settings.touch.leftOffsetX,
+                    range: -220...220,
+                    step: 2,
+                    format: { "\(Int($0)) pt" }
+                )
+                settingsSlider(
+                    "Left Controls Up",
+                    value: $store.settings.touch.leftOffsetY,
+                    range: -160...160,
+                    step: 2,
+                    format: { "\(Int(-$0)) pt" }
+                )
+                settingsSlider(
+                    "Right Controls Across",
+                    value: $store.settings.touch.rightOffsetX,
+                    range: -220...220,
+                    step: 2,
+                    format: { "\(Int($0)) pt" }
+                )
+                settingsSlider(
+                    "Right Controls Up",
+                    value: $store.settings.touch.rightOffsetY,
+                    range: -160...160,
+                    step: 2,
+                    format: { "\(Int(-$0)) pt" }
                 )
                 Button("Reset Touch Layout") {
                     store.settings.touch.resetLayout()
@@ -1005,10 +1034,11 @@ struct SettingsView: View {
                 }
             }
 
+            Toggle("Keep Session Awake", isOn: $store.settings.showAntiAfkIndicator)
         } header: {
             Text("Stats HUD")
         } footer: {
-            Text("The HUD sits over the game, so keep it to the numbers you actually watch. Values in the normal range stay untinted on purpose — amber and red are what should catch your eye.")
+            Text("Keeping the session awake nudges the cursor by a pixel after two idle minutes so GeForce NOW does not disconnect you mid-cutscene; a dot in the corner shows while it is doing that. The HUD sits over the game, so keep it to the numbers you actually watch. Values in the normal range stay untinted on purpose — amber and red are what should catch your eye.")
         }
     }
 
@@ -1016,13 +1046,14 @@ struct SettingsView: View {
         Section {
             Toggle("Session Counter", isOn: $store.settings.sessionCounterEnabled)
             Toggle("Session Report", isOn: $store.settings.showSessionReportAfterStream)
+            Toggle("Chime When Ready", isOn: $store.settings.queueReadySound)
             #if !os(tvOS)
             Toggle("Queue Live Activities", isOn: $store.settings.queueLiveActivitiesEnabled)
             #endif
         } header: {
             Text("Sessions")
         } footer: {
-            Text("The session report appears after a stream ends and scores how the connection held up.")
+            Text("The session report appears after a stream ends and scores how the connection held up. The chime plays once when a rig frees up, so you can put the phone down while you wait for a long queue.")
         }
     }
 
@@ -1085,6 +1116,11 @@ struct SettingsView: View {
 
     private var advancedSection: some View {
         Section {
+            NavigationLink {
+                CodecDiagnosticsView()
+            } label: {
+                Label("Decoders", systemImage: "cpu")
+            }
             LabeledContent("Preferred Codec", value: store.settings.preferredCodec)
             LabeledContent("Stream Profile", value: headerSummary)
             LabeledContent("Color", value: selectedColorQualityLabel)

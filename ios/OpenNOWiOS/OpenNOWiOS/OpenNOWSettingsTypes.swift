@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 // MARK: - Microphone
@@ -260,6 +261,26 @@ struct TouchSettings: Codable, Equatable {
         leftOffsetY = fresh.leftOffsetY
         rightOffsetX = fresh.rightOffsetX
         rightOffsetY = fresh.rightOffsetY
+    }
+}
+
+// MARK: - Stick maths
+
+/// Shared by the on-screen sticks and, in spirit, by the controller cursor curve.
+///
+/// Kept out of the view so it can be tested: the correctness that matters here is arithmetic, and
+/// a dead zone that clips instead of rescaling is a bug you only notice as "my stick feels short".
+enum TouchStickMath {
+    /// Rescales the remaining travel so the stick still reaches full deflection at the rim.
+    /// Simply zeroing inside the threshold would cost the player the top of their range.
+    static func applyDeadZone(x: CGFloat, y: CGFloat, deadZone: Double) -> (CGFloat, CGFloat) {
+        let threshold = CGFloat(min(max(deadZone, 0), 0.9))
+        guard threshold > 0 else { return (x, y) }
+        let magnitude = hypot(x, y)
+        guard magnitude > threshold else { return (0, 0) }
+        let scaled = (magnitude - threshold) / (1 - threshold)
+        let factor = scaled / magnitude
+        return (x * factor, y * factor)
     }
 }
 

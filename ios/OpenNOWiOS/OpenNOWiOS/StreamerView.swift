@@ -306,6 +306,58 @@ fileprivate enum NativeStreamNetworkTransport: Equatable, Sendable {
 }
 #endif
 
+/// Fires only when the server hands back something different from what was asked for.
+///
+/// Silence is the normal case and the point of the whole thing: a notice that appears on every
+/// session teaches people to ignore it, so this one is worth reading precisely because it is rare.
+struct StreamModeChangeNotice: Equatable, Identifiable {
+    let requested: String
+    let delivered: String
+    let reason: Reason
+
+    enum Reason: Equatable {
+        case serverNegotiated
+        case runtimeChange
+        case safeRecovery(String)
+    }
+
+    var id: String { "\(requested)->\(delivered)" }
+
+    var message: String {
+        switch reason {
+        case .serverNegotiated:
+            return "Server chose \(delivered) — your \(requested) request wasn't available."
+        case .runtimeChange:
+            return "The game switched to \(delivered); you asked for \(requested)."
+        case .safeRecovery(let why):
+            return "Dropped to \(delivered) to keep the stream up. \(why)"
+        }
+    }
+
+    /// Compares two geometries, ignoring the noise CloudMatch emits before video actually starts.
+    static func between(
+        requested: StreamVideoProfile,
+        deliveredResolution: String?,
+        reason: Reason
+    ) -> StreamModeChangeNotice? {
+        guard let deliveredResolution,
+              let parts = parsedResolution(deliveredResolution),
+              parts.width >= 320, parts.height >= 180 else { return nil }
+        guard parts.width != requested.width || parts.height != requested.height else { return nil }
+        return StreamModeChangeNotice(
+            requested: "\(requested.width)x\(requested.height)",
+            delivered: "\(parts.width)x\(parts.height)",
+            reason: reason
+        )
+    }
+
+    private static func parsedResolution(_ value: String) -> (width: Int, height: Int)? {
+        let parts = value.split(separator: "x", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]), w > 0, h > 0 else { return nil }
+        return (w, h)
+    }
+}
+
 fileprivate enum NativeStreamGuidanceSheet: String, Identifiable {
     case streamTutorial
     case controllerTouchPrompt
@@ -432,9 +484,27 @@ struct StreamerView: View {
                     }
                     .padding(.top, max(22, proxy.safeAreaInsets.top + 8))
                     .padding(.horizontal, max(12, proxy.safeAreaInsets.leading + 12))
+
+                    if let notice = coordinator.modeChangeNotice {
+                        NativeStreamModePill(notice: notice) {
+                            coordinator.dismissModeChangeNotice()
+                        }
+                        .padding(.horizontal, max(12, proxy.safeAreaInsets.leading + 12))
+                        .padding(.top, 8)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
                     Spacer()
+
+                    if coordinator.antiAfkActive {
+                        NativeStreamAntiAfkIndicator()
+                            .padding(.leading, max(12, proxy.safeAreaInsets.leading + 12))
+                            .padding(.bottom, max(10, proxy.safeAreaInsets.bottom + 8))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
+                .animation(.easeInOut(duration: 0.22), value: coordinator.modeChangeNotice)
 
                 if coordinator.showStatusOverlay {
                     NativeStreamStatusOverlay(
@@ -703,6 +773,64 @@ private struct NativeStreamDeviceStatus: Equatable {
         formatter.dateStyle = .none
         return formatter
     }()
+}
+
+/// The one overlay that is allowed to interrupt gameplay, because it explains something the
+/// player would otherwise blame on their connection.
+private struct NativeStreamModePill: View {
+    let notice: StreamModeChangeNotice
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "rectangle.on.rectangle.angled")
+                .font(.caption)
+                .accessibilityHidden(true)
+            Text(notice.message)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 460, alignment: .leading)
+        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(OpenNOWPalette.statusFair.opacity(0.6), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isStaticText)
+    }
+}
+
+/// A twelve-point dot, bottom-left, present only while the keepalive is running. Deliberately
+/// nothing more: it exists so a player can tell the input they did not make came from OpenNOW.
+private struct NativeStreamAntiAfkIndicator: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulsing = false
+
+    var body: some View {
+        Circle()
+            .fill(OpenNOWPalette.statusNotice)
+            .frame(width: 12, height: 12)
+            .opacity(pulsing ? 0.35 : 0.9)
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 1.4).repeatForever(autoreverses: true),
+                value: pulsing
+            )
+            .onAppear { pulsing = !reduceMotion }
+            .accessibilityLabel("Anti-AFK is keeping the session awake")
+    }
 }
 
 private struct NativeStreamStatusOverlay: View {
@@ -1292,6 +1420,15 @@ private struct NativeStreamControlsPanel: View {
                     NativeStreamKeyButton(title: "Esc") { coordinator.sendVirtualKey(.escape) }
                     NativeStreamKeyButton(title: "Enter") { coordinator.sendVirtualKey(.enter) }
                     NativeStreamKeyButton(title: "Delete") { coordinator.sendVirtualKey(.backspace) }
+                }
+                if coordinator.liveSettings.clipboardPasteEnabled {
+                    NativeStreamActionRow(
+                        title: "Paste",
+                        value: "Types the clipboard into the game",
+                        actionLabel: "Paste"
+                    ) {
+                        coordinator.pasteClipboardIntoStream()
+                    }
                 }
             }
 
@@ -1960,6 +2097,8 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @Published fileprivate var sessionTimerProgress = 0.0
     @Published fileprivate var sessionTimerWarningActive = false
     @Published fileprivate var sessionWarningText: String?
+    @Published fileprivate var modeChangeNotice: StreamModeChangeNotice?
+    @Published fileprivate var antiAfkActive = false
 
     let sessionID: String
     let inputBridge = NativeStreamInputBridge()
@@ -1999,6 +2138,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private var stopped = false
     private var selectedCodec: NativeStreamVideoCodec = .h264
     private var streamProfile: StreamVideoProfile
+    /// What the user actually asked for, before CloudMatch had a say. `streamProfile` already
+    /// carries the negotiated geometry, so the two have to be kept apart to spot a difference.
+    private let requestedProfile: StreamVideoProfile
+    private var modeNoticeDismissTask: Task<Void, Never>?
+    private var reportedModeChangeKey: String?
+    /// Set when the app itself dropped the profile, so the notice can say so instead of blaming
+    /// the server for something OpenNOW did.
+    private var safeVideoRecoveryReason: String?
+    private var antiAfkTimer: Timer?
+    private var lastUserInputAt: TimeInterval = ProcessInfo.processInfo.systemUptime
+    private var lastObservedInputPacketCount = 0
+    private var antiAfkGeneratedPacketCount = 0
     private var viewportSize: CGSize = .zero
     private var signalingSession: URLSession?
     private var webSocket: URLSessionWebSocketTask?
@@ -2118,6 +2269,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.onClose = onClose
         self.onRetry = onRetry
         self.streamProfile = Self.effectiveProfile(for: session, settings: settings)
+        self.requestedProfile = StreamSettingsResolver.profile(for: settings, membershipTier: membershipTier)
         self.showStatsOverlay = settings.showStatsOverlay
         self.statsDisplayStyle = settings.streamerPreferences.statsStyle
         self.statsMetrics = settings.streamStatsMetrics
@@ -2134,7 +2286,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             mouseSensitivity: settings.mouseSensitivity,
             mouseAcceleration: settings.mouseAcceleration,
             phoneRumbleFallback: settings.phoneRumbleFallback,
-            physicalControllerPassthrough: settings.streamerPreferences.physicalControllerPassthrough
+            physicalControllerPassthrough: settings.streamerPreferences.physicalControllerPassthrough,
+            controllerMouseEmulation: settings.controllerMouseEmulation,
+            mouseScrollSensitivity: settings.mouseScrollSensitivity
         )
         inputBridge.onPhysicalControllerAvailabilityChanged = { [weak self] connected in
             Task { @MainActor in
@@ -2377,6 +2531,14 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         guard next != liveSettings else { return }
         liveSettings = next
         statsMetrics = next.streamStatsMetrics
+        inputBridge.configureUserPreferences(
+            mouseSensitivity: next.mouseSensitivity,
+            mouseAcceleration: next.mouseAcceleration,
+            phoneRumbleFallback: phoneRumbleFallbackEnabled,
+            physicalControllerPassthrough: streamerPreferences.physicalControllerPassthrough,
+            controllerMouseEmulation: next.controllerMouseEmulation,
+            mouseScrollSensitivity: next.mouseScrollSensitivity
+        )
         onSettingsChange(next)
     }
 
@@ -2729,6 +2891,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         sessionWarningDismissTask = nil
         sessionWarningText = nil
         presentedGuidanceSheet = nil
+        setAntiAfkEnabled(false)
+        modeNoticeDismissTask?.cancel()
+        modeNoticeDismissTask = nil
+        modeChangeNotice = nil
         stopNetworkMonitoring()
         inputBridge.detach()
         setIdleTimerDisabled(false)
@@ -3522,6 +3688,13 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             detail: statsText
         )
 
+        // A decoded frame is authoritative. CloudMatch can publish an intermediate monitor profile
+        // before video arrives, and turning that provisional value into a user-facing notice is
+        // how the Android build learned to gate this on real frames.
+        if (framesDecoded ?? 0) > 0 {
+            raiseModeChangeNoticeIfNeeded(deliveredResolution: resolution)
+        }
+
         onRuntimeSample(
             StreamRuntimeSample(
                 timestamp: now,
@@ -3550,6 +3723,108 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         lastStatsTotalDecodeTime = totalDecodeTimeSeconds
         lastStatsPacketsLost = packetsLost
         lastStatsPacketsReceived = packetsReceived
+    }
+
+    private func raiseModeChangeNoticeIfNeeded(deliveredResolution: String) {
+        guard let notice = StreamModeChangeNotice.between(
+            requested: requestedProfile,
+            deliveredResolution: deliveredResolution,
+            reason: safeVideoRecoveryReason.map { .safeRecovery($0) } ?? .serverNegotiated
+        ) else { return }
+        // Once per distinct change. A stream that oscillates between two modes should not strobe
+        // a banner at the player.
+        guard reportedModeChangeKey != notice.id else { return }
+        reportedModeChangeKey = notice.id
+        modeChangeNotice = notice
+        modeNoticeDismissTask?.cancel()
+        modeNoticeDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 8 * NSEC_PER_SEC)
+            guard !Task.isCancelled else { return }
+            self?.modeChangeNotice = nil
+        }
+    }
+
+    // MARK: - Anti-AFK
+    //
+    // GFN ends an idle session, which is reasonable for them and infuriating during a cutscene or
+    // a long load. The keepalive sends the smallest thing the host will count as activity — a
+    // one-pixel mouse nudge and its inverse, so the cursor does not actually travel — and only
+    // after a real idle stretch. The indicator is not optional while it runs: an input the player
+    // did not make has to be attributable.
+
+    private static let antiAfkIdleThreshold: TimeInterval = 120
+    private static let antiAfkInterval: TimeInterval = 30
+
+    func setAntiAfkEnabled(_ enabled: Bool) {
+        antiAfkTimer?.invalidate()
+        antiAfkTimer = nil
+        antiAfkActive = false
+        guard enabled else { return }
+        antiAfkTimer = Timer.scheduledTimer(withTimeInterval: Self.antiAfkInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.stepAntiAfk() }
+        }
+    }
+
+    /// Marks the player as active. Called on the paste action, and inferred from packet counters
+    /// everywhere else — hooking every input path individually would guarantee one gets missed.
+    func noteUserInput() {
+        lastUserInputAt = ProcessInfo.processInfo.systemUptime
+        lastObservedInputPacketCount = totalInputPacketCount
+        if antiAfkActive { antiAfkActive = false }
+    }
+
+    private var totalInputPacketCount: Int {
+        reliableInputPackets + partiallyReliableInputPackets
+    }
+
+    private func stepAntiAfk() {
+        guard !stopped, mediaTransportConnected else { return }
+
+        // Any outgoing input at all — touch, controller, keyboard, virtual pad — bumps these
+        // counters, so one check covers every path rather than one hook per call site. The
+        // keepalive's own nudge is excluded because it is subtracted below.
+        let observed = totalInputPacketCount - antiAfkGeneratedPacketCount
+        if observed != lastObservedInputPacketCount {
+            lastObservedInputPacketCount = observed
+            lastUserInputAt = ProcessInfo.processInfo.systemUptime
+            if antiAfkActive { antiAfkActive = false }
+            return
+        }
+
+        let idleFor = ProcessInfo.processInfo.systemUptime - lastUserInputAt
+        guard idleFor >= Self.antiAfkIdleThreshold else {
+            if antiAfkActive { antiAfkActive = false }
+            return
+        }
+        antiAfkActive = true
+        // A nudge and its exact inverse: the host sees movement, the cursor ends where it began.
+        inputBridge.sendTouchMouseMove(dx: 1, dy: 0)
+        antiAfkGeneratedPacketCount += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            self.inputBridge.sendTouchMouseMove(dx: -1, dy: 0)
+            self.antiAfkGeneratedPacketCount += 1
+        }
+    }
+
+    /// Pastes the clipboard into the remote session as typed text. Nothing is read from the
+    /// pasteboard until the player asks for it — iOS shows its own paste banner when it happens.
+    @discardableResult
+    func pasteClipboardIntoStream() -> Int {
+        #if canImport(UIKit)
+        guard liveSettings.clipboardPasteEnabled else { return 0 }
+        guard let text = UIPasteboard.general.string, !text.isEmpty else { return 0 }
+        noteUserInput()
+        return inputBridge.sendUnicodeText(String(text.prefix(2_000)))
+        #else
+        return 0
+        #endif
+    }
+
+    func dismissModeChangeNotice() {
+        modeNoticeDismissTask?.cancel()
+        modeNoticeDismissTask = nil
+        modeChangeNotice = nil
     }
 
     private func handleMediaLiveness(
@@ -3826,6 +4101,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     private func markMediaTransportConnected() {
         mediaTransportConnected = true
+        setAntiAfkEnabled(liveSettings.showAntiAfkIndicator)
         iceDisconnectWorkItem?.cancel()
         iceDisconnectWorkItem = nil
         mediaLivenessWatchdog.markConnected(now: ProcessInfo.processInfo.systemUptime)
@@ -5203,10 +5479,26 @@ private struct NativeStreamVirtualControllerOverlay: View {
             safeAreaInsets: safeAreaInsets,
             scale: layout.scale,
             opacity: layout.opacity,
+            edgePadding: touchSettings.edgePadding,
+            bottomPadding: touchSettings.bottomPadding,
+            sideOffset: sideOffset(for: group, point: point),
             editing: editing,
             onPositionChange: { onPositionChange(group, $0) },
             content: content
         )
+    }
+
+    /// Which half of the screen a group lives on decides which nudge applies. Groups pinned near
+    /// the middle get neither — nudging them by a "left" offset would be surprising.
+    private func sideOffset(for group: NativeStreamTouchControlGroup, point: TouchControlPoint) -> CGSize {
+        switch point.x {
+        case ..<0.4:
+            return CGSize(width: touchSettings.leftOffsetX, height: touchSettings.leftOffsetY)
+        case 0.6...:
+            return CGSize(width: touchSettings.rightOffsetX, height: touchSettings.rightOffsetY)
+        default:
+            return .zero
+        }
     }
 }
 
@@ -5254,6 +5546,13 @@ private struct NativeStreamPositionedControlGroup<Content: View>: View {
     let safeAreaInsets: EdgeInsets
     let scale: Double
     let opacity: Double
+    /// Extra inset beyond the safe area, for phones whose curved corners or case swallow the
+    /// outermost few points.
+    var edgePadding: Double = 0
+    var bottomPadding: Double = 0
+    /// Whole-side nudges, so a left-handed grip can shift both left controls without dragging
+    /// each group individually.
+    var sideOffset: CGSize = .zero
     let editing: Bool
     let onPositionChange: (TouchControlPoint) -> Void
     @ViewBuilder let content: () -> Content
@@ -5328,11 +5627,11 @@ private struct NativeStreamPositionedControlGroup<Content: View>: View {
     }
 
     private var safeRect: CGRect {
-        let margin: CGFloat = 8
+        let margin = CGFloat(8 + max(edgePadding, 0))
         let left = safeAreaInsets.leading + margin
         let top = safeAreaInsets.top + margin
         let right = safeAreaInsets.trailing + margin
-        let bottom = safeAreaInsets.bottom + margin
+        let bottom = safeAreaInsets.bottom + margin + CGFloat(max(bottomPadding, 0))
         return CGRect(
             x: left,
             y: top,
@@ -5351,8 +5650,8 @@ private struct NativeStreamPositionedControlGroup<Content: View>: View {
     private var basePosition: CGPoint {
         clampedPosition(
             CGPoint(
-                x: safeRect.minX + safeRect.width * CGFloat(point.x),
-                y: safeRect.minY + safeRect.height * CGFloat(point.y)
+                x: safeRect.minX + safeRect.width * CGFloat(point.x) + sideOffset.width,
+                y: safeRect.minY + safeRect.height * CGFloat(point.y) + sideOffset.height
             )
         )
     }
@@ -5364,9 +5663,11 @@ private struct NativeStreamPositionedControlGroup<Content: View>: View {
                 y: basePosition.y + translation.height
             )
         )
+        // Subtract the side nudge again, so dragging a group stores where it sits relative to the
+        // layout rather than baking the current offset into the saved point.
         return TouchControlPoint(
-            x: Double(min(max((center.x - safeRect.minX) / safeRect.width, 0), 1)),
-            y: Double(min(max((center.y - safeRect.minY) / safeRect.height, 0), 1))
+            x: Double(min(max((center.x - sideOffset.width - safeRect.minX) / safeRect.width, 0), 1)),
+            y: Double(min(max((center.y - sideOffset.height - safeRect.minY) / safeRect.height, 0), 1))
         )
     }
 
@@ -5560,7 +5861,7 @@ private struct NativeStreamVirtualStickView: View {
                     let scale = magnitude > radius ? radius / magnitude : 1
                     knobOffset = CGSize(width: raw.width * scale, height: raw.height * scale)
                     moved = moved || magnitude > 5
-                    let (x, y) = Self.applyDeadZone(
+                    let (x, y) = TouchStickMath.applyDeadZone(
                         x: knobOffset.width / radius,
                         y: -knobOffset.height / radius,
                         deadZone: deadZone
@@ -5590,17 +5891,6 @@ private struct NativeStreamVirtualStickView: View {
         }
     }
 
-    /// Rescales the remaining travel so the stick still reaches full deflection at the rim —
-    /// simply zeroing inside the threshold would cost the player the top of their range.
-    static func applyDeadZone(x: CGFloat, y: CGFloat, deadZone: Double) -> (CGFloat, CGFloat) {
-        let threshold = CGFloat(min(max(deadZone, 0), 0.9))
-        guard threshold > 0 else { return (x, y) }
-        let magnitude = hypot(x, y)
-        guard magnitude > threshold else { return (0, 0) }
-        let scaled = (magnitude - threshold) / (1 - threshold)
-        let factor = scaled / magnitude
-        return (x * factor, y * factor)
-    }
 }
 
 private struct NativeStreamTouchCaptureView: UIViewRepresentable {

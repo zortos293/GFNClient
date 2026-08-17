@@ -392,8 +392,12 @@ struct PrintedWasteQueueView: View {
     }
 
     private func zoneDisplayName(_ zone: PrintedWasteZone) -> String {
-        let ping = zone.pingMs.map { "\($0) ms" } ?? (zone.isMeasuring ? "measuring" : "ping unknown")
-        return "\(zone.id) in \(zone.region) · Q \(zone.queuePosition) · \(ping)"
+        let ping = zone.pingMs.map { "\($0) milliseconds" } ?? (zone.isMeasuring ? "measuring latency" : "latency unknown")
+        let quality = zone.pingMs.map(StreamQuality.serverPing).flatMap { $0 == .good ? nil : $0.label }
+        let people = zone.queuePosition == 1 ? "1 person in queue" : "\(zone.queuePosition) people in queue"
+        return [zone.id, "in \(zone.region)", ping, quality, people]
+            .compactMap { $0 }
+            .joined(separator: ", ")
     }
 
     private func loadZones() async {
@@ -629,13 +633,19 @@ private struct ZoneRow: View {
     }
 
     private var pingBadge: some View {
-        Group {
-            if zone.isMeasuring {
-                Text("Testing")
-            } else if let pingMs = zone.pingMs {
-                Text("\(pingMs) ms")
-            } else {
-                Text("N/A")
+        HStack(spacing: 3) {
+            // Colour is never the only signal.
+            if let level = pingLevel, level != .good, let glyph = level.glyph {
+                Image(systemName: glyph).font(.caption2)
+            }
+            Group {
+                if zone.isMeasuring {
+                    Text("Testing")
+                } else if let pingMs = zone.pingMs {
+                    Text("\(pingMs) ms").monospacedDigit()
+                } else {
+                    Text("N/A")
+                }
             }
         }
         .font(.caption.weight(.semibold))
@@ -644,12 +654,15 @@ private struct ZoneRow: View {
         .foregroundStyle(pingBadgeColor)
     }
 
+    private var pingLevel: StreamQualityLevel? {
+        zone.pingMs.map(StreamQuality.serverPing)
+    }
+
+    /// Reads from the same ladder the in-stream HUD and the session report use. A latency the
+    /// picker calls fine must not be one the HUD calls poor thirty seconds later.
     private var pingBadgeColor: Color {
-        guard let pingMs = zone.pingMs else { return .secondary }
-        if pingMs < 30 { return .green }
-        if pingMs < 80 { return Color(red: 0.38, green: 0.62, blue: 0.08) }
-        if pingMs < 150 { return .orange }
-        return .red
+        guard let level = pingLevel else { return .secondary }
+        return level.tint ?? OpenNOWPalette.textPrimary
     }
 
     private func statusText(_ text: String, color: Color) -> some View {
@@ -659,10 +672,9 @@ private struct ZoneRow: View {
     }
 
     private func queueColor(_ queue: Int) -> Color {
-        if queue <= 5 { return .green }
-        if queue <= 15 { return Color(red: 0.52, green: 0.8, blue: 0.13) }
-        if queue <= 30 { return .yellow }
-        return .red
+        if queue <= 15 { return OpenNOWPalette.textPrimary }
+        if queue <= 40 { return OpenNOWPalette.statusFair }
+        return OpenNOWPalette.statusPoor
     }
 
     private func formatWait(_ etaMs: Double) -> String {

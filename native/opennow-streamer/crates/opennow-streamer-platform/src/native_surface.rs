@@ -30,6 +30,7 @@ impl NativeSurface {
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn parse_handle(value: &str) -> Result<usize, String> {
     let trimmed = value.trim();
     let parsed = if let Some(hex) = trimmed.strip_prefix("0x") {

@@ -1,6 +1,16 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "%@ %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ %2$@"
+          }
+        }
+      }
+    },
     "%@ games": {},
     "%@ is already known and being worked on. Send a report anyway if what you saw does not match it — say how it differs in the description.": {},
     "%@ thumbstick": {},
@@ -45,9 +55,29 @@
         }
       }
     },
+    "%@status %lld, %lld milliseconds, from %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@status %2$lld, %3$lld milliseconds, from %4$@"
+          }
+        }
+      }
+    },
     "%lld": {},
     "%lld fps": {},
     "%lld ms": {},
+    "%lld of %lld calls. Addresses, tokens and identifiers are already removed.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld of %2$lld calls. Addresses, tokens and identifiers are already removed."
+          }
+        }
+      }
+    },
     "%lld out of 100, %@": {
       "localizations": {
         "en": {
@@ -85,6 +115,7 @@
     "Any Store": {},
     "Appearance": {},
     "Apple Features": {},
+    "Apple Performance HUD": {},
     "Aspect Ratio": {},
     "At least one metric stays on. To hide the HUD entirely, turn off Show Stats While Streaming.": {},
     "Auto": {},
@@ -94,6 +125,7 @@
     "Both are negotiated with the server and may be refused. If a game stops launching after you turn one on, turn it off again first.": {},
     "Browse": {},
     "Build": {},
+    "Calls appear here as OpenNOW talks to GeForce NOW. Try loading the catalog or starting a session.": {},
     "Cancel": {},
     "Card Titles": {},
     "Catalog": {},
@@ -135,6 +167,7 @@
     "Controller Mouse Mode": {},
     "Controller mouse mode maps the left stick to the cursor, the right stick to scrolling, A to click and B to right-click. You can also switch it on for a single session from the stream controls.": {},
     "Controls": {},
+    "Copy": {},
     "Copy Probe Summary": {},
     "Copy Reference": {},
     "Current": {},
@@ -169,9 +202,11 @@
     "Expressive Surfaces": {},
     "Expressive surfaces add the gradient washes and softer cards. Turning both off gives a flatter interface that costs less to draw. Nerd Mode reveals the Advanced category and the technical readouts.": {},
     "Face buttons": {},
+    "Failures only": {},
     "Favorites": {},
     "Favourite Badge": {},
     "Features": {},
+    "Filter by source, path or status": {},
     "Filters": {},
     "Finger Mouse": {},
     "Frame Rate": {},
@@ -231,6 +266,7 @@
     "Native Low-Latency Decoder": {},
     "Negotiated": {},
     "Nerd Mode": {},
+    "Network Log": {},
     "Next in queue": {},
     "No": {},
     "No persistent storage add-on is active for this account.": {},
@@ -278,6 +314,7 @@
     "Queue position %lld": {},
     "Queue progress": {},
     "Queue trend": {},
+    "Reading log…": {},
     "Recently added or updated": {},
     "Recording": {},
     "Refresh Connections": {},
@@ -396,6 +433,7 @@
     "Thanks to the people helping improve OpenNOW for everyone.": {},
     "Thanks — the maintainers have what they need to look into it.": {},
     "Thanks. Your reference is %@.": {},
+    "The Apple performance HUD is the system's own GPU readout drawn over the video. It is off unless you turn it on here — OpenNOW's stats overlay covers what most people need, and the system one sits on top of the game.": {},
     "The native decoder cuts a frame or two of latency. Turn it off if the picture tears or stutters.": {},
     "The session report appears after a stream ends and scores how the connection held up. The chime plays once when a rig frees up, so you can put the phone down while you wait for a long queue.": {},
     "The stream keeps running while controls are open.": {},
@@ -412,6 +450,7 @@
     "Touch Mode": {},
     "Touch controller": {},
     "Try Again": {},
+    "Try a different search, or turn off Failures only.": {},
     "Turning card titles off leaves the grid as pure box art. The favourite badge puts a heart on artwork you have starred.": {},
     "Type into Stream": {},
     "Upload Redacted Logs & Copy Summary": {},
@@ -433,7 +472,8 @@
     "You can sign out one or all accounts, clear cached images and catalog data, reset settings, or reset the entire app from Settings. Resetting removes locally stored OpenNOW data and Keychain credentials.": {},
     "Your Choices": {},
     "Zortos": {},
-    "muted": {}
+    "muted": {},
+    "—": {}
   },
   "version": "1.0"
 }

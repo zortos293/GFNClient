@@ -130,7 +130,20 @@ struct QueueTrendEstimator: Equatable {
         }
     }
 
-    /// Normalised 0...1 series for the sparkline, oldest first. Empty when there is nothing to draw.
+    /// How far through the wait the queue has come, 0…1, or nil when there is nothing honest to
+    /// report. Measured against the worst position actually seen, so it can only move forward as
+    /// the queue drains — a bar computed from a guessed starting point jumps backwards the first
+    /// time the guess is wrong, which is worse than no bar.
+    func progress() -> Double? {
+        guard let worst = samples.map(\.position).max(),
+              let current = samples.last?.position,
+              worst > 0,
+              samples.count >= Self.minimumSamples else { return nil }
+        guard worst > current else { return nil }
+        return min(max(Double(worst - current) / Double(worst), 0), 1)
+    }
+
+    /// Normalised 0...1 series, oldest first. Empty when there is nothing to draw.
     func sparkline() -> [Double] {
         guard samples.count >= Self.minimumSamples else { return [] }
         let positions = samples.map { Double($0.position) }

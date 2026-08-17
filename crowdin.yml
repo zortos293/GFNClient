@@ -1,3 +1,10 @@
 files:
   - source: /locales/en.json
     translation: /locales/%two_letters_code%.json
+
+  # iOS String Catalog. Crowdin reads and writes .xcstrings in place — the source strings and
+  # every translation live in the one file — so source and translation point at the same path.
+  # Xcode extracts the English side automatically on build; see ios/LOCALIZATION.md.
+  - source: /ios/OpenNOWiOS/OpenNOWiOS/Localizable.xcstrings
+    translation: /ios/OpenNOWiOS/OpenNOWiOS/Localizable.xcstrings
+    update_option: update_as_unapproved

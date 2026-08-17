@@ -1324,9 +1324,18 @@ private struct NativeStreamControlsPanel: View {
             }
             .scrollIndicators(.visible)
         }
-        .foregroundStyle(.primary)
-        .background(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.98), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+        // Fixed dark: this sits on live video, where the system's light grouped colour would put
+        // a near-white slab over the game for anyone not in dark mode.
+        .foregroundStyle(OpenNOWPalette.textOnDark)
+        .environment(\.colorScheme, .dark)
+        .background(
+            OpenNOWPalette.panelOverVideo,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(OpenNOWPalette.hairlineOverVideo, lineWidth: 1)
+        )
         .shadow(color: .black.opacity(0.24), radius: 16, y: 8)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: page)
         .sheet(isPresented: $keyboardPresented) {
@@ -1521,6 +1530,14 @@ private struct NativeStreamControlsPanel: View {
                 metricToggle("Server", \.location)
                 metricToggle("Battery", \.battery)
                 metricToggle("Network", \.connection)
+                NativeStreamToggleRow(
+                    title: "Apple performance HUD",
+                    value: coordinator.liveSettings.showMetalPerformanceHUD ? "Shown" : "Hidden",
+                    isOn: Binding(
+                        get: { coordinator.liveSettings.showMetalPerformanceHUD },
+                        set: { value in coordinator.updateLiveSettings { $0.showMetalPerformanceHUD = value } }
+                    )
+                )
                 NativeStreamToggleRow(
                     title: "Clock",
                     value: coordinator.streamerPreferences.showStatsClock ? "Shown" : "Hidden",
@@ -1845,15 +1862,54 @@ private struct NativeStreamKeyboardSheet: View {
     }
 }
 
+/// Row chrome for the in-stream panel, matching `ControlRowStyle.stream()` on Android.
+///
+/// Two things it fixes beyond looking the same. The fills are **opaque tones**, not translucent
+/// white — translucency composited differently against every frame of the game behind it, so a
+/// row's contrast changed as the scene changed. And the whole panel is fixed dark: it used
+/// `secondarySystemGroupedBackground`, which is near-white in light appearance and put white rows
+/// over live video for anyone not in dark mode.
+private enum StreamPanelStyle {
+    static let rowRadius: CGFloat = 12
+    static let rowFill = OpenNOWPalette.rowOverVideoRest
+    static let rowStroke = OpenNOWPalette.hairlineOverVideo
+    static let horizontalPadding: CGFloat = 12
+    static let verticalPadding: CGFloat = 10
+    static let label = Font.subheadline.weight(.semibold)
+    static let supporting = Font.caption2
+    static let supportingColor = OpenNOWPalette.textMutedOnDark
+    static let sectionHeader = Font.caption2.weight(.bold)
+}
+
+private extension View {
+    /// The shared container. Every row goes through this so a padding change happens once.
+    func streamPanelRow() -> some View {
+        self
+            .padding(.horizontal, StreamPanelStyle.horizontalPadding)
+            .padding(.vertical, StreamPanelStyle.verticalPadding)
+            .frame(minHeight: 48)
+            .background(
+                StreamPanelStyle.rowFill,
+                in: RoundedRectangle(cornerRadius: StreamPanelStyle.rowRadius, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: StreamPanelStyle.rowRadius, style: .continuous)
+                    .strokeBorder(StreamPanelStyle.rowStroke, lineWidth: 1)
+            )
+    }
+}
+
 private struct NativeStreamPanelSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(Color.primary.opacity(0.62))
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(StreamPanelStyle.sectionHeader)
+                .kerning(0.7)
+                .foregroundStyle(StreamPanelStyle.supportingColor)
+                .padding(.leading, 2)
             content()
         }
     }
@@ -1871,8 +1927,10 @@ private struct NativeStreamPanelIconButton: View {
                 .frame(width: 34, height: 34)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        .background(Color.primary.opacity(0.10), in: Circle())
+        .foregroundStyle(OpenNOWPalette.textOnDark)
+        .frame(minWidth: 44, minHeight: 44)
+        .background(OpenNOWPalette.rowOverVideoRest, in: Circle())
+        .overlay(Circle().strokeBorder(OpenNOWPalette.hairlineOverVideo, lineWidth: 1))
         .accessibilityLabel(label)
     }
 }
@@ -1886,21 +1944,20 @@ private struct NativeStreamToggleRow: View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(StreamPanelStyle.label)
                 Text(value)
-                    .font(.caption)
-                    .foregroundStyle(Color.primary.opacity(0.72))
+                    .font(StreamPanelStyle.supporting)
+                    .foregroundStyle(StreamPanelStyle.supportingColor)
             }
             Spacer(minLength: 10)
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .fixedSize()
         }
-        .font(.subheadline)
-        .frame(minHeight: 44)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .streamPanelRow()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
     }
 }
 
@@ -1926,17 +1983,18 @@ private struct NativeStreamSliderRow: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(StreamPanelStyle.label)
                 Spacer(minLength: 10)
                 Text(percentText)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Color.primary.opacity(0.72))
+                    .font(StreamPanelStyle.supporting.monospacedDigit())
+                    .foregroundStyle(StreamPanelStyle.supportingColor)
             }
             Slider(value: $value, in: range, step: step)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .streamPanelRow()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(percentText)
     }
 
     private var percentText: String {
@@ -1967,21 +2025,24 @@ private struct NativeStreamActionRow: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(StreamPanelStyle.label)
                     Text(value)
-                        .font(.caption)
-                        .foregroundStyle(Color.primary.opacity(0.72))
+                        .font(StreamPanelStyle.supporting)
+                        .foregroundStyle(StreamPanelStyle.supportingColor)
+                        .multilineTextAlignment(.leading)
                 }
-                Spacer()
+                Spacer(minLength: 10)
                 Text(actionLabel)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tint)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .streamPanelRow()
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .accessibilityHint(actionLabel)
     }
 }
 
@@ -1992,16 +2053,14 @@ private struct NativeStreamInfoRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(StreamPanelStyle.label)
             Spacer(minLength: 12)
             Text(value)
-                .font(.caption)
-                .foregroundStyle(Color.primary.opacity(0.72))
+                .font(StreamPanelStyle.supporting)
+                .foregroundStyle(StreamPanelStyle.supportingColor)
                 .multilineTextAlignment(.trailing)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .streamPanelRow()
     }
 }
 
@@ -2026,9 +2085,7 @@ private struct NativeStreamSessionTimeRow: View {
                 .accessibilityLabel("Session progress")
                 .accessibilityValue("\(Int((min(max(progress, 0), 1) * 100).rounded())) percent")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .streamPanelRow()
     }
 }
 
@@ -2531,6 +2588,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         guard next != liveSettings else { return }
         liveSettings = next
         statsMetrics = next.streamStatsMetrics
+        renderer?.setMetalPerformanceHUD(next.showMetalPerformanceHUD)
         inputBridge.configureUserPreferences(
             mouseSensitivity: next.mouseSensitivity,
             mouseAcceleration: next.mouseAcceleration,
@@ -2869,6 +2927,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         renderer.setStretchStreamToFill(streamerPreferences.stretchStreamToFill)
         renderer.setStreamSharpening(enabled: streamSharpeningEnabled, amount: streamSharpeningAmount)
         renderer.setViewportTransform(scale: streamZoomScale, offset: streamZoomOffset)
+        renderer.setMetalPerformanceHUD(liveSettings.showMetalPerformanceHUD)
         attachCurrentVideoSinkIfNeeded()
     }
 
@@ -4971,10 +5030,30 @@ private final class NativeStreamRenderView: UIView {
     private var viewportTransformOffset: CGSize = .zero
     private var loggedRendererPath = false
     private var filteredRendererCreationScheduled = false
+    private var metalPerformanceHUDEnabled = false
 
     var metalDelegate: RTCVideoViewDelegate? {
         get { metalVideoView.delegate }
         set { metalVideoView.delegate = newValue }
+    }
+
+    /// Apple's Metal performance HUD, per layer.
+    ///
+    /// `developerHUDProperties` is the runtime switch for it; leaving it nil is what keeps the
+    /// OS-level developer setting from painting FPS and GPU figures over the game. Applied to
+    /// every Metal layer this view owns, because which one is live depends on whether the
+    /// filtered renderer is in use.
+    func setMetalPerformanceHUD(_ enabled: Bool) {
+        metalPerformanceHUDEnabled = enabled
+        applyMetalPerformanceHUD()
+    }
+
+    private func applyMetalPerformanceHUD() {
+        let properties: [AnyHashable: Any]? = metalPerformanceHUDEnabled ? ["mode": "default"] : nil
+        for layer in [metalVideoView.layer, filteredMetalView?.metalLayer].compactMap({ $0 }) {
+            guard let metalLayer = layer as? CAMetalLayer else { continue }
+            metalLayer.developerHUDProperties = properties
+        }
     }
 
     override init(frame: CGRect) {
@@ -4996,6 +5075,7 @@ private final class NativeStreamRenderView: UIView {
         ensureFilteredMetalView()
         #endif
         updateRendererVisibility()
+        applyMetalPerformanceHUD()
     }
 
     required init?(coder: NSCoder) {
@@ -5154,6 +5234,8 @@ private final class NativeStreamFilteredMetalView: UIView, MTKViewDelegate {
     private let sharpeningFilter = CIFilter(name: "CISharpenLuminance")
     private let colorSpace = CGColorSpaceCreateDeviceRGB()
     private let mtkView: MTKView
+    /// Exposed so the render view can reach the HUD switch on whichever layer is actually live.
+    var metalLayer: CALayer { mtkView.layer }
     private let lock = NSLock()
     private var latestPixelBuffer: CVPixelBuffer?
     private var latestFrameSize: CGSize = .zero

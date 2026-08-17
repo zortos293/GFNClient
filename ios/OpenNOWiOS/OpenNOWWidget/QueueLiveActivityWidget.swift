@@ -3,203 +3,358 @@ import Foundation
 import SwiftUI
 import WidgetKit
 
+/// The queue, on the lock screen and in the Dynamic Island.
+///
+/// Three rules shaped this, all from how the surfaces are actually used:
+///
+/// 1. **The minimal and compact presentations get one value each.** They are twenty points wide
+///    and read in under a second, so the app icon is the wrong thing to put there — the island
+///    already tells you which app it is. The changing number is the only thing worth the space.
+/// 2. **Progress is drawn only when it is real.** The previous version had a three-segment "phase
+///    track" that looked like a progress bar and never moved within a phase, which is worse than
+///    no bar. The ring and the bar here are driven by measured queue movement, and both fall back
+///    to indeterminate when the app has not seen enough to say.
+/// 3. **Stale means stale.** ActivityKit keeps showing the last state after updates stop; the
+///    views dim and say so rather than presenting a stale number as current.
 struct QueueLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: QueueActivityAttributes.self) { context in
             LockScreenQueueLiveActivityView(context: context)
-                .activityBackgroundTint(backgroundTint(for: context.state.phase))
-                .activitySystemActionForegroundColor(.white)
+                .activityBackgroundTint(QueuePhaseStyle.background(context.state.phase))
+                .activitySystemActionForegroundColor(QueuePhaseStyle.accent(context.state.phase))
                 .widgetURL(URL(string: "opennow://resume"))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    LiveActivityAppIcon(size: 24)
-                        .padding(.leading, 6)
+                    QueueProgressRing(
+                        progress: context.state.progress,
+                        phase: context.state.phase,
+                        diameter: 34
+                    ) {
+                        LiveActivityAppIcon(size: 22)
+                    }
+                    .padding(.leading, 4)
                 }
+
+                DynamicIslandExpandedRegion(.trailing) {
+                    QueueValueText(state: context.state, size: .expanded)
+                        .padding(.trailing, 4)
+                }
+
                 DynamicIslandExpandedRegion(.center) {
-                    VStack(spacing: 1) {
+                    VStack(spacing: 2) {
                         Text(context.attributes.gameTitle)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
                             .minimumScaleFactor(0.72)
-                        Text(storeQueueLabel(for: context))
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.72))
+                        Text(contextLine(for: context))
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.7))
                             .lineLimit(1)
                     }
                     .padding(.horizontal, 4)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
-                    if let queueLabel = queueNumberLabel(for: context.state) {
-                        QueueValueText(
-                            label: queueLabel,
-                            phase: context.state.phase,
-                            size: .expanded
-                        )
-                        .padding(.trailing, 6)
-                    }
-                }
+
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(context.state.detail)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.78)
-                        LiveActivityPhaseTrack(phase: context.state.phase)
+                    VStack(alignment: .leading, spacing: 7) {
+                        QueueProgressBar(progress: context.state.progress, phase: context.state.phase)
+                        HStack(spacing: 6) {
+                            Text(context.isStale ? "Waiting for an update…" : context.state.detail)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(context.isStale ? 0.5 : 0.9))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                            Spacer(minLength: 4)
+                            if context.state.phase == .ready {
+                                Label("Resume", systemImage: "play.fill")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(QueuePhaseStyle.accent(.ready))
+                            }
+                        }
                     }
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 4)
                 }
             } compactLeading: {
-                LiveActivityAppIcon(size: 21)
-                    .padding(.trailing, 6)
-            } compactTrailing: {
-                if let queueLabel = queueNumberLabel(for: context.state) {
-                    QueueValueText(
-                        label: queueLabel,
-                        phase: context.state.phase,
-                        size: .compact
-                    )
-                    .padding(.leading, 6)
+                // A ring rather than a bare icon: it carries progress in a slot that would
+                // otherwise repeat what the island already tells you.
+                QueueProgressRing(
+                    progress: context.state.progress,
+                    phase: context.state.phase,
+                    diameter: 20
+                ) {
+                    LiveActivityAppIcon(size: 13)
                 }
+            } compactTrailing: {
+                QueueValueText(state: context.state, size: .compact)
+                    .padding(.leading, 2)
             } minimal: {
-                LiveActivityAppIcon(size: 19)
-                    .padding(2)
+                // Shown when another activity is competing for the island. One value only.
+                QueueMinimalIndicator(state: context.state)
             }
-            .contentMargins(.horizontal, 26, for: .expanded)
-            .contentMargins(.vertical, 16, for: .expanded)
-            .contentMargins([.leading, .top, .bottom], 10, for: .compactLeading)
-            .contentMargins([.trailing, .top, .bottom], 10, for: .compactTrailing)
-            .contentMargins(.all, 10, for: .minimal)
-            .keylineTint(color(for: context.state.phase))
+            .keylineTint(QueuePhaseStyle.accent(context.state.phase))
             .widgetURL(URL(string: "opennow://resume"))
         }
     }
 
-    private func backgroundTint(for phase: QueueActivityAttributes.ContentState.Phase) -> Color {
-        switch phase {
-        case .queued:
-            return Color(red: 0.035, green: 0.075, blue: 0.105)
-        case .waiting:
-            return Color(red: 0.12, green: 0.10, blue: 0.035)
-        case .ready:
-            return Color(red: 0.025, green: 0.15, blue: 0.09)
-        }
-    }
-
-    private func color(for phase: QueueActivityAttributes.ContentState.Phase) -> Color {
-        switch phase {
-        case .queued:
-            return Color(red: 0.39, green: 0.71, blue: 1.0)
-        case .waiting:
-            return Color(red: 1.0, green: 0.8, blue: 0.33)
-        case .ready:
-            return Color(red: 0.45, green: 0.91, blue: 0.62)
-        }
-    }
-
-    private func storeQueueLabel(for context: ActivityViewContext<QueueActivityAttributes>) -> String {
+    private func contextLine(for context: ActivityViewContext<QueueActivityAttributes>) -> String {
         let store = context.attributes.storeName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let displayStore = store.isEmpty ? "Store" : store
-        return context.state.phase == .ready ? "\(displayStore) ready" : "\(displayStore) queue"
-    }
-
-    private func queueNumberLabel(for state: QueueActivityAttributes.ContentState) -> String? {
-        state.queuePosition.map { "#\($0)" }
+        let base = store.isEmpty ? "GeForce NOW" : store
+        switch context.state.phase {
+        case .ready: return "\(base) · ready"
+        case .waiting: return "\(base) · preparing"
+        case .queued: return "\(base) · in queue"
+        }
     }
 }
+
+// MARK: - Phase styling
+
+private enum QueuePhaseStyle {
+    /// Kept close to the app's own status palette: the queue is neutral, setup is the "fair"
+    /// amber, ready is the accent green. Nothing here is red — waiting is not an error.
+    static func accent(_ phase: QueueActivityAttributes.ContentState.Phase) -> Color {
+        switch phase {
+        case .queued: return Color(red: 0.45, green: 0.82, blue: 1.0)
+        case .waiting: return Color(red: 1.0, green: 0.79, blue: 0.35)
+        case .ready: return Color(red: 0.42, green: 0.94, blue: 0.63)
+        }
+    }
+
+    static func background(_ phase: QueueActivityAttributes.ContentState.Phase) -> Color {
+        switch phase {
+        case .queued: return Color(red: 0.03, green: 0.06, blue: 0.09)
+        case .waiting: return Color(red: 0.09, green: 0.075, blue: 0.03)
+        case .ready: return Color(red: 0.02, green: 0.11, blue: 0.07)
+        }
+    }
+}
+
+// MARK: - Lock screen
 
 private struct LockScreenQueueLiveActivityView: View {
     let context: ActivityViewContext<QueueActivityAttributes>
 
+    private var accent: Color { QueuePhaseStyle.accent(context.state.phase) }
+
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                LiveActivityAppIcon(size: 38)
-                VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 13) {
+                QueueProgressRing(
+                    progress: context.state.progress,
+                    phase: context.state.phase,
+                    diameter: 46
+                ) {
+                    LiveActivityAppIcon(size: 30)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
                     Text(context.attributes.gameTitle)
                         .font(.headline)
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                        .minimumScaleFactor(0.78)
                     Text(context.state.headline)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.88))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(accent)
                         .lineLimit(1)
-                    Text(context.state.detail)
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.72))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
                 }
-                Spacer(minLength: 10)
-                QueueValueText(
-                    label: lockScreenValueLabel(for: context.state),
-                    phase: context.state.phase,
-                    size: .lockScreen
-                )
-            }
-            LiveActivityPhaseTrack(phase: context.state.phase)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
-    }
 
-    private func lockScreenValueLabel(for state: QueueActivityAttributes.ContentState) -> String {
-        switch state.phase {
-        case .queued:
-            if let queue = state.queuePosition {
-                return "#\(queue)"
+                Spacer(minLength: 8)
+
+                QueueValueText(state: context.state, size: .lockScreen)
             }
-            return "QUEUE"
-        case .waiting:
-            return "WAIT"
-        case .ready:
-            return "READY"
+
+            QueueProgressBar(progress: context.state.progress, phase: context.state.phase)
+
+            HStack(spacing: 6) {
+                Text(context.isStale ? "Waiting for an update from OpenNOW…" : context.state.detail)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(context.isStale ? 0.5 : 0.75))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                Spacer(minLength: 4)
+                if context.state.phase == .ready {
+                    Label("Tap to resume", systemImage: "play.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(accent)
+                        .lineLimit(1)
+                }
+            }
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 15)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(context.attributes.gameTitle), \(context.state.headline)")
+        .accessibilityValue(context.state.detail)
     }
 }
 
-private struct LiveActivityPhaseTrack: View {
+// MARK: - Progress
+
+/// A ring around the app icon. Determinate when the app has measured enough queue movement to
+/// know how far through the wait you are; a slow indeterminate arc otherwise.
+private struct QueueProgressRing<Content: View>: View {
+    let progress: Double?
+    let phase: QueueActivityAttributes.ContentState.Phase
+    let diameter: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    private var lineWidth: CGFloat { max(2, diameter * 0.085) }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.16), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: trimEnd)
+                .stroke(
+                    QueuePhaseStyle.accent(phase),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+            content()
+        }
+        .frame(width: diameter, height: diameter)
+        .accessibilityHidden(true)
+    }
+
+    private var trimEnd: CGFloat {
+        if phase == .ready { return 1 }
+        // A short fixed arc reads as "working" without pretending to know a percentage.
+        guard let progress else { return 0.18 }
+        return CGFloat(min(max(progress, 0.03), 1))
+    }
+}
+
+/// The wide bar. Same rule as the ring: real progress or an honest sliver, never a fake full bar.
+private struct QueueProgressBar: View {
+    let progress: Double?
     let phase: QueueActivityAttributes.ContentState.Phase
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<3, id: \.self) { index in
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(index <= activeIndex ? activeColor : Color.white.opacity(0.14))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 4)
+                    .fill(Color.white.opacity(0.14))
+                Capsule()
+                    .fill(QueuePhaseStyle.accent(phase))
+                    .frame(width: max(6, proxy.size.width * fraction))
             }
         }
+        .frame(height: 5)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Queue progress")
         .accessibilityValue(accessibilityValue)
     }
 
-    private var activeIndex: Int {
-        switch phase {
-        case .queued: return 0
-        case .waiting: return 1
-        case .ready: return 2
-        }
-    }
-
-    private var activeColor: Color {
-        switch phase {
-        case .queued: return Color(red: 0.45, green: 0.82, blue: 1)
-        case .waiting: return Color(red: 1, green: 0.82, blue: 0.36)
-        case .ready: return Color(red: 0.48, green: 0.94, blue: 0.65)
-        }
+    private var fraction: CGFloat {
+        if phase == .ready { return 1 }
+        if phase == .waiting { return max(CGFloat(progress ?? 0), 0.75) }
+        guard let progress else { return 0.06 }
+        return CGFloat(min(max(progress, 0.03), 0.95))
     }
 
     private var accessibilityValue: String {
         switch phase {
-        case .queued: return "In queue"
-        case .waiting: return "Preparing rig"
         case .ready: return "Ready"
+        case .waiting: return "Preparing your rig"
+        case .queued:
+            guard let progress else { return "Waiting in queue" }
+            return "\(Int((progress * 100).rounded())) percent through the queue"
         }
+    }
+}
+
+// MARK: - Values
+
+private struct QueueValueText: View {
+    enum Size {
+        case compact
+        case expanded
+        case lockScreen
+    }
+
+    let state: QueueActivityAttributes.ContentState
+    let size: Size
+
+    var body: some View {
+        Group {
+            if state.phase == .ready {
+                Image(systemName: "play.circle.fill")
+                    .font(readyFont)
+            } else if let position = state.queuePosition {
+                Text("\(position)")
+                    .font(font)
+                    .monospacedDigit()
+                    // Apple's signature for a counter that changes in place; without it the
+                    // number hard-cuts and reads as a glitch on the lock screen.
+                    .contentTransition(.numericText(countsDown: true))
+            } else {
+                Text(state.phase == .waiting ? "Setup" : "Queue")
+                    .font(fallbackFont)
+            }
+        }
+        .foregroundStyle(QueuePhaseStyle.accent(state.phase))
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        switch state.phase {
+        case .ready: return "Ready to play"
+        case .waiting: return "Preparing"
+        case .queued:
+            guard let position = state.queuePosition else { return "In queue" }
+            return position == 1 ? "Next in queue" : "Queue position \(position)"
+        }
+    }
+
+    private var font: Font {
+        switch size {
+        case .compact: return .callout.weight(.bold)
+        case .expanded: return .title2.weight(.bold)
+        case .lockScreen: return .system(size: 32, weight: .heavy, design: .rounded)
+        }
+    }
+
+    private var readyFont: Font {
+        switch size {
+        case .compact: return .callout.weight(.semibold)
+        case .expanded: return .title2
+        case .lockScreen: return .system(size: 30)
+        }
+    }
+
+    private var fallbackFont: Font {
+        switch size {
+        case .compact: return .caption2.weight(.bold)
+        case .expanded: return .subheadline.weight(.bold)
+        case .lockScreen: return .headline.weight(.bold)
+        }
+    }
+}
+
+/// What shows when another Live Activity is sharing the island. One glyph, one meaning.
+private struct QueueMinimalIndicator: View {
+    let state: QueueActivityAttributes.ContentState
+
+    var body: some View {
+        Group {
+            if state.phase == .ready {
+                Image(systemName: "play.fill").font(.caption2.weight(.bold))
+            } else if let position = state.queuePosition, position < 100 {
+                Text("\(position)")
+                    .font(.caption2.weight(.bold))
+                    .monospacedDigit()
+                    .contentTransition(.numericText(countsDown: true))
+            } else {
+                Image(systemName: "hourglass").font(.caption2.weight(.bold))
+            }
+        }
+        .foregroundStyle(QueuePhaseStyle.accent(state.phase))
+        .accessibilityLabel(state.phase == .ready ? "Session ready" : "In queue")
     }
 }
 
@@ -212,61 +367,6 @@ private struct LiveActivityAppIcon: View {
             .scaledToFill()
             .frame(width: size, height: size)
             .clipShape(Circle())
-            .contentShape(Circle())
-    }
-}
-
-private struct QueueValueText: View {
-    enum Size {
-        case compact
-        case expanded
-        case lockScreen
-    }
-
-    let label: String
-    let phase: QueueActivityAttributes.ContentState.Phase
-    let size: Size
-
-    var body: some View {
-        Text(label)
-            .font(font)
-            .monospacedDigit()
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.72)
-            .frame(minWidth: minWidth, alignment: .trailing)
-    }
-
-    private var color: Color {
-        switch phase {
-        case .queued:
-            return Color(red: 0.55, green: 0.82, blue: 1.0)
-        case .waiting:
-            return Color(red: 1.0, green: 0.83, blue: 0.4)
-        case .ready:
-            return Color(red: 0.55, green: 0.95, blue: 0.68)
-        }
-    }
-
-    private var font: Font {
-        switch size {
-        case .compact:
-            return .caption.weight(.bold)
-        case .expanded:
-            return .title3.weight(.bold)
-        case .lockScreen:
-            return .title3.weight(.bold)
-        }
-    }
-
-    private var minWidth: CGFloat {
-        switch size {
-        case .compact:
-            return 16
-        case .expanded:
-            return 24
-        case .lockScreen:
-            return 56
-        }
+            .accessibilityHidden(true)
     }
 }

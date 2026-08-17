@@ -842,6 +842,108 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
+    // MARK: - Failure classification
+
+    func testFailuresAreClassifiedIntoSomethingActionable() {
+        let offline = OpenNOWFailure.classify(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet),
+            context: .catalog
+        )
+        XCTAssertEqual(offline.kind, .offline)
+        XCTAssertEqual(offline.recovery, .retry)
+        XCTAssertFalse(offline.message.contains("Error Domain"), "Raw NSError text must never reach the screen")
+
+        let timeout = OpenNOWFailure.classify(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut),
+            context: .launch
+        )
+        XCTAssertEqual(timeout.kind, .timeout)
+
+        // Capacity during a launch offers the server picker; elsewhere that would be meaningless.
+        let busyLaunch = OpenNOWFailure.classify(
+            NSError(domain: "OpenNOW.Session", code: 503),
+            context: .launch
+        )
+        XCTAssertEqual(busyLaunch.kind, .capacity)
+        XCTAssertEqual(busyLaunch.recovery, .changeServer)
+        let busyElsewhere = OpenNOWFailure.classify(
+            NSError(domain: "OpenNOW.Session", code: 503),
+            context: .catalog
+        )
+        XCTAssertEqual(busyElsewhere.recovery, .retry)
+
+        let expired = OpenNOWFailure.classify(
+            NSError(domain: "OpenNOW.Auth", code: 0, userInfo: [NSLocalizedDescriptionKey: "invalid_grant"]),
+            context: .account
+        )
+        XCTAssertEqual(expired.kind, .authExpired)
+        XCTAssertEqual(expired.recovery, .signIn)
+    }
+
+    func testUnknownFailuresCarryACodeWorthPasting() {
+        let failure = OpenNOWFailure.classify(
+            NSError(domain: "OpenNOW.Weird", code: 918),
+            context: .launch
+        )
+        XCTAssertEqual(failure.kind, .unknown)
+        XCTAssertEqual(failure.recovery, .reportProblem)
+        XCTAssertEqual(failure.message, "The game couldn't start.")
+        XCTAssertEqual(failure.code, "OpenNOW.Weird 918")
+    }
+
+    func testServerJSONNeverReachesTheScreenVerbatim() {
+        let htmlish = OpenNOWFailure.classify(
+            NSError(
+                domain: "OpenNOW.Session",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "<html><body>Internal Server Error</body></html>"]
+            ),
+            context: .launch
+        )
+        XCTAssertFalse(htmlish.message.contains("<html>"))
+
+        // A real sentence from the server is better than anything invented here, and is used.
+        let explained = OpenNOWFailure.classify(
+            NSError(
+                domain: "OpenNOW.Session",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: #"{"message":"That game is not available in your region."}"#]
+            ),
+            context: .launch
+        )
+        XCTAssertEqual(explained.message, "That game is not available in your region.")
+    }
+
+    // MARK: - Queue progress
+
+    func testQueueProgressOnlyMovesForward() {
+        var estimator = QueueTrendEstimator()
+        let start = Date(timeIntervalSince1970: 2_000_000)
+
+        // Too few samples to say anything.
+        estimator.record(position: 100, at: start)
+        XCTAssertNil(estimator.progress())
+
+        for step in 0...5 {
+            estimator.record(position: 100 - step * 10, at: start.addingTimeInterval(Double(step) * 30))
+        }
+        // 50 of 100 consumed.
+        XCTAssertEqual(estimator.progress() ?? 0, 0.5, accuracy: 0.001)
+
+        // Further movement only increases it.
+        estimator.record(position: 20, at: start.addingTimeInterval(200))
+        XCTAssertEqual(estimator.progress() ?? 0, 0.8, accuracy: 0.001)
+    }
+
+    func testQueueProgressStaysSilentWhenNothingHasDrained() {
+        var estimator = QueueTrendEstimator()
+        let start = Date(timeIntervalSince1970: 2_000_000)
+        for step in 0...5 {
+            estimator.record(position: 40, at: start.addingTimeInterval(Double(step) * 30))
+        }
+        XCTAssertNil(estimator.progress(), "A bar drawn from no movement is a fake bar")
+    }
+
     // MARK: - In-stream behaviour
 
     func testModeChangeNoticeOnlyFiresOnARealDifference() {

@@ -250,9 +250,41 @@ enum DiagnosticsSanitizer {
     }
 }
 
+/// One recorded request, in the shape the in-app log needs to draw a row without re-parsing the
+/// rendered text. The rendered form stays authoritative for export; this is a header for it.
+struct DiagnosticsTraceEntry: Identifiable, Equatable {
+    let id = UUID()
+    let date: Date
+    let source: String
+    let method: String
+    let url: String
+    let statusCode: Int
+    let durationMs: Int
+    let failed: Bool
+    let rendered: String
+
+    /// Last two path components, which is usually the only part that differs between calls.
+    var shortPath: String {
+        guard let components = URL(string: url)?.pathComponents.filter({ $0 != "/" }), !components.isEmpty else {
+            return url
+        }
+        return components.suffix(2).joined(separator: "/")
+    }
+
+    func matches(_ query: String) -> Bool {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return true }
+        return source.lowercased().contains(trimmed)
+            || url.lowercased().contains(trimmed)
+            || method.lowercased().contains(trimmed)
+            || String(statusCode).contains(trimmed)
+    }
+}
+
 actor DiagnosticsHTTPTraceStore {
     static let shared = DiagnosticsHTTPTraceStore()
 
+    private var traceEntries: [DiagnosticsTraceEntry] = []
     private var entries: [String] = []
     private var storedBytes = 0
     private let maximumEntries = 180
@@ -293,10 +325,28 @@ actor DiagnosticsHTTPTraceStore {
         )
 
         entries.append(rendered)
+        traceEntries.append(
+            DiagnosticsTraceEntry(
+                date: Date(),
+                source: source,
+                method: request.httpMethod ?? "GET",
+                url: url,
+                statusCode: response?.statusCode ?? -1,
+                durationMs: Int(duration * 1_000),
+                failed: error != nil || !(200...299).contains(response?.statusCode ?? 0),
+                rendered: rendered
+            )
+        )
         storedBytes += rendered.utf8.count
         while entries.count > maximumEntries || storedBytes > maximumStoredBytes {
             storedBytes -= entries.removeFirst().utf8.count
+            if !traceEntries.isEmpty { traceEntries.removeFirst() }
         }
+    }
+
+    /// Newest first, because that is the one you came to look at.
+    func recentEntries() -> [DiagnosticsTraceEntry] {
+        traceEntries.reversed()
     }
 
     func export() -> String {

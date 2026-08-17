@@ -30,11 +30,10 @@ struct StreamLoadingView: View {
   var body: some View {
     GeometryReader { proxy in
       ZStack {
-        QueueAmbientBackdrop(
-          accent: brandAccent,
-          queuePosition: store.activeSession?.queuePosition
-        )
-        .ignoresSafeArea(edges: ignoredBackgroundEdges)
+        // Deliberately no longer passed the queue position: it changed on every poll and
+        // invalidated a full-screen gradient for a difference nobody could see.
+        QueueAmbientBackdrop(accent: brandAccent)
+          .ignoresSafeArea(edges: ignoredBackgroundEdges)
 
         let topInset = max(18, proxy.safeAreaInsets.top + 10)
         let bottomInset = max(18, proxy.safeAreaInsets.bottom + 10)
@@ -207,12 +206,13 @@ struct StreamLoadingView: View {
   }
 }
 
-/// Movement trend under the queue numeral: a sparkline of where the position has been, and one
-/// line saying what that means.
+/// One line under the queue numeral saying whether the queue is moving and roughly how long is
+/// left. There was a sparkline here too; it was noise — the sentence is the part that answers
+/// "should I wait?", and a twenty-two point chart of six samples was decoration.
 ///
-/// The whole component renders nothing until the estimator has seen enough to be honest. That is
-/// deliberate — an empty strip for the first minute is better than a confident wrong number, and
-/// the layout does not shift when it appears because the numeral above it is the anchor.
+/// Renders nothing until the estimator has seen enough to be honest. An empty line for the first
+/// minute is better than a confident wrong number, and the layout does not shift when it appears
+/// because the numeral above it is the anchor.
 private struct QueueTrendStrip: View {
   let trend: QueueTrendEstimator
 
@@ -223,20 +223,12 @@ private struct QueueTrendStrip: View {
 
   var body: some View {
     if let supportLine {
-      VStack(spacing: 6) {
-        let points = trend.sparkline()
-        if points.count >= QueueTrendEstimator.minimumSamples {
-          QueueTrendSparkline(points: points, tint: tint)
-            .frame(width: 132, height: 22)
-            .accessibilityHidden(true)
-        }
-        Text(supportLine)
-          .font(.footnote.weight(.medium))
-          .foregroundStyle(tint)
-          .monospacedDigit()
-          .multilineTextAlignment(.center)
-      }
-      .frame(maxWidth: .infinity)
+      Text(supportLine)
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(tint)
+        .monospacedDigit()
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
       .accessibilityElement(children: .ignore)
       .accessibilityLabel("Queue trend")
       .accessibilityValue(supportLine)
@@ -251,50 +243,6 @@ private struct QueueTrendStrip: View {
     case .holding: return OpenNOWPalette.statusFair
     case .slipped: return OpenNOWPalette.statusPoor
     case .unknown: return .secondary
-    }
-  }
-}
-
-/// A falling queue position is progress, so the line is drawn inverted — it climbs as you get
-/// closer to the front. A chart that slopes downward while things improve is a chart people read
-/// backwards.
-private struct QueueTrendSparkline: View {
-  let points: [Double]
-  let tint: Color
-
-  /// y in view space for a normalised position, where 1.0 is the worst position seen.
-  private func y(for value: Double, in height: CGFloat) -> CGFloat {
-    // 1.0 (worst) sits at the bottom, 0.0 (next in line) at the top.
-    CGFloat(value) * height
-  }
-
-  var body: some View {
-    Canvas { context, size in
-      guard points.count >= 2 else { return }
-      let stepX = size.width / CGFloat(points.count - 1)
-      var path = Path()
-      for (index, value) in points.enumerated() {
-        let point = CGPoint(x: CGFloat(index) * stepX, y: y(for: value, in: size.height))
-        if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-      }
-
-      var fill = path
-      fill.addLine(to: CGPoint(x: size.width, y: size.height))
-      fill.addLine(to: CGPoint(x: 0, y: size.height))
-      fill.closeSubpath()
-      context.fill(fill, with: .linearGradient(
-        Gradient(colors: [tint.opacity(0.28), tint.opacity(0.02)]),
-        startPoint: .zero,
-        endPoint: CGPoint(x: 0, y: size.height)
-      ))
-
-      context.stroke(path, with: .color(tint), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-
-      // Emphasised endpoint — the only value that is still true.
-      if let last = points.last {
-        let end = CGPoint(x: size.width, y: y(for: last, in: size.height))
-        context.fill(Path(ellipseIn: CGRect(x: end.x - 2.5, y: end.y - 2.5, width: 5, height: 5)), with: .color(tint))
-      }
     }
   }
 }

@@ -1,91 +1,98 @@
 import SwiftUI
 
+/// The ambient wash behind the queue screen.
+///
+/// Rewritten for cost. The previous version put a 52-point `.blur` on two full-screen circles —
+/// two offscreen render passes per frame — and took `queuePosition` as a parameter, so the whole
+/// thing invalidated on every poll and restarted its own drift animation mid-flight. On a phone
+/// holding a WebRTC connection open, that was most of the jank.
+///
+/// Now: no blur (a radial gradient is already soft, so the blur was redundant), no dependency on
+/// anything that changes while queueing, and the drift comes from the clock rather than `@State`
+/// so a parent re-render cannot interrupt it.
 struct QueueAmbientBackdrop: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var drift = false
 
     let accent: Color
-    let queuePosition: Int?
+
+    /// Slow enough to be felt rather than watched.
+    private let driftPeriod: TimeInterval = 26
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                LinearGradient(
-                    colors: [Color.black, Color(red: 0.02, green: 0.035, blue: 0.045), Color.black],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                ambientOrb(color: accent, size: min(proxy.size.width, proxy.size.height) * 0.92, opacity: 0.52)
-                    .offset(
-                        x: proxy.size.width * (drift ? -0.08 : -0.24),
-                        y: proxy.size.height * (drift ? 0.12 : 0.02)
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: reduceMotion)) { context in
+            Canvas { canvas, size in
+                canvas.fill(
+                    Path(CGRect(origin: .zero, size: size)),
+                    with: .linearGradient(
+                        Gradient(colors: [
+                            .black,
+                            Color(red: 0.02, green: 0.035, blue: 0.045),
+                            .black
+                        ]),
+                        startPoint: .zero,
+                        endPoint: CGPoint(x: 0, y: size.height)
                     )
-                ambientOrb(
+                )
+
+                let drift = driftPhase(at: context.date)
+                orb(
+                    in: canvas,
+                    color: accent,
+                    diameter: min(size.width, size.height) * 1.5,
+                    centre: CGPoint(
+                        x: size.width * (0.26 + 0.08 * drift),
+                        y: size.height * (0.30 + 0.10 * drift)
+                    ),
+                    peak: 0.30
+                )
+                orb(
+                    in: canvas,
                     color: Color(red: 0.17, green: 0.86, blue: 1),
-                    size: min(proxy.size.width, proxy.size.height) * 0.68,
-                    opacity: 0.34
+                    diameter: min(size.width, size.height) * 1.1,
+                    centre: CGPoint(
+                        x: size.width * (0.72 - 0.10 * drift),
+                        y: size.height * (0.68 - 0.08 * drift)
+                    ),
+                    peak: 0.20
                 )
-                .offset(
-                    x: proxy.size.width * (drift ? 0.23 : 0.10),
-                    y: proxy.size.height * (drift ? 0.16 : 0.29)
-                )
-                QueueSignalField(accent: accent, queuePosition: queuePosition)
-                Color.black.opacity(0.30)
-            }
-            .clipped()
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 13).repeatForever(autoreverses: true)) {
-                    drift.toggle()
-                }
+
+                canvas.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black.opacity(0.22)))
             }
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
     }
 
-    private func ambientOrb(color: Color, size: CGFloat, opacity: Double) -> some View {
-        Circle()
-            .fill(
-                RadialGradient(
-                    colors: [color.opacity(0.58), color.opacity(0.14), .clear],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: size * 0.5
-                )
+    /// A soft disc drawn as a multi-stop radial gradient. Same look as a blurred circle, one pass
+    /// instead of two.
+    private func orb(in canvas: GraphicsContext, color: Color, diameter: CGFloat, centre: CGPoint, peak: Double) {
+        let rect = CGRect(
+            x: centre.x - diameter / 2,
+            y: centre.y - diameter / 2,
+            width: diameter,
+            height: diameter
+        )
+        canvas.fill(
+            Path(ellipseIn: rect),
+            with: .radialGradient(
+                Gradient(stops: [
+                    .init(color: color.opacity(peak), location: 0),
+                    .init(color: color.opacity(peak * 0.45), location: 0.35),
+                    .init(color: color.opacity(peak * 0.12), location: 0.65),
+                    .init(color: .clear, location: 1)
+                ]),
+                center: centre,
+                startRadius: 0,
+                endRadius: diameter / 2
             )
-            .frame(width: size, height: size)
-            .blur(radius: 52)
-            .opacity(opacity)
+        )
     }
-}
 
-private struct QueueSignalField: View {
-    let accent: Color
-    let queuePosition: Int?
-
-    var body: some View {
-        Canvas { context, size in
-            let urgency = queuePosition.map { 1 - min(Double($0), 50) / 50 } ?? 0
-            let spacing = size.height / 9
-            for index in 0...10 {
-                let y = CGFloat(index) * spacing
-                var path = Path()
-                path.move(to: CGPoint(x: -size.width * 0.12, y: y))
-                path.addLine(to: CGPoint(x: size.width * 1.08, y: y - size.height * 0.10))
-                context.stroke(path, with: .color(accent.opacity(0.035 + urgency * 0.035)), lineWidth: 1)
-            }
-            for index in 1...12 {
-                let x = CGFloat((index * 173) % 997) / 997 * size.width
-                let y = CGFloat((index * 291) % 991) / 991 * size.height
-                let diameter = CGFloat(2 + index % 4)
-                context.fill(
-                    Path(ellipseIn: CGRect(x: x, y: y, width: diameter, height: diameter)),
-                    with: .color(accent.opacity(0.05 + urgency * 0.04))
-                )
-            }
-        }
-        .opacity(0.9)
+    private func driftPhase(at date: Date) -> CGFloat {
+        guard !reduceMotion else { return 0.5 }
+        let phase = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: driftPeriod) / driftPeriod
+        let triangle = phase < 0.5 ? phase * 2 : (1 - phase) * 2
+        return CGFloat(triangle * triangle * (3 - 2 * triangle))
     }
 }
 
@@ -179,42 +186,61 @@ struct AndroidQueueStatusText: View {
     }
 }
 
+/// The indeterminate bar shown while waiting for a rig.
+///
+/// Driven by `TimelineView` rather than a `@State` toggle with `repeatForever`. The queue screen
+/// observes the whole store, so it re-renders on every poll, every trend sample and every ad-state
+/// update — and each of those re-evaluated the implicit animation and restarted it mid-flight,
+/// which is what made the bar stutter. A timeline computes position from the clock instead, so
+/// nothing the parent does can interrupt it.
+///
+/// It also draws in a single `Canvas` pass: no `GeometryReader`, no per-frame layout.
 struct OscillatingQueueProgressView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isAnimating = false
+
+    private let cycle: TimeInterval = 2.0
+    private let barHeight: CGFloat = 8
+    private let travellerFraction: CGFloat = 0.32
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.secondary.opacity(0.3))
-                    .frame(height: 8)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+            Canvas { canvas, size in
+                let radius = barHeight / 2
+                let track = CGRect(
+                    x: 0,
+                    y: (size.height - barHeight) / 2,
+                    width: size.width,
+                    height: barHeight
+                )
+                canvas.fill(
+                    Path(roundedRect: track, cornerRadius: radius),
+                    with: .color(.secondary.opacity(0.28))
+                )
 
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(brandAccent)
-                    .frame(width: geometry.size.width * 0.3, height: 8)
-                    .offset(
-                        x: reduceMotion
-                            ? geometry.size.width * 0.35
-                            : (isAnimating ? geometry.size.width * 0.7 : 0)
-                    )
-                    .animation(
-                        reduceMotion
-                            ? nil
-                            : .easeInOut(duration: 1.0).repeatForever(autoreverses: true),
-                        value: isAnimating
-                    )
+                let travellerWidth = size.width * travellerFraction
+                let travelSpan = max(0, size.width - travellerWidth)
+                let x = travelSpan * offsetFraction(at: context.date)
+
+                canvas.fill(
+                    Path(roundedRect: CGRect(x: x, y: track.minY, width: travellerWidth, height: barHeight),
+                         cornerRadius: radius),
+                    with: .color(brandAccent)
+                )
             }
         }
-        .frame(height: 8)
+        .frame(height: barHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Queue progress")
         .accessibilityValue("Waiting for a gaming rig")
-        .onAppear {
-            isAnimating = !reduceMotion
-        }
-        .onChangeCompat(of: reduceMotion) { enabled in
-            isAnimating = !enabled
-        }
+    }
+
+    /// Ping-pongs 0…1…0 across one cycle, eased so the turn at each end is not abrupt.
+    private func offsetFraction(at date: Date) -> CGFloat {
+        // Parked mid-track under Reduce Motion: still reads as "busy", never moves.
+        guard !reduceMotion else { return 0.5 }
+        let phase = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycle) / cycle
+        let triangle = phase < 0.5 ? phase * 2 : (1 - phase) * 2
+        // Smoothstep, which is the cheap equivalent of easeInOut without an Animation object.
+        return CGFloat(triangle * triangle * (3 - 2 * triangle))
     }
 }

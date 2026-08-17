@@ -60,7 +60,7 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         case .general:
             return ["general", "privacy", "analytics", "telemetry", "usage", "cache", "reset", "data", "tutorial", "updates"]
         case .stream:
-            return ["stream", "preset", "recommended", "resolution", "aspect ratio", "fps", "frame rate", "bitrate", "data", "codec", "color", "hdr", "sharpening", "sharpness", "region", "server", "session proxy", "proxy", "native decoder", "stretch"]
+            return ["stream", "preset", "recommended", "resolution", "aspect ratio", "fps", "frame rate", "bitrate", "data", "codec", "color", "hdr", "sharpening", "sharpness", "region", "server", "session proxy", "proxy", "native decoder", "hud", "gpu", "performance overlay", "metal", "stretch"]
         case .input:
             return ["input", "mouse", "sensitivity", "acceleration", "scroll", "pointer", "keyboard", "layout", "language", "clipboard", "paste", "touch", "native touch", "joystick", "stick", "dead zone", "aim", "controller", "rumble", "haptics", "tutorial", "guide", "replay"]
         case .interface:
@@ -599,6 +599,7 @@ struct SettingsView: View {
             }
 
             Toggle("Native Low-Latency Decoder", isOn: $store.settings.nativeStreamerEnabled)
+            Toggle("Apple Performance HUD", isOn: $store.settings.showMetalPerformanceHUD)
         } header: {
             Text("Video")
         } footer: {
@@ -607,6 +608,7 @@ struct SettingsView: View {
                     Text(hdrUnavailableReason)
                 }
                 Text("The native decoder cuts a frame or two of latency. Turn it off if the picture tears or stutters.")
+                Text("The Apple performance HUD is the system's own GPU readout drawn over the video. It is off unless you turn it on here — OpenNOW's stats overlay covers what most people need, and the system one sits on top of the game.")
             }
         }
     }
@@ -1120,6 +1122,11 @@ struct SettingsView: View {
                 CodecDiagnosticsView()
             } label: {
                 Label("Decoders", systemImage: "cpu")
+            }
+            NavigationLink {
+                DebugLogView()
+            } label: {
+                Label("Network Log", systemImage: "list.bullet.rectangle")
             }
             LabeledContent("Preferred Codec", value: store.settings.preferredCodec)
             LabeledContent("Stream Profile", value: headerSummary)

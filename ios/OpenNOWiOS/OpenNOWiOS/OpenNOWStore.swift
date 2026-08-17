@@ -808,6 +808,12 @@ struct AppSettings: Codable, Equatable {
     var catalogWallpaperPreset: CatalogWallpaperPreset = .colorfulAbstract
 
     // Stream HUD
+    /// Apple's own Metal performance HUD, drawn by the OS over the video layer. Off by default:
+    /// it is a developer tool, it overlaps the game, and OpenNOW's own stats overlay already
+    /// reports the numbers a player cares about. Kept as a setting because it reports things
+    /// ours cannot — GPU time and the actual present rate — which is worth having when
+    /// diagnosing a stutter.
+    var showMetalPerformanceHUD: Bool = false
     var streamStatsMetrics: StreamStatsMetrics = .default
     var hideStreamButtons: Bool = false
     var streamKeyboardButtonPosition: NormalizedPoint = .trailingCenter
@@ -893,6 +899,7 @@ struct AppSettings: Codable, Equatable {
         case showCardTitles
         case showFavoriteIconOnGameCards
         case catalogWallpaperPreset
+        case showMetalPerformanceHUD
         case streamStatsMetrics
         case hideStreamButtons
         case streamKeyboardButtonPosition
@@ -1014,6 +1021,7 @@ struct AppSettings: Codable, Equatable {
         showCardTitles = try container.decodeIfPresent(Bool.self, forKey: .showCardTitles) ?? true
         showFavoriteIconOnGameCards = try container.decodeIfPresent(Bool.self, forKey: .showFavoriteIconOnGameCards) ?? true
         catalogWallpaperPreset = try container.decodeIfPresent(CatalogWallpaperPreset.self, forKey: .catalogWallpaperPreset) ?? .colorfulAbstract
+        showMetalPerformanceHUD = try container.decodeIfPresent(Bool.self, forKey: .showMetalPerformanceHUD) ?? false
         streamStatsMetrics = try container.decodeIfPresent(StreamStatsMetrics.self, forKey: .streamStatsMetrics) ?? .default
         hideStreamButtons = try container.decodeIfPresent(Bool.self, forKey: .hideStreamButtons) ?? false
         streamKeyboardButtonPosition = try container.decodeIfPresent(NormalizedPoint.self, forKey: .streamKeyboardButtonPosition) ?? .trailingCenter
@@ -5632,6 +5640,10 @@ final class OpenNOWStore: ObservableObject {
     /// A launch that is waiting on the user to confirm ending the session it would replace.
     @Published private(set) var pendingLaunchConflict: LaunchConflict?
 
+    /// The last failure, classified. `lastError` still carries the same text for anything that
+    /// only needs a string; this adds the recovery action, which is the part worth showing.
+    @Published private(set) var lastFailure: OpenNOWFailure?
+
     /// Cross-tab navigation request, mirroring Android's `SettingsRouteTarget`. Set by anything
     /// that wants to send the user to a specific settings page — an empty state that knows the
     /// fix, a deep link, an error with a remedy — and consumed once by the settings screen.
@@ -6628,7 +6640,7 @@ final class OpenNOWStore: ObservableObject {
             showStreamLoading = false
             queueOverlayVisible = false
             syncTrackedSessionSurface()
-            lastError = "Session launch failed: \(error.localizedDescription)"
+            report(error, context: .launch)
         }
     }
 
@@ -6666,6 +6678,40 @@ final class OpenNOWStore: ObservableObject {
 
     func cancelPendingLaunch() {
         pendingLaunchConflict = nil
+    }
+
+    /// Records a failure in both channels at once.
+    private func report(_ error: Error, context: OpenNOWFailure.Context) {
+        let failure = OpenNOWFailure.classify(error, context: context)
+        lastFailure = failure
+        lastError = failure.message
+        logger.error(
+            "failure kind=\(failure.kind.rawValue, privacy: .public) context=\(String(describing: context), privacy: .public)"
+        )
+    }
+
+    func clearFailure() {
+        lastFailure = nil
+        lastError = nil
+    }
+
+    /// Runs the recovery the banner offered. The store owns what each one means, so the view
+    /// never has to know how to retry a catalog load.
+    func performRecovery(_ recovery: OpenNOWFailure.Recovery) {
+        let context = lastFailure
+        clearFailure()
+        switch recovery {
+        case .retry:
+            Task { await refreshCatalog() }
+        case .signIn:
+            Task { await bootstrap() }
+        case .changeServer:
+            pendingSettingsRoute = .stream
+        case .seePlans:
+            pendingSettingsRoute = .account
+        case .reportProblem, .none:
+            _ = context
+        }
     }
 
     private func performScheduledLaunch(_ request: PendingLaunchRequest) {
@@ -6836,7 +6882,7 @@ final class OpenNOWStore: ObservableObject {
             remoteSessionsSnapshotLoaded = true
         } catch {
             remoteSessionsSnapshotLoaded = false
-            lastError = "Could not fetch active sessions: \(error.localizedDescription)"
+            report(error, context: .session)
         }
     }
 
@@ -6863,7 +6909,7 @@ final class OpenNOWStore: ObservableObject {
             }
             lastError = nil
         } catch {
-            lastError = "Could not end session: \(error.localizedDescription)"
+            report(error, context: .session)
         }
     }
 
@@ -6924,7 +6970,7 @@ final class OpenNOWStore: ObservableObject {
             showStreamLoading = false
             queueOverlayVisible = false
             syncTrackedSessionSurface()
-            lastError = "Failed to resume session: \(error.localizedDescription)"
+            report(error, context: .session)
         }
     }
 
@@ -7340,6 +7386,7 @@ final class OpenNOWStore: ObservableObject {
     func applyStreamerSettings(_ updated: AppSettings) {
         var next = settings
         next.streamStatsMetrics = updated.streamStatsMetrics
+        next.showMetalPerformanceHUD = updated.showMetalPerformanceHUD
         next.touch = updated.touch
         next.mouseSensitivity = updated.mouseSensitivity
         next.mouseScrollSensitivity = updated.mouseScrollSensitivity
@@ -8435,10 +8482,11 @@ final class OpenNOWStore: ObservableObject {
         if isReadyForStreamer(session) || session.status == 3 {
             return QueueActivityAttributes.ContentState(
                 phase: .ready,
-                headline: "Session ready",
+                headline: "Ready to play",
                 detail: "Tap to jump back in",
                 queueLabel: "Ready",
-                queuePosition: session.queuePosition
+                queuePosition: session.queuePosition,
+                progress: 1
             )
         }
         if isInQueuePhase(session) {
@@ -8463,19 +8511,21 @@ final class OpenNOWStore: ObservableObject {
             }
             return QueueActivityAttributes.ContentState(
                 phase: .queued,
-                headline: "In queue",
+                headline: session.queuePosition == 1 ? "You're next" : "In queue",
                 detail: detail,
                 queueLabel: queueLabel,
-                queuePosition: session.queuePosition
+                queuePosition: session.queuePosition,
+                progress: queueTrend.progress()
             )
         }
         if isInSetupPhase(session) || session.status == 2 {
             return QueueActivityAttributes.ContentState(
                 phase: .waiting,
-                headline: "Allocating your rig",
-                detail: "Setting up \(session.game.title)",
-                queueLabel: "Wait",
-                queuePosition: session.queuePosition
+                headline: "Preparing your rig",
+                detail: session.seatSetupStep.map { "Step \($0) of 4" } ?? "Almost there",
+                queueLabel: "Setup",
+                queuePosition: nil,
+                progress: session.seatSetupStep.map { min(max(Double($0) / 4, 0.25), 0.95) }
             )
         }
         return nil

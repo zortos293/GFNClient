@@ -690,7 +690,12 @@ struct HomeView: View {
     private var homeHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let error = store.lastError {
-                ErrorBannerView(message: error)
+                ErrorBannerView(
+                    message: error,
+                    failure: store.lastFailure,
+                    onRecover: { store.performRecovery($0) },
+                    onDismiss: { store.clearFailure() }
+                )
             }
 
             if !isHomeSearchActive && jumpBackInHasContent {
@@ -2372,20 +2377,71 @@ private struct FeaturedGameCardSkeleton: View {
     }
 }
 
+/// An error the user can do something about.
+///
+/// The action is the point. "Session launch failed" on its own leaves someone tapping Play again
+/// and getting the same result; "All rigs in this region are busy" next to a Change Server button
+/// is a screen they can leave.
 struct ErrorBannerView: View {
     let message: String
+    var failure: OpenNOWFailure?
+    var onRecover: ((OpenNOWFailure.Recovery) -> Void)?
+    var onDismiss: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            Text(message)
-                .font(.footnote)
-                .foregroundStyle(.primary)
-            Spacer()
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(OpenNOWPalette.statusFair)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(message)
+                    .font(.footnote)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let code = failure?.code {
+                    // Selectable so it can be pasted into a report, small so it never competes
+                    // with the sentence above it.
+                    Text(code)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if let failure, let label = failure.recovery.label, let onRecover {
+                Button(label) { onRecover(failure.recovery) }
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+            } else if let onDismiss {
+                Button {
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.bold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Dismiss")
+            }
         }
         .padding(12)
-        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .background(OpenNOWPalette.statusFair.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var symbol: String {
+        switch failure?.kind {
+        case .offline: return "wifi.slash"
+        case .authExpired: return "person.crop.circle.badge.exclamationmark"
+        case .capacity: return "server.rack"
+        case .maintenance: return "wrench.and.screwdriver"
+        case .notEntitled: return "lock"
+        default: return "exclamationmark.triangle.fill"
+        }
     }
 }
 
@@ -3169,51 +3225,104 @@ struct GameArtworkView: View {
     }
 }
 
+/// What fills a card before artwork arrives, or when it never does.
+///
+/// The previous version drew a generic `photo` glyph and two small grey bars meant to suggest
+/// text. At poster size that was busy; on the 16:9 detail card the bars floated in the middle of a
+/// large empty area and read as a rendering fault rather than as loading.
+///
+/// Now the two cases are properly distinct:
+///
+/// - **Loading** is a calm tinted ground with a single shimmer sweep and nothing else. A skeleton
+///   should say "not yet", not imitate content that is about to appear somewhere else.
+/// - **Failed or missing** shows the game's initials. A monogram is specific to the title and
+///   recognisable at a glance; a generic photo symbol tells you nothing about which card you are
+///   looking at. Everything scales with the container, so it works from a 104-point poster up to
+///   a full-width hero.
 struct GameArtworkLoadingPlaceholder: View {
     let game: CloudGame
     let iconSize: CGFloat
     let isFailure: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        ZStack {
+        GeometryReader { proxy in
+            let minimumEdge = min(proxy.size.width, proxy.size.height)
+            ZStack {
+                ground
+                if isFailure {
+                    monogram(edge: minimumEdge)
+                } else if !reduceMotion {
+                    shimmer(in: proxy.size)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// Tinted from the title so a grid of placeholders is not a wall of identical grey, but kept
+    /// dark and low-contrast because it sits where box art will be.
+    private var ground: some View {
+        LinearGradient(
+            colors: [
+                gameColor(for: game.title).opacity(isFailure ? 0.22 : 0.16),
+                OpenNOWPalette.imagePlaceholder
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private func monogram(edge: CGFloat) -> some View {
+        VStack(spacing: edge * 0.05) {
+            Text(initials)
+                .font(.system(size: max(16, edge * 0.30), weight: .bold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.34))
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            Image(systemName: game.icon)
+                .font(.system(size: max(9, edge * 0.10), weight: .semibold))
+                .foregroundStyle(.white.opacity(0.22))
+        }
+        .padding(edge * 0.12)
+    }
+
+    /// A single diagonal band, positioned from the clock so it cannot be restarted by a parent
+    /// re-render — the catalog re-renders often while images load.
+    private func shimmer(in size: CGSize) -> some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+            let period: TimeInterval = 1.4
+            let phase = context.date.timeIntervalSinceReferenceDate
+                .truncatingRemainder(dividingBy: period) / period
+            let travel = size.width + size.height
             LinearGradient(
-                colors: [
-                    gameColor(for: game.title).opacity(isFailure ? 0.18 : 0.30),
-                    Color.secondary.opacity(isFailure ? 0.12 : 0.18),
-                    Color.black.opacity(isFailure ? 0.08 : 0.18)
-                ],
+                colors: [.clear, .white.opacity(0.07), .clear],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-
-            VStack(spacing: 10) {
-                Image(systemName: isFailure ? game.icon : "photo")
-                    .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(gameColor(for: game.title).opacity(isFailure ? 0.95 : 0.72))
-
-                if !isFailure {
-                    VStack(spacing: 5) {
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.white.opacity(0.16))
-                            .frame(width: 56, height: 6)
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.white.opacity(0.11))
-                            .frame(width: 34, height: 6)
-                    }
-                }
-            }
+            .frame(width: travel * 0.45)
+            .rotationEffect(.degrees(24))
+            .offset(x: -travel * 0.5 + travel * CGFloat(phase))
+            .blendMode(.screen)
+            .allowsHitTesting(false)
         }
-        .overlay {
-            if !isFailure {
-                LinearGradient(
-                    colors: [.clear, Color.white.opacity(0.10), .clear],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .blendMode(.screen)
-                .allowsHitTesting(false)
-            }
+    }
+
+    /// Up to two initials from the meaningful words in the title. Leading articles and short
+    /// connectives are skipped so "The Last of Us" reads LU rather than TL.
+    private var initials: String {
+        let skipped: Set<String> = ["the", "a", "an", "of", "and", "de", "la", "le"]
+        let words = game.title
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !skipped.contains($0.lowercased()) }
+        let letters = words.prefix(2).compactMap { $0.first }.map(String.init)
+        if letters.isEmpty {
+            return String(game.title.prefix(2)).uppercased()
         }
+        return letters.joined().uppercased()
     }
 }
 

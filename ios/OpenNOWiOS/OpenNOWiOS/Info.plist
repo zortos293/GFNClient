@@ -30,6 +30,14 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!--
+	Without this, iOS caps every layer this app presents at 60 Hz on a ProMotion
+	iPhone, so a 120 fps stream is decoded at 120 and displayed at 60. The cap
+	exists to protect battery in apps that would otherwise redraw needlessly;
+	a cloud-gaming client is exactly the case it is not meant to catch.
+	-->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSSupportsLiveActivities</key>

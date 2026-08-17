@@ -672,6 +672,17 @@ struct HomeView: View {
                 comingNextSection
             }
 
+            if !isHomeSearchActive {
+                ForEach(storeSectionRails) { section in
+                    CatalogPosterRail(
+                        title: section.title,
+                        games: section.games,
+                        onOpenDetails: { selectedGameForDetails = $0 },
+                        onPlay: launchFromCard
+                    )
+                }
+            }
+
             CatalogControlsHeader(
                 title: homeHeaderTitle,
                 subtitle: isHomeSearchActive ? "Search results" : "Store catalog",
@@ -725,11 +736,41 @@ struct HomeView: View {
     }
 
     private var comingNextSection: some View {
-        ComingNextRail(
+        CatalogPosterRail(
+            title: "Coming Next",
+            symbol: "sparkles",
+            caption: "Recently added or updated",
             games: comingNextGames,
             onOpenDetails: { selectedGameForDetails = $0 },
             onPlay: launchFromCard
         )
+    }
+
+    /// The catalog groups games into named sections; Android surfaces those as rails while iOS
+    /// was flattening all of them into one grid. A section is only worth a rail when it is long
+    /// enough to scroll — anything shorter reads as a rendering bug, so it stays in the grid.
+    private var storeSectionRails: [CatalogSectionGroup] {
+        let excluded = comingNextExcludedGameKeys.union(comingNextGames.map(catalogStableGameKey))
+        var order: [String] = []
+        var grouped: [String: [CloudGame]] = [:]
+        var seen = Set<String>()
+
+        for game in store.allGames {
+            let key = catalogStableGameKey(game)
+            guard !excluded.contains(key), seen.insert(key).inserted else { continue }
+            guard let title = game.catalogSectionTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty,
+                  !title.localizedCaseInsensitiveContains("jump back in") else { continue }
+            if grouped[title] == nil { order.append(title) }
+            grouped[title, default: []].append(game)
+        }
+
+        return order.compactMap { title -> CatalogSectionGroup? in
+            guard let games = grouped[title], games.count >= 4 else { return nil }
+            return CatalogSectionGroup(title: title, games: Array(games.prefix(20)))
+        }
+        .prefix(6)
+        .map { $0 }
     }
 
     private var comingNextGames: [CloudGame] {
@@ -911,6 +952,13 @@ struct HomeView: View {
 
 private let gameVerticalBannerAspectRatio: CGFloat = 2.0 / 3.0
 
+/// One curated catalog section, rendered as a rail on Home.
+struct CatalogSectionGroup: Identifiable {
+    let title: String
+    let games: [CloudGame]
+    var id: String { title }
+}
+
 struct GameBannerRowGroup: Identifiable {
     let id: String
     let games: [CloudGame]
@@ -1018,6 +1066,10 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
     let isLoading: Bool
     let emptyTitle: String
     let emptySystemImage: String
+    /// One line under the empty-state title saying what actually happened. Optional because not
+    /// every caller has a cause worth naming — but when there is one, it belongs here rather
+    /// than being folded into the title.
+    var emptyDescription: String? = nil
     let subtitle: (CloudGame) -> String
     let badgeSystemImage: (CloudGame) -> String?
     let onOpenDetails: (CloudGame) -> Void
@@ -1054,7 +1106,9 @@ struct GameCatalogGridView<Header: View, EmptyActions: View>: View {
                     .padding(.horizontal, 12)
                 } else if games.isEmpty {
                     OpenNOWUnavailableView(emptyTitle, systemImage: emptySystemImage) {
-                        EmptyView()
+                        if let emptyDescription {
+                            Text(emptyDescription)
+                        }
                     } actions: {
                         emptyActions()
                     }
@@ -1784,9 +1838,16 @@ private struct JumpBackInCard: View {
     }
 }
 
-private struct ComingNextRail: View {
+/// A horizontal row of poster cards under a titled header.
+///
+/// Used both for "Coming Next" and for the curated sections the catalog itself defines, so a rail
+/// looks and behaves the same wherever it appears — which is the point of having rails at all.
+private struct CatalogPosterRail: View {
     @EnvironmentObject private var store: OpenNOWStore
 
+    let title: String
+    var symbol: String? = nil
+    var caption: String? = nil
     let games: [CloudGame]
     let onOpenDetails: (CloudGame) -> Void
     let onPlay: (CloudGame) -> Void
@@ -1800,12 +1861,22 @@ private struct ComingNextRail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Label("Coming Next", systemImage: "sparkles")
-                    .font(.subheadline.weight(.semibold))
+                Group {
+                    if let symbol {
+                        Label(title, systemImage: symbol)
+                    } else {
+                        Text(title)
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+
                 Spacer(minLength: 8)
-                Text("Recently added or updated")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+                if let caption {
+                    Text(caption)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1831,7 +1902,8 @@ private struct ComingNextRail: View {
                 .padding(.horizontal, 2)
                 .padding(.vertical, 4)
             }
-            .accessibilityLabel("Coming Next games")
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("\(title) games")
         }
     }
 }

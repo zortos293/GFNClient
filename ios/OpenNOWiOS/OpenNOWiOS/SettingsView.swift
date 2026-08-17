@@ -74,6 +74,16 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
         }
     }
 
+    init(_ route: SettingsRouteTarget) {
+        switch route {
+        case .account: self = .account
+        case .general: self = .general
+        case .stream: self = .stream
+        case .input: self = .input
+        case .interface: self = .interface
+        }
+    }
+
     func matches(_ query: String) -> Bool {
         let tokens = query
             .lowercased()
@@ -88,6 +98,8 @@ private enum SettingsCategory: String, CaseIterable, Hashable, Identifiable {
 struct SettingsView: View {
     @EnvironmentObject private var store: OpenNOWStore
     @Environment(\.openURL) private var openURL
+    @State private var path: [SettingsCategory] = []
+    @State private var bugReportDeck: BugReportPreflightDeck?
     @State private var searchText = ""
     @State private var showingResetConfirmation = false
     @State private var showingResetAppConfirmation = false
@@ -119,13 +131,21 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 accountLandingSection
                 settingsCategorySection
             }
             .navigationTitle("Settings")
             .searchable(text: $searchText, prompt: "Search settings")
+            .onChangeCompat(of: store.pendingSettingsRoute) { route in
+                guard let route else { return }
+                // Search filters the category list, so an inbound route has to clear it or the
+                // destination the caller asked for may not be reachable.
+                searchText = ""
+                path = [SettingsCategory(route)]
+                store.pendingSettingsRoute = nil
+            }
             .navigationDestination(for: SettingsCategory.self) { category in
                 Form {
                     settingsDetailContent(for: category)
@@ -209,7 +229,13 @@ struct SettingsView: View {
                 await store.refreshAccountConnectors()
             }
         }
-        .tint(brandAccent)
+        // Presented from the stack root so both entry points — About and Advanced — reach it.
+        .sheet(item: $bugReportDeck) { deck in
+            BugReportView(deck: deck) { draft in
+                await store.submitBugReport(draft, deck: deck)
+            }
+            .environmentObject(store)
+        }
     }
 
     @ViewBuilder
@@ -272,6 +298,7 @@ struct SettingsView: View {
             interfaceSoundSessionSection
         case .advanced:
             experimentalSection
+            reportProblemSection
             advancedSection
         case .account:
             savedAccountsSection
@@ -1076,6 +1103,18 @@ struct SettingsView: View {
         }
     }
 
+    private var reportProblemSection: some View {
+        Section {
+            Button {
+                bugReportDeck = store.bugReportPreflightDeck()
+            } label: {
+                Label("Report a Problem", systemImage: "ladybug")
+            }
+        } footer: {
+            Text("Sends what OpenNOW already knows about this device and your last session, so you don't have to remember your settings.")
+        }
+    }
+
     private var advancedSection: some View {
         Section {
             LabeledContent("Preferred Codec", value: store.settings.preferredCodec)
@@ -1206,6 +1245,12 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section("About") {
+            Button {
+                bugReportDeck = store.bugReportPreflightDeck()
+            } label: {
+                Label("Report a Problem", systemImage: "ladybug")
+            }
+
             LabeledContent("OpenNOW iOS", value: "Version \(appVersion)")
             LabeledContent("Build", value: buildNumber)
             LabeledContent("Platform", value: OpenNOWPlatform.displayName)

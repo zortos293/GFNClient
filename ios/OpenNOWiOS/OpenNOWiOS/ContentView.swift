@@ -72,11 +72,29 @@ private struct SplashView: View {
 }
 
 struct MainTabView: View {
-    private enum Tab: Hashable {
+    private enum Tab: String, CaseIterable, Hashable {
         case home
         case browse
         case library
         case settings
+
+        var title: String {
+            switch self {
+            case .home: return "Home"
+            case .browse: return "Browse"
+            case .library: return "Library"
+            case .settings: return "Settings"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .home: return "house.fill"
+            case .browse: return "square.grid.2x2.fill"
+            case .library: return "books.vertical.fill"
+            case .settings: return "slider.horizontal.3"
+            }
+        }
     }
 
     @EnvironmentObject private var store: OpenNOWStore
@@ -84,6 +102,9 @@ struct MainTabView: View {
     @State private var selectedTab: Tab
     @State private var streamerAutoRetryCount = 0
     @State private var presentedStreamerSession: ActiveSession?
+    @State private var bugReportDeck: BugReportPreflightDeck?
+    @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private static let maxStreamerAutoRetries = 3
 
     init(initialPage: AppLaunchPage) {
@@ -153,27 +174,27 @@ struct MainTabView: View {
         .onChangeCompat(of: store.queueOverlayVisible) { _ in
             synchronizeCatalogControllerShortcuts()
         }
+        .onChangeCompat(of: store.pendingSettingsRoute) { route in
+            // Switching the tab is this view's job; pushing to the right page inside Settings is
+            // SettingsView's. It clears the request once it has consumed it.
+            guard route != nil else { return }
+            selectedTab = .settings
+        }
         .onDisappear {
             catalogControllerShortcuts.setEnabled(false)
         }
     }
 
     private var tabSurface: some View {
-        TabView(selection: $selectedTab) {
-            HomeView()
-                .tabItem { Label("Home", systemImage: "house.fill") }
-                .tag(Tab.home)
-            BrowseView()
-                .tabItem { Label("Browse", systemImage: "square.grid.2x2.fill") }
-                .tag(Tab.browse)
-            LibraryView()
-                .tabItem { Label("Library", systemImage: "books.vertical.fill") }
-                .tag(Tab.library)
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
-                .tag(Tab.settings)
+        // A tab bar is the iPhone idiom and a sidebar is the iPad one. Splitting on size class
+        // rather than device also covers Slide Over and Stage Manager, where an iPad is compact.
+        Group {
+            if horizontalSizeClass == .regular {
+                sidebarSurface
+            } else {
+                tabBarSurface
+            }
         }
-        .tint(brandAccent)
         .environmentObject(catalogControllerShortcuts)
         .overlay {
             ZStack {
@@ -188,7 +209,7 @@ struct MainTabView: View {
         }
         .animation(queueSurfaceAnimation, value: store.queueOverlayVisible)
         .safeAreaInset(edge: .top) {
-            if store.canJumpBackToSession && !store.queueOverlayVisible {
+            if horizontalSizeClass != .regular, store.canJumpBackToSession, !store.queueOverlayVisible {
                 JumpBackStatusBanner()
                     .environmentObject(store)
                     .padding(.horizontal)
@@ -222,12 +243,102 @@ struct MainTabView: View {
             get: { store.sessionReport },
             set: { if $0 == nil { store.dismissSessionReport() } }
         )) { report in
-            SessionReportView(report: report) { disableFutureReports in
-                store.dismissSessionReport(disableFutureReports: disableFutureReports)
-            }
+            SessionReportView(
+                report: report,
+                onReportProblem: {
+                    // Capture the deck before the report sheet closes: it reads the session the
+                    // user is about to complain about, which is gone a moment later.
+                    bugReportDeck = store.bugReportPreflightDeck()
+                    store.dismissSessionReport()
+                },
+                onDismiss: { disableFutureReports in
+                    store.dismissSessionReport(disableFutureReports: disableFutureReports)
+                }
+            )
             .environmentObject(store)
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $bugReportDeck) { deck in
+            BugReportView(deck: deck) { draft in
+                await store.submitBugReport(draft, deck: deck)
+            }
+            .environmentObject(store)
+        }
+        // Two sheets cannot be presented from one view, so consent waits until nothing else is
+        // on screen. It is a one-time prompt; deferring it a launch costs nothing.
+        .sheet(isPresented: Binding(
+            get: { showAnalyticsConsent },
+            set: { if !$0 { store.recordAnalyticsConsent(sharing: false) } }
+        )) {
+            AnalyticsConsentView { sharing in
+                store.recordAnalyticsConsent(sharing: sharing)
+            }
+        }
+    }
+
+    /// Only after sign-in, and only when the screen is otherwise clear. Asking during a queue or
+    /// over a session report is asking at the worst possible moment.
+    private var showAnalyticsConsent: Bool {
+        store.settings.analyticsConsent == .notAsked
+            && store.sessionReport == nil
+            && store.pendingLaunchConflict == nil
+            && !store.queueOverlayVisible
+            && presentedStreamerSession == nil
+    }
+
+    private var tabBarSurface: some View {
+        TabView(selection: $selectedTab) {
+            ForEach(Tab.allCases, id: \.self) { tab in
+                destination(for: tab)
+                    .tabItem { Label(tab.title, systemImage: tab.symbol) }
+                    .tag(tab)
+            }
+        }
+        .tint(brandAccent)
+    }
+
+    private var sidebarSurface: some View {
+        NavigationSplitView(columnVisibility: $sidebarVisibility) {
+            // iOS sidebars take an optional selection; a nil write (deselect) is ignored so the
+            // detail column can never end up showing nothing.
+            List(selection: Binding<Tab?>(
+                get: { selectedTab },
+                set: { newValue in if let newValue { selectedTab = newValue } }
+            )) {
+                Section {
+                    ForEach(Tab.allCases, id: \.self) { tab in
+                        Label(tab.title, systemImage: tab.symbol).tag(tab)
+                    }
+                }
+
+                // On iPhone the running session lives in a floating banner. Here there is a
+                // permanent place for it, which is better: it never covers content and it does
+                // not have to compete with the top safe area.
+                if store.canJumpBackToSession {
+                    Section("Session") {
+                        JumpBackStatusBanner()
+                            .environmentObject(store)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("OpenNOW")
+        } detail: {
+            destination(for: selectedTab)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .tint(brandAccent)
+    }
+
+    @ViewBuilder
+    private func destination(for tab: Tab) -> some View {
+        switch tab {
+        case .home: HomeView()
+        case .browse: BrowseView()
+        case .library: LibraryView()
+        case .settings: SettingsView()
         }
     }
 
@@ -271,6 +382,15 @@ struct MainTabView: View {
             onNativeFallbackRequiresFreshEndpoint: { _ in },
             onRuntimeSample: { sample in
                 store.recordStreamRuntimeSample(sample)
+            },
+            onSettingsChange: { updated in
+                store.applyStreamerSettings(updated)
+            },
+            onBuildBugReportDeck: {
+                store.bugReportPreflightDeck()
+            },
+            onSubmitBugReport: { draft, deck in
+                await store.submitBugReport(draft, deck: deck)
             },
             onClose: {
                 presentedStreamerSession = nil

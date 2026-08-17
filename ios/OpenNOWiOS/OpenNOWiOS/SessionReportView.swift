@@ -10,7 +10,7 @@ import Charts
 /// Everything is derived — nothing here is invented to fill space.
 struct SessionReportView: View {
     let report: SessionReport
-    var onReportProblem: (() -> Void)?
+    var onReportProblem: (() -> Void)? = nil
     let onDismiss: (Bool) -> Void
 
     @Environment(\.openNowAccent) private var accent

@@ -842,6 +842,164 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
+    // MARK: - Bug reports
+
+    func testBugReportDescriptionNeedsSubstanceNotJustLength() {
+        // Long enough by character count, but says nothing.
+        let padded = String(repeating: "aaaa ", count: 20)
+        XCTAssertNotNil(BugReportValidation.descriptionError(padded))
+
+        // The same word repeated clears the word count but not the distinct-word floor.
+        let repeated = Array(repeating: "broken", count: 12).joined(separator: " ")
+        XCTAssertNotNil(BugReportValidation.descriptionError(repeated))
+
+        // Too short.
+        XCTAssertNotNil(BugReportValidation.descriptionError("it doesnt work"))
+
+        // Punctuation does not count toward the meaningful-character floor.
+        XCTAssertNotNil(BugReportValidation.descriptionError(String(repeating: ".", count: 200)))
+
+        // A real report passes.
+        let real = """
+        I launched Cyberpunk on the US Southwest server and the picture froze after about \
+        thirty seconds while the audio kept playing. Reconnecting did not help; ending the \
+        session and starting again did.
+        """
+        XCTAssertNil(BugReportValidation.descriptionError(real))
+    }
+
+    func testBugReportTitleRejectsMashingAndEmptiness() {
+        XCTAssertNotNil(BugReportValidation.titleError(""))
+        XCTAssertNotNil(BugReportValidation.titleError("   "))
+        XCTAssertNotNil(BugReportValidation.titleError("bug"))
+        XCTAssertNotNil(BugReportValidation.titleError("aaaaaaaaaaaa"))
+        XCTAssertNil(BugReportValidation.titleError("Video freezes but audio continues"))
+    }
+
+    func testBugReportProgressCopyCountsOnlyMeaningfulCharacters() {
+        XCTAssertEqual(BugReportValidation.meaningfulCharacterCount("ab! cd?"), 4)
+        XCTAssertEqual(BugReportValidation.meaningfulCharacterCount("12 34"), 4)
+        let progress = BugReportValidation.descriptionProgress("short")
+        XCTAssertTrue(progress?.contains("5 / 50") ?? false, "Progress should show real characters, got \(progress ?? "nil")")
+    }
+
+    func testReporterIdIsStableNamespacedAndNotTheRawDeviceId() {
+        let deviceId = "8F1C0F7E-0000-4000-8000-ABCDEF012345"
+        guard let first = BugReportReporter.reporterId(stableDeviceId: deviceId) else {
+            return XCTFail("Expected a reporter id")
+        }
+        XCTAssertEqual(first, BugReportReporter.reporterId(stableDeviceId: deviceId), "Must be stable")
+        XCTAssertTrue(BugReportReporter.isValid(first))
+        XCTAssertTrue(first.hasPrefix("br1_"))
+        XCTAssertEqual(first.count, 4 + 64)
+        XCTAssertFalse(first.contains(deviceId), "The raw device ID must never be uploaded")
+
+        // A different install is a different reporter.
+        XCTAssertNotEqual(first, BugReportReporter.reporterId(stableDeviceId: "other-device"))
+        XCTAssertNil(BugReportReporter.reporterId(stableDeviceId: "   "))
+        XCTAssertFalse(BugReportReporter.isValid("br1_short"))
+        XCTAssertFalse(BugReportReporter.isValid(String(repeating: "a", count: 64)))
+    }
+
+    func testBugReportServerErrorPrefersTheServersOwnMessage() {
+        let banned = """
+        {"ok":false,"error":{"code":"REPORTER_BANNED","message":"Bug reporting is disabled for this installation.","retryable":false}}
+        """
+        guard case .server(let code, let message, let retryable) =
+                BugReportClient.parseServerError(body: banned, status: 403) else {
+            return XCTFail("Expected a server error")
+        }
+        XCTAssertEqual(code, "REPORTER_BANNED")
+        XCTAssertEqual(message, "Bug reporting is disabled for this installation.")
+        XCTAssertFalse(retryable)
+
+        // An HTML proxy page must not reach the screen.
+        guard case .server(_, let fallback, _) =
+                BugReportClient.parseServerError(body: "<html><body>502 Bad Gateway</body></html>", status: 502) else {
+            return XCTFail("Expected a server error")
+        }
+        XCTAssertFalse(fallback.contains("<html>"))
+        XCTAssertTrue(fallback.contains("502"))
+
+        // Rate limits are retryable even when the server does not say so.
+        guard case .server(_, _, let rateLimited) =
+                BugReportClient.parseServerError(body: "{}", status: 429) else {
+            return XCTFail("Expected a server error")
+        }
+        XCTAssertTrue(rateLimited)
+    }
+
+    func testBugReportRequestIsRejectedBeforeItLeavesTheDevice() {
+        let valid = BugReportSubmission(
+            title: "Video freezes but audio continues",
+            description: """
+            I launched Cyberpunk on the US Southwest server and the picture froze after about \
+            thirty seconds while the audio kept playing. Reconnecting did not help.
+            """,
+            versionName: "1.1",
+            versionCode: "100",
+            reporterId: BugReportReporter.reporterId(stableDeviceId: "device")!,
+            metadata: "{}",
+            attachments: []
+        )
+        XCTAssertNoThrow(try BugReportClient.buildRequest(valid))
+
+        var badReporter = valid
+        badReporter = BugReportSubmission(
+            title: valid.title,
+            description: valid.description,
+            versionName: valid.versionName,
+            versionCode: valid.versionCode,
+            reporterId: "not-a-reporter-id",
+            metadata: valid.metadata,
+            attachments: valid.attachments
+        )
+        XCTAssertThrowsError(try BugReportClient.buildRequest(badReporter))
+
+        let tooManyFiles = BugReportSubmission(
+            title: valid.title,
+            description: valid.description,
+            versionName: valid.versionName,
+            versionCode: valid.versionCode,
+            reporterId: valid.reporterId,
+            metadata: valid.metadata,
+            attachments: (0..<6).map {
+                BugReportAttachment(fileName: "log\($0).txt", contentType: "text/plain", data: Data())
+            }
+        )
+        XCTAssertThrowsError(try BugReportClient.buildRequest(tooManyFiles))
+    }
+
+    func testBugReportMetadataCarriesTheKnownIssueDecision() throws {
+        let deck = BugReportPreflightDeck(items: [
+            BugReportPreflightItem(label: "Device", value: "iPhone16,1, iOS 18.2"),
+            BugReportPreflightItem(
+                label: "Known issue",
+                value: "Resolution drops on a weak connection",
+                kind: .knownIssue(key: "ios-resolution-fallback-weak-link")
+            )
+        ])
+        let json = BugReportMetadata.build(deck: deck, overridesKnownIssue: true)
+        let parsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(parsed["platform"] as? String, "ios")
+        XCTAssertEqual(parsed["knownIssueKey"] as? String, "ios-resolution-fallback-weak-link")
+        XCTAssertEqual(parsed["knownIssueOverride"] as? Bool, true)
+        let preflight = try XCTUnwrap(parsed["preflight"] as? [String: String])
+        XCTAssertEqual(preflight["Device"], "iPhone16,1, iOS 18.2")
+
+        // No known issue means no override key at all, rather than a false one.
+        let plain = BugReportMetadata.build(
+            deck: BugReportPreflightDeck(items: [deck.items[0]]),
+            overridesKnownIssue: false
+        )
+        let plainParsed = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(plain.utf8)) as? [String: Any]
+        )
+        XCTAssertNil(plainParsed["knownIssueOverride"])
+    }
+
     // MARK: - Launch conflict
 
     func testLaunchOverALiveSessionAsksBeforeDiscardingIt() {

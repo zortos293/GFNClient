@@ -22,8 +22,9 @@ struct LibraryView: View {
                     GameCatalogGridView(
                         games: filteredGames,
                         isLoading: store.libraryGames.isEmpty && store.isLoadingGames,
-                        emptyTitle: store.libraryGames.isEmpty && !hasActiveFilters ? "Library Empty" : "No Matches",
-                        emptySystemImage: store.libraryGames.isEmpty && !hasActiveFilters ? "books.vertical" : "magnifyingglass",
+                        emptyTitle: emptyState.title,
+                        emptySystemImage: emptyState.symbol,
+                        emptyDescription: emptyState.detail,
                         subtitle: { gameCatalogSubtitle(for: $0) },
                         badgeSystemImage: { _ in nil },
                         onOpenDetails: { selectedGameForDetails = $0 },
@@ -31,13 +32,7 @@ struct LibraryView: View {
                     ) {
                         libraryHeader
                     } emptyActions: {
-                        if hasActiveFilters {
-                            Button("Clear Filters") {
-                                clearFilters()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(brandAccent)
-                        }
+                        emptyStateActions
                     }
                 }
             }
@@ -58,6 +53,76 @@ struct LibraryView: View {
             pendingLaunchRequest = GameLaunchRequest(game: game, launchOption: option)
         }
         .printedWasteLaunchSheet(pendingLaunchRequest: $pendingLaunchRequest)
+    }
+
+    // MARK: - Empty states
+    //
+    // "No games" is not one state. It has three completely different causes and three completely
+    // different fixes, and naming the wrong one is why people file "my library is broken" when
+    // they simply have not linked Steam yet.
+
+    private enum LibraryEmptyCause {
+        case noStoresLinked
+        case syncing
+        case filteredOut
+    }
+
+    private var emptyCause: LibraryEmptyCause {
+        if hasActiveFilters { return .filteredOut }
+        if store.accountConnectors.contains(where: \.isLinked) { return .syncing }
+        return .noStoresLinked
+    }
+
+    private var emptyState: (title: String, symbol: String, detail: String) {
+        switch emptyCause {
+        case .noStoresLinked:
+            return (
+                "Your library is empty",
+                "link.badge.plus",
+                "Link a game store and the games you already own show up here automatically."
+            )
+        case .syncing:
+            let names = store.accountConnectors.filter(\.isLinked).map(\.label)
+            let subject = names.isEmpty ? "your stores" : ListFormatter.localizedString(byJoining: names)
+            return (
+                "Nothing synced yet",
+                "arrow.triangle.2.circlepath",
+                "GeForce NOW has not returned any owned games from \(subject) yet. This usually settles within a minute."
+            )
+        case .filteredOut:
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !query.isEmpty {
+                return (
+                    "No matches for “\(query)”",
+                    "magnifyingglass",
+                    "Nothing in your library matches. The full catalog might still have it."
+                )
+            }
+            return (
+                "No games match these filters",
+                "line.3.horizontal.decrease.circle",
+                "Try removing one of the filters above."
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var emptyStateActions: some View {
+        switch emptyCause {
+        case .noStoresLinked:
+            Button("Link a Game Store") {
+                store.pendingSettingsRoute = .account
+            }
+            .buttonStyle(.borderedProminent)
+        case .syncing:
+            Button("Check Again") {
+                Task { await store.refreshAccountConnectors() }
+            }
+            .buttonStyle(.bordered)
+        case .filteredOut:
+            Button("Clear Filters") { clearFilters() }
+                .buttonStyle(.borderedProminent)
+        }
     }
 
     private var libraryHeader: some View {

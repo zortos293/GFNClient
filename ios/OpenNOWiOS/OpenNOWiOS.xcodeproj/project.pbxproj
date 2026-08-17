@@ -27,6 +27,9 @@
 		DE0000000000000000000003 /* NativeTouchSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000013 /* NativeTouchSupport.swift */; };
 		DE0000000000000000000005 /* SessionReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000015 /* SessionReportView.swift */; };
 		DE0000000000000000000006 /* QueueTrendEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000016 /* QueueTrendEstimator.swift */; };
+		DE0000000000000000000007 /* AnalyticsConsentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000017 /* AnalyticsConsentView.swift */; };
+		DE0000000000000000000009 /* BugReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000019 /* BugReportView.swift */; };
+		DE0000000000000000000008 /* BugReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000018 /* BugReport.swift */; };
 		DE0000000000000000000004 /* SessionReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000014 /* SessionReport.swift */; };
 		DE0000000000000000000001 /* OpenNOWDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE0000000000000000000011 /* OpenNOWDesign.swift */; };
 		BB0000000000000000000007 /* StreamLoadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000017 /* StreamLoadingView.swift */; };
@@ -115,6 +118,9 @@
 		DE0000000000000000000013 /* NativeTouchSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTouchSupport.swift; sourceTree = "<group>"; };
 		DE0000000000000000000015 /* SessionReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReportView.swift; sourceTree = "<group>"; };
 		DE0000000000000000000016 /* QueueTrendEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueTrendEstimator.swift; sourceTree = "<group>"; };
+		DE0000000000000000000017 /* AnalyticsConsentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalyticsConsentView.swift; sourceTree = "<group>"; };
+		DE0000000000000000000019 /* BugReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BugReportView.swift; sourceTree = "<group>"; };
+		DE0000000000000000000018 /* BugReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BugReport.swift; sourceTree = "<group>"; };
 		DE0000000000000000000014 /* SessionReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReport.swift; sourceTree = "<group>"; };
 		DE0000000000000000000011 /* OpenNOWDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenNOWDesign.swift; sourceTree = "<group>"; };
 		BB0000000000000000000017 /* StreamLoadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamLoadingView.swift; sourceTree = "<group>"; };
@@ -191,6 +197,9 @@
 				DE0000000000000000000013 /* NativeTouchSupport.swift */,
 				DE0000000000000000000015 /* SessionReportView.swift */,
 				DE0000000000000000000016 /* QueueTrendEstimator.swift */,
+				DE0000000000000000000017 /* AnalyticsConsentView.swift */,
+				DE0000000000000000000019 /* BugReportView.swift */,
+				DE0000000000000000000018 /* BugReport.swift */,
 				DE0000000000000000000014 /* SessionReport.swift */,
 				DE0000000000000000000011 /* OpenNOWDesign.swift */,
 				BB0000000000000000000011 /* LoginView.swift */,
@@ -395,6 +404,9 @@
 				DE0000000000000000000003 /* NativeTouchSupport.swift in Sources */,
 				DE0000000000000000000005 /* SessionReportView.swift in Sources */,
 				DE0000000000000000000006 /* QueueTrendEstimator.swift in Sources */,
+				DE0000000000000000000007 /* AnalyticsConsentView.swift in Sources */,
+				DE0000000000000000000009 /* BugReportView.swift in Sources */,
+				DE0000000000000000000008 /* BugReport.swift in Sources */,
 				DE0000000000000000000004 /* SessionReport.swift in Sources */,
 				DE0000000000000000000001 /* OpenNOWDesign.swift in Sources */,
 				74417F2A2F8C848000233AC1 /* BrandLogoView.swift in Sources */,

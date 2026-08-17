@@ -335,6 +335,9 @@ struct StreamerView: View {
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
+        onSettingsChange: @escaping (AppSettings) -> Void = { _ in },
+        onBuildBugReportDeck: @escaping () -> BugReportPreflightDeck = { BugReportPreflightDeck() },
+        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error> = { _, _ in .success(nil) },
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)? = nil
     ) {
@@ -354,6 +357,9 @@ struct StreamerView: View {
                 onTransportStable: onTransportStable,
                 onSafeVideoFallbackRequired: onSafeVideoFallbackRequired,
                 onRuntimeSample: onRuntimeSample,
+                onSettingsChange: onSettingsChange,
+                onBuildBugReportDeck: onBuildBugReportDeck,
+                onSubmitBugReport: onSubmitBugReport,
                 onClose: onClose,
                 onRetry: onRetry
             )
@@ -548,6 +554,9 @@ struct StreamerView: View {
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onNativeFallbackRequiresFreshEndpoint: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void = { _ in },
+        onSettingsChange: @escaping (AppSettings) -> Void = { _ in },
+        onBuildBugReportDeck: @escaping () -> BugReportPreflightDeck = { BugReportPreflightDeck() },
+        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error> = { _, _ in .success(nil) },
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)? = nil
     ) {
@@ -568,6 +577,9 @@ struct StreamerView: View {
         _ = onSafeVideoFallbackRequired
         _ = onNativeFallbackRequiresFreshEndpoint
         _ = onRuntimeSample
+        _ = onSettingsChange
+        _ = onBuildBugReportDeck
+        _ = onSubmitBugReport
         _ = onRetry
     }
 
@@ -1135,254 +1147,482 @@ private struct NativeStreamTutorialDoneCallout: View {
     }
 }
 
+/// S7 — the in-stream control centre.
+///
+/// Five pages rather than one long scroll. The single-column version the iOS build shipped with
+/// meant reaching the touch-layout sliders took a dozen swipes over a live game; grouping by task
+/// keeps every page to roughly one screen. The Main page carries only what you actually reach for
+/// mid-session — audio, stats, the session clock, the way out.
 private struct NativeStreamControlsPanel: View {
     @ObservedObject var coordinator: NativeStreamCoordinator
+    @State private var page: Page = .main
     @State private var keyboardText = ""
     @State private var keyboardPresented = false
+    @State private var bugReportDeck: BugReportPreflightDeck?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private enum Page: Hashable {
+        case main
+        case statsHUD
+        case touchControls
+        case mouseMode
+
+        var title: String {
+            switch self {
+            case .main: return "Stream Controls"
+            case .statsHUD: return "Stats & HUD"
+            case .touchControls: return "Touch Controls"
+            case .mouseMode: return "Mouse & Touch Input"
+            }
+        }
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if coordinator.tutorialDoneCalloutVisible {
-                    NativeStreamTutorialDoneCallout(coordinator: coordinator)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            header
 
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Stream Controls")
-                            .font(.subheadline.weight(.bold))
-                        Text(coordinator.gameTitle)
-                            .font(.caption)
-                            .foregroundStyle(Color.primary.opacity(0.72))
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
-
-                    NativeStreamPanelIconButton(systemImage: "rectangle.portrait.and.arrow.right", label: "Exit stream") {
-                        coordinator.close()
-                    }
-
-                    NativeStreamPanelIconButton(systemImage: "checkmark", label: "Done") {
-                        coordinator.finishControlsPanel()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch page {
+                    case .main: mainPage
+                    case .statsHUD: statsPage
+                    case .touchControls: touchPage
+                    case .mouseMode: mousePage
                     }
                 }
-
-                NativeStreamPanelSection(title: "Display") {
-                    NativeStreamToggleRow(
-                        title: "Audio",
-                        value: coordinator.streamerPreferences.audioMuted ? "Muted" : "On",
-                        isOn: Binding(
-                            get: { !coordinator.streamerPreferences.audioMuted },
-                            set: { coordinator.setAudioEnabled($0) }
-                        )
-                    )
-                    NativeStreamToggleRow(
-                        title: "Stream stats",
-                        value: coordinator.showStatsOverlay ? "On" : "Off",
-                        isOn: Binding(
-                            get: { coordinator.showStatsOverlay },
-                            set: { coordinator.setStatsOverlayVisible($0) }
-                        )
-                    )
-                    NativeStreamActionRow(title: "Stats style", value: coordinator.statsDisplayStyle.label) {
-                        coordinator.cycleStatsStyle()
-                    }
-                    NativeStreamActionRow(
-                        title: "Stats position",
-                        value: coordinator.streamerPreferences.statsPosition.label
-                    ) {
-                        coordinator.toggleStatsPosition()
-                    }
-                    NativeStreamToggleRow(
-                        title: "Stream sharpening",
-                        value: coordinator.streamSharpeningEnabled ? "On" : "Off",
-                        isOn: Binding(
-                            get: { coordinator.streamSharpeningEnabled },
-                            set: { coordinator.setStreamSharpeningEnabled($0) }
-                        )
-                    )
-                    if coordinator.streamSharpeningEnabled {
-                        NativeStreamSliderRow(
-                            title: "Sharpness",
-                            value: Binding(
-                                get: { coordinator.streamSharpeningAmount },
-                                set: { coordinator.setStreamSharpeningAmount($0) }
-                            ),
-                            range: 0...1
-                        )
-                    }
-                    NativeStreamToggleRow(
-                        title: "Stretch to fill",
-                        value: coordinator.streamerPreferences.stretchStreamToFill ? "Fill" : "Fit",
-                        isOn: Binding(
-                            get: { coordinator.streamerPreferences.stretchStreamToFill },
-                            set: { coordinator.setStretchStreamToFill($0) }
-                        )
-                    )
-                    if coordinator.pictureInPictureAvailable {
-                        NativeStreamActionRow(
-                            title: "Picture in Picture",
-                            value: coordinator.isPictureInPictureActive ? "Active" : "Ready",
-                            actionLabel: coordinator.isPictureInPictureActive ? "Stop" : "Start"
-                        ) {
-                            coordinator.togglePictureInPicture()
-                        }
-                    }
-                    NativeStreamInfoRow(title: "Codec", value: coordinator.selectedCodecLabel)
-                    NativeStreamInfoRow(title: "Resolution", value: coordinator.profileLabel)
-                    if let sessionDurationText = coordinator.sessionDurationText {
-                        NativeStreamSessionTimeRow(
-                            value: sessionDurationText,
-                            progress: coordinator.sessionTimerProgress,
-                            isWarning: coordinator.sessionTimerWarningActive
-                        )
-                    }
-                }
-
-                NativeStreamPanelSection(title: "Status") {
-                    NativeStreamToggleRow(
-                        title: "Time",
-                        value: coordinator.streamerPreferences.showStatsClock ? "Shown" : "Hidden",
-                        isOn: Binding(
-                            get: { coordinator.streamerPreferences.showStatsClock },
-                            set: { coordinator.setStatsClockVisible($0) }
-                        )
-                    )
-                    NativeStreamToggleRow(
-                        title: "Battery",
-                        value: coordinator.streamerPreferences.showStatsBattery ? "Shown" : "Hidden",
-                        isOn: Binding(
-                            get: { coordinator.streamerPreferences.showStatsBattery },
-                            set: { coordinator.setStatsBatteryVisible($0) }
-                        )
-                    )
-                    NativeStreamToggleRow(
-                        title: "Network",
-                        value: coordinator.streamerPreferences.showStatsCellular ? "Shown" : "Hidden",
-                        isOn: Binding(
-                            get: { coordinator.streamerPreferences.showStatsCellular },
-                            set: { coordinator.setStatsNetworkVisible($0) }
-                        )
-                    )
-                }
-
-                NativeStreamPanelSection(title: "Input") {
-                    NativeStreamActionRow(
-                        title: "Keyboard",
-                        value: "Type into stream",
-                        actionLabel: "Open"
-                    ) {
-                        keyboardPresented = true
-                    }
-                    NativeStreamToggleRow(
-                        title: "Finger mouse",
-                        value: coordinator.fingerMouseEnabled ? "On" : "Off",
-                        isOn: Binding(
-                            get: { coordinator.fingerMouseEnabled },
-                            set: { coordinator.setFingerMouseEnabled($0) }
-                        )
-                    )
-                    NativeStreamToggleRow(
-                        title: "Touch controller",
-                        value: !coordinator.streamerPreferences.touchControllerVisible
-                            ? "Hidden"
-                            : (coordinator.physicalControllerConnected
-                                ? (coordinator.showTouchControlsWithPhysicalController
-                                    ? "Shown with physical controller"
-                                    : "Hidden while controller is connected")
-                                : "Shown"),
-                        isOn: Binding(
-                            get: { coordinator.streamerPreferences.touchControllerVisible },
-                            set: { coordinator.setTouchControllerVisible($0) }
-                        )
-                    )
-                    NativeStreamToggleRow(
-                        title: "Controller passthrough",
-                        value: coordinator.streamerPreferences.physicalControllerPassthrough ? "On" : "Off",
-                        isOn: Binding(
-                            get: { coordinator.streamerPreferences.physicalControllerPassthrough },
-                            set: { coordinator.setPhysicalControllerPassthrough($0) }
-                        )
-                    )
-                    NativeStreamToggleRow(
-                        title: "Phone rumble fallback",
-                        value: coordinator.phoneRumbleFallbackEnabled ? "On" : "Off",
-                        isOn: Binding(
-                            get: { coordinator.phoneRumbleFallbackEnabled },
-                            set: { coordinator.setPhoneRumbleFallback($0) }
-                        )
-                    )
-                    HStack(spacing: 8) {
-                        NativeStreamKeyButton(title: "Esc") {
-                            coordinator.sendVirtualKey(.escape)
-                        }
-                        NativeStreamKeyButton(title: "Enter") {
-                            coordinator.sendVirtualKey(.enter)
-                        }
-                        NativeStreamKeyButton(title: "Delete") {
-                            coordinator.sendVirtualKey(.backspace)
-                        }
-                    }
-                }
-
-                NativeStreamPanelSection(title: "Touch Layout") {
-                    NativeStreamActionRow(
-                        title: "Edit layout",
-                        value: "Drag control groups",
-                        actionLabel: coordinator.touchLayoutEditing ? "Resume" : "Edit"
-                    ) {
-                        coordinator.beginTouchLayoutEditing()
-                    }
-                    NativeStreamSliderRow(
-                        title: "Layout scale",
-                        value: Binding(
-                            get: { coordinator.touchLayout.scale },
-                            set: { coordinator.setTouchLayoutScale($0) }
-                        ),
-                        range: 0.6...1.4
-                    )
-                    NativeStreamSliderRow(
-                        title: "Button size",
-                        value: Binding(
-                            get: { coordinator.touchLayout.buttonScale },
-                            set: { coordinator.setTouchButtonScale($0) }
-                        ),
-                        range: 0.65...1.5
-                    )
-                    NativeStreamSliderRow(
-                        title: "Stick size",
-                        value: Binding(
-                            get: { coordinator.touchLayout.stickScale },
-                            set: { coordinator.setTouchStickScale($0) }
-                        ),
-                        range: 0.65...1.5
-                    )
-                    NativeStreamSliderRow(
-                        title: "Opacity",
-                        value: Binding(
-                            get: { coordinator.touchLayout.opacity },
-                            set: { coordinator.setTouchOpacity($0) }
-                        ),
-                        range: 0.15...1.0
-                    )
-                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 14)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 14)
+            .scrollIndicators(.visible)
         }
         .foregroundStyle(.primary)
         .background(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.98), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.primary.opacity(0.12), lineWidth: 1))
-        .scrollIndicators(.visible)
         .shadow(color: .black.opacity(0.24), radius: 16, y: 8)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: page)
         .sheet(isPresented: $keyboardPresented) {
-            NativeStreamKeyboardSheet(
-                coordinator: coordinator,
-                text: $keyboardText
+            NativeStreamKeyboardSheet(coordinator: coordinator, text: $keyboardText)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $bugReportDeck) { deck in
+            BugReportView(deck: deck) { draft in
+                await coordinator.submitBugReport(draft, deck: deck)
+            }
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if coordinator.tutorialDoneCalloutVisible, page == .main {
+                NativeStreamTutorialDoneCallout(coordinator: coordinator)
+            }
+
+            HStack(spacing: 8) {
+                if page != .main {
+                    NativeStreamPanelIconButton(systemImage: "chevron.left", label: "Back") {
+                        page = .main
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(page.title)
+                        .font(.subheadline.weight(.bold))
+                    Text(page == .main ? coordinator.gameTitle : coordinator.profileLabel)
+                        .font(.caption)
+                        .foregroundStyle(Color.primary.opacity(0.72))
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                NativeStreamPanelIconButton(systemImage: "checkmark", label: "Done") {
+                    coordinator.finishControlsPanel()
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+    }
+
+    // MARK: Main
+
+    private var mainPage: some View {
+        Group {
+            NativeStreamPanelSection(title: "Session") {
+                if let sessionDurationText = coordinator.sessionDurationText {
+                    NativeStreamSessionTimeRow(
+                        value: sessionDurationText,
+                        progress: coordinator.sessionTimerProgress,
+                        isWarning: coordinator.sessionTimerWarningActive
+                    )
+                }
+                NativeStreamToggleRow(
+                    title: "Audio",
+                    value: coordinator.streamerPreferences.audioMuted ? "Muted" : "On",
+                    isOn: Binding(
+                        get: { !coordinator.streamerPreferences.audioMuted },
+                        set: { coordinator.setAudioEnabled($0) }
+                    )
+                )
+                NativeStreamToggleRow(
+                    title: "Stream stats",
+                    value: coordinator.showStatsOverlay ? "On" : "Off",
+                    isOn: Binding(
+                        get: { coordinator.showStatsOverlay },
+                        set: { coordinator.setStatsOverlayVisible($0) }
+                    )
+                )
+                if coordinator.pictureInPictureAvailable {
+                    NativeStreamActionRow(
+                        title: "Picture in Picture",
+                        value: coordinator.isPictureInPictureActive ? "Active" : "Ready",
+                        actionLabel: coordinator.isPictureInPictureActive ? "Stop" : "Start"
+                    ) {
+                        coordinator.togglePictureInPicture()
+                    }
+                }
+                NativeStreamActionRow(title: "Keyboard", value: "Type into stream", actionLabel: "Open") {
+                    keyboardPresented = true
+                }
+                HStack(spacing: 8) {
+                    NativeStreamKeyButton(title: "Esc") { coordinator.sendVirtualKey(.escape) }
+                    NativeStreamKeyButton(title: "Enter") { coordinator.sendVirtualKey(.enter) }
+                    NativeStreamKeyButton(title: "Delete") { coordinator.sendVirtualKey(.backspace) }
+                }
+            }
+
+            NativeStreamPanelSection(title: "More") {
+                NativeStreamActionRow(title: "Stats & HUD", value: "\(coordinator.statsMetrics.enabledCount) metrics", actionLabel: "Open") {
+                    page = .statsHUD
+                }
+                NativeStreamActionRow(title: "Touch controls", value: coordinator.streamerPreferences.touchControllerVisible ? "Shown" : "Hidden", actionLabel: "Open") {
+                    page = .touchControls
+                }
+                NativeStreamActionRow(title: "Mouse & touch input", value: coordinator.resolvedTouchModeLabel, actionLabel: "Open") {
+                    page = .mouseMode
+                }
+                NativeStreamActionRow(title: "Report a problem", value: "Attaches this session", actionLabel: "Open") {
+                    bugReportDeck = coordinator.bugReportPreflightDeck()
+                }
+            }
+
+            NativeStreamPanelSection(title: "Picture") {
+                NativeStreamToggleRow(
+                    title: "Stream sharpening",
+                    value: coordinator.streamSharpeningEnabled ? "On" : "Off",
+                    isOn: Binding(
+                        get: { coordinator.streamSharpeningEnabled },
+                        set: { coordinator.setStreamSharpeningEnabled($0) }
+                    )
+                )
+                if coordinator.streamSharpeningEnabled {
+                    NativeStreamSliderRow(
+                        title: "Sharpness",
+                        value: Binding(
+                            get: { coordinator.streamSharpeningAmount },
+                            set: { coordinator.setStreamSharpeningAmount($0) }
+                        ),
+                        range: 0...1
+                    )
+                }
+                NativeStreamToggleRow(
+                    title: "Stretch to fill",
+                    value: coordinator.streamerPreferences.stretchStreamToFill ? "Fill" : "Fit",
+                    isOn: Binding(
+                        get: { coordinator.streamerPreferences.stretchStreamToFill },
+                        set: { coordinator.setStretchStreamToFill($0) }
+                    )
+                )
+                NativeStreamInfoRow(title: "Codec", value: coordinator.selectedCodecLabel)
+                NativeStreamInfoRow(title: "Resolution", value: coordinator.profileLabel)
+            }
+
+            NativeStreamPanelSection(title: "Session end") {
+                NativeStreamActionRow(
+                    title: "End session",
+                    value: "Closes the stream and frees the rig",
+                    actionLabel: "End"
+                ) {
+                    coordinator.close()
+                }
+            }
+        }
+    }
+
+    // MARK: Stats & HUD
+
+    private var statsPage: some View {
+        Group {
+            NativeStreamPanelSection(title: "Appearance") {
+                NativeStreamActionRow(title: "Style", value: coordinator.statsDisplayStyle.label, actionLabel: "Change") {
+                    coordinator.cycleStatsStyle()
+                }
+                NativeStreamActionRow(
+                    title: "Position",
+                    value: coordinator.streamerPreferences.statsPosition.label,
+                    actionLabel: "Move"
+                ) {
+                    coordinator.toggleStatsPosition()
+                }
+            }
+
+            NativeStreamPanelSection(title: "Connection metrics") {
+                metricToggle("Frame rate", \.fps)
+                metricToggle("Ping", \.ping)
+                metricToggle("Decode", \.latency)
+                metricToggle("Bitrate", \.bitrate)
+                metricToggle("Packet loss", \.packetLoss)
+            }
+
+            NativeStreamPanelSection(title: "Session metrics") {
+                metricToggle("Resolution", \.resolution)
+                metricToggle("Codec", \.codec)
+                metricToggle("Server", \.location)
+                metricToggle("Battery", \.battery)
+                metricToggle("Network", \.connection)
+                NativeStreamToggleRow(
+                    title: "Clock",
+                    value: coordinator.streamerPreferences.showStatsClock ? "Shown" : "Hidden",
+                    isOn: Binding(
+                        get: { coordinator.streamerPreferences.showStatsClock },
+                        set: { coordinator.setStatsClockVisible($0) }
+                    )
+                )
+            }
+        }
+    }
+
+    private func metricToggle(
+        _ title: String,
+        _ keyPath: WritableKeyPath<StreamStatsMetrics, Bool>
+    ) -> some View {
+        let metrics = coordinator.statsMetrics
+        let isLastEnabled = metrics[keyPath: keyPath] && metrics.enabledCount == 1
+        return NativeStreamToggleRow(
+            title: title,
+            value: metrics[keyPath: keyPath] ? "Shown" : "Hidden",
+            isOn: Binding(
+                get: { coordinator.statsMetrics[keyPath: keyPath] },
+                set: { newValue in
+                    // The last metric cannot be turned off — an empty HUD looks like a bug and
+                    // there is no way back to this page without one.
+                    guard newValue || coordinator.statsMetrics.enabledCount > 1 else { return }
+                    coordinator.updateLiveSettings { $0.streamStatsMetrics[keyPath: keyPath] = newValue }
+                }
             )
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
+        )
+        .disabled(isLastEnabled)
+    }
+
+    // MARK: Touch controls
+
+    private var touchPage: some View {
+        Group {
+            NativeStreamPanelSection(title: "Controller") {
+                NativeStreamToggleRow(
+                    title: "Touch controller",
+                    value: touchControllerStateLabel,
+                    isOn: Binding(
+                        get: { coordinator.streamerPreferences.touchControllerVisible },
+                        set: { coordinator.setTouchControllerVisible($0) }
+                    )
+                )
+                NativeStreamActionRow(
+                    title: "Style",
+                    value: coordinator.liveSettings.touch.style.label,
+                    actionLabel: "Change"
+                ) {
+                    coordinator.updateLiveSettings {
+                        $0.touch.style = $0.touch.style == .solid ? .outline : .solid
+                    }
+                }
+                NativeStreamActionRow(
+                    title: "Joystick",
+                    value: coordinator.liveSettings.touch.joystickMode.label,
+                    actionLabel: "Change"
+                ) {
+                    coordinator.updateLiveSettings {
+                        $0.touch.joystickMode = $0.touch.joystickMode == .fixed ? .dynamic : .fixed
+                    }
+                }
+                NativeStreamActionRow(
+                    title: "Aim lock",
+                    value: coordinator.liveSettings.touch.aimMode.label,
+                    actionLabel: "Change"
+                ) {
+                    coordinator.updateLiveSettings {
+                        $0.touch.aimMode = $0.touch.aimMode == .lockJoystick ? .lockZone : .lockJoystick
+                    }
+                }
+                NativeStreamSliderRow(
+                    title: "Dead zone",
+                    value: Binding(
+                        get: { coordinator.liveSettings.touch.joystickDeadZone },
+                        set: { value in coordinator.updateLiveSettings { $0.touch.joystickDeadZone = value } }
+                    ),
+                    range: 0...0.3
+                )
+                NativeStreamToggleRow(
+                    title: "Controller passthrough",
+                    value: coordinator.streamerPreferences.physicalControllerPassthrough ? "On" : "Off",
+                    isOn: Binding(
+                        get: { coordinator.streamerPreferences.physicalControllerPassthrough },
+                        set: { coordinator.setPhysicalControllerPassthrough($0) }
+                    )
+                )
+                NativeStreamToggleRow(
+                    title: "Rumble",
+                    value: coordinator.phoneRumbleFallbackEnabled ? "On" : "Off",
+                    isOn: Binding(
+                        get: { coordinator.phoneRumbleFallbackEnabled },
+                        set: { coordinator.setPhoneRumbleFallback($0) }
+                    )
+                )
+            }
+
+            NativeStreamPanelSection(title: "Layout") {
+                NativeStreamActionRow(
+                    title: "Edit layout",
+                    value: "Drag control groups",
+                    actionLabel: coordinator.touchLayoutEditing ? "Resume" : "Edit"
+                ) {
+                    coordinator.beginTouchLayoutEditing()
+                }
+                NativeStreamSliderRow(
+                    title: "Layout scale",
+                    value: Binding(
+                        get: { coordinator.touchLayout.scale },
+                        set: { coordinator.setTouchLayoutScale($0) }
+                    ),
+                    range: 0.6...1.4
+                )
+                NativeStreamSliderRow(
+                    title: "Button size",
+                    value: Binding(
+                        get: { coordinator.touchLayout.buttonScale },
+                        set: { coordinator.setTouchButtonScale($0) }
+                    ),
+                    range: 0.65...1.5
+                )
+                NativeStreamSliderRow(
+                    title: "Stick size",
+                    value: Binding(
+                        get: { coordinator.touchLayout.stickScale },
+                        set: { coordinator.setTouchStickScale($0) }
+                    ),
+                    range: 0.65...1.5
+                )
+                NativeStreamSliderRow(
+                    title: "Opacity",
+                    value: Binding(
+                        get: { coordinator.touchLayout.opacity },
+                        set: { coordinator.setTouchOpacity($0) }
+                    ),
+                    range: 0.15...1.0
+                )
+                NativeStreamActionRow(title: "Reset layout", value: "Back to defaults", actionLabel: "Reset") {
+                    coordinator.resetTouchLayout()
+                }
+            }
+        }
+    }
+
+    private var touchControllerStateLabel: String {
+        guard coordinator.streamerPreferences.touchControllerVisible else { return "Hidden" }
+        guard coordinator.physicalControllerConnected else { return "Shown" }
+        return coordinator.showTouchControlsWithPhysicalController
+            ? "Shown with controller"
+            : "Hidden while controller connected"
+    }
+
+    // MARK: Mouse & touch input
+
+    private var mousePage: some View {
+        Group {
+            NativeStreamPanelSection(title: "How touch is sent") {
+                NativeStreamActionRow(
+                    title: "Touch mode",
+                    value: coordinator.liveSettings.touch.nativeTouchMode.label,
+                    actionLabel: "Change"
+                ) {
+                    coordinator.updateLiveSettings {
+                        let order = NativeTouchMode.allCases
+                        let index = order.firstIndex(of: $0.touch.nativeTouchMode) ?? 0
+                        $0.touch.nativeTouchMode = order[(index + 1) % order.count]
+                    }
+                }
+                // The resolved state is what actually matters, and it is not obvious from the
+                // three inputs above it.
+                NativeStreamInfoRow(title: "Currently", value: coordinator.resolvedTouchModeLabel)
+                if coordinator.liveSettings.touch.nativeTouchMode != .never {
+                    NativeStreamSliderRow(
+                        title: "Touch scroll speed",
+                        value: Binding(
+                            get: { coordinator.liveSettings.touch.nativeTouchScrollScale },
+                            set: { value in coordinator.updateLiveSettings { $0.touch.nativeTouchScrollScale = value } }
+                        ),
+                        range: 0.25...2
+                    )
+                    NativeStreamSliderRow(
+                        title: "Tap stability",
+                        value: Binding(
+                            get: { coordinator.liveSettings.touch.nativeTouchJitterThreshold },
+                            set: { value in coordinator.updateLiveSettings { $0.touch.nativeTouchJitterThreshold = value } }
+                        ),
+                        range: 0...24
+                    )
+                }
+            }
+
+            NativeStreamPanelSection(title: "Pointer") {
+                NativeStreamToggleRow(
+                    title: "Finger mouse",
+                    value: coordinator.fingerMouseEnabled ? "On" : "Off",
+                    isOn: Binding(
+                        get: { coordinator.fingerMouseEnabled },
+                        set: { coordinator.setFingerMouseEnabled($0) }
+                    )
+                )
+                if coordinator.fingerMouseEnabled {
+                    NativeStreamToggleRow(
+                        title: "Tap clicks where you touch",
+                        value: coordinator.liveSettings.touch.mouseDirectClick ? "On" : "Off",
+                        isOn: Binding(
+                            get: { coordinator.liveSettings.touch.mouseDirectClick },
+                            set: { value in coordinator.updateLiveSettings { $0.touch.mouseDirectClick = value } }
+                        )
+                    )
+                }
+                NativeStreamToggleRow(
+                    title: "Controller mouse mode",
+                    value: coordinator.liveSettings.controllerMouseEmulation ? "On" : "Off",
+                    isOn: Binding(
+                        get: { coordinator.liveSettings.controllerMouseEmulation },
+                        set: { value in coordinator.updateLiveSettings { $0.controllerMouseEmulation = value } }
+                    )
+                )
+                NativeStreamSliderRow(
+                    title: "Mouse sensitivity",
+                    value: Binding(
+                        get: { coordinator.liveSettings.mouseSensitivity },
+                        set: { value in coordinator.updateLiveSettings { $0.mouseSensitivity = value } }
+                    ),
+                    range: 0.25...3
+                )
+                NativeStreamSliderRow(
+                    title: "Scroll sensitivity",
+                    value: Binding(
+                        get: { Double(coordinator.liveSettings.mouseScrollSensitivity) },
+                        set: { value in
+                            coordinator.updateLiveSettings { $0.mouseScrollSensitivity = Int(value.rounded()) }
+                        }
+                    ),
+                    range: 10...100
+                )
+            }
         }
     }
 }
@@ -1699,6 +1939,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     @Published fileprivate var touchLayoutEditing = false
     @Published fileprivate var statsDisplayStyle: StreamStatsStyle = .compact
     @Published fileprivate var statsMetrics: StreamStatsMetrics = .default
+    /// A live copy of app settings the panel can edit mid-session. Persisted through
+    /// `onSettingsChange` so a change made in-game survives the session ending.
+    @Published fileprivate var liveSettings: AppSettings
     @Published var streamerPreferences: StreamerPreferences
     @Published fileprivate var streamSharpeningEnabled: Bool
     @Published fileprivate var streamSharpeningAmount: Double
@@ -1738,6 +1981,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     /// them into a session report. Deliberately a plain closure rather than a Combine publisher —
     /// nothing in the view hierarchy should observe it.
     private let onRuntimeSample: (StreamRuntimeSample) -> Void
+    private let onSettingsChange: (AppSettings) -> Void
+    private let onBuildBugReportDeck: () -> BugReportPreflightDeck
+    private let onSubmitBugReport: (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error>
     private let onClose: () -> Void
     private let onRetry: (() -> Void)?
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "NativeStreamer")
@@ -1827,6 +2073,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         onTransportStable: @escaping () -> Void,
         onSafeVideoFallbackRequired: @escaping (String) -> Void,
         onRuntimeSample: @escaping (StreamRuntimeSample) -> Void,
+        onSettingsChange: @escaping (AppSettings) -> Void,
+        onBuildBugReportDeck: @escaping () -> BugReportPreflightDeck,
+        onSubmitBugReport: @escaping (BugReportDraft, BugReportPreflightDeck) async -> Result<String?, Error>,
         onClose: @escaping () -> Void,
         onRetry: (() -> Void)?
     ) {
@@ -1861,6 +2110,10 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         self.onTransportStable = onTransportStable
         self.onSafeVideoFallbackRequired = onSafeVideoFallbackRequired
         self.onRuntimeSample = onRuntimeSample
+        self.onSettingsChange = onSettingsChange
+        self.onBuildBugReportDeck = onBuildBugReportDeck
+        self.onSubmitBugReport = onSubmitBugReport
+        self.liveSettings = settings
         self.onClose = onClose
         self.onRetry = onRetry
         self.streamProfile = Self.effectiveProfile(for: session, settings: settings)
@@ -2082,8 +2335,48 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
 
     func toggleStatsPosition() {
         var preferences = streamerPreferences
-        preferences.statsPosition = preferences.statsPosition == .left ? .right : .left
+        let order = StreamStatsPosition.allCases
+        let index = order.firstIndex(of: preferences.statsPosition) ?? 0
+        preferences.statsPosition = order[(index + 1) % order.count]
         setStreamerPreferences(preferences)
+    }
+
+    func bugReportPreflightDeck() -> BugReportPreflightDeck { onBuildBugReportDeck() }
+
+    func submitBugReport(
+        _ draft: BugReportDraft,
+        deck: BugReportPreflightDeck
+    ) async -> Result<String?, Error> {
+        await onSubmitBugReport(draft, deck)
+    }
+
+    /// What the touch-routing settings actually add up to right now. The three inputs that
+    /// produce it are not individually readable as an outcome, so the panel shows this instead.
+    var resolvedTouchModeLabel: String {
+        switch liveSettings.touch.nativeTouchMode {
+        case .always:
+            return ResolvedTouchMode.nativeTouch.label
+        case .automatic, .never:
+            if fingerMouseEnabled {
+                return ResolvedTouchMode.trackpadCursor(directClick: liveSettings.touch.mouseDirectClick).label
+            }
+            if streamerPreferences.touchControllerVisible {
+                return ResolvedTouchMode.virtualGamepad.label
+            }
+            return ResolvedTouchMode.inert.label
+        }
+    }
+
+    /// Single channel for the settings the control panel edits that are not part of
+    /// `StreamerPreferences`. Keeps the panel from needing one callback per control.
+    func updateLiveSettings(_ transform: (inout AppSettings) -> Void) {
+        var next = liveSettings
+        transform(&next)
+        next.normalizeStreamDefaults()
+        guard next != liveSettings else { return }
+        liveSettings = next
+        statsMetrics = next.streamStatsMetrics
+        onSettingsChange(next)
     }
 
     func setStretchStreamToFill(_ enabled: Bool) {

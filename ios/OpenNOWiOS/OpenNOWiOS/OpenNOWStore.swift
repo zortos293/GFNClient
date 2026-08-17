@@ -700,6 +700,15 @@ func removeSessionAdItem(_ adState: SessionAdState?, adId: String) -> SessionAdS
     )
 }
 
+/// Somewhere in Settings that another screen can ask to open.
+enum SettingsRouteTarget: String, Equatable {
+    case account
+    case general
+    case stream
+    case input
+    case interface
+}
+
 /// A launch the user asked for, held so it can be replayed after a confirmation.
 struct PendingLaunchRequest: Equatable {
     let game: CloudGame
@@ -2045,6 +2054,22 @@ enum OpenNOWPlatform {
     static let authUnavailableReason = ""
     static let streamingUnavailableReason = ""
     #endif
+
+    /// Hardware identifier such as `iPhone16,1`. `UIDevice.model` only ever says "iPhone", which
+    /// is useless in a bug report — decoder behaviour differs sharply between generations.
+    static let modelIdentifier: String = {
+        #if targetEnvironment(simulator)
+        return ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? "Simulator"
+        #else
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let identifier = withUnsafeBytes(of: &systemInfo.machine) { buffer -> String in
+            let bytes = buffer.prefix { $0 != 0 }
+            return String(decoding: bytes, as: UTF8.self)
+        }
+        return identifier.isEmpty ? "Unknown" : identifier
+        #endif
+    }()
 }
 
 private enum GFNConstants {
@@ -5603,6 +5628,11 @@ final class OpenNOWStore: ObservableObject {
 
     /// A launch that is waiting on the user to confirm ending the session it would replace.
     @Published private(set) var pendingLaunchConflict: LaunchConflict?
+
+    /// Cross-tab navigation request, mirroring Android's `SettingsRouteTarget`. Set by anything
+    /// that wants to send the user to a specific settings page — an empty state that knows the
+    /// fix, a deep link, an error with a remedy — and consumed once by the settings screen.
+    @Published var pendingSettingsRoute: SettingsRouteTarget?
     #if os(tvOS)
     @Published private(set) var tvAuthLogs: [String] = []
     #endif
@@ -7296,6 +7326,155 @@ final class OpenNOWStore: ObservableObject {
             "session report reason=\(reason, privacy: .public) score=\(report.score) samples=\(report.sampleCount)"
         )
         sessionReport = report
+    }
+
+    /// Persists a settings change made from inside the stream.
+    ///
+    /// Only the fields the control panel can actually reach are copied across. Taking the whole
+    /// object would let a stale snapshot — the streamer holds one from when the session started —
+    /// silently revert anything changed in Settings while the game was running.
+    func applyStreamerSettings(_ updated: AppSettings) {
+        var next = settings
+        next.streamStatsMetrics = updated.streamStatsMetrics
+        next.touch = updated.touch
+        next.mouseSensitivity = updated.mouseSensitivity
+        next.mouseScrollSensitivity = updated.mouseScrollSensitivity
+        next.controllerMouseEmulation = updated.controllerMouseEmulation
+        guard next != settings else { return }
+        settings = next
+        persistSettings()
+    }
+
+    // MARK: - Report a problem
+
+    /// Everything the app already knows that a maintainer would otherwise have to ask for.
+    ///
+    /// Collected at the moment the form opens rather than at submit, so the numbers describe the
+    /// session the user is complaining about and not the idle state they returned to.
+    func bugReportPreflightDeck() -> BugReportPreflightDeck {
+        var items: [BugReportPreflightItem] = []
+
+        #if canImport(UIKit)
+        let device = UIDevice.current
+        items.append(BugReportPreflightItem(
+            label: "Device",
+            value: "\(OpenNOWPlatform.modelIdentifier), \(device.systemName) \(device.systemVersion)"
+        ))
+        #endif
+
+        items.append(BugReportPreflightItem(
+            label: "App",
+            value: "\(Self.appVersionName) (\(Self.appVersionCode))"
+        ))
+
+        let profile = StreamSettingsResolver.profile(
+            for: currentStreamerSettings,
+            membershipTier: subscription?.membershipTier ?? user?.membershipTier
+        )
+        items.append(BugReportPreflightItem(
+            label: "Stream",
+            value: "\(profile.resolutionString) · \(profile.fps) fps · \(currentStreamerSettings.preferredCodec)"
+        ))
+
+        if let session = activeSession ?? streamSession {
+            items.append(BugReportPreflightItem(label: "Game", value: session.game.title))
+            if !session.zone.isEmpty {
+                items.append(BugReportPreflightItem(label: "Server", value: session.zone))
+            }
+        }
+
+        if let report = sessionReport {
+            items.append(BugReportPreflightItem(
+                label: "Last session",
+                value: "\(report.durationSeconds / 60) min, score \(report.score)"
+            ))
+        }
+
+        let codecReport = NativeStreamCodecProbe.report()
+        let codecSummary = NativeStreamVideoCodec.allCases
+            .map { codec in
+                let usable = codecReport.capability(for: codec)?.launchSafe == true
+                return "\(codec.rawValue.uppercased()) \(usable ? "✓" : "✗")"
+            }
+            .joined(separator: " ")
+        items.append(BugReportPreflightItem(label: "Decoders", value: codecSummary))
+
+        items.append(BugReportPreflightItem(
+            label: "Membership",
+            value: subscription?.membershipTier ?? user?.membershipTier ?? "Unknown"
+        ))
+
+        var deck = BugReportPreflightDeck(items: items)
+        if let known = knownIssueMatch(profile: profile, report: sessionReport) {
+            deck.items.append(known)
+        }
+        return deck
+    }
+
+    /// A short, hand-maintained list of things already on the board. Matching one does not block
+    /// the report — it tells the user before they spend time writing, and lets them say "no, mine
+    /// is different", which is the signal worth capturing.
+    private func knownIssueMatch(
+        profile: StreamVideoProfile,
+        report: SessionReport?
+    ) -> BugReportPreflightItem? {
+        if let report, report.deliveredResolution != nil,
+           report.deliveredResolution != report.requestedResolution,
+           (report.packetLossPercent ?? 0) > 1.0 {
+            return BugReportPreflightItem(
+                label: "Known issue",
+                value: "Resolution drops on a weak connection",
+                kind: .knownIssue(key: "ios-resolution-fallback-weak-link")
+            )
+        }
+        if currentStreamerSettings.hdrEnabled,
+           NativeStreamCodecProbe.report().capability(for: .h265)?.launchSafe != true {
+            return BugReportPreflightItem(
+                label: "Known issue",
+                value: "HDR requested without a usable H.265 decoder",
+                kind: .knownIssue(key: "ios-hdr-without-hevc")
+            )
+        }
+        return nil
+    }
+
+    func submitBugReport(_ draft: BugReportDraft, deck: BugReportPreflightDeck) async -> Result<String?, Error> {
+        guard let reporterId = BugReportReporter.reporterId(stableDeviceId: persistentDeviceId()) else {
+            return .failure(BugReportError.invalid("This installation has no reporting ID yet. Restart OpenNOW and try again."))
+        }
+        let submission = BugReportSubmission(
+            title: draft.title,
+            description: draft.description,
+            versionName: Self.appVersionName,
+            versionCode: Self.appVersionCode,
+            reporterId: reporterId,
+            metadata: BugReportMetadata.build(deck: deck, overridesKnownIssue: draft.overridesKnownIssue),
+            attachments: []
+        )
+        do {
+            let reference = try await BugReportClient.upload(submission)
+            logger.notice("bug report accepted reference=\(reference ?? "none", privacy: .public)")
+            return .success(reference)
+        } catch {
+            logger.error("bug report failed error=\(error.localizedDescription, privacy: .public)")
+            return .failure(error)
+        }
+    }
+
+    static var appVersionName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+    }
+
+    static var appVersionCode: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+    }
+
+    /// Records the user's answer to the one-time analytics prompt. Both answers are terminal —
+    /// the prompt never reappears, which is the only reason it is acceptable to block on it.
+    func recordAnalyticsConsent(sharing: Bool) {
+        settings.analyticsConsentAsked = true
+        settings.analyticsOptOut = !sharing
+        persistSettings()
     }
 
     func dismissSessionReport(disableFutureReports: Bool = false) {

@@ -41,6 +41,7 @@ fn parse_handle(value: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("invalid Electron native window handle: {value}"))
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn physical_rect(rect: RenderSurfaceRect, scale: f32) -> (i32, i32, u32, u32) {
     let scale = if scale.is_finite() {
         scale.clamp(0.25, 8.0)

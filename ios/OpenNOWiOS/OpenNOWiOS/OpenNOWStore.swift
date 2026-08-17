@@ -4907,6 +4907,114 @@ private actor GFNAPIClient {
         return (json["membershipTier"] as? String) ?? "FREE"
     }
 
+    /// Searches the whole catalog server-side.
+    ///
+    /// The panels query only returns curated sections, so the local filter over `allGames` could
+    /// never find a game NVIDIA had not put in a row — which is most of the catalog. Android has
+    /// always searched server-side; this is the same `apps(searchQuery:)` query, posted as plain
+    /// GraphQL rather than a persisted one because there is no published hash for it.
+    ///
+    /// The result is fed through `flattenPanels` by wrapping it in a one-section panel, so search
+    /// results are parsed by exactly the same code as the catalog and cannot drift from it.
+    func searchCatalog(token: String, vpcId: String, query: String, limit: Int = 60) async throws -> [CloudGame] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let document = """
+        query GetSearchFilterResults($vpcId: String!, $locale: String!, $sortString: String!, $fetchCount: Int!, $cursor: String!, $searchString: String!, $filters: AppFilterFields!) {
+          apps(vpcId: $vpcId, language: $locale, orderBy: $sortString, first: $fetchCount, after: $cursor, searchQuery: $searchString, filters: $filters) {
+            numberReturned
+            pageInfo { hasNextPage endCursor }
+            items {
+              id
+              title
+              shortDescription
+              longDescription
+              publisherName
+              images { KEY_ART GAME_BOX_ART TV_BANNER HERO_IMAGE SCREENSHOTS }
+              variants { id appStore supportedControls gfn { status library { status selected lastPlayedDate } } }
+              gfn { playType playabilityState minimumMembershipTierLabel }
+              genres { name }
+              contentRatings { name }
+            }
+          }
+        }
+        """
+
+        let body: [String: Any] = [
+            "query": document,
+            "variables": [
+                "vpcId": vpcId,
+                "locale": "en_US",
+                "sortString": "itemMetadata.relevance:DESC,sortName:ASC",
+                "fetchCount": limit,
+                "cursor": "",
+                "searchString": trimmed,
+                "filters": [String: Any]()
+            ]
+        ]
+
+        var request = URLRequest(url: URL(string: GFNConstants.graphQL)!)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        for (key, value) in [
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Origin": "https://play.geforcenow.com",
+            "Referer": "https://play.geforcenow.com/",
+            "Authorization": "GFNJWT \(token)",
+            "nv-client-id": GFNConstants.lcarsClientId,
+            "nv-client-type": "NATIVE",
+            "nv-client-version": GFNConstants.gfnClientVersion,
+            "nv-client-streamer": "NVIDIA-CLASSIC",
+            "nv-device-os": "WINDOWS",
+            "nv-device-type": "DESKTOP",
+            "nv-browser-type": "CHROME",
+            "User-Agent": GFNConstants.userAgent
+        ] {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+
+        let (data, response) = try await DiagnosticsHTTPRecorder.data(
+            for: request,
+            using: URLSession.shared,
+            source: "catalog.search"
+        )
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw NSError(
+                domain: "OpenNOW.Catalog",
+                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: "Catalog search failed."]
+            )
+        }
+
+        let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard let items = ((payload["data"] as? [String: Any])?["apps"] as? [String: Any])?["items"] as? [[String: Any]] else {
+            return []
+        }
+        return Self.flattenPanels(payload: Self.searchResultsAsPanelPayload(items))
+    }
+
+    /// Reshapes a flat `apps.items` array into the panel envelope `flattenPanels` expects, so one
+    /// parser serves both paths.
+    private static func searchResultsAsPanelPayload(_ items: [[String: Any]]) -> [String: Any] {
+        [
+            "data": [
+                "panels": [
+                    [
+                        "sections": [
+                            [
+                                "id": "SEARCH",
+                                "title": "Search results",
+                                "items": items.map { ["__typename": "GameItem", "app": $0] }
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    }
+
     private static func flattenPanels(payload: [String: Any]) -> [CloudGame] {
         guard let data = payload["data"] as? [String: Any],
               let panels = data["panels"] as? [[String: Any]] else {
@@ -5615,7 +5723,16 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var connectorActionStore: String?
     @Published private(set) var switchingAccountUserId: String?
     @Published var settings: AppSettings
-    @Published var searchText = ""
+    @Published var searchText = "" {
+        didSet {
+            guard searchText != oldValue else { return }
+            scheduleCatalogSearch()
+        }
+    }
+
+    /// Games the server returned for the current query that are not in the local catalog.
+    @Published private(set) var remoteSearchResults: [CloudGame] = []
+    @Published private(set) var isSearchingCatalog = false
     @Published var micEnabled = false
     @Published var recordingEnabled = false
     @Published var controllerConnected = true
@@ -5662,6 +5779,7 @@ final class OpenNOWStore: ObservableObject {
     private var sessionReportAccumulator: StreamSessionReportAccumulator?
     private var sessionReportSessionId: String?
     private var queueTrendSessionId: String?
+    private var catalogSearchTask: Task<Void, Never>?
     private var accountRefreshTask: Task<Void, Never>?
     private var backgroundRefreshingAccountUserId: String?
     #if os(tvOS)
@@ -6688,6 +6806,49 @@ final class OpenNOWStore: ObservableObject {
         logger.error(
             "failure kind=\(failure.kind.rawValue, privacy: .public) context=\(String(describing: context), privacy: .public)"
         )
+    }
+
+    /// Debounced so a five-letter word is one request, not five.
+    private func scheduleCatalogSearch() {
+        catalogSearchTask?.cancel()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Under three characters the server returns most of the catalog, which is slower and less
+        // useful than the local list already on screen.
+        guard query.count >= 3 else {
+            remoteSearchResults = []
+            isSearchingCatalog = false
+            return
+        }
+
+        isSearchingCatalog = true
+        catalogSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350 * NSEC_PER_MSEC)
+            guard !Task.isCancelled, let self else { return }
+            await self.runCatalogSearch(query: query)
+        }
+    }
+
+    private func runCatalogSearch(query: String) async {
+        defer { isSearchingCatalog = false }
+        guard let session = authSession else { return }
+        do {
+            let results = try await api.searchCatalog(
+                token: session.tokens.idToken ?? session.tokens.accessToken,
+                vpcId: cachedVpcId,
+                query: query
+            )
+            // The query may have moved on while the request was in flight.
+            guard !Task.isCancelled,
+                  searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            remoteSearchResults = results
+        } catch is CancellationError {
+            return
+        } catch {
+            // A failed search is not worth a banner: the local results are still on screen and
+            // still useful. It is logged for diagnostics and nothing else.
+            logger.notice("catalog search failed query=\(query.count) chars error=\(error.localizedDescription, privacy: .public)")
+        }
     }
 
     func clearFailure() {
@@ -7827,9 +7988,18 @@ final class OpenNOWStore: ObservableObject {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
+    /// Local matches first, then anything only the server knew about.
+    ///
+    /// Local results appear instantly as you type; the server's arrive a moment later and fill in
+    /// the long tail. Ordering them this way means the list never reshuffles under a thumb that
+    /// is already reaching for a result.
     var filteredCatalogGames: [CloudGame] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return allGames.filter { gameMatchesCatalogSearch($0, query: query) }
+        let local = allGames.filter { gameMatchesCatalogSearch($0, query: query) }
+        guard !query.isEmpty, !remoteSearchResults.isEmpty else { return local }
+        var seen = Set(local.map { catalogStableGameKey($0) })
+        let extra = remoteSearchResults.filter { seen.insert(catalogStableGameKey($0)).inserted }
+        return local + extra
     }
 
     var favoriteGames: [CloudGame] {

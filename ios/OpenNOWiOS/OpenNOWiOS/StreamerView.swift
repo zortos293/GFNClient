@@ -1299,9 +1299,29 @@ private struct NativeStreamControlsPanel: View {
         var title: String {
             switch self {
             case .main: return "Stream Controls"
-            case .statsHUD: return "Stats & HUD"
+            case .statsHUD: return "Status Bar"
             case .touchControls: return "Touch Controls"
-            case .mouseMode: return "Mouse & Touch Input"
+            case .mouseMode: return "Mouse Mode"
+            }
+        }
+
+        /// Second line under the title. On Main it is the game; elsewhere it says what the page
+        /// is for, which is the pattern the Android panel uses.
+        func subtitle(gameTitle: String) -> String {
+            switch self {
+            case .main: return gameTitle
+            case .statsHUD: return "Choose what the overlay shows"
+            case .touchControls: return "Size, style and placement"
+            case .mouseMode: return "How touch and sticks reach the game"
+            }
+        }
+
+        var order: Int {
+            switch self {
+            case .main: return 0
+            case .statsHUD: return 1
+            case .touchControls: return 2
+            case .mouseMode: return 3
             }
         }
     }
@@ -1321,6 +1341,13 @@ private struct NativeStreamControlsPanel: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 14)
+                // Forward going in, back coming out — the same directional cue Android uses, so
+                // the panel reads as a stack rather than a set of unrelated screens.
+                .transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .move(edge: page == .main ? .leading : .trailing).combined(with: .opacity),
+                    removal: .move(edge: page == .main ? .trailing : .leading).combined(with: .opacity)
+                ))
+                .id(page)
             }
             .scrollIndicators(.visible)
         }
@@ -1360,24 +1387,38 @@ private struct NativeStreamControlsPanel: View {
 
             HStack(spacing: 8) {
                 if page != .main {
-                    NativeStreamPanelIconButton(systemImage: "chevron.left", label: "Back") {
-                        page = .main
+                    // A labelled pill rather than a bare chevron, as on Android: on a panel over
+                    // live video the word is what makes it unmistakable at a glance.
+                    NativeStreamPanelPillButton(action: { page = .main }) {
+                        Label("Back", systemImage: "chevron.left")
+                            .labelStyle(.titleAndIcon)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(page.title)
                         .font(.subheadline.weight(.bold))
-                    Text(page == .main ? coordinator.gameTitle : coordinator.profileLabel)
-                        .font(.caption)
-                        .foregroundStyle(Color.primary.opacity(0.72))
+                        .lineLimit(1)
+                    Text(page.subtitle(gameTitle: coordinator.gameTitle))
+                        .font(StreamPanelStyle.supporting)
+                        .foregroundStyle(StreamPanelStyle.supportingColor)
                         .lineLimit(1)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer()
+                if page == .main {
+                    NativeStreamPanelPillButton(action: { keyboardPresented = true }) {
+                        Image(systemName: "keyboard")
+                    }
+                    .accessibilityLabel("Keyboard")
 
-                NativeStreamPanelIconButton(systemImage: "checkmark", label: "Done") {
-                    coordinator.finishControlsPanel()
+                    NativeStreamPanelPillButton(action: { coordinator.close() }) {
+                        Text("Exit")
+                    }
+                }
+
+                NativeStreamPanelPillButton(prominent: true, action: { coordinator.finishControlsPanel() }) {
+                    Text("Done")
                 }
             }
         }
@@ -1421,9 +1462,6 @@ private struct NativeStreamControlsPanel: View {
                     ) {
                         coordinator.togglePictureInPicture()
                     }
-                }
-                NativeStreamActionRow(title: "Keyboard", value: "Type into stream", actionLabel: "Open") {
-                    keyboardPresented = true
                 }
                 HStack(spacing: 8) {
                     NativeStreamKeyButton(title: "Esc") { coordinator.sendVirtualKey(.escape) }
@@ -1487,15 +1525,6 @@ private struct NativeStreamControlsPanel: View {
                 NativeStreamInfoRow(title: "Resolution", value: coordinator.profileLabel)
             }
 
-            NativeStreamPanelSection(title: "Session end") {
-                NativeStreamActionRow(
-                    title: "End session",
-                    value: "Closes the stream and frees the rig",
-                    actionLabel: "End"
-                ) {
-                    coordinator.close()
-                }
-            }
         }
     }
 
@@ -1912,6 +1941,38 @@ private struct NativeStreamPanelSection<Content: View>: View {
                 .padding(.leading, 2)
             content()
         }
+    }
+}
+
+/// The outlined pill the panel header uses. Android's `StreamPanelHeaderButton` exists because an
+/// OutlinedButton alone shows no focus state there; the same shape is used here so the two panels
+/// read as the same control set.
+private struct NativeStreamPanelPillButton<Content: View>: View {
+    var prominent: Bool = false
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Button(action: action) {
+            content()
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .frame(minHeight: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(prominent ? OpenNOWPalette.textOnDark : OpenNOWPalette.textMutedOnDark)
+        .background(
+            prominent ? OpenNOWPalette.rowOverVideoFocused : OpenNOWPalette.rowOverVideoRest,
+            in: Capsule()
+        )
+        .overlay(
+            Capsule().strokeBorder(
+                prominent ? OpenNOWPalette.textOnDark.opacity(0.45) : OpenNOWPalette.hairlineOverVideo,
+                lineWidth: prominent ? 1.5 : 1
+            )
+        )
+        .contentShape(Capsule())
     }
 }
 

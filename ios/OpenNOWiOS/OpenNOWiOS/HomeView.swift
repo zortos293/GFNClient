@@ -644,8 +644,10 @@ struct HomeView: View {
             GameCatalogGridView(
                 games: homeGridGames,
                 isLoading: store.isLoadingGames && store.allGames.isEmpty,
-                emptyTitle: isHomeSearchActive ? "No Matches" : "No Games",
-                emptySystemImage: isHomeSearchActive ? "magnifyingglass" : "square.grid.2x2",
+                emptyTitle: homeEmptyTitle,
+                emptySystemImage: store.isSearchingCatalog ? "arrow.triangle.2.circlepath"
+                    : (isHomeSearchActive ? "magnifyingglass" : "square.grid.2x2"),
+                emptyDescription: homeEmptyDescription,
                 subtitle: { gameCatalogSubtitle(for: $0) },
                 badgeSystemImage: { _ in nil },
                 onOpenDetails: { selectedGameForDetails = $0 },
@@ -653,7 +655,7 @@ struct HomeView: View {
             ) {
                 homeHeader
             } emptyActions: {
-                if isHomeSearchActive {
+                if isHomeSearchActive && !store.isSearchingCatalog {
                     Button("Clear Search") {
                         store.searchText = ""
                         isSearchPresented = false
@@ -855,6 +857,19 @@ struct HomeView: View {
             if leftFavorite != rightFavorite { return leftFavorite }
             return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
         }
+    }
+
+    /// Searching the server takes a moment; saying so beats showing "No Matches" and then
+    /// silently filling the grid a second later.
+    private var homeEmptyTitle: String {
+        if store.isSearchingCatalog { return "Searching the catalog…" }
+        return isHomeSearchActive ? "No Matches" : "No Games"
+    }
+
+    private var homeEmptyDescription: String? {
+        if store.isSearchingCatalog { return nil }
+        guard isHomeSearchActive else { return nil }
+        return "Nothing in the catalog matches that. Check the spelling, or try part of the name."
     }
 
     private var homeHeaderTitle: String {

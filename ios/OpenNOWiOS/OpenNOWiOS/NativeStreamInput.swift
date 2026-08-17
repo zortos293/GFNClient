@@ -112,6 +112,10 @@ final class NativeStreamInputEncoder {
         static let gamepad: UInt32 = 12
         static let hapticsEnabled: UInt32 = 13
         static let unicode: UInt32 = 23
+
+        /// Native multi-touch. The host turns these into a Windows digitizer, which is what makes
+        /// touch-aware games switch to their mobile UI on their own.
+        static let touch: UInt32 = 24
     }
 
     private var protocolVersion = NativeStreamSDP.defaultInputProtocolVersion
@@ -168,6 +172,49 @@ final class NativeStreamInputEncoder {
         Self.writeUInt16BE(0, to: &bytes, at: 8)
         Self.writeUInt32BE(0, to: &bytes, at: 10)
         Self.writeUInt64BE(Self.timestampUs(), to: &bytes, at: 14)
+        return wrapSingle(Data(bytes))
+    }
+
+    /// A batch of finger updates, one packet per event.
+    ///
+    /// Layout, taken from the official web client's encoder. Note the opcode is little-endian
+    /// while everything after it is big-endian — the same split every other packet here uses.
+    ///
+    /// ```
+    /// 0..3    opcode 24            uint32 LE
+    /// 4..5    payload size         uint16 BE   = 8 + 16 * count
+    /// 6..7    count                uint16 BE
+    /// 8+      records, 16 bytes each:
+    ///           +0     slot        uint8
+    ///           +1     phase       uint8       1=down 2=up 4=move 8=cancel
+    ///           +2..3  x           uint16 BE   0..65535 across the video area
+    ///           +4..5  y           uint16 BE
+    ///           +6     radiusX     uint8
+    ///           +7     radiusY     uint8
+    ///           +8..15 timestamp   int64 BE    microseconds
+    /// ```
+    ///
+    /// Returns nil for an empty batch, so a caller cannot send a header describing nothing.
+    func encodeTouchBatch(_ touches: [NativeTouchRecord]) -> Data? {
+        guard !touches.isEmpty else { return nil }
+        let nowUs = Self.timestampUs()
+        let count = min(touches.count, nativeTouchMaxRecordsPerBatch)
+        let payloadSize = 8 + 16 * count
+        var bytes = [UInt8](repeating: 0, count: payloadSize)
+        Self.writeUInt32LE(EventType.touch, to: &bytes, at: 0)
+        Self.writeUInt16BE(UInt16(payloadSize), to: &bytes, at: 4)
+        Self.writeUInt16BE(UInt16(count), to: &bytes, at: 6)
+        for index in 0..<count {
+            let touch = touches[index]
+            let offset = 8 + 16 * index
+            bytes[offset] = UInt8(min(max(touch.slot, 0), 255))
+            bytes[offset + 1] = touch.phase
+            Self.writeUInt16BE(UInt16(min(max(touch.x, 0), nativeTouchCoordinateMax)), to: &bytes, at: offset + 2)
+            Self.writeUInt16BE(UInt16(min(max(touch.y, 0), nativeTouchCoordinateMax)), to: &bytes, at: offset + 4)
+            bytes[offset + 6] = UInt8(min(max(touch.radiusX, 0), 255))
+            bytes[offset + 7] = UInt8(min(max(touch.radiusY, 0), 255))
+            Self.writeUInt64BE(touch.timestampUs != 0 ? touch.timestampUs : nowUs, to: &bytes, at: offset + 8)
+        }
         return wrapSingle(Data(bytes))
     }
 
@@ -727,6 +774,15 @@ final class NativeStreamInputBridge {
         // Preserve the established touch baseline while applying the same
         // sensitivity and acceleration curve as a physical relative mouse.
         coalesceMouse(dx: dx * 1.35, dy: dy * 1.35)
+    }
+
+    /// Sends one batch of finger updates. Reliable, because a dropped lift leaves a finger stuck
+    /// down for the rest of the session and no later packet corrects it.
+    @discardableResult
+    func sendNativeTouch(_ records: [NativeTouchRecord]) -> Bool {
+        guard let sink, let packet = encoder.encodeTouchBatch(records) else { return false }
+        sink.sendReliableInput(packet)
+        return true
     }
 
     func sendMouseButton(_ button: Int, pressed: Bool) {
@@ -1508,6 +1564,8 @@ final class NativeStreamInputBridge {
     func attach() {}
     func detach() {}
     func sendTouchMouseMove(dx: CGFloat, dy: CGFloat) {}
+    @discardableResult
+    func sendNativeTouch(_ records: [NativeTouchRecord]) -> Bool { false }
     func sendMouseButton(_ button: Int, pressed: Bool) {}
     func sendKey(mapping: NativeStreamKeyboardMapping, pressed: Bool, modifiers: UInt16) {}
     func sendMouseWheel(delta: Int) {}

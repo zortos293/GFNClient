@@ -702,6 +702,200 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertEqual(limited.packets.reduce(0) { $0 + max(0, $1.count - 5) }, 4_096)
     }
 
+    // MARK: - Native touch
+
+    func testTouchBatchMatchesTheAndroidWireLayout() throws {
+        let encoder = NativeStreamInputEncoder()
+        // Protocol 3 is what the handshake settles on, so packets arrive frame-wrapped.
+        encoder.setProtocolVersion(3)
+
+        let packet = try XCTUnwrap(
+            encoder.encodeTouchBatch([
+                NativeTouchRecord(slot: 0, phase: NativeTouchPhase.down, x: 0x1234, y: 0x5678, radiusX: 7, radiusY: 9, timestampUs: 0x0102_0304_0506_0708),
+                NativeTouchRecord(slot: 3, phase: NativeTouchPhase.move, x: 65_535, y: 0, timestampUs: 1)
+            ])
+        )
+        let bytes = [UInt8](packet)
+
+        // 10-byte single-message frame, then the payload.
+        XCTAssertEqual(bytes[0], 0x23)
+        XCTAssertEqual(bytes[9], 0x22)
+        let payload = Array(bytes.dropFirst(10))
+        XCTAssertEqual(payload.count, 8 + 16 * 2)
+
+        // Opcode 24 little-endian, then size and count big-endian.
+        XCTAssertEqual(Array(payload.prefix(4)), [24, 0, 0, 0])
+        XCTAssertEqual(Array(payload[4..<6]), [0, UInt8(8 + 32)])
+        XCTAssertEqual(Array(payload[6..<8]), [0, 2])
+
+        XCTAssertEqual(payload[8], 0)
+        XCTAssertEqual(payload[9], NativeTouchPhase.down)
+        XCTAssertEqual(Array(payload[10..<12]), [0x12, 0x34])
+        XCTAssertEqual(Array(payload[12..<14]), [0x56, 0x78])
+        XCTAssertEqual(payload[14], 7)
+        XCTAssertEqual(payload[15], 9)
+        XCTAssertEqual(Array(payload[16..<24]), [1, 2, 3, 4, 5, 6, 7, 8])
+
+        XCTAssertEqual(payload[24], 3)
+        XCTAssertEqual(payload[25], NativeTouchPhase.move)
+        XCTAssertEqual(Array(payload[26..<28]), [0xFF, 0xFF])
+
+        XCTAssertNil(encoder.encodeTouchBatch([]))
+    }
+
+    func testTouchSlotsAreReusedRatherThanClimbingWithPointerIdentity() {
+        var allocator = NativeTouchSlotAllocator<Int>()
+
+        XCTAssertEqual(allocator.acquire(41), 0)
+        XCTAssertEqual(allocator.acquire(42), 1)
+        // Re-acquiring an already tracked finger keeps its slot.
+        XCTAssertEqual(allocator.acquire(41), 0)
+        XCTAssertEqual(allocator.release(41), 0)
+        // The freed slot is the lowest one available, not the next integer up.
+        XCTAssertEqual(allocator.acquire(43), 0)
+        XCTAssertEqual(allocator.activeCount, 2)
+
+        for identity in 100..<106 {
+            XCTAssertNotNil(allocator.acquire(identity))
+        }
+        // Eight concurrent fingers is the host's limit; a ninth is dropped rather than sent.
+        XCTAssertNil(allocator.acquire(200))
+        XCTAssertNil(allocator.release(200))
+    }
+
+    func testTouchPointsUndoLetterboxingAndPresentationZoom() {
+        let viewSize = CGSize(width: 1_000, height: 500)
+        let streamSize = CGSize(width: 1_920, height: 1_080)
+
+        // 16:9 in a 2:1 view is pillarboxed: 889 points wide, 55.5 points of bar each side.
+        let centre = NativeTouchGeometry.streamPoint(
+            touch: CGPoint(x: 500, y: 250),
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: false
+        )
+        XCTAssertEqual(centre.x, 960, accuracy: 0.5)
+        XCTAssertEqual(centre.y, 540, accuracy: 0.5)
+
+        // A finger on the pillarbox bar maps outside the picture when clamping is off, which is
+        // how the batch builder knows to drop it.
+        let onBar = NativeTouchGeometry.streamPoint(
+            touch: CGPoint(x: 10, y: 250),
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: false,
+            clamp: false
+        )
+        XCTAssertLessThan(onBar.x, 0)
+
+        // Fill mode really fills, so the same point is inside the picture.
+        let stretched = NativeTouchGeometry.streamPoint(
+            touch: CGPoint(x: 10, y: 250),
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: true,
+            clamp: false
+        )
+        XCTAssertEqual(stretched.x, 1_920 * 0.01, accuracy: 0.5)
+
+        // Zoomed 2x with no pan, the centre is unmoved and a point halfway to the edge maps to a
+        // point a quarter of the way there in the source.
+        let zoomedCentre = NativeTouchGeometry.streamPoint(
+            touch: CGPoint(x: 500, y: 250),
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: true,
+            zoomScale: 2
+        )
+        XCTAssertEqual(zoomedCentre.x, 960, accuracy: 0.5)
+        let zoomedQuarter = NativeTouchGeometry.streamPoint(
+            touch: CGPoint(x: 750, y: 250),
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: true,
+            zoomScale: 2
+        )
+        XCTAssertEqual(zoomedQuarter.x, 1_920 * 0.625, accuracy: 0.5)
+    }
+
+    func testTouchBatchDropsFingersOffThePictureButNeverSwallowsALift() {
+        let viewSize = CGSize(width: 1_000, height: 500)
+        let streamSize = CGSize(width: 1_920, height: 1_080)
+        var allocator = NativeTouchSlotAllocator<Int>()
+
+        let onPicture = NativeTouchGeometry.buildBatch(
+            allocator: &allocator,
+            phase: NativeTouchPhase.down,
+            pointers: [NativeTouchPointerSample(pointer: 1, location: CGPoint(x: 500, y: 250))],
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: false
+        )
+        XCTAssertEqual(onPicture.count, 1)
+        XCTAssertEqual(onPicture.first?.slot, 0)
+        XCTAssertEqual(onPicture.first?.x ?? 0, nativeTouchCoordinateMax / 2, accuracy: 1)
+
+        // A press on the pillarbox bar belongs to nothing and takes no slot.
+        let onBar = NativeTouchGeometry.buildBatch(
+            allocator: &allocator,
+            phase: NativeTouchPhase.down,
+            pointers: [NativeTouchPointerSample(pointer: 2, location: CGPoint(x: 4, y: 250))],
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: false
+        )
+        XCTAssertTrue(onBar.isEmpty)
+        XCTAssertEqual(allocator.activeCount, 1)
+
+        // A lift is reported wherever the finger ended up — swallowing one leaves the host holding
+        // that contact down for the rest of the session.
+        let lift = NativeTouchGeometry.buildBatch(
+            allocator: &allocator,
+            phase: NativeTouchPhase.up,
+            pointers: [NativeTouchPointerSample(pointer: 1, location: CGPoint(x: -400, y: 250))],
+            viewSize: viewSize,
+            streamSize: streamSize,
+            stretchToFill: false
+        )
+        XCTAssertEqual(lift.count, 1)
+        XCTAssertEqual(lift.first?.phase, NativeTouchPhase.up)
+        XCTAssertEqual(lift.first?.slot, 0)
+        XCTAssertEqual(allocator.activeCount, 0)
+    }
+
+    func testEveryHeldFingerIsCancelledWhenTheSurfaceGoesAway() {
+        var allocator = NativeTouchSlotAllocator<Int>()
+        XCTAssertEqual(allocator.acquire(1), 0)
+        XCTAssertEqual(allocator.acquire(2), 1)
+
+        let cancels = NativeTouchGeometry.cancelAll(allocator: &allocator)
+        XCTAssertEqual(cancels.count, 2)
+        XCTAssertTrue(cancels.allSatisfy { $0.phase == NativeTouchPhase.cancel })
+        XCTAssertEqual(Set(cancels.map(\.slot)), [0, 1])
+        XCTAssertEqual(allocator.activeCount, 0)
+        XCTAssertTrue(NativeTouchGeometry.cancelAll(allocator: &allocator).isEmpty)
+    }
+
+    func testNativeTouchReachesTheReliableChannelAsOnePacketPerEvent() {
+        let bridge = NativeStreamInputBridge()
+        let sink = RecordingNativeStreamInputSink()
+        bridge.sink = sink
+        bridge.configure(protocolVersion: 3, partiallyReliableGamepadMask: 0)
+
+        XCTAssertTrue(
+            bridge.sendNativeTouch([
+                NativeTouchRecord(slot: 0, phase: NativeTouchPhase.down, x: 100, y: 200),
+                NativeTouchRecord(slot: 1, phase: NativeTouchPhase.down, x: 300, y: 400)
+            ])
+        )
+        // One packet, not one per finger, and never on the lossy channel: a dropped lift is
+        // uncorrectable.
+        XCTAssertEqual(sink.reliablePackets.count, 1)
+        XCTAssertTrue(sink.partiallyReliablePackets.isEmpty)
+        XCTAssertFalse(bridge.sendNativeTouch([]))
+        XCTAssertEqual(sink.reliablePackets.count, 1)
+    }
+
     func testVirtualControllerMergesIntoPrimaryPhysicalControllerLikeAndroid() {
         let physical = NativeStreamGamepadState(
             controllerId: 2,

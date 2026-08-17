@@ -1317,9 +1317,7 @@ private struct GameCatalogGridCard: View {
                         Image(systemName: favorite ? "heart.fill" : "heart")
                             .font(.headline.weight(.bold))
                             .foregroundStyle(favorite ? Color.red : Color.white)
-                            .frame(width: controlSize, height: controlSize)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
+                            .artworkControlChip(diameter: controlSize)
                     }
                     .buttonStyle(.plain)
                     .controllerFocusableCompat(fallbackActivation: toggleFavorite)
@@ -1333,9 +1331,10 @@ private struct GameCatalogGridCard: View {
                     Image(systemName: "play.fill")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(Color.white)
-                        .frame(width: controlSize, height: controlSize)
-                        .background(brandAccent.opacity(canLaunch ? 0.96 : 0.45), in: Circle())
-                        .shadow(color: .black.opacity(0.24), radius: 6, y: 3)
+                        .artworkControlChip(
+                            diameter: controlSize,
+                            fill: brandAccent.opacity(canLaunch ? 0.96 : 0.45)
+                        )
                 }
                 .buttonStyle(.plain)
                 .controllerFocusableCompat(fallbackActivation: play)
@@ -1874,8 +1873,7 @@ struct GameListRowView: View {
                         Image(systemName: trailingSystemImage)
                             .font(.body.weight(.semibold))
                             .foregroundStyle(trailingSystemImage == "heart.fill" ? Color.red : Color.white)
-                            .frame(width: 30, height: 30)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .artworkControlChip(diameter: 30)
                     }
                     Spacer()
                 }
@@ -2249,8 +2247,7 @@ private struct ComingNextHeroCard: View {
                     Image(systemName: store.isFavorite(game) ? "heart.fill" : "heart")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(store.isFavorite(game) ? Color.red : Color.white)
-                        .frame(width: 42, height: 42)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .artworkControlChip(diameter: 42)
                 }
                 .buttonStyle(.plain)
                 .controllerFocusableCompat(
@@ -2266,8 +2263,10 @@ private struct ComingNextHeroCard: View {
                     Image(systemName: "play.fill")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(.white)
-                        .frame(width: 46, height: 46)
-                        .background(brandAccent.opacity(canLaunch ? 0.96 : 0.45), in: Circle())
+                        .artworkControlChip(
+                            diameter: 46,
+                            fill: brandAccent.opacity(canLaunch ? 0.96 : 0.45)
+                        )
                 }
                 .buttonStyle(.plain)
                 .controllerFocusableCompat(
@@ -3242,40 +3241,35 @@ struct GameArtworkView: View {
 
 /// What fills a card before artwork arrives, or when it never does.
 ///
-/// The previous version drew a generic `photo` glyph and two small grey bars meant to suggest
-/// text. At poster size that was busy; on the 16:9 detail card the bars floated in the middle of a
-/// large empty area and read as a rendering fault rather than as loading.
+/// Two rules, both taken from how the system's own libraries behave:
 ///
-/// Now the two cases are properly distinct:
+/// 1. **A tile that is waiting does not perform.** Photos, Music and the App Store all show a plain
+///    quiet fill while artwork loads — no sweep, no pulse. The previous version ran a shimmer here,
+///    which meant a catalog page mid-load held twenty independent 30 fps timelines, each one
+///    compositing offscreen, for decoration standing in for the very images it was delaying. The
+///    screen-level skeleton already carries "something is happening" while the catalog itself is
+///    empty; once cards exist, the honest signal is stillness.
+/// 2. **Missing is not the same as loading.** A permanent absence shows the game's initials over
+///    the same ground, with its category glyph beneath. A monogram is specific to the title and
+///    recognisable at poster size; a generic photo symbol says nothing about which card you are
+///    looking at. Both states share one ground, so a half-loaded grid reads as one surface rather
+///    than a patchwork.
 ///
-/// - **Loading** is a calm tinted ground with a single shimmer sweep and nothing else. A skeleton
-///   should say "not yet", not imitate content that is about to appear somewhere else.
-/// - **Failed or missing** shows the game's initials. A monogram is specific to the title and
-///   recognisable at a glance; a generic photo symbol tells you nothing about which card you are
-///   looking at. Everything scales with the container, so it works from a 104-point poster up to
-///   a full-width hero.
+/// It draws in a single pass with no `GeometryReader` of its own — the caller already knows how big
+/// the card is and passes `iconSize`, so measuring it again would add a layout pass to every cell.
 struct GameArtworkLoadingPlaceholder: View {
     let game: CloudGame
     let iconSize: CGFloat
     let isFailure: Bool
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
-        GeometryReader { proxy in
-            let minimumEdge = min(proxy.size.width, proxy.size.height)
-            ZStack {
-                ground
+        ground
+            .overlay {
                 if isFailure {
-                    monogram(edge: minimumEdge)
-                } else if !reduceMotion {
-                    shimmer(in: proxy.size)
+                    monogram
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
-        }
-        .accessibilityHidden(true)
+            .accessibilityHidden(true)
     }
 
     /// Tinted from the title so a grid of placeholders is not a wall of identical grey, but kept
@@ -3291,39 +3285,20 @@ struct GameArtworkLoadingPlaceholder: View {
         )
     }
 
-    private func monogram(edge: CGFloat) -> some View {
-        VStack(spacing: edge * 0.05) {
+    /// Scaled from `iconSize`, which every call site already sizes against its own card, so a
+    /// 26-point queue thumbnail and a 54-point detail hero both get proportionate lettering.
+    private var monogram: some View {
+        VStack(spacing: 3) {
             Text(initials)
-                .font(.system(size: max(16, edge * 0.30), weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.34))
+                .font(.system(size: max(17, iconSize * 0.62), weight: .semibold, design: .rounded))
+                .foregroundStyle(OpenNOWPalette.textOnDark.opacity(0.32))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
             Image(systemName: game.icon)
-                .font(.system(size: max(9, edge * 0.10), weight: .semibold))
-                .foregroundStyle(.white.opacity(0.22))
+                .font(.system(size: max(9, iconSize * 0.22), weight: .semibold))
+                .foregroundStyle(OpenNOWPalette.textMutedOnDark.opacity(0.55))
         }
-        .padding(edge * 0.12)
-    }
-
-    /// A single diagonal band, positioned from the clock so it cannot be restarted by a parent
-    /// re-render — the catalog re-renders often while images load.
-    private func shimmer(in size: CGSize) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
-            let period: TimeInterval = 1.4
-            let phase = context.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: period) / period
-            let travel = size.width + size.height
-            LinearGradient(
-                colors: [.clear, .white.opacity(0.07), .clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .frame(width: travel * 0.45)
-            .rotationEffect(.degrees(24))
-            .offset(x: -travel * 0.5 + travel * CGFloat(phase))
-            .blendMode(.screen)
-            .allowsHitTesting(false)
-        }
+        .padding(6)
     }
 
     /// Up to two initials from the meaningful words in the title. Leading articles and short

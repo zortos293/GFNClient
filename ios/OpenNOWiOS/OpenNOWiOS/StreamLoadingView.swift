@@ -50,16 +50,21 @@ struct StreamLoadingView: View {
           .padding(.bottom, bottomInset)
           .frame(maxWidth: .infinity)
           .frame(minHeight: max(0, proxy.size.height - topInset - bottomInset))
+          // Scoped to the panel rather than the whole screen. An implicit animation applies to
+          // everything beneath it, and at the root it was reaching the ambient backdrop and the
+          // progress bar — both of which derive their position from the clock and stutter the
+          // moment something re-interpolates it.
+          .animation(
+            .spring(response: 0.34, dampingFraction: 0.84),
+            value: store.activeSession?.queuePosition
+          )
+          .animation(.easeInOut(duration: 0.22), value: queueStatusText)
         }
         #if os(iOS)
           .scrollBounceBehavior(.basedOnSize)
         #endif
       }
     }
-    .animation(
-      .spring(response: 0.34, dampingFraction: 0.84), value: store.activeSession?.queuePosition
-    )
-    .animation(.easeInOut(duration: 0.22), value: queueStatusText)
     .environment(\.colorScheme, .dark)
     .task(id: store.activeSession?.id) {
       guard store.activeSession != nil else { return }

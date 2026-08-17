@@ -2,90 +2,91 @@ import SwiftUI
 
 /// The ambient wash behind the queue screen.
 ///
-/// Rewritten for cost. The previous version put a 52-point `.blur` on two full-screen circles —
-/// two offscreen render passes per frame — and took `queuePosition` as a parameter, so the whole
-/// thing invalidated on every poll and restarted its own drift animation mid-flight. On a phone
-/// holding a WebRTC connection open, that was most of the jank.
+/// Rewritten twice, both times for cost. The first version put a 52-point `.blur` on two
+/// full-screen circles and took `queuePosition` as a parameter, so it invalidated on every poll and
+/// restarted its own drift animation mid-flight. The second replaced that with a full-screen
+/// `Canvas`, which fixed the invalidation but still re-rasterised four full-screen fills — two of
+/// them radial gradients — on the main thread twenty times a second, while the same thread was
+/// holding a WebRTC connection open. That was the remaining jank.
 ///
-/// Now: no blur (a radial gradient is already soft, so the blur was redundant), no dependency on
-/// anything that changes while queueing, and the drift comes from the clock rather than `@State`
-/// so a parent re-render cannot interrupt it.
+/// This version draws the gradients once and only moves them. A `LinearGradient` view is
+/// rasterised by Core Animation and an `.offset` is a layer transform, so drift costs a
+/// recomposite rather than a redraw — the render server's job, not the main thread's. The phase
+/// still comes from the clock rather than `@State`, so a parent re-render cannot interrupt it.
 struct QueueAmbientBackdrop: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let accent: Color
 
-    /// Slow enough to be felt rather than watched.
+    /// Slow enough to be felt rather than watched. At this period a 10 Hz tick is already finer
+    /// than the eye can resolve, and the offsets it produces move under a point per frame.
     private let driftPeriod: TimeInterval = 26
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: reduceMotion)) { context in
-            Canvas { canvas, size in
-                canvas.fill(
-                    Path(CGRect(origin: .zero, size: size)),
-                    with: .linearGradient(
-                        Gradient(colors: [
-                            .black,
-                            Color(red: 0.02, green: 0.035, blue: 0.045),
-                            .black
-                        ]),
-                        startPoint: .zero,
-                        endPoint: CGPoint(x: 0, y: size.height)
-                    )
+        GeometryReader { proxy in
+            let size = proxy.size
+            let travel = min(size.width, size.height) * 0.1
+
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        .black,
+                        Color(red: 0.02, green: 0.035, blue: 0.045),
+                        .black
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
                 )
 
-                let drift = driftPhase(at: context.date)
-                orb(
-                    in: canvas,
-                    color: accent,
-                    diameter: min(size.width, size.height) * 1.5,
-                    centre: CGPoint(
-                        x: size.width * (0.26 + 0.08 * drift),
-                        y: size.height * (0.30 + 0.10 * drift)
-                    ),
-                    peak: 0.30
-                )
-                orb(
-                    in: canvas,
-                    color: Color(red: 0.17, green: 0.86, blue: 1),
-                    diameter: min(size.width, size.height) * 1.1,
-                    centre: CGPoint(
-                        x: size.width * (0.72 - 0.10 * drift),
-                        y: size.height * (0.68 - 0.08 * drift)
-                    ),
-                    peak: 0.20
-                )
+                TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: reduceMotion)) { context in
+                    let drift = driftPhase(at: context.date)
 
-                canvas.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black.opacity(0.22)))
+                    ZStack {
+                        orb(color: accent, diameter: min(size.width, size.height) * 1.5, peak: 0.30)
+                            .position(x: size.width * 0.26, y: size.height * 0.30)
+                            .offset(x: travel * drift, y: travel * 1.2 * drift)
+
+                        orb(
+                            color: Color(red: 0.17, green: 0.86, blue: 1),
+                            diameter: min(size.width, size.height) * 1.1,
+                            peak: 0.20
+                        )
+                        .position(x: size.width * 0.72, y: size.height * 0.68)
+                        .offset(x: -travel * 1.2 * drift, y: -travel * drift)
+                    }
+                }
+                // Decoration whose position already comes from the clock. Without this, an
+                // implicit animation anywhere up the tree — the queue numeral's spring, say —
+                // re-interpolates every offset the timeline produces and the drift stutters.
+                .transaction { $0.animation = nil }
+
+                Color.black.opacity(0.22)
             }
+            .frame(width: size.width, height: size.height)
+            .clipped()
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
     }
 
-    /// A soft disc drawn as a multi-stop radial gradient. Same look as a blurred circle, one pass
-    /// instead of two.
-    private func orb(in canvas: GraphicsContext, color: Color, diameter: CGFloat, centre: CGPoint, peak: Double) {
-        let rect = CGRect(
-            x: centre.x - diameter / 2,
-            y: centre.y - diameter / 2,
-            width: diameter,
-            height: diameter
-        )
-        canvas.fill(
-            Path(ellipseIn: rect),
-            with: .radialGradient(
-                Gradient(stops: [
-                    .init(color: color.opacity(peak), location: 0),
-                    .init(color: color.opacity(peak * 0.45), location: 0.35),
-                    .init(color: color.opacity(peak * 0.12), location: 0.65),
-                    .init(color: .clear, location: 1)
-                ]),
-                center: centre,
-                startRadius: 0,
-                endRadius: diameter / 2
+    /// A soft disc drawn as a multi-stop radial gradient. Same look as a blurred circle, without
+    /// the offscreen pass a `.blur` needs.
+    private func orb(color: Color, diameter: CGFloat, peak: Double) -> some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: color.opacity(peak), location: 0),
+                        .init(color: color.opacity(peak * 0.45), location: 0.35),
+                        .init(color: color.opacity(peak * 0.12), location: 0.65),
+                        .init(color: .clear, location: 1)
+                    ]),
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: diameter / 2
+                )
             )
-        )
+            .frame(width: diameter, height: diameter)
     }
 
     private func driftPhase(at date: Date) -> CGFloat {
@@ -188,13 +189,20 @@ struct AndroidQueueStatusText: View {
 
 /// The indeterminate bar shown while waiting for a rig.
 ///
-/// Driven by `TimelineView` rather than a `@State` toggle with `repeatForever`. The queue screen
-/// observes the whole store, so it re-renders on every poll, every trend sample and every ad-state
-/// update — and each of those re-evaluated the implicit animation and restarted it mid-flight,
-/// which is what made the bar stutter. A timeline computes position from the clock instead, so
-/// nothing the parent does can interrupt it.
+/// Two things had to be true before this stopped stuttering, and only the first was fixed the last
+/// time round:
 ///
-/// It also draws in a single `Canvas` pass: no `GeometryReader`, no per-frame layout.
+/// 1. **Position comes from the clock, not from `@State`.** The queue screen observes the whole
+///    store, so it re-renders on every poll, every trend sample and every ad-state update, and each
+///    of those re-evaluated an implicit `repeatForever` animation and restarted it mid-flight.
+/// 2. **No ancestor may re-interpolate that position.** The screen animates the queue numeral with
+///    a spring, and an implicit animation applies to the whole subtree — so every offset the
+///    timeline produced was being spring-interpolated towards the next one, which is exactly the
+///    lag a clock-driven animation is supposed to make impossible. `.transaction` clears it.
+///
+/// The traveller is a plain `Capsule` moved with `.offset`, so a tick is a layer transform on the
+/// render server rather than a `Canvas` redraw on the main thread — which matters on the one screen
+/// that is also holding a WebRTC connection open.
 struct OscillatingQueueProgressView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -203,29 +211,22 @@ struct OscillatingQueueProgressView: View {
     private let travellerFraction: CGFloat = 0.32
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
-            Canvas { canvas, size in
-                let radius = barHeight / 2
-                let track = CGRect(
-                    x: 0,
-                    y: (size.height - barHeight) / 2,
-                    width: size.width,
-                    height: barHeight
-                )
-                canvas.fill(
-                    Path(roundedRect: track, cornerRadius: radius),
-                    with: .color(.secondary.opacity(0.28))
-                )
+        GeometryReader { proxy in
+            let travellerWidth = proxy.size.width * travellerFraction
+            let travelSpan = max(0, proxy.size.width - travellerWidth)
 
-                let travellerWidth = size.width * travellerFraction
-                let travelSpan = max(0, size.width - travellerWidth)
-                let x = travelSpan * offsetFraction(at: context.date)
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(Color.secondary.opacity(0.28))
 
-                canvas.fill(
-                    Path(roundedRect: CGRect(x: x, y: track.minY, width: travellerWidth, height: barHeight),
-                         cornerRadius: radius),
-                    with: .color(brandAccent)
-                )
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+                    Capsule(style: .continuous)
+                        .fill(brandAccent)
+                        .frame(width: travellerWidth)
+                        .offset(x: travelSpan * offsetFraction(at: context.date))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .transaction { $0.animation = nil }
             }
         }
         .frame(height: barHeight)

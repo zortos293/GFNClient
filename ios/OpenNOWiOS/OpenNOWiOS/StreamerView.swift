@@ -432,6 +432,10 @@ struct StreamerView: View {
                 NativeStreamTouchCaptureView(
                     inputBridge: coordinator.inputBridge,
                     inputEnabled: coordinator.fingerMouseCaptureEnabled,
+                    nativeTouchEnabled: coordinator.nativeTouchCaptureEnabled,
+                    geometry: { [weak coordinator] in
+                        coordinator?.currentTouchGeometry() ?? NativeStreamTouchGeometry()
+                    },
                     onZoomGesture: coordinator.applyFingerMouseZoom
                 )
                     .ignoresSafeArea()
@@ -2528,11 +2532,50 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
             !touchLayoutEditing
     }
 
+    /// Whether this session sends real fingers to the host rather than a synthetic cursor.
+    ///
+    /// The catalog's `TOUCHSCREEN` capability decides it under `.automatic`; asking for the
+    /// on-screen controller overrides it, because the two need exclusive ownership of the same
+    /// fingers. Mirrors `nativeTouchActive` in `OpenNowStreamSurface.kt`.
+    fileprivate var nativeTouchActive: Bool {
+        NativeTouchSupport.shouldUseNativeTouchForStream(
+            mode: liveSettings.touch.nativeTouchMode,
+            game: session.game,
+            preferVirtualController: streamerPreferences.touchControllerVisible
+        )
+    }
+
+    fileprivate var nativeTouchCaptureEnabled: Bool {
+        nativeTouchActive &&
+            !controlsPanelVisible &&
+            presentedGuidanceSheet == nil &&
+            !isPictureInPictureActive
+    }
+
     fileprivate var fingerMouseCaptureEnabled: Bool {
         fingerMouseEnabled &&
+            !nativeTouchActive &&
             !shouldShowVirtualController &&
             !controlsPanelVisible &&
             presentedGuidanceSheet == nil
+    }
+
+    /// What the touch surface needs to map a finger onto the picture. Read at touch time rather
+    /// than published, because the zoom transform changes once per frame during a pinch and
+    /// nothing in the view hierarchy should re-render for it.
+    fileprivate func currentTouchGeometry() -> NativeStreamTouchGeometry {
+        let decoded = renderedVideoSize
+        let streamSize = decoded.width > 0 && decoded.height > 0
+            ? decoded
+            : CGSize(width: streamProfile.width, height: streamProfile.height)
+        return NativeStreamTouchGeometry(
+            streamSize: streamSize,
+            stretchToFill: streamerPreferences.stretchStreamToFill,
+            zoomScale: streamZoomScale,
+            zoomOffset: streamZoomOffset,
+            scrollScale: CGFloat(liveSettings.touch.nativeTouchScrollScale),
+            jitterThreshold: CGFloat(liveSettings.touch.nativeTouchJitterThreshold)
+        )
     }
 
     func toggleControlsPanel() {
@@ -2626,18 +2669,18 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     /// What the touch-routing settings actually add up to right now. The three inputs that
     /// produce it are not individually readable as an outcome, so the panel shows this instead.
     var resolvedTouchModeLabel: String {
-        switch liveSettings.touch.nativeTouchMode {
-        case .always:
+        if nativeTouchActive {
             return ResolvedTouchMode.nativeTouch.label
-        case .automatic, .never:
-            if fingerMouseEnabled {
-                return ResolvedTouchMode.trackpadCursor(directClick: liveSettings.touch.mouseDirectClick).label
-            }
-            if streamerPreferences.touchControllerVisible {
-                return ResolvedTouchMode.virtualGamepad.label
-            }
-            return ResolvedTouchMode.inert.label
         }
+        // The resolved state, not the stored preference: with the controller wanted but suppressed
+        // by a connected gamepad, the fingers are still driving the cursor.
+        if shouldShowVirtualController {
+            return ResolvedTouchMode.virtualGamepad.label
+        }
+        if fingerMouseEnabled {
+            return ResolvedTouchMode.trackpadCursor(directClick: liveSettings.touch.mouseDirectClick).label
+        }
+        return ResolvedTouchMode.inert.label
     }
 
     /// Single channel for the settings the control panel edits that are not part of
@@ -4594,6 +4637,14 @@ extension NativeStreamCoordinator: RTCDataChannelDelegate {
                 if dataChannel === self.reliableInputChannel {
                     self.inputBridge.primeReliableChannel()
                     self.log("Reliable input channel open")
+                    // One line per session recording the catalog signal and the decision it
+                    // produced, so a "touch did not work" report can be answered without guessing.
+                    self.log(
+                        NativeTouchSupport.diagnostics(
+                            game: self.session.game,
+                            enabled: self.nativeTouchActive
+                        )
+                    )
                 } else if dataChannel === self.partiallyReliableInputChannel {
                     self.log("Partially reliable input channel open")
                 } else if dataChannel.label == "control_channel" {
@@ -6036,23 +6087,46 @@ private struct NativeStreamVirtualStickView: View {
 
 }
 
+/// What the touch surface needs to turn a finger into a point on the picture.
+///
+/// Passed by value at touch time rather than held as view state: the zoom transform moves once per
+/// frame during a pinch, and a published property for it would re-render the whole streamer.
+struct NativeStreamTouchGeometry {
+    var streamSize: CGSize = .zero
+    var stretchToFill = false
+    var zoomScale: CGFloat = 1
+    var zoomOffset: CGSize = .zero
+    var scrollScale: CGFloat = 1
+    var jitterThreshold: CGFloat = 0
+}
+
 private struct NativeStreamTouchCaptureView: UIViewRepresentable {
     let inputBridge: NativeStreamInputBridge
     let inputEnabled: Bool
+    let nativeTouchEnabled: Bool
+    let geometry: () -> NativeStreamTouchGeometry
     let onZoomGesture: (CGFloat, CGSize) -> Void
 
     func makeUIView(context: Context) -> NativeStreamTouchView {
         let view = NativeStreamTouchView()
         view.inputBridge = inputBridge
-        view.inputEnabled = inputEnabled
+        view.geometryProvider = geometry
         view.onZoomGesture = onZoomGesture
+        view.nativeTouchEnabled = nativeTouchEnabled
+        view.inputEnabled = inputEnabled
         return view
     }
 
     func updateUIView(_ uiView: NativeStreamTouchView, context: Context) {
         uiView.inputBridge = inputBridge
-        uiView.inputEnabled = inputEnabled
+        uiView.geometryProvider = geometry
         uiView.onZoomGesture = onZoomGesture
+        uiView.nativeTouchEnabled = nativeTouchEnabled
+        uiView.inputEnabled = inputEnabled
+    }
+
+    static func dismantleUIView(_ uiView: NativeStreamTouchView, coordinator: ()) {
+        uiView.releaseAllNativeTouches()
     }
 }
 
@@ -6070,15 +6144,32 @@ private final class NativeStreamTouchView: UIView {
             if !inputEnabled {
                 cancelTouchInteraction()
             }
-            isAccessibilityElement = inputEnabled
-            accessibilityHint = inputEnabled
-                ? "Drag to move the pointer, tap to click, or pinch with two fingers to zoom."
-                : nil
+            updateAccessibilityPresentation()
         }
     }
+
+    /// Every finger goes straight to the host as a digitizer contact. Mutually exclusive with the
+    /// trackpad cursor above — the two would fight over the same fingers.
+    var nativeTouchEnabled = false {
+        didSet {
+            guard nativeTouchEnabled != oldValue else { return }
+            if nativeTouchEnabled {
+                cancelTouchInteraction()
+            } else {
+                releaseAllNativeTouches()
+            }
+            updateAccessibilityPresentation()
+        }
+    }
+
+    var geometryProvider: (() -> NativeStreamTouchGeometry)?
     var onZoomGesture: ((CGFloat, CGSize) -> Void)?
     private static let tapMovementThreshold: CGFloat = 8
     private static let clickReleaseDelay: TimeInterval = 0.045
+
+    private var touchSlots = NativeTouchSlotAllocator<ObjectIdentifier>()
+    /// Where each finger landed, for the jitter dead zone and the scroll-scale pivot.
+    private var nativeTouchOrigins: [ObjectIdentifier: CGPoint] = [:]
 
     private var activeTouch: UITouch?
     private var touchStartPoint: CGPoint?
@@ -6096,8 +6187,8 @@ private final class NativeStreamTouchView: UIView {
         backgroundColor = .clear
         isAccessibilityElement = true
         accessibilityLabel = "Stream input surface"
-        accessibilityHint = "Drag to move the pointer, tap to click, or pinch with two fingers to zoom."
         accessibilityTraits = [.button, .allowsDirectInteraction]
+        updateAccessibilityPresentation()
     }
 
     required init?(coder: NSCoder) {
@@ -6110,10 +6201,28 @@ private final class NativeStreamTouchView: UIView {
         super.didMoveToWindow()
         if window != nil {
             becomeFirstResponder()
+        } else {
+            releaseAllNativeTouches()
+        }
+    }
+
+    private func updateAccessibilityPresentation() {
+        isAccessibilityElement = inputEnabled || nativeTouchEnabled
+        if nativeTouchEnabled {
+            accessibilityHint = "Touch is sent to the game directly."
+        } else if inputEnabled {
+            accessibilityHint = "Drag to move the pointer, tap to click, or pinch with two fingers to zoom."
+        } else {
+            accessibilityHint = nil
         }
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if nativeTouchEnabled {
+            becomeFirstResponder()
+            dispatchNativeTouch(phase: NativeTouchPhase.down, touches: touches)
+            return
+        }
         guard inputEnabled else { return }
         becomeFirstResponder()
         let liveTouches = activeTouches(in: event, fallback: touches)
@@ -6137,6 +6246,10 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if nativeTouchEnabled {
+            dispatchNativeTouch(phase: NativeTouchPhase.move, touches: touches)
+            return
+        }
         guard inputEnabled else { return }
         let liveTouches = activeTouches(in: event, fallback: touches)
         if liveTouches.count >= 2 {
@@ -6158,6 +6271,10 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if nativeTouchEnabled {
+            dispatchNativeTouch(phase: NativeTouchPhase.up, touches: touches)
+            return
+        }
         let liveTouches = activeTouches(in: event, fallback: [])
         if pinchActive {
             if liveTouches.count >= 2 {
@@ -6183,6 +6300,10 @@ private final class NativeStreamTouchView: UIView {
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if nativeTouchEnabled {
+            dispatchNativeTouch(phase: NativeTouchPhase.cancel, touches: touches)
+            return
+        }
         let liveTouches = activeTouches(in: event, fallback: [])
         if pinchActive {
             endPinch(remainingTouches: liveTouches.count)
@@ -6196,6 +6317,95 @@ private final class NativeStreamTouchView: UIView {
         }
         guard let activeTouch, touches.contains(activeTouch) else { return }
         resetActiveTouch()
+    }
+
+    /// Forwards fingers as native touch, so the host presents a digitizer and a touch-aware game
+    /// switches to its own mobile UI.
+    ///
+    /// Unlike the cursor paths this keeps no per-gesture state beyond the finger-to-slot mapping
+    /// and each finger's landing point. UIKit already delivers exactly the touches that changed,
+    /// which is the split Android has to reconstruct from `MotionEvent.actionMasked`.
+    private func dispatchNativeTouch(phase: UInt8, touches: Set<UITouch>) {
+        guard let inputBridge, let geometry = geometryProvider?() else { return }
+        let viewSize = bounds.size
+        guard viewSize.width > 0, viewSize.height > 0,
+              geometry.streamSize.width > 0, geometry.streamSize.height > 0 else {
+            return
+        }
+
+        let scrollScale = min(max(geometry.scrollScale, 0.25), 2)
+        let jitterThreshold = max(geometry.jitterThreshold, 0)
+        let lifting = phase == NativeTouchPhase.up || phase == NativeTouchPhase.cancel
+
+        var samples: [NativeTouchPointerSample<ObjectIdentifier>] = []
+        samples.reserveCapacity(touches.count)
+
+        for touch in touches {
+            let identity = ObjectIdentifier(touch)
+            let raw = touch.location(in: self)
+            var location = raw
+
+            switch phase {
+            case NativeTouchPhase.down:
+                nativeTouchOrigins[identity] = raw
+            case NativeTouchPhase.move:
+                let origin = nativeTouchOrigins[identity]
+                if let origin, jitterThreshold > 0 {
+                    // Hold the contact still until the finger has left a small dead zone around
+                    // where it landed. Without this, sensor noise on a resting thumb reads as a
+                    // micro-swipe and games treat it as a drag.
+                    if hypot(raw.x - origin.x, raw.y - origin.y) < jitterThreshold { continue }
+                }
+                if let origin, scrollScale != 1 {
+                    // Scale the apparent velocity of the gesture by moving the reported point
+                    // further from where it started, rather than clamping coordinates.
+                    location = CGPoint(
+                        x: origin.x + (raw.x - origin.x) * scrollScale,
+                        y: origin.y + (raw.y - origin.y) * scrollScale
+                    )
+                }
+            default:
+                nativeTouchOrigins.removeValue(forKey: identity)
+            }
+
+            let radius = touch.majorRadius.isFinite ? max(touch.majorRadius, 0) : 0
+            samples.append(
+                NativeTouchPointerSample(
+                    pointer: identity,
+                    location: location,
+                    radiusX: radius,
+                    radiusY: radius
+                )
+            )
+        }
+
+        guard !samples.isEmpty else { return }
+
+        let records = NativeTouchGeometry.buildBatch(
+            allocator: &touchSlots,
+            phase: phase,
+            pointers: samples,
+            viewSize: viewSize,
+            streamSize: geometry.streamSize,
+            stretchToFill: geometry.stretchToFill,
+            zoomScale: geometry.zoomScale,
+            zoomOffset: geometry.zoomOffset
+        )
+        guard !records.isEmpty else { return }
+        inputBridge.sendNativeTouch(records)
+
+        if lifting, touchSlots.activeCount == 0 {
+            nativeTouchOrigins.removeAll(keepingCapacity: true)
+        }
+    }
+
+    /// Lifts every finger the host still believes is down. UIKit will not deliver the missing
+    /// `touchesEnded` when the surface is torn down or the mode is switched mid-gesture.
+    func releaseAllNativeTouches() {
+        nativeTouchOrigins.removeAll(keepingCapacity: true)
+        let records = NativeTouchGeometry.cancelAll(allocator: &touchSlots)
+        guard !records.isEmpty else { return }
+        inputBridge?.sendNativeTouch(records)
     }
 
     private func activeTouches(in event: UIEvent?, fallback: Set<UITouch>) -> [UITouch] {

@@ -33,12 +33,14 @@ struct QueueLiveActivityWidget: Widget {
                     ) {
                         LiveActivityAppIcon(size: 22)
                     }
-                    .padding(.leading, 4)
+                    .padding(.leading, DynamicIslandInset.expandedEdge)
+                    .padding(.vertical, DynamicIslandInset.expandedVertical)
                 }
 
                 DynamicIslandExpandedRegion(.trailing) {
                     QueueValueText(state: context.state, size: .expanded)
-                        .padding(.trailing, 4)
+                        .padding(.trailing, DynamicIslandInset.expandedEdge)
+                        .padding(.vertical, DynamicIslandInset.expandedVertical)
                 }
 
                 DynamicIslandExpandedRegion(.center) {
@@ -53,7 +55,8 @@ struct QueueLiveActivityWidget: Widget {
                             .foregroundStyle(.white.opacity(0.7))
                             .lineLimit(1)
                     }
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, DynamicIslandInset.expandedEdge)
+                    .padding(.top, DynamicIslandInset.expandedVertical)
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
@@ -73,7 +76,9 @@ struct QueueLiveActivityWidget: Widget {
                             }
                         }
                     }
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, DynamicIslandInset.expandedEdge)
+                    .padding(.top, DynamicIslandInset.expandedVertical)
+                    .padding(.bottom, DynamicIslandInset.expandedBottom)
                 }
             } compactLeading: {
                 // A ring rather than a bare icon: it carries progress in a slot that would
@@ -81,16 +86,23 @@ struct QueueLiveActivityWidget: Widget {
                 QueueProgressRing(
                     progress: context.state.progress,
                     phase: context.state.phase,
-                    diameter: 20
+                    diameter: DynamicIslandInset.compactRingDiameter
                 ) {
-                    LiveActivityAppIcon(size: 13)
+                    LiveActivityAppIcon(size: 11)
                 }
+                .padding(.leading, DynamicIslandInset.compactOuter)
+                .padding(.trailing, DynamicIslandInset.compactInner)
+                .padding(.vertical, DynamicIslandInset.compactVertical)
             } compactTrailing: {
                 QueueValueText(state: context.state, size: .compact)
-                    .padding(.leading, 2)
+                    .padding(.leading, DynamicIslandInset.compactInner)
+                    .padding(.trailing, DynamicIslandInset.compactOuter)
+                    .padding(.vertical, DynamicIslandInset.compactVertical)
             } minimal: {
                 // Shown when another activity is competing for the island. One value only.
                 QueueMinimalIndicator(state: context.state)
+                    .padding(.horizontal, DynamicIslandInset.compactOuter)
+                    .padding(.vertical, DynamicIslandInset.compactVertical)
             }
             .keylineTint(QueuePhaseStyle.accent(context.state.phase))
             .widgetURL(URL(string: "opennow://resume"))
@@ -106,6 +118,32 @@ struct QueueLiveActivityWidget: Widget {
         case .queued: return "\(base) · in queue"
         }
     }
+}
+
+// MARK: - Island metrics
+
+/// How far every presentation stays clear of the island's own edge.
+///
+/// The island is a capsule, so its corners curve away from the content well before the region's
+/// nominal bounds end — content flush against a region reads as if it has been cut by the pill. The
+/// first version pushed a 20-point ring with a centred 2-point stroke into a compact slot roughly
+/// 23 points tall and gave it no inset at all, so it was: the stroke sat half outside the frame it
+/// declared, and both ends touched the curve.
+///
+/// The fix has two halves — a stroke that stays inside its own bounds (see `QueueProgressRing`) and
+/// these insets. Outer edges get more than inner ones, because that is where the curve is.
+private enum DynamicIslandInset {
+    /// Toward the island's rounded end.
+    static let compactOuter: CGFloat = 4
+    /// Toward the sensor housing in the middle, which is a straight edge and needs less.
+    static let compactInner: CGFloat = 2
+    static let compactVertical: CGFloat = 1
+    /// Leaves the ring's 18-point outer bound sitting inside a slot of roughly 23 points.
+    static let compactRingDiameter: CGFloat = 18
+
+    static let expandedEdge: CGFloat = 8
+    static let expandedVertical: CGFloat = 2
+    static let expandedBottom: CGFloat = 4
 }
 
 // MARK: - Phase styling
@@ -182,8 +220,10 @@ private struct LockScreenQueueLiveActivityView: View {
                 }
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 15)
+        // The banner presentation has its own rounded container, so the same rule applies here as
+        // in the island: leave room for the corner rather than filling to the nominal edge.
+        .padding(.horizontal, 20)
+        .padding(.vertical, 17)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(context.attributes.gameTitle), \(context.state.headline)")
         .accessibilityValue(context.state.detail)
@@ -204,9 +244,13 @@ private struct QueueProgressRing<Content: View>: View {
 
     var body: some View {
         ZStack {
+            // `strokeBorder` and the matching inset keep the whole ring inside `diameter`. A plain
+            // `stroke` centres the line on the path, so half of it spills outside the frame — which
+            // is invisible on the lock screen and clipped by the pill in the compact island.
             Circle()
-                .stroke(Color.white.opacity(0.16), lineWidth: lineWidth)
+                .strokeBorder(Color.white.opacity(0.16), lineWidth: lineWidth)
             Circle()
+                .inset(by: lineWidth / 2)
                 .trim(from: 0, to: trimEnd)
                 .stroke(
                     QueuePhaseStyle.accent(phase),

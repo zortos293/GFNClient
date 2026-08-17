@@ -1,42 +1,74 @@
 import SwiftUI
 
+/// The single sweep that says "this whole screen is still loading".
+///
+/// Applied once, to a container — never per cell. The phase comes from the clock rather than a
+/// `@State` toggle with `repeatForever`, because every screen that shows a skeleton also observes
+/// the store, and each re-render used to re-evaluate the implicit animation and restart the sweep
+/// mid-flight. A timeline cannot be interrupted by anything a parent does.
 struct SkeletonShimmerModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var phase: CGFloat = -1
+
+    private let period: TimeInterval = 1.35
 
     func body(content: Content) -> some View {
         content
             .overlay {
-                GeometryReader { proxy in
-                    LinearGradient(
-                        colors: [
-                            .clear,
-                            Color.white.opacity(0.08),
-                            Color.white.opacity(0.34),
-                            Color.white.opacity(0.08),
-                            .clear
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .rotationEffect(.degrees(18))
-                    .frame(width: max(80, proxy.size.width * 0.48))
-                    .offset(x: phase * (proxy.size.width * 1.7))
-                    .blendMode(.screen)
+                if !reduceMotion {
+                    GeometryReader { proxy in
+                        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
+                            let phase = context.date.timeIntervalSinceReferenceDate
+                                .truncatingRemainder(dividingBy: period) / period
+                            LinearGradient(
+                                colors: [
+                                    .clear,
+                                    Color.white.opacity(0.08),
+                                    Color.white.opacity(0.30),
+                                    Color.white.opacity(0.08),
+                                    .clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .rotationEffect(.degrees(18))
+                            .frame(width: max(80, proxy.size.width * 0.48))
+                            .offset(x: (CGFloat(phase) * 2.4 - 1) * proxy.size.width * 1.7)
+                        }
+                        // The sweep is decoration laid over a skeleton, so nothing an ancestor
+                        // animates should reinterpolate a position already derived from the clock.
+                        .transaction { $0.animation = nil }
+                    }
+                    .allowsHitTesting(false)
                 }
-                .allowsHitTesting(false)
             }
             .mask(content)
-            .onAppear {
-                guard !reduceMotion else {
-                    phase = 0
-                    return
-                }
-                phase = -1
-                withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) {
-                    phase = 1.4
-                }
+    }
+}
+
+/// The circular chip a control sits on when it sits on box art.
+///
+/// A material is the obvious choice, and it was the first one — but a material is a backdrop
+/// capture, and a catalog page holds one per visible card. Twenty backdrop captures recomposited on
+/// every scroll frame was the most expensive thing the grid did, in exchange for a blur that is
+/// invisible behind an opaque glyph anyway. An opaque scrim with a hairline reads identically at
+/// 30–42 points and costs a single fill, with no offscreen pass and no shadow.
+struct ArtworkControlChipModifier: ViewModifier {
+    let diameter: CGFloat
+    var fill: Color = .black.opacity(0.46)
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: diameter, height: diameter)
+            .background(fill, in: Circle())
+            .overlay {
+                Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
             }
+    }
+}
+
+extension View {
+    func artworkControlChip(diameter: CGFloat, fill: Color = .black.opacity(0.46)) -> some View {
+        modifier(ArtworkControlChipModifier(diameter: diameter, fill: fill))
     }
 }
 

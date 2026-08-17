@@ -145,12 +145,7 @@ jobs:
         if: matrix.native_target == 'aarch64-pc-windows-msvc'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: arm64
-
-      - name: Configure Windows ARM64 CMake generator
-        if: matrix.native_target == 'aarch64-pc-windows-msvc'
-        shell: pwsh
-        run: '"CMAKE_GENERATOR=NMake Makefiles" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+          arch: amd64_arm64
 
       - name: Pin CMake for bundled SDL2
         if: runner.os == 'macOS'

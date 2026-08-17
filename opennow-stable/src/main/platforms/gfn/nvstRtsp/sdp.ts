@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 
+import { deriveSrtpSaltHex } from "./srtp";
+
 /** Minimal ANNOUNCE attrs from docs/research/nvst-announce-allowlist-1080p60.json */
 const ANNOUNCE_ALLOWLIST = {
   video: {
@@ -157,9 +159,7 @@ export function packSrtpMasterKeySalt(aesKeyHex: string, keyId: number): string 
   if (!/^[0-9A-F]{64}$/.test(key)) {
     throw new Error(`encryptionKey must be 64 hex chars, got length ${key.length}`);
   }
-  const id = keyId >>> 0;
-  const salt = id.toString(16).toUpperCase().padStart(24, "0");
-  return `${key}${salt}`;
+  return `${key}${deriveSrtpSaltHex(keyId)}`;
 }
 
 export function extractRuntimeEncryptionKey(
@@ -179,6 +179,28 @@ export function extractRuntimeEncryptionKey(
     keyId = keyId + 0x1_0000_0000;
   }
   return { aesKeyHex: keyMatch[1]!.toUpperCase(), keyId: keyId >>> 0 };
+}
+
+export function extractMediaControl(sdp: string, mediaType: string): string | null {
+  let currentMediaType: string | null = null;
+
+  for (const rawLine of sdp.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.startsWith("m=")) {
+      currentMediaType = line.slice(2).split(/\s+/, 1)[0]?.toLowerCase() ?? null;
+      continue;
+    }
+    if (currentMediaType !== mediaType.toLowerCase() || !line.startsWith("a=control:")) {
+      continue;
+    }
+
+    const control = line.slice("a=control:".length).trim();
+    if (control && control !== "*") {
+      return control;
+    }
+  }
+
+  return null;
 }
 
 export function generateClientEncryptionKey(): { aesKeyHex: string; keyId: number } {

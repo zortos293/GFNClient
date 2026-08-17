@@ -53,12 +53,20 @@ export interface NativeStreamerSessionContext {
   nvstVideo?: NvstVideoSession;
 }
 
+export type NvstSrtpProfile =
+  | "AEAD_AES_128_GCM"
+  | "AEAD_AES_256_GCM"
+  | "AES_CM_128_HMAC_SHA1_32"
+  | "AES_CM_128_HMAC_SHA1_80";
+
 export interface NvstVideoSession {
   clientUdpPort: number;
   videoPeerIp: string;
   videoPeerPort: number;
   srtpAesKeyHex: string;
   srtpKeyId: number;
+  srtpSaltHex: string;
+  srtpProfile?: NvstSrtpProfile;
   pingPayload?: string;
   codec?: string;
 }

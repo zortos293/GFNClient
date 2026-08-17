@@ -254,8 +254,15 @@ test("isNativeExternalRendererSupported is Windows-only", () => {
   assert.equal(status.runtime.message, NATIVE_STREAMER_UNSUPPORTED_PLATFORM_MESSAGE);
 });
 
-test("NVST transport stays disabled and normalizes to WebRTC", () => {
-  assert.equal(isNvstTransportSupported("win32"), false);
-  assert.equal(normalizeTransportModeForPlatform("nvst", "win32", "native"), "webrtc");
+test("NVST transport is limited to native sessions on supported desktop platforms", () => {
+  assert.equal(isNvstTransportSupported("win32"), true);
+  assert.equal(isNvstTransportSupported("darwin"), true);
+  assert.equal(isNvstTransportSupported("linux"), true);
+  assert.equal(isNvstTransportSupported("android"), false);
+  assert.equal(normalizeTransportModeForPlatform("nvst", "win32", "native"), "nvst");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "darwin", "native"), "nvst");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "linux", "native"), "nvst");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "linux", "web"), "webrtc");
+  assert.equal(normalizeTransportModeForPlatform("nvst", "android", "native"), "webrtc");
   assert.equal(normalizeTransportModeForPlatform("webrtc", "win32", "native"), "webrtc");
 });

@@ -33,9 +33,8 @@ export function isNativeExternalRendererSupported(platform: string): boolean {
 }
 
 export const isNativeDirectXBackendSupported = isNativeExternalRendererSupported;
-/** NVST is intentionally disabled until the transport is complete. */
-export function isNvstTransportSupported(_platform: string): boolean {
-  return false;
+export function isNvstTransportSupported(platform: string): boolean {
+  return isNativeStreamerSupportedPlatform(platform);
 }
 
 export function normalizeStreamClientModeForPlatform(mode: StreamClientMode, platform: string): StreamClientMode {
@@ -47,11 +46,15 @@ export function normalizeNativeExternalRendererForPlatform(enabled: boolean, pla
 }
 
 export function normalizeTransportModeForPlatform(
-  _mode: StreamTransportMode,
-  _platform: string,
-  _streamClientMode: StreamClientMode = "native",
+  mode: StreamTransportMode,
+  platform: string,
+  streamClientMode: StreamClientMode = "native",
 ): StreamTransportMode {
-  return "webrtc";
+  return mode === "nvst"
+    && streamClientMode === "native"
+    && isNvstTransportSupported(platform)
+    ? "nvst"
+    : "webrtc";
 }
 
 export function nativeStreamerFeatureModeToEnvValue(mode: NativeStreamerFeatureMode): "auto" | "0" | "1" {

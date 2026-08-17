@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   buildAnnounceSdp,
   extractHmacSeed,
+  extractMediaControl,
   extractRuntimeEncryptionKey,
   packSrtpMasterKeySalt,
 } from "./sdp";
@@ -43,4 +44,20 @@ test("extractRuntimeEncryptionKey reads DESCRIBE attrs", () => {
   const parsed = extractRuntimeEncryptionKey(sdp);
   assert.ok(parsed);
   assert.equal(parsed?.keyId, 2664076126);
+});
+
+test("extractMediaControl reads the advertised video track instead of session control", () => {
+  const sdp = [
+    "v=0",
+    "a=control:*",
+    "m=audio 0 RTP/AVP 97",
+    "a=control:streamid=audio/0/0",
+    "m=video 0 RTP/AVP 96",
+    "a=control:tracks/server-selected-video",
+    "",
+  ].join("\r\n");
+
+  assert.equal(extractMediaControl(sdp, "video"), "tracks/server-selected-video");
+  assert.equal(extractMediaControl(sdp, "audio"), "streamid=audio/0/0");
+  assert.equal(extractMediaControl(sdp, "control"), null);
 });

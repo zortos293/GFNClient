@@ -281,12 +281,7 @@ mod platform {
                 .map_err(|_| "macOS native surface height is out of range".to_owned())?;
             unsafe {
                 sdl2::sys::SDL_SetWindowPosition(self.raw_window, screen_rect.x, screen_rect.y);
-                if sdl2::sys::SDL_SetWindowSize(self.raw_window, width, height) != 0 {
-                    return Err(format!(
-                        "failed to size macOS native surface: {}",
-                        sdl2::get_error()
-                    ));
-                }
+                sdl2::sys::SDL_SetWindowSize(self.raw_window, width, height);
                 sdl2::sys::SDL_ShowWindow(self.raw_window);
             }
             self.child.orderFrontRegardless();

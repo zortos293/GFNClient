@@ -141,6 +141,12 @@ jobs:
         with:
           targets: ${{ matrix.native_target }}
 
+      - name: Setup Windows ARM64 build tools
+        if: matrix.native_target == 'aarch64-pc-windows-msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
       - name: Install dependencies
         run: npm ci
 

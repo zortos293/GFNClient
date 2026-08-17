@@ -334,6 +334,12 @@ jobs:
         if: matrix.native_build == 'true'
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Windows ARM64 build tools
+        if: matrix.native_target == 'aarch64-pc-windows-msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
       - name: Install Rust target
         if: matrix.native_build == 'true' && matrix.native_target != ''
         run: rustup target add ${{ matrix.native_target }}

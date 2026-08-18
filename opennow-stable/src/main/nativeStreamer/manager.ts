@@ -581,9 +581,10 @@ export class NativeStreamerManager {
     this.inputBackpressureWarned = false;
 
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
+    child.stdout.on("data", (chunk: string) => this.handleStdout(child, chunk));
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
+      if (this.child !== child) return;
       for (const line of chunk.split(/\r?\n/)) {
         if (line.trim()) {
           this.appendStderr(line);
@@ -681,7 +682,8 @@ export class NativeStreamerManager {
     });
   }
 
-  private handleStdout(chunk: string): void {
+  private handleStdout(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.child !== child) return;
     this.stdoutBuffer += chunk;
     const lines = this.stdoutBuffer.split(/\r?\n/);
     this.stdoutBuffer = lines.pop() ?? "";

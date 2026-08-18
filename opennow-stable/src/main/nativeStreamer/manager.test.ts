@@ -37,6 +37,7 @@ interface FakeChild {
 
 interface ManagerInternals {
   child: ChildProcessWithoutNullStreams | null;
+  stdoutBuffer: string;
   activeSessionId: string | null;
   capabilities: NativeStreamerCapabilities | null;
   pending: Map<string, unknown>;
@@ -45,8 +46,22 @@ interface ManagerInternals {
     timeoutMs: number,
   ): Promise<NativeStreamerResponse>;
   installStdinErrorHandler(child: ChildProcessWithoutNullStreams): void;
+  handleStdout(child: ChildProcessWithoutNullStreams, chunk: string): void;
   handleEvent(message: NativeStreamerEvent): void;
 }
+
+test("stdout from a replaced native process cannot affect the current session", () => {
+  const { internals } = createManager();
+  const current = createFakeChild();
+  const stale = createFakeChild();
+  internals.child = current.child;
+
+  internals.handleStdout(stale.child, "stale partial output");
+  assert.equal(internals.stdoutBuffer, "");
+
+  internals.handleStdout(current.child, "current partial output");
+  assert.equal(internals.stdoutBuffer, "current partial output");
+});
 
 function createFakeChild(): FakeChild {
   const stdin = new FakeStdin();

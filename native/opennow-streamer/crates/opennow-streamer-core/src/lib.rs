@@ -1345,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn offer_is_reachable_and_reports_typed_ice_server_limitation() {
+    fn offer_negotiates_directly_with_configured_ice_services() {
         let (sender, _receiver) = std::sync::mpsc::channel();
         let (media_sender, _media_receiver) = std::sync::mpsc::sync_channel(4);
         let mut engine = Engine::with_media_consumer(sender, media_sender);
@@ -1368,16 +1368,15 @@ mod tests {
             "id": "offer",
             "type": "offer",
             "context": context,
-            "sdp": "v=0\r\n"
+            "sdp": synthetic_offer()
         })));
-        assert_eq!(responses[0]["type"], "error");
-        assert_eq!(responses[0]["code"], "ice-servers-unsupported");
+        assert_eq!(responses[0]["type"], "answer");
         assert!(
-            responses[0]["message"]
+            responses[0]["answer"]["sdp"]
                 .as_str()
-                .is_some_and(|message| { message.contains("stun") && message.contains("turn") })
+                .is_some_and(|sdp| sdp.contains("m=video") && !sdp.contains("m=video 0"))
         );
-        assert_eq!(lifecycle_state(&engine), State::Prepared);
+        assert_eq!(lifecycle_state(&engine), State::Negotiating);
     }
 
     #[test]

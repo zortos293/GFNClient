@@ -49,8 +49,6 @@ pub enum TransportError {
         #[source]
         source: std::io::Error,
     },
-    #[error("STUN/TURN candidate gathering is not implemented; configured ICE schemes: {schemes}")]
-    IceServersUnsupported { schemes: String },
     #[error("failed to bind media UDP socket: {0}")]
     Bind(#[source] std::io::Error),
     #[error("invalid WebRTC offer: {0}")]
@@ -78,7 +76,6 @@ impl TransportError {
             Self::InvalidMediaEndpoint(_) | Self::ResolveMediaEndpoint { .. } => {
                 "invalid-media-endpoint"
             }
-            Self::IceServersUnsupported { .. } => "ice-servers-unsupported",
             Self::Bind(_) | Self::LocalCandidate(_) => "local-transport-failed",
             Self::Offer(_) => "invalid-offer",
             Self::RemoteCandidate(_) => "invalid-remote-candidate",
@@ -220,7 +217,11 @@ pub fn negotiate(
 ) -> Result<NegotiatedTransport, TransportError> {
     install_crypto();
 
-    reject_unsupported_ice_servers(&session.ice_servers)?;
+    if let Some(schemes) = configured_ice_schemes(&session.ice_servers) {
+        let _ = events.send(TransportEvent::Log(format!(
+            "Configured ICE services ({schemes}) are not gathered locally; continuing with a direct host candidate for the ICE-lite GFN peer"
+        )));
+    }
     let normalized_offer = normalize_offer_endpoints(offer_sdp, session)?;
     let server_ip = match normalized_offer.media_endpoint {
         Some(endpoint) => endpoint.ip(),
@@ -418,7 +419,7 @@ fn dashed_ipv4_prefix(host: &str) -> Option<std::net::Ipv4Addr> {
     Some(octets.into())
 }
 
-fn reject_unsupported_ice_servers(servers: &[IceServer]) -> Result<(), TransportError> {
+fn configured_ice_schemes(servers: &[IceServer]) -> Option<String> {
     let mut schemes = servers
         .iter()
         .flat_map(|server| &server.urls)
@@ -429,13 +430,11 @@ fn reject_unsupported_ice_servers(servers: &[IceServer]) -> Result<(), Transport
         })
         .collect::<Vec<_>>();
     if schemes.is_empty() {
-        return Ok(());
+        return None;
     }
     schemes.sort_unstable();
     schemes.dedup();
-    Err(TransportError::IceServersUnsupported {
-        schemes: schemes.join(", "),
-    })
+    Some(schemes.join(", "))
 }
 
 fn normalize_remote_candidate(candidate: &str, endpoint: Option<SocketAddr>) -> String {
@@ -845,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_configured_stun_and_turn_as_typed_unsupported_error() {
+    fn summarizes_configured_ice_schemes_without_credentials() {
         let servers: Vec<IceServer> = serde_json::from_value(json!([
             {
                 "urls": ["stun:stun.synthetic.invalid:3478"],
@@ -858,11 +857,10 @@ mod tests {
         ]))
         .expect("ICE servers");
 
-        let error = reject_unsupported_ice_servers(&servers).expect_err("unsupported servers");
+        let schemes = configured_ice_schemes(&servers).expect("configured schemes");
 
-        assert_eq!(error.code(), "ice-servers-unsupported");
-        assert!(error.to_string().contains("stun, turns"));
-        assert!(!error.to_string().contains("synthetic-secret"));
+        assert_eq!(schemes, "stun, turns");
+        assert!(!schemes.contains("synthetic-secret"));
     }
 
     #[test]

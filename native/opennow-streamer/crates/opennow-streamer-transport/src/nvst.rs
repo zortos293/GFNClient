@@ -45,6 +45,8 @@ const MAX_PING_BYTES: usize = 512;
 const FLAG_CONTAINS_PIC_DATA: u8 = 0x01;
 const FLAG_EOF: u8 = 0x02;
 const FLAG_SOF: u8 = 0x04;
+const STREAM_PACKET_INDEX_MASK: u32 = 0x00ff_ffff;
+const MAX_GS_FRAME_HEADER_BYTES: usize = 64;
 
 type Aes256Ctr = Ctr128BE<Aes256>;
 type Aes128Ctr = Ctr128BE<Aes128>;
@@ -1023,9 +1025,10 @@ impl NvVideoPacket {
             return Err(RtpParseError::MissingNvVideoHeader);
         }
         let header = Self {
-            stream_packet_index: u32::from_le_bytes(
+            stream_packet_index: (u32::from_le_bytes(
                 payload[0..4].try_into().expect("length checked"),
-            ),
+            ) >> 8)
+                & STREAM_PACKET_INDEX_MASK,
             frame_index: u32::from_le_bytes(payload[4..8].try_into().expect("length checked")),
             flags: payload[8],
         };
@@ -1081,24 +1084,32 @@ impl H264AccessUnitAssembler {
         }
         if header.is_start_of_frame() {
             self.reset();
-            if !starts_with_annex_b_start_code(payload) {
+            let Some(payload) = h264_picture_payload(payload) else {
                 return Err(NvstDropReason::MissingAnnexBStartCode);
-            }
+            };
             self.current_frame = Some(header.frame_index);
             self.first_stream_packet_index = Some(header.stream_packet_index);
+            let remaining = self.max_access_unit_bytes;
+            if payload.len() > remaining {
+                self.reset();
+                return Err(NvstDropReason::AccessUnitTooLarge {
+                    limit: self.max_access_unit_bytes,
+                });
+            }
+            self.bytes.extend_from_slice(payload);
         } else if self.current_frame != Some(header.frame_index) {
             self.reset();
             return Err(NvstDropReason::AwaitingStartOfFrame);
+        } else {
+            let remaining = self.max_access_unit_bytes.saturating_sub(self.bytes.len());
+            if payload.len() > remaining {
+                self.reset();
+                return Err(NvstDropReason::AccessUnitTooLarge {
+                    limit: self.max_access_unit_bytes,
+                });
+            }
+            self.bytes.extend_from_slice(payload);
         }
-
-        let remaining = self.max_access_unit_bytes.saturating_sub(self.bytes.len());
-        if payload.len() > remaining {
-            self.reset();
-            return Err(NvstDropReason::AccessUnitTooLarge {
-                limit: self.max_access_unit_bytes,
-            });
-        }
-        self.bytes.extend_from_slice(payload);
         if !header.is_end_of_frame() {
             return Ok(None);
         }
@@ -1119,8 +1130,10 @@ impl H264AccessUnitAssembler {
     }
 }
 
-fn starts_with_annex_b_start_code(payload: &[u8]) -> bool {
-    payload.starts_with(&[0, 0, 1]) || payload.starts_with(&[0, 0, 0, 1])
+fn h264_picture_payload(payload: &[u8]) -> Option<&[u8]> {
+    let search_len = payload.len().min(MAX_GS_FRAME_HEADER_BYTES + 4);
+    let (offset, _) = find_annex_b_start_code(&payload[..search_len])?;
+    Some(&payload[offset..])
 }
 
 fn h264_access_unit_is_keyframe(bytes: &[u8]) -> bool {
@@ -2009,6 +2022,56 @@ mod tests {
             header.payload(&packet).expect("padding removed"),
             &[1, 2, 3, 4]
         );
+    }
+
+    #[test]
+    fn parses_the_wire_stream_packet_index_as_a_24_bit_value() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(0x12_34_56_u32 << 8).to_le_bytes());
+        payload.extend_from_slice(&7_u32.to_le_bytes());
+        payload.push(FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA);
+        payload.extend_from_slice(&[0; 7]);
+
+        let (header, media) = NvVideoPacket::parse(&payload).expect("NV video header");
+        assert_eq!(header.stream_packet_index, 0x12_34_56);
+        assert_eq!(header.frame_index, 7);
+        assert!(media.is_empty());
+    }
+
+    #[test]
+    fn strips_the_gamestream_frame_header_before_annex_b_video() {
+        let header = NvVideoPacket {
+            stream_packet_index: 1,
+            frame_index: 9,
+            flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+        };
+        let mut payload = vec![0x01, 0, 0, 2, 0, 0, 0, 0];
+        payload.extend_from_slice(&[0, 0, 0, 1, 0x67, 0xaa, 0, 0, 1, 0x65, 0xbb]);
+
+        let mut assembler = H264AccessUnitAssembler::new(4096);
+        let frame = assembler
+            .push(header, 90_000, &payload)
+            .expect("valid frame")
+            .expect("complete frame");
+
+        assert_eq!(frame.bytes, [0, 0, 0, 1, 0x67, 0xaa, 0, 0, 1, 0x65, 0xbb]);
+        assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn rejects_a_start_packet_without_nearby_annex_b_video() {
+        let header = NvVideoPacket {
+            stream_packet_index: 1,
+            frame_index: 9,
+            flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+        };
+        let payload = vec![0x81; MAX_GS_FRAME_HEADER_BYTES + 8];
+        let mut assembler = H264AccessUnitAssembler::new(4096);
+
+        assert!(matches!(
+            assembler.push(header, 90_000, &payload),
+            Err(NvstDropReason::MissingAnnexBStartCode)
+        ));
     }
 
     #[test]

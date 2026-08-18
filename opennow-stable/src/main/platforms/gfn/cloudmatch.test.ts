@@ -212,6 +212,11 @@ test("CloudMatch requests secure RTSPS for explicit classic native sessions", ()
   );
 
   assert.equal(nativeBody.sessionRequestData.secureRTSPSupported, true);
+  assert.equal(nativeBody.sessionRequestData.clientPlatformName, "Linux");
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.codec, undefined);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.maxBitrateKbps, undefined);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.dynamicStreamingMode, undefined);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.audioChannelCount, undefined);
   assert.equal(
     nativeBody.sessionRequestData.metaData.some((entry) => entry.key === "GSStreamerType"),
     false,

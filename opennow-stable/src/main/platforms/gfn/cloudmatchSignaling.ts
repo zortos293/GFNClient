@@ -122,7 +122,11 @@ export function resolveSignaling(response: CloudMatchResponse): {
 
   const rtspsHost =
     connections
-      .filter((connection) => connection.usage === 16)
+      .filter((connection) =>
+        connection.usage === 16
+        || connection.appLevelProtocol === 6
+        || (typeof connection.resourcePath === "string" && /^rtsps?:\/\//i.test(connection.resourcePath)),
+      )
       .map((connection) => connection.ip
         ?? (typeof connection.resourcePath === "string"
           ? extractHostFromUrl(connection.resourcePath)

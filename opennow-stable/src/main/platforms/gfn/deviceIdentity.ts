@@ -18,29 +18,27 @@ export interface GfnDeviceIdentity {
   clientPlatformName: string;
 }
 
-// OpenNOW historically always sent clientPlatformName "windows" on the desktop
-// CloudMatch path (even on macOS/Linux). Keep that unless Steam Deck spoof is on.
 const DESKTOP_IDENTITY_BY_PLATFORM: Record<"win32" | "darwin" | "linux", GfnDeviceIdentity> = {
   win32: {
     deviceOs: "WINDOWS",
     deviceType: "DESKTOP",
     deviceMake: "UNKNOWN",
     deviceModel: "UNKNOWN",
-    clientPlatformName: "windows",
+    clientPlatformName: "Windows",
   },
   darwin: {
     deviceOs: "MACOS",
     deviceType: "DESKTOP",
     deviceMake: "UNKNOWN",
     deviceModel: "UNKNOWN",
-    clientPlatformName: "windows",
+    clientPlatformName: "MacOS",
   },
   linux: {
     deviceOs: "LINUX",
     deviceType: "DESKTOP",
     deviceMake: "UNKNOWN",
     deviceModel: "UNKNOWN",
-    clientPlatformName: "windows",
+    clientPlatformName: "Linux",
   },
 };
 

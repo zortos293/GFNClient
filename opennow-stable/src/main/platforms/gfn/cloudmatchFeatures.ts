@@ -26,10 +26,11 @@ export function buildRequestedStreamingFeatures(
   chromaFormat: number,
   _hdrEnabled: boolean,
   supportedCodecs?: readonly VideoCodec[],
+  transportMode: StreamSettings["transportMode"] = settings.transportMode,
 ): CloudMatchRequest["sessionRequestData"]["requestedStreamingFeatures"] {
   const cloudGsync = settings.enableCloudGsync;
 
-  return {
+  const commonFeatures = {
     reflex: shouldRequestReflex(settings),
     bitDepth,
     cloudGsync,
@@ -42,6 +43,14 @@ export function buildRequestedStreamingFeatures(
     prefilterSharpness: 0,
     prefilterNoiseReduction: 0,
     hudStreamingMode: 0,
+  };
+
+  if (transportMode === "nvst") {
+    return commonFeatures;
+  }
+
+  return {
+    ...commonFeatures,
     maxBitrateKbps: Math.round(settings.maxBitrateMbps * 1000),
     codec: resolveRequestedCodecWireValue(
       codecWireValue(settings.codec),

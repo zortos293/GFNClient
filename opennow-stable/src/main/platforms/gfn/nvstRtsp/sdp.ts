@@ -37,8 +37,6 @@ const ANNOUNCE_ALLOWLIST = {
     "drc.enable": "0",
     "dfc.adjustResAndFps": "0",
     calculateAvgVideoStreamingBitrate: "1",
-    "bw.maximumBitrateKbps": "100000",
-    "bw.minimumBitrateKbps": "1000",
   },
   packetPacing: {
     version: "3",
@@ -87,6 +85,7 @@ export function buildAnnounceSdp(
   options: {
     resolution?: string;
     fps?: number;
+    videoPort?: number;
     encryptionKeyHex?: string;
     encryptionKeyId?: number;
   } = {},
@@ -97,9 +96,8 @@ export function buildAnnounceSdp(
 
   const lines: string[] = [
     "v=0",
-    "o=- 0 0 IN IP4 127.0.0.1",
-    "s=OpenNOW NVST Handshake",
-    "t=0 0",
+    "o=android 0 14 IN IPv4 127.0.0.1",
+    "s=NVIDIA Streaming Client",
   ];
 
   const pushGroup = (
@@ -141,6 +139,8 @@ export function buildAnnounceSdp(
   }
   // Control protocol preference evidenced in geronimo: udp_ag (not encrypted).
   lines.push("a=x-nv-general.controlProtocol:udp_ag");
+  lines.push("t=0 0");
+  lines.push(`m=video ${options.videoPort ?? 5004}  `);
   lines.push("");
   return lines.join("\r\n");
 }

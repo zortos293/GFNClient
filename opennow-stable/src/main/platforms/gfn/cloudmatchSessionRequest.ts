@@ -130,6 +130,7 @@ export function buildSessionRequestBody(
         chromaFormat,
         hdrEnabled,
         input.supportedCodecs,
+        input.settings.transportMode,
       ),
     },
   };

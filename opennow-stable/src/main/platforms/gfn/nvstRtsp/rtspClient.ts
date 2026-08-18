@@ -2,8 +2,6 @@ import type { Duplex } from "node:stream";
 
 import { connectNvstWss, encodeWsTextFrame, WsFrameReader } from "./websocketTransport";
 
-const GS_VERSION = "14.2";
-
 export interface ParsedRtspResponse {
   statusCode: number;
   statusText: string;
@@ -127,7 +125,6 @@ export class RtspOverWssClient {
     const headers: Record<string, string> = {
       CSeq: String(this.cseq),
       "Request-Id": String(this.cseq),
-      "X-GS-Version": GS_VERSION,
       ...extraHeaders,
     };
     if (body.length > 0) {

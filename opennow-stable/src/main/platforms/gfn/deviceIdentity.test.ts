@@ -7,6 +7,8 @@ import {
   buildGfnCloudMatchHeaders,
   buildGfnGraphQlHeaders,
   buildGfnLcarsHeaders,
+  gfnUserAgentForPlatform,
+  LCARS_CLIENT_ID,
 } from "./clientHeaders";
 import {
   STEAM_DECK_DEVICE_IDENTITY,
@@ -21,7 +23,24 @@ test("resolveGfnDeviceIdentity defaults to host desktop DESKTOP/UNKNOWN", () => 
   assert.equal(identity.deviceType, "DESKTOP");
   assert.equal(identity.deviceMake, "UNKNOWN");
   assert.equal(identity.deviceModel, "UNKNOWN");
-  assert.equal(identity.clientPlatformName, "windows");
+  assert.equal(identity.clientPlatformName, "Windows");
+});
+
+test("desktop identity uses native platform names", () => {
+  assert.equal(resolveGfnDeviceIdentity({ platform: "darwin" }).clientPlatformName, "MacOS");
+  assert.equal(resolveGfnDeviceIdentity({ platform: "linux" }).clientPlatformName, "Linux");
+});
+
+test("Linux requests use the packaged native CEF product identity", () => {
+  const userAgent = gfnUserAgentForPlatform("linux");
+  assert.match(userAgent, /\(X11; Linux x86_64\)/);
+  assert.match(userAgent, /NVIDIACEFClient\/gfn_release\/2f4a4c46/);
+  assert.match(userAgent, /GFN-PC\/2\.0\.80\.173/);
+});
+
+test("CloudMatch defaults to the stable LCARS client identity", () => {
+  const headers = buildGfnCloudMatchHeaders({ token: "token", deviceId: "device" });
+  assert.equal(headers["nv-client-id"], LCARS_CLIENT_ID);
 });
 
 test("resolveGfnDeviceIdentity Steam Deck profile matches official headers", () => {

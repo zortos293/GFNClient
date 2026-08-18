@@ -21,6 +21,7 @@ import { SessionError } from "./errorCodes";
 import {
   buildGfnCloudMatchClaimHeaders,
   buildGfnCloudMatchHeaders,
+  LCARS_CLIENT_ID,
 } from "./clientHeaders";
 import { getStableDeviceId } from "./deviceId";
 import {
@@ -90,7 +91,7 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   }
 
   // Generate client/device IDs once for the entire session lifecycle
-  const clientId = crypto.randomUUID();
+  const clientId = LCARS_CLIENT_ID;
   const deviceId = getStableDeviceId();
 
   const requestedBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
@@ -144,7 +145,7 @@ export async function pollSession(input: SessionPollRequest): Promise<SessionInf
   }
 
   // Use provided client/device IDs if available (should match session creation)
-  const clientId = input.clientId ?? crypto.randomUUID();
+  const clientId = input.clientId ?? LCARS_CLIENT_ID;
   const deviceId = input.deviceId ?? crypto.randomUUID();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
@@ -208,7 +209,7 @@ export async function reportSessionAd(input: SessionAdReportRequest): Promise<Se
     throw new Error("Missing token for ad update");
   }
 
-  const clientId = input.clientId ?? crypto.randomUUID();
+  const clientId = input.clientId ?? LCARS_CLIENT_ID;
   const deviceId = input.deviceId ?? crypto.randomUUID();
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const url = `${base}/v2/session/${input.sessionId}`;
@@ -275,7 +276,7 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
   }
 
   // Use provided client/device IDs if available (should match session creation)
-  const clientId = input.clientId ?? crypto.randomUUID();
+  const clientId = input.clientId ?? LCARS_CLIENT_ID;
   const deviceId = input.deviceId ?? crypto.randomUUID();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
@@ -464,7 +465,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
   }
 
   const deviceId = input.deviceId ?? getStableDeviceId();
-  const clientId = input.clientId ?? crypto.randomUUID();
+  const clientId = input.clientId ?? LCARS_CLIENT_ID;
 
   // Provide default values for optional parameters
   const appId = input.appId ?? "0";
@@ -534,7 +535,6 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       preClaimStatus = validationPayload.session?.status ?? 0;
       const errorCode = validationPayload.session?.errorCode ?? 0;
       console.log(`[CloudMatch] claimSession: pre-claim validation status=${preClaimStatus}, errorCode=${errorCode}`);
-      console.log(`[CloudMatch] claimSession: validation response (first 1000 chars): ${validationText.slice(0, 1000)}`);
       if (preClaimStatus === 1) {
         console.log(`[CloudMatch] claimSession: session is still launching (status=1), skipping RESUME claim — polling directly to ready state`);
       } else if (

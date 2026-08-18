@@ -74,6 +74,10 @@ const DESCRIBE_SDP = [
   "a=x-nv-runtime.encryptionKeyId:42",
   "m=video 0 RTP/AVP 96",
   "a=control:tracks/actual-video-track",
+  "m=audio 0 RTP/AVP 97",
+  "a=control:tracks/actual-audio-track",
+  "m=application 0 RTP/AVP 98",
+  "a=control:streamid=control/0",
   "",
 ].join("\r\n");
 
@@ -84,6 +88,7 @@ function createNegotiationHarness(
   client: FakeRtspClient;
   dependencies: NvstRtspNegotiationDependencies;
 } {
+  let nextUdpPort = 45678;
   const client = new FakeRtspClient((method) => {
     const overridden = override?.(method);
     if (overridden) {
@@ -106,12 +111,16 @@ function createNegotiationHarness(
     client,
     dependencies: {
       createClient: () => client,
-      reserveUdpPort: async () => ({
-        port: 45678,
-        release: async () => {
-          events.push("udp-release");
-        },
-      }),
+      reserveUdpPort: async () => {
+        const port = nextUdpPort;
+        nextUdpPort += 2;
+        return {
+          port,
+          release: async () => {
+            events.push("udp-release");
+          },
+        };
+      },
     },
   };
 }
@@ -131,7 +140,7 @@ test("rtspsUrlToWssUrl is host:port with no path (empty upgrade path is manual)"
   );
 });
 
-test("collectRtspsEndpoints keeps usage=16 RTSPS paths and ignores signaling", () => {
+test("collectRtspsEndpoints keeps current and legacy RTSPS descriptors and ignores signaling paths", () => {
   const endpoints = collectRtspsEndpoints(
     [
       {
@@ -146,8 +155,14 @@ test("collectRtspsEndpoints keeps usage=16 RTSPS paths and ignores signaling", (
       },
       {
         usage: 14,
+        appLevelProtocol: 6,
+        port: 48323,
+        resourcePath: "rtsps://legacy.example:48323",
+      },
+      {
+        usage: 14,
         port: 443,
-        resourcePath: "rtsps://signal.example/nvst/",
+        resourcePath: "/nvst/",
       },
     ],
     "host.example",
@@ -155,6 +170,7 @@ test("collectRtspsEndpoints keeps usage=16 RTSPS paths and ignores signaling", (
   assert.deepEqual(endpoints, [
     "rtsps://host.example:322",
     "rtsps://host.example:48322",
+    "rtsps://legacy.example:48323",
   ]);
 });
 
@@ -200,9 +216,15 @@ test("negotiation retains RTSPS control and releases UDP immediately before nati
   }, dependencies);
   events.push("native-start");
 
-  assert.deepEqual(events.slice(-3), ["request:PLAY", "udp-release", "native-start"]);
+  assert.deepEqual(events.slice(-5), [
+    "request:PLAY",
+    "udp-release",
+    "udp-release",
+    "udp-release",
+    "native-start",
+  ]);
   assert.equal(client.closed, false);
-  assert.equal(negotiated.videoSession.clientUdpPort, 45678);
+  assert.equal(negotiated.videoSession.clientUdpPort, 45680);
   assert.equal(negotiated.videoSession.videoPeerIp, "192.0.2.4");
   assert.equal(negotiated.videoSession.codec, "H265");
   assert.equal(negotiated.videoSession.srtpSaltHex, "00000000000000000000002A");
@@ -210,9 +232,22 @@ test("negotiation retains RTSPS control and releases UDP immediately before nati
   assert.equal(negotiated.srtp.saltHex, "00000000000000000000002A");
   assert.equal(negotiated.srtp.profile, undefined);
   assert.equal(
-    client.requests.find(({ method }) => method === "SETUP")?.uri,
-    "rtsps://host.example:322/session/base/tracks/actual-video-track",
+    client.requests.find(({ method }) => method === "OPTIONS")?.uri,
+    "rtsp://host.example:322",
   );
+  assert.equal(
+    client.requests.find(({ method, uri }) => method === "SETUP" && uri.includes("video"))?.uri,
+    "tracks/actual-video-track",
+  );
+  assert.deepEqual(
+    client.requests.filter(({ method }) => method === "SETUP").map(({ uri }) => uri),
+    ["tracks/actual-audio-track", "tracks/actual-video-track", "streamid=control/0"],
+  );
+  assert.equal(
+    client.requests.find(({ method }) => method === "ANNOUNCE")?.uri,
+    "streamid=control/0",
+  );
+  assert.equal(client.requests.find(({ method }) => method === "PLAY")?.uri, "/");
 
   await negotiated.release("test stop");
   await negotiated.release("duplicate stop");

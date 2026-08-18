@@ -1,7 +1,7 @@
 /**
  * Classic NVST RTSPS-over-WSS handshake (GO-with-Moonlight-hypothesis).
  *
- * Runs OPTIONS → DESCRIBE → SETUP advertised video control → ANNOUNCE → PLAY.
+ * Runs OPTIONS → DESCRIBE → SETUP advertised video, audio, and control streams → ANNOUNCE → PLAY.
  * Extracts or generates runtime.encryptionKey for SRTP, then returns nvstVideo
  * handoff fields for the native UDP receiver. The UDP reservation is released
  * immediately before handoff so native can rebind clientUdpPort, while the
@@ -108,6 +108,8 @@ export interface NvstRtspProbeResult {
 export type NvstRtspNegotiationErrorCode =
   | "missing-rtsps-endpoint"
   | "missing-video-control"
+  | "missing-audio-control"
+  | "missing-control-stream"
   | "missing-video-peer"
   | "conflicting-srtp-profile"
   | "negotiation-failed";
@@ -162,22 +164,27 @@ export function rtspsUrlToWssUrl(rtspsUrl: string): string {
 }
 
 export function collectRtspsEndpoints(
-  connections: Array<{ usage?: number; port?: number; resourcePath?: string | null }>,
+  connections: Array<{
+    usage?: number;
+    port?: number;
+    appLevelProtocol?: number;
+    resourcePath?: string | null;
+  }>,
   fallbackHost?: string | null,
 ): string[] {
   const endpoints: string[] = [];
   const seen = new Set<string>();
 
   for (const conn of connections) {
-    if (conn.usage !== 16) {
-      continue;
-    }
     const resourcePath = typeof conn.resourcePath === "string" ? conn.resourcePath.trim() : "";
     if (/^rtsps?:\/\//i.test(resourcePath)) {
       if (!seen.has(resourcePath)) {
         seen.add(resourcePath);
         endpoints.push(resourcePath);
       }
+      continue;
+    }
+    if (conn.usage !== 16 && conn.appLevelProtocol !== 6) {
       continue;
     }
     if (!fallbackHost || !conn.port) {
@@ -292,24 +299,32 @@ export async function negotiateNvstRtspSession(
     (message) => log(input.onLog, message),
   );
   let udp: NvstUdpPortReservation | null = null;
+  let audioUdp: NvstUdpPortReservation | null = null;
+  let controlUdp: NvstUdpPortReservation | null = null;
   let session: string | null = null;
 
   try {
     log(
       input.onLog,
-      `Connecting RTSPS WSS ${wssUrl} via raw-TLS Bifrost-shaped upgrade (GET / then /v2/session/<id>) (session ${input.sessionId})`,
+      `Connecting RTSPS WSS ${wssUrl} via raw-TLS Bifrost-shaped upgrade (GET /rtsp) (session ${input.sessionId})`,
     );
     await client.connect(input.sessionId);
     steps.push("wss-open");
 
-    const options = await client.request("OPTIONS", endpoint);
+    const rtspTarget = `rtsp://${parsedEndpoint.host}`;
+    const commonHeaders = {
+      "X-GS-Version": "14.2",
+      Host: parsedEndpoint.host,
+    };
+    const options = await client.request("OPTIONS", rtspTarget, commonHeaders);
     if (options.statusCode !== 200) {
       throw new Error(`OPTIONS failed: ${options.statusCode} ${options.statusText}`);
     }
     steps.push("options");
     log(input.onLog, `OPTIONS ok (X-GS-Version=${header(options.headers, "x-gs-version") ?? "n/a"})`);
 
-    const describe = await client.request("DESCRIBE", endpoint, {
+    const describe = await client.request("DESCRIBE", rtspTarget, {
+      ...commonHeaders,
       Accept: "application/sdp",
     });
     if (describe.statusCode !== 200) {
@@ -327,10 +342,25 @@ export async function negotiateNvstRtspSession(
         "DESCRIBE response did not advertise a video media control URI",
       );
     }
-    const controlBase = header(describe.headers, "content-base")
-      ?? header(describe.headers, "content-location")
-      ?? endpoint;
-    const videoControlUri = resolveRtspControlUri(controlBase, videoControl);
+    const audioControl = extractMediaControl(describe.body, "audio");
+    if (!audioControl) {
+      throw new NvstRtspNegotiationError(
+        "missing-audio-control",
+        "DESCRIBE response did not advertise an audio media control URI",
+      );
+    }
+    const describedControls = [...describe.body.matchAll(/^a=control:(.+)$/gm)]
+      .map((match) => match[1]?.trim())
+      .filter((control): control is string => Boolean(control));
+    const controlStream = describedControls.find((control) => /(?:^|[=/])control\/0(?:\/|$)/i.test(control));
+    if (!controlStream) {
+      throw new NvstRtspNegotiationError(
+        "missing-control-stream",
+        "DESCRIBE response did not advertise the primary control/0 stream",
+      );
+    }
+    log(input.onLog, `DESCRIBE media controls: ${describedControls.join(", ") || "none"}`);
+    const videoControlUri = videoControl;
     const hmacSeed = extractHmacSeed(describe.body);
     const describedSrtpProfile = extractAdvertisedSrtpProfileFromSdp(describe.body);
     const describedKey = extractRuntimeEncryptionKey(describe.body);
@@ -355,16 +385,33 @@ export async function negotiateNvstRtspSession(
       );
     }
 
+    audioUdp = await dependencies.reserveUdpPort();
+    const audioClientPort = audioUdp.port;
+    const audioSetup = await client.request("SETUP", audioControl, {
+      ...commonHeaders,
+      Session: session,
+      Transport: `unicast;X-GS-ClientPort=${audioClientPort}-${audioClientPort + 1}`,
+      "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
+    });
+    if (audioSetup.statusCode !== 200) {
+      throw new Error(`SETUP audio failed: ${audioSetup.statusCode} ${audioSetup.statusText}`);
+    }
+    steps.push("setup-audio");
+    session = header(audioSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
+    log(input.onLog, `SETUP ${audioControl} ok (clientPort=${audioClientPort})`);
+
     udp = await dependencies.reserveUdpPort();
     const clientPort = udp.port;
     const setup = await client.request("SETUP", videoControlUri, {
-      Session: session,
+      ...commonHeaders,
       Transport: `unicast;X-GS-ClientPort=${clientPort}-${clientPort + 1}`,
+      "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
     });
     if (setup.statusCode !== 200) {
       throw new Error(`SETUP video failed: ${setup.statusCode} ${setup.statusText}`);
     }
     steps.push("setup-video");
+    session = header(setup.headers, "session")?.split(";")[0]?.trim() ?? session;
     const setupSrtpProfile = extractAdvertisedSrtpProfileFromHeaders(setup.headers);
     if (
       describedSrtpProfile
@@ -392,6 +439,21 @@ export async function negotiateNvstRtspSession(
       `SETUP ${videoControl} ok (clientPort=${clientPort}, peer=${videoPeer.ip}:${videoPeer.port}, srtpProfile=${srtpProfile ?? "legacy-default"})`,
     );
 
+    controlUdp = await dependencies.reserveUdpPort();
+    const controlClientPort = controlUdp.port;
+    const controlSetup = await client.request("SETUP", controlStream, {
+      ...commonHeaders,
+      Session: session,
+      Transport: `unicast;X-GS-ClientPort=${controlClientPort}-${controlClientPort + 1}`,
+      "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
+    });
+    if (controlSetup.statusCode !== 200) {
+      throw new Error(`SETUP control failed: ${controlSetup.statusCode} ${controlSetup.statusText}`);
+    }
+    steps.push("setup-control");
+    session = header(controlSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
+    log(input.onLog, `SETUP ${controlStream} ok (clientPort=${controlClientPort})`);
+
     const saltHex = deriveSrtpSaltHex(encryptionKeyId);
     const srtp: NvstSrtpMaterial = {
       aesKeyHex: encryptionKeyHex,
@@ -403,14 +465,16 @@ export async function negotiateNvstRtspSession(
     };
     const announce = await client.request(
       "ANNOUNCE",
-      endpoint,
+      controlStream,
       {
+        ...commonHeaders,
         Session: session,
         "Content-Type": "application/sdp",
       },
       buildAnnounceSdp({
         resolution: input.resolution,
         fps: input.fps,
+        videoPort: videoPeer.port,
         encryptionKeyHex,
         encryptionKeyId,
       }),
@@ -421,9 +485,9 @@ export async function negotiateNvstRtspSession(
     steps.push("announce");
     log(input.onLog, "ANNOUNCE ok (allowlist + encryptionKey; ICE/DTLS omitted)");
 
-    const play = await client.request("PLAY", endpoint, {
+    const play = await client.request("PLAY", "/", {
+      ...commonHeaders,
       Session: session,
-      Range: "npt=0.000-",
     });
     if (play.statusCode !== 200) {
       throw new Error(`PLAY failed: ${play.statusCode} ${play.statusText}`);
@@ -432,6 +496,10 @@ export async function negotiateNvstRtspSession(
 
     await udp.release();
     udp = null;
+    await audioUdp.release();
+    audioUdp = null;
+    await controlUdp.release();
+    controlUdp = null;
 
     const videoSession: NvstVideoSession = {
       clientUdpPort: clientPort,
@@ -471,6 +539,8 @@ export async function negotiateNvstRtspSession(
     };
   } catch (error) {
     await udp?.release().catch(() => undefined);
+    await audioUdp?.release().catch(() => undefined);
+    await controlUdp?.release().catch(() => undefined);
     await teardownAndClose(client, endpoint, session, "failed negotiation", input.onLog);
     if (error instanceof NvstRtspNegotiationError) {
       throw new NvstRtspNegotiationError(error.code, error.message, {

@@ -12,8 +12,20 @@ const GFN_WINDOWS_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173";
 const GFN_MACOS_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 GFN-PC/2.0.80.173";
+const GFN_LINUX_USER_AGENT =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/gfn_release/2f4a4c46 GFN-PC/2.0.80.173";
 
-export const GFN_USER_AGENT = process.platform === "darwin" ? GFN_MACOS_USER_AGENT : GFN_WINDOWS_USER_AGENT;
+export function gfnUserAgentForPlatform(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") {
+    return GFN_MACOS_USER_AGENT;
+  }
+  if (platform === "linux") {
+    return GFN_LINUX_USER_AGENT;
+  }
+  return GFN_WINDOWS_USER_AGENT;
+}
+
+export const GFN_USER_AGENT = gfnUserAgentForPlatform();
 export const GFN_CLIENT_VERSION = "2.0.80.173";
 export const LCARS_CLIENT_ID = "ec7e38d4-03af-4b58-b131-cfb0495903ab";
 
@@ -148,7 +160,7 @@ export interface GfnCloudMatchHeadersOptions {
 
 function resolveCloudMatchIdentity(options: GfnCloudMatchHeadersOptions): { clientId: string; deviceId: string } {
   return {
-    clientId: options.clientId ?? crypto.randomUUID(),
+    clientId: options.clientId ?? LCARS_CLIENT_ID,
     deviceId: options.deviceId ?? crypto.randomUUID(),
   };
 }

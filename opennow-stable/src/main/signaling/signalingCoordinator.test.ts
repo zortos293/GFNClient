@@ -112,7 +112,7 @@ test("coordinator releases retained NVST control on explicit native stop", async
   assert.deepEqual(events, ["native-stop:test stop", "nvst-release:test stop"]);
 });
 
-test("coordinator tears down NVST when native startup fails", async () => {
+test("coordinator tears down explicit NVST without falling back to WebRTC", async () => {
   const events: string[] = [];
   const owner: GfnNvstRtspOwner = {
     prepare: async (context) => {
@@ -135,13 +135,16 @@ test("coordinator tears down NVST when native startup fails", async () => {
     },
   } as unknown as NativeStreamerManager;
 
-  await internals.prepareNativeStreamerBeforeSignaling();
+  await assert.rejects(
+    internals.prepareNativeStreamerBeforeSignaling(),
+    /synthetic native start failure/,
+  );
 
   assert.deepEqual(events, [
     "nvst-prepare",
     "native-prepare",
-    "native-stop:native streamer pre-attach fallback",
-    "nvst-release:native streamer pre-attach fallback",
+    "native-stop:explicit NVST pre-attach startup failed",
+    "nvst-release:explicit NVST pre-attach startup failed",
   ]);
 });
 

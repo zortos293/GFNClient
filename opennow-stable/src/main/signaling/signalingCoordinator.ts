@@ -612,6 +612,25 @@ export class SignalingCoordinator {
       await this.getNativeStreamerManager().handleOffer(sdp, context);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (context.settings.transportMode === "nvst") {
+        console.warn("[NativeStreamer] Explicit NVST startup failed:", message);
+        this.retainSessionState({
+          streamer: "native",
+          phase: "native-nvst-failed",
+          lastError: message,
+        });
+        await Promise.all([
+          this.nativeStreamerManager
+            ?.stop("explicit NVST startup failed")
+            .catch(() => undefined),
+          this.gfnNvstRtspOwner.release("explicit NVST startup failed"),
+        ]);
+        this.emitToRenderer({
+          type: "error",
+          message: `Native NVST failed: ${message}. WebRTC media fallback is disabled for explicit NVST mode.`,
+        });
+        return;
+      }
       console.warn("[NativeStreamer] Falling back to web streamer:", message);
       this.retainSessionState({
         streamer: "web-fallback",
@@ -679,6 +698,25 @@ export class SignalingCoordinator {
       await this.getNativeStreamerManager().prepareForSession(preparedContext);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (context.settings.transportMode === "nvst") {
+        console.warn("[NativeStreamer] Explicit NVST pre-attach startup failed:", message);
+        this.retainSessionState({
+          streamer: "native",
+          phase: "native-nvst-pre-attach-failed",
+          lastError: message,
+        });
+        await Promise.all([
+          this.nativeStreamerManager
+            ?.stop("explicit NVST pre-attach startup failed")
+            .catch(() => undefined),
+          this.gfnNvstRtspOwner.release("explicit NVST pre-attach startup failed"),
+        ]);
+        this.emitToRenderer({
+          type: "error",
+          message: `Native NVST failed before signaling attach: ${message}. WebRTC media fallback is disabled for explicit NVST mode.`,
+        });
+        throw error;
+      }
       console.warn(
         "[NativeStreamer] Pre-attach startup failed; falling back to web streamer:",
         message,

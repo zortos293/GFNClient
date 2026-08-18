@@ -36,14 +36,27 @@ jobs:
       prerelease: ${{ steps.release.outputs.prerelease }}
       make_latest: ${{ steps.release.outputs.make_latest }}
       release_tag: ${{ steps.release.outputs.release_tag }}
-      source_ref: ${{ steps.release.outputs.source_ref }}
       release_type: ${{ steps.release.outputs.release_type }}
       release_name: ${{ steps.release.outputs.release_name }}
       previous_tag: ${{ steps.release.outputs.previous_tag }}
 
     steps:
+      - name: Validate manual release source
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [[ "$REF_TYPE" != "branch" || "$REF_NAME" != "dev" ]]; then
+            echo "Manual releases must be dispatched from the dev branch." >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -127,10 +140,8 @@ jobs:
 
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             release_tag="v${version}"
-            source_ref="$REF_NAME"
           else
             release_tag="$raw"
-            source_ref="$REF_NAME"
           fi
 
           release_pages="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100")"
@@ -167,7 +178,6 @@ jobs:
             echo "prerelease=$prerelease"
             echo "make_latest=$make_latest"
             echo "release_tag=$release_tag"
-            echo "source_ref=$source_ref"
             echo "release_type=$release_type"
             echo "release_name=$release_name"
             echo "previous_tag=$previous_tag"
@@ -186,7 +196,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.source_ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || github.sha }}
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -197,7 +207,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-          SOURCE_REF: ${{ needs.preflight.outputs.source_ref }}
           RELEASE_TYPE: ${{ needs.preflight.outputs.release_type }}
         run: |
           if [[ "$RELEASE_TYPE" == "nightly" ]]; then
@@ -225,7 +234,7 @@ jobs:
             echo "No version bump changes to commit."
           else
             git commit -m "chore(release): prepare v${RELEASE_VERSION}"
-            git push origin HEAD:"$SOURCE_REF"
+            git push origin HEAD:dev
           fi
           echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -321,7 +330,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare-source.outputs.release_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -562,24 +571,10 @@ jobs:
       contents: write
 
     steps:
-      - name: Resolve release branch
-        id: branch
-        shell: bash
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [[ "$REF_TYPE" == "branch" ]]; then
-            branch="$REF_NAME"
-          else
-            branch="main"
-          fi
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-
       - name: Checkout release branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.branch.outputs.branch }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'refs/heads/dev' || 'refs/heads/main' }}
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 

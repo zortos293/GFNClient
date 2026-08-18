@@ -440,8 +440,14 @@ struct SettingsView: View {
                     total: subscription.totalHours
                 )
             }
-            if store.activeSession != nil {
-                LabeledContent("Current Session", value: elapsedLabel(store.sessionElapsedSeconds))
+            if let startedAt = store.activeSession?.startedAt {
+                // Ticks locally. The store used to publish a new second to every observer once a
+                // second so this one row could count; the system animates this without anyone
+                // being told anything.
+                LabeledContent("Current Session") {
+                    Text(startedAt, style: .timer)
+                        .monospacedDigit()
+                }
             }
         }
     }
@@ -1605,16 +1611,6 @@ struct SettingsView: View {
             return "\(Int(value)) hr"
         }
         return String(format: "%.1f hr", value)
-    }
-
-    private func elapsedLabel(_ seconds: Int) -> String {
-        let hours = seconds / 3_600
-        let minutes = (seconds % 3_600) / 60
-        let remainingSeconds = seconds % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
-        }
-        return String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 
     private var headerSummary: String {

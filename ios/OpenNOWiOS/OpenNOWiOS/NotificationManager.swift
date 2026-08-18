@@ -50,8 +50,10 @@ actor NotificationManager {
         guard await ensureAuthorization() else { return }
 
         let content = UNMutableNotificationContent()
-        content.title = "Seat Allocated!"
-        content.body = "Setting up your \(gameTitle) session..."
+        // "Seat allocated" is NVIDIA's internal vocabulary for its own allocator, not something a
+        // player asked about. What they want to know is how much longer, so say that instead.
+        content.title = "Almost ready!"
+        content.body = "\(gameTitle) is starting up — we'll let you know the moment it's ready."
         content.sound = .default
         content.interruptionLevel = .active
         let request = UNNotificationRequest(identifier: setupNotificationId, content: content, trigger: nil)

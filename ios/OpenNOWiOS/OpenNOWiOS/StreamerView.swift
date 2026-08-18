@@ -28,6 +28,26 @@ enum NativeStreamAudioSessionPolicy {
     static func options(enableMic: Bool) -> AVAudioSession.CategoryOptions {
         enableMic ? [.allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker] : []
     }
+
+    /// Teaches WebRTC itself what this app's audio is, which is the only way to stop iOS treating
+    /// a stream as a phone call.
+    ///
+    /// Setting the category on `RTCAudioSession` is not enough on its own. WebRTC's audio device
+    /// module reapplies `RTCAudioSessionConfiguration.webRTC()` whenever it starts playout, and
+    /// that shared default is `playAndRecord` + `voiceChat` — a voice-processing I/O unit. The
+    /// category this app carefully chose was being overwritten from underneath it a moment later,
+    /// which is why the system showed the in-call microphone indicator and the volume HUD drew a
+    /// phone: as far as iOS was concerned, this *was* a call. Overriding the shared default first
+    /// means playback-only is what the module asks for in the first place.
+    ///
+    /// Idempotent, and must run before the peer connection factory is created.
+    static func installWebRTCDefaults() {
+        let configuration = RTCAudioSessionConfiguration.webRTC()
+        configuration.category = category(enableMic: false).rawValue
+        configuration.mode = mode(enableMic: false).rawValue
+        configuration.categoryOptions = options(enableMic: false)
+        RTCAudioSessionConfiguration.setWebRTC(configuration)
+    }
 }
 
 func nativeStreamShouldUseFilteredRenderer(
@@ -3291,6 +3311,9 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     private func createPeerConnection(with offerSDP: String) {
         if factory == nil {
             _ = RTCInitializeSSL()
+            // Before the factory, because the audio device module reads the shared configuration
+            // when it is built and again every time it starts playout.
+            NativeStreamAudioSessionPolicy.installWebRTCDefaults()
             let audioDevice = nativeAudioDeviceAvailable ? nil : NativeStreamMutedAudioDevice()
             mutedAudioDevice = audioDevice
             factory = RTCPeerConnectionFactory(
@@ -4403,6 +4426,7 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
         // GFN's current offer has no upstream microphone track. Keep the
         // session playback-only instead of requesting a misleading permission.
         let enableMic = false
+        NativeStreamAudioSessionPolicy.installWebRTCDefaults()
 
         audioSession.useManualAudio = true
         audioSession.ignoresPreferredAttributeConfigurationErrors = true

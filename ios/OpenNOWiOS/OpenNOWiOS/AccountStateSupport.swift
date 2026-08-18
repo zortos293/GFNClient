@@ -12,6 +12,20 @@ struct CachedAccountSnapshot: Codable, Equatable {
 }
 
 enum OpenNOWErrorPresenter {
+    /// Whether this error is a cancellation rather than a failure.
+    ///
+    /// A cancelled `URLSession` task throws `URLError.cancelled`, **not** `CancellationError`, so
+    /// `catch is CancellationError` alone lets it through — and it arrives with the
+    /// `localizedDescription` "cancelled", which is how "Failed to load account details: cancelled"
+    /// reached the screen. It is not a failure at all: SwiftUI tears down a `.task` when its view
+    /// goes away, and pull-to-refresh supersedes an in-flight request, both of which are the app
+    /// working correctly. Nothing about a cancellation should ever be shown to the player.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
     static func message(for error: Error, fallback: String) -> String {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorTimedOut {

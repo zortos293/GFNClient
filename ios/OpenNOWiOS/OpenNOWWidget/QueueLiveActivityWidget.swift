@@ -69,6 +69,9 @@ struct QueueLiveActivityWidget: Widget {
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
                             Spacer(minLength: 4)
+                            if context.state.phase != .ready, let since = context.state.waitStartedAt {
+                                QueueElapsedTimer(since: since, font: .caption2.weight(.medium))
+                            }
                             if context.state.phase == .ready {
                                 Label("Resume", systemImage: "play.fill")
                                     .font(.caption.weight(.semibold))
@@ -185,6 +188,21 @@ private struct LockScreenQueueLiveActivityView: View {
                 ) {
                     LiveActivityAppIcon(size: 30)
                 }
+                // A soft pool of the phase colour under the ring. The lock screen tints the whole
+                // panel one flat shade, and a single light source gives it somewhere to sit.
+                .background {
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [accent.opacity(0.28), .clear],
+                                center: .center,
+                                startRadius: 4,
+                                endRadius: 42
+                            )
+                        )
+                        .frame(width: 84, height: 84)
+                        .allowsHitTesting(false)
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(context.attributes.gameTitle)
@@ -212,6 +230,9 @@ private struct LockScreenQueueLiveActivityView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
                 Spacer(minLength: 4)
+                if context.state.phase != .ready, let since = context.state.waitStartedAt {
+                    QueueElapsedTimer(since: since, font: .caption.weight(.medium))
+                }
                 if context.state.phase == .ready {
                     Label("Tap to resume", systemImage: "play.fill")
                         .font(.caption.weight(.semibold))
@@ -253,10 +274,27 @@ private struct QueueProgressRing<Content: View>: View {
                 .inset(by: lineWidth / 2)
                 .trim(from: 0, to: trimEnd)
                 .stroke(
-                    QueuePhaseStyle.accent(phase),
+                    // An angular gradient follows the arc, so the stroke gains depth along its
+                    // length instead of reading as a flat wedge of colour.
+                    AngularGradient(
+                        colors: [
+                            QueuePhaseStyle.accent(phase).opacity(0.45),
+                            QueuePhaseStyle.accent(phase),
+                            QueuePhaseStyle.accent(phase)
+                        ],
+                        center: .center,
+                        angle: .degrees(-90)
+                    ),
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
+                // Ready is the one state worth drawing attention to, and a glow says so without
+                // taking any more room than the ring already occupies.
+                .shadow(
+                    color: phase == .ready ? QueuePhaseStyle.accent(phase).opacity(0.55) : .clear,
+                    radius: lineWidth
+                )
+                .animation(.smooth(duration: 0.45), value: trimEnd)
             content()
         }
         .frame(width: diameter, height: diameter)
@@ -282,8 +320,22 @@ private struct QueueProgressBar: View {
                 Capsule()
                     .fill(Color.white.opacity(0.14))
                 Capsule()
-                    .fill(QueuePhaseStyle.accent(phase))
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                QueuePhaseStyle.accent(phase).opacity(0.72),
+                                QueuePhaseStyle.accent(phase)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
                     .frame(width: max(6, proxy.size.width * fraction))
+                    // A Live Activity redraws only when the app pushes state, so the one moment
+                    // this bar can move is the moment it changes. Letting it slide there, rather
+                    // than jump, is the difference between a panel that looks live and one that
+                    // looks like a screenshot.
+                    .animation(.smooth(duration: 0.5), value: fraction)
             }
         }
         .frame(height: 5)
@@ -307,6 +359,29 @@ private struct QueueProgressBar: View {
             guard let progress else { return "Waiting in queue" }
             return "\(Int((progress * 100).rounded())) percent through the queue"
         }
+    }
+}
+
+/// How long this wait has been going, ticking on its own.
+///
+/// `Text(_:style: .timer)` is one of the few things the system keeps animating inside a Live
+/// Activity without the app pushing an update, which is what makes the panel read as live between
+/// two-second polls. It counts up rather than down on purpose: the queue estimate is a range
+/// because queue rates are not stable enough to promise a finish time, and a countdown would
+/// quietly turn that range back into a promise.
+private struct QueueElapsedTimer: View {
+    let since: Date
+    let font: Font
+    var opacity: Double = 0.62
+
+    var body: some View {
+        Text(since, style: .timer)
+            .font(font)
+            .monospacedDigit()
+            .foregroundStyle(.white.opacity(opacity))
+            .lineLimit(1)
+            .fixedSize()
+            .accessibilityLabel("Waiting time")
     }
 }
 

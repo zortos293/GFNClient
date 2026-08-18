@@ -189,8 +189,8 @@ struct AndroidQueueStatusText: View {
 
 /// The indeterminate bar shown while waiting for a rig.
 ///
-/// Two things had to be true before this stopped stuttering, and only the first was fixed the last
-/// time round:
+/// Three things had to be true before this stopped reading as stuck, and each was found the hard
+/// way:
 ///
 /// 1. **Position comes from the clock, not from `@State`.** The queue screen observes the whole
 ///    store, so it re-renders on every poll, every trend sample and every ad-state update, and each
@@ -199,6 +199,11 @@ struct AndroidQueueStatusText: View {
 ///    a spring, and an implicit animation applies to the whole subtree — so every offset the
 ///    timeline produced was being spring-interpolated towards the next one, which is exactly the
 ///    lag a clock-driven animation is supposed to make impossible. `.transaction` clears it.
+/// 3. **It travels one way, at a constant speed.** This used to ping-pong with a smoothstep ease,
+///    which meant it spent most of each cycle decelerating into a turn or accelerating out of one
+///    — near-stationary at both ends, twice every two seconds. Reported as "going back and forth
+///    so slow". A sweep that runs off one end and re-enters the other never appears to stall,
+///    which is why the system's own indeterminate bar works that way.
 ///
 /// The traveller is a plain `Capsule` moved with `.offset`, so a tick is a layer transform on the
 /// render server rather than a `Canvas` redraw on the main thread — which matters on the one screen
@@ -206,14 +211,16 @@ struct AndroidQueueStatusText: View {
 struct OscillatingQueueProgressView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let cycle: TimeInterval = 2.0
+    private let cycle: TimeInterval = 1.15
     private let barHeight: CGFloat = 8
-    private let travellerFraction: CGFloat = 0.32
+    private let travellerFraction: CGFloat = 0.34
 
     var body: some View {
         GeometryReader { proxy in
             let travellerWidth = proxy.size.width * travellerFraction
-            let travelSpan = max(0, proxy.size.width - travellerWidth)
+            // Off the left edge to off the right edge, so the leading and trailing gaps are
+            // covered by the same constant-velocity motion.
+            let travelSpan = proxy.size.width + travellerWidth
 
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous)
@@ -221,13 +228,26 @@ struct OscillatingQueueProgressView: View {
 
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { context in
                     Capsule(style: .continuous)
-                        .fill(brandAccent)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    brandAccent.opacity(0.35),
+                                    brandAccent,
+                                    brandAccent.opacity(0.35)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                         .frame(width: travellerWidth)
-                        .offset(x: travelSpan * offsetFraction(at: context.date))
+                        .offset(x: -travellerWidth + travelSpan * offsetFraction(at: context.date))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .transaction { $0.animation = nil }
             }
+            // The traveller starts and finishes outside the track, so it has to be clipped to it
+            // or it would slide across whatever sits beside the bar.
+            .clipShape(Capsule(style: .continuous))
         }
         .frame(height: barHeight)
         .accessibilityElement(children: .ignore)
@@ -235,13 +255,12 @@ struct OscillatingQueueProgressView: View {
         .accessibilityValue("Waiting for a gaming rig")
     }
 
-    /// Ping-pongs 0…1…0 across one cycle, eased so the turn at each end is not abrupt.
+    /// Sweeps 0…1 at a constant rate and wraps. No easing: an indeterminate bar has nothing to
+    /// ease towards, and easing is what made this one look like it kept stopping.
     private func offsetFraction(at date: Date) -> CGFloat {
         // Parked mid-track under Reduce Motion: still reads as "busy", never moves.
         guard !reduceMotion else { return 0.5 }
         let phase = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: cycle) / cycle
-        let triangle = phase < 0.5 ? phase * 2 : (1 - phase) * 2
-        // Smoothstep, which is the cheap equivalent of easeInOut without an Animation object.
-        return CGFloat(triangle * triangle * (3 - 2 * triangle))
+        return CGFloat(phase)
     }
 }

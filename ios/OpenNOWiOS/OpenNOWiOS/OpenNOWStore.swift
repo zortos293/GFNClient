@@ -5772,7 +5772,6 @@ final class OpenNOWStore: ObservableObject {
     @Published private(set) var activeSession: ActiveSession?
     @Published private(set) var resumableSessions: [RemoteSessionCandidate] = []
     @Published private(set) var telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
-    @Published private(set) var sessionElapsedSeconds = 0
     @Published private(set) var subscription: SubscriptionSnapshot?
     @Published private(set) var savedAccounts: [SavedAccount] = []
     @Published private(set) var accountConnectors: [AccountConnector] = []
@@ -5791,8 +5790,6 @@ final class OpenNOWStore: ObservableObject {
     /// Games the server returned for the current query that are not in the local catalog.
     @Published private(set) var remoteSearchResults: [CloudGame] = []
     @Published private(set) var isSearchingCatalog = false
-    @Published var micEnabled = false
-    @Published var recordingEnabled = false
     @Published var controllerConnected = true
     @Published var isAuthenticating = false
     @Published var isLoadingGames = false
@@ -5831,12 +5828,14 @@ final class OpenNOWStore: ObservableObject {
     private let logger = Logger(subsystem: "OpenNOWiOS", category: "Session")
     private let defaults = UserDefaults.standard
     private var authSession: AuthSession?
-    private var sessionElapsedTask: Task<Void, Never>?
     private var sessionPollTask: Task<Void, Never>?
     private var launchTask: Task<Void, Never>?
     private var sessionReportAccumulator: StreamSessionReportAccumulator?
     private var sessionReportSessionId: String?
     private var queueTrendSessionId: String?
+    /// Mirrors the Keychain-backed auth state so a persist that would write identical bytes can
+    /// be skipped. See `persistAuthState`.
+    private var persistedAuthState: PersistedAuthState?
     private var catalogSearchTask: Task<Void, Never>?
     private var accountRefreshTask: Task<Void, Never>?
     private var backgroundRefreshingAccountUserId: String?
@@ -5884,6 +5883,7 @@ final class OpenNOWStore: ObservableObject {
             CatalogWallpaperStorage.pruneManagedWallpapers(keeping: retainedWallpaperFilename)
         }
         let loadedAuthState = Self.loadAuthState(from: defaults)
+        persistedAuthState = loadedAuthState
         authSession = loadedAuthState.activeSession
         savedAccounts = loadedAuthState.savedAccounts
         if let selectedProvider = loadedAuthState.selectedProvider {
@@ -5934,7 +5934,6 @@ final class OpenNOWStore: ObservableObject {
 
     deinit {
         launchTask?.cancel()
-        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         #if os(tvOS)
         if let tvAuthLogObserver {
@@ -6266,7 +6265,7 @@ final class OpenNOWStore: ObservableObject {
     func signOut() {
         let currentUserId = authSession?.user.userId
         Task { await NotificationManager.shared.cancelSessionNotifications() }
-        var state = Self.loadAuthState(from: defaults)
+        var state = currentAuthState()
         if let currentUserId {
             state.sessions.removeAll { $0.user.userId == currentUserId }
             removeCachedCatalog(forUserId: currentUserId)
@@ -6315,7 +6314,7 @@ final class OpenNOWStore: ObservableObject {
             }
         }
         await Task.yield()
-        var state = Self.loadAuthState(from: defaults)
+        var state = currentAuthState()
         guard let nextSession = state.sessions.first(where: { $0.user.userId == userId }) else { return }
         state.activeUserId = nextSession.user.userId
         state.selectedProvider = nextSession.provider
@@ -6367,10 +6366,8 @@ final class OpenNOWStore: ObservableObject {
         remoteSessionsSnapshotLoaded = false
         setStreamSession(nil, reason: "signOut")
         subscription = nil
-        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
-        sessionElapsedSeconds = 0
         showStreamLoading = false
         queueOverlayVisible = false
         adReportStateById = [:]
@@ -6491,11 +6488,8 @@ final class OpenNOWStore: ObservableObject {
                 )
             }
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             // Pull-to-refresh can cancel an in-flight request; treat as non-failure.
-            return
-        } catch let nsError as NSError
-            where nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             return
         } catch {
             guard accountIsCurrent(requestedUserId) else { return }
@@ -6551,7 +6545,7 @@ final class OpenNOWStore: ObservableObject {
             accountConnectors = connectors
             persistCachedAccount(for: refreshed)
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             guard accountIsCurrent(requestedUserId) else { return }
@@ -6576,7 +6570,7 @@ final class OpenNOWStore: ObservableObject {
             openURL(url)
             scheduleAccountConnectorRefreshAfterLinking()
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             guard accountIsCurrent(requestedUserId) else { return }
@@ -6601,7 +6595,7 @@ final class OpenNOWStore: ObservableObject {
             accountConnectors = connectors
             persistCachedAccount(for: refreshed)
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             guard accountIsCurrent(requestedUserId) else { return }
@@ -6804,12 +6798,11 @@ final class OpenNOWStore: ObservableObject {
             activeStreamSettings = launchSettings
             adReportStateById = [:]
             adStartedAtById = [:]
-            sessionElapsedSeconds = 0
-            startSessionTasks()
+                startSessionTasks()
             syncTrackedSessionSurface()
             logger.info("Session started id=\(started.id, privacy: .public) status=\(started.status) queue=\(started.queuePosition ?? -1)")
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             logger.error("Session launch failed error=\(error.localizedDescription, privacy: .public)")
@@ -6900,7 +6893,7 @@ final class OpenNOWStore: ObservableObject {
             guard !Task.isCancelled,
                   searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
             remoteSearchResults = results
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             // A failed search is not worth a banner: the local results are still on screen and
@@ -7177,12 +7170,11 @@ final class OpenNOWStore: ObservableObject {
             activeStreamSettings = streamSettings
             adReportStateById = [:]
             adStartedAtById = [:]
-            sessionElapsedSeconds = 0
-            startSessionTasks()
+                startSessionTasks()
             syncTrackedSessionSurface()
             logger.info("Session resumed id=\(claimed.id, privacy: .public) status=\(claimed.status) queue=\(claimed.queuePosition ?? -1)")
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             logger.error("Resume session failed error=\(error.localizedDescription, privacy: .public)")
@@ -7245,8 +7237,10 @@ final class OpenNOWStore: ObservableObject {
             authSession = refreshed
             persistAuthSession(refreshed)
             try await api.stopSession(session: refreshed, activeSession: active)
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
+            // The session is being torn down either way; a cancelled stop is not a failure.
         } catch {
-            lastError = "Stop session failed: \(error.localizedDescription)"
+            lastError = "Stop session failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "The session could not be stopped."))"
         }
         clearLocalSessionState(reason: "endSession.completed")
         resumableSessions.removeAll { $0.id == active.id }
@@ -7312,10 +7306,8 @@ final class OpenNOWStore: ObservableObject {
         setStreamSession(nil, reason: reason)
         adReportStateById = [:]
         adStartedAtById = [:]
-        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
-        sessionElapsedSeconds = 0
         syncTrackedSessionSurface()
     }
 
@@ -7413,15 +7405,14 @@ final class OpenNOWStore: ObservableObject {
             activeStreamSettings = safeSettings
             adReportStateById = [:]
             adStartedAtById = [:]
-            sessionElapsedSeconds = 0
-            startSessionTasks()
+                startSessionTasks()
             setStreamSession(handoff, reason: "safeVideoRestart.handoff")
             syncTrackedSessionSurface()
             logger.notice(
                 "Safe video session started id=\(handoff.id, privacy: .public) reason=\(reason, privacy: .public) resolution=\(safeSettings.preferredResolution, privacy: .public)"
             )
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             logger.error("Safe video restart failed error=\(error.localizedDescription, privacy: .public)")
@@ -7890,7 +7881,6 @@ final class OpenNOWStore: ObservableObject {
         Task { await NotificationManager.shared.cancelSessionNotifications() }
         launchTask?.cancel()
         launchTask = nil
-        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
         clearImageCache()
@@ -7909,8 +7899,6 @@ final class OpenNOWStore: ObservableObject {
         user = nil
         savedAccounts = []
         searchText = ""
-        micEnabled = false
-        recordingEnabled = false
         isAuthenticating = false
         isLoadingGames = false
         isLaunchingSession = false
@@ -8036,14 +8024,24 @@ final class OpenNOWStore: ObservableObject {
         shouldUsePrintedWasteQueue && !settings.hideServerSelector
     }
 
+    /// Seconds since the active session started, or nil when there is no session.
+    var sessionElapsedSeconds: Int? {
+        activeSession.map { max(0, Int(Date().timeIntervalSince($0.startedAt))) }
+    }
+
     func formattedSessionElapsed() -> String {
-        let hours = sessionElapsedSeconds / 3600
-        let minutes = (sessionElapsedSeconds % 3600) / 60
-        let seconds = sessionElapsedSeconds % 60
+        Self.elapsedLabel(sessionElapsedSeconds ?? 0)
+    }
+
+    /// One owner for H:MM:SS, rather than the same arithmetic written out at each surface.
+    static func elapsedLabel(_ seconds: Int) -> String {
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainingSeconds = seconds % 60
         if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
         }
-        return String(format: "%02d:%02d", minutes, seconds)
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 
     /// Local matches first, then anything only the server knew about.
@@ -8168,20 +8166,16 @@ final class OpenNOWStore: ObservableObject {
             activeStreamSettings = settings
         }
         reopenToken = UUID()
-        sessionElapsedTask?.cancel()
         sessionPollTask?.cancel()
         endSessionPollBackgroundTask()
 
         telemetry = SessionTelemetry(pingMs: 0, fps: 0, packetLossPercent: 0, bitrateMbps: 0)
-        sessionElapsedTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                if let active = self.activeSession {
-                    self.sessionElapsedSeconds = Int(Date().timeIntervalSince(active.startedAt))
-                }
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
+        // No 1 Hz ticker here any more. `sessionElapsedSeconds` was `@Published` and reassigned
+        // every second for the whole life of a session, which published a change through the store
+        // to *every* observing view — the catalog and the queue screen included — so that one
+        // `LabeledContent` on a Settings page nobody was looking at could count up. Elapsed time is
+        // derived from `activeSession.startedAt` on demand instead, and the surfaces that show it
+        // ticking use `Text(_:style: .timer)`, which the system animates locally.
 
         sessionPollTask = Task { [weak self] in
             guard let self else { return }
@@ -8294,10 +8288,18 @@ final class OpenNOWStore: ObservableObject {
                         self.showStreamLoading = true
                         dismissedOverlayAfterReady = true
                     }
+                } catch where OpenNOWErrorPresenter.isCancellation(error) {
+                    // The loop is being torn down, or a poll was superseded. Neither is a failure,
+                    // and both used to end the session on a banner reading "cancelled".
+                    break
                 } catch {
                     consecutivePollFailures += 1
                     self.logger.error("Session poll failed attempt=\(consecutivePollFailures) error=\(error.localizedDescription, privacy: .public)")
-                    self.lastError = "Session poll failed: \(error.localizedDescription)"
+                    // One dropped poll is normal on a phone changing networks. Only say so once the
+                    // failures are consistent enough to mean something.
+                    if consecutivePollFailures >= 3 {
+                        self.lastError = "Session poll failed: \(OpenNOWErrorPresenter.message(for: error, fallback: "The session status could not be refreshed."))"
+                    }
                 }
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -8519,7 +8521,7 @@ final class OpenNOWStore: ObservableObject {
             activeStreamSettings = streamSettings
             setStreamSession(claimed, reason: "reopenStreamer.claimed")
             lastError = nil
-        } catch is CancellationError {
+        } catch where OpenNOWErrorPresenter.isCancellation(error) {
             return
         } catch {
             logger.error(
@@ -8743,7 +8745,8 @@ final class OpenNOWStore: ObservableObject {
                 detail: detail,
                 queueLabel: queueLabel,
                 queuePosition: session.queuePosition,
-                progress: queueTrend.progress()
+                progress: queueTrend.progress(),
+                waitStartedAt: session.startedAt
             )
         }
         if isInSetupPhase(session) || session.status == 2 {
@@ -8753,7 +8756,8 @@ final class OpenNOWStore: ObservableObject {
                 detail: session.seatSetupStep.map { "Step \($0) of 4" } ?? "Almost there",
                 queueLabel: "Setup",
                 queuePosition: nil,
-                progress: session.seatSetupStep.map { min(max(Double($0) / 4, 0.25), 0.95) }
+                progress: session.seatSetupStep.map { min(max(Double($0) / 4, 0.25), 0.95) },
+                waitStartedAt: session.startedAt
             )
         }
         return nil
@@ -9024,7 +9028,7 @@ final class OpenNOWStore: ObservableObject {
     }
 
     private func persistAuthSession(_ session: AuthSession) {
-        var state = Self.loadAuthState(from: defaults)
+        var state = currentAuthState()
         state.sessions.removeAll { $0.user.userId == session.user.userId }
         state.sessions.insert(session, at: 0)
         state.activeUserId = session.user.userId
@@ -9032,9 +9036,25 @@ final class OpenNOWStore: ObservableObject {
         persistAuthState(state)
     }
 
+    /// What the Keychain currently holds, mirrored in memory.
+    ///
+    /// Reading it back was two IPC round-trips to `securityd` plus a full JSON decode, and the
+    /// session poll asked for it every two seconds for the whole life of a queue and a stream.
+    private func currentAuthState() -> PersistedAuthState {
+        if let persistedAuthState { return persistedAuthState }
+        let loaded = Self.loadAuthState(from: defaults)
+        persistedAuthState = loaded
+        return loaded
+    }
+
     private func persistAuthState(_ state: PersistedAuthState) {
         let normalized = Self.normalizedAuthState(state)
-        savedAccounts = normalized.savedAccounts
+        // The poll loop re-persists the auth session on every tick, and `refreshSession` returns
+        // the same tokens until they are near expiry — so in the steady state this was encoding
+        // every saved account and writing the Keychain twice a minute, on the main actor, to store
+        // bytes it had just read. Rewriting identical state is not persistence, it is a stall: it
+        // is what made a 30 fps progress bar stutter and image decodes queue behind it.
+        guard normalized != persistedAuthState else { return }
         if normalized.sessions.isEmpty {
             AuthKeychainStore.delete()
         } else {
@@ -9044,6 +9064,8 @@ final class OpenNOWStore: ObservableObject {
                 return
             }
         }
+        persistedAuthState = normalized
+        savedAccounts = normalized.savedAccounts
         defaults.removeObject(forKey: authStateKey)
         defaults.removeObject(forKey: authSessionKey)
     }

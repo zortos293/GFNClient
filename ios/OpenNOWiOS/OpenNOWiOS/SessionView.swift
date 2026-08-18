@@ -10,7 +10,6 @@ struct SessionView: View {
                 if let session = store.activeSession {
                     currentSessionSection(session)
                     streamProfileSection(session)
-                    controlsSection
                     endSessionSection
                 } else {
                     Section {
@@ -50,7 +49,12 @@ struct SessionView: View {
                 trailingSystemImage: session.status == 3 ? "play.circle.fill" : "hourglass"
             )
 
-            LabeledContent("Elapsed", value: store.formattedSessionElapsed())
+            // Ticks on its own, for the same reason as the Settings row: nothing should publish
+            // a change through the store once a second just to move a clock.
+            LabeledContent("Elapsed") {
+                Text(session.startedAt, style: .timer)
+                    .monospacedDigit()
+            }
             if let queue = session.queuePosition {
                 LabeledContent("Queue", value: queue == 1 ? "Next" : "#\(queue)")
             }
@@ -104,16 +108,11 @@ struct SessionView: View {
         }
     }
 
-    private var controlsSection: some View {
-        Section("Controls") {
-            Toggle(isOn: $store.micEnabled) {
-                Label("Microphone", systemImage: store.micEnabled ? "mic.fill" : "mic.slash")
-            }
-            Toggle(isOn: $store.recordingEnabled) {
-                Label("Recording", systemImage: "record.circle")
-            }
-        }
-    }
+    // A "Controls" section used to sit here with Microphone and Recording toggles. Neither had any
+    // consumer anywhere in the app: flipping them changed one published boolean and nothing else.
+    // The microphone one was worse than useless — GeForce NOW's offer carries no upstream audio
+    // track, so it advertised a capability that cannot exist, and left the impression the app had
+    // switched the microphone on when iOS showed its in-call indicator for an unrelated reason.
 
     private var endSessionSection: some View {
         Section {

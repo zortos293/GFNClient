@@ -18,11 +18,12 @@ test("extractHmacSeed reads DESCRIBE k= line", () => {
   assert.equal(seed, "76A28E94D8C07CB67C04C29CFAAAAF64BE4BA0899456217CB73D070E5060965F");
 });
 
-test("buildAnnounceSdp uses allowlist shape and omits ICE/DTLS", () => {
+test("buildAnnounceSdp uses Bifrost session and attribute shape without ICE/DTLS", () => {
   const sdp = buildAnnounceSdp({ resolution: "1920x1080", fps: 60 });
-  assert.match(sdp, /a=x-nv-video\[0\]\.clientViewportWd:1920/);
-  assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:60/);
-  assert.match(sdp, /a=x-nv-general\.controlProtocol:udp_ag/);
+  assert.match(sdp, /a=video\[0\]\.clientViewportWd:1920/);
+  assert.match(sdp, /a=video\[0\]\.maxFPS:60/);
+  assert.match(sdp, /a=general\.controlProtocol:udp_ag/);
+  assert.match(sdp, /m=video 0 RTP\/AVP\r\ni=DeviceString, DeviceName\r\na=msid:video_0/);
   assert.doesNotMatch(sdp, /iceUsernameFragment|dtlsFingerprint/);
 });
 

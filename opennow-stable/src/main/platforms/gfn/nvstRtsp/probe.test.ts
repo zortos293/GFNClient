@@ -217,14 +217,14 @@ test("negotiation retains RTSPS control and releases UDP immediately before nati
   events.push("native-start");
 
   assert.deepEqual(events.slice(-5), [
-    "request:PLAY",
+    "request:ANNOUNCE",
     "udp-release",
     "udp-release",
     "udp-release",
     "native-start",
   ]);
   assert.equal(client.closed, false);
-  assert.equal(negotiated.videoSession.clientUdpPort, 45680);
+  assert.equal(negotiated.videoSession.clientUdpPort, 45678);
   assert.equal(negotiated.videoSession.videoPeerIp, "192.0.2.4");
   assert.equal(negotiated.videoSession.codec, "H265");
   assert.equal(negotiated.videoSession.srtpSaltHex, "00000000000000000000002A");
@@ -241,13 +241,17 @@ test("negotiation retains RTSPS control and releases UDP immediately before nati
   );
   assert.deepEqual(
     client.requests.filter(({ method }) => method === "SETUP").map(({ uri }) => uri),
-    ["tracks/actual-audio-track", "tracks/actual-video-track", "streamid=control/0"],
+    ["tracks/actual-video-track", "tracks/actual-audio-track", "streamid=control/0"],
+  );
+  assert.deepEqual(
+    client.requests.filter(({ method }) => method === "SETUP").map(({ headers }) => headers.Session),
+    ["rtsp-session", "rtsp-session", "rtsp-session"],
   );
   assert.equal(
     client.requests.find(({ method }) => method === "ANNOUNCE")?.uri,
-    "streamid=control/0",
+    "/",
   );
-  assert.equal(client.requests.find(({ method }) => method === "PLAY")?.uri, "/");
+  assert.equal(client.requests.some(({ method }) => method === "PLAY"), false);
 
   await negotiated.release("test stop");
   await negotiated.release("duplicate stop");
@@ -359,10 +363,10 @@ test("negotiation fails closed when DESCRIBE omits video control and tears down"
   assert.deepEqual(events.slice(-2), ["request:TEARDOWN", "client-close"]);
 });
 
-test("failed startup releases the UDP reservation and closes RTSPS control", async () => {
+test("failed ANNOUNCE releases the UDP reservation and closes RTSPS control", async () => {
   const events: string[] = [];
   const { client, dependencies } = createNegotiationHarness(events, (method) =>
-    method === "PLAY" ? response({}, "", 500) : undefined);
+    method === "ANNOUNCE" ? response({}, "", 500) : undefined);
 
   await assert.rejects(
     negotiateNvstRtspSession({
@@ -372,7 +376,7 @@ test("failed startup releases the UDP reservation and closes RTSPS control", asy
     (error: unknown) =>
       error instanceof NvstRtspNegotiationError
       && error.code === "negotiation-failed"
-      && /PLAY failed/.test(error.message),
+      && /ANNOUNCE failed/.test(error.message),
   );
 
   assert.equal(events.includes("udp-release"), true);

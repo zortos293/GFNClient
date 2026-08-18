@@ -20,6 +20,7 @@ import {
   resolveRequestedCodecWireValue,
 } from "./cloudmatch";
 import { buildSessionRequestBody } from "./cloudmatchSessionRequest";
+import { resolveGfnDeviceIdentity } from "./deviceIdentity";
 
 function makeSettings(overrides: Partial<StreamSettings> = {}): StreamSettings {
   return {
@@ -212,7 +213,10 @@ test("CloudMatch requests secure RTSPS for explicit classic native sessions", ()
   );
 
   assert.equal(nativeBody.sessionRequestData.secureRTSPSupported, true);
-  assert.equal(nativeBody.sessionRequestData.clientPlatformName, "Linux");
+  assert.equal(
+    nativeBody.sessionRequestData.clientPlatformName,
+    resolveGfnDeviceIdentity().clientPlatformName,
+  );
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.codec, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.maxBitrateKbps, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.dynamicStreamingMode, undefined);

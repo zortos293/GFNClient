@@ -85,7 +85,6 @@ export function buildAnnounceSdp(
   options: {
     resolution?: string;
     fps?: number;
-    videoPort?: number;
     encryptionKeyHex?: string;
     encryptionKeyId?: number;
   } = {},
@@ -116,7 +115,7 @@ export function buildAnnounceSdp(
       } else if (prefix === "video" && key === "framePacing.pid.minTargetFrameTimeUs") {
         nextValue = frameTimeUs;
       }
-      const name = indexed ? `x-nv-${prefix}[0].${key}` : `x-nv-${prefix}.${key}`;
+      const name = indexed ? `${prefix}[0].${key}` : `${prefix}.${key}`;
       lines.push(`a=${name}:${nextValue}`);
     }
   };
@@ -128,19 +127,20 @@ export function buildAnnounceSdp(
   pushGroup("aqos", false, ANNOUNCE_ALLOWLIST.aqos);
   pushGroup("general", false, ANNOUNCE_ALLOWLIST.general);
   pushGroup("runtime", false, ANNOUNCE_ALLOWLIST.runtime);
-  lines.push("a=x-nv-runtime.videoSrtp:1");
+  lines.push("a=runtime.videoSrtp:1");
   if (options.encryptionKeyHex && options.encryptionKeyId !== undefined) {
-    lines.push(`a=x-nv-runtime.encryptionKey:${options.encryptionKeyHex.toUpperCase()}`);
+    lines.push(`a=runtime.encryptionKey:${options.encryptionKeyHex.toUpperCase()}`);
     // Signed i32 form matches geronimo runtime.encryptionKeyId dumps.
     const signedId = options.encryptionKeyId > 0x7fffffff
       ? options.encryptionKeyId - 0x1_0000_0000
       : options.encryptionKeyId;
-    lines.push(`a=x-nv-runtime.encryptionKeyId:${signedId}`);
+    lines.push(`a=runtime.encryptionKeyId:${signedId}`);
   }
-  // Control protocol preference evidenced in geronimo: udp_ag (not encrypted).
-  lines.push("a=x-nv-general.controlProtocol:udp_ag");
+  lines.push("a=general.controlProtocol:udp_ag");
   lines.push("t=0 0");
-  lines.push(`m=video ${options.videoPort ?? 5004}  `);
+  lines.push("m=video 0 RTP/AVP");
+  lines.push("i=DeviceString, DeviceName");
+  lines.push("a=msid:video_0");
   lines.push("");
   return lines.join("\r\n");
 }

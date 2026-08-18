@@ -1,7 +1,7 @@
 /**
  * Classic NVST RTSPS-over-WSS handshake (GO-with-Moonlight-hypothesis).
  *
- * Runs OPTIONS → DESCRIBE → SETUP advertised video, audio, and control streams → ANNOUNCE → PLAY.
+ * Runs OPTIONS → DESCRIBE → SETUP advertised streams → ANNOUNCE. GFN disables PLAY.
  * Extracts or generates runtime.encryptionKey for SRTP, then returns nvstVideo
  * handoff fields for the native UDP receiver. The UDP reservation is released
  * immediately before handoff so native can rebind clientUdpPort, while the
@@ -300,7 +300,7 @@ export async function negotiateNvstRtspSession(
   );
   let udp: NvstUdpPortReservation | null = null;
   let audioUdp: NvstUdpPortReservation | null = null;
-  let controlUdp: NvstUdpPortReservation | null = null;
+  const auxiliaryUdp: NvstUdpPortReservation[] = [];
   let session: string | null = null;
 
   try {
@@ -385,25 +385,11 @@ export async function negotiateNvstRtspSession(
       );
     }
 
-    audioUdp = await dependencies.reserveUdpPort();
-    const audioClientPort = audioUdp.port;
-    const audioSetup = await client.request("SETUP", audioControl, {
-      ...commonHeaders,
-      Session: session,
-      Transport: `unicast;X-GS-ClientPort=${audioClientPort}-${audioClientPort + 1}`,
-      "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
-    });
-    if (audioSetup.statusCode !== 200) {
-      throw new Error(`SETUP audio failed: ${audioSetup.statusCode} ${audioSetup.statusText}`);
-    }
-    steps.push("setup-audio");
-    session = header(audioSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
-    log(input.onLog, `SETUP ${audioControl} ok (clientPort=${audioClientPort})`);
-
     udp = await dependencies.reserveUdpPort();
     const clientPort = udp.port;
     const setup = await client.request("SETUP", videoControlUri, {
       ...commonHeaders,
+      Session: session,
       Transport: `unicast;X-GS-ClientPort=${clientPort}-${clientPort + 1}`,
       "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
     });
@@ -439,20 +425,40 @@ export async function negotiateNvstRtspSession(
       `SETUP ${videoControl} ok (clientPort=${clientPort}, peer=${videoPeer.ip}:${videoPeer.port}, srtpProfile=${srtpProfile ?? "legacy-default"})`,
     );
 
-    controlUdp = await dependencies.reserveUdpPort();
-    const controlClientPort = controlUdp.port;
-    const controlSetup = await client.request("SETUP", controlStream, {
+    audioUdp = await dependencies.reserveUdpPort();
+    const audioClientPort = audioUdp.port;
+    const audioSetup = await client.request("SETUP", audioControl, {
       ...commonHeaders,
       Session: session,
-      Transport: `unicast;X-GS-ClientPort=${controlClientPort}-${controlClientPort + 1}`,
+      Transport: `unicast;X-GS-ClientPort=${audioClientPort}-${audioClientPort + 1}`,
       "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
     });
-    if (controlSetup.statusCode !== 200) {
-      throw new Error(`SETUP control failed: ${controlSetup.statusCode} ${controlSetup.statusText}`);
+    if (audioSetup.statusCode !== 200) {
+      throw new Error(`SETUP audio failed: ${audioSetup.statusCode} ${audioSetup.statusText}`);
     }
-    steps.push("setup-control");
-    session = header(controlSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
-    log(input.onLog, `SETUP ${controlStream} ok (clientPort=${controlClientPort})`);
+    steps.push("setup-audio");
+    session = header(audioSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
+    log(input.onLog, `SETUP ${audioControl} ok (clientPort=${audioClientPort})`);
+
+    for (const control of describedControls) {
+      if (control === videoControl || control === audioControl) {
+        continue;
+      }
+      const reservation = await dependencies.reserveUdpPort();
+      auxiliaryUdp.push(reservation);
+      const auxiliarySetup = await client.request("SETUP", control, {
+        ...commonHeaders,
+        Session: session,
+        Transport: `unicast;X-GS-ClientPort=${reservation.port}-${reservation.port + 1}`,
+        "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
+      });
+      if (auxiliarySetup.statusCode !== 200) {
+        throw new Error(`SETUP ${control} failed: ${auxiliarySetup.statusCode} ${auxiliarySetup.statusText}`);
+      }
+      steps.push(`setup-${control}`);
+      session = header(auxiliarySetup.headers, "session")?.split(";")[0]?.trim() ?? session;
+      log(input.onLog, `SETUP ${control} ok (clientPort=${reservation.port})`);
+    }
 
     const saltHex = deriveSrtpSaltHex(encryptionKeyId);
     const srtp: NvstSrtpMaterial = {
@@ -465,7 +471,7 @@ export async function negotiateNvstRtspSession(
     };
     const announce = await client.request(
       "ANNOUNCE",
-      controlStream,
+      "/",
       {
         ...commonHeaders,
         Session: session,
@@ -474,7 +480,6 @@ export async function negotiateNvstRtspSession(
       buildAnnounceSdp({
         resolution: input.resolution,
         fps: input.fps,
-        videoPort: videoPeer.port,
         encryptionKeyHex,
         encryptionKeyId,
       }),
@@ -485,21 +490,16 @@ export async function negotiateNvstRtspSession(
     steps.push("announce");
     log(input.onLog, "ANNOUNCE ok (allowlist + encryptionKey; ICE/DTLS omitted)");
 
-    const play = await client.request("PLAY", "/", {
-      ...commonHeaders,
-      Session: session,
-    });
-    if (play.statusCode !== 200) {
-      throw new Error(`PLAY failed: ${play.statusCode} ${play.statusText}`);
-    }
-    steps.push("play");
+    steps.push("play-skipped");
+    log(input.onLog, "PLAY skipped because the GFN Bifrost flow disables it after ANNOUNCE");
 
     await udp.release();
     udp = null;
     await audioUdp.release();
     audioUdp = null;
-    await controlUdp.release();
-    controlUdp = null;
+    for (const reservation of auxiliaryUdp.splice(0)) {
+      await reservation.release();
+    }
 
     const videoSession: NvstVideoSession = {
       clientUdpPort: clientPort,
@@ -514,7 +514,7 @@ export async function negotiateNvstRtspSession(
     };
     log(
       input.onLog,
-      `PLAY ok — NVST video handoff ready after UDP reservation release (peer ${videoPeer.ip}:${videoPeer.port}, clientUdp ${clientPort})`,
+      `ANNOUNCE complete — NVST video handoff ready after UDP reservation release (peer ${videoPeer.ip}:${videoPeer.port}, clientUdp ${clientPort})`,
     );
 
     let released = false;
@@ -540,7 +540,7 @@ export async function negotiateNvstRtspSession(
   } catch (error) {
     await udp?.release().catch(() => undefined);
     await audioUdp?.release().catch(() => undefined);
-    await controlUdp?.release().catch(() => undefined);
+    await Promise.all(auxiliaryUdp.map((reservation) => reservation.release().catch(() => undefined)));
     await teardownAndClose(client, endpoint, session, "failed negotiation", input.onLog);
     if (error instanceof NvstRtspNegotiationError) {
       throw new NvstRtspNegotiationError(error.code, error.message, {

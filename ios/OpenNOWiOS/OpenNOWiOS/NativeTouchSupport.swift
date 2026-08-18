@@ -58,38 +58,26 @@ enum NativeTouchSupport {
         return gameTitle.localizedCaseInsensitiveContains("fortnite") ? "fortnite-mobile" : "default"
     }
 
-    /// Whether a session should be requested with the mobile CloudMatch identity.
+    /// The launch mode the session has to be *created* with for any of the above to matter.
     ///
-    /// This is not a free choice: the mobile identity narrows the allocation matrix, so a game
-    /// requested at 1440p or above 60 fps would be quietly downgraded. Under `.automatic` the
-    /// user's quality request wins — touch is optional, the resolution they picked is not.
-    /// Mirrors `StreamSettings.requiresNativeDesktopCloudMatchMode()` on Android.
-    static func prefersMobileIdentity(
-        mode: NativeTouchMode,
-        game: CloudGame?,
-        profile: StreamVideoProfile,
-        hdrEnabled: Bool
-    ) -> Bool {
-        switch mode {
-        case .never:
-            return false
-        case .always:
-            return true
-        case .automatic:
-            guard catalogClaimsTouchSupport(game) else { return false }
-            return !exceedsMobileAllocationEnvelope(profile: profile, hdrEnabled: hdrEnabled)
-        }
-    }
-
-    /// The envelope CloudMatch's mobile allocation will actually honour.
-    static func exceedsMobileAllocationEnvelope(profile: StreamVideoProfile, hdrEnabled: Bool) -> Bool {
-        hdrEnabled || profile.fps > 60 || profile.width > 1920 || profile.height > 1200
+    /// The host provisions its virtual input devices from this value once, when the session is
+    /// created, and never revisits it. The official client gates its whole touch pipeline on the
+    /// same value — `enableTouchInput: appLaunchMode === AppLaunchMode.TouchFriendly` — so a
+    /// session created under any other mode drops perfectly well-formed touch packets on the
+    /// floor. That is why this reads exactly the same predicate the stream reads: if the two ever
+    /// disagree, touch is dead for the whole session with nothing on the wire to say so.
+    ///
+    /// Mirrors `appLaunchModeFor` in `OpenNowViewModel.kt`.
+    static func appLaunchMode(mode: NativeTouchMode, game: CloudGame?) -> GFNAppLaunchMode {
+        shouldUseNativeTouch(mode: mode, game: game) ? .touchFriendly : .default
     }
 
     /// One line per session recording the catalog signal and the decision it produced, so a
     /// "touch did not work" report can be answered without guessing.
-    static func diagnostics(game: CloudGame?, enabled: Bool) -> String {
-        guard let game else { return "native touch enabled=\(enabled) game=none" }
+    static func diagnostics(game: CloudGame?, enabled: Bool, provisioned: Bool) -> String {
+        guard let game else {
+            return "native touch enabled=\(enabled) provisioned=\(provisioned) game=none"
+        }
         let controls = game.launchOptions
             .compactMap(\.supportedControls)
             .flatMap { $0 }
@@ -97,7 +85,8 @@ enum NativeTouchSupport {
                 if !acc.contains(value) { acc.append(value) }
             }
             .joined(separator: "|")
-        return "native touch enabled=\(enabled) id=\(game.id) title=\(game.title) "
+        return "native touch enabled=\(enabled) provisioned=\(provisioned) "
+            + "id=\(game.id) title=\(game.title) "
             + "catalogTouch=\(catalogClaimsTouchSupport(game)) "
             + "supportedControls=\(controls.isEmpty ? "none" : controls)"
     }

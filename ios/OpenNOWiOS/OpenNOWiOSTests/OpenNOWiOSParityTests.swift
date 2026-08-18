@@ -1006,34 +1006,58 @@ final class OpenNOWiOSParityTests: XCTestCase {
         )
     }
 
-    func testAutomaticTouchDoesNotDowngradeAHighQualityRequest() {
+    func testSessionLaunchModeAgreesWithTheStreamTouchDecision() {
         let touchGame = OpenNOWiOSParityTests.makeGame(
             title: "Genshin Impact",
             controls: ["TOUCHSCREEN"]
         )
-        let hd = StreamVideoProfile(width: 1_920, height: 1_080, fps: 60, maxBitrateKbps: 35_000)
-        let qhd = StreamVideoProfile(width: 2_560, height: 1_440, fps: 60, maxBitrateKbps: 45_000)
-        let highRefresh = StreamVideoProfile(width: 1_920, height: 1_080, fps: 120, maxBitrateKbps: 75_000)
+        let desktopGame = OpenNOWiOSParityTests.makeGame(
+            title: "Cyberpunk 2077",
+            controls: ["GAMEPAD", "KEYBOARD_MOUSE"]
+        )
 
-        // Inside the mobile allocation envelope, automatic takes the mobile identity so the game
-        // sees a digitizer.
-        XCTAssertTrue(
-            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: hd, hdrEnabled: false)
+        // The host provisions its virtual input devices from this once. If it disagrees with what
+        // the stream decides, touch is dead for the whole session and nothing says so — which is
+        // exactly how native touch shipped broken.
+        XCTAssertEqual(
+            NativeTouchSupport.appLaunchMode(mode: .automatic, game: touchGame),
+            .touchFriendly
         )
-        // Outside it, the resolution the user asked for wins — touch is optional, 1440p is not.
-        XCTAssertFalse(
-            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: qhd, hdrEnabled: false)
+        XCTAssertEqual(
+            NativeTouchSupport.appLaunchMode(mode: .automatic, game: desktopGame),
+            .default
         )
-        XCTAssertFalse(
-            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: highRefresh, hdrEnabled: false)
+        XCTAssertEqual(
+            NativeTouchSupport.appLaunchMode(mode: .always, game: desktopGame),
+            .touchFriendly
         )
-        XCTAssertFalse(
-            NativeTouchSupport.prefersMobileIdentity(mode: .automatic, game: touchGame, profile: hd, hdrEnabled: true)
+        XCTAssertEqual(
+            NativeTouchSupport.appLaunchMode(mode: .never, game: touchGame),
+            .default
         )
-        // "Always" is an explicit instruction and is honoured regardless.
-        XCTAssertTrue(
-            NativeTouchSupport.prefersMobileIdentity(mode: .always, game: touchGame, profile: qhd, hdrEnabled: false)
+
+        // The value on the wire is the one the official client gates its touch pipeline on.
+        XCTAssertEqual(GFNAppLaunchMode.default.rawValue, 1)
+        XCTAssertEqual(GFNAppLaunchMode.gamepadFriendly.rawValue, 2)
+        XCTAssertEqual(GFNAppLaunchMode.touchFriendly.rawValue, 3)
+    }
+
+    func testTouchLaunchModeIgnoresTheRequestedVideoProfile() {
+        let touchGame = OpenNOWiOSParityTests.makeGame(
+            title: "Genshin Impact",
+            controls: ["TOUCHSCREEN"]
         )
+
+        // The touch identity keeps the desktop allocation matrix, so asking for 1440p, 120 fps or
+        // HDR no longer costs the digitizer. The old envelope check declined touch above 1080p60
+        // while the stream went on sending contacts regardless.
+        for mode in [NativeTouchMode.automatic, .always] {
+            XCTAssertEqual(
+                NativeTouchSupport.appLaunchMode(mode: mode, game: touchGame),
+                .touchFriendly,
+                "mode \(mode)"
+            )
+        }
     }
 
     // MARK: - Failure classification
@@ -1898,21 +1922,65 @@ final class OpenNOWiOSParityTests: XCTestCase {
         XCTAssertTrue(isSessionAdsRequired(updated))
     }
 
-    func testNvidiaArtworkRequestsReplaceExistingSizingAndClampToAndroidWideLimit() {
+    func testNvidiaArtworkRequestsAreClampedToTheStoredMasterWidth() {
+        let boxArt = "https://img.nvidiagrid.net/apps/101550411/ZZ/GAME_BOX_ART_01_abc.jpg"
+        let screenshot = "https://img.nvidiagrid.net/apps/101550411/ZZ/SCREENSHOT_01_abc.jpg"
+
+        // Under the master, the request is the width we will draw.
         XCTAssertEqual(
-            optimizedNvidiaArtworkURL(
-                "https://img.nvidiagrid.net/apps/box.jpg;f=jpeg;w=4096;dpr=2",
-                targetPixelSize: 2_800
-            ),
-            "https://img.nvidiagrid.net/apps/box.jpg;f=webp;w=1920"
+            optimizedNvidiaArtworkURL(boxArt, targetPixelWidth: 480),
+            "\(boxArt);f=webp;w=480"
+        )
+        // Above it, the CDN would upscale and charge us more bytes than the untouched original,
+        // so the request is clamped to what NVIDIA actually stores.
+        XCTAssertEqual(
+            optimizedNvidiaArtworkURL(boxArt, targetPixelWidth: 1_600),
+            "\(boxArt);f=webp;w=628"
         )
         XCTAssertEqual(
-            optimizedNvidiaArtworkURL(
-                "https://cdn.example.com/box.jpg",
-                targetPixelSize: 800
-            ),
+            optimizedNvidiaArtworkURL(screenshot, targetPixelWidth: 4_096),
+            "\(screenshot);f=webp;w=1920"
+        )
+
+        // Existing sizing parameters are replaced, not appended to.
+        XCTAssertEqual(
+            optimizedNvidiaArtworkURL("\(boxArt);f=jpeg;w=4096;dpr=2", targetPixelWidth: 400),
+            "\(boxArt);f=webp;w=400"
+        )
+
+        // Sizing travels as path parameters. Appending them after a query string would leave the
+        // CDN serving the full-size master while the URL claimed otherwise.
+        XCTAssertEqual(
+            optimizedNvidiaArtworkURL("\(boxArt)?sig=abc", targetPixelWidth: 320),
+            "\(boxArt);f=webp;w=320?sig=abc"
+        )
+
+        // Anything we have not measured is left exactly as it came.
+        XCTAssertEqual(
+            optimizedNvidiaArtworkURL("https://cdn.example.com/box.jpg", targetPixelWidth: 800),
             "https://cdn.example.com/box.jpg"
         )
+        XCTAssertEqual(
+            optimizedNvidiaArtworkURL(
+                "https://img.nvidiagrid.net/apps/101550411/ZZ/MYSTERY_ART_01_abc.jpg",
+                targetPixelWidth: 800
+            ),
+            "https://img.nvidiagrid.net/apps/101550411/ZZ/MYSTERY_ART_01_abc.jpg"
+        )
+    }
+
+    func testArtworkRequestWidthFollowsTheCardWidthNotItsLongestEdge() {
+        // Box art is portrait. Sizing the request by the longest edge asks the CDN for a third
+        // more pixels than a poster can ever show.
+        let poster = CGSize(width: 180, height: 600)
+        let scale = UIScreen.main.scale
+        XCTAssertEqual(
+            imageRequestWidth(for: poster),
+            normalizedImageTargetPixelSize(Int(ceil(180 * scale)))
+        )
+        XCTAssertLessThan(imageRequestWidth(for: poster), imageTargetPixelSize(for: poster))
+        // Degenerate sizes fall back rather than producing a zero-width request.
+        XCTAssertEqual(imageRequestWidth(for: .zero), 480)
     }
 
     func testCatalogSearchMatchesAllTermsAcrossMetadataLikeAndroid() throws {

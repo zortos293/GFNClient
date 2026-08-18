@@ -377,6 +377,17 @@ struct ActiveSession: Identifiable, Codable, Equatable {
     var negotiatedStreamProfile: NegotiatedStreamProfile? = nil
     var requestedStreamingFeatures: StreamingFeatures? = nil
     var finalizedStreamingFeatures: StreamingFeatures? = nil
+    /// Whether this session was requested with `appLaunchMode: touchFriendly`, and therefore
+    /// whether the host has a digitizer to receive contacts at all.
+    ///
+    /// The host provisions its input devices when the session is created and never revisits them,
+    /// so this cannot be recomputed later from the current settings — flipping the touch setting
+    /// mid-session would otherwise produce a stream that sends well-formed touch packets into a
+    /// session with nowhere to put them, with nothing on screen to explain the silence.
+    ///
+    /// `nil` means "created before this was recorded, or by something other than a launch or claim
+    /// we performed"; those sessions keep the old behaviour of trusting the setting.
+    var touchProvisioned: Bool? = nil
 }
 
 struct RemoteSessionCandidate: Identifiable, Codable, Equatable {
@@ -2109,6 +2120,10 @@ private enum GFNConstants {
     static let panelsQueryHash = "f8e26265a5db5c20e1334a6872cf04b6e3970507697f6ae55a6ddefa5420daf0"
     static let appMetadataQueryHash = "39187e85b6dcf60b7279a5f233288b0a8b69a8b1dbcfb5b25555afdcb988f0d7"
     static let userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NVIDIACEFClient/HEAD/debb5919f6 GFN-PC/2.0.80.173"
+    /// The user agent the official GeForce NOW Android client sends for a touch session. It travels
+    /// with the touch CloudMatch identity in `StreamDeviceProfile`; the two are one signal and must
+    /// not be set independently.
+    static let touchUserAgent = "GFN-PC/22.0 (Android-Generic-Touch 14) PGC/3.8 (6.36.38319306) okhttp/4.12.0"
     static let oauthRedirectUri = "http://localhost:2259"
     static let oauthCallbackScheme = "opennowios"
     static let oauthRedirectPort: UInt16 = 2259
@@ -2675,57 +2690,99 @@ private final class OAuthLoopbackServer: @unchecked Sendable {
     }
 }
 
+/// Server-side values, chosen when the session is created. They decide which virtual input devices
+/// the host sets up, which is why the choice cannot be revisited once the game is running.
+///
+/// `touchFriendly` is what makes the host present a digitizer. The official client gates its whole
+/// touch pipeline on it — `enableTouchInput: appLaunchMode === AppLaunchMode.TouchFriendly` — so a
+/// session created under any other mode silently ignores well-formed touch packets.
+///
+/// Ported from `GfnAppLaunchMode` in the Android build. `gamepadFriendly` is listed for
+/// completeness; iOS keeps sending `default` for non-touch sessions, which is what it has always
+/// sent and what the desktop allocation path is known to work with.
+enum GFNAppLaunchMode: Int {
+    case `default` = 1
+    case gamepadFriendly = 2
+    case touchFriendly = 3
+}
+
+/// The CloudMatch client identity a session is requested under, and the launch mode that goes with
+/// it. One value owns both because they are not independent: asking for `touchFriendly` under the
+/// desktop identity is a session that claims a digitizer and allocates as though it had none.
+///
+/// The touch identity is not a guess. It is the combination the Android build validated: the
+/// desktop-native streamer and client type (`NVIDIA-CLASSIC` / `NATIVE`) with an Android OS and a
+/// `TABLET` device type. That pairing tells the server to enable the host-side digitizer *and*
+/// keep the full desktop resolution matrix, so touch is no longer paid for with a downgraded
+/// allocation. An earlier iOS-flavoured guess at this — `IOS` / `MOBILE` / `GFN-MOBILE` plus two
+/// invented metadata keys — provisioned no digitizer at all.
 private enum StreamDeviceProfile {
     case desktop
-    case mobileTouch
+    case touch
+
+    var appLaunchMode: GFNAppLaunchMode {
+        switch self {
+        case .desktop: return .default
+        case .touch: return .touchFriendly
+        }
+    }
 
     var nvDeviceOS: String {
         switch self {
-        case .desktop:
-            return "WINDOWS"
-        case .mobileTouch:
-            return "IOS"
+        case .desktop: return "WINDOWS"
+        case .touch: return "ANDROID"
         }
     }
 
     var nvDeviceType: String {
         switch self {
-        case .desktop:
-            return "DESKTOP"
-        case .mobileTouch:
-            return "MOBILE"
+        case .desktop: return "DESKTOP"
+        case .touch: return "TABLET"
+        }
+    }
+
+    /// The touch identity has to look like the client whose user agent it borrows, so make and
+    /// model go back to that identity's own values rather than naming the iPhone.
+    var nvDeviceMake: String {
+        switch self {
+        case .desktop: return "APPLE"
+        case .touch: return "UNKNOWN"
+        }
+    }
+
+    var nvDeviceModel: String {
+        switch self {
+        case .desktop: return OpenNOWPlatform.displayName
+        case .touch: return "UNKNOWN"
+        }
+    }
+
+    var userAgent: String {
+        switch self {
+        case .desktop: return GFNConstants.userAgent
+        case .touch: return GFNConstants.touchUserAgent
         }
     }
 
     var clientPlatformName: String {
         switch self {
-        case .desktop:
-            return "windows"
-        case .mobileTouch:
-            return "ios"
+        case .desktop: return "windows"
+        case .touch: return "android"
         }
     }
 
-    var clientIdentification: String {
+    /// Only the desktop identity persists in-game settings server-side. The touch identity is a
+    /// borrowed one and must not write a phone session's choices back over the desktop profile.
+    var persistsInGameSettings: Bool {
         switch self {
-        case .desktop:
-            return "GFN-PC"
-        case .mobileTouch:
-            return "GFN-MOBILE"
+        case .desktop: return true
+        case .touch: return false
         }
     }
 
-    var metadata: [[String: String]] {
-        switch self {
-        case .desktop:
-            return []
-        case .mobileTouch:
-            return [
-                ["key": "MobileTouchInput", "value": "1"],
-                ["key": "InputDeviceClass", "value": "touch"]
-            ]
-        }
-    }
+    /// Both identities present themselves as the PC client; only the device fields differ. Sending
+    /// `GFN-MOBILE` here was part of the same guess that failed.
+    var clientIdentification: String { "GFN-PC" }
 }
 
 private actor GFNAPIClient {
@@ -3655,7 +3712,7 @@ private actor GFNAPIClient {
         let token = session.tokens.idToken ?? session.tokens.accessToken
         let baseSource = streamingBaseUrl ?? session.provider.streamingServiceUrl
         let base = baseSource.hasSuffix("/") ? String(baseSource.dropLast()) : baseSource
-        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings, profile: streamProfile)
+        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings)
         let sessionQuery = URLQueryItemEncoder.encode([
             "keyboardLayout": StreamSettingsResolver.normalizedKeyboardLayout(settings.keyboardLayout),
             "languageCode": StreamSettingsResolver.normalizedGameLanguage(settings.gameLanguage)
@@ -3730,7 +3787,8 @@ private actor GFNAPIClient {
             requestedStreamingFeatures: Self.extractStreamingFeatures(
                 (sessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
             ),
-            finalizedStreamingFeatures: Self.extractStreamingFeatures(sessionObj["finalizedStreamingFeatures"] as? [String: Any])
+            finalizedStreamingFeatures: Self.extractStreamingFeatures(sessionObj["finalizedStreamingFeatures"] as? [String: Any]),
+            touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly
         )
     }
 
@@ -4023,7 +4081,7 @@ private actor GFNAPIClient {
         let clientId = UUID().uuidString
         let claimDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? UUID().uuidString : deviceId
         let streamProfile = StreamSettingsResolver.profile(for: settings, membershipTier: session.user.membershipTier)
-        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings, profile: streamProfile)
+        let deviceProfile = Self.streamDeviceProfile(for: game, settings: settings)
         let zoneBase = Self.normalizedStreamingBase(streamingBaseUrl, vpcId: vpcId)
         var effectiveServerIp = Self.remoteSessionTargetHost(
             serverIp: candidate.serverIp,
@@ -4148,7 +4206,8 @@ private actor GFNAPIClient {
             requestedStreamingFeatures: Self.extractStreamingFeatures(
                 (resolvedSessionObj["sessionRequestData"] as? [String: Any])?["requestedStreamingFeatures"] as? [String: Any]
             ),
-            finalizedStreamingFeatures: Self.extractStreamingFeatures(resolvedSessionObj["finalizedStreamingFeatures"] as? [String: Any])
+            finalizedStreamingFeatures: Self.extractStreamingFeatures(resolvedSessionObj["finalizedStreamingFeatures"] as? [String: Any]),
+            touchProvisioned: deviceProfile.appLaunchMode == .touchFriendly
         )
 
         for _ in 0..<45 {
@@ -5376,7 +5435,7 @@ private actor GFNAPIClient {
         deviceProfile: StreamDeviceProfile = .desktop
     ) -> [String: String] {
         var headers: [String: String] = [
-            "User-Agent": GFNConstants.userAgent,
+            "User-Agent": deviceProfile.userAgent,
             "Authorization": "GFNJWT \(token)",
             "Content-Type": "application/json",
             "nv-browser-type": "CHROME",
@@ -5384,8 +5443,8 @@ private actor GFNAPIClient {
             "nv-client-streamer": "NVIDIA-CLASSIC",
             "nv-client-type": "NATIVE",
             "nv-client-version": GFNConstants.gfnClientVersion,
-            "nv-device-make": "APPLE",
-            "nv-device-model": OpenNOWPlatform.displayName,
+            "nv-device-make": deviceProfile.nvDeviceMake,
+            "nv-device-model": deviceProfile.nvDeviceModel,
             "nv-device-os": deviceProfile.nvDeviceOS,
             "nv-device-type": deviceProfile.nvDeviceType,
             "x-device-id": deviceId
@@ -5423,7 +5482,7 @@ private actor GFNAPIClient {
             ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":\(profile.width),\"verticalPixels\":\(profile.height)}"],
             ["key": GFNConstants.streamSettingsMetadataKey, "value": StreamSettingsResolver.sessionSignature(for: settings, profile: profile)],
             ["key": "surroundAudioInfo", "value": "2"]
-        ] + deviceProfile.metadata
+        ]
         let body: [String: Any] = [
             "sessionRequestData": [
                 "appId": appId,
@@ -5458,11 +5517,11 @@ private actor GFNAPIClient {
                 "remoteControllersBitmap": 0,
                 "clientTimezoneOffset": TimeZone.current.secondsFromGMT() * 1000,
                 "enhancedStreamMode": 1,
-                "appLaunchMode": 1,
+                "appLaunchMode": deviceProfile.appLaunchMode.rawValue,
                 "secureRTSPSupported": false,
                 "partnerCustomData": "",
                 "accountLinked": accountLinked,
-                "enablePersistingInGameSettings": true,
+                "enablePersistingInGameSettings": deviceProfile.persistsInGameSettings,
                 "userAge": 26,
                 "requestedStreamingFeatures": requestedStreamingFeatures(
                     settings: settings,
@@ -5499,7 +5558,7 @@ private actor GFNAPIClient {
             ["key": "clientPhysicalResolution", "value": "{\"horizontalPixels\":\(profile.width),\"verticalPixels\":\(profile.height)}"],
             ["key": GFNConstants.streamSettingsMetadataKey, "value": StreamSettingsResolver.sessionSignature(for: settings, profile: profile)],
             ["key": "surroundAudioInfo", "value": "2"]
-        ] + deviceProfile.metadata
+        ]
         let body: [String: Any] = [
             "action": 2,
             "data": "RESUME",
@@ -5532,14 +5591,14 @@ private actor GFNAPIClient {
                 "parentSessionId": NSNull(),
                 "appId": Int(appId) ?? 0,
                 "streamerVersion": 1,
-                "appLaunchMode": 1,
+                "appLaunchMode": deviceProfile.appLaunchMode.rawValue,
                 "sdkVersion": "1.0",
                 "enhancedStreamMode": 1,
                 "useOps": true,
                 "clientDisplayHdrCapabilities": hdrCapabilitiesValue,
                 "accountLinked": true,
                 "partnerCustomData": "",
-                "enablePersistingInGameSettings": true,
+                "enablePersistingInGameSettings": deviceProfile.persistsInGameSettings,
                 "secureRTSPSupported": false,
                 "userAge": 26,
                 "requestedStreamingFeatures": requestedStreamingFeatures(
@@ -5599,24 +5658,23 @@ private actor GFNAPIClient {
         ]
     }
 
-    /// Whether to ask CloudMatch for a session under the mobile identity, which is what makes a
-    /// Windows build see a digitizer and switch to its touch UI.
+    /// Which CloudMatch identity — and therefore which `appLaunchMode` — this session is created
+    /// under.
     ///
-    /// Previously this matched the literal string "fortnite", which missed every other touch title
-    /// in the catalog. It now reads the catalog's own `TOUCHSCREEN` capability, the same signal the
-    /// official client uses — and declines the mobile identity when the user has asked for a
-    /// profile the mobile allocation matrix would downgrade.
+    /// This deliberately reads `shouldUseNativeTouch`, the same predicate the live stream reads to
+    /// decide whether to send digitizer contacts. The two used to be different functions: the
+    /// session asked whether the *mobile allocation envelope* could take the requested profile and
+    /// declined the touch identity above 1080p60, while the stream went on sending touch packets
+    /// regardless. That envelope no longer exists — the touch identity keeps the desktop
+    /// allocation matrix — and one predicate means the session and the stream cannot disagree.
     private static func streamDeviceProfile(
         for game: CloudGame,
-        settings: AppSettings,
-        profile: StreamVideoProfile
+        settings: AppSettings
     ) -> StreamDeviceProfile {
-        NativeTouchSupport.prefersMobileIdentity(
+        NativeTouchSupport.shouldUseNativeTouch(
             mode: settings.touch.nativeTouchMode,
-            game: game,
-            profile: profile,
-            hdrEnabled: settings.hdrEnabled
-        ) ? .mobileTouch : .desktop
+            game: game
+        ) ? .touch : .desktop
     }
 
     private static func generatePKCE() -> (verifier: String, challenge: String) {

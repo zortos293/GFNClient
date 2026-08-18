@@ -72,6 +72,54 @@ extension View {
     }
 }
 
+/// The lift under a piece of artwork, drawn as the shadow of a shape rather than of the card.
+///
+/// `.shadow` applied to a composed subtree has to rasterise that subtree offscreen to find the
+/// alpha it should blur, once per view per frame — a catalog page of twenty cards is twenty
+/// offscreen passes on every scroll tick. The cards are opaque and already clipped to a rounded
+/// rectangle, so the same shadow can come from an opaque shape sitting behind them, which Core
+/// Animation draws from a path with no offscreen pass at all.
+///
+/// This is the same rule that removed the per-cell shimmer and the per-cell material: anything
+/// costing a render pass per visible cell has to earn it, and decoration never does.
+struct ArtworkCardShadowModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    var opacity: Double = 0.14
+    var radius: CGFloat = 8
+    var offsetY: CGFloat = 4
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                // The shape has to be opaque for its shadow to match the card's, and it is filled
+                // with the same ground the artwork itself uses rather than plain black: a card
+                // whose image has not arrived is not fully opaque, and this is the colour its own
+                // placeholder gradient resolves to, so the corner it lets through is unchanged.
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(OpenNOWPalette.imagePlaceholder)
+                    .shadow(color: .black.opacity(opacity), radius: radius, y: offsetY)
+            }
+    }
+}
+
+extension View {
+    func artworkCardShadow(
+        cornerRadius: CGFloat,
+        opacity: Double = 0.14,
+        radius: CGFloat = 8,
+        offsetY: CGFloat = 4
+    ) -> some View {
+        modifier(
+            ArtworkCardShadowModifier(
+                cornerRadius: cornerRadius,
+                opacity: opacity,
+                radius: radius,
+                offsetY: offsetY
+            )
+        )
+    }
+}
+
 struct GlassCardModifier: ViewModifier {
     let cornerRadius: CGFloat
 

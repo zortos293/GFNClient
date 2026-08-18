@@ -58,6 +58,9 @@ enum NativeTouchMode: String, Codable, CaseIterable, Identifiable {
 /// the difference between a comprehensible screen and a confusing one.
 enum ResolvedTouchMode: Equatable {
     case nativeTouch
+    /// Touch is wanted, but this session was created without the digitizer that would receive it.
+    /// The host decides that once, when the session starts, so the only way out is a new session.
+    case nativeTouchUnavailable
     case trackpadCursor(directClick: Bool)
     case virtualGamepad
     case inert
@@ -65,6 +68,7 @@ enum ResolvedTouchMode: Equatable {
     var label: String {
         switch self {
         case .nativeTouch: return "Native touch"
+        case .nativeTouchUnavailable: return "Native touch — needs a new session"
         case .trackpadCursor(let directClick): return directClick ? "Trackpad, direct click" : "Trackpad cursor"
         case .virtualGamepad: return "Virtual gamepad"
         case .inert: return "Touch does nothing"

@@ -131,7 +131,7 @@ final class OpenNOWImageCache {
             diskPath: "OpenNOWURLCache"
         )
         Task(priority: .utility) {
-            await OpenNOWImageDiskCache.shared.prepare()
+            await OpenNOWImageDiskCache.prepare()
         }
     }
 
@@ -149,7 +149,7 @@ final class OpenNOWImageCache {
 
     static func removeAllPersistentImages() {
         Task(priority: .utility) {
-            await OpenNOWImageDiskCache.shared.removeAll()
+            await OpenNOWImageDiskCache.removeAll()
         }
     }
 
@@ -158,59 +158,67 @@ final class OpenNOWImageCache {
     }
 }
 
-private actor OpenNOWImageDiskCache {
-    static let shared = OpenNOWImageDiskCache()
+/// Artwork bytes on disk, keyed by URL.
+///
+/// Deliberately **not** an actor. Every method here is a file syscall against a path derived purely
+/// from the URL, so there is no shared mutable state to protect — and an actor would have serialised
+/// them: a screen of cards would queue its reads behind one another and behind every atomic write,
+/// on one executor, while the six-wide network gate sat idle. The only thing that needs guarding is
+/// how often the directory gets swept, which `OpenNOWImageDiskCachePruneClock` owns.
+private enum OpenNOWImageDiskCache {
+    private static let maximumAge: TimeInterval = 30 * 24 * 60 * 60
+    private static let maximumBytes = 512 * 1024 * 1024
 
-    private let maximumAge: TimeInterval = 30 * 24 * 60 * 60
-    private let maximumBytes = 512 * 1024 * 1024
-    private let directoryURL: URL?
-    private var lastPruneAt = Date.distantPast
+    private static let directoryURL: URL? = FileManager.default
+        .urls(for: .cachesDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("OpenNOWArtwork", isDirectory: true)
 
-    private init() {
-        directoryURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("OpenNOWArtwork", isDirectory: true)
-    }
-
-    func prepare() {
+    static func prepare() async {
         ensureDirectoryExists()
-        pruneIfNeeded(force: true)
+        guard await OpenNOWImageDiskCachePruneClock.shared.claim(force: true) else { return }
+        prune()
     }
 
-    func data(for url: URL) -> Data? {
+    /// The file holding this URL's bytes, if it exists and has not aged out. Callers decode from
+    /// the file rather than from `Data`, so a cache hit never materialises the encoded image.
+    static func freshFileURL(for url: URL) -> URL? {
         guard let fileURL = fileURL(for: url),
-              let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
-              Date().timeIntervalSince(values.contentModificationDate ?? .distantPast) <= maximumAge,
-              let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe),
-              !data.isEmpty else {
+              let values = try? fileURL.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey]
+              ),
+              (values.fileSize ?? 0) > 0,
+              Date().timeIntervalSince(values.contentModificationDate ?? .distantPast) <= maximumAge else {
             return nil
         }
-        return data
+        return fileURL
     }
 
-    func store(_ data: Data, for url: URL) {
+    static func store(_ data: Data, for url: URL) async {
         guard !data.isEmpty, let fileURL = fileURL(for: url) else { return }
         ensureDirectoryExists()
         do {
             try data.write(to: fileURL, options: .atomic)
-            pruneIfNeeded(force: false)
         } catch {
             // Artwork can always be fetched again; cache writes must not block rendering.
+            return
         }
+        guard await OpenNOWImageDiskCachePruneClock.shared.claim(force: false) else { return }
+        prune()
     }
 
-    func remove(for url: URL) {
+    static func remove(for url: URL) {
         guard let fileURL = fileURL(for: url) else { return }
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    func removeAll() {
+    static func removeAll() async {
         guard let directoryURL else { return }
         try? FileManager.default.removeItem(at: directoryURL)
         ensureDirectoryExists()
-        lastPruneAt = .distantPast
+        await OpenNOWImageDiskCachePruneClock.shared.reset()
     }
 
-    private func ensureDirectoryExists() {
+    private static func ensureDirectoryExists() {
         guard let directoryURL else { return }
         try? FileManager.default.createDirectory(
             at: directoryURL,
@@ -218,7 +226,7 @@ private actor OpenNOWImageDiskCache {
         )
     }
 
-    private func fileURL(for url: URL) -> URL? {
+    private static func fileURL(for url: URL) -> URL? {
         guard let directoryURL else { return nil }
         let digest = SHA256.hash(data: Data(url.absoluteString.utf8))
             .map { String(format: "%02x", $0) }
@@ -226,10 +234,11 @@ private actor OpenNOWImageDiskCache {
         return directoryURL.appendingPathComponent(digest).appendingPathExtension("image")
     }
 
-    private func pruneIfNeeded(force: Bool) {
+    /// Only ever reached after the clock has granted a sweep, so the directory enumeration cannot
+    /// land on the path that just wrote one file.
+    private static func prune() {
         let now = Date()
-        guard force || now.timeIntervalSince(lastPruneAt) >= 60 * 60,
-              let directoryURL,
+        guard let directoryURL,
               let files = try? FileManager.default.contentsOfDirectory(
                 at: directoryURL,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
@@ -237,7 +246,6 @@ private actor OpenNOWImageDiskCache {
               ) else {
             return
         }
-        lastPruneAt = now
 
         var entries = files.compactMap { fileURL -> (url: URL, date: Date, bytes: Int)? in
             guard let values = try? fileURL.resourceValues(
@@ -259,6 +267,26 @@ private actor OpenNOWImageDiskCache {
             try? FileManager.default.removeItem(at: entry.url)
             totalBytes -= entry.bytes
         }
+    }
+}
+
+/// Decides when the artwork directory may be swept. Claiming is what makes a sweep exclusive, so a
+/// hundred concurrent stores produce at most one enumeration an hour between them.
+private actor OpenNOWImageDiskCachePruneClock {
+    static let shared = OpenNOWImageDiskCachePruneClock()
+
+    private static let interval: TimeInterval = 60 * 60
+    private var lastPruneAt = Date.distantPast
+
+    func claim(force: Bool) -> Bool {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastPruneAt) >= Self.interval else { return false }
+        lastPruneAt = now
+        return true
+    }
+
+    func reset() {
+        lastPruneAt = .distantPast
     }
 }
 
@@ -357,6 +385,16 @@ private enum OpenNOWImageDecoder {
         }.value
     }
 
+    static func downsampledImage(fileURL: URL, targetPixelSize: Int) async throws -> UIImage {
+        try await Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            guard let decoded = downsample(fileURL: fileURL, targetPixelSize: targetPixelSize) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            return decoded
+        }.value
+    }
+
     private static func downsample(source: CGImageSource, targetPixelSize: Int) -> UIImage? {
         let maxPixelSize = max(160, targetPixelSize)
         let downsampleOptions = [
@@ -373,6 +411,17 @@ private enum OpenNOWImageDecoder {
 }
 
 private enum OpenNOWRemoteImageFetcher {
+    /// Artwork gets its own session with no `URLCache`. `OpenNOWImageDiskCache` already holds every
+    /// byte this fetcher returns, and is consulted before the fetcher runs at all, so the shared
+    /// cache was writing a second copy of every image to disk and evicting real API responses to
+    /// make room for it.
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
+
     static func load(url: URL, targetPixelSize: Int) async throws -> OpenNOWLoadedImage {
         try await OpenNOWImageLoadGate.shared.acquire()
         defer {
@@ -384,10 +433,9 @@ private enum OpenNOWRemoteImageFetcher {
         try Task.checkCancellation()
 
         var request = URLRequest(url: url)
-        request.cachePolicy = .returnCacheDataElseLoad
         request.timeoutInterval = 15
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -421,13 +469,13 @@ private actor OpenNOWRemoteImagePipeline {
         }
 
         let task = Task(priority: Task.currentPriority) {
-            if let diskData = await OpenNOWImageDiskCache.shared.data(for: request.url) {
+            if let diskFile = OpenNOWImageDiskCache.freshFileURL(for: request.url) {
                 do {
                     let diskImage = try await OpenNOWImageDecoder.downsampledImage(
-                        data: diskData,
+                        fileURL: diskFile,
                         targetPixelSize: request.targetPixelSize
                     )
-                    let cost = diskImage.cgImage.map { $0.bytesPerRow * $0.height } ?? diskData.count
+                    let cost = diskImage.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
                     OpenNOWImageCache.shared.insert(
                         diskImage,
                         for: request.url,
@@ -436,7 +484,7 @@ private actor OpenNOWRemoteImagePipeline {
                     )
                     return diskImage
                 } catch {
-                    await OpenNOWImageDiskCache.shared.remove(for: request.url)
+                    OpenNOWImageDiskCache.remove(for: request.url)
                 }
             }
 
@@ -450,7 +498,7 @@ private actor OpenNOWRemoteImagePipeline {
                 targetPixelSize: request.targetPixelSize,
                 cost: loaded.cost
             )
-            await OpenNOWImageDiskCache.shared.store(loaded.data, for: request.url)
+            await OpenNOWImageDiskCache.store(loaded.data, for: request.url)
             return loaded.image
         }
         inFlight[request] = task
@@ -1446,7 +1494,7 @@ private struct GameCatalogPosterContent: View {
                     lineWidth: isFocused ? 2 : 1
                 )
         )
-        .shadow(color: .black.opacity(0.14), radius: 8, y: 4)
+        .artworkCardShadow(cornerRadius: 12)
         .accessibilityLabel(game.title)
         .accessibilityValue(subtitle ?? "")
     }
@@ -1660,7 +1708,7 @@ struct GameVerticalBannerCard: View {
                     lineWidth: isFocused ? 2 : 1
                 )
         )
-        .shadow(color: .black.opacity(0.14), radius: 8, y: 4)
+        .artworkCardShadow(cornerRadius: 12)
         .accessibilityElement(children: .combine)
     }
 
@@ -1744,7 +1792,7 @@ private struct GameLaunchDetailsArtwork: View {
                    let url = URL(
                     string: optimizedNvidiaArtworkURL(
                         imageUrl,
-                        targetPixelSize: targetPixelSize
+                        targetPixelWidth: imageRequestWidth(for: proxy.size)
                     )
                    ) {
                     CachedRemoteImage(
@@ -1780,7 +1828,7 @@ private struct GameScreenshotGallery: View {
         return urls.compactMap { raw in
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
-            return URL(string: optimizedNvidiaArtworkURL(trimmed, targetPixelSize: 960))
+            return URL(string: optimizedNvidiaArtworkURL(trimmed, targetPixelWidth: 960))
         }
     }
 
@@ -2992,7 +3040,7 @@ private struct GameArtworkCard: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 8)
+        .artworkCardShadow(cornerRadius: 18, opacity: 0.18, radius: 12, offsetY: 8)
     }
 
     private var displayStores: [String] {
@@ -3179,7 +3227,7 @@ struct GameArtworkView: View {
             ZStack {
                 gameColor(for: game.title).opacity(0.2)
                 if let imageUrl = artworkUrl,
-                   let url = URL(string: requestArtworkURL(imageUrl, targetPixelSize: targetPixelSize)) {
+                   let url = URL(string: requestArtworkURL(imageUrl, size: proxy.size)) {
                     CachedRemoteImage(url: url, targetPixelSize: targetPixelSize) { image in
                         fittedImage(image, size: proxy.size)
                     } placeholder: {
@@ -3229,13 +3277,11 @@ struct GameArtworkView: View {
         }
     }
 
-    private func requestArtworkURL(_ source: String, targetPixelSize: Int) -> String {
-        switch role {
-        case .catalog:
-            return source
-        case .details, .queue:
-            return optimizedNvidiaArtworkURL(source, targetPixelSize: targetPixelSize)
-        }
+    /// Every role asks the CDN for the width it will draw. The catalog used to be exempt, on the
+    /// theory that box art is small — but a page of cards is twenty of them, and each one was the
+    /// full-size master. That is the single largest cost in filling a catalog screen.
+    private func requestArtworkURL(_ source: String, size: CGSize) -> String {
+        optimizedNvidiaArtworkURL(source, targetPixelWidth: imageRequestWidth(for: size))
     }
 }
 
@@ -3327,15 +3373,62 @@ func normalizedImageTargetPixelSize(_ targetPixelSize: Int) -> Int {
     max(160, ((targetPixelSize + 159) / 160) * 160)
 }
 
-func optimizedNvidiaArtworkURL(_ raw: String, targetPixelSize: Int) -> String {
+/// The width to request artwork at, in pixels, for a view of `size`.
+///
+/// Deliberately the view's **width** rather than its longest edge: box art is portrait, so sizing a
+/// request by the longest edge asks the CDN for a third more pixels than the card can show. Rounded
+/// up to the same 160-pixel step as the decode target so a poster-size slider does not invalidate
+/// every cached image for a few points of travel.
+func imageRequestWidth(for size: CGSize) -> Int {
+    let pixels = size.width * UIScreen.main.scale
+    guard pixels.isFinite, pixels > 0 else { return 480 }
+    return normalizedImageTargetPixelSize(Int(ceil(pixels)))
+}
+
+/// The pixel width of the master NVIDIA stores for each kind of artwork, keyed by the marker its
+/// filename carries.
+///
+/// These are measured, not assumed, and they are the whole reason this table exists: the CDN
+/// happily serves `;w=` above the master and **upscales**, so a request sized from the screen alone
+/// can cost more bytes than the untouched original. A 3x phone asking for a 640-pixel-wide poster
+/// would have pulled an upscaled 628-pixel master; asking for 1920 pulls nearly three times the
+/// original. Every request is clamped here instead.
+///
+/// An unrecognised path is left alone rather than guessed at — we only rewrite what we have
+/// measured.
+private let nvidiaArtworkMasterWidths: [(marker: String, width: Int)] = [
+    ("/GAME_BOX_ART_", 628),
+    ("/KEY_ART_", 600),
+    ("/HERO_IMAGE_", 1_920),
+    ("/TV_BANNER_", 1_920),
+    ("/SCREENSHOT_", 1_920)
+]
+
+/// Rewrites an NVIDIA artwork URL to ask the CDN for a WebP re-encode no wider than we will draw.
+///
+/// Worth doing even when the width is already the master's: at native size WebP costs roughly a
+/// quarter less than the stored JPEG for box art and half for a screenshot, so every artwork
+/// request gets smaller, and a catalog card on a tablet gets a great deal smaller than that.
+///
+/// The sizing parameters are path parameters, not query items, so they have to go on the last path
+/// segment — appending them after a query string would make the CDN serve the master again.
+func optimizedNvidiaArtworkURL(_ raw: String, targetPixelWidth: Int) -> String {
     guard raw.localizedCaseInsensitiveContains("img.nvidiagrid.net") else { return raw }
+    let queryStart = raw.firstIndex(of: "?")
+    let path = queryStart.map { String(raw[..<$0]) } ?? raw
+    let query = queryStart.map { String(raw[$0...]) } ?? ""
     let markers = [";f=", ";w=", ";h=", ";dpr="]
     let cutoff = markers.compactMap {
-        raw.range(of: $0, options: .caseInsensitive)?.lowerBound
+        path.range(of: $0, options: .caseInsensitive)?.lowerBound
     }.min()
-    let base = cutoff.map { String(raw[..<$0]) } ?? raw
-    let width = min(max(targetPixelSize, 160), 1_920)
-    return "\(base);f=webp;w=\(width)"
+    let base = cutoff.map { String(path[..<$0]) } ?? path
+    guard let master = nvidiaArtworkMasterWidths.first(where: {
+        base.range(of: $0.marker, options: .caseInsensitive) != nil
+    })?.width else {
+        return raw
+    }
+    let width = min(max(targetPixelWidth, 160), master)
+    return "\(base);f=webp;w=\(width)\(query)"
 }
 
 func gameColor(for title: String) -> Color {

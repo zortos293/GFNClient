@@ -2538,7 +2538,11 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     /// on-screen controller overrides it, because the two need exclusive ownership of the same
     /// fingers. Mirrors `nativeTouchActive` in `OpenNowStreamSurface.kt`.
     fileprivate var nativeTouchActive: Bool {
-        NativeTouchSupport.shouldUseNativeTouchForStream(
+        // A session created without `appLaunchMode: touchFriendly` has no digitizer and never will,
+        // so sending contacts into it would be silence with no explanation. Sessions from before
+        // this was recorded report `nil` and keep trusting the setting.
+        guard session.touchProvisioned != false else { return false }
+        return NativeTouchSupport.shouldUseNativeTouchForStream(
             mode: liveSettings.touch.nativeTouchMode,
             game: session.game,
             preferVirtualController: streamerPreferences.touchControllerVisible
@@ -2671,6 +2675,17 @@ final class NativeStreamCoordinator: NSObject, ObservableObject {
     var resolvedTouchModeLabel: String {
         if nativeTouchActive {
             return ResolvedTouchMode.nativeTouch.label
+        }
+        // Turning touch on inside a session the host provisioned without a digitizer cannot take
+        // effect, and the picker above gives no hint of that. Say so rather than quietly reporting
+        // whatever the fallback happens to be.
+        if session.touchProvisioned == false,
+           NativeTouchSupport.shouldUseNativeTouchForStream(
+            mode: liveSettings.touch.nativeTouchMode,
+            game: session.game,
+            preferVirtualController: streamerPreferences.touchControllerVisible
+           ) {
+            return ResolvedTouchMode.nativeTouchUnavailable.label
         }
         // The resolved state, not the stored preference: with the controller wanted but suppressed
         // by a connected gamepad, the fingers are still driving the cursor.
@@ -4642,7 +4657,8 @@ extension NativeStreamCoordinator: RTCDataChannelDelegate {
                     self.log(
                         NativeTouchSupport.diagnostics(
                             game: self.session.game,
-                            enabled: self.nativeTouchActive
+                            enabled: self.nativeTouchActive,
+                            provisioned: self.session.touchProvisioned ?? true
                         )
                     )
                 } else if dataChannel === self.partiallyReliableInputChannel {

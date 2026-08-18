@@ -759,6 +759,27 @@ fn validate_context(context: &SessionContext, id: &str) -> Result<(), Value> {
             ));
         }
     }
+    if context
+        .session
+        .connection_info
+        .as_ref()
+        .is_some_and(|connections| {
+            connections.iter().any(|connection| {
+                connection.port == 0
+                    || connection.port > u16::MAX.into()
+                    || connection
+                        .ip
+                        .as_ref()
+                        .is_some_and(|ip| ip.trim().is_empty())
+            })
+        })
+    {
+        return Err(error(
+            Some(id),
+            "invalid-context",
+            "connectionInfo requires ports in 1..=65535 and non-empty hostnames when present",
+        ));
+    }
     serde_json::to_value(context).map_err(|context_error| {
         error(
             Some(id),

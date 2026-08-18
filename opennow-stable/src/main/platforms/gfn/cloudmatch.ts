@@ -578,12 +578,10 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
       body: JSON.stringify(payload),
     });
 
-    const { text, payload: apiResponse } = await readCloudMatchJson<CloudMatchResponse>(response, {
-      onText: (text) => {
-        console.log(`[CloudMatch] claimSession response: HTTP ${response.status}`);
-        console.log(`[CloudMatch] claimSession response body FULL: ${text}`);
-      },
-    });
+    const { text, payload: apiResponse } = await readCloudMatchJson<CloudMatchResponse>(response);
+    console.log(
+      `[CloudMatch] claimSession response: HTTP ${response.status}, requestStatus=${apiResponse.requestStatus.statusCode}, sessionStatus=${apiResponse.session?.status ?? "n/a"}, connectionInfo=${apiResponse.session?.connectionInfo?.length ?? 0}`,
+    );
 
     if (apiResponse.requestStatus.statusCode !== 1) {
       throw SessionError.fromResponse(200, text);
@@ -653,6 +651,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
         gpuType: sessionData.gpuType,
         appLaunchMode: echoedSessionAppLaunchMode(pollApiResponse) ?? input.appLaunchMode,
         enablePersistingInGameSettings,
+        connectionInfo: sessionData.connectionInfo?.map((connection) => ({ ...connection })),
         rtspsEndpoints: signaling.rtspsEndpoints.length > 0 ? signaling.rtspsEndpoints : undefined,
         iceServers: await normalizeIceServers(pollApiResponse),
         mediaConnectionInfo: signaling.mediaConnectionInfo,

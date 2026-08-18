@@ -31,11 +31,15 @@ export function timezoneOffsetMs(): number {
   return -new Date().getTimezoneOffset() * 60 * 1000;
 }
 
-export function webRtcSessionMetadata(width: number, height: number): Array<{ key: string; value: string }> {
+export function sessionMetadata(
+  width: number,
+  height: number,
+  transportMode: StreamSettings["transportMode"],
+): Array<{ key: string; value: string }> {
   return [
     { key: "SubSessionId", value: crypto.randomUUID() },
     { key: "wssignaling", value: "1" },
-    { key: "GSStreamerType", value: "WebRTC" },
+    ...(transportMode === "nvst" ? [] : [{ key: "GSStreamerType", value: "WebRTC" }]),
     { key: "networkType", value: "Unknown" },
     { key: "ClientImeSupport", value: "0" },
     {
@@ -62,6 +66,7 @@ export function buildSessionRequestBody(
   const bitDepth = colorQualityBitDepth(cq);
   const chromaFormat = colorQualityChromaFormat(cq);
   const accountLinked = input.accountLinked ?? true;
+  const useClassicStreamer = input.settings.transportMode === "nvst";
 
   return {
     sessionRequestData: {
@@ -100,7 +105,7 @@ export function buildSessionRequestBody(
       ],
       useOps: true,
       audioMode: 2,
-      metaData: webRtcSessionMetadata(width, height),
+      metaData: sessionMetadata(width, height, input.settings.transportMode),
       sdrHdrMode: hdrEnabled ? 1 : 0,
       clientDisplayHdrCapabilities: hdrEnabled
         ? {
@@ -114,7 +119,7 @@ export function buildSessionRequestBody(
       clientTimezoneOffset: timezoneOffsetMs(),
       enhancedStreamMode: 1,
       appLaunchMode: appLaunchModeWireValue(input.settings.appLaunchMode),
-      secureRTSPSupported: false,
+      secureRTSPSupported: useClassicStreamer,
       partnerCustomData: "",
       accountLinked,
       enablePersistingInGameSettings: shouldEnableInGameSettingsPersistence(input),
@@ -147,6 +152,7 @@ export function buildClaimRequestBody(
   const deviceId = getStableDeviceId();
   const subSessionId = crypto.randomUUID();
   const timezoneMs = timezoneOffsetMs();
+  const useClassicStreamer = settings.transportMode === "nvst";
 
   return {
     action: 2,
@@ -165,7 +171,7 @@ export function buildClaimRequestBody(
       metaData: [
         { key: "SubSessionId", value: subSessionId },
         { key: "wssignaling", value: "1" },
-        { key: "GSStreamerType", value: "WebRTC" },
+        ...(useClassicStreamer ? [] : [{ key: "GSStreamerType", value: "WebRTC" }]),
         { key: "networkType", value: "Unknown" },
         { key: "ClientImeSupport", value: "0" },
         { key: "surroundAudioInfo", value: "2" },
@@ -186,7 +192,7 @@ export function buildClaimRequestBody(
       accountLinked: true,
       partnerCustomData: "",
       enablePersistingInGameSettings,
-      secureRTSPSupported: false,
+      secureRTSPSupported: useClassicStreamer,
       userAge: 26,
     },
     metaData: [],

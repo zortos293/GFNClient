@@ -234,7 +234,9 @@ export interface SessionInfo {
   appLaunchMode?: number;
   /** Wire in-game settings persistence value the session was created with, kept session-stable for resumes */
   enablePersistingInGameSettings?: boolean;
-  /** Classic NVST RTSPS endpoints from CloudMatch usage=14 connections. */
+  /** Complete ordered CloudMatch transport list consumed by the native stream SDK. */
+  connectionInfo?: SessionConnectionInfo[];
+  /** Classic NVST RTSPS endpoints from CloudMatch usage=16 connections. */
   rtspsEndpoints?: string[];
   iceServers: IceServer[];
   mediaConnectionInfo?: MediaConnectionInfo;
@@ -243,6 +245,16 @@ export interface SessionInfo {
   finalizedStreamingFeatures?: StreamingFeatures;
   clientId?: string;
   deviceId?: string;
+}
+
+export interface SessionConnectionInfo {
+  ip?: string;
+  port: number;
+  usage: number;
+  protocol?: number;
+  appLevelProtocol?: number;
+  resourcePath?: string;
+  [key: string]: unknown;
 }
 
 /** Information about an active session from getActiveSessions */

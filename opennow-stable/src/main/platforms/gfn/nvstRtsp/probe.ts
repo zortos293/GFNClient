@@ -147,11 +147,7 @@ export function selectPrimaryRtspsEndpoint(endpoints: string[]): string | null {
   const normalized = endpoints
     .map((value) => value.trim())
     .filter((value) => /^rtsps?:\/\//i.test(value));
-  if (normalized.length === 0) {
-    return null;
-  }
-  const port322 = normalized.find((url) => /:322(?:\/|$)/.test(url));
-  return port322 ?? normalized[0] ?? null;
+  return normalized[0] ?? null;
 }
 
 /**
@@ -173,7 +169,7 @@ export function collectRtspsEndpoints(
   const seen = new Set<string>();
 
   for (const conn of connections) {
-    if (conn.usage !== 14) {
+    if (conn.usage !== 16) {
       continue;
     }
     const resourcePath = typeof conn.resourcePath === "string" ? conn.resourcePath.trim() : "";

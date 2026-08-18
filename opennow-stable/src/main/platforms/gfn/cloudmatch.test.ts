@@ -191,6 +191,38 @@ test("CloudMatch session request body carries supported codecs into the wire cod
   assert.equal(body.sessionRequestData.requestedStreamingFeatures.codec, 2);
 });
 
+test("CloudMatch requests secure RTSPS for explicit classic native sessions", () => {
+  const nativeBody = buildSessionRequestBody(
+    {
+      appId: "1001",
+      internalTitle: "Test Game",
+      zone: "prod",
+      settings: makeSettings({ transportMode: "nvst" }),
+    },
+    "device-id",
+  );
+  const webRtcBody = buildSessionRequestBody(
+    {
+      appId: "1001",
+      internalTitle: "Test Game",
+      zone: "prod",
+      settings: makeSettings({ transportMode: "webrtc" }),
+    },
+    "device-id",
+  );
+
+  assert.equal(nativeBody.sessionRequestData.secureRTSPSupported, true);
+  assert.equal(
+    nativeBody.sessionRequestData.metaData.some((entry) => entry.key === "GSStreamerType"),
+    false,
+  );
+  assert.equal(webRtcBody.sessionRequestData.secureRTSPSupported, false);
+  assert.deepEqual(
+    webRtcBody.sessionRequestData.metaData.find((entry) => entry.key === "GSStreamerType"),
+    { key: "GSStreamerType", value: "WebRTC" },
+  );
+});
+
 test("CloudMatch extracts local serverInfo region before fallback regions", () => {
   const bases = extractServerInfoRegionBases({
     metaData: [
@@ -688,7 +720,16 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
       sessionControlInfo: { ip: "203.0.113.10" },
       connectionInfo: [
         { ip: "203.0.113.10", port: 443, usage: 14, resourcePath: "/nvst/" },
-        { ip: "203.0.113.10", port: 49006, usage: 2 },
+        { ip: "203.0.113.11", port: 49006, usage: 15, protocol: 2 },
+        { ip: "203.0.113.13", port: 49007, usage: 17, protocol: 2 },
+        {
+          ip: "203.0.113.12",
+          port: 48322,
+          usage: 16,
+          protocol: 1,
+          appLevelProtocol: 6,
+          resourcePath: "rtsps://203.0.113.12:48322/session",
+        },
       ],
       iceServerConfiguration: {
         iceServers: [{ urls: "stun:127.0.0.1:19302" }],
@@ -711,7 +752,7 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
   try {
     // Session created as gamepad-friendly (wire 2) must stay gamepad-friendly on
     // resume even if the live settings toggles now say "default".
-    await claimSession({
+    const claimed = await claimSession({
       token: "token",
       sessionId: "sess-1",
       serverIp: "203.0.113.10",
@@ -719,6 +760,25 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
       appLaunchMode: 2,
       settings: makeSettings(),
     });
+    assert.deepEqual(claimed.connectionInfo, [
+      { ip: "203.0.113.10", port: 443, usage: 14, resourcePath: "/nvst/" },
+      { ip: "203.0.113.11", port: 49006, usage: 15, protocol: 2 },
+      { ip: "203.0.113.13", port: 49007, usage: 17, protocol: 2 },
+      {
+        ip: "203.0.113.12",
+        port: 48322,
+        usage: 16,
+        protocol: 1,
+        appLevelProtocol: 6,
+        resourcePath: "rtsps://203.0.113.12:48322/session",
+      },
+    ]);
+    assert.deepEqual(claimed.mediaConnectionInfo, {
+      ip: "203.0.113.13",
+      port: 49007,
+      usage: 17,
+    });
+    assert.deepEqual(claimed.rtspsEndpoints, ["rtsps://203.0.113.12:48322/session"]);
 
     // Without a session-stable value the claim falls back to the settings-derived mode.
     await claimSession({

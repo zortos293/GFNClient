@@ -215,8 +215,8 @@ export class NativeStreamerManager {
     });
 
     if (!this.capabilities?.supportsOfferAnswer) {
-      console.warn(
-        `[NativeStreamer] Backend "${this.capabilities?.backend ?? "unknown"}" reports offer/answer is not ready; forwarding offer for validation/fallback.`,
+      throw new Error(
+        `Native streamer backend "${this.capabilities?.backend ?? "unknown"}" does not support offer/answer.`,
       );
     }
 
@@ -282,6 +282,9 @@ export class NativeStreamerManager {
 
   async addRemoteIce(candidate: IceCandidatePayload, context: NativeStreamerSessionContext): Promise<void> {
     const sessionId = context.session.sessionId;
+    if (this.capabilities && !this.capabilities.supportsRemoteIce) {
+      return;
+    }
     if (!this.child || this.activeSessionId !== sessionId) {
       this.queueRemoteIce(sessionId, candidate);
       return;
@@ -742,6 +745,10 @@ export class NativeStreamerManager {
     }
 
     if (message.type === "local-ice") {
+      if (!this.capabilities?.supportsLocalIce) {
+        console.warn("[NativeStreamer] Ignoring local ICE from a backend that did not advertise it.");
+        return;
+      }
       if (this.answerInFlight) {
         this.queuedLocalIce.push(message.candidate);
         return;
@@ -1011,6 +1018,9 @@ export class NativeStreamerManager {
 
   private async flushQueuedRemoteIce(sessionId: string): Promise<void> {
     const queued = this.drainQueuedRemoteIce(sessionId);
+    if (!this.capabilities?.supportsRemoteIce) {
+      return;
+    }
     for (const candidate of queued) {
       await this.sendRemoteIce(candidate);
     }

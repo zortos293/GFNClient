@@ -444,6 +444,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
     gpuType: payload.session.gpuType,
     appLaunchMode: echoedSessionAppLaunchMode(payload) ?? options.fallbackAppLaunchMode,
     enablePersistingInGameSettings,
+    connectionInfo: connections.length > 0 ? connections.map((connection) => ({ ...connection })) : undefined,
     rtspsEndpoints: signaling.rtspsEndpoints.length > 0 ? signaling.rtspsEndpoints : undefined,
     iceServers: await normalizeIceServers(payload),
     mediaConnectionInfo: signaling.mediaConnectionInfo,

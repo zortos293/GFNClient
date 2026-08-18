@@ -113,6 +113,25 @@ pub struct Session {
     pub ice_servers: Vec<IceServer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_connection_info: Option<MediaConnectionInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_info: Option<Vec<ConnectionInfo>>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+    pub port: u32,
+    pub usage: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_level_protocol: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_path: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -249,6 +268,24 @@ mod tests {
                     "usage": 17,
                     "futureEndpointField": true
                 },
+                "connectionInfo": [
+                    {
+                        "ip": "198.51.100.10",
+                        "port": 443,
+                        "usage": 14,
+                        "protocol": 1,
+                        "resourcePath": "/nvst/"
+                    },
+                    {
+                        "ip": "198.51.100.20",
+                        "port": 48322,
+                        "usage": 16,
+                        "protocol": 1,
+                        "appLevelProtocol": 6,
+                        "resourcePath": "rtsps://198.51.100.20:48322/session",
+                        "futureConnectionField": true
+                    }
+                ],
                 "futureSessionField": "preserved"
             },
             "settings": { "codec": "H264", "fps": 60 },

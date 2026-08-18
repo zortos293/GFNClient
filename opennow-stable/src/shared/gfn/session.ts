@@ -217,6 +217,7 @@ export function getSessionAdDurationMs(ad: SessionAdInfo | undefined): number | 
 
 export interface SessionInfo {
   sessionId: string;
+  subSessionId?: string;
   appId?: string;
   status: number;
   queuePosition?: number;
@@ -260,6 +261,7 @@ export interface SessionConnectionInfo {
 /** Information about an active session from getActiveSessions */
 export interface ActiveSessionInfo {
   sessionId: string;
+  subSessionId?: string;
   appId: number;
   /** Wire appLaunchMode the session was created with, as echoed by the server */
   appLaunchMode?: number;

@@ -430,6 +430,7 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
 
   return {
     sessionId: payload.session.sessionId,
+    subSessionId: payload.session.subSessionId,
     appId: payload.session.sessionRequestData?.appId ?? options.fallbackAppId,
     status: payload.session.status,
     seatSetupStep,

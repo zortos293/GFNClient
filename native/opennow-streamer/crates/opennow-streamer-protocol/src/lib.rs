@@ -108,6 +108,8 @@ pub struct SessionContext {
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_session_id: Option<String>,
     pub server_ip: String,
     #[serde(default)]
     pub ice_servers: Vec<IceServer>,
@@ -260,6 +262,7 @@ mod tests {
         let fixture = serde_json::json!({
             "session": {
                 "sessionId": "synthetic-session",
+                "subSessionId": "synthetic-subsession",
                 "serverIp": "127-0-0-1.synthetic.invalid",
                 "iceServers": [],
                 "mediaConnectionInfo": {

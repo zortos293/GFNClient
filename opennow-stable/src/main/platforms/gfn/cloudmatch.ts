@@ -435,6 +435,7 @@ async function fetchActiveSessionsFromBase(
 
       return {
         sessionId: s.sessionId,
+        subSessionId: s.subSessionId,
         appId,
         appLaunchMode,
         enablePersistingInGameSettings,
@@ -640,6 +641,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
 
       return {
         sessionId: sessionData.sessionId,
+        subSessionId: sessionData.subSessionId,
         appId: input.appId,
         status: sessionData.status,
         queuePosition,

@@ -716,6 +716,7 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
     requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
     session: {
       sessionId: "sess-1",
+      subSessionId: "subsess-1",
       status: 3,
       sessionControlInfo: { ip: "203.0.113.10" },
       connectionInfo: [
@@ -773,6 +774,7 @@ test("CloudMatch claim keeps the session-stable appLaunchMode over live settings
         resourcePath: "rtsps://203.0.113.12:48322/session",
       },
     ]);
+    assert.equal(claimed.subSessionId, "subsess-1");
     assert.deepEqual(claimed.mediaConnectionInfo, {
       ip: "203.0.113.13",
       port: 49007,

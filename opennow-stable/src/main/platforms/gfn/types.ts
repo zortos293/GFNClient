@@ -84,6 +84,7 @@ export interface CloudMatchResponse {
   };
   session: {
     sessionId: string;
+    subSessionId?: string;
     status: number;
     queuePosition?: number;
     seatSetupInfo?: {
@@ -197,6 +198,7 @@ export interface CloudMatchResponse {
 /** Session in the get sessions response */
 export interface SessionEntry {
   sessionId: string;
+  subSessionId?: string;
   status: number;
   queuePosition?: number;
   seatSetupInfo?: {

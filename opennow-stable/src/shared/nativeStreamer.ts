@@ -119,7 +119,7 @@ export type NativeStreamerEvent =
     }
   | {
       type: "status";
-      status: "starting" | "ready" | "streaming" | "stopped";
+      status: "starting" | "ready" | "streaming" | "paused" | "stopped";
       message?: string;
     }
   | {

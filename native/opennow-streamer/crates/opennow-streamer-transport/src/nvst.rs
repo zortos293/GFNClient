@@ -6,7 +6,7 @@
 //! FEC repair, or NACK transmission because the current handoff does not contain enough
 //! wire information to implement those features safely.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -23,10 +23,19 @@ use ctr::Ctr128BE;
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha1::Sha1;
+use socket2::{Domain, Protocol, Socket, Type};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
-use super::{EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame};
+use str0m::config::Fingerprint;
+use str0m::media::{MediaKind, Mid};
+use str0m::net::{Protocol as RtcProtocol, Receive};
+use str0m::rtp::Ssrc;
+use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
+
+use super::{
+    EncodedMediaFrame, MediaConsumer, TransportError, deliver_media_frame, install_crypto,
+};
 
 const RTP_FIXED_HEADER_LEN: usize = 12;
 const SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN: usize = 10;
@@ -38,7 +47,7 @@ const DEFAULT_MAX_ACCESS_UNIT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ACCESS_UNIT_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_TIMEOUT: Duration = Duration::from_millis(250);
-const MAX_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_PING_BYTES: usize = 512;
 const PING_INTERVAL_BEFORE_CONNECTION: Duration = Duration::from_millis(20);
 const PING_INTERVAL_AFTER_CONNECTION: Duration = Duration::from_millis(100);
@@ -168,6 +177,7 @@ pub struct NvstVideoConfig {
     ping_payload: Vec<u8>,
     ping_version: Option<u8>,
     stun_credentials: Option<NvstStunCredentials>,
+    remote_dtls_fingerprint: Option<String>,
     codec: NvstVideoCodec,
     expected_payload_type: Option<u8>,
     expected_ssrc: Option<u32>,
@@ -186,6 +196,10 @@ impl fmt::Debug for NvstVideoConfig {
             .field("ping_payload_len", &self.ping_payload.len())
             .field("ping_version", &self.ping_version)
             .field("stun_credentials", &self.stun_credentials)
+            .field(
+                "remote_dtls_fingerprint_bytes",
+                &self.remote_dtls_fingerprint.as_ref().map(String::len),
+            )
             .field("codec", &self.codec)
             .field("expected_payload_type", &self.expected_payload_type)
             .field("expected_ssrc", &self.expected_ssrc)
@@ -342,7 +356,9 @@ impl NvstVideoConfig {
             });
         }
         let ping_version = optional_u8(object, "pingVersion")?;
-        let stun_credentials = if ping_version == Some(6) {
+        let remote_dtls_fingerprint =
+            optional_string(object, "remoteDtlsFingerprint")?.map(str::to_owned);
+        let stun_credentials = if ping_version == Some(6) || remote_dtls_fingerprint.is_some() {
             Some(NvstStunCredentials {
                 local_username_fragment: required_ice_credential(
                     object,
@@ -390,6 +406,7 @@ impl NvstVideoConfig {
             ping_payload,
             ping_version,
             stun_credentials,
+            remote_dtls_fingerprint,
             codec,
             expected_payload_type,
             expected_ssrc,
@@ -417,6 +434,10 @@ impl NvstVideoConfig {
 
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    pub fn remote_dtls_fingerprint(&self) -> Option<&str> {
+        self.remote_dtls_fingerprint.as_deref()
     }
 }
 
@@ -1506,6 +1527,42 @@ impl NvstVideoReceiver {
         events
     }
 
+    fn process_mjolnir_payload(
+        &mut self,
+        ssrc: u32,
+        rtp_timestamp: u32,
+        payload: &[u8],
+        now: Instant,
+    ) -> Vec<NvstReceiveEvent> {
+        match self.state {
+            NvstReceiverState::Paused => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::Paused)];
+            }
+            NvstReceiverState::Stopped => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::Stopped)];
+            }
+            NvstReceiverState::RecoveryRequired => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::RecoveryRequired)];
+            }
+            NvstReceiverState::Running => {}
+        }
+        self.bound_ssrc.get_or_insert(ssrc);
+        self.last_authenticated_packet = Some(now);
+        let (nv_packet, media) = match NvVideoPacket::parse(payload) {
+            Ok(value) => value,
+            Err(error) => {
+                return vec![NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
+                    error,
+                ))];
+            }
+        };
+        match self.assembler.push(nv_packet, rtp_timestamp, media) {
+            Ok(Some(frame)) => vec![NvstReceiveEvent::Frame(frame)],
+            Ok(None) => Vec::new(),
+            Err(reason) => vec![NvstReceiveEvent::Dropped(reason)],
+        }
+    }
+
     fn reset_media_state(&mut self) {
         self.reorder.reset();
         self.assembler.reset();
@@ -1733,6 +1790,8 @@ pub enum NvstUdpReceiverError {
     Spawn(#[source] std::io::Error),
     #[error("NVST receive worker is no longer running")]
     Closed,
+    #[error("failed to prepare NVST WebRTC bundle: {0}")]
+    WebrtcBundle(String),
 }
 
 impl NvstUdpReceiverSession {
@@ -1768,20 +1827,202 @@ impl Drop for NvstUdpReceiverSession {
     }
 }
 
+pub fn reserve_nvst_udp_socket() -> std::io::Result<UdpSocket> {
+    bind_nvst_udp(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+}
+
+/// ICE + DTLS identity that already owns the reserved bundle socket.
+#[derive(Debug, Clone)]
+pub struct NvstBundleIdentity {
+    pub ice_username_fragment: String,
+    pub ice_password: String,
+    pub dtls_fingerprint: String,
+}
+
+/// UDP socket plus the `Rtc` that will speak ICE/DTLS on it.
+pub struct ReservedNvstBundle {
+    socket: UdpSocket,
+    rtc: Rtc,
+}
+
+impl ReservedNvstBundle {
+    pub fn reserve() -> Result<Self, NvstUdpReceiverError> {
+        let socket = reserve_nvst_udp_socket().map_err(NvstUdpReceiverError::Bind)?;
+        let rtc = create_nvst_bundle_rtc(&socket)?;
+        Ok(Self { socket, rtc })
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    pub fn identity(&mut self) -> NvstBundleIdentity {
+        nvst_local_bundle_identity(&mut self.rtc)
+    }
+
+    pub fn send_to(&self, payload: &[u8], host: &str, port: u16) -> std::io::Result<usize> {
+        self.socket.send_to(payload, (host, port))
+    }
+
+    pub fn try_clone_socket(&self) -> std::io::Result<UdpSocket> {
+        self.socket.try_clone()
+    }
+
+    pub fn into_parts(self) -> (UdpSocket, Rtc) {
+        (self.socket, self.rtc)
+    }
+}
+
+fn generate_gfn_local_ice_credentials() -> IceCreds {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
+    let mut random = [0_u8; 26];
+    let _ = getrandom::fill(&mut random);
+    let encode = |start: usize, length: usize| {
+        random[start..start + length]
+            .iter()
+            .map(|value| ALPHABET[usize::from(*value) & 0x3f] as char)
+            .collect::<String>()
+    };
+    IceCreds {
+        ufrag: encode(0, 4),
+        pass: encode(4, 22),
+    }
+}
+
+fn create_nvst_bundle_rtc(socket: &UdpSocket) -> Result<Rtc, NvstUdpReceiverError> {
+    install_crypto();
+    let _ = socket;
+    // Official GenerateIceCredentials() is 4-char ufrag / 22-char password.
+    // str0m's default 16-char ufrag is rejected by Bifrost length checks.
+    let mut rtc = RtcConfig::new().set_rtp_mode(true).build(Instant::now());
+    rtc.direct_api()
+        .set_local_ice_credentials(generate_gfn_local_ice_credentials());
+    Ok(rtc)
+}
+
+fn nvst_local_bundle_identity(rtc: &mut Rtc) -> NvstBundleIdentity {
+    let creds = rtc.direct_api().local_ice_credentials();
+    let fingerprint = rtc.direct_api().local_dtls_fingerprint().clone();
+    NvstBundleIdentity {
+        ice_username_fragment: creds.ufrag,
+        ice_password: creds.pass,
+        dtls_fingerprint: nvst_fingerprint_hex(&fingerprint),
+    }
+}
+
+fn nvst_fingerprint_hex(fingerprint: &Fingerprint) -> String {
+    fingerprint
+        .bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn routed_host_addr(peer: Option<SocketAddr>, local: SocketAddr) -> SocketAddr {
+    if !local.ip().is_unspecified() && !local.ip().is_loopback() {
+        return local;
+    }
+    if let Some(peer) = peer
+        && let Ok(probe) = UdpSocket::bind(SocketAddr::new(
+            if peer.is_ipv4() {
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+            } else {
+                IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+            },
+            0,
+        ))
+    {
+        let _ = probe.connect(peer);
+        if let Ok(addr) = probe.local_addr()
+            && !addr.ip().is_unspecified()
+            && !addr.ip().is_loopback()
+        {
+            return SocketAddr::new(addr.ip(), local.port());
+        }
+    }
+    local
+}
+
+fn parse_nvst_fingerprint(value: &str) -> Result<Fingerprint, String> {
+    let trimmed = value.trim();
+    let sdp = if trimmed.contains(' ') {
+        trimmed.to_owned()
+    } else {
+        format!("sha-256 {trimmed}")
+    };
+    sdp.parse()
+}
+
+fn bind_nvst_udp(bind_ip: IpAddr, port: u16) -> std::io::Result<UdpSocket> {
+    #[cfg(unix)]
+    if let Ok(fd_text) = std::env::var("OPENNOW_NVST_VIDEO_UDP_FD") {
+        if let Ok(fd) = fd_text.parse::<std::os::unix::io::RawFd>() {
+            use std::os::unix::io::FromRawFd;
+            // Electron dups the probe socket onto this fd so native never rebinds.
+            eprintln!("NVST inheriting video UDP socket from fd {fd}");
+            return Ok(unsafe { UdpSocket::from_raw_fd(fd) });
+        }
+    }
+    let domain = if bind_ip.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.bind(&SocketAddr::new(bind_ip, port).into())?;
+    Ok(socket.into())
+}
+
 pub fn spawn_nvst_udp_receiver(
     config: NvstVideoConfig,
     media_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
 ) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
+    spawn_nvst_udp_receiver_with_socket(config, media_consumer, event_sender, None, None)
+}
+
+pub fn spawn_nvst_udp_receiver_with_socket(
+    config: NvstVideoConfig,
+    media_consumer: MediaConsumer,
+    event_sender: Sender<NvstReceiveEvent>,
+    reserved_socket: Option<UdpSocket>,
+    reserved_rtc: Option<Rtc>,
+) -> Result<NvstUdpReceiverSession, NvstUdpReceiverError> {
     let bind_ip = match config.video_peer.ip() {
         IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
     };
-    let socket = UdpSocket::bind(SocketAddr::new(bind_ip, config.client_udp_port))
-        .map_err(NvstUdpReceiverError::Bind)?;
+    let socket = match reserved_socket {
+        Some(socket) => {
+            eprintln!(
+                "NVST using UDP socket reserved before ANNOUNCE ({})",
+                socket
+                    .local_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|_| "unknown".to_owned())
+            );
+            socket
+        }
+        None => {
+            bind_nvst_udp(bind_ip, config.client_udp_port).map_err(NvstUdpReceiverError::Bind)?
+        }
+    };
     socket
         .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
         .map_err(NvstUdpReceiverError::Configure)?;
+    let rtc = if config.remote_dtls_fingerprint().is_some() {
+        let rtc = match reserved_rtc {
+            Some(rtc) => rtc,
+            None => create_nvst_bundle_rtc(&socket)?,
+        };
+        Some(prepare_nvst_webrtc_bundle(&socket, &config, rtc)?)
+    } else {
+        None
+    };
     let (commands, receiver) = mpsc::channel();
     let transport_origin = Instant::now();
     let join = thread::Builder::new()
@@ -1794,6 +2035,7 @@ pub fn spawn_nvst_udp_receiver(
                 media_consumer,
                 event_sender,
                 transport_origin,
+                rtc,
             )
         })
         .map_err(NvstUdpReceiverError::Spawn)?;
@@ -1803,6 +2045,329 @@ pub fn spawn_nvst_udp_receiver(
     })
 }
 
+fn prepare_nvst_webrtc_bundle(
+    socket: &UdpSocket,
+    config: &NvstVideoConfig,
+    mut rtc: Rtc,
+) -> Result<Rtc, NvstUdpReceiverError> {
+    let fingerprint = config.remote_dtls_fingerprint().ok_or_else(|| {
+        NvstUdpReceiverError::WebrtcBundle("missing remote DTLS fingerprint".into())
+    })?;
+    let remote_fingerprint =
+        parse_nvst_fingerprint(fingerprint).map_err(NvstUdpReceiverError::WebrtcBundle)?;
+    let credentials = config.stun_credentials.as_ref().ok_or_else(|| {
+        NvstUdpReceiverError::WebrtcBundle(
+            "DTLS bundle requires local and remote ICE credentials".into(),
+        )
+    })?;
+    let local_addr = socket
+        .local_addr()
+        .map_err(NvstUdpReceiverError::Configure)?;
+    let local_candidate =
+        Candidate::host(routed_host_addr(Some(config.video_peer), local_addr), "udp")
+            .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
+    let remote_candidate = Candidate::host(config.video_peer, "udp")
+        .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
+    rtc.add_local_candidate(local_candidate);
+    rtc.add_remote_candidate(remote_candidate);
+    {
+        let mut api = rtc.direct_api();
+        api.set_ice_controlling(true);
+        api.set_local_ice_credentials(IceCreds {
+            ufrag: credentials.local_username_fragment.clone(),
+            pass: credentials.local_password.clone(),
+        });
+        api.set_remote_ice_credentials(IceCreds {
+            ufrag: credentials.remote_username_fragment.clone(),
+            pass: credentials.remote_password.clone(),
+        });
+        api.set_remote_fingerprint(remote_fingerprint);
+        api.declare_media(Mid::from("0"), MediaKind::Video);
+        api.start_dtls(true)
+            .map_err(|error| NvstUdpReceiverError::WebrtcBundle(error.to_string()))?;
+    }
+    eprintln!(
+        "NVST WebRTC bundle armed (local={}, peer={}, remoteFingerprintBytes={})",
+        routed_host_addr(Some(config.video_peer), local_addr),
+        config.video_peer,
+        fingerprint.len()
+    );
+    Ok(rtc)
+}
+
+fn looks_like_rtp(datagram: &[u8]) -> bool {
+    datagram.len() >= RTP_FIXED_HEADER_LEN
+        && datagram[0] >> 6 == 2
+        && !looks_like_stun(datagram)
+        && !looks_like_dtls(datagram)
+}
+
+fn looks_like_stun(datagram: &[u8]) -> bool {
+    datagram.len() >= STUN_HEADER_LEN && datagram[4..8] == STUN_MAGIC_COOKIE.to_be_bytes()
+}
+
+fn stun_binding_request_transaction_id(datagram: &[u8]) -> Option<[u8; 12]> {
+    if !looks_like_stun(datagram)
+        || u16::from_be_bytes([datagram[0], datagram[1]]) != STUN_BINDING_REQUEST
+    {
+        return None;
+    }
+    datagram[8..20].try_into().ok()
+}
+
+fn synthesize_ice_binding_success(
+    transaction_id: &[u8; 12],
+    mapped: SocketAddr,
+    remote_password: &str,
+) -> Vec<u8> {
+    build_authenticated_stun_packet(
+        STUN_BINDING_SUCCESS_RESPONSE,
+        transaction_id,
+        remote_password.as_bytes(),
+        &[(
+            STUN_ATTR_XOR_MAPPED_ADDRESS,
+            xor_mapped_address(mapped, transaction_id),
+        )],
+    )
+}
+
+fn looks_like_dtls(datagram: &[u8]) -> bool {
+    matches!(datagram.first().copied(), Some(20..=63))
+}
+
+fn peek_rtp_ssrc(datagram: &[u8]) -> Option<u32> {
+    looks_like_rtp(datagram)
+        .then(|| u32::from_be_bytes([datagram[8], datagram[9], datagram[10], datagram[11]]))
+}
+
+fn run_nvst_webrtc_bundle(
+    socket: UdpSocket,
+    config: NvstVideoConfig,
+    commands: Receiver<UdpReceiverCommand>,
+    media_consumer: MediaConsumer,
+    event_sender: Sender<NvstReceiveEvent>,
+    transport_origin: Instant,
+    mut rtc: Rtc,
+) {
+    let video_peer = config.video_peer;
+    let stun_credentials = config.stun_credentials.clone();
+    let receive_destination = socket.local_addr().ok().map_or_else(
+        || video_peer,
+        |local| routed_host_addr(Some(video_peer), local),
+    );
+    let mut receiver = NvstVideoReceiver::new(config);
+    let mut datagram = vec![0_u8; 65_536];
+    let mut inbound_datagrams = 0_u64;
+    let mut outbound_datagrams = 0_u64;
+    let mut hole_punch_pings = 0_u64;
+    let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
+    let mut seen_ssrcs = HashSet::new();
+    let mut dtls_ready = false;
+    loop {
+        loop {
+            match commands.try_recv() {
+                Ok(UdpReceiverCommand::Pause) => forward_optional(&event_sender, receiver.pause()),
+                Ok(UdpReceiverCommand::Resume) => {
+                    forward_optional(&event_sender, receiver.resume())
+                }
+                Ok(UdpReceiverCommand::Recover) => {
+                    forward_optional(&event_sender, receiver.recover())
+                }
+                Ok(UdpReceiverCommand::Stop) | Err(TryRecvError::Disconnected) => {
+                    rtc.disconnect();
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+
+        // Official NattHolePunch keeps sending on a dedicated thread at
+        // pingIntervalBeforeConnectionMs (20ms) until DTLS is up. The WebRTC
+        // path previously only emitted sparse ICE STUN from str0m.
+        let now = Instant::now();
+        if !dtls_ready
+            && now.duration_since(last_hole_punch) >= PING_INTERVAL_BEFORE_CONNECTION
+            && let Some(credentials) = stun_credentials.as_ref()
+        {
+            let mut transaction_id = [0_u8; 12];
+            if getrandom::fill(&mut transaction_id).is_ok() {
+                let ping = build_stun_binding_request(credentials, &transaction_id);
+                let _ = socket.send_to(&ping, video_peer);
+                hole_punch_pings += 1;
+                if hole_punch_pings == 1 || hole_punch_pings % 50 == 0 {
+                    eprintln!(
+                        "NVST hole-punch ping={hole_punch_pings} dest={video_peer} bytes={}",
+                        ping.len()
+                    );
+                }
+            }
+            last_hole_punch = now;
+        }
+
+        let timeout = loop {
+            match rtc.poll_output() {
+                Ok(Output::Timeout(timeout)) => break timeout,
+                Ok(Output::Transmit(transmit)) => {
+                    outbound_datagrams += 1;
+                    let kind = if looks_like_stun(&transmit.contents) {
+                        "stun"
+                    } else if looks_like_dtls(&transmit.contents) {
+                        "dtls"
+                    } else {
+                        "other"
+                    };
+                    if outbound_datagrams <= 8 || outbound_datagrams % 50 == 0 {
+                        eprintln!(
+                            "NVST WebRTC outbound={outbound_datagrams} kind={kind} dest={} bytes={}",
+                            transmit.destination,
+                            transmit.contents.len()
+                        );
+                    }
+                    let _ = socket.send_to(&transmit.contents, transmit.destination);
+                    // Official GFN does not wait for ICE Binding Success before DTLS.
+                    // str0m only emits DTLS after a nominated pair, so with inbound=0
+                    // ClientHello never leaves. Confirm the known 5-tuple locally.
+                    if inbound_datagrams == 0
+                        && let Some(credentials) = stun_credentials.as_ref()
+                        && let Some(transaction_id) =
+                            stun_binding_request_transaction_id(&transmit.contents)
+                    {
+                        let success = synthesize_ice_binding_success(
+                            &transaction_id,
+                            receive_destination,
+                            &credentials.remote_password,
+                        );
+                        if let Ok(contents) = success.as_slice().try_into() {
+                            let _ = rtc.handle_input(Input::Receive(
+                                Instant::now(),
+                                Receive {
+                                    proto: RtcProtocol::Udp,
+                                    source: video_peer,
+                                    destination: receive_destination,
+                                    contents,
+                                },
+                            ));
+                            if outbound_datagrams == 1 {
+                                eprintln!(
+                                    "NVST ICE pair locally confirmed for DTLS (no inbound STUN yet)"
+                                );
+                            }
+                        }
+                    }
+                }
+                Ok(Output::Event(event)) => match event {
+                    Event::IceConnectionStateChange(state) => {
+                        eprintln!("NVST ICE state: {state:?}");
+                        // Official GFN treats hole-punch / ICE receive failure as
+                        // non-fatal. Media is gated on DTLS, not ICE success.
+                    }
+                    Event::Connected => {
+                        dtls_ready = true;
+                        eprintln!("NVST DTLS handshake complete; waiting for SRTP/Mjolnir");
+                    }
+                    Event::RtpPacket(packet) => {
+                        for event in receiver.process_mjolnir_payload(
+                            *packet.header.ssrc,
+                            packet.header.timestamp,
+                            &packet.payload,
+                            Instant::now(),
+                        ) {
+                            if !forward_receive_event(
+                                &media_consumer,
+                                &event_sender,
+                                transport_origin,
+                                event,
+                            ) {
+                                rtc.disconnect();
+                                forward_optional(&event_sender, receiver.stop());
+                                return;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                Err(error) => {
+                    eprintln!("NVST WebRTC bundle failed: {error}");
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
+            }
+        };
+
+        let wait = timeout
+            .saturating_duration_since(Instant::now())
+            .min(UDP_RECEIVE_POLL_INTERVAL);
+        if wait.is_zero() {
+            let _ = rtc.handle_input(Input::Timeout(Instant::now()));
+        } else {
+            let _ = socket.set_read_timeout(Some(wait));
+            match socket.recv_from(&mut datagram) {
+                Ok((length, source)) => {
+                    inbound_datagrams += 1;
+                    if inbound_datagrams == 1 || inbound_datagrams % 50 == 0 {
+                        eprintln!(
+                            "NVST WebRTC inbound={inbound_datagrams} source={source} bytes={length} dtlsReady={dtls_ready}"
+                        );
+                    }
+                    if let Some(ssrc) = peek_rtp_ssrc(&datagram[..length])
+                        && seen_ssrcs.insert(ssrc)
+                    {
+                        rtc.direct_api().expect_stream_rx(
+                            Ssrc::from(ssrc),
+                            None,
+                            Mid::from("0"),
+                            None,
+                        );
+                        eprintln!("NVST expecting SSRC {ssrc} on bundle mid=0");
+                    }
+                    let destination = receive_destination;
+                    let contents = match datagram[..length].try_into() {
+                        Ok(value) => value,
+                        Err(error) => {
+                            eprintln!("NVST dropping oversized UDP packet: {error}");
+                            continue;
+                        }
+                    };
+                    if let Err(error) = rtc.handle_input(Input::Receive(
+                        Instant::now(),
+                        Receive {
+                            proto: RtcProtocol::Udp,
+                            source,
+                            destination,
+                            contents,
+                        },
+                    )) {
+                        eprintln!("NVST WebRTC handle_input failed: {error}");
+                        forward_optional(&event_sender, receiver.stop());
+                        return;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    let _ = rtc.handle_input(Input::Timeout(Instant::now()));
+                }
+                Err(_) => {
+                    forward_optional(&event_sender, receiver.stop());
+                    return;
+                }
+            }
+        }
+
+        let timeout = receiver.poll_timeout(Instant::now());
+        if timeout.is_some() {
+            eprintln!(
+                "NVST WebRTC timeout counters: inbound={inbound_datagrams}, dtlsReady={dtls_ready}"
+            );
+        }
+        forward_optional(&event_sender, timeout);
+    }
+}
+
 fn run_nvst_udp_receiver(
     socket: UdpSocket,
     config: NvstVideoConfig,
@@ -1810,7 +2375,20 @@ fn run_nvst_udp_receiver(
     media_consumer: MediaConsumer,
     event_sender: Sender<NvstReceiveEvent>,
     transport_origin: Instant,
+    rtc: Option<Rtc>,
 ) {
+    if let Some(rtc) = rtc {
+        run_nvst_webrtc_bundle(
+            socket,
+            config,
+            commands,
+            media_consumer,
+            event_sender,
+            transport_origin,
+            rtc,
+        );
+        return;
+    }
     let mut receiver = NvstVideoReceiver::new(config);
     let stun_credentials = receiver.config.stun_credentials.clone();
     let mut datagram = vec![0_u8; 65_536];
@@ -2166,6 +2744,32 @@ mod tests {
         assert!(matches!(
             handle_stun_datagram(&tampered, source, &credentials),
             StunDatagram::Invalid
+        ));
+    }
+
+    #[test]
+    fn gfn_local_ice_credentials_match_official_lengths() {
+        let creds = generate_gfn_local_ice_credentials();
+        assert_eq!(creds.ufrag.len(), 4);
+        assert_eq!(creds.pass.len(), 22);
+    }
+
+    #[test]
+    fn synthesized_ice_success_matches_the_request_transaction() {
+        let credentials = stun_credentials();
+        let transaction_id = [7_u8; 12];
+        let mapped = "192.168.1.104:54454".parse().expect("mapped");
+        let response =
+            synthesize_ice_binding_success(&transaction_id, mapped, &credentials.remote_password);
+        assert_eq!(
+            u16::from_be_bytes([response[0], response[1]]),
+            STUN_BINDING_SUCCESS_RESPONSE
+        );
+        assert_eq!(&response[8..20], &transaction_id);
+        assert!(valid_stun_fingerprint(&response));
+        assert!(valid_stun_message_integrity(
+            &response,
+            credentials.remote_password.as_bytes()
         ));
     }
 

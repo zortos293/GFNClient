@@ -7,6 +7,7 @@ import {
   buildAnnounceSdp,
   extractHmacSeed,
   extractNvstIceCredentials,
+  extractNvstSdpAttribute,
   extractMediaControl,
   extractRuntimeEncryptionKey,
   generateNvstIceCredentials,
@@ -40,13 +41,60 @@ test("extractHmacSeed reads DESCRIBE k= line", () => {
   assert.equal(seed, "76A28E94D8C07CB67C04C29CFAAAAF64BE4BA0899456217CB73D070E5060965F");
 });
 
+test("extractNvstSdpAttribute reads DESCRIBE transport fields with or without x-nv-", () => {
+  assert.equal(
+    extractNvstSdpAttribute(
+      "a=x-nv-general.serverTransport:192.0.2.20:5004\r\na=x-nv-general.useNewIceInfo:0\r\n",
+      "general.serverTransport",
+    ),
+    "192.0.2.20:5004",
+  );
+  assert.equal(
+    extractNvstSdpAttribute("a=general.useNewIceInfo:0\n", "general.useNewIceInfo"),
+    "0",
+  );
+  assert.equal(extractNvstSdpAttribute("a=general.clientTransport:\n", "general.clientTransport"), null);
+});
+
 test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
-  const sdp = buildAnnounceSdp({ resolution: "1920x1080", fps: 60 });
+  const sdp = buildAnnounceSdp({
+    resolution: "1920x1080",
+    fps: 60,
+    videoPort: 5004,
+    clientPorts: { video: 45000, audio: 45002, control: 45004 },
+  });
   assert.match(sdp, /a=x-nv-video\[0\]\.clientViewportWd:1920/);
   assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:60/);
-  assert.match(sdp, /a=x-nv-general\.controlProtocol:udp_ag/);
-  assert.match(sdp, /m=video 0 RTP\/AVP\r\ni=DeviceString, DeviceName\r\na=msid:video_0/);
-  assert.doesNotMatch(sdp, /iceUsernameFragment|dtlsFingerprint/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.video:45000/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.audio:45002/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.control:45004/);
+  assert.match(sdp, /m=video 5004\r\ni=DeviceString, DeviceName/);
+  assert.doesNotMatch(sdp, /RTP\/AVP|msid:video_0|clientTransport|nativeRtcOnBundlePort|iceUsernameFragment|dtlsFingerprint|controlProtocol/);
+});
+
+test("buildAnnounceSdp echoes nativeRtcOnBundlePort when the server advertised it", () => {
+  const sdp = buildAnnounceSdp({
+    videoPort: 5004,
+    nativeRtcOnBundlePort: "1",
+    clientPorts: { video: 45000, audio: 45000, control: 45000, bundle: 45000 },
+  });
+  assert.match(sdp, /a=x-nv-general\.nativeRtcOnBundlePort:1/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.bundle:45000/);
+});
+
+test("buildAnnounceSdp includes clientTransport only when provided", () => {
+  const sdp = buildAnnounceSdp({
+    videoPort: 5004,
+    clientTransport: "192.0.2.8:45000",
+  });
+  assert.match(sdp, /a=x-nv-general\.clientTransport:192\.0\.2\.8:45000/);
+});
+
+test("buildAnnounceSdp includes DTLS fingerprint V1 and V2 when provided", () => {
+  const fingerprint = "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF";
+  const sdp = buildAnnounceSdp({ dtlsFingerprint: fingerprint });
+  assert.ok(sdp.includes(`a=x-nv-general.dtlsFingerprint:${fingerprint}`));
+  assert.ok(sdp.includes(`a=x-nv-general.dtlsFingerprintV2:${fingerprint}`));
 });
 
 test("buildAnnounceSdp includes generated ICE V2 credentials when negotiated", () => {

@@ -19,11 +19,12 @@ use thiserror::Error;
 pub mod nvst;
 
 pub use nvst::{
-    BoundedFrameQueue, EncodedH264Frame, NvstConfigError, NvstDropReason, NvstFallbackReason,
-    NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile, NvstUdpReceiverError,
-    NvstUdpReceiverSession, NvstUnsupportedFeature, NvstVideoCodec, NvstVideoConfig,
-    NvstVideoReceiver, PreferredVideoTransport, nack_transmission_support,
-    parse_nvst_video_handoff, select_preferred_video_transport, spawn_nvst_udp_receiver,
+    BoundedFrameQueue, EncodedH264Frame, NvstBundleIdentity, NvstConfigError, NvstDropReason,
+    NvstFallbackReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile,
+    NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature, NvstVideoCodec,
+    NvstVideoConfig, NvstVideoReceiver, PreferredVideoTransport, ReservedNvstBundle,
+    nack_transmission_support, parse_nvst_video_handoff, reserve_nvst_udp_socket,
+    select_preferred_video_transport, spawn_nvst_udp_receiver, spawn_nvst_udp_receiver_with_socket,
 };
 
 static INSTALL_CRYPTO: Once = Once::new();

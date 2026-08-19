@@ -50,7 +50,32 @@ export class SignalingCoordinator {
   };
 
   constructor(private readonly deps: SignalingCoordinatorDeps) {
-    this.gfnNvstRtspOwner = deps.gfnNvstRtspOwner ?? new GfnNvstRtspSessionOwner();
+    this.gfnNvstRtspOwner = deps.gfnNvstRtspOwner ?? new GfnNvstRtspSessionOwner({
+      reserveVideoUdp: () => this.getNativeStreamerManager().reserveNvstUdp(),
+      onVideoReady: async (videoSession) => {
+        const current = this.nativeStreamerContext;
+        if (!current) {
+          throw new Error("Native streamer context missing while arming NVST receive");
+        }
+        this.nativeStreamerContext = {
+          ...current,
+          nvstVideo: videoSession,
+        };
+      },
+      onAnnounceReady: async (videoSession) => {
+        const current = this.nativeStreamerContext;
+        if (!current) {
+          throw new Error("Native streamer context missing after NVST ANNOUNCE");
+        }
+        const armed = {
+          ...current,
+          nvstVideo: videoSession,
+        };
+        this.nativeStreamerContext = armed;
+        // Official doAnnounce: ANNOUNCE → setupWebRtcTransport → wait DTLS → PLAY.
+        await this.getNativeStreamerManager().prepareForSession(armed);
+      },
+    });
   }
 
   private retainSessionState(values: Record<string, unknown>): void {
@@ -581,6 +606,11 @@ export class SignalingCoordinator {
       nativeNvstActive
       && (event.type === "offer" || event.type === "remote-ice")
     ) {
+      console.log(
+        `[NativeStreamer] Explicit NVST is active; ignoring WebRTC ${event.type} (${
+          event.type === "offer" ? `sdpBytes=${event.sdp.length}` : "candidate"
+        })`,
+      );
       return;
     }
 
@@ -695,7 +725,11 @@ export class SignalingCoordinator {
         throw new Error("Native streamer context changed during NVST preparation");
       }
       this.nativeStreamerContext = preparedContext;
+      // Official Bifrost binds the ICE/bundle socket in-process before ANNOUNCE
+      // and never rebinds. Native reserved that socket during prepare(); start
+      // must reuse it on the same process.
       await this.getNativeStreamerManager().prepareForSession(preparedContext);
+      await this.gfnNvstRtspOwner.handoffVideoUdp();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (context.settings.transportMode === "nvst") {

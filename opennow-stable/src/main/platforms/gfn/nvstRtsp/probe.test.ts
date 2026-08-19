@@ -219,7 +219,7 @@ test("resolveRtspControlUri preserves server-advertised absolute and relative co
   );
 });
 
-test("negotiation retains RTSPS control and releases UDP immediately before native handoff", async () => {
+test("negotiation retains RTSPS control and video UDP until native rebind", async () => {
   const events: string[] = [];
   const { client, dependencies } = createNegotiationHarness(events);
   const negotiated = await negotiateNvstRtspSession({
@@ -228,13 +228,12 @@ test("negotiation retains RTSPS control and releases UDP immediately before nati
     codec: "H265",
   }, dependencies);
   events.push("native-start");
+  await negotiated.handoffVideoUdp();
 
-  assert.deepEqual(events.slice(-5), [
+  assert.deepEqual(events.slice(-3), [
     "request:ANNOUNCE",
-    "udp-release",
-    "udp-release",
-    "udp-release",
     "native-start",
+    "udp-release",
   ]);
   assert.equal(client.closed, false);
   assert.equal(negotiated.videoSession.clientUdpPort, 45678);
@@ -264,10 +263,10 @@ test("negotiation retains RTSPS control and releases UDP immediately before nati
     client.requests.filter(({ method }) => method === "SETUP").map(({ headers }) => headers.Session),
     ["rtsp-session", "rtsp-session", "rtsp-session"],
   );
-  assert.equal(
-    client.requests.find(({ method }) => method === "ANNOUNCE")?.uri,
-    "/",
-  );
+  const announce = client.requests.find(({ method }) => method === "ANNOUNCE");
+  assert.equal(announce?.uri, "/");
+  assert.match(announce?.body ?? "", /m=video 5004/);
+  assert.match(announce?.body ?? "", /a=x-nv-general\.clientPorts\.video:45678/);
   assert.equal(client.requests.some(({ method }) => method === "PLAY"), false);
 
   await negotiated.release("test stop");
@@ -336,7 +335,7 @@ test("ping version 6 hands off remote and generated local ICE credentials", asyn
   }, dependencies);
 
   assert.equal(negotiated.videoSession.pingVersion, 6);
-  assert.equal(negotiated.videoSession.remoteIceUsernameFragment, "srv1");
+  assert.equal(negotiated.videoSession.remoteIceUsernameFragment, remoteUsername);
   assert.equal(negotiated.videoSession.remoteIcePassword, remotePassword);
   assert.match(negotiated.videoSession.localIceUsernameFragment ?? "", /^[A-Za-z0-9+/]{4}$/);
   assert.match(negotiated.videoSession.localIcePassword ?? "", /^[A-Za-z0-9+/]{22}$/);
@@ -357,6 +356,167 @@ test("ping version 6 hands off remote and generated local ICE credentials", asyn
   assert.ok(
     announceBody.includes(`a=x-nv-general.icePasswordV2:${negotiated.videoSession.localIcePassword}`),
   );
+  assert.match(announceBody, /m=video 5004/);
+  assert.match(announceBody, /a=x-nv-general\.clientPorts\.video:45678/);
+  await negotiated.release("test complete");
+});
+
+test("negotiation plays when DESCRIBE leaves disablePlay at 0", async () => {
+  const events: string[] = [];
+  const { client, dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        `${DESCRIBE_SDP.replace("m=video", "a=x-nv-general.disablePlay:0\r\nm=video")}`,
+      );
+    }
+    if (method === "PLAY") {
+      return response({}, "", 455);
+    }
+    return undefined;
+  });
+
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+  }, dependencies);
+
+  assert.equal(client.requests.some(({ method, uri }) => method === "PLAY" && uri === "/"), true);
+  assert.equal(negotiated.steps.includes("play-455"), true);
+  await negotiated.release("test complete");
+});
+
+test("negotiation arms native receive after video SETUP and before ANNOUNCE", async () => {
+  const events: string[] = [];
+  const { client, dependencies } = createNegotiationHarness(events);
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+    onVideoReady: async (videoSession) => {
+      events.push(`native-armed:${videoSession.clientUdpPort}`);
+    },
+  }, dependencies);
+
+  const announceIndex = events.indexOf("request:ANNOUNCE");
+  const armedIndex = events.indexOf("native-armed:45678");
+  assert.ok(armedIndex >= 0);
+  assert.ok(announceIndex > armedIndex);
+  assert.equal(negotiated.steps.includes("native-receive-armed"), true);
+  assert.equal(client.requests.some(({ method }) => method === "ANNOUNCE"), true);
+  await negotiated.release("test complete");
+});
+
+test("negotiation starts native WebRtcTransport after ANNOUNCE and before PLAY", async () => {
+  const events: string[] = [];
+  const { client, dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        `${DESCRIBE_SDP.replace("m=video", "a=x-nv-general.disablePlay:0\r\nm=video")}`,
+      );
+    }
+    if (method === "PLAY") {
+      return response({}, "", 455);
+    }
+    return undefined;
+  });
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+    onAnnounceReady: async (videoSession) => {
+      events.push(`native-announce-armed:${videoSession.clientUdpPort}`);
+    },
+  }, dependencies);
+
+  const announceIndex = events.indexOf("request:ANNOUNCE");
+  const armedIndex = events.indexOf("native-announce-armed:45678");
+  const playIndex = events.indexOf("request:PLAY");
+  assert.ok(announceIndex >= 0);
+  assert.ok(armedIndex > announceIndex);
+  assert.ok(playIndex > armedIndex);
+  assert.equal(negotiated.steps.includes("native-announce-armed"), true);
+  await negotiated.release("test complete");
+});
+
+test("negotiation announces reserved WebRtcTransport ICE and DTLS fingerprint", async () => {
+  const events: string[] = [];
+  const fingerprint = "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF";
+  const { client, dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        DESCRIBE_SDP
+          .replace("a=x-nv-runtime.encryptionKey:AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899\r\n", "")
+          .replace("a=x-nv-runtime.encryptionKeyId:42\r\n", "")
+          .replace(
+            "m=video",
+            [
+              "a=x-nv-general.nativeRtcOnBundlePort:1",
+              "a=x-nv-general.dtlsFingerprintV2:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+              "a=x-nv-general.iceUserNameFragmentV2:srvUfrag",
+              "a=x-nv-general.icePasswordV2:srv-password-with-22b-value",
+              "m=video",
+            ].join("\r\n"),
+          ),
+      );
+    }
+    return undefined;
+  });
+  const originalReserve = dependencies.reserveUdpPort;
+  dependencies.reserveUdpPort = async () => {
+    const reservation = await originalReserve();
+    return {
+      ...reservation,
+      iceUsernameFragment: "locU",
+      icePassword: "local-password-22-chars!",
+      dtlsFingerprint: fingerprint,
+    };
+  };
+
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+  }, dependencies);
+
+  const announceBody = client.requests.find(({ method }) => method === "ANNOUNCE")?.body ?? "";
+  assert.ok(announceBody.includes(`a=x-nv-general.dtlsFingerprint:${fingerprint}`));
+  assert.ok(announceBody.includes(`a=x-nv-general.dtlsFingerprintV2:${fingerprint}`));
+  assert.ok(announceBody.includes("a=x-nv-general.iceUsernameFragment:locU"));
+  assert.equal(negotiated.videoSession.localDtlsFingerprint, fingerprint);
+  assert.equal(negotiated.videoSession.remoteDtlsFingerprint?.length, 95);
+  assert.equal(negotiated.videoSession.remoteIceUsernameFragment, "srvUfrag");
+  assert.equal(announceBody.includes("encryptionKey"), false);
+  await negotiated.release("test complete");
+});
+
+test("negotiation bundles every SETUP onto the video client port when asked", async () => {
+  const events: string[] = [];
+  const { client, dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        `${DESCRIBE_SDP.replace("m=video", "a=x-nv-general.nativeRtcOnBundlePort:1\r\nm=video")}`,
+      );
+    }
+    return undefined;
+  });
+
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+  }, dependencies);
+
+  const setupPorts = client.requests
+    .filter(({ method }) => method === "SETUP")
+    .map(({ headers }) => headers.Transport);
+  assert.deepEqual(setupPorts, [
+    "unicast;X-GS-ClientPort=45678-45679",
+    "unicast;X-GS-ClientPort=45678-45679",
+    "unicast;X-GS-ClientPort=45678-45679",
+  ]);
+  assert.match(client.requests.find(({ method }) => method === "ANNOUNCE")?.body ?? "", /nativeRtcOnBundlePort:1/);
+  assert.match(client.requests.find(({ method }) => method === "ANNOUNCE")?.body ?? "", /clientPorts\.bundle:45678/);
+  assert.equal(negotiated.videoSession.clientUdpPort, 45678);
   await negotiated.release("test complete");
 });
 

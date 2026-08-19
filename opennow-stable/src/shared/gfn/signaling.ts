@@ -73,7 +73,13 @@ export interface NvstVideoSession {
   localIcePassword?: string;
   remoteIceUsernameFragment?: string;
   remoteIcePassword?: string;
+  /** SHA-256 colon hex from the local WebRtcTransport-equivalent cert. */
+  localDtlsFingerprint?: string;
+  /** SHA-256 colon hex advertised by DESCRIBE (`dtlsFingerprint` / `V2`). */
+  remoteDtlsFingerprint?: string;
   codec?: string;
+  /** Idle receive timeout. Handshake needs longer than the 5s media default. */
+  timeoutMs?: number;
 }
 
 export function buildNativeStreamerSessionContext(

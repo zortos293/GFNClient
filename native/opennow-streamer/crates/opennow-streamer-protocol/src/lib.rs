@@ -29,6 +29,12 @@ pub struct Command {
     pub reason: Option<String>,
     #[serde(default)]
     pub shortcuts: Option<Value>,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub payload_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

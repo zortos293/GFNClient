@@ -63,6 +63,7 @@ function createRtspSession(
       codec: "H265",
     },
     steps: ["wss-open", "options", "describe", "setup-video", "announce", "play"],
+    handoffVideoUdp: async () => undefined,
     release: async (reason = "released") => onRelease(reason),
   };
 }

@@ -48,6 +48,17 @@ export type NativeStreamerCommand =
     }
   | {
       id: string;
+      type: "nvst-bind";
+    }
+  | {
+      id: string;
+      type: "nvst-send";
+      host: string;
+      port: number;
+      payloadBase64: string;
+    }
+  | {
+      id: string;
       type: "offer";
       sdp: string;
       context: NativeStreamerSessionContext;
@@ -98,6 +109,14 @@ export type NativeStreamerResponse =
       id: string;
       type: "ok";
       transport?: "webrtc" | "nvst";
+    }
+  | {
+      id: string;
+      type: "nvst-bound";
+      port: number;
+      iceUsernameFragment?: string;
+      icePassword?: string;
+      dtlsFingerprint?: string;
     }
   | {
       id: string;

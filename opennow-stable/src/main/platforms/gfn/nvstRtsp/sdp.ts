@@ -81,6 +81,13 @@ function parseResolution(resolution: string | undefined): { width: number; heigh
   return { width: Number(match[1]), height: Number(match[2]) };
 }
 
+export function extractNvstSdpAttribute(sdp: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^a=(?:x-nv-)?${escaped}:([^\\r\\n]*)$`, "mi").exec(sdp);
+  const value = match?.[1]?.trim();
+  return value ? value : null;
+}
+
 export function buildAnnounceSdp(
   options: {
     resolution?: string;
@@ -88,11 +95,20 @@ export function buildAnnounceSdp(
     encryptionKeyHex?: string;
     encryptionKeyId?: number;
     iceCredentials?: { usernameFragment: string; password: string };
+    /** Server video port from SETUP / DESCRIBE. Capture uses `m=video 5004`. */
+    videoPort?: number;
+    clientPorts?: { video: number; audio?: number; control?: number; bundle?: number };
+    /** Official `general.clientTransport` form is `ip:port`. */
+    clientTransport?: string;
+    nativeRtcOnBundlePort?: string;
+    /** SHA-256 colon hex (95 chars). Written as V1 + V2 to match Bifrost/mall. */
+    dtlsFingerprint?: string;
   } = {},
 ): string {
   const { width, height } = parseResolution(options.resolution);
   const fps = options.fps && options.fps > 0 ? Math.round(options.fps) : 60;
   const frameTimeUs = String(Math.round(1_000_000 / fps));
+  const videoPort = options.videoPort && options.videoPort > 0 ? options.videoPort : 0;
 
   const lines: string[] = [
     "v=0",
@@ -143,11 +159,32 @@ export function buildAnnounceSdp(
     lines.push(`a=x-nv-general.iceUserNameFragmentV2:${options.iceCredentials.usernameFragment}`);
     lines.push(`a=x-nv-general.icePasswordV2:${options.iceCredentials.password}`);
   }
-  lines.push("a=x-nv-general.controlProtocol:udp_ag");
+  if (options.clientPorts) {
+    lines.push(`a=x-nv-general.clientPorts.video:${options.clientPorts.video}`);
+    if (options.clientPorts.audio !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.audio:${options.clientPorts.audio}`);
+    }
+    if (options.clientPorts.control !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.control:${options.clientPorts.control}`);
+    }
+    if (options.clientPorts.bundle !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.bundle:${options.clientPorts.bundle}`);
+    }
+  }
+  if (options.clientTransport) {
+    lines.push(`a=x-nv-general.clientTransport:${options.clientTransport}`);
+  }
+  if (options.nativeRtcOnBundlePort) {
+    lines.push(`a=x-nv-general.nativeRtcOnBundlePort:${options.nativeRtcOnBundlePort}`);
+  }
+  if (options.dtlsFingerprint) {
+    lines.push(`a=x-nv-general.dtlsFingerprint:${options.dtlsFingerprint}`);
+    lines.push(`a=x-nv-general.dtlsFingerprintV2:${options.dtlsFingerprint}`);
+  }
   lines.push("t=0 0");
-  lines.push("m=video 0 RTP/AVP");
+  // Live capture ANNOUNCE uses the server video port, not SDP's "port 0 = unused".
+  lines.push(`m=video ${videoPort}`);
   lines.push("i=DeviceString, DeviceName");
-  lines.push("a=msid:video_0");
   lines.push("");
   return lines.join("\r\n");
 }

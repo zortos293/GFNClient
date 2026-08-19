@@ -15,6 +15,7 @@ hmac.workspace = true
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 serde_json.workspace = true
 sha1.workspace = true
+socket2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 

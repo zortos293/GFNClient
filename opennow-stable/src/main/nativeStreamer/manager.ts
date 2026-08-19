@@ -150,6 +150,44 @@ export class NativeStreamerManager {
     this.videoBackendOverride = value;
   }
 
+  async reserveNvstUdp(): Promise<{
+    port: number;
+    iceUsernameFragment?: string;
+    icePassword?: string;
+    dtlsFingerprint?: string;
+    send(payload: Buffer, host: string, port: number): Promise<void>;
+    release(): Promise<void>;
+  }> {
+    await this.ensureProcess();
+    const response = await this.request({ type: "nvst-bind" }, CONTROL_TIMEOUT_MS);
+    if (response.type !== "nvst-bound" || !Number.isInteger(response.port) || response.port <= 0) {
+      throw new Error("Native streamer did not reserve an NVST UDP socket.");
+    }
+    const port = response.port;
+    console.log(
+      `[NativeStreamer] Reserved NVST video UDP on port ${port} before RTSP ANNOUNCE`
+      + `${response.dtlsFingerprint ? ` (dtlsFingerprintBytes=${response.dtlsFingerprint.length})` : ""}`,
+    );
+    return {
+      port,
+      iceUsernameFragment: response.iceUsernameFragment,
+      icePassword: response.icePassword,
+      dtlsFingerprint: response.dtlsFingerprint,
+      send: async (payload, host, peerPort) => {
+        const sent = await this.request({
+          type: "nvst-send",
+          host,
+          port: peerPort,
+          payloadBase64: payload.toString("base64"),
+        }, CONTROL_TIMEOUT_MS);
+        if (sent.type !== "ok") {
+          throw new Error(`Native streamer returned ${sent.type} instead of ok for nvst-send.`);
+        }
+      },
+      release: async () => undefined,
+    };
+  }
+
   async prepareForSession(context: NativeStreamerSessionContext): Promise<void> {
     if (this.activeSessionId && this.activeSessionId !== context.session.sessionId) {
       await this.stop("new native streamer session");

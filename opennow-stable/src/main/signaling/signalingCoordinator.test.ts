@@ -56,7 +56,7 @@ function createCoordinator(
   };
 }
 
-test("coordinator prepares NVST handoff before starting the native process", async () => {
+test("coordinator starts native after NVST prepare without dropping the reserved socket", async () => {
   const events: string[] = [];
   const owner: GfnNvstRtspOwner = {
     prepare: async (context) => {
@@ -73,6 +73,10 @@ test("coordinator prepares NVST handoff before starting the native process", asy
         },
       };
     },
+    videoUdpFd: () => undefined,
+    handoffVideoUdp: async () => {
+      events.push("nvst-handoff-video-udp");
+    },
     release: async (reason) => {
       events.push(`nvst-release:${reason}`);
     },
@@ -88,7 +92,7 @@ test("coordinator prepares NVST handoff before starting the native process", asy
 
   await internals.prepareNativeStreamerBeforeSignaling();
 
-  assert.deepEqual(events, ["nvst-prepare", "native-prepare"]);
+  assert.deepEqual(events, ["nvst-prepare", "native-prepare", "nvst-handoff-video-udp"]);
   assert.equal(internals.nativeStreamerContext?.nvstVideo?.videoPeerPort, 5004);
 });
 
@@ -96,6 +100,8 @@ test("coordinator releases retained NVST control on explicit native stop", async
   const events: string[] = [];
   const owner: GfnNvstRtspOwner = {
     prepare: async (context) => context,
+    videoUdpFd: () => undefined,
+    handoffVideoUdp: async () => undefined,
     release: async (reason) => {
       events.push(`nvst-release:${reason}`);
     },
@@ -118,6 +124,10 @@ test("coordinator tears down explicit NVST without falling back to WebRTC", asyn
     prepare: async (context) => {
       events.push("nvst-prepare");
       return context;
+    },
+    videoUdpFd: () => undefined,
+    handoffVideoUdp: async () => {
+      events.push("nvst-handoff-video-udp");
     },
     release: async (reason) => {
       events.push(`nvst-release:${reason}`);
@@ -151,6 +161,8 @@ test("coordinator tears down explicit NVST without falling back to WebRTC", asyn
 test("coordinator does not renegotiate WebRTC after native NVST starts", () => {
   const owner: GfnNvstRtspOwner = {
     prepare: async (context) => context,
+    videoUdpFd: () => undefined,
+    handoffVideoUdp: async () => undefined,
     release: async () => undefined,
   };
   const { internals } = createCoordinator(owner);

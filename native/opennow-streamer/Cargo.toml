@@ -31,6 +31,7 @@ sdl2 = { version = "0.38.0", default-features = false, features = ["bundled", "r
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha1 = "0.10"
+socket2 = { version = "0.5", features = ["all"] }
 str0m = { version = "0.23", default-features = false }
 subtle = "2"
 thiserror = "2"

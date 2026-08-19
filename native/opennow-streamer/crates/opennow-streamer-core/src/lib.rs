@@ -1,3 +1,4 @@
+use std::net::UdpSocket;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -14,8 +15,9 @@ use opennow_streamer_protocol::{
 };
 use opennow_streamer_transport::{
     NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstUdpReceiverSession,
-    PreferredVideoTransport, TransportControl, TransportEvent, TransportSession, negotiate,
-    select_preferred_video_transport, spawn_nvst_udp_receiver,
+    PreferredVideoTransport, ReservedNvstBundle, TransportControl, TransportEvent,
+    TransportSession, negotiate, select_preferred_video_transport,
+    spawn_nvst_udp_receiver_with_socket,
 };
 use serde_json::{Value, json};
 
@@ -35,6 +37,8 @@ pub struct Engine {
     lifecycle: Arc<Mutex<Lifecycle>>,
     transport: Option<TransportSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
+    reserved_nvst_bundle: Option<ReservedNvstBundle>,
+    nvst_hole_punch_socket: Option<UdpSocket>,
     events: Sender<Value>,
     media_consumer: Option<MediaConsumer>,
     media_runtime: Option<MediaRuntime>,
@@ -61,6 +65,8 @@ impl Engine {
             })),
             transport: None,
             nvst_transport: None,
+            reserved_nvst_bundle: None,
+            nvst_hole_punch_socket: None,
             events,
             media_consumer: None,
             media_runtime: None,
@@ -80,6 +86,8 @@ impl Engine {
             })),
             transport: None,
             nvst_transport: None,
+            reserved_nvst_bundle: None,
+            nvst_hole_punch_socket: None,
             events,
             media_consumer: Some(media_consumer),
             media_runtime: None,
@@ -99,6 +107,8 @@ impl Engine {
             })),
             transport: None,
             nvst_transport: None,
+            reserved_nvst_bundle: None,
+            nvst_hole_punch_socket: None,
             events,
             media_consumer: None,
             media_runtime: Some(media_runtime),
@@ -113,6 +123,8 @@ impl Engine {
         let id = command.id.clone();
         let result = match command.kind.as_str() {
             "hello" => self.hello(&command),
+            "nvst-bind" => self.nvst_bind(command),
+            "nvst-send" => self.nvst_send(command),
             "start" => self.start(command),
             "offer" => self.offer(command),
             "remote-ice" => self.remote_ice(command),
@@ -175,6 +187,97 @@ impl Engine {
             "type": "ready",
             "capabilities": capabilities,
         })])
+    }
+
+    fn nvst_bind(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        if self.reserved_nvst_bundle.is_none() {
+            let bundle = ReservedNvstBundle::reserve().map_err(|bind_error| {
+                error(
+                    Some(&command.id),
+                    "nvst-bind-failed",
+                    format!("failed to reserve NVST UDP socket: {bind_error}"),
+                )
+            })?;
+            eprintln!(
+                "NVST reserved video UDP socket on {}",
+                bundle
+                    .local_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|_| "unknown".to_owned())
+            );
+            self.reserved_nvst_bundle = Some(bundle);
+        }
+        let bundle = self.reserved_nvst_bundle.as_mut().ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "nvst-bind-failed",
+                "reserved NVST UDP socket has no local port",
+            )
+        })?;
+        let port = bundle
+            .local_addr()
+            .map_err(|_| {
+                error(
+                    Some(&command.id),
+                    "nvst-bind-failed",
+                    "reserved NVST UDP socket has no local port",
+                )
+            })?
+            .port();
+        let identity = bundle.identity();
+        Ok(vec![json!({
+            "id": command.id,
+            "type": "nvst-bound",
+            "port": port,
+            "iceUsernameFragment": identity.ice_username_fragment,
+            "icePassword": identity.ice_password,
+            "dtlsFingerprint": identity.dtls_fingerprint,
+        })])
+    }
+
+    fn nvst_send(&mut self, command: Command) -> Result<Vec<Value>, Value> {
+        let host = command.host.ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "nvst-send-failed",
+                "nvst-send requires host",
+            )
+        })?;
+        let port = command.port.ok_or_else(|| {
+            error(
+                Some(&command.id),
+                "nvst-send-failed",
+                "nvst-send requires port",
+            )
+        })?;
+        let payload = BASE64
+            .decode(command.payload_base64.unwrap_or_default())
+            .map_err(|decode_error| {
+                error(
+                    Some(&command.id),
+                    "nvst-send-failed",
+                    format!("nvst-send payload is not valid base64: {decode_error}"),
+                )
+            })?;
+        let send_result = if let Some(bundle) = self.reserved_nvst_bundle.as_ref() {
+            bundle.send_to(&payload, host.as_str(), port)
+        } else if let Some(socket) = self.nvst_hole_punch_socket.as_ref() {
+            socket.send_to(&payload, (host.as_str(), port))
+        } else {
+            return Err(error(
+                Some(&command.id),
+                "nvst-send-failed",
+                "NVST UDP socket has not been reserved",
+            ));
+        };
+        send_result.map_err(|send_error| {
+            error(
+                Some(&command.id),
+                "nvst-send-failed",
+                format!("failed to send NVST UDP datagram: {send_error}"),
+            )
+        })?;
+        Ok(vec![response(command.id, "ok")])
     }
 
     fn start(&mut self, command: Command) -> Result<Vec<Value>, Value> {
@@ -264,18 +367,34 @@ impl Engine {
                 ));
             };
             let (event_sender, event_receiver) = std::sync::mpsc::channel();
-            let transport = spawn_nvst_udp_receiver(config, media_consumer, event_sender).map_err(
-                |transport_error| {
-                    self.stop_media_resources();
-                    error(
-                        Some(&command.id),
-                        "nvst-start-failed",
-                        transport_error.to_string(),
-                    )
-                },
-            )?;
+            let (reserved_socket, reserved_rtc) = match self.reserved_nvst_bundle.take() {
+                Some(bundle) => {
+                    self.nvst_hole_punch_socket = bundle.try_clone_socket().ok();
+                    let (socket, rtc) = bundle.into_parts();
+                    (Some(socket), Some(rtc))
+                }
+                None => (None, None),
+            };
+            let transport = spawn_nvst_udp_receiver_with_socket(
+                config,
+                media_consumer,
+                event_sender,
+                reserved_socket,
+                reserved_rtc,
+            )
+            .map_err(|transport_error| {
+                self.stop_media_resources();
+                error(
+                    Some(&command.id),
+                    "nvst-start-failed",
+                    transport_error.to_string(),
+                )
+            })?;
             self.nvst_transport = Some(transport);
             nvst_events = Some(event_receiver);
+        } else {
+            self.reserved_nvst_bundle = None;
+            self.nvst_hole_punch_socket = None;
         }
 
         let generation = {
@@ -659,6 +778,8 @@ impl Engine {
         if let Some(transport) = self.nvst_transport.take() {
             transport.stop();
         }
+        self.reserved_nvst_bundle = None;
+        self.nvst_hole_punch_socket = None;
         self.stop_media_resources();
         if was_active {
             let _ = self.events.send(event(

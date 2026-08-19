@@ -141,6 +141,22 @@ jobs:
         with:
           targets: ${{ matrix.native_target }}
 
+      - name: Install Linux native streamer build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libpulse-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libxss-dev
+
       - name: Install Windows ARM64 compiler
         if: matrix.native_target == 'aarch64-pc-windows-msvc'
         shell: pwsh

@@ -6,10 +6,32 @@ import assert from "node:assert/strict";
 import {
   buildAnnounceSdp,
   extractHmacSeed,
+  extractNvstIceCredentials,
   extractMediaControl,
   extractRuntimeEncryptionKey,
+  generateNvstIceCredentials,
   packSrtpMasterKeySalt,
 } from "./sdp";
+
+test("extractNvstIceCredentials reads native and standard SDP forms", () => {
+  assert.deepEqual(
+    extractNvstIceCredentials(
+      "a=x-nv-general.iceUsernameFragment:native-user\r\na=x-nv-general.iceUsernamePwd:native-password\r\n",
+    ),
+    { usernameFragment: "native-user", password: "native-password" },
+  );
+  assert.deepEqual(
+    extractNvstIceCredentials("a=ice-ufrag:standard-user\na=ice-pwd:standard-password\n"),
+    { usernameFragment: "standard-user", password: "standard-password" },
+  );
+  assert.deepEqual(
+    extractNvstIceCredentials(
+      "a=x-nv-general.iceUserNameFragmentV2:native-v2-user\r\na=x-nv-general.icePasswordV2:native-v2-password\r\n",
+    ),
+    { usernameFragment: "native-v2-user", password: "native-v2-password" },
+  );
+  assert.equal(extractNvstIceCredentials("a=ice-ufrag:incomplete\n"), null);
+});
 
 test("extractHmacSeed reads DESCRIBE k= line", () => {
   const seed = extractHmacSeed(
@@ -18,13 +40,25 @@ test("extractHmacSeed reads DESCRIBE k= line", () => {
   assert.equal(seed, "76A28E94D8C07CB67C04C29CFAAAAF64BE4BA0899456217CB73D070E5060965F");
 });
 
-test("buildAnnounceSdp uses Bifrost session and attribute shape without ICE/DTLS", () => {
+test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
   const sdp = buildAnnounceSdp({ resolution: "1920x1080", fps: 60 });
-  assert.match(sdp, /a=video\[0\]\.clientViewportWd:1920/);
-  assert.match(sdp, /a=video\[0\]\.maxFPS:60/);
-  assert.match(sdp, /a=general\.controlProtocol:udp_ag/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.clientViewportWd:1920/);
+  assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:60/);
+  assert.match(sdp, /a=x-nv-general\.controlProtocol:udp_ag/);
   assert.match(sdp, /m=video 0 RTP\/AVP\r\ni=DeviceString, DeviceName\r\na=msid:video_0/);
   assert.doesNotMatch(sdp, /iceUsernameFragment|dtlsFingerprint/);
+});
+
+test("buildAnnounceSdp includes generated ICE V2 credentials when negotiated", () => {
+  const credentials = generateNvstIceCredentials();
+  assert.match(credentials.usernameFragment, /^[A-Za-z0-9+/]{4}$/);
+  assert.match(credentials.password, /^[A-Za-z0-9+/]{22}$/);
+
+  const sdp = buildAnnounceSdp({ iceCredentials: credentials });
+  assert.ok(sdp.includes(`a=x-nv-general.iceUsernameFragment:${credentials.usernameFragment}`));
+  assert.ok(sdp.includes(`a=x-nv-general.iceUsernamePwd:${credentials.password}`));
+  assert.ok(sdp.includes(`a=x-nv-general.iceUserNameFragmentV2:${credentials.usernameFragment}`));
+  assert.ok(sdp.includes(`a=x-nv-general.icePasswordV2:${credentials.password}`));
 });
 
 test("packSrtpMasterKeySalt matches geronimo keyId packing", () => {

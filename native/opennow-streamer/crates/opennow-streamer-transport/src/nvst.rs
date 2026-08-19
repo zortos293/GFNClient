@@ -18,6 +18,7 @@ use aes::cipher::{KeyIvInit, StreamCipher};
 use aes::{Aes128, Aes256};
 use aes_gcm::aead::AeadInPlace;
 use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce, Tag};
+use crc32fast::hash as crc32;
 use ctr::Ctr128BE;
 use hmac::{Hmac, Mac};
 use serde_json::Value;
@@ -39,6 +40,19 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const MIN_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PING_BYTES: usize = 512;
+const PING_INTERVAL_BEFORE_CONNECTION: Duration = Duration::from_millis(20);
+const PING_INTERVAL_AFTER_CONNECTION: Duration = Duration::from_millis(100);
+const UDP_RECEIVE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const STUN_HEADER_LEN: usize = 20;
+const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
+const STUN_BINDING_REQUEST: u16 = 0x0001;
+const STUN_BINDING_SUCCESS_RESPONSE: u16 = 0x0101;
+const STUN_ATTR_USERNAME: u16 = 0x0006;
+const STUN_ATTR_MESSAGE_INTEGRITY: u16 = 0x0008;
+const STUN_ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+const STUN_ATTR_FINGERPRINT: u16 = 0x8028;
+const STUN_FINGERPRINT_XOR: u32 = 0x5354_554e;
+const MAX_ICE_CREDENTIAL_BYTES: usize = 256;
 
 /// The independently documented `NV_VIDEO_PACKET` flag values used by an earlier OpenNOW
 /// implementation. This module does not borrow code or binaries from NVIDIA.
@@ -152,6 +166,8 @@ pub struct NvstVideoConfig {
     video_peer: SocketAddr,
     srtp: NvstSrtpMaterial,
     ping_payload: Vec<u8>,
+    ping_version: Option<u8>,
+    stun_credentials: Option<NvstStunCredentials>,
     codec: NvstVideoCodec,
     expected_payload_type: Option<u8>,
     expected_ssrc: Option<u32>,
@@ -168,12 +184,34 @@ impl fmt::Debug for NvstVideoConfig {
             .field("video_peer", &self.video_peer)
             .field("srtp", &self.srtp)
             .field("ping_payload_len", &self.ping_payload.len())
+            .field("ping_version", &self.ping_version)
+            .field("stun_credentials", &self.stun_credentials)
             .field("codec", &self.codec)
             .field("expected_payload_type", &self.expected_payload_type)
             .field("expected_ssrc", &self.expected_ssrc)
             .field("reorder_window_packets", &self.reorder_window_packets)
             .field("max_access_unit_bytes", &self.max_access_unit_bytes)
             .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+struct NvstStunCredentials {
+    local_username_fragment: String,
+    local_password: String,
+    remote_username_fragment: String,
+    remote_password: String,
+}
+
+impl fmt::Debug for NvstStunCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NvstStunCredentials")
+            .field("local_username_fragment", &"[redacted]")
+            .field("local_password", &"[redacted]")
+            .field("remote_username_fragment", &"[redacted]")
+            .field("remote_password", &"[redacted]")
             .finish()
     }
 }
@@ -303,6 +341,23 @@ impl NvstVideoConfig {
                 field: "pingPayload",
             });
         }
+        let ping_version = optional_u8(object, "pingVersion")?;
+        let stun_credentials = if ping_version == Some(6) {
+            Some(NvstStunCredentials {
+                local_username_fragment: required_ice_credential(
+                    object,
+                    "localIceUsernameFragment",
+                )?,
+                local_password: required_ice_credential(object, "localIcePassword")?,
+                remote_username_fragment: required_ice_credential(
+                    object,
+                    "remoteIceUsernameFragment",
+                )?,
+                remote_password: required_ice_credential(object, "remoteIcePassword")?,
+            })
+        } else {
+            None
+        };
 
         let expected_payload_type = optional_u8(object, "rtpPayloadType")?;
         let expected_ssrc = optional_u32(object, "rtpSsrc")?;
@@ -333,6 +388,8 @@ impl NvstVideoConfig {
             video_peer: SocketAddr::new(peer_ip, video_peer_port),
             srtp,
             ping_payload,
+            ping_version,
+            stun_credentials,
             codec,
             expected_payload_type,
             expected_ssrc,
@@ -361,6 +418,17 @@ impl NvstVideoConfig {
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
+}
+
+fn required_ice_credential(
+    object: &serde_json::Map<String, Value>,
+    field: &'static str,
+) -> Result<String, NvstConfigError> {
+    let value = required_string(object, field)?;
+    if value.is_empty() || value.len() > MAX_ICE_CREDENTIAL_BYTES {
+        return Err(NvstConfigError::OutOfRange { field });
+    }
+    Ok(value.to_owned())
 }
 
 /// Parses `context.nvstVideo` without tying the rest of the transport to JSON field names.
@@ -1444,6 +1512,203 @@ impl NvstVideoReceiver {
     }
 }
 
+enum StunDatagram {
+    NotStun,
+    Invalid,
+    Handled(Option<Vec<u8>>),
+}
+
+fn append_stun_attribute(packet: &mut Vec<u8>, attribute_type: u16, value: &[u8]) {
+    packet.extend_from_slice(&attribute_type.to_be_bytes());
+    packet.extend_from_slice(&(value.len() as u16).to_be_bytes());
+    packet.extend_from_slice(value);
+    packet.resize(packet.len().next_multiple_of(4), 0);
+}
+
+fn build_authenticated_stun_packet(
+    message_type: u16,
+    transaction_id: &[u8; 12],
+    key: &[u8],
+    attributes: &[(u16, Vec<u8>)],
+) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(128);
+    packet.extend_from_slice(&message_type.to_be_bytes());
+    packet.extend_from_slice(&0_u16.to_be_bytes());
+    packet.extend_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+    packet.extend_from_slice(transaction_id);
+    for (attribute_type, value) in attributes {
+        append_stun_attribute(&mut packet, *attribute_type, value);
+    }
+
+    let length_through_integrity = packet.len() - STUN_HEADER_LEN + 24;
+    packet[2..4].copy_from_slice(&(length_through_integrity as u16).to_be_bytes());
+    let mut mac = HmacSha1::new_from_slice(key).expect("HMAC accepts variable-size ICE passwords");
+    mac.update(&packet);
+    append_stun_attribute(
+        &mut packet,
+        STUN_ATTR_MESSAGE_INTEGRITY,
+        &mac.finalize().into_bytes(),
+    );
+
+    let final_length = packet.len() - STUN_HEADER_LEN + 8;
+    packet[2..4].copy_from_slice(&(final_length as u16).to_be_bytes());
+    let fingerprint = crc32(&packet) ^ STUN_FINGERPRINT_XOR;
+    append_stun_attribute(
+        &mut packet,
+        STUN_ATTR_FINGERPRINT,
+        &fingerprint.to_be_bytes(),
+    );
+    packet
+}
+
+fn build_stun_binding_request(
+    credentials: &NvstStunCredentials,
+    transaction_id: &[u8; 12],
+) -> Vec<u8> {
+    let username = format!(
+        "{}:{}",
+        credentials.remote_username_fragment, credentials.local_username_fragment
+    );
+    build_authenticated_stun_packet(
+        STUN_BINDING_REQUEST,
+        transaction_id,
+        credentials.remote_password.as_bytes(),
+        &[(STUN_ATTR_USERNAME, username.into_bytes())],
+    )
+}
+
+fn xor_mapped_address(source: SocketAddr, transaction_id: &[u8; 12]) -> Vec<u8> {
+    let mut value = Vec::with_capacity(20);
+    value.push(0);
+    value.push(if source.is_ipv4() { 1 } else { 2 });
+    value.extend_from_slice(&(source.port() ^ ((STUN_MAGIC_COOKIE >> 16) as u16)).to_be_bytes());
+    match source.ip() {
+        IpAddr::V4(ip) => {
+            for (octet, mask) in ip.octets().into_iter().zip(STUN_MAGIC_COOKIE.to_be_bytes()) {
+                value.push(octet ^ mask);
+            }
+        }
+        IpAddr::V6(ip) => {
+            let mut mask = [0_u8; 16];
+            mask[..4].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+            mask[4..].copy_from_slice(transaction_id);
+            for (octet, mask) in ip.octets().into_iter().zip(mask) {
+                value.push(octet ^ mask);
+            }
+        }
+    }
+    value
+}
+
+fn find_stun_attribute(packet: &[u8], wanted_type: u16) -> Option<(usize, &[u8])> {
+    let mut offset = STUN_HEADER_LEN;
+    while offset + 4 <= packet.len() {
+        let attribute_type = u16::from_be_bytes([packet[offset], packet[offset + 1]]);
+        let length = usize::from(u16::from_be_bytes([packet[offset + 2], packet[offset + 3]]));
+        let value_start = offset + 4;
+        let value_end = value_start.checked_add(length)?;
+        if value_end > packet.len() {
+            return None;
+        }
+        if attribute_type == wanted_type {
+            return Some((offset, &packet[value_start..value_end]));
+        }
+        offset = value_end.next_multiple_of(4);
+    }
+    None
+}
+
+fn valid_stun_fingerprint(packet: &[u8]) -> bool {
+    let Some((offset, value)) = find_stun_attribute(packet, STUN_ATTR_FINGERPRINT) else {
+        return false;
+    };
+    if value.len() != 4 || offset + 8 != packet.len() {
+        return false;
+    }
+    let expected = crc32(&packet[..offset]) ^ STUN_FINGERPRINT_XOR;
+    expected.to_be_bytes().ct_eq(value).into()
+}
+
+fn valid_stun_message_integrity(packet: &[u8], key: &[u8]) -> bool {
+    let Some((integrity_offset, integrity)) =
+        find_stun_attribute(packet, STUN_ATTR_MESSAGE_INTEGRITY)
+    else {
+        return false;
+    };
+    if integrity.len() != 20 {
+        return false;
+    }
+    let fingerprint_bytes = if find_stun_attribute(packet, STUN_ATTR_FINGERPRINT).is_some() {
+        8
+    } else {
+        0
+    };
+    let Some(adjusted_length) = packet
+        .len()
+        .checked_sub(STUN_HEADER_LEN + fingerprint_bytes)
+    else {
+        return false;
+    };
+    let mut authenticated = packet[..integrity_offset].to_vec();
+    authenticated[2..4].copy_from_slice(&(adjusted_length as u16).to_be_bytes());
+    let mut mac = HmacSha1::new_from_slice(key).expect("HMAC accepts variable-size ICE passwords");
+    mac.update(&authenticated);
+    mac.finalize().into_bytes().ct_eq(integrity).into()
+}
+
+fn handle_stun_datagram(
+    datagram: &[u8],
+    source: SocketAddr,
+    credentials: &NvstStunCredentials,
+) -> StunDatagram {
+    if datagram.len() < STUN_HEADER_LEN
+        || datagram[0] & 0xc0 != 0
+        || u32::from_be_bytes([datagram[4], datagram[5], datagram[6], datagram[7]])
+            != STUN_MAGIC_COOKIE
+    {
+        return StunDatagram::NotStun;
+    }
+    let message_length = usize::from(u16::from_be_bytes([datagram[2], datagram[3]]));
+    if STUN_HEADER_LEN + message_length != datagram.len() || !valid_stun_fingerprint(datagram) {
+        return StunDatagram::Invalid;
+    }
+    let message_type = u16::from_be_bytes([datagram[0], datagram[1]]);
+    let transaction_id: [u8; 12] = datagram[8..20]
+        .try_into()
+        .expect("STUN header length checked above");
+    match message_type {
+        STUN_BINDING_REQUEST => {
+            let Some((_, username)) = find_stun_attribute(datagram, STUN_ATTR_USERNAME) else {
+                return StunDatagram::Invalid;
+            };
+            let expected_username = format!(
+                "{}:{}",
+                credentials.local_username_fragment, credentials.remote_username_fragment
+            );
+            if !bool::from(expected_username.as_bytes().ct_eq(username))
+                || !valid_stun_message_integrity(datagram, credentials.local_password.as_bytes())
+            {
+                return StunDatagram::Invalid;
+            }
+            let mapped_address = xor_mapped_address(source, &transaction_id);
+            StunDatagram::Handled(Some(build_authenticated_stun_packet(
+                STUN_BINDING_SUCCESS_RESPONSE,
+                &transaction_id,
+                credentials.local_password.as_bytes(),
+                &[(STUN_ATTR_XOR_MAPPED_ADDRESS, mapped_address)],
+            )))
+        }
+        STUN_BINDING_SUCCESS_RESPONSE => {
+            if valid_stun_message_integrity(datagram, credentials.remote_password.as_bytes()) {
+                StunDatagram::Handled(None)
+            } else {
+                StunDatagram::Invalid
+            }
+        }
+        _ => StunDatagram::Invalid,
+    }
+}
+
 enum UdpReceiverCommand {
     Pause,
     Resume,
@@ -1515,9 +1780,8 @@ pub fn spawn_nvst_udp_receiver(
     let socket = UdpSocket::bind(SocketAddr::new(bind_ip, config.client_udp_port))
         .map_err(NvstUdpReceiverError::Bind)?;
     socket
-        .set_read_timeout(Some(Duration::from_millis(50)))
+        .set_read_timeout(Some(UDP_RECEIVE_POLL_INTERVAL))
         .map_err(NvstUdpReceiverError::Configure)?;
-    let _ = socket.send_to(&config.ping_payload, config.video_peer);
     let (commands, receiver) = mpsc::channel();
     let transport_origin = Instant::now();
     let join = thread::Builder::new()
@@ -1548,7 +1812,16 @@ fn run_nvst_udp_receiver(
     transport_origin: Instant,
 ) {
     let mut receiver = NvstVideoReceiver::new(config);
+    let stun_credentials = receiver.config.stun_credentials.clone();
     let mut datagram = vec![0_u8; 65_536];
+    let mut peer_seen = false;
+    let mut last_ping = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
+    let mut pings_sent = 0_u64;
+    let mut inbound_datagrams = 0_u64;
+    let mut handled_stun = 0_u64;
+    let mut invalid_stun = 0_u64;
+    let mut non_stun = 0_u64;
+    let mut wrong_source = 0_u64;
     loop {
         loop {
             match commands.try_recv() {
@@ -1567,8 +1840,53 @@ fn run_nvst_udp_receiver(
             }
         }
 
+        let now = Instant::now();
+        let ping_interval = if peer_seen {
+            PING_INTERVAL_AFTER_CONNECTION
+        } else {
+            PING_INTERVAL_BEFORE_CONNECTION
+        };
+        if now.duration_since(last_ping) >= ping_interval {
+            if let Some(credentials) = stun_credentials.as_ref() {
+                let mut transaction_id = [0_u8; 12];
+                if getrandom::fill(&mut transaction_id).is_ok() {
+                    let ping = build_stun_binding_request(credentials, &transaction_id);
+                    let _ = socket.send_to(&ping, receiver.config.video_peer);
+                    pings_sent += 1;
+                }
+            } else {
+                let _ = socket.send_to(&receiver.config.ping_payload, receiver.config.video_peer);
+                pings_sent += 1;
+            }
+            last_ping = now;
+        }
+
         match socket.recv_from(&mut datagram) {
             Ok((length, source)) => {
+                inbound_datagrams += 1;
+                if source != receiver.config.video_peer {
+                    wrong_source += 1;
+                }
+                if source == receiver.config.video_peer
+                    && let Some(credentials) = stun_credentials.as_ref()
+                {
+                    match handle_stun_datagram(&datagram[..length], source, credentials) {
+                        StunDatagram::Handled(response) => {
+                            handled_stun += 1;
+                            peer_seen = true;
+                            if let Some(response) = response {
+                                let _ = socket.send_to(&response, source);
+                            }
+                            continue;
+                        }
+                        StunDatagram::Invalid => {
+                            invalid_stun += 1;
+                            continue;
+                        }
+                        StunDatagram::NotStun => non_stun += 1,
+                    }
+                }
+                peer_seen |= source == receiver.config.video_peer;
                 for event in receiver.process_datagram(source, &datagram[..length], Instant::now())
                 {
                     if !forward_receive_event(
@@ -1589,7 +1907,13 @@ fn run_nvst_udp_receiver(
                 return;
             }
         }
-        forward_optional(&event_sender, receiver.poll_timeout(Instant::now()));
+        let timeout = receiver.poll_timeout(Instant::now());
+        if timeout.is_some() {
+            eprintln!(
+                "NVST transport timeout counters: pings={pings_sent}, inbound={inbound_datagrams}, stunHandled={handled_stun}, stunInvalid={invalid_stun}, nonStun={non_stun}, wrongSource={wrong_source}"
+            );
+        }
+        forward_optional(&event_sender, timeout);
     }
 }
 
@@ -1674,6 +1998,15 @@ mod tests {
         SocketAddr::new(TEST_PEER.parse().expect("test IP"), 5004)
     }
 
+    fn stun_credentials() -> NvstStunCredentials {
+        NvstStunCredentials {
+            local_username_fragment: "loc1".to_owned(),
+            local_password: "local-password-value-01".to_owned(),
+            remote_username_fragment: "remote01".to_owned(),
+            remote_password: "remote-password-with-36-byte-value-001".to_owned(),
+        }
+    }
+
     fn build_plaintext_rtp(sequence: u16, flags: u8, frame_index: u32, media: &[u8]) -> Vec<u8> {
         let mut packet = vec![0x80, 0xe0];
         packet.extend_from_slice(&sequence.to_be_bytes());
@@ -1753,6 +2086,87 @@ mod tests {
             decode_fixed_hex::<12>("00000000000000009ECA935E", NvstConfigError::InvalidSrtpSalt)
                 .expect("salt"),
         );
+    }
+
+    #[test]
+    fn ping_version_six_requires_all_ice_credentials() {
+        let mut handoff = legacy_handoff();
+        handoff["pingVersion"] = json!(6);
+        assert!(matches!(
+            NvstVideoConfig::from_legacy_handoff(&handoff, None),
+            Err(NvstConfigError::MissingField("localIceUsernameFragment"))
+        ));
+
+        handoff["localIceUsernameFragment"] = json!("loc1");
+        handoff["localIcePassword"] = json!("local-password-value-01");
+        handoff["remoteIceUsernameFragment"] = json!("remote01");
+        handoff["remoteIcePassword"] = json!("remote-password-with-36-byte-value-001");
+        let config = NvstVideoConfig::from_legacy_handoff(&handoff, None)
+            .expect("complete version-six credentials");
+        assert_eq!(config.ping_version, Some(6));
+        assert!(config.stun_credentials.is_some());
+        assert!(!format!("{config:?}").contains("local-password-value-01"));
+    }
+
+    #[test]
+    fn version_six_binding_request_matches_known_answer() {
+        let packet = build_stun_binding_request(
+            &stun_credentials(),
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        );
+        assert_eq!(
+            packet,
+            hex_bytes(
+                "000100342112A442000102030405060708090A0B0006000D72656D6F746530313A6C6F633100000000080014B276DC1C7949494C7EF7EB226BE8BB5E0EE5AABD802800045A8349EF"
+            ),
+        );
+        assert!(valid_stun_fingerprint(&packet));
+        assert!(valid_stun_message_integrity(
+            &packet,
+            b"remote-password-with-36-byte-value-001"
+        ));
+    }
+
+    #[test]
+    fn version_six_validates_requests_and_builds_authenticated_responses() {
+        let credentials = stun_credentials();
+        let transaction_id = [0x11; 12];
+        let request = build_authenticated_stun_packet(
+            STUN_BINDING_REQUEST,
+            &transaction_id,
+            credentials.local_password.as_bytes(),
+            &[(STUN_ATTR_USERNAME, b"loc1:remote01".to_vec())],
+        );
+        let source: SocketAddr = "192.0.2.20:5004".parse().expect("source");
+        let StunDatagram::Handled(Some(response)) =
+            handle_stun_datagram(&request, source, &credentials)
+        else {
+            panic!("authenticated binding request must produce a response");
+        };
+        assert_eq!(
+            u16::from_be_bytes([response[0], response[1]]),
+            STUN_BINDING_SUCCESS_RESPONSE
+        );
+        assert_eq!(&response[8..20], &transaction_id);
+        assert!(valid_stun_fingerprint(&response));
+        assert!(valid_stun_message_integrity(
+            &response,
+            credentials.local_password.as_bytes()
+        ));
+        let (_, mapped) = find_stun_attribute(&response, STUN_ATTR_XOR_MAPPED_ADDRESS)
+            .expect("XOR-MAPPED-ADDRESS");
+        assert_eq!(mapped[1], 1);
+        assert_eq!(
+            u16::from_be_bytes([mapped[2], mapped[3]]) ^ ((STUN_MAGIC_COOKIE >> 16) as u16),
+            5004
+        );
+
+        let mut tampered = request;
+        tampered[24] ^= 1;
+        assert!(matches!(
+            handle_stun_datagram(&tampered, source, &credentials),
+            StunDatagram::Invalid
+        ));
     }
 
     #[test]
@@ -2245,6 +2659,37 @@ mod tests {
             ))
         ));
         assert_eq!(receiver.state(), NvstReceiverState::RecoveryRequired);
+    }
+
+    #[test]
+    fn udp_receiver_repeats_the_negotiated_ping_before_media_arrives() {
+        let server = UdpSocket::bind("127.0.0.1:0").expect("server socket");
+        server
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .expect("server timeout");
+        let client_reservation = UdpSocket::bind("127.0.0.1:0").expect("client reservation");
+        let client_port = client_reservation
+            .local_addr()
+            .expect("client address")
+            .port();
+        drop(client_reservation);
+
+        let mut config = config();
+        config.client_udp_port = client_port;
+        config.video_peer = server.local_addr().expect("server address");
+        config.ping_payload = b"negotiated-ping".to_vec();
+        let (media_consumer, _media_receiver) = mpsc::sync_channel(1);
+        let (event_sender, _event_receiver) = mpsc::channel();
+        let session =
+            spawn_nvst_udp_receiver(config, media_consumer, event_sender).expect("UDP receiver");
+
+        let mut datagram = [0_u8; 64];
+        let (first_len, _) = server.recv_from(&mut datagram).expect("first ping");
+        assert_eq!(&datagram[..first_len], b"negotiated-ping");
+        let (second_len, _) = server.recv_from(&mut datagram).expect("repeated ping");
+        assert_eq!(&datagram[..second_len], b"negotiated-ping");
+
+        session.stop();
     }
 
     #[test]

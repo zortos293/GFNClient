@@ -87,6 +87,7 @@ export function buildAnnounceSdp(
     fps?: number;
     encryptionKeyHex?: string;
     encryptionKeyId?: number;
+    iceCredentials?: { usernameFragment: string; password: string };
   } = {},
 ): string {
   const { width, height } = parseResolution(options.resolution);
@@ -115,7 +116,7 @@ export function buildAnnounceSdp(
       } else if (prefix === "video" && key === "framePacing.pid.minTargetFrameTimeUs") {
         nextValue = frameTimeUs;
       }
-      const name = indexed ? `${prefix}[0].${key}` : `${prefix}.${key}`;
+      const name = indexed ? `x-nv-${prefix}[0].${key}` : `x-nv-${prefix}.${key}`;
       lines.push(`a=${name}:${nextValue}`);
     }
   };
@@ -127,16 +128,22 @@ export function buildAnnounceSdp(
   pushGroup("aqos", false, ANNOUNCE_ALLOWLIST.aqos);
   pushGroup("general", false, ANNOUNCE_ALLOWLIST.general);
   pushGroup("runtime", false, ANNOUNCE_ALLOWLIST.runtime);
-  lines.push("a=runtime.videoSrtp:1");
+  lines.push("a=x-nv-runtime.videoSrtp:1");
   if (options.encryptionKeyHex && options.encryptionKeyId !== undefined) {
-    lines.push(`a=runtime.encryptionKey:${options.encryptionKeyHex.toUpperCase()}`);
+    lines.push(`a=x-nv-runtime.encryptionKey:${options.encryptionKeyHex.toUpperCase()}`);
     // Signed i32 form matches geronimo runtime.encryptionKeyId dumps.
     const signedId = options.encryptionKeyId > 0x7fffffff
       ? options.encryptionKeyId - 0x1_0000_0000
       : options.encryptionKeyId;
-    lines.push(`a=runtime.encryptionKeyId:${signedId}`);
+    lines.push(`a=x-nv-runtime.encryptionKeyId:${signedId}`);
   }
-  lines.push("a=general.controlProtocol:udp_ag");
+  if (options.iceCredentials) {
+    lines.push(`a=x-nv-general.iceUsernameFragment:${options.iceCredentials.usernameFragment}`);
+    lines.push(`a=x-nv-general.iceUsernamePwd:${options.iceCredentials.password}`);
+    lines.push(`a=x-nv-general.iceUserNameFragmentV2:${options.iceCredentials.usernameFragment}`);
+    lines.push(`a=x-nv-general.icePasswordV2:${options.iceCredentials.password}`);
+  }
+  lines.push("a=x-nv-general.controlProtocol:udp_ag");
   lines.push("t=0 0");
   lines.push("m=video 0 RTP/AVP");
   lines.push("i=DeviceString, DeviceName");
@@ -148,6 +155,23 @@ export function buildAnnounceSdp(
 export function extractHmacSeed(sdp: string): string | null {
   const match = /^k=HMAC:([0-9A-Fa-f]{64})\s*$/m.exec(sdp);
   return match?.[1] ?? null;
+}
+
+export function extractNvstIceCredentials(
+  sdp: string,
+): { usernameFragment: string; password: string } | null {
+  const usernameFragment = /^(?:a=(?:x-nv-)?general\.iceUsernameFragment:|a=ice-ufrag:)([^\r\n]+)\s*$/mi
+    .exec(sdp)?.[1]?.trim()
+    ?? /^(?:a=(?:x-nv-)?general\.iceUserNameFragmentV2:)([^\r\n]+)\s*$/mi
+      .exec(sdp)?.[1]?.trim();
+  const password = /^(?:a=(?:x-nv-)?general\.iceUsernamePwd:|a=ice-pwd:)([^\r\n]+)\s*$/mi
+    .exec(sdp)?.[1]?.trim()
+    ?? /^(?:a=(?:x-nv-)?general\.icePasswordV2:)([^\r\n]+)\s*$/mi
+      .exec(sdp)?.[1]?.trim();
+  if (!usernameFragment || !password) {
+    return null;
+  }
+  return { usernameFragment, password };
 }
 
 /**
@@ -207,6 +231,19 @@ export function generateClientEncryptionKey(): { aesKeyHex: string; keyId: numbe
   const aesKeyHex = randomBytes(32).toString("hex").toUpperCase();
   const keyId = randomBytes(4).readUInt32BE(0);
   return { aesKeyHex, keyId };
+}
+
+export function generateNvstIceCredentials(): { usernameFragment: string; password: string } {
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
+  const random = randomBytes(26);
+  const encode = (start: number, length: number): string => Array.from(
+    random.subarray(start, start + length),
+    (value) => alphabet[value & 0x3f],
+  ).join("");
+  return {
+    usernameFragment: encode(0, 4),
+    password: encode(4, 22),
+  };
 }
 
 export function redactKey(aesKeyHex: string): string {

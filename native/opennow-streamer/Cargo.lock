@@ -333,6 +333,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crypto-bigint"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1170,7 +1179,9 @@ version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
+ "crc32fast",
  "ctr",
+ "getrandom 0.3.4",
  "hmac",
  "opennow-streamer-protocol",
  "serde_json",

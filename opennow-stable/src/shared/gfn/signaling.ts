@@ -68,6 +68,11 @@ export interface NvstVideoSession {
   srtpSaltHex: string;
   srtpProfile?: NvstSrtpProfile;
   pingPayload?: string;
+  pingVersion?: number;
+  localIceUsernameFragment?: string;
+  localIcePassword?: string;
+  remoteIceUsernameFragment?: string;
+  remoteIcePassword?: string;
   codec?: string;
 }
 

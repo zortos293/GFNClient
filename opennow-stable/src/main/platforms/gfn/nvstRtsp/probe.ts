@@ -12,6 +12,7 @@
  */
 
 import { createSocket } from "node:dgram";
+import { createHmac, randomBytes } from "node:crypto";
 
 import type { NvstSrtpProfile, NvstVideoSession } from "@shared/gfn";
 
@@ -24,9 +25,11 @@ import {
 import {
   buildAnnounceSdp,
   extractHmacSeed,
+  extractNvstIceCredentials,
   extractMediaControl,
   extractRuntimeEncryptionKey,
   generateClientEncryptionKey,
+  generateNvstIceCredentials,
   packSrtpMasterKeySalt,
   redactKey,
 } from "./sdp";
@@ -61,6 +64,8 @@ export interface NvstRtspClient {
 
 export interface NvstUdpPortReservation {
   port: number;
+  localAddress?: string;
+  send?(payload: Buffer, peerHost: string, peerPort: number): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -71,7 +76,7 @@ export interface NvstRtspNegotiationDependencies {
     timeoutMs: number,
     onLog?: (message: string) => void,
   ): NvstRtspClient;
-  reserveUdpPort(): Promise<NvstUdpPortReservation>;
+  reserveUdpPort(peerHost?: string, peerPort?: number): Promise<NvstUdpPortReservation>;
 }
 
 export interface NvstSrtpMaterial {
@@ -111,6 +116,7 @@ export type NvstRtspNegotiationErrorCode =
   | "missing-audio-control"
   | "missing-control-stream"
   | "missing-video-peer"
+  | "missing-ice-credentials"
   | "conflicting-srtp-profile"
   | "negotiation-failed";
 
@@ -143,6 +149,61 @@ export interface NvstRtspSession {
 function log(onLog: NvstRtspProbeInput["onLog"], message: string): void {
   console.log(`[NvstRtspProbe] ${message}`);
   onLog?.(message);
+}
+
+const CRC32_TABLE = Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return crc >>> 0;
+});
+
+function appendStunAttribute(packet: Buffer[], type: number, value: Buffer): void {
+  const header = Buffer.alloc(4);
+  header.writeUInt16BE(type, 0);
+  header.writeUInt16BE(value.length, 2);
+  packet.push(header, value);
+  const padding = value.length % 4;
+  if (padding) {
+    packet.push(Buffer.alloc(4 - padding));
+  }
+}
+
+export function buildNvstStunBindingRequest(
+  localUsernameFragment: string,
+  remoteUsernameFragment: string,
+  remotePassword: string,
+  transactionId: Buffer = randomBytes(12),
+): Buffer {
+  if (transactionId.length !== 12) {
+    throw new Error("STUN transaction ID must be 12 bytes");
+  }
+  const header = Buffer.alloc(20);
+  header.writeUInt16BE(0x0001, 0);
+  header.writeUInt32BE(0x2112a442, 4);
+  transactionId.copy(header, 8);
+  const parts = [header];
+  appendStunAttribute(
+    parts,
+    0x0006,
+    Buffer.from(`${remoteUsernameFragment}:${localUsernameFragment}`, "utf8"),
+  );
+  let packet = Buffer.concat(parts);
+  header.writeUInt16BE(packet.length - 20 + 24, 2);
+  packet = Buffer.concat(parts);
+  appendStunAttribute(parts, 0x0008, createHmac("sha1", remotePassword).update(packet).digest());
+  packet = Buffer.concat(parts);
+  header.writeUInt16BE(packet.length - 20 + 8, 2);
+  packet = Buffer.concat(parts);
+  let crc = 0xffffffff;
+  for (const byte of packet) {
+    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ byte) & 0xff]!;
+  }
+  const fingerprint = Buffer.alloc(4);
+  fingerprint.writeUInt32BE(((crc ^ 0xffffffff) ^ 0x5354554e) >>> 0);
+  appendStunAttribute(parts, 0x8028, fingerprint);
+  return Buffer.concat(parts);
 }
 
 export function selectPrimaryRtspsEndpoint(endpoints: string[]): string | null {
@@ -213,7 +274,7 @@ export function resolveRtspControlUri(baseUri: string, control: string): string 
   return `${baseUri.replace(/\/+$/, "")}/${control.replace(/^\/+/, "")}`;
 }
 
-async function bindEphemeralUdp(): Promise<NvstUdpPortReservation> {
+async function bindEphemeralUdp(peerHost?: string, peerPort?: number): Promise<NvstUdpPortReservation> {
   const socket = createSocket("udp4");
   try {
     await new Promise<void>((resolve, reject) => {
@@ -229,14 +290,32 @@ async function bindEphemeralUdp(): Promise<NvstUdpPortReservation> {
     } catch {}
     throw error;
   }
+  if (peerHost && peerPort) {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.connect(peerPort, peerHost, () => {
+        socket.off("error", reject);
+        resolve();
+      });
+    });
+  }
   const address = socket.address();
   if (typeof address === "string") {
     socket.close();
     throw new Error("Unexpected UDP socket address shape");
   }
   let released = false;
+  if (peerHost && peerPort) {
+    socket.disconnect();
+  }
   return {
     port: address.port,
+    localAddress: address.address === "0.0.0.0" ? undefined : address.address,
+    send: async (payload, host, port) => {
+      await new Promise<void>((resolve, reject) => {
+        socket.send(payload, port, host, (error) => error ? reject(error) : resolve());
+      });
+    },
     release: async () => {
       if (released) {
         return;
@@ -301,6 +380,8 @@ export async function negotiateNvstRtspSession(
   let udp: NvstUdpPortReservation | null = null;
   let audioUdp: NvstUdpPortReservation | null = null;
   const auxiliaryUdp: NvstUdpPortReservation[] = [];
+  const holePunchTimers: NodeJS.Timeout[] = [];
+  let videoHolePunchTimer: NodeJS.Timeout | null = null;
   let session: string | null = null;
 
   try {
@@ -326,6 +407,7 @@ export async function negotiateNvstRtspSession(
     const describe = await client.request("DESCRIBE", rtspTarget, {
       ...commonHeaders,
       Accept: "application/sdp",
+      "X-Nv-Abtesting": "2",
     });
     if (describe.statusCode !== 200) {
       throw new Error(`DESCRIBE failed: ${describe.statusCode} ${describe.statusText}`);
@@ -362,8 +444,25 @@ export async function negotiateNvstRtspSession(
     log(input.onLog, `DESCRIBE media controls: ${describedControls.join(", ") || "none"}`);
     const videoControlUri = videoControl;
     const hmacSeed = extractHmacSeed(describe.body);
+    const iceCredentials = extractNvstIceCredentials(describe.body);
+    const legacyIceUsername = /^a=(?:x-nv-)?general\.iceUsernameFragment:([^\r\n]+)$/mi
+      .exec(describe.body)?.[1]?.trim();
+    const legacyIcePassword = /^a=(?:x-nv-)?general\.iceUsernamePwd:([^\r\n]+)$/mi
+      .exec(describe.body)?.[1]?.trim();
+    const v2IceUsername = /^a=(?:x-nv-)?general\.iceUserNameFragmentV2:([^\r\n]+)$/mi
+      .exec(describe.body)?.[1]?.trim();
+    const v2IcePassword = /^a=(?:x-nv-)?general\.icePasswordV2:([^\r\n]+)$/mi
+      .exec(describe.body)?.[1]?.trim();
     const describedSrtpProfile = extractAdvertisedSrtpProfileFromSdp(describe.body);
     const describedKey = extractRuntimeEncryptionKey(describe.body);
+    const dtlsFingerprint = /^a=(?:x-nv-)?general\.dtlsFingerprintV2:([^\r\n]+)$/mi
+      .exec(describe.body)?.[1]?.trim();
+    const serverTransport = /^a=(?:x-nv-)?general\.serverTransport:([A-Za-z0-9_-]{1,32})\s*$/mi
+      .exec(describe.body)?.[1];
+    log(
+      input.onLog,
+      `DESCRIBE transport metadata: dtlsFingerprintBytes=${dtlsFingerprint?.length ?? 0}, serverTransport=${serverTransport ?? "absent"}, legacyIce=${legacyIceUsername?.length ?? 0}/${legacyIcePassword?.length ?? 0}, v2Ice=${v2IceUsername?.length ?? 0}/${v2IcePassword?.length ?? 0}, iceVariantsMatch=${legacyIceUsername === v2IceUsername && legacyIcePassword === v2IcePassword}`,
+    );
     let encryptionKeyHex: string;
     let encryptionKeyId: number;
     let clientGenerated = false;
@@ -372,7 +471,7 @@ export async function negotiateNvstRtspSession(
       encryptionKeyId = describedKey.keyId;
       log(
         input.onLog,
-        `DESCRIBE ok (Session=${session}, videoControl=${videoControl}, HMAC ${hmacSeed ? "present" : "missing"}, encryptionKey ${redactKey(encryptionKeyHex)} from server)`,
+        `DESCRIBE ok (Session=${session}, videoControl=${videoControl}, HMAC ${hmacSeed ? "present" : "missing"}, ICE credentials ${iceCredentials ? `present (ufragBytes=${iceCredentials.usernameFragment.length}, pwdBytes=${iceCredentials.password.length})` : "missing"}, encryptionKey ${redactKey(encryptionKeyHex)} from server)`,
       );
     } else {
       const generated = generateClientEncryptionKey();
@@ -381,11 +480,11 @@ export async function negotiateNvstRtspSession(
       clientGenerated = true;
       log(
         input.onLog,
-        `DESCRIBE ok (Session=${session}, videoControl=${videoControl}, HMAC ${hmacSeed ? "present" : "missing"}, encryptionKey absent — client-generated ${redactKey(encryptionKeyHex)} for ANNOUNCE)`,
+        `DESCRIBE ok (Session=${session}, videoControl=${videoControl}, HMAC ${hmacSeed ? "present" : "missing"}, ICE credentials ${iceCredentials ? `present (ufragBytes=${iceCredentials.usernameFragment.length}, pwdBytes=${iceCredentials.password.length})` : "missing"}, encryptionKey absent — client-generated ${redactKey(encryptionKeyHex)} for ANNOUNCE)`,
       );
     }
 
-    udp = await dependencies.reserveUdpPort();
+    udp = await dependencies.reserveUdpPort(parsedEndpoint.hostname, Number(parsedEndpoint.port || "322"));
     const clientPort = udp.port;
     const setup = await client.request("SETUP", videoControlUri, {
       ...commonHeaders,
@@ -420,12 +519,48 @@ export async function negotiateNvstRtspSession(
     const pingPayload = header(setup.headers, "x-nv-ping-payload");
     const pingVersionRaw = header(setup.headers, "x-nv-ping");
     const pingVersion = pingVersionRaw ? Number(pingVersionRaw) : undefined;
+    if (pingVersion === 6 && (!iceCredentials || !pingPayload)) {
+      throw new NvstRtspNegotiationError(
+        "missing-ice-credentials",
+        "SETUP selected ping version 6 but its username payload or DESCRIBE password was missing",
+      );
+    }
+    const localIceCredentials = iceCredentials ? generateNvstIceCredentials() : null;
+    const startAuthenticatedHolePunch = (
+      reservation: NvstUdpPortReservation,
+      peer: { ip: string; port: number },
+      remoteUsernameFragment: string,
+    ): NodeJS.Timeout | null => {
+      if (!localIceCredentials || !iceCredentials || !reservation.send) {
+        return null;
+      }
+      const sendPing = (): void => {
+        const packet = buildNvstStunBindingRequest(
+          localIceCredentials.usernameFragment,
+          remoteUsernameFragment,
+          iceCredentials.password,
+        );
+        void reservation.send?.(packet, peer.ip, peer.port).catch(() => undefined);
+      };
+      sendPing();
+      const timer = setInterval(sendPing, 20);
+      timer.unref();
+      holePunchTimers.push(timer);
+      return timer;
+    };
+    if (pingPayload) {
+      videoHolePunchTimer = startAuthenticatedHolePunch(udp, videoPeer, pingPayload);
+    }
+    const setupHeaderNames = Object.keys(setup.headers).sort();
+    const setupCredentialHeaders = setupHeaderNames
+      .filter((name) => /(ice|stun|credential|password|user)/i.test(name))
+      .map((name) => `${name}[${header(setup.headers, name)?.length ?? 0}]`);
     log(
       input.onLog,
-      `SETUP ${videoControl} ok (clientPort=${clientPort}, peer=${videoPeer.ip}:${videoPeer.port}, srtpProfile=${srtpProfile ?? "legacy-default"})`,
+      `SETUP ${videoControl} ok (clientPort=${clientPort}, peer=${videoPeer.ip}:${videoPeer.port}, srtpProfile=${srtpProfile ?? "legacy-default"}, pingVersion=${Number.isFinite(pingVersion) ? pingVersion : "legacy"}, pingPayloadBytes=${pingPayload ? Buffer.byteLength(pingPayload, "utf8") : 4}, headers=${setupHeaderNames.join(",")}, credentialHeaders=${setupCredentialHeaders.join(",") || "none"})`,
     );
 
-    audioUdp = await dependencies.reserveUdpPort();
+    audioUdp = await dependencies.reserveUdpPort(parsedEndpoint.hostname, Number(parsedEndpoint.port || "322"));
     const audioClientPort = audioUdp.port;
     const audioSetup = await client.request("SETUP", audioControl, {
       ...commonHeaders,
@@ -439,12 +574,23 @@ export async function negotiateNvstRtspSession(
     steps.push("setup-audio");
     session = header(audioSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
     log(input.onLog, `SETUP ${audioControl} ok (clientPort=${audioClientPort})`);
+    const audioPeer = extractVideoPeer(header(audioSetup.headers, "transport"));
+    if (audioPeer) {
+      startAuthenticatedHolePunch(
+        audioUdp,
+        audioPeer,
+        header(audioSetup.headers, "x-nv-ping-payload") ?? session,
+      );
+    }
 
     for (const control of describedControls) {
       if (control === videoControl || control === audioControl) {
         continue;
       }
-      const reservation = await dependencies.reserveUdpPort();
+      const reservation = await dependencies.reserveUdpPort(
+        parsedEndpoint.hostname,
+        Number(parsedEndpoint.port || "322"),
+      );
       auxiliaryUdp.push(reservation);
       const auxiliarySetup = await client.request("SETUP", control, {
         ...commonHeaders,
@@ -457,7 +603,18 @@ export async function negotiateNvstRtspSession(
       }
       steps.push(`setup-${control}`);
       session = header(auxiliarySetup.headers, "session")?.split(";")[0]?.trim() ?? session;
-      log(input.onLog, `SETUP ${control} ok (clientPort=${reservation.port})`);
+      const auxiliaryPeer = extractVideoPeer(header(auxiliarySetup.headers, "transport"));
+      if (auxiliaryPeer) {
+        startAuthenticatedHolePunch(
+          reservation,
+          auxiliaryPeer,
+          header(auxiliarySetup.headers, "x-nv-ping-payload") ?? session,
+        );
+      }
+      log(
+        input.onLog,
+        `SETUP ${control} ok (clientPort=${reservation.port}, peer=${auxiliaryPeer ? `${auxiliaryPeer.ip}:${auxiliaryPeer.port}` : "absent"}, pingVersion=${header(auxiliarySetup.headers, "x-nv-ping") ?? "legacy"})`,
+      );
     }
 
     const saltHex = deriveSrtpSaltHex(encryptionKeyId);
@@ -482,24 +639,31 @@ export async function negotiateNvstRtspSession(
         fps: input.fps,
         encryptionKeyHex,
         encryptionKeyId,
+        iceCredentials: localIceCredentials ?? undefined,
       }),
     );
     if (announce.statusCode !== 200) {
       throw new Error(`ANNOUNCE failed: ${announce.statusCode} ${announce.statusText}`);
     }
     steps.push("announce");
-    log(input.onLog, "ANNOUNCE ok (allowlist + encryptionKey; ICE/DTLS omitted)");
+    log(
+      input.onLog,
+      `ANNOUNCE ok (allowlist + encryptionKey${localIceCredentials ? ` + ICE V2 credentials (local ufragBytes=${localIceCredentials.usernameFragment.length}, pwdBytes=${localIceCredentials.password.length})` : ""})`,
+    );
 
     steps.push("play-skipped");
     log(input.onLog, "PLAY skipped because the GFN Bifrost flow disables it after ANNOUNCE");
 
+    if (videoHolePunchTimer) {
+      clearInterval(videoHolePunchTimer);
+      const index = holePunchTimers.indexOf(videoHolePunchTimer);
+      if (index >= 0) {
+        holePunchTimers.splice(index, 1);
+      }
+      videoHolePunchTimer = null;
+    }
     await udp.release();
     udp = null;
-    await audioUdp.release();
-    audioUdp = null;
-    for (const reservation of auxiliaryUdp.splice(0)) {
-      await reservation.release();
-    }
 
     const videoSession: NvstVideoSession = {
       clientUdpPort: clientPort,
@@ -510,6 +674,11 @@ export async function negotiateNvstRtspSession(
       srtpSaltHex: srtp.saltHex,
       srtpProfile: srtp.profile,
       pingPayload,
+      pingVersion: Number.isFinite(pingVersion) ? pingVersion : undefined,
+      localIceUsernameFragment: localIceCredentials?.usernameFragment,
+      localIcePassword: localIceCredentials?.password,
+      remoteIceUsernameFragment: pingVersion === 6 ? pingPayload : iceCredentials?.usernameFragment,
+      remoteIcePassword: iceCredentials?.password,
       codec: input.codec,
     };
     log(
@@ -534,10 +703,21 @@ export async function negotiateNvstRtspSession(
           return;
         }
         released = true;
+        for (const timer of holePunchTimers.splice(0)) {
+          clearInterval(timer);
+        }
+        await audioUdp?.release().catch(() => undefined);
+        audioUdp = null;
+        await Promise.all(
+          auxiliaryUdp.splice(0).map((reservation) => reservation.release().catch(() => undefined)),
+        );
         await teardownAndClose(client, endpoint, session, reason, input.onLog);
       },
     };
   } catch (error) {
+    for (const timer of holePunchTimers.splice(0)) {
+      clearInterval(timer);
+    }
     await udp?.release().catch(() => undefined);
     await audioUdp?.release().catch(() => undefined);
     await Promise.all(auxiliaryUdp.map((reservation) => reservation.release().catch(() => undefined)));

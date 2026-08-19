@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildNvstStunBindingRequest,
   collectRtspsEndpoints,
   negotiateNvstRtspSession,
   NvstRtspNegotiationError,
@@ -13,6 +14,18 @@ import {
   type NvstRtspClient,
   type NvstRtspNegotiationDependencies,
 } from "./probe";
+
+test("version 6 STUN request matches the official RFC 5389 packet shape", () => {
+  assert.equal(
+    buildNvstStunBindingRequest(
+      "loc1",
+      "remote01",
+      "remote-password-with-36-byte-value-001",
+      Buffer.from("000102030405060708090A0B", "hex"),
+    ).toString("hex").toUpperCase(),
+    "000100342112A442000102030405060708090A0B0006000D72656D6F746530313A6C6F633100000000080014B276DC1C7949494C7EF7EB226BE8BB5E0EE5AABD802800045A8349EF",
+  );
+});
 import type { ParsedRtspResponse } from "./rtspClient";
 
 function response(
@@ -236,6 +249,10 @@ test("negotiation retains RTSPS control and releases UDP immediately before nati
     "rtsp://host.example:322",
   );
   assert.equal(
+    client.requests.find(({ method }) => method === "DESCRIBE")?.headers["X-Nv-Abtesting"],
+    "2",
+  );
+  assert.equal(
     client.requests.find(({ method, uri }) => method === "SETUP" && uri.includes("video"))?.uri,
     "tracks/actual-video-track",
   );
@@ -287,6 +304,81 @@ test("negotiation hands off an explicitly advertised DESCRIBE SRTP profile", asy
   assert.equal(negotiated.videoSession.srtpProfile, "AEAD_AES_256_GCM");
   assert.equal(negotiated.videoSession.srtpSaltHex, negotiated.srtp.saltHex);
   await negotiated.release("test complete");
+});
+
+test("ping version 6 hands off remote and generated local ICE credentials", async () => {
+  const events: string[] = [];
+  const remoteUsername = "remote01";
+  const remotePassword = "remote-password-with-36-byte-value-001";
+  const { client, dependencies } = createNegotiationHarness(events, (method) => {
+    if (method === "DESCRIBE") {
+      return response(
+        { session: "rtsp-session;timeout=60" },
+        DESCRIBE_SDP.replace(
+          "m=video",
+          `a=x-nv-general.iceUserNameFragmentV2:${remoteUsername}\r\na=x-nv-general.icePasswordV2:${remotePassword}\r\nm=video`,
+        ),
+      );
+    }
+    if (method === "SETUP") {
+      return response({
+        transport: "unicast;X-GS-ServerPort=5004-5005;source=192.0.2.4",
+        "x-nv-ping": "6",
+        "x-nv-ping-payload": "srv1",
+      });
+    }
+    return undefined;
+  });
+
+  const negotiated = await negotiateNvstRtspSession({
+    sessionId: "gfn-session",
+    rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+  }, dependencies);
+
+  assert.equal(negotiated.videoSession.pingVersion, 6);
+  assert.equal(negotiated.videoSession.remoteIceUsernameFragment, "srv1");
+  assert.equal(negotiated.videoSession.remoteIcePassword, remotePassword);
+  assert.match(negotiated.videoSession.localIceUsernameFragment ?? "", /^[A-Za-z0-9+/]{4}$/);
+  assert.match(negotiated.videoSession.localIcePassword ?? "", /^[A-Za-z0-9+/]{22}$/);
+  const announceBody = client.requests.find(({ method }) => method === "ANNOUNCE")?.body ?? "";
+  assert.ok(
+    announceBody.includes(
+      `a=x-nv-general.iceUsernameFragment:${negotiated.videoSession.localIceUsernameFragment}`,
+    ),
+  );
+  assert.ok(
+    announceBody.includes(`a=x-nv-general.iceUsernamePwd:${negotiated.videoSession.localIcePassword}`),
+  );
+  assert.ok(
+    announceBody.includes(
+      `a=x-nv-general.iceUserNameFragmentV2:${negotiated.videoSession.localIceUsernameFragment}`,
+    ),
+  );
+  assert.ok(
+    announceBody.includes(`a=x-nv-general.icePasswordV2:${negotiated.videoSession.localIcePassword}`),
+  );
+  await negotiated.release("test complete");
+});
+
+test("ping version 6 fails closed without DESCRIBE ICE credentials", async () => {
+  const events: string[] = [];
+  const { dependencies } = createNegotiationHarness(events, (method) =>
+    method === "SETUP"
+      ? response({
+        transport: "unicast;X-GS-ServerPort=5004-5005;source=192.0.2.4",
+        "x-nv-ping": "6",
+      })
+      : undefined);
+
+  await assert.rejects(
+    negotiateNvstRtspSession({
+      sessionId: "gfn-session",
+      rtspsEndpoints: ["rtsps://host.example:322/session/base"],
+    }, dependencies),
+    (error: unknown) =>
+      error instanceof NvstRtspNegotiationError
+      && error.code === "missing-ice-credentials",
+  );
 });
 
 test("negotiation hands off an explicitly advertised SETUP SRTP profile", async () => {

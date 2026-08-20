@@ -97,10 +97,34 @@ export function buildAnnounceSdp(
     iceCredentials?: { usernameFragment: string; password: string };
     /** Server video port from SETUP / DESCRIBE. Capture uses `m=video 5004`. */
     videoPort?: number;
-    clientPorts?: { video: number; audio?: number; control?: number; bundle?: number };
+    clientPorts?: {
+      video: number;
+      audio?: number;
+      mic?: number;
+      control?: number;
+      bundle?: number;
+      session?: number;
+      /** Official `general.clientPorts.localAddress` — routable NIC IPv4. */
+      localAddress?: string;
+    };
+    /** Official `general.clientBundlePort` — ICE/DTLS socket, distinct from clientPorts.bundle. */
+    clientBundlePort?: number;
     /** Official `general.clientTransport` form is `ip:port`. */
     clientTransport?: string;
     nativeRtcOnBundlePort?: string;
+    /** Official `general.rtc{Video,Audio,DataChannel}OnNativeBundle` when unified. */
+    rtcOnNativeBundle?: boolean;
+    rtcVideoOnNativeBundle?: boolean;
+    rtcAudioOnNativeBundle?: boolean;
+    rtcMicOnNativeBundle?: boolean;
+    rtcDataChannelOnNativeBundle?: boolean;
+    enableUnifiedSocket?: boolean;
+    /**
+     * Official skips Nvsc V1 `iceUsernameFragment` / `iceUsernamePwd` /
+     * `dtlsFingerprint` and keeps V2 plus WebRTC `a=ice-*`.
+     */
+    includeNvscLegacyIce?: boolean;
+    includeNvscLegacyDtls?: boolean;
     /** SHA-256 colon hex (95 chars). Written as V1 + V2 to match Bifrost/mall. */
     dtlsFingerprint?: string;
   } = {},
@@ -112,7 +136,8 @@ export function buildAnnounceSdp(
 
   const lines: string[] = [
     "v=0",
-    "o=android 0 14 IN IPv4 127.0.0.1",
+    // Official macOS handshake origin username is "unknown", not "android".
+    "o=unknown 0 14 IN IPv4 127.0.0.1",
     "s=NVIDIA Streaming Client",
   ];
 
@@ -147,22 +172,28 @@ export function buildAnnounceSdp(
   lines.push("a=x-nv-runtime.videoSrtp:1");
   if (options.encryptionKeyHex && options.encryptionKeyId !== undefined) {
     lines.push(`a=x-nv-runtime.encryptionKey:${options.encryptionKeyHex.toUpperCase()}`);
-    // Signed i32 form matches geronimo runtime.encryptionKeyId dumps.
-    const signedId = options.encryptionKeyId > 0x7fffffff
-      ? options.encryptionKeyId - 0x1_0000_0000
-      : options.encryptionKeyId;
-    lines.push(`a=x-nv-runtime.encryptionKeyId:${signedId}`);
+    // Official sends the keyId unsigned (u32) on the wire, and our salt derivation uses the
+    // unsigned form too (deriveSrtpSaltHex does keyId >>> 0), so both ends derive the same salt.
+    lines.push(`a=x-nv-runtime.encryptionKeyId:${options.encryptionKeyId >>> 0}`);
   }
   if (options.iceCredentials) {
-    lines.push(`a=x-nv-general.iceUsernameFragment:${options.iceCredentials.usernameFragment}`);
-    lines.push(`a=x-nv-general.iceUsernamePwd:${options.iceCredentials.password}`);
+    if (options.includeNvscLegacyIce !== false) {
+      lines.push(`a=x-nv-general.iceUsernameFragment:${options.iceCredentials.usernameFragment}`);
+      lines.push(`a=x-nv-general.iceUsernamePwd:${options.iceCredentials.password}`);
+    }
     lines.push(`a=x-nv-general.iceUserNameFragmentV2:${options.iceCredentials.usernameFragment}`);
     lines.push(`a=x-nv-general.icePasswordV2:${options.iceCredentials.password}`);
   }
   if (options.clientPorts) {
+    if (options.clientPorts.localAddress) {
+      lines.push(`a=x-nv-general.clientPorts.localAddress:${options.clientPorts.localAddress}`);
+    }
     lines.push(`a=x-nv-general.clientPorts.video:${options.clientPorts.video}`);
     if (options.clientPorts.audio !== undefined) {
       lines.push(`a=x-nv-general.clientPorts.audio:${options.clientPorts.audio}`);
+    }
+    if (options.clientPorts.mic !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.mic:${options.clientPorts.mic}`);
     }
     if (options.clientPorts.control !== undefined) {
       lines.push(`a=x-nv-general.clientPorts.control:${options.clientPorts.control}`);
@@ -170,6 +201,12 @@ export function buildAnnounceSdp(
     if (options.clientPorts.bundle !== undefined) {
       lines.push(`a=x-nv-general.clientPorts.bundle:${options.clientPorts.bundle}`);
     }
+    if (options.clientPorts.session !== undefined) {
+      lines.push(`a=x-nv-general.clientPorts.session:${options.clientPorts.session}`);
+    }
+  }
+  if (options.clientBundlePort !== undefined) {
+    lines.push(`a=x-nv-general.clientBundlePort:${options.clientBundlePort}`);
   }
   if (options.clientTransport) {
     lines.push(`a=x-nv-general.clientTransport:${options.clientTransport}`);
@@ -177,13 +214,56 @@ export function buildAnnounceSdp(
   if (options.nativeRtcOnBundlePort) {
     lines.push(`a=x-nv-general.nativeRtcOnBundlePort:${options.nativeRtcOnBundlePort}`);
   }
+  const rtcVideo = options.rtcVideoOnNativeBundle ?? (options.rtcOnNativeBundle ? true : undefined);
+  const rtcAudio = options.rtcAudioOnNativeBundle ?? (options.rtcOnNativeBundle ? true : undefined);
+  const rtcMic = options.rtcMicOnNativeBundle;
+  const rtcData = options.rtcDataChannelOnNativeBundle ?? (options.rtcOnNativeBundle ? true : undefined);
+  if (rtcVideo !== undefined) {
+    lines.push(`a=x-nv-general.rtcVideoOnNativeBundle:${rtcVideo ? "1" : "0"}`);
+  }
+  if (rtcAudio !== undefined) {
+    lines.push(`a=x-nv-general.rtcAudioOnNativeBundle:${rtcAudio ? "1" : "0"}`);
+  }
+  if (rtcMic !== undefined) {
+    lines.push(`a=x-nv-general.rtcMicOnNativeBundle:${rtcMic ? "1" : "0"}`);
+  }
+  if (rtcData !== undefined) {
+    lines.push(`a=x-nv-general.rtcDataChannelOnNativeBundle:${rtcData ? "1" : "0"}`);
+  }
+  if (options.enableUnifiedSocket !== undefined) {
+    lines.push(`a=x-nv-general.enableUnifiedSocket:${options.enableUnifiedSocket ? "1" : "0"}`);
+  }
   if (options.dtlsFingerprint) {
-    lines.push(`a=x-nv-general.dtlsFingerprint:${options.dtlsFingerprint}`);
+    if (options.includeNvscLegacyDtls !== false) {
+      lines.push(`a=x-nv-general.dtlsFingerprint:${options.dtlsFingerprint}`);
+    }
     lines.push(`a=x-nv-general.dtlsFingerprintV2:${options.dtlsFingerprint}`);
+  }
+  // Official doAnnounce also emits CreateAnswer WebRTC ICE/DTLS (a=ice-ufrag,
+  // a=fingerprint, host a=candidate). NVST x-nv-general.* alone does not arm inbound UDP.
+  if (options.iceCredentials) {
+    lines.push("a=ice-options:trickle");
+    lines.push(`a=ice-ufrag:${options.iceCredentials.usernameFragment}`);
+    lines.push(`a=ice-pwd:${options.iceCredentials.password}`);
+  }
+  if (options.dtlsFingerprint) {
+    lines.push(`a=fingerprint:sha-256 ${options.dtlsFingerprint}`);
+    lines.push("a=setup:actpass");
+  }
+  const candidateAddress = options.clientPorts?.localAddress;
+  const candidatePort = options.clientBundlePort
+    ?? (options.clientPorts?.bundle && options.clientPorts.bundle > 0 ? options.clientPorts.bundle : undefined)
+    ?? (options.clientPorts?.video && options.clientPorts.video > 0 ? options.clientPorts.video : undefined);
+  if (candidateAddress && candidatePort) {
+    // Official CreateLocalCandidate format string: `a=candidate:1 1 udp 2122260223 ` + ` typ host`.
+    lines.push(`a=candidate:1 1 udp 2122260223 ${candidateAddress} ${candidatePort} typ host`);
   }
   lines.push("t=0 0");
   // Live capture ANNOUNCE uses the server video port, not SDP's "port 0 = unused".
   lines.push(`m=video ${videoPort}`);
+  if (options.iceCredentials || options.dtlsFingerprint) {
+    lines.push("c=IN IP4 0.0.0.0");
+  }
   lines.push("i=DeviceString, DeviceName");
   lines.push("");
   return lines.join("\r\n");

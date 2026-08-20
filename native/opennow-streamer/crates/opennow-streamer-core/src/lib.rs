@@ -16,7 +16,8 @@ use opennow_streamer_protocol::{
 use opennow_streamer_transport::{
     NvstDropReason, NvstReceiveEvent, NvstReceiverState, NvstUdpReceiverSession,
     PreferredVideoTransport, ReservedNvstBundle, TransportControl, TransportEvent,
-    TransportSession, negotiate, select_preferred_video_transport,
+    TransportSession, negotiate, reserve_nvst_mjolnir_udp_socket,
+    select_preferred_video_transport, spawn_nvst_mjolnir_receiver,
     spawn_nvst_udp_receiver_with_socket,
 };
 use serde_json::{Value, json};
@@ -37,6 +38,7 @@ pub struct Engine {
     lifecycle: Arc<Mutex<Lifecycle>>,
     transport: Option<TransportSession>,
     nvst_transport: Option<NvstUdpReceiverSession>,
+    nvst_mjolnir_transport: Option<NvstUdpReceiverSession>,
     reserved_nvst_bundle: Option<ReservedNvstBundle>,
     nvst_hole_punch_socket: Option<UdpSocket>,
     events: Sender<Value>,
@@ -65,6 +67,7 @@ impl Engine {
             })),
             transport: None,
             nvst_transport: None,
+            nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
             events,
@@ -86,6 +89,7 @@ impl Engine {
             })),
             transport: None,
             nvst_transport: None,
+            nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
             events,
@@ -107,6 +111,7 @@ impl Engine {
             })),
             transport: None,
             nvst_transport: None,
+            nvst_mjolnir_transport: None,
             reserved_nvst_bundle: None,
             nvst_hole_punch_socket: None,
             events,
@@ -199,11 +204,15 @@ impl Engine {
                 )
             })?;
             eprintln!(
-                "NVST reserved video UDP socket on {}",
+                "NVST reserved video UDP socket on {} (Mjolnir on {})",
                 bundle
                     .local_addr()
                     .map(|addr| addr.to_string())
-                    .unwrap_or_else(|_| "unknown".to_owned())
+                    .unwrap_or_else(|_| "unknown".to_owned()),
+                bundle
+                    .mjolnir_local_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|_| "unknown".to_owned()),
             );
             self.reserved_nvst_bundle = Some(bundle);
         }
@@ -214,21 +223,29 @@ impl Engine {
                 "reserved NVST UDP socket has no local port",
             )
         })?;
-        let port = bundle
-            .local_addr()
-            .map_err(|_| {
-                error(
-                    Some(&command.id),
-                    "nvst-bind-failed",
-                    "reserved NVST UDP socket has no local port",
-                )
-            })?
-            .port();
+        let local_addr = bundle.local_addr().map_err(|_| {
+            error(
+                Some(&command.id),
+                "nvst-bind-failed",
+                "reserved NVST UDP socket has no local port",
+            )
+        })?;
+        let mjolnir_addr = bundle.mjolnir_local_addr().map_err(|_| {
+            error(
+                Some(&command.id),
+                "nvst-bind-failed",
+                "reserved NVST Mjolnir UDP socket has no local port",
+            )
+        })?;
+        let port = local_addr.port();
+        let local_address = bundle.advertised_local_address();
         let identity = bundle.identity();
         Ok(vec![json!({
             "id": command.id,
             "type": "nvst-bound",
             "port": port,
+            "mjolnirPort": mjolnir_addr.port(),
+            "localAddress": local_address,
             "iceUsernameFragment": identity.ice_username_fragment,
             "icePassword": identity.ice_password,
             "dtlsFingerprint": identity.dtls_fingerprint,
@@ -326,6 +343,9 @@ impl Engine {
         if let Some(transport) = self.nvst_transport.take() {
             transport.stop();
         }
+        if let Some(transport) = self.nvst_mjolnir_transport.take() {
+            transport.stop();
+        }
         self.stop_media_resources();
         if let Some(runtime) = self.media_runtime.clone() {
             let (feedback_sender, feedback_receiver) = std::sync::mpsc::channel();
@@ -367,18 +387,20 @@ impl Engine {
                 ));
             };
             let (event_sender, event_receiver) = std::sync::mpsc::channel();
-            let (reserved_socket, reserved_rtc) = match self.reserved_nvst_bundle.take() {
-                Some(bundle) => {
-                    self.nvst_hole_punch_socket = bundle.try_clone_socket().ok();
-                    let (socket, rtc) = bundle.into_parts();
-                    (Some(socket), Some(rtc))
-                }
-                None => (None, None),
-            };
+            let (reserved_socket, reserved_rtc, reserved_mjolnir) =
+                match self.reserved_nvst_bundle.take() {
+                    Some(bundle) => {
+                        self.nvst_hole_punch_socket = bundle.try_clone_socket().ok();
+                        let (socket, rtc, mjolnir_socket) = bundle.into_parts();
+                        (Some(socket), Some(rtc), Some(mjolnir_socket))
+                    }
+                    None => (None, None, None),
+                };
+            let mjolnir_udp_port = config.mjolnir_udp_port();
             let transport = spawn_nvst_udp_receiver_with_socket(
-                config,
-                media_consumer,
-                event_sender,
+                config.clone(),
+                media_consumer.clone(),
+                event_sender.clone(),
                 reserved_socket,
                 reserved_rtc,
             )
@@ -391,6 +413,56 @@ impl Engine {
                 )
             })?;
             self.nvst_transport = Some(transport);
+            if let Some(expected_port) = mjolnir_udp_port {
+                // Official two-socket model: video RTP/SRTP arrives on the
+                // dedicated NATT-only Mjolnir socket, not on the ICE/DTLS bundle.
+                let mjolnir_socket = match reserved_mjolnir {
+                    Some(socket) => {
+                        let actual_port =
+                            socket.local_addr().map(|addr| addr.port()).unwrap_or(0);
+                        if actual_port != expected_port {
+                            eprintln!(
+                                "NVST Mjolnir socket port mismatch: reserved {actual_port}, handoff expects {expected_port}; NATT keepalive determines routing"
+                            );
+                        }
+                        socket
+                    }
+                    None => {
+                        eprintln!(
+                            "NVST Mjolnir reservation missing at start; binding a fresh video UDP socket"
+                        );
+                        reserve_nvst_mjolnir_udp_socket().map_err(|bind_error| {
+                            if let Some(transport) = self.nvst_transport.take() {
+                                transport.stop();
+                            }
+                            self.stop_media_resources();
+                            error(
+                                Some(&command.id),
+                                "nvst-start-failed",
+                                format!("failed to reserve NVST Mjolnir UDP socket: {bind_error}"),
+                            )
+                        })?
+                    }
+                };
+                let mjolnir = spawn_nvst_mjolnir_receiver(
+                    mjolnir_socket,
+                    config,
+                    media_consumer,
+                    event_sender,
+                )
+                .map_err(|mjolnir_error| {
+                    if let Some(transport) = self.nvst_transport.take() {
+                        transport.stop();
+                    }
+                    self.stop_media_resources();
+                    error(
+                        Some(&command.id),
+                        "nvst-start-failed",
+                        mjolnir_error.to_string(),
+                    )
+                })?;
+                self.nvst_mjolnir_transport = Some(mjolnir);
+            }
             nvst_events = Some(event_receiver);
         } else {
             self.reserved_nvst_bundle = None;
@@ -426,6 +498,9 @@ impl Engine {
                 .ok();
             if self.feedback_worker.is_none() {
                 if let Some(transport) = self.nvst_transport.take() {
+                    transport.stop();
+                }
+                if let Some(transport) = self.nvst_mjolnir_transport.take() {
                     transport.stop();
                 }
                 self.stop_media_resources();
@@ -739,6 +814,20 @@ impl Engine {
                 )
             })?;
         }
+        if let Some(transport) = self.nvst_mjolnir_transport.as_ref() {
+            let result = if paused {
+                transport.pause()
+            } else {
+                transport.resume()
+            };
+            result.map_err(|transport_error| {
+                error(
+                    Some(&command.id),
+                    "nvst-control-failed",
+                    transport_error.to_string(),
+                )
+            })?;
+        }
         Ok(vec![response(command.id, "ok")])
     }
 
@@ -776,6 +865,9 @@ impl Engine {
             transport.stop();
         }
         if let Some(transport) = self.nvst_transport.take() {
+            transport.stop();
+        }
+        if let Some(transport) = self.nvst_mjolnir_transport.take() {
             transport.stop();
         }
         self.reserved_nvst_bundle = None;

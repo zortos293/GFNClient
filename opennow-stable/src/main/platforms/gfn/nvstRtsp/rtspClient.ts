@@ -40,6 +40,33 @@ export function header(headers: Record<string, string>, name: string): string | 
   return headers[name.toLowerCase()];
 }
 
+/** Content-Length only when there is a body. Empty header values are kept (official SETUP sends `Transport: `). */
+export function buildRtspRequest(
+  method: string,
+  uri: string,
+  extraHeaders: Record<string, string> = {},
+  body = "",
+  cseq = 1,
+): string {
+  const headers: Record<string, string> = {
+    CSeq: String(cseq),
+    "Request-Id": String(cseq),
+    ...extraHeaders,
+  };
+  if (body.length > 0) {
+    headers["Content-Length"] = String(Buffer.byteLength(body, "utf8"));
+  }
+  let message = `${method} ${uri} RTSP/1.0\r\n`;
+  for (const [key, value] of Object.entries(headers)) {
+    message += `${key}: ${value}\r\n`;
+  }
+  message += "\r\n";
+  if (body.length > 0) {
+    message += body;
+  }
+  return message;
+}
+
 export function extractVideoPeer(
   transport: string | undefined,
 ): { ip: string; port: number } | undefined {
@@ -122,23 +149,7 @@ export class RtspOverWssClient {
     }
 
     this.cseq += 1;
-    const headers: Record<string, string> = {
-      CSeq: String(this.cseq),
-      "Request-Id": String(this.cseq),
-      ...extraHeaders,
-    };
-    if (body.length > 0) {
-      headers["Content-Length"] = String(Buffer.byteLength(body, "utf8"));
-    }
-
-    let message = `${method} ${uri} RTSP/1.0\r\n`;
-    for (const [key, value] of Object.entries(headers)) {
-      message += `${key}: ${value}\r\n`;
-    }
-    message += "\r\n";
-    if (body.length > 0) {
-      message += body;
-    }
+    const message = buildRtspRequest(method, uri, extraHeaders, body, this.cseq);
 
     return await new Promise<ParsedRtspResponse>((resolve, reject) => {
       const timer = setTimeout(() => {

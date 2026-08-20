@@ -46,7 +46,18 @@ export function buildRequestedStreamingFeatures(
   };
 
   if (transportMode === "nvst") {
-    return commonFeatures;
+    const sku = resolveNvstCreateStreamSku(settings);
+    return {
+      ...commonFeatures,
+      reflex: sku.reflex,
+      bitDepth: sku.bitDepth,
+      chromaFormat: sku.chromaFormat,
+      mouseMovementFlags: 0,
+      trueHdr: false,
+      hidDevices: null,
+      qosPolicy: 0,
+      touchSupport: false,
+    };
   }
 
   return {
@@ -103,6 +114,16 @@ export function shouldRequestReflex(settings: StreamSettings): boolean {
     settings.cloudGsyncResolution?.capabilities.minimumFpsForReflexWithoutVrr
     ?? DEFAULT_MINIMUM_FPS_FOR_REFLEX_WITHOUT_VRR;
   return settings.enableCloudGsync || settings.fps >= reflexMinimum;
+}
+
+/** Official Mac Bifrost NVST create advertises 10-bit + reflex even at 8-bit UI quality. */
+export function resolveNvstCreateStreamSku(settings: StreamSettings): {
+  bitDepth: number;
+  chromaFormat: number;
+  reflex: boolean;
+} {
+  void settings;
+  return { bitDepth: 1, chromaFormat: 0, reflex: true };
 }
 
 export function shouldEnableInGameSettingsPersistence(

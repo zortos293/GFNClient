@@ -9,6 +9,7 @@ import type {
 
 import type { CloudMatchResponse, GetSessionsResponse } from "./types";
 import { SessionError } from "./errorCodes";
+import { resolveSessionControlBaseUrl } from "./cloudmatchTransport";
 import {
   normalizeIceServers,
   resolveSignaling,
@@ -431,13 +432,13 @@ export async function toSessionInfo(options: ToSessionInfoOptions): Promise<Sess
   return {
     sessionId: payload.session.sessionId,
     subSessionId: payload.session.subSessionId,
-    appId: payload.session.sessionRequestData?.appId ?? options.fallbackAppId,
+    appId: String(payload.session.sessionRequestData?.appId ?? options.fallbackAppId),
     status: payload.session.status,
     seatSetupStep,
     queuePosition,
     adState,
     zone,
-    streamingBaseUrl,
+    streamingBaseUrl: resolveSessionControlBaseUrl(payload.session.sessionControlInfo?.ip, streamingBaseUrl),
     serverIp: signaling.serverIp,
     signalingServer: signaling.signalingServer,
     signalingUrl: signaling.signalingUrl,

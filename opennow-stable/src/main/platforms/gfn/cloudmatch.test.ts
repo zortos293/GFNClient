@@ -20,6 +20,7 @@ import {
   resolveRequestedCodecWireValue,
 } from "./cloudmatch";
 import { buildSessionRequestBody } from "./cloudmatchSessionRequest";
+import { resolveNvstCreateStreamSku } from "./cloudmatchFeatures";
 import { resolveGfnDeviceIdentity } from "./deviceIdentity";
 
 function makeSettings(overrides: Partial<StreamSettings> = {}): StreamSettings {
@@ -213,14 +214,48 @@ test("CloudMatch requests secure RTSPS for explicit classic native sessions", ()
   );
 
   assert.equal(nativeBody.sessionRequestData.secureRTSPSupported, true);
+  assert.equal(nativeBody.sessionRequestData.sdkVersion, "2.0");
+  assert.equal(nativeBody.sessionRequestData.streamerVersion, "14");
+  assert.equal(nativeBody.sessionRequestData.enhancedStreamMode, 0);
+  assert.deepEqual(nativeBody.sessionRequestData.availableSupportedControllers, [2]);
+  assert.equal(nativeBody.sessionRequestData.preferredController, 2);
+  assert.equal(nativeBody.sessionRequestData.requestedAudioFormat, 0);
+  assert.equal(nativeBody.sessionRequestData.partnerCustomData, null);
+  assert.equal(nativeBody.sessionRequestData.transport, null);
+  assert.equal(nativeBody.sessionRequestData.externalAppId, null);
+  assert.equal(nativeBody.sessionRequestData.appId, 1001);
+  assert.equal(nativeBody.sessionRequestData.internalTitle, null);
+  assert.equal(nativeBody.sessionRequestData.accountLinked, false);
+  assert.equal(nativeBody.sessionRequestData.deviceHashId, "device-id");
+  assert.equal(nativeBody.sessionRequestData.userAge, 25);
+  assert.ok((nativeBody.sessionRequestData.clientRequestMonitorSettings[0]?.dpi ?? 0) > 0);
   assert.equal(
     nativeBody.sessionRequestData.clientPlatformName,
     resolveGfnDeviceIdentity().clientPlatformName,
   );
+  if (process.platform === "darwin") {
+    assert.equal(nativeBody.sessionRequestData.clientPlatformName, "MacOSX");
+    assert.equal(nativeBody.sessionRequestData.sdrHdrMode, 1);
+    assert.equal(nativeBody.sessionRequestData.clientDisplayHdrCapabilities?.version, 2);
+    assert.equal(
+      nativeBody.sessionRequestData.metaData.find((entry) => entry.key === "networkType")?.value,
+      "WiFi5.0",
+    );
+  }
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.codec, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.maxBitrateKbps, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.dynamicStreamingMode, undefined);
   assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.audioChannelCount, undefined);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.trueHdr, false);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.bitDepth, 1);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.chromaFormat, 0);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.reflex, true);
+  assert.equal(nativeBody.sessionRequestData.requestedStreamingFeatures.qosPolicy, 0);
+  assert.deepEqual(resolveNvstCreateStreamSku(makeSettings({ transportMode: "nvst" })), {
+    bitDepth: 1,
+    chromaFormat: 0,
+    reflex: true,
+  });
   assert.equal(
     nativeBody.sessionRequestData.metaData.some((entry) => entry.key === "GSStreamerType"),
     false,
@@ -250,12 +285,16 @@ test("CloudMatch extracts local serverInfo region before fallback regions", () =
   ]);
 });
 
-test("CloudMatch pins the resolved region with a network-test session before creating a session", async () => {
+test("CloudMatch creates a session without a network-test pin", async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
   const calls: string[] = [];
   type CapturedSessionRequestBody = {
     sessionRequestData: {
+      appId?: string | number;
+      internalTitle?: string | null;
+      accountLinked?: boolean;
+      deviceHashId?: string;
       networkTestSessionId?: string | null;
       appLaunchMode?: number;
       enablePersistingInGameSettings?: boolean;
@@ -273,15 +312,7 @@ test("CloudMatch pins the resolved region with a network-test session before cre
       };
     };
   };
-  type CapturedNetworkTestRequestBody = {
-    netTestRequestData: {
-      netTestProfile: {
-        framesPerSecond: number;
-      };
-    };
-  };
   let requestBody: CapturedSessionRequestBody | null = null;
-  let networkTestRequestBody: CapturedNetworkTestRequestBody | null = null;
   const expectedSessionUrl = `https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/session?${new URLSearchParams({
     keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
     languageCode: "en_US",
@@ -301,16 +332,6 @@ test("CloudMatch pins the resolved region with a network-test session before cre
           { key: "US West", value: "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/" },
           { key: "US East", value: "https://np-ash-01.cloudmatchbeta.nvidiagrid.net/" },
         ],
-      }), { status: 200 });
-    }
-
-    if (url === "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession") {
-      networkTestRequestBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({
-        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
-        netTestSession: {
-          sessionId: "nettest-lax-1",
-        },
       }), { status: 200 });
     }
 
@@ -358,12 +379,8 @@ test("CloudMatch pins the resolved region with a network-test session before cre
     assert.equal(session.enablePersistingInGameSettings, false);
     assert.deepEqual(calls, [
       "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
-      "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession",
       expectedSessionUrl,
     ]);
-    const capturedNetworkTestRequestBody = networkTestRequestBody as CapturedNetworkTestRequestBody | null;
-    assert.ok(capturedNetworkTestRequestBody);
-    assert.equal(capturedNetworkTestRequestBody.netTestRequestData.netTestProfile.framesPerSecond, 90);
     const capturedRequestBody = requestBody as CapturedSessionRequestBody | null;
     assert.ok(capturedRequestBody);
     assert.equal(capturedRequestBody.sessionRequestData.clientRequestMonitorSettings[0]?.framesPerSecond, 90);
@@ -376,11 +393,110 @@ test("CloudMatch pins the resolved region with a network-test session before cre
     assert.equal(capturedRequestBody.sessionRequestData.requestedStreamingFeatures.audioChannelCount, 2);
     assert.equal(capturedRequestBody.sessionRequestData.appLaunchMode, 2);
     assert.equal(capturedRequestBody.sessionRequestData.enablePersistingInGameSettings, false);
-    assert.equal(capturedRequestBody.sessionRequestData.networkTestSessionId, "nettest-lax-1");
+    assert.equal(capturedRequestBody.sessionRequestData.networkTestSessionId, null);
+    assert.equal(capturedRequestBody.sessionRequestData.appId, 1001);
+    assert.equal(capturedRequestBody.sessionRequestData.internalTitle, null);
+    assert.equal(capturedRequestBody.sessionRequestData.accountLinked, false);
+    assert.match(capturedRequestBody.sessionRequestData.deviceHashId ?? "", /^[0-9a-f]{64}$/);
   } finally {
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
   }
+});
+
+test("CloudMatch NVST create posts to regional host then sends official RESUME", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const calls: string[] = [];
+  let resumeBodyJson: unknown = null;
+
+  const regionalBase = "https://eu-netherlands-north.cloudmatchbeta.nvidiagrid.net";
+  const query = new URLSearchParams({
+    keyboardLayout: resolveGfnKeyboardLayout(DEFAULT_KEYBOARD_LAYOUT, process.platform),
+    languageCode: "en_US",
+  }).toString();
+  const expectedPostUrl = `${regionalBase}/v2/session?${query}`;
+  const expectedResumeUrl = `${regionalBase}/v2/session/session-nvst-1?${query}`;
+
+  console.log = () => {};
+  console.warn = () => {};
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.warn = originalWarn;
+  });
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+
+    if (url === "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo") {
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-AMS-06" },
+        metaData: [
+          { key: "local-region", value: "EU Northwest" },
+          { key: "gfn-regions", value: "EU Northwest, Netherlands North" },
+          { key: "EU Northwest", value: "https://np-ams-06.cloudmatchbeta.nvidiagrid.net/" },
+          { key: "Netherlands North", value: "https://eu-netherlands-north.cloudmatchbeta.nvidiagrid.net/" },
+        ],
+      }), { status: 200 });
+    }
+
+    if (url === expectedPostUrl && (init?.method ?? "GET") === "POST") {
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
+        session: {
+          sessionId: "session-nvst-1",
+          status: 1,
+          seatSetupInfo: { seatSetupStep: 0 },
+          sessionControlInfo: { ip: "np-ams-06.cloudmatchbeta.nvidiagrid.net" },
+          connectionInfo: [],
+          iceServerConfiguration: {
+            iceServers: [{ urls: "stun:127.0.0.1:19302" }],
+          },
+        },
+      }), { status: 200 });
+    }
+
+    if (url === expectedResumeUrl && init?.method === "PUT") {
+      resumeBodyJson = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({
+        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS" },
+        session: { sessionId: "session-nvst-1", status: 1 },
+      }), { status: 200 });
+    }
+
+    throw new Error(`Unexpected fetch: ${url} ${init?.method ?? "GET"}`);
+  }) as typeof fetch;
+
+  const session = await createSession({
+    token: "token",
+    streamingBaseUrl: "https://prod.cloudmatchbeta.nvidiagrid.net/",
+    appId: "1001",
+    internalTitle: "Test Game",
+    zone: "prod",
+    settings: makeSettings({ transportMode: "nvst", resolution: "2560x1600", fps: 120 }),
+  });
+
+  assert.deepEqual(calls, [
+    "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
+    expectedPostUrl,
+    expectedResumeUrl,
+  ]);
+  const resumeBody = resumeBodyJson as {
+    action?: number;
+    data?: string;
+    sessionRequestData?: {
+      requestedStreamingFeatures?: { bitDepth?: number; reflex?: boolean; chromaFormat?: number };
+    };
+  } | null;
+  assert.equal(resumeBody?.action, 2);
+  assert.equal(resumeBody?.data, "RESUME");
+  assert.equal(resumeBody?.sessionRequestData?.requestedStreamingFeatures?.bitDepth, 1);
+  assert.equal(resumeBody?.sessionRequestData?.requestedStreamingFeatures?.reflex, true);
+  assert.equal(resumeBody?.sessionRequestData?.requestedStreamingFeatures?.chromaFormat, 0);
+  assert.equal(session.sessionId, "session-nvst-1");
 });
 
 test("CloudMatch pins a manually selected zone before creating a session", async (t) => {
@@ -403,15 +519,6 @@ test("CloudMatch pins a manually selected zone before creating a session", async
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
     calls.push(url);
-
-    if (url === `${base}/v2/nettestsession`) {
-      return new Response(JSON.stringify({
-        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-MIA-04" },
-        netTestSession: {
-          sessionId: "nettest-mia-1",
-        },
-      }), { status: 200 });
-    }
 
     if (url === expectedSessionUrl) {
       const body = JSON.parse(String(init?.body)) as {
@@ -453,10 +560,9 @@ test("CloudMatch pins a manually selected zone before creating a session", async
   });
 
   assert.deepEqual(calls, [
-    `${base}/v2/nettestsession`,
     expectedSessionUrl,
   ]);
-  assert.equal(networkTestSessionId, "nettest-mia-1");
+  assert.equal(networkTestSessionId, null);
 });
 
 test("CloudMatch retries transient serverInfo failures before creating a session", async () => {
@@ -487,15 +593,6 @@ test("CloudMatch retries transient serverInfo failures before creating a session
           { key: "gfn-regions", value: "US West" },
           { key: "US West", value: "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/" },
         ],
-      }), { status: 200 });
-    }
-
-    if (url === "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession") {
-      return new Response(JSON.stringify({
-        requestStatus: { statusCode: 1, statusDescription: "SUCCESS_STATUS", serverId: "NP-LAX-01" },
-        netTestSession: {
-          sessionId: "nettest-lax-retry",
-        },
       }), { status: 200 });
     }
 
@@ -541,7 +638,6 @@ test("CloudMatch retries transient serverInfo failures before creating a session
     assert.deepEqual(calls, [
       "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
       "https://prod.cloudmatchbeta.nvidiagrid.net/v2/serverInfo",
-      "https://np-lax-01.cloudmatchbeta.nvidiagrid.net/v2/nettestsession",
       expectedSessionUrl,
     ]);
   } finally {

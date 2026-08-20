@@ -23,8 +23,10 @@ pub use nvst::{
     NvstFallbackReason, NvstReceiveEvent, NvstReceiverState, NvstRecovery, NvstSrtpProfile,
     NvstUdpReceiverError, NvstUdpReceiverSession, NvstUnsupportedFeature, NvstVideoCodec,
     NvstVideoConfig, NvstVideoReceiver, PreferredVideoTransport, ReservedNvstBundle,
-    nack_transmission_support, parse_nvst_video_handoff, reserve_nvst_udp_socket,
-    select_preferred_video_transport, spawn_nvst_udp_receiver, spawn_nvst_udp_receiver_with_socket,
+    advertised_nvst_ipv4, nack_transmission_support, parse_nvst_video_handoff,
+    reserve_nvst_mjolnir_udp_socket, reserve_nvst_udp_socket,
+    select_preferred_video_transport, spawn_nvst_mjolnir_receiver, spawn_nvst_udp_receiver,
+    spawn_nvst_udp_receiver_with_socket,
 };
 
 static INSTALL_CRYPTO: Once = Once::new();

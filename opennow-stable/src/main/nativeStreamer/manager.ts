@@ -152,6 +152,8 @@ export class NativeStreamerManager {
 
   async reserveNvstUdp(): Promise<{
     port: number;
+    mjolnirPort?: number;
+    localAddress?: string;
     iceUsernameFragment?: string;
     icePassword?: string;
     dtlsFingerprint?: string;
@@ -164,12 +166,22 @@ export class NativeStreamerManager {
       throw new Error("Native streamer did not reserve an NVST UDP socket.");
     }
     const port = response.port;
+    const mjolnirPort = Number.isInteger(response.mjolnirPort) && (response.mjolnirPort ?? 0) > 0
+      ? response.mjolnirPort
+      : undefined;
+    const localAddress = typeof response.localAddress === "string" && response.localAddress.length > 0
+      ? response.localAddress
+      : undefined;
     console.log(
       `[NativeStreamer] Reserved NVST video UDP on port ${port} before RTSP ANNOUNCE`
+      + `${mjolnirPort ? ` mjolnirPort=${mjolnirPort}` : ""}`
+      + `${localAddress ? ` localAddress=${localAddress}` : ""}`
       + `${response.dtlsFingerprint ? ` (dtlsFingerprintBytes=${response.dtlsFingerprint.length})` : ""}`,
     );
     return {
       port,
+      mjolnirPort,
+      localAddress,
       iceUsernameFragment: response.iceUsernameFragment,
       icePassword: response.icePassword,
       dtlsFingerprint: response.dtlsFingerprint,

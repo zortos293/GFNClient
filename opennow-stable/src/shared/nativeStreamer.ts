@@ -114,6 +114,8 @@ export type NativeStreamerResponse =
       id: string;
       type: "nvst-bound";
       port: number;
+      mjolnirPort?: number;
+      localAddress?: string;
       iceUsernameFragment?: string;
       icePassword?: string;
       dtlsFingerprint?: string;

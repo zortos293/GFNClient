@@ -63,6 +63,7 @@ test("buildAnnounceSdp uses Bifrost session and attribute shape", () => {
     videoPort: 5004,
     clientPorts: { video: 45000, audio: 45002, control: 45004 },
   });
+  assert.match(sdp, /^o=unknown 0 14 IN IPv4 127\.0\.0\.1$/m);
   assert.match(sdp, /a=x-nv-video\[0\]\.clientViewportWd:1920/);
   assert.match(sdp, /a=x-nv-video\[0\]\.maxFPS:60/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.video:45000/);
@@ -80,6 +81,70 @@ test("buildAnnounceSdp echoes nativeRtcOnBundlePort when the server advertised i
   });
   assert.match(sdp, /a=x-nv-general\.nativeRtcOnBundlePort:1/);
   assert.match(sdp, /a=x-nv-general\.clientPorts\.bundle:45000/);
+});
+
+test("buildAnnounceSdp marks rtc streams on the native bundle when unified", () => {
+  const sdp = buildAnnounceSdp({
+    videoPort: 5004,
+    nativeRtcOnBundlePort: "1",
+    rtcOnNativeBundle: true,
+  });
+  assert.match(sdp, /a=x-nv-general\.rtcVideoOnNativeBundle:1/);
+  assert.match(sdp, /a=x-nv-general\.rtcAudioOnNativeBundle:1/);
+  assert.match(sdp, /a=x-nv-general\.rtcDataChannelOnNativeBundle:1/);
+});
+
+test("buildAnnounceSdp matches official cloud bundle flags", () => {
+  const fingerprint = "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF";
+  const sdp = buildAnnounceSdp({
+    videoPort: 5004,
+    iceCredentials: { usernameFragment: "Ab1+", password: "pwd0123456789abcdefABCD" },
+    includeNvscLegacyIce: false,
+    includeNvscLegacyDtls: false,
+    dtlsFingerprint: fingerprint,
+    clientPorts: {
+      video: 0,
+      audio: 0,
+      mic: 0,
+      control: 0,
+      bundle: 0,
+      session: 0,
+      localAddress: "192.0.2.8",
+    },
+    clientBundlePort: 49006,
+    nativeRtcOnBundlePort: "1",
+    rtcVideoOnNativeBundle: false,
+    rtcAudioOnNativeBundle: true,
+    rtcMicOnNativeBundle: true,
+    rtcDataChannelOnNativeBundle: true,
+    enableUnifiedSocket: false,
+  });
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.video:0/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.audio:0/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.mic:0/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.bundle:0/);
+  assert.match(sdp, /a=x-nv-general\.clientBundlePort:49006/);
+  assert.match(sdp, /a=x-nv-general\.rtcVideoOnNativeBundle:0/);
+  assert.match(sdp, /a=x-nv-general\.rtcAudioOnNativeBundle:1/);
+  assert.match(sdp, /a=x-nv-general\.rtcMicOnNativeBundle:1/);
+  assert.match(sdp, /a=x-nv-general\.enableUnifiedSocket:0/);
+  assert.doesNotMatch(sdp, /a=x-nv-general\.iceUsernameFragment:/);
+  assert.doesNotMatch(sdp, /a=x-nv-general\.iceUsernamePwd:/);
+  assert.doesNotMatch(sdp, /a=x-nv-general\.dtlsFingerprint:/);
+  assert.match(sdp, /a=x-nv-general\.iceUserNameFragmentV2:Ab1\+/);
+  assert.match(sdp, /a=x-nv-general\.dtlsFingerprintV2:/);
+  assert.match(sdp, /^a=ice-ufrag:Ab1\+$/m);
+  assert.match(sdp, /^a=candidate:1 1 udp 2122260223 192\.0\.2\.8 49006 typ host$/m);
+  assert.doesNotMatch(sdp, /clientTransport/);
+});
+
+test("buildAnnounceSdp includes official clientPorts.localAddress when provided", () => {
+  const sdp = buildAnnounceSdp({
+    videoPort: 5004,
+    clientPorts: { video: 45000, localAddress: "192.0.2.8" },
+  });
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.localAddress:192\.0\.2\.8/);
+  assert.match(sdp, /a=x-nv-general\.clientPorts\.video:45000/);
 });
 
 test("buildAnnounceSdp includes clientTransport only when provided", () => {
@@ -107,6 +172,26 @@ test("buildAnnounceSdp includes generated ICE V2 credentials when negotiated", (
   assert.ok(sdp.includes(`a=x-nv-general.iceUsernamePwd:${credentials.password}`));
   assert.ok(sdp.includes(`a=x-nv-general.iceUserNameFragmentV2:${credentials.usernameFragment}`));
   assert.ok(sdp.includes(`a=x-nv-general.icePasswordV2:${credentials.password}`));
+  assert.ok(sdp.includes(`a=ice-ufrag:${credentials.usernameFragment}`));
+  assert.ok(sdp.includes(`a=ice-pwd:${credentials.password}`));
+});
+
+test("buildAnnounceSdp includes official WebRTC ICE/DTLS and host candidate", () => {
+  const fingerprint = "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF";
+  const sdp = buildAnnounceSdp({
+    videoPort: 5004,
+    iceCredentials: { usernameFragment: "Ab1+", password: "pwd0123456789abcdefABCD" },
+    dtlsFingerprint: fingerprint,
+    clientPorts: { video: 45000, bundle: 45000, localAddress: "192.0.2.8" },
+  });
+  assert.match(sdp, /^a=ice-options:trickle$/m);
+  assert.match(sdp, /^a=ice-ufrag:Ab1\+$/m);
+  assert.match(sdp, /^a=ice-pwd:pwd0123456789abcdefABCD$/m);
+  assert.ok(sdp.includes(`a=fingerprint:sha-256 ${fingerprint}`));
+  assert.match(sdp, /^a=setup:actpass$/m);
+  assert.match(sdp, /^a=candidate:1 1 udp 2122260223 192\.0\.2\.8 45000 typ host$/m);
+  assert.match(sdp, /^c=IN IP4 0\.0\.0\.0$/m);
+  assert.match(sdp, /^m=video 5004$/m);
 });
 
 test("packSrtpMasterKeySalt matches geronimo keyId packing", () => {

@@ -61,6 +61,12 @@ export type NvstSrtpProfile =
 
 export interface NvstVideoSession {
   clientUdpPort: number;
+  /**
+   * Dedicated NATT-only video (Mjolnir) socket port reserved by the native
+   * streamer. When present, the native streamer reads raw-SRTP video from this
+   * socket while the ICE/DTLS bundle socket carries control/audio.
+   */
+  mjolnirUdpPort?: number;
   videoPeerIp: string;
   videoPeerPort: number;
   srtpAesKeyHex: string;

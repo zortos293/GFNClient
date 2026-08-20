@@ -166,17 +166,11 @@ export class GfnNvstRtspSessionOwner implements GfnNvstRtspOwner {
     if (this.dependencies.negotiate) {
       return this.dependencies.negotiate(input);
     }
-    let reservedVideo = false;
     return negotiateNvstRtspSession(
       input,
       createNvstNegotiationDependencies({
-        reserveUdpPort: async () => {
-          if (this.dependencies.reserveVideoUdp && !reservedVideo) {
-            reservedVideo = true;
-            return this.dependencies.reserveVideoUdp();
-          }
-          return bindEphemeralUdp();
-        },
+        reserveUdpPort: bindEphemeralUdp,
+        reserveBundlePort: this.dependencies.reserveVideoUdp ?? bindEphemeralUdp,
       }),
     );
   }

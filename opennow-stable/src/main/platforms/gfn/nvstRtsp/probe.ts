@@ -1,11 +1,11 @@
 /**
  * Classic NVST RTSPS-over-WSS handshake.
  *
- * Runs OPTIONS → DESCRIBE → SETUP advertised streams → ANNOUNCE. GFN may skip PLAY.
- * When DESCRIBE advertises `nativeRtcOnBundlePort` plus a DTLS fingerprint, official
- * Bifrost treats the reserved UDP as WebRtcTransport (ICE + DTLS + SRTP) and parses
- * Mjolnir video after DTLS. This probe announces the local DTLS fingerprint and ICE
- * identity that already own that socket.
+ * Runs OPTIONS → DESCRIBE → SETUP → ANNOUNCE. Official cloud (`nativeRtcOnBundlePort=1`)
+ * SETUPs video only with an empty Transport, binds Mjolnir before SETUP and the ICE
+ * bundle after SETUP, then ANNOUNCEs `clientPorts.*=0` + `clientBundlePort`. First
+ * bundle STUN is after ANNOUNCE; Mjolnir NATT starts just before PLAY. PLAY waits
+ * for WebRtcTransport. The legacy path still SETUPs every advertised stream.
  */
 
 import { createSocket } from "node:dgram";
@@ -67,6 +67,12 @@ export interface NvstRtspClient {
 
 export interface NvstUdpPortReservation {
   port: number;
+  /**
+   * Port of the dedicated NATT-only Mjolnir video socket reserved alongside the
+   * bundle. Set only when the native streamer owns both sockets (nvst-bind); the
+   * probe must not bind or NATT a separate Mjolnir socket in that case.
+   */
+  mjolnirPort?: number;
   localAddress?: string;
   fd?: number;
   iceUsernameFragment?: string;
@@ -74,6 +80,9 @@ export interface NvstUdpPortReservation {
   /** SHA-256 colon hex of the local DTLS cert that owns this socket. */
   dtlsFingerprint?: string;
   send?(payload: Buffer, peerHost: string, peerPort: number): Promise<void>;
+  onMessage?(
+    handler: (payload: Buffer, peer: { address: string; port: number }) => void,
+  ): void;
   release(): Promise<void>;
 }
 
@@ -84,7 +93,10 @@ export interface NvstRtspNegotiationDependencies {
     timeoutMs: number,
     onLog?: (message: string) => void,
   ): NvstRtspClient;
+  /** Mjolnir / extra SETUP sockets. Official cloud uses this for video NATT. */
   reserveUdpPort(peerHost?: string, peerPort?: number): Promise<NvstUdpPortReservation>;
+  /** ICE/DTLS bundle socket. Official binds this after video SETUP. */
+  reserveBundlePort?(peerHost?: string, peerPort?: number): Promise<NvstUdpPortReservation>;
 }
 
 export interface NvstSrtpMaterial {
@@ -285,6 +297,100 @@ export function resolveRtspControlUri(baseUri: string, control: string): string 
   return `${baseUri.replace(/\/+$/, "")}/${control.replace(/^\/+/, "")}`;
 }
 
+/** Official SETUP uses `streamid=video/0/0` when DESCRIBE advertised `streamid=video/0`. */
+export function officialVideoSetupControl(control: string): string {
+  if (/^streamid=video\/\d+$/i.test(control)) {
+    return `${control}/0`;
+  }
+  return control;
+}
+
+/** Official bundle ICE remote ufrag is SETUP ping + 1 (`…998` → `…999`). */
+export function incrementNvstPingUfrag(payload: string): string | null {
+  if (!/^[0-9a-fA-F]+$/.test(payload) || payload.toUpperCase() === "PING") {
+    return null;
+  }
+  const next = (BigInt(`0x${payload}`) + 1n).toString(16);
+  return next.padStart(payload.length, "0");
+}
+
+/**
+ * Official NattHolePunch STUN remote ufrag:
+ * hex SETUP ping → ping+1 on the ICE bundle; otherwise the ping-string itself
+ * (`PING` when "Old server only supports PING"). Never fall back to DESCRIBE V2
+ * while a SETUP ping payload is present — that keepalive identity is what the
+ * server answers.
+ */
+export function resolveNvstIceRemoteUfrag(
+  pingPayload: string | undefined,
+  describeUfrag?: string,
+  pingVersion?: number,
+): string | undefined {
+  if (pingPayload) {
+    const incremented = incrementNvstPingUfrag(pingPayload);
+    if (incremented) {
+      return incremented;
+    }
+    if (pingPayload.toUpperCase() === "PING" || pingVersion === 6) {
+      return pingPayload;
+    }
+  }
+  return describeUfrag;
+}
+
+function xorMappedIPv4(host: string, port: number): Buffer | null {
+  const parts = host.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part) || part < 0 || part > 255)) {
+    return null;
+  }
+  const value = Buffer.alloc(8);
+  value.writeUInt8(0, 0);
+  value.writeUInt8(1, 1);
+  value.writeUInt16BE(port ^ 0x2112, 2);
+  value[4] = (parts[0] ?? 0) ^ 0x21;
+  value[5] = (parts[1] ?? 0) ^ 0x12;
+  value[6] = (parts[2] ?? 0) ^ 0xa4;
+  value[7] = (parts[3] ?? 0) ^ 0x42;
+  return value;
+}
+
+/** Official ping-version 6 PONG: STUN Binding Success for an inbound request. */
+export function buildNvstStunBindingSuccess(
+  localPassword: string,
+  transactionId: Buffer,
+  mappedHost: string,
+  mappedPort: number,
+): Buffer | null {
+  if (transactionId.length !== 12) {
+    return null;
+  }
+  const mapped = xorMappedIPv4(mappedHost, mappedPort);
+  if (!mapped) {
+    return null;
+  }
+  const header = Buffer.alloc(20);
+  header.writeUInt16BE(0x0101, 0);
+  header.writeUInt32BE(0x2112a442, 4);
+  transactionId.copy(header, 8);
+  const parts = [header];
+  appendStunAttribute(parts, 0x0020, mapped);
+  let packet = Buffer.concat(parts);
+  header.writeUInt16BE(packet.length - 20 + 24, 2);
+  packet = Buffer.concat(parts);
+  appendStunAttribute(parts, 0x0008, createHmac("sha1", localPassword).update(packet).digest());
+  packet = Buffer.concat(parts);
+  header.writeUInt16BE(packet.length - 20 + 8, 2);
+  packet = Buffer.concat(parts);
+  let crc = 0xffffffff;
+  for (const byte of packet) {
+    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ byte) & 0xff]!;
+  }
+  const fingerprint = Buffer.alloc(4);
+  fingerprint.writeUInt32BE(((crc ^ 0xffffffff) ^ 0x5354554e) >>> 0);
+  appendStunAttribute(parts, 0x8028, fingerprint);
+  return Buffer.concat(parts);
+}
+
 function pickLocalIpv4(): string | undefined {
   for (const addresses of Object.values(networkInterfaces())) {
     for (const address of addresses ?? []) {
@@ -343,11 +449,19 @@ export async function bindEphemeralUdp(peerHost?: string, peerPort?: number): Pr
   const fd = typeof handle?.fd === "number" && handle.fd >= 0 ? handle.fd : undefined;
   return {
     port: address.port,
-    localAddress: address.address === "0.0.0.0" ? undefined : address.address,
+    localAddress: address.address === "0.0.0.0" ? pickLocalIpv4() : address.address,
     fd,
     send: async (payload, host, port) => {
       await new Promise<void>((resolve, reject) => {
         socket.send(payload, port, host, (error) => error ? reject(error) : resolve());
+      });
+    },
+    onMessage: (handler) => {
+      socket.on("message", (message, rinfo) => {
+        handler(Buffer.isBuffer(message) ? message : Buffer.from(message), {
+          address: rinfo.address,
+          port: rinfo.port,
+        });
       });
     },
     release: async () => {
@@ -412,11 +526,18 @@ export async function negotiateNvstRtspSession(
     (message) => log(input.onLog, message),
   );
   let udp: NvstUdpPortReservation | null = null;
+  let mjolnirUdp: NvstUdpPortReservation | null = null;
+  // Port of the native-owned Mjolnir video socket (undefined when the probe owns
+  // the fallback Mjolnir socket itself).
+  let nativeMjolnirPort: number | undefined;
   let audioUdp: NvstUdpPortReservation | null = null;
   const auxiliaryUdp: NvstUdpPortReservation[] = [];
   const holePunchTimers: NodeJS.Timeout[] = [];
   let videoHolePunchTimer: NodeJS.Timeout | null = null;
   let session: string | null = null;
+
+  const reserveBundle = (): Promise<NvstUdpPortReservation> =>
+    (dependencies.reserveBundlePort ?? dependencies.reserveUdpPort)();
 
   try {
     log(
@@ -426,11 +547,14 @@ export async function negotiateNvstRtspSession(
     await client.connect(input.sessionId);
     steps.push("wss-open");
 
-    const rtspTarget = `rtsp://${parsedEndpoint.host}`;
-    const commonHeaders = {
+    const rtspTarget = `rtsps://${parsedEndpoint.host}`;
+    const commonHeaders: Record<string, string> = {
       "X-GS-Version": "14.2",
       Host: parsedEndpoint.host,
     };
+    if (input.sessionId.trim()) {
+      commonHeaders["x-nv-sessionid"] = input.sessionId.trim();
+    }
     const options = await client.request("OPTIONS", rtspTarget, commonHeaders);
     if (options.statusCode !== 200) {
       throw new Error(`OPTIONS failed: ${options.statusCode} ${options.statusText}`);
@@ -441,7 +565,9 @@ export async function negotiateNvstRtspSession(
     const describe = await client.request("DESCRIBE", rtspTarget, {
       ...commonHeaders,
       Accept: "application/sdp",
-      "X-Nv-Abtesting": "2",
+      // Official Bifrost sends x-nv-abtesting on DESCRIBE; the seat keys the modern
+      // ping/HMAC media context off it. Omitting it is treated as a legacy client.
+      "x-nv-abtesting": "2",
     });
     if (describe.statusCode !== 200) {
       throw new Error(`DESCRIBE failed: ${describe.statusCode} ${describe.statusText}`);
@@ -507,12 +633,11 @@ export async function negotiateNvstRtspSession(
         input.onLog,
         `DESCRIBE ok (Session=${session}, videoControl=${videoControl}, HMAC ${hmacSeed ? "present" : "missing"}, ICE credentials ${iceCredentials ? `present (ufragBytes=${iceCredentials.usernameFragment.length}, pwdBytes=${iceCredentials.password.length})` : "missing"}, encryptionKey ${redactKey(encryptionKeyHex)} from server)`,
       );
-    } else if (dtlsFingerprint) {
-      log(
-        input.onLog,
-        `DESCRIBE ok (Session=${session}, videoControl=${videoControl}, HMAC ${hmacSeed ? "present" : "missing"}, ICE credentials ${iceCredentials ? `present (ufragBytes=${iceCredentials.usernameFragment.length}, pwdBytes=${iceCredentials.password.length})` : "missing"}, encryptionKey absent — skipping client generate; DTLS-SRTP is the media key)`,
-      );
     } else {
+      // Official Bifrost ALWAYS client-generates runtime.encryptionKey and sends it in
+      // ANNOUNCE — even when a DTLS fingerprint is present. The video SRTP path (the
+      // separate non-DTLS socket) is keyed by this runtime key, not by DTLS-SRTP. If we
+      // skip generating it, the server never keys video for us and no video is sent.
       const generated = generateClientEncryptionKey();
       encryptionKeyHex = generated.aesKeyHex;
       encryptionKeyId = generated.keyId;
@@ -523,16 +648,44 @@ export async function negotiateNvstRtspSession(
       );
     }
 
-    // Official Bifrost binds the ICE/bundle socket locally and never connects it
-    // to the RTSPS host. Connecting to :322 would create the wrong NAT mapping.
-    udp = await dependencies.reserveUdpPort();
-    const clientPort = udp.port;
-    const setup = await client.request("SETUP", videoControlUri, {
+    const officialCloudPath = nativeRtcOnBundlePort === "1";
+    // Official Bifrost binds the ICE/bundle socket on 0.0.0.0 and never connects
+    // it to the RTSPS host. Connecting to :322 would create the wrong NAT mapping.
+    // Official: Mjolnir first (empty Transport line), then ICE bundle after SETUP.
+    const videoSetupUri = officialCloudPath
+      ? officialVideoSetupControl(videoControlUri)
+      : videoControlUri;
+    if (officialCloudPath) {
+      // Official two-socket model: the native streamer reserves BOTH the ICE/DTLS
+      // bundle and the dedicated NATT-only Mjolnir video socket in one nvst-bind.
+      // Reserve the bundle now so its mjolnirPort is known before video SETUP; the
+      // probe must not bind its own Mjolnir socket when the native streamer owns it.
+      udp = await reserveBundle();
+      if (udp.mjolnirPort === undefined) {
+        // Older native streamer without a Mjolnir reservation: keep the probe-owned
+        // fallback socket so NATT keepalive still runs somewhere.
+        mjolnirUdp = await dependencies.reserveUdpPort();
+      } else {
+        nativeMjolnirPort = udp.mjolnirPort;
+      }
+    } else {
+      udp = await reserveBundle();
+    }
+    const setupHeaders: Record<string, string> = {
       ...commonHeaders,
       Session: session,
-      Transport: `unicast;X-GS-ClientPort=${clientPort}-${clientPort + 1}`,
-      "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
-    });
+      // Official Bifrost advertises its ping-protocol version on SETUP. The seat only
+      // returns a hex X-Nv-Ping-Payload (modern NATT/ICE identity) when this is present;
+      // without it the seat falls back to the literal "PING" keepalive and never arms
+      // the media relay to answer STUN. Echo the DESCRIBE-advertised version.
+      "x-nv-ping": describedPingVersion ?? "6",
+    };
+    if (officialCloudPath) {
+      setupHeaders.Transport = "";
+    } else if (udp) {
+      setupHeaders.Transport = `unicast;X-GS-ClientPort=${udp.port}-${udp.port + 1}`;
+    }
+    const setup = await client.request("SETUP", videoSetupUri, setupHeaders);
     if (setup.statusCode !== 200) {
       throw new Error(`SETUP video failed: ${setup.statusCode} ${setup.statusText}`);
     }
@@ -566,6 +719,18 @@ export async function negotiateNvstRtspSession(
         "SETUP selected ping version 6 but its username payload or DESCRIBE password was missing",
       );
     }
+    if (!udp) {
+      throw new NvstRtspNegotiationError(
+        "negotiation-failed",
+        "NVST ICE/bundle UDP socket was not reserved",
+      );
+    }
+    const clientPort = udp.port;
+    const iceRemoteUfrag = resolveNvstIceRemoteUfrag(
+      pingPayload,
+      iceCredentials?.usernameFragment,
+      Number.isFinite(pingVersion) ? pingVersion : undefined,
+    );
     const reservedIce = udp.iceUsernameFragment && udp.icePassword
       ? { usernameFragment: udp.iceUsernameFragment, password: udp.icePassword }
       : null;
@@ -576,18 +741,63 @@ export async function negotiateNvstRtspSession(
     const startAuthenticatedHolePunch = (
       reservation: NvstUdpPortReservation,
       peer: { ip: string; port: number },
-      remoteUsernameFragment: string,
+      options?: { nattUsername?: string; iceBurst?: boolean },
     ): NodeJS.Timeout | null => {
       if (!localIceCredentials || !iceCredentials || !reservation.send) {
         return null;
       }
+      const iceBurst = options?.iceBurst !== false;
+      const nattUsername = options?.nattUsername;
+      let nonStunInbound = 0;
+      reservation.onMessage?.((payload, from) => {
+        if (payload.equals(Buffer.from("PING"))) {
+          void reservation.send?.(Buffer.from("PONG"), from.address, from.port).catch(() => undefined);
+          return;
+        }
+        if (payload.length >= 20 && payload.readUInt16BE(0) === 0x0001) {
+          const transactionId = payload.subarray(8, 20);
+          const pong = buildNvstStunBindingSuccess(
+            localIceCredentials.password,
+            transactionId,
+            from.address,
+            from.port,
+          );
+          if (pong) {
+            void reservation.send?.(pong, from.address, from.port).catch(() => undefined);
+          }
+          return;
+        }
+        // Non-PING, non-STUN inbound is candidate video/SRTP. Log it (throttled) so we can
+        // confirm which socket the seat actually delivers video to (bundle vs Mjolnir).
+        nonStunInbound += 1;
+        if (nonStunInbound <= 5 || nonStunInbound % 200 === 0) {
+          log(
+            input.onLog,
+            `hole-punch inbound (non-STUN) port=${reservation.port} count=${nonStunInbound} bytes=${payload.length} firstByte=0x${payload.readUInt8(0).toString(16).padStart(2, "0")} from=${from.address}:${from.port}`,
+          );
+        }
+      });
       const sendPing = (): void => {
-        const packet = buildNvstStunBindingRequest(
-          localIceCredentials.usernameFragment,
-          remoteUsernameFragment,
-          iceCredentials.password,
-        );
-        void reservation.send?.(packet, peer.ip, peer.port).catch(() => undefined);
+        // Official first burst is three ICE Binding Requests, then NATT
+        // ping-string PING ("Old server only supports PING") as keepalive.
+        if (iceBurst && iceRemoteUfrag) {
+          for (let burst = 0; burst < 3; burst += 1) {
+            const ice = buildNvstStunBindingRequest(
+              localIceCredentials.usernameFragment,
+              iceRemoteUfrag,
+              iceCredentials.password,
+            );
+            void reservation.send?.(ice, peer.ip, peer.port).catch(() => undefined);
+          }
+        }
+        if (nattUsername) {
+          const natt = buildNvstStunBindingRequest(
+            localIceCredentials.usernameFragment,
+            nattUsername,
+            iceCredentials.password,
+          );
+          void reservation.send?.(natt, peer.ip, peer.port).catch(() => undefined);
+        }
       };
       sendPing();
       const timer = setInterval(sendPing, 20);
@@ -595,8 +805,12 @@ export async function negotiateNvstRtspSession(
       holePunchTimers.push(timer);
       return timer;
     };
-    if (pingPayload) {
-      videoHolePunchTimer = startAuthenticatedHolePunch(udp, videoPeer, pingPayload);
+    if (iceCredentials && localIceCredentials && !officialCloudPath) {
+      videoHolePunchTimer = startAuthenticatedHolePunch(
+        udp,
+        videoPeer,
+        { nattUsername: "PING" },
+      );
     }
     const setupHeaderNames = Object.keys(setup.headers).sort();
     const setupCredentialHeaders = setupHeaderNames
@@ -604,7 +818,7 @@ export async function negotiateNvstRtspSession(
       .map((name) => `${name}[${header(setup.headers, name)?.length ?? 0}]`);
     log(
       input.onLog,
-      `SETUP ${videoControl} ok (clientPort=${clientPort}, peer=${videoPeer.ip}:${videoPeer.port}, srtpProfile=${srtpProfile ?? "legacy-default"}, pingVersion=${Number.isFinite(pingVersion) ? pingVersion : "legacy"}, pingPayloadBytes=${pingPayload ? Buffer.byteLength(pingPayload, "utf8") : 4}, headers=${setupHeaderNames.join(",")}, credentialHeaders=${setupCredentialHeaders.join(",") || "none"})`,
+      `SETUP ${videoSetupUri} ok (official=${officialCloudPath}, bundlePort=${clientPort}${nativeMjolnirPort !== undefined ? `, mjolnirPort=${nativeMjolnirPort} (native)` : mjolnirUdp ? `, mjolnirPort=${mjolnirUdp.port}` : ""}, transport=${officialCloudPath ? "empty" : setupHeaders.Transport}, peer=${videoPeer.ip}:${videoPeer.port}, srtpProfile=${srtpProfile ?? "legacy-default"}, pingVersion=${Number.isFinite(pingVersion) ? pingVersion : "legacy"}, pingPayload=${pingPayload === undefined ? "absent" : JSON.stringify(pingPayload)}, iceRemote=${iceRemoteUfrag ?? "absent"}, pingPayloadBytes=${pingPayload ? Buffer.byteLength(pingPayload, "utf8") : 0}, headers=${setupHeaderNames.join(",")}, credentialHeaders=${setupCredentialHeaders.join(",") || "none"})`,
     );
 
     const handoffKeyHex = encryptionKeyHex ?? "00".repeat(32);
@@ -620,6 +834,9 @@ export async function negotiateNvstRtspSession(
     };
     const videoSession: NvstVideoSession = {
       clientUdpPort: clientPort,
+      // Native-owned Mjolnir video socket: the native streamer reads raw-SRTP video
+      // here while the bundle DTLS socket carries control/audio.
+      mjolnirUdpPort: nativeMjolnirPort,
       videoPeerIp: videoPeer.ip,
       videoPeerPort: videoPeer.port,
       srtpAesKeyHex: srtp.aesKeyHex,
@@ -630,7 +847,7 @@ export async function negotiateNvstRtspSession(
       pingVersion: Number.isFinite(pingVersion) ? pingVersion : undefined,
       localIceUsernameFragment: localIceCredentials?.usernameFragment,
       localIcePassword: localIceCredentials?.password,
-      remoteIceUsernameFragment: iceCredentials?.usernameFragment
+      remoteIceUsernameFragment: iceRemoteUfrag
         ?? (pingVersion === 6 ? pingPayload : undefined),
       remoteIcePassword: iceCredentials?.password,
       localDtlsFingerprint,
@@ -639,124 +856,140 @@ export async function negotiateNvstRtspSession(
       timeoutMs: 60_000,
     };
     if (input.onVideoReady) {
-      // Official keeps Mjolnir hole-punch running through later SETUP/ANNOUNCE.
-      // Native ICE+DTLS starts only after ANNOUNCE; stopping STUN here closes the NAT mapping.
+      // Official binds Mjolnir before SETUP but does not send STUN until after ANNOUNCE.
       log(
         input.onLog,
-        `Video SETUP ready; keeping STUN hole-punch through remaining SETUP/ANNOUNCE (clientUdp ${clientPort})`,
+        officialCloudPath
+          ? `Video SETUP ready; deferring STUN until after ANNOUNCE (clientUdp ${clientPort})`
+          : `Video SETUP ready; keeping STUN hole-punch through remaining SETUP/ANNOUNCE (clientUdp ${clientPort})`,
       );
       await input.onVideoReady(videoSession);
       steps.push("native-receive-armed");
     }
 
-    const bundleOnOnePort = nativeRtcOnBundlePort === "1";
     const setupTransport = (port: number): string =>
       `unicast;X-GS-ClientPort=${port}-${port + 1}`;
-    const reserveOrReuseVideoPort = async (): Promise<NvstUdpPortReservation> => {
-      if (bundleOnOnePort && udp) {
-        return udp;
-      }
-      return dependencies.reserveUdpPort();
-    };
-
-    if (!bundleOnOnePort) {
-      audioUdp = await reserveOrReuseVideoPort();
-    }
-    const audioClientPort = audioUdp?.port ?? clientPort;
-    const audioSetup = await client.request("SETUP", audioControl, {
-      ...commonHeaders,
-      Session: session,
-      Transport: setupTransport(audioClientPort),
-      "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
-    });
-    if (audioSetup.statusCode !== 200) {
-      throw new Error(`SETUP audio failed: ${audioSetup.statusCode} ${audioSetup.statusText}`);
-    }
-    steps.push("setup-audio");
-    session = header(audioSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
-    log(
-      input.onLog,
-      `SETUP ${audioControl} ok (clientPort=${audioClientPort}${bundleOnOnePort ? ", bundled" : ""})`,
-    );
-    const audioPeer = extractVideoPeer(header(audioSetup.headers, "transport"));
-    if (audioPeer && audioUdp && audioUdp !== udp) {
-      startAuthenticatedHolePunch(
-        audioUdp,
-        audioPeer,
-        header(audioSetup.headers, "x-nv-ping-payload") ?? session,
-      );
-    } else if (audioPeer && pingPayload) {
-      startAuthenticatedHolePunch(udp, audioPeer, pingPayload);
-    }
-
+    let audioClientPort = clientPort;
     let controlClientPort: number | undefined;
-    for (const control of describedControls) {
-      if (control === videoControl || control === audioControl) {
-        continue;
-      }
-      const reservation = await reserveOrReuseVideoPort();
-      if (reservation !== udp) {
-        auxiliaryUdp.push(reservation);
-      }
-      if (control === controlStream) {
-        controlClientPort = reservation.port;
-      }
-      const auxiliarySetup = await client.request("SETUP", control, {
+    if (!officialCloudPath) {
+      audioUdp = await dependencies.reserveUdpPort();
+      audioClientPort = audioUdp.port;
+      const audioSetup = await client.request("SETUP", audioControl, {
         ...commonHeaders,
         Session: session,
-        Transport: setupTransport(reservation.port),
-        "If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
+        Transport: setupTransport(audioClientPort),
       });
-      if (auxiliarySetup.statusCode !== 200) {
-        throw new Error(`SETUP ${control} failed: ${auxiliarySetup.statusCode} ${auxiliarySetup.statusText}`);
+      if (audioSetup.statusCode !== 200) {
+        throw new Error(`SETUP audio failed: ${audioSetup.statusCode} ${audioSetup.statusText}`);
       }
-      steps.push(`setup-${control}`);
-      session = header(auxiliarySetup.headers, "session")?.split(";")[0]?.trim() ?? session;
-      const auxiliaryPeer = extractVideoPeer(header(auxiliarySetup.headers, "transport"));
-      if (auxiliaryPeer && reservation !== udp) {
-        startAuthenticatedHolePunch(
-          reservation,
-          auxiliaryPeer,
-          header(auxiliarySetup.headers, "x-nv-ping-payload") ?? session,
+      steps.push("setup-audio");
+      session = header(audioSetup.headers, "session")?.split(";")[0]?.trim() ?? session;
+      log(input.onLog, `SETUP ${audioControl} ok (clientPort=${audioClientPort})`);
+      const audioPeer = extractVideoPeer(header(audioSetup.headers, "transport"));
+      if (audioPeer && audioUdp && audioUdp !== udp) {
+        startAuthenticatedHolePunch(audioUdp, audioPeer, {
+          nattUsername: header(audioSetup.headers, "x-nv-ping-payload") ?? pingPayload,
+        });
+      }
+
+      for (const control of describedControls) {
+        if (control === videoControl || control === audioControl) {
+          continue;
+        }
+        const reservation = await dependencies.reserveUdpPort();
+        if (reservation !== udp) {
+          auxiliaryUdp.push(reservation);
+        }
+        if (control === controlStream) {
+          controlClientPort = reservation.port;
+        }
+        const auxiliarySetup = await client.request("SETUP", control, {
+          ...commonHeaders,
+          Session: session,
+          Transport: setupTransport(reservation.port),
+        });
+        if (auxiliarySetup.statusCode !== 200) {
+          throw new Error(`SETUP ${control} failed: ${auxiliarySetup.statusCode} ${auxiliarySetup.statusText}`);
+        }
+        steps.push(`setup-${control}`);
+        session = header(auxiliarySetup.headers, "session")?.split(";")[0]?.trim() ?? session;
+        const auxiliaryPeer = extractVideoPeer(header(auxiliarySetup.headers, "transport"));
+        if (auxiliaryPeer && reservation !== udp) {
+          startAuthenticatedHolePunch(reservation, auxiliaryPeer, {
+            nattUsername: header(auxiliarySetup.headers, "x-nv-ping-payload") ?? pingPayload,
+          });
+        }
+        log(
+          input.onLog,
+          `SETUP ${control} ok (clientPort=${reservation.port}, peer=${auxiliaryPeer ? `${auxiliaryPeer.ip}:${auxiliaryPeer.port}` : "absent"}, pingVersion=${header(auxiliarySetup.headers, "x-nv-ping") ?? "legacy"})`,
         );
-      } else if (auxiliaryPeer && pingPayload) {
-        startAuthenticatedHolePunch(udp, auxiliaryPeer, pingPayload);
       }
+    } else {
       log(
         input.onLog,
-        `SETUP ${control} ok (clientPort=${reservation.port}${bundleOnOnePort ? ", bundled" : ""}, peer=${auxiliaryPeer ? `${auxiliaryPeer.ip}:${auxiliaryPeer.port}` : "absent"}, pingVersion=${header(auxiliarySetup.headers, "x-nv-ping") ?? "legacy"})`,
+        "Official cloud path: skipping audio/mic/control SETUP (WebRtcTransport owns those streams)",
       );
     }
 
     const localIpv4 = udp.localAddress ?? pickLocalIpv4();
-    const clientTransport = useNewIceInfo && useNewIceInfo !== "0" && localIpv4
-      ? `${localIpv4}:${clientPort}`
-      : undefined;
+    const clientTransport = officialCloudPath
+      ? undefined
+      : (localIpv4 ? `${localIpv4}:${clientPort}` : undefined);
     const announce = await client.request(
       "ANNOUNCE",
-      "/",
+      officialCloudPath ? rtspTarget : "/",
       {
         ...commonHeaders,
         Session: session,
         "Content-Type": "application/sdp",
       },
-      buildAnnounceSdp({
-        resolution: input.resolution,
-        fps: input.fps,
-        encryptionKeyHex: describedKey || !dtlsFingerprint ? encryptionKeyHex : undefined,
-        encryptionKeyId: describedKey || !dtlsFingerprint ? encryptionKeyId : undefined,
-        iceCredentials: localIceCredentials ?? undefined,
-        videoPort: videoPeer.port,
-        clientPorts: {
-          video: clientPort,
-          audio: audioClientPort,
-          control: controlClientPort,
-          bundle: bundleOnOnePort ? clientPort : undefined,
-        },
-        clientTransport,
-        nativeRtcOnBundlePort: bundleOnOnePort ? "1" : undefined,
-        dtlsFingerprint: localDtlsFingerprint,
-      }),
+      buildAnnounceSdp(officialCloudPath
+        ? {
+          resolution: input.resolution,
+          fps: input.fps,
+          // Official always advertises the runtime encryptionKey in ANNOUNCE (it keys the
+          // video SRTP on the separate non-DTLS socket). Now that we always generate it,
+          // send it unconditionally rather than dropping it when a DTLS fingerprint exists.
+          encryptionKeyHex,
+          encryptionKeyId,
+          iceCredentials: localIceCredentials ?? undefined,
+          includeNvscLegacyIce: false,
+          includeNvscLegacyDtls: false,
+          videoPort: videoPeer.port,
+          clientPorts: {
+            video: 0,
+            audio: 0,
+            mic: 0,
+            control: 0,
+            bundle: 0,
+            session: 0,
+            localAddress: localIpv4,
+          },
+          clientBundlePort: clientPort,
+          nativeRtcOnBundlePort: "1",
+          rtcVideoOnNativeBundle: false,
+          rtcAudioOnNativeBundle: true,
+          rtcMicOnNativeBundle: true,
+          rtcDataChannelOnNativeBundle: true,
+          enableUnifiedSocket: false,
+          dtlsFingerprint: localDtlsFingerprint,
+        }
+        : {
+          resolution: input.resolution,
+          fps: input.fps,
+          encryptionKeyHex: describedKey || !dtlsFingerprint ? encryptionKeyHex : undefined,
+          encryptionKeyId: describedKey || !dtlsFingerprint ? encryptionKeyId : undefined,
+          iceCredentials: localIceCredentials ?? undefined,
+          videoPort: videoPeer.port,
+          clientPorts: {
+            video: clientPort,
+            audio: audioClientPort,
+            control: controlClientPort,
+            localAddress: localIpv4,
+          },
+          clientTransport,
+          dtlsFingerprint: localDtlsFingerprint,
+        }),
     );
     if (announce.statusCode !== 200) {
       throw new Error(`ANNOUNCE failed: ${announce.statusCode} ${announce.statusText}`);
@@ -764,8 +997,19 @@ export async function negotiateNvstRtspSession(
     steps.push("announce");
     log(
       input.onLog,
-      `ANNOUNCE ok (allowlist${encryptionKeyHex && (describedKey || !dtlsFingerprint) ? " + encryptionKey" : ""}${localIceCredentials ? ` + ICE V2 credentials (local ufragBytes=${localIceCredentials.usernameFragment.length}, pwdBytes=${localIceCredentials.password.length})` : ""}${localDtlsFingerprint ? ` + dtlsFingerprintBytes=${localDtlsFingerprint.length}` : ""})`,
+      `ANNOUNCE ok (allowlist${encryptionKeyHex && (describedKey || !dtlsFingerprint) ? " + encryptionKey" : ""}${localIceCredentials ? ` + ICE V2 credentials (local ufragBytes=${localIceCredentials.usernameFragment.length}, pwdBytes=${localIceCredentials.password.length})` : ""}${localDtlsFingerprint ? ` + dtlsFingerprintBytes=${localDtlsFingerprint.length}` : ""}${localIpv4 ? ` + localAddress=${localIpv4}` : ""}${clientTransport ? ` + clientTransport=${clientTransport}` : ""}${localIpv4 && localIceCredentials ? ` + host candidate ${localIpv4}:${clientPort}` : ""})`,
     );
+    if (officialCloudPath && iceCredentials && localIceCredentials) {
+      log(
+        input.onLog,
+        `Starting official bundle STUN after ANNOUNCE (clientUdp ${clientPort}, iceRemote=${iceRemoteUfrag ?? "absent"})`,
+      );
+      videoHolePunchTimer = startAuthenticatedHolePunch(
+        udp,
+        videoPeer,
+        { nattUsername: "PING" },
+      );
+    }
     if (input.onAnnounceReady) {
       log(
         input.onLog,
@@ -774,10 +1018,35 @@ export async function negotiateNvstRtspSession(
       await input.onAnnounceReady(videoSession);
       steps.push("native-announce-armed");
     }
+    if (officialCloudPath && iceCredentials && localIceCredentials && mjolnirUdp) {
+      // Probe-owned fallback only. When the native streamer owns the Mjolnir socket
+      // (nativeMjolnirPort set), its raw-SRTP receiver already runs this NATT
+      // keepalive — running a second one here would fight over the same socket.
+      // Official RtpSourceQueue on 49005 starts ~1ms before PLAY, after DTLS.
+      log(
+        input.onLog,
+        `Starting official Mjolnir NATT before PLAY (mjolnirPort=${mjolnirUdp.port})`,
+      );
+      startAuthenticatedHolePunch(mjolnirUdp, videoPeer, {
+        iceBurst: false,
+        nattUsername: pingPayload && pingPayload !== "PING" ? pingPayload : "PING",
+      });
+    } else if (officialCloudPath && nativeMjolnirPort !== undefined) {
+      log(
+        input.onLog,
+        `Mjolnir NATT owned by native streamer (mjolnirPort=${nativeMjolnirPort}); native raw-SRTP receiver keeps it alive`,
+      );
+    }
+    if (officialCloudPath && disablePlay === "0") {
+      // Official waits for DTLS after setupWebRtcTransport, then PLAY returns 200.
+      await new Promise((resolve) => {
+        setTimeout(resolve, 400);
+      });
+    }
 
     if (disablePlay === "0") {
       try {
-        const play = await client.request("PLAY", "/", {
+        const play = await client.request("PLAY", officialCloudPath ? rtspTarget : "/", {
           ...commonHeaders,
           Session: session,
         });
@@ -851,6 +1120,8 @@ export async function negotiateNvstRtspSession(
         videoHolePunchTimer = null;
         await udp?.release().catch(() => undefined);
         udp = null;
+        await mjolnirUdp?.release().catch(() => undefined);
+        mjolnirUdp = null;
         await audioUdp?.release().catch(() => undefined);
         audioUdp = null;
         await Promise.all(
@@ -864,6 +1135,7 @@ export async function negotiateNvstRtspSession(
       clearInterval(timer);
     }
     await udp?.release().catch(() => undefined);
+    await mjolnirUdp?.release().catch(() => undefined);
     await audioUdp?.release().catch(() => undefined);
     await Promise.all(auxiliaryUdp.map((reservation) => reservation.release().catch(() => undefined)));
     await teardownAndClose(client, endpoint, session, "failed negotiation", input.onLog);

@@ -1,5 +1,3 @@
-import crypto from "node:crypto";
-
 import type {
   ActiveSessionInfo,
   SessionAdAction,
@@ -23,7 +21,7 @@ import {
   buildGfnCloudMatchHeaders,
   LCARS_CLIENT_ID,
 } from "./clientHeaders";
-import { getStableDeviceId } from "./deviceId";
+import { getCloudMatchDeviceHashId } from "./deviceId";
 import {
   readCloudMatchJson,
   throwIfCloudMatchResponseError,
@@ -50,7 +48,6 @@ import {
   buildClaimRequestBody,
   buildSessionRequestBody,
 } from "./cloudmatchSessionRequest";
-import { createNetworkTestSession } from "./networkTestSession";
 import {
   echoedSessionAppLaunchMode,
   extractAdState,
@@ -72,6 +69,7 @@ export {
 export { extractServerInfoRegionBases } from "./cloudmatchTransport";
 
 const SESSION_MODIFY_ACTION_AD_UPDATE = 6;
+const SESSION_MODIFY_ACTION_RESUME = 2;
 
 const AD_ACTION_CODES: Record<SessionAdAction, number> = {
   start: 1,
@@ -92,7 +90,7 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
 
   // Generate client/device IDs once for the entire session lifecycle
   const clientId = LCARS_CLIENT_ID;
-  const deviceId = getStableDeviceId();
+  const deviceId = getCloudMatchDeviceHashId();
 
   const requestedBase = resolveStreamingBaseUrl(input.zone, input.streamingBaseUrl);
   const base = await resolveCreateSessionBase(
@@ -101,33 +99,57 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
     clientId,
     deviceId,
     input.proxyUrl,
+    { preferRegionalHost: input.settings.transportMode === "nvst" },
   );
-  const networkTestSessionId = await createNetworkTestSession({
-    base,
-    token: input.token,
-    clientId,
-    deviceId,
-    settings: input.settings,
-    proxyUrl: input.proxyUrl,
-  });
-  const body = buildSessionRequestBody(input, deviceId, networkTestSessionId);
+  // Official Bifrost create sends networkTestSessionId: null and does not POST /v2/nettestsession.
+  const body = buildSessionRequestBody(input, deviceId, null);
+  const request = body.sessionRequestData;
   console.log(
     `[CloudMatch] createSession in-game settings persistence: user=${input.enablePersistingInGameSettings === true}, ` +
     `gameSupport=${input.supportsInGameSettingsPersistence === true}, ` +
-    `sent=${body.sessionRequestData.enablePersistingInGameSettings}, ` +
-    `networkTestSessionId=${networkTestSessionId ?? "none"}`,
+    `sent=${request.enablePersistingInGameSettings}, ` +
+    `networkTestSessionId=${request.networkTestSessionId ?? "null"}`,
+  );
+  console.log(
+    `[CloudMatch] createSession identity: platform=${request.clientPlatformName}, ` +
+    `sdk=${request.sdkVersion}, streamer=${request.streamerVersion}, ` +
+    `enhanced=${request.enhancedStreamMode}, controllers=${JSON.stringify(request.availableSupportedControllers)}, ` +
+    `audioFormat=${request.requestedAudioFormat ?? "absent"}, partnerCustomData=${request.partnerCustomData === null ? "null" : "set"}`,
   );
 
   const keyboardLayout = resolveGfnKeyboardLayout(input.settings.keyboardLayout ?? DEFAULT_KEYBOARD_LAYOUT, process.platform);
   const languageCode = input.settings.gameLanguage ?? "en_US";
   const url = `${base}/v2/session?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
+  console.log(
+    `[CloudMatch] createSession POST ${url} resolution=${input.settings.resolution} fps=${input.settings.fps} ` +
+    `colorQuality=${input.settings.colorQuality} bitDepth=${request.requestedStreamingFeatures.bitDepth} ` +
+    `reflex=${request.requestedStreamingFeatures.reflex} deviceHashId=${deviceId.slice(0, 12)}…`,
+  );
   const response = await fetchCloudMatch(url, {
     method: "POST",
-    headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: true }),
+    headers: buildGfnCloudMatchHeaders({ token: input.token, clientId, deviceId, includeOrigin: false }),
     body: JSON.stringify(body),
   }, { proxyUrl: input.proxyUrl });
 
   const { payload } = await readCloudMatchJson<CloudMatchResponse>(response);
+
+  // Official Bifrost follows every fresh create with an immediate
+  // PUT action=2 RESUME carrying the same full sessionRequestData (fresh
+  // SubSessionId). That explicit RESUME starts seat setup on the modern hex
+  // ping-hash streamer pool; sessions left to auto-start from POST alone land
+  // on the legacy literal-"PING" pool that never completes NVST hole-punch.
+  if (input.settings.transportMode === "nvst" && payload.session?.sessionId) {
+    await resumeFreshNvstSession({
+      base,
+      sessionId: payload.session.sessionId,
+      input,
+      clientId,
+      deviceId,
+      keyboardLayout,
+      languageCode,
+    });
+  }
+
   return await toSessionInfo({
     zone: input.zone,
     streamingBaseUrl: base,
@@ -139,14 +161,63 @@ export async function createSession(input: SessionCreateRequest): Promise<Sessio
   });
 }
 
-export async function pollSession(input: SessionPollRequest): Promise<SessionInfo> {
-  if (!input.token) {
+/**
+ * Official fresh-create parity for the classic (NVST) streamer: immediately
+ * RESUME the just-created session with the full sessionRequestData. Failures
+ * are logged and ignored — the caller still polls to readiness as before.
+ */
+async function resumeFreshNvstSession(args: {
+  base: string;
+  sessionId: string;
+  input: SessionCreateRequest;
+  clientId: string;
+  deviceId: string;
+  keyboardLayout: string;
+  languageCode: string;
+}): Promise<void> {
+  const { base, sessionId, input, clientId, deviceId, keyboardLayout, languageCode } = args;
+  // Rebuild the body so SubSessionId is fresh, mirroring the official client.
+  const resumeBody = buildSessionRequestBody(input, deviceId, null);
+  const payload = {
+    action: SESSION_MODIFY_ACTION_RESUME,
+    data: "RESUME",
+    sessionRequestData: resumeBody.sessionRequestData,
+    metaData: null,
+    adUpdates: null,
+  };
+  const url = `${base}/v2/session/${sessionId}?${new URLSearchParams({ keyboardLayout, languageCode }).toString()}`;
+  console.log(`[CloudMatch] createSession RESUME PUT ${url} (official fresh-create parity)`);
+  try {
+    const response = await fetchCloudMatch(url, {
+      method: "PUT",
+      headers: buildGfnCloudMatchHeaders({ token: input.token as string, clientId, deviceId, includeOrigin: false }),
+      body: JSON.stringify(payload),
+    }, { proxyUrl: input.proxyUrl });
+    const text = await response.text();
+    let statusCode = -1;
+    try {
+      statusCode = (JSON.parse(text) as CloudMatchResponse).requestStatus?.statusCode ?? -1;
+    } catch {
+      // Keep -1 for unparsable bodies; the warning below carries the HTTP status.
+    }
+    console.log(`[CloudMatch] createSession RESUME response: HTTP ${response.status}, requestStatus=${statusCode}`);
+    if (!response.ok || statusCode !== 1) {
+      console.warn(
+        `[CloudMatch] createSession RESUME not accepted (HTTP ${response.status}, status=${statusCode}); continuing with poll-based setup`,
+      );
+    }
+  } catch (error) {
+    console.warn(`[CloudMatch] createSession RESUME failed: ${formatErrorForLog(error)}; continuing with poll-based setup`);
+  }
+}
+
+export async function pollSession(input: SessionPollRequest): Promise<SessionInfo> {  if (!input.token) {
     throw new Error("Missing token for session polling");
   }
 
   // Use provided client/device IDs if available (should match session creation)
   const clientId = input.clientId ?? LCARS_CLIENT_ID;
-  const deviceId = input.deviceId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? getCloudMatchDeviceHashId();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const baseHost = new URL(base).hostname;
@@ -210,7 +281,7 @@ export async function reportSessionAd(input: SessionAdReportRequest): Promise<Se
   }
 
   const clientId = input.clientId ?? LCARS_CLIENT_ID;
-  const deviceId = input.deviceId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? getCloudMatchDeviceHashId();
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const url = `${base}/v2/session/${input.sessionId}`;
   const clientTimestamp = input.clientTimestamp ?? Math.floor(Date.now() / 1000);
@@ -277,7 +348,7 @@ export async function stopSession(input: SessionStopRequest): Promise<void> {
 
   // Use provided client/device IDs if available (should match session creation)
   const clientId = input.clientId ?? LCARS_CLIENT_ID;
-  const deviceId = input.deviceId ?? crypto.randomUUID();
+  const deviceId = input.deviceId ?? getCloudMatchDeviceHashId();
 
   const base = resolvePollStopBase(input.zone, input.streamingBaseUrl, input.serverIp);
   const url = `${base}/v2/session/${input.sessionId}`;
@@ -304,7 +375,7 @@ export async function getActiveSessions(
   const base = normalizeTrustedCloudMatchBaseUrl(streamingBaseUrl);
   const headers = buildGfnCloudMatchHeaders({
     token,
-    deviceId: getStableDeviceId(),
+    deviceId: getCloudMatchDeviceHashId(),
     includeOrigin: false,
   });
   const primary = await fetchActiveSessionsFromBase(base, headers);
@@ -464,7 +535,7 @@ export async function claimSession(input: SessionClaimRequest): Promise<SessionI
     throw new Error("Missing token for session claim");
   }
 
-  const deviceId = input.deviceId ?? getStableDeviceId();
+  const deviceId = input.deviceId ?? getCloudMatchDeviceHashId();
   const clientId = input.clientId ?? LCARS_CLIENT_ID;
 
   // Provide default values for optional parameters

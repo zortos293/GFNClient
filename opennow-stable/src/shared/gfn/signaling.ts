@@ -56,8 +56,12 @@ export interface NativeStreamerSessionContext {
 export type NvstSrtpProfile =
   | "AEAD_AES_128_GCM"
   | "AEAD_AES_256_GCM"
+  | "AEAD_AES_128_GCM_8"
+  | "AEAD_AES_256_GCM_8"
   | "AES_CM_128_HMAC_SHA1_32"
-  | "AES_CM_128_HMAC_SHA1_80";
+  | "AES_CM_128_HMAC_SHA1_80"
+  | "AES_CM_256_HMAC_SHA1_32"
+  | "AES_CM_256_HMAC_SHA1_80";
 
 export interface NvstVideoSession {
   clientUdpPort: number;

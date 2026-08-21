@@ -9,6 +9,13 @@ mod runtime;
 pub use media::{EncodedFrame, MediaCodec, MediaFeedback, MediaSession, MediaSink, PushOutcome};
 pub use runtime::{MainThreadHost, MediaRuntime, create_runtime};
 
+/// Shows a standalone overlay window through the exact production creation path.
+/// Debug-only aid for isolating window-server behavior without a streaming session.
+#[cfg(target_os = "macos")]
+pub fn debug_show_overlay_window() {
+    opennow_streamer_platform_macos::debug_show_overlay_window();
+}
+
 use opennow_streamer_protocol::{CodecCapability, VideoBackendCapability};
 
 pub fn video_backends() -> Vec<VideoBackendCapability> {

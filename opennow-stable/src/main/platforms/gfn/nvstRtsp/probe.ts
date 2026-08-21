@@ -972,6 +972,9 @@ export async function negotiateNvstRtspSession(
           rtcMicOnNativeBundle: true,
           rtcDataChannelOnNativeBundle: true,
           enableUnifiedSocket: false,
+          // The native streamer opens the `rtcp1` SCTP data channel on the bundle and
+          // sends RTCP Receiver Reports / PLI over it, so advertise RTCP-over-SCTP.
+          rtcpOnSctp: true,
           dtlsFingerprint: localDtlsFingerprint,
         }
         : {

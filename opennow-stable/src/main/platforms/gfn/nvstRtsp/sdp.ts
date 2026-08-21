@@ -120,6 +120,12 @@ export function buildAnnounceSdp(
     rtcDataChannelOnNativeBundle?: boolean;
     enableUnifiedSocket?: boolean;
     /**
+     * Official `general.rtcpOnSctp` gates RTCP feedback onto the `rtcp1` SCTP data
+     * channel. We do not bring that channel up, so advertise 0 to keep feedback on
+     * plain SRTCP over the Mjolnir socket (which the native receiver already sends).
+     */
+    rtcpOnSctp?: boolean;
+    /**
      * Official skips Nvsc V1 `iceUsernameFragment` / `iceUsernamePwd` /
      * `dtlsFingerprint` and keeps V2 plus WebRTC `a=ice-*`.
      */
@@ -232,6 +238,9 @@ export function buildAnnounceSdp(
   }
   if (options.enableUnifiedSocket !== undefined) {
     lines.push(`a=x-nv-general.enableUnifiedSocket:${options.enableUnifiedSocket ? "1" : "0"}`);
+  }
+  if (options.rtcpOnSctp !== undefined) {
+    lines.push(`a=x-nv-general.rtcpOnSctp:${options.rtcpOnSctp ? "1" : "0"}`);
   }
   if (options.dtlsFingerprint) {
     if (options.includeNvscLegacyDtls !== false) {

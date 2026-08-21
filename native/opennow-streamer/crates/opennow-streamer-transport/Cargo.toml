@@ -7,10 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 aes.workspace = true
-aes-gcm.workspace = true
 ctr.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
+ghash.workspace = true
 hmac.workspace = true
 opennow-streamer-protocol = { path = "../opennow-streamer-protocol" }
 serde_json.workspace = true

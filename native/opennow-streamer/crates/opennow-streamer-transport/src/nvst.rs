@@ -10,16 +10,16 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use aes::cipher::{KeyIvInit, StreamCipher};
+use aes::cipher::{BlockEncrypt, KeyIvInit, StreamCipher};
 use aes::{Aes128, Aes256};
-use aes_gcm::aead::AeadInPlace;
-use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce, Tag};
 use crc32fast::hash as crc32;
-use ctr::Ctr128BE;
+use ctr::{Ctr128BE, Ctr32BE};
+use ghash::{GHash, universal_hash::UniversalHash};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha1::Sha1;
@@ -27,6 +27,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
+use str0m::channel::{ChannelConfig, ChannelId, Reliability};
 use str0m::config::Fingerprint;
 use str0m::media::{MediaKind, Mid};
 use str0m::net::{Protocol as RtcProtocol, Receive};
@@ -39,7 +40,24 @@ use super::{
 
 const RTP_FIXED_HEADER_LEN: usize = 12;
 const SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN: usize = 10;
+/// RFC 7714 `AEAD_AES_*_GCM` profiles carry a 16-byte authentication tag.
 const SRTP_AEAD_AES_GCM_TAG_LEN: usize = 16;
+/// NVIDIA's `SecureRtp` (libBifrost2) maps `sec_serv_conf_and_auth` + 256-bit keys
+/// to `srtp_crypto_policy_set_aes_gcm_256_8_auth` — an 8-byte tag, not RFC 7714's 16.
+const SRTP_AEAD_AES_GCM_8_TAG_LEN: usize = 8;
+
+/// RFC 3711 / libsrtp SRTP labels. Hook captures of 0x03/0x05 were SRTCP (same
+/// master key, separate session keys). Mjolnir video is RTP, so use 0x00/0x02.
+const GFN_SRTP_KEY_LABEL: u8 = 0x00;
+const GFN_SRTP_SALT_LABEL: u8 = 0x02;
+/// RFC 3711 SRTCP KDF labels (same master key, separate session keys).
+const GFN_SRTCP_KEY_LABEL: u8 = 0x03;
+const GFN_SRTCP_SALT_LABEL: u8 = 0x05;
+const SRTCP_ENCRYPTED_FLAG: u32 = 0x8000_0000;
+const SRTCP_RR_INTERVAL: Duration = Duration::from_secs(1);
+/// How many even SCTP stream ids to try for the `rtcp1` feedback channel. The
+/// server resets the DCEP open on the wrong id, so we probe the low even ids.
+const RTCP_STREAM_CANDIDATES: usize = 8;
 const NV_VIDEO_PACKET_LEN: usize = 16;
 const DEFAULT_REORDER_WINDOW: usize = 32;
 const MAX_REORDER_WINDOW: usize = 128;
@@ -69,6 +87,9 @@ const FLAG_CONTAINS_PIC_DATA: u8 = 0x01;
 const FLAG_EOF: u8 = 0x02;
 const FLAG_SOF: u8 = 0x04;
 const STREAM_PACKET_INDEX_MASK: u32 = 0x00ff_ffff;
+/// Mjolnir video RTP packets carry the per-packet video metadata in a fixed
+/// 16-byte RTP extension block with profile `0x4753` ("GS"), not in the payload.
+const GS_VIDEO_EXTENSION_PROFILE: u16 = 0x4753;
 const MAX_GS_FRAME_HEADER_BYTES: usize = 64;
 
 type Aes256Ctr = Ctr128BE<Aes256>;
@@ -76,13 +97,18 @@ type Aes128Ctr = Ctr128BE<Aes128>;
 type HmacSha1 = Hmac<Sha1>;
 
 /// The SRTP profile must come from negotiated metadata. The legacy `nvstVideo` handoff has no
-/// profile field, so its documented 32-byte key plus 12-byte salt convention selects GCM.
+/// profile field; Bifrost's Mjolnir video path hardcodes `aes_gcm_256_8_auth`, so the legacy
+/// default selects the 8-byte-tag GCM variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NvstSrtpProfile {
     AeadAes128Gcm,
     AeadAes256Gcm,
+    AeadAes128Gcm8,
+    AeadAes256Gcm8,
     AesCm128HmacSha1_32,
     AesCm128HmacSha1_80,
+    AesCm256HmacSha1_32,
+    AesCm256HmacSha1_80,
 }
 
 impl NvstSrtpProfile {
@@ -90,11 +116,19 @@ impl NvstSrtpProfile {
         match value.trim().to_ascii_uppercase().as_str() {
             "AEAD_AES_128_GCM" | "SRTP_AEAD_AES_128_GCM" => Ok(Self::AeadAes128Gcm),
             "AEAD_AES_256_GCM" | "SRTP_AEAD_AES_256_GCM" => Ok(Self::AeadAes256Gcm),
+            "AEAD_AES_128_GCM_8" | "SRTP_AEAD_AES_128_GCM_8" => Ok(Self::AeadAes128Gcm8),
+            "AEAD_AES_256_GCM_8" | "SRTP_AEAD_AES_256_GCM_8" => Ok(Self::AeadAes256Gcm8),
             "AES_CM_128_HMAC_SHA1_32" | "SRTP_AES_CM_128_HMAC_SHA1_32" => {
                 Ok(Self::AesCm128HmacSha1_32)
             }
             "AES_CM_128_HMAC_SHA1_80" | "SRTP_AES_CM_128_HMAC_SHA1_80" => {
                 Ok(Self::AesCm128HmacSha1_80)
+            }
+            "AES_CM_256_HMAC_SHA1_32" | "SRTP_AES_CM_256_HMAC_SHA1_32" => {
+                Ok(Self::AesCm256HmacSha1_32)
+            }
+            "AES_CM_256_HMAC_SHA1_80" | "SRTP_AES_CM_256_HMAC_SHA1_80" => {
+                Ok(Self::AesCm256HmacSha1_80)
             }
             other => Err(NvstConfigError::UnsupportedSrtpProfile(other.to_owned())),
         }
@@ -165,6 +199,51 @@ impl fmt::Display for NvstUnsupportedFeature {
     }
 }
 
+/// Feedback plane shared between the Mjolnir video receiver (which learns the
+/// stream SSRC/sequence and detects unrecoverable loss) and the ICE/DTLS bundle
+/// (which owns the `rtcp1` SCTP data channel used for RTCP feedback).
+///
+/// The official client sends RTCP Receiver Reports / PLI over an SCTP data
+/// channel on the bundle ("RTCP over SCTP is a must for One SDK video to
+/// function"). Without it the server stops video after a short provisional
+/// window. This state lets the bundle build accurate reports for the stream the
+/// Mjolnir receiver is actually seeing.
+#[derive(Debug, Default)]
+pub struct NvstFeedbackState {
+    /// Bound video stream SSRC (0 until the first packet is authenticated).
+    video_ssrc: AtomicU32,
+    /// Highest extended sequence number received on the video stream.
+    highest_sequence: AtomicU32,
+    /// Set when the receiver hits unrecoverable loss and needs a fresh keyframe.
+    keyframe_needed: AtomicBool,
+}
+
+impl NvstFeedbackState {
+    fn publish_stream(&self, ssrc: u32, highest_sequence: u32) {
+        self.video_ssrc.store(ssrc, Ordering::Release);
+        self.highest_sequence
+            .fetch_max(highest_sequence, Ordering::AcqRel);
+    }
+
+    fn request_keyframe(&self) {
+        self.keyframe_needed.store(true, Ordering::Release);
+    }
+
+    /// SSRC + highest sequence for the next Receiver Report, if a stream is bound.
+    fn stream_snapshot(&self) -> Option<(u32, u32)> {
+        let ssrc = self.video_ssrc.load(Ordering::Acquire);
+        (ssrc != 0).then(|| (ssrc, self.highest_sequence.load(Ordering::Acquire)))
+    }
+
+    /// Atomically takes the pending keyframe request, returning true if one was set.
+    fn take_keyframe_request(&self) -> bool {
+        self.keyframe_needed.swap(false, Ordering::AcqRel)
+    }
+}
+
+/// Shared handle to the NVST feedback plane (cheap to clone, shared across threads).
+pub type SharedNvstFeedback = Arc<NvstFeedbackState>;
+
 /// Legacy `nvstVideo` configuration normalized into the bounded receive transport.
 ///
 /// Secret material is never exposed through `Debug`. The legacy `nvstVideo` handoff defaults to
@@ -188,6 +267,8 @@ pub struct NvstVideoConfig {
     reorder_window_packets: usize,
     max_access_unit_bytes: usize,
     timeout: Duration,
+    /// Feedback plane shared with the ICE/DTLS bundle (cloned configs share it).
+    feedback: SharedNvstFeedback,
 }
 
 impl fmt::Debug for NvstVideoConfig {
@@ -240,13 +321,20 @@ enum NvstSrtpMaterial {
     AeadAes128Gcm {
         master_key: [u8; 16],
         master_salt: [u8; 12],
+        authentication_tag_len: usize,
     },
     AeadAes256Gcm {
         master_key: [u8; 32],
         master_salt: [u8; 12],
+        authentication_tag_len: usize,
     },
     AesCm128HmacSha1 {
         master_key: [u8; 16],
+        master_salt: [u8; 14],
+        authentication_tag_len: usize,
+    },
+    AesCm256HmacSha1 {
+        master_key: [u8; 32],
         master_salt: [u8; 14],
         authentication_tag_len: usize,
     },
@@ -266,13 +354,26 @@ impl fmt::Debug for NvstSrtpMaterial {
 impl NvstSrtpMaterial {
     fn profile(&self) -> NvstSrtpProfile {
         match self {
+            Self::AeadAes128Gcm {
+                authentication_tag_len: SRTP_AEAD_AES_GCM_8_TAG_LEN,
+                ..
+            } => NvstSrtpProfile::AeadAes128Gcm8,
             Self::AeadAes128Gcm { .. } => NvstSrtpProfile::AeadAes128Gcm,
+            Self::AeadAes256Gcm {
+                authentication_tag_len: SRTP_AEAD_AES_GCM_8_TAG_LEN,
+                ..
+            } => NvstSrtpProfile::AeadAes256Gcm8,
             Self::AeadAes256Gcm { .. } => NvstSrtpProfile::AeadAes256Gcm,
             Self::AesCm128HmacSha1 {
                 authentication_tag_len: SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN,
                 ..
             } => NvstSrtpProfile::AesCm128HmacSha1_80,
             Self::AesCm128HmacSha1 { .. } => NvstSrtpProfile::AesCm128HmacSha1_32,
+            Self::AesCm256HmacSha1 {
+                authentication_tag_len: SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN,
+                ..
+            } => NvstSrtpProfile::AesCm256HmacSha1_80,
+            Self::AesCm256HmacSha1 { .. } => NvstSrtpProfile::AesCm256HmacSha1_32,
         }
     }
 }
@@ -310,32 +411,42 @@ impl NvstVideoConfig {
         }
 
         let master_key = required_string(object, "srtpAesKeyHex")?;
+        // Bifrost's SignalingHandler initializes Mjolnir video as
+        // sec_serv_conf_and_auth + 256-bit keys → AES-256-GCM with an 8-byte tag.
         let srtp_profile = optional_string(object, "srtpProfile")?
             .map(NvstSrtpProfile::parse)
             .transpose()?
-            .unwrap_or(NvstSrtpProfile::AeadAes256Gcm);
+            .unwrap_or(NvstSrtpProfile::AeadAes256Gcm8);
         let srtp = match srtp_profile {
-            NvstSrtpProfile::AeadAes128Gcm => {
+            NvstSrtpProfile::AeadAes128Gcm | NvstSrtpProfile::AeadAes128Gcm8 => {
                 let master_salt = required_string(object, "srtpSaltHex").and_then(|salt| {
                     decode_fixed_hex::<12>(salt, NvstConfigError::InvalidSrtpSalt)
                 })?;
                 NvstSrtpMaterial::AeadAes128Gcm {
                     master_key: decode_fixed_hex::<16>(master_key, NvstConfigError::InvalidAesKey)?,
                     master_salt,
+                    authentication_tag_len: match srtp_profile {
+                        NvstSrtpProfile::AeadAes128Gcm8 => SRTP_AEAD_AES_GCM_8_TAG_LEN,
+                        _ => SRTP_AEAD_AES_GCM_TAG_LEN,
+                    },
                 }
             }
-            NvstSrtpProfile::AeadAes256Gcm => {
+            NvstSrtpProfile::AeadAes256Gcm | NvstSrtpProfile::AeadAes256Gcm8 => {
                 let master_salt = required_string(object, "srtpSaltHex").and_then(|salt| {
                     decode_fixed_hex::<12>(salt, NvstConfigError::InvalidSrtpSalt)
                 })?;
                 NvstSrtpMaterial::AeadAes256Gcm {
                     master_key: decode_fixed_hex::<32>(master_key, NvstConfigError::InvalidAesKey)?,
                     master_salt,
+                    authentication_tag_len: match srtp_profile {
+                        NvstSrtpProfile::AeadAes256Gcm8 => SRTP_AEAD_AES_GCM_8_TAG_LEN,
+                        _ => SRTP_AEAD_AES_GCM_TAG_LEN,
+                    },
                 }
             }
             NvstSrtpProfile::AesCm128HmacSha1_32 | NvstSrtpProfile::AesCm128HmacSha1_80 => {
                 let master_salt = required_string(object, "srtpSaltHex").and_then(|salt| {
-                    decode_fixed_hex::<14>(salt, NvstConfigError::InvalidSrtpSalt)
+                    decode_salt_hex::<14>(salt, NvstConfigError::InvalidSrtpSalt)
                 })?;
                 NvstSrtpMaterial::AesCm128HmacSha1 {
                     master_key: decode_fixed_hex::<16>(master_key, NvstConfigError::InvalidAesKey)?,
@@ -343,6 +454,20 @@ impl NvstVideoConfig {
                     authentication_tag_len: match srtp_profile {
                         NvstSrtpProfile::AesCm128HmacSha1_32 => 4,
                         NvstSrtpProfile::AesCm128HmacSha1_80 => SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN,
+                        _ => unreachable!("AES-CM profile selected above"),
+                    },
+                }
+            }
+            NvstSrtpProfile::AesCm256HmacSha1_32 | NvstSrtpProfile::AesCm256HmacSha1_80 => {
+                let master_salt = required_string(object, "srtpSaltHex").and_then(|salt| {
+                    decode_salt_hex::<14>(salt, NvstConfigError::InvalidSrtpSalt)
+                })?;
+                NvstSrtpMaterial::AesCm256HmacSha1 {
+                    master_key: decode_fixed_hex::<32>(master_key, NvstConfigError::InvalidAesKey)?,
+                    master_salt,
+                    authentication_tag_len: match srtp_profile {
+                        NvstSrtpProfile::AesCm256HmacSha1_32 => 4,
+                        NvstSrtpProfile::AesCm256HmacSha1_80 => SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN,
                         _ => unreachable!("AES-CM profile selected above"),
                     },
                 }
@@ -425,11 +550,17 @@ impl NvstVideoConfig {
             reorder_window_packets,
             max_access_unit_bytes,
             timeout,
+            feedback: Arc::new(NvstFeedbackState::default()),
         })
     }
 
     pub fn client_udp_port(&self) -> u16 {
         self.client_udp_port
+    }
+
+    /// Shared feedback plane (RTCP-over-SCTP state) for this session.
+    pub fn feedback(&self) -> SharedNvstFeedback {
+        self.feedback.clone()
     }
 
     pub fn video_peer(&self) -> SocketAddr {
@@ -639,6 +770,30 @@ fn decode_fixed_hex<const N: usize>(
     Ok(decoded)
 }
 
+/// GFN packs the keyId into the low 4 bytes of a 12-byte salt; libsrtp right-pads the
+/// AES-CM master salt to 14 bytes. Accept the 12-byte probe form and right-pad with zeros.
+fn decode_salt_hex<const N: usize>(
+    value: &str,
+    error: NvstConfigError,
+) -> Result<[u8; N], NvstConfigError> {
+    if value.len() % 2 != 0 || value.len() > N * 2 {
+        return Err(error);
+    }
+    let mut decoded = [0_u8; N];
+    for (index, output) in decoded.iter_mut().take(value.len() / 2).enumerate() {
+        let offset = index * 2;
+        let pair = match value.get(offset..offset + 2) {
+            Some(pair) => pair,
+            None => return Err(error),
+        };
+        *output = match u8::from_str_radix(pair, 16) {
+            Ok(byte) => byte,
+            Err(_) => return Err(error),
+        };
+    }
+    Ok(decoded)
+}
+
 fn is_unicast_peer(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => !ip.is_unspecified() && !ip.is_multicast() && ip != Ipv4Addr::BROADCAST,
@@ -742,6 +897,7 @@ struct RtpHeader {
     ssrc: u32,
     payload_offset: usize,
     has_padding: bool,
+    gs_video_header: Option<[u8; NV_VIDEO_PACKET_LEN]>,
 }
 
 impl RtpHeader {
@@ -760,16 +916,26 @@ impl RtpHeader {
         if packet.len() < payload_offset {
             return Err(RtpParseError::InvalidCsrcLength);
         }
+        let mut gs_video_header = None;
         if first & 0x10 != 0 {
             if packet.len() < payload_offset + 4 {
                 return Err(RtpParseError::InvalidExtensionLength);
             }
+            let profile = u16::from_be_bytes([packet[payload_offset], packet[payload_offset + 1]]);
             let words =
                 u16::from_be_bytes([packet[payload_offset + 2], packet[payload_offset + 3]]);
             let extension_len = usize::from(words)
                 .checked_mul(4)
                 .and_then(|length| length.checked_add(4))
                 .ok_or(RtpParseError::InvalidExtensionLength)?;
+            if profile == GS_VIDEO_EXTENSION_PROFILE && extension_len >= NV_VIDEO_PACKET_LEN + 4 {
+                let body = &packet[payload_offset + 4..payload_offset + extension_len];
+                gs_video_header = Some(
+                    body[..NV_VIDEO_PACKET_LEN]
+                        .try_into()
+                        .expect("length checked"),
+                );
+            }
             payload_offset = payload_offset
                 .checked_add(extension_len)
                 .ok_or(RtpParseError::InvalidExtensionLength)?;
@@ -784,6 +950,7 @@ impl RtpHeader {
             ssrc: u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]),
             payload_offset,
             has_padding: first & 0x20 != 0,
+            gs_video_header,
         })
     }
 
@@ -821,13 +988,21 @@ enum SrtpCipher {
     AeadAes128Gcm {
         encryption_key: [u8; 16],
         session_salt: [u8; 12],
+        authentication_tag_len: usize,
     },
     AeadAes256Gcm {
         encryption_key: [u8; 32],
         session_salt: [u8; 12],
+        authentication_tag_len: usize,
     },
     AesCm128HmacSha1 {
         encryption_key: [u8; 16],
+        authentication_key: [u8; 20],
+        session_salt: [u8; 14],
+        authentication_tag_len: usize,
+    },
+    AesCm256HmacSha1 {
+        encryption_key: [u8; 32],
         authentication_key: [u8; 20],
         session_salt: [u8; 14],
         authentication_tag_len: usize,
@@ -840,16 +1015,20 @@ impl SrtpReceiver {
             NvstSrtpMaterial::AeadAes128Gcm {
                 master_key,
                 master_salt,
+                authentication_tag_len,
             } => SrtpCipher::AeadAes128Gcm {
-                encryption_key: derive_aes128_cm_key::<16>(master_key, master_salt, 0x00),
-                session_salt: derive_aes128_cm_key::<12>(master_key, master_salt, 0x02),
+                encryption_key: derive_aes128_cm_key::<16>(master_key, master_salt, GFN_SRTP_KEY_LABEL),
+                session_salt: derive_aes128_cm_key::<12>(master_key, master_salt, GFN_SRTP_SALT_LABEL),
+                authentication_tag_len: *authentication_tag_len,
             },
             NvstSrtpMaterial::AeadAes256Gcm {
                 master_key,
                 master_salt,
+                authentication_tag_len,
             } => SrtpCipher::AeadAes256Gcm {
-                encryption_key: derive_aes_cm_key::<32>(master_key, master_salt, 0x00),
-                session_salt: derive_aes_cm_key::<12>(master_key, master_salt, 0x02),
+                encryption_key: derive_aes_cm_key::<32>(master_key, master_salt, GFN_SRTP_KEY_LABEL),
+                session_salt: derive_aes_cm_key::<12>(master_key, master_salt, GFN_SRTP_SALT_LABEL),
+                authentication_tag_len: *authentication_tag_len,
             },
             NvstSrtpMaterial::AesCm128HmacSha1 {
                 master_key,
@@ -859,6 +1038,16 @@ impl SrtpReceiver {
                 encryption_key: derive_aes128_cm_key::<16>(master_key, master_salt, 0x00),
                 authentication_key: derive_aes128_cm_key::<20>(master_key, master_salt, 0x01),
                 session_salt: derive_aes128_cm_key::<14>(master_key, master_salt, 0x02),
+                authentication_tag_len: *authentication_tag_len,
+            },
+            NvstSrtpMaterial::AesCm256HmacSha1 {
+                master_key,
+                master_salt,
+                authentication_tag_len,
+            } => SrtpCipher::AesCm256HmacSha1 {
+                encryption_key: derive_aes_cm_key::<32>(master_key, master_salt, 0x00),
+                authentication_key: derive_aes_cm_key::<20>(master_key, master_salt, 0x01),
+                session_salt: derive_aes_cm_key::<14>(master_key, master_salt, 0x02),
                 authentication_tag_len: *authentication_tag_len,
             },
         };
@@ -876,14 +1065,57 @@ impl SrtpReceiver {
             SrtpCipher::AeadAes128Gcm {
                 encryption_key,
                 session_salt,
-            } => unprotect_aead_aes_128_gcm(datagram, header, roc, encryption_key, session_salt)?,
+                authentication_tag_len,
+            } => unprotect_aes_gcm(
+                datagram,
+                header,
+                roc,
+                encryption_key,
+                session_salt,
+                *authentication_tag_len,
+            )?,
             SrtpCipher::AeadAes256Gcm {
                 encryption_key,
                 session_salt,
-            } => unprotect_aead_aes_256_gcm(datagram, header, roc, encryption_key, session_salt)?,
-            cipher @ SrtpCipher::AesCm128HmacSha1 { .. } => {
-                unprotect_aes_cm_hmac_sha1(datagram, header, packet_index, roc, cipher)?
-            }
+                authentication_tag_len,
+            } => unprotect_aes_gcm(
+                datagram,
+                header,
+                roc,
+                encryption_key,
+                session_salt,
+                *authentication_tag_len,
+            )?,
+            SrtpCipher::AesCm128HmacSha1 {
+                encryption_key,
+                authentication_key,
+                session_salt,
+                authentication_tag_len,
+            } => unprotect_aes_cm_hmac_sha1(
+                datagram,
+                header,
+                packet_index,
+                roc,
+                encryption_key,
+                authentication_key,
+                session_salt,
+                *authentication_tag_len,
+            )?,
+            SrtpCipher::AesCm256HmacSha1 {
+                encryption_key,
+                authentication_key,
+                session_salt,
+                authentication_tag_len,
+            } => unprotect_aes_cm_hmac_sha1(
+                datagram,
+                header,
+                packet_index,
+                roc,
+                encryption_key,
+                authentication_key,
+                session_salt,
+                *authentication_tag_len,
+            )?,
         };
         self.replay.check(packet_index)?;
         header
@@ -898,92 +1130,136 @@ impl SrtpReceiver {
     }
 }
 
-fn unprotect_aead_aes_256_gcm(
+/// AES-GCM with a truncated tag. `aes-gcm` 0.10 only seals 12–16 byte tags;
+/// NVIDIA's Mjolnir path uses the 8-byte `aes_gcm_*_8_auth` libsrtp policy.
+fn unprotect_aes_gcm(
     datagram: &[u8],
     header: RtpHeader,
     roc: u32,
-    encryption_key: &[u8; 32],
+    encryption_key: &[u8],
     session_salt: &[u8; 12],
+    tag_len: usize,
 ) -> Result<Vec<u8>, NvstDropReason> {
-    let ciphertext_end = datagram
-        .len()
-        .checked_sub(SRTP_AEAD_AES_GCM_TAG_LEN)
-        .ok_or(NvstDropReason::MalformedRtp(
-            RtpParseError::MissingAuthenticationTag,
-        ))?;
+    let ciphertext_end =
+        datagram
+            .len()
+            .checked_sub(tag_len)
+            .ok_or(NvstDropReason::MalformedRtp(
+                RtpParseError::MissingAuthenticationTag,
+            ))?;
     if ciphertext_end < header.payload_offset {
         return Err(NvstDropReason::MalformedRtp(
             RtpParseError::MissingAuthenticationTag,
         ));
     }
-    let mut plaintext = datagram[..ciphertext_end].to_vec();
     let iv = srtp_gcm_iv(*session_salt, header.ssrc, roc, header.sequence_number);
-    let cipher = <Aes256Gcm as aes_gcm::aead::KeyInit>::new_from_slice(encryption_key)
-        .expect("AES-256-GCM accepts a fixed-size key");
-    cipher
-        .decrypt_in_place_detached(
-            Nonce::from_slice(&iv),
-            &datagram[..header.payload_offset],
-            &mut plaintext[header.payload_offset..],
-            Tag::from_slice(&datagram[ciphertext_end..]),
-        )
-        .map_err(|_| NvstDropReason::AuthenticationFailed)?;
-    Ok(plaintext)
-}
-
-fn unprotect_aead_aes_128_gcm(
-    datagram: &[u8],
-    header: RtpHeader,
-    roc: u32,
-    encryption_key: &[u8; 16],
-    session_salt: &[u8; 12],
-) -> Result<Vec<u8>, NvstDropReason> {
-    let ciphertext_end = datagram
-        .len()
-        .checked_sub(SRTP_AEAD_AES_GCM_TAG_LEN)
-        .ok_or(NvstDropReason::MalformedRtp(
-            RtpParseError::MissingAuthenticationTag,
-        ))?;
-    if ciphertext_end < header.payload_offset {
-        return Err(NvstDropReason::MalformedRtp(
-            RtpParseError::MissingAuthenticationTag,
-        ));
+    let aad = &datagram[..header.payload_offset];
+    let ciphertext = &datagram[header.payload_offset..ciphertext_end];
+    let received_tag = &datagram[ciphertext_end..];
+    let (expected_tag, mut ctr) = aes_gcm_tag_and_ctr(encryption_key, &iv, aad, ciphertext);
+    if expected_tag[..tag_len].ct_eq(received_tag).unwrap_u8() != 1 {
+        return Err(NvstDropReason::AuthenticationFailed);
     }
     let mut plaintext = datagram[..ciphertext_end].to_vec();
-    let iv = srtp_gcm_iv(*session_salt, header.ssrc, roc, header.sequence_number);
-    let cipher = <Aes128Gcm as aes_gcm::aead::KeyInit>::new_from_slice(encryption_key)
-        .expect("AES-128-GCM accepts a fixed-size key");
-    cipher
-        .decrypt_in_place_detached(
-            Nonce::from_slice(&iv),
-            &datagram[..header.payload_offset],
-            &mut plaintext[header.payload_offset..],
-            Tag::from_slice(&datagram[ciphertext_end..]),
-        )
-        .map_err(|_| NvstDropReason::AuthenticationFailed)?;
+    ctr.apply_keystream(&mut plaintext[header.payload_offset..]);
     Ok(plaintext)
 }
 
+enum GcmCtr {
+    Aes128(Ctr32BE<Aes128>),
+    Aes256(Ctr32BE<Aes256>),
+}
+
+impl GcmCtr {
+    fn apply_keystream(&mut self, buffer: &mut [u8]) {
+        match self {
+            Self::Aes128(cipher) => cipher.apply_keystream(buffer),
+            Self::Aes256(cipher) => cipher.apply_keystream(buffer),
+        }
+    }
+}
+
+fn aes_gcm_tag_and_ctr(
+    encryption_key: &[u8],
+    iv: &[u8; 12],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> ([u8; 16], GcmCtr) {
+    let mut j0 = [0_u8; 16];
+    j0[..12].copy_from_slice(iv);
+    j0[15] = 1;
+    let mut hash_key = [0_u8; 16];
+    let mut tag_mask = [0_u8; 16];
+    let ctr = match encryption_key.len() {
+        16 => {
+            let key: &[u8; 16] = encryption_key.try_into().expect("16-byte GCM key");
+            let aes = <Aes128 as aes::cipher::KeyInit>::new(key.into());
+            aes.encrypt_block((&mut hash_key).into());
+            let mut ctr = Ctr32BE::<Aes128>::new(key.into(), (&j0).into());
+            ctr.apply_keystream(&mut tag_mask);
+            GcmCtr::Aes128(ctr)
+        }
+        32 => {
+            let key: &[u8; 32] = encryption_key.try_into().expect("32-byte GCM key");
+            let aes = <Aes256 as aes::cipher::KeyInit>::new(key.into());
+            aes.encrypt_block((&mut hash_key).into());
+            let mut ctr = Ctr32BE::<Aes256>::new(key.into(), (&j0).into());
+            ctr.apply_keystream(&mut tag_mask);
+            GcmCtr::Aes256(ctr)
+        }
+        _ => unreachable!("AES-GCM key is 16 or 32 bytes"),
+    };
+    let mut hasher = <GHash as ghash::universal_hash::KeyInit>::new((&hash_key).into());
+    hasher.update_padded(aad);
+    hasher.update_padded(ciphertext);
+    let mut len_block = ghash::Block::default();
+    len_block[..8].copy_from_slice(&((aad.len() as u64) * 8).to_be_bytes());
+    len_block[8..].copy_from_slice(&((ciphertext.len() as u64) * 8).to_be_bytes());
+    hasher.update(&[len_block]);
+    let mut tag = hasher.finalize();
+    for (byte, mask) in tag.iter_mut().zip(tag_mask) {
+        *byte ^= mask;
+    }
+    let mut expected = [0_u8; 16];
+    expected.copy_from_slice(&tag);
+    (expected, ctr)
+}
+
+#[cfg(test)]
+fn protect_aes_gcm(
+    packet: &mut Vec<u8>,
+    payload_offset: usize,
+    encryption_key: &[u8],
+    iv: &[u8; 12],
+    tag_len: usize,
+) {
+    let aad_owned = packet[..payload_offset].to_vec();
+    let (_, mut ctr) = aes_gcm_tag_and_ctr(encryption_key, iv, &aad_owned, &[]);
+    ctr.apply_keystream(&mut packet[payload_offset..]);
+    let (tag, _) = aes_gcm_tag_and_ctr(
+        encryption_key,
+        iv,
+        &aad_owned,
+        &packet[payload_offset..],
+    );
+    packet.extend_from_slice(&tag[..tag_len]);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn unprotect_aes_cm_hmac_sha1(
     datagram: &[u8],
     header: RtpHeader,
     packet_index: u64,
     roc: u32,
-    cipher: &SrtpCipher,
+    encryption_key: &[u8],
+    authentication_key: &[u8; 20],
+    session_salt: &[u8; 14],
+    authentication_tag_len: usize,
 ) -> Result<Vec<u8>, NvstDropReason> {
-    let SrtpCipher::AesCm128HmacSha1 {
-        encryption_key,
-        authentication_key,
-        session_salt,
-        authentication_tag_len,
-    } = cipher
-    else {
-        unreachable!("AES-CM helper requires an AES-CM cipher")
-    };
     let authenticated_len =
         datagram
             .len()
-            .checked_sub(*authentication_tag_len)
+            .checked_sub(authentication_tag_len)
             .ok_or(NvstDropReason::MalformedRtp(
                 RtpParseError::MissingAuthenticationTag,
             ))?;
@@ -998,7 +1274,7 @@ fn unprotect_aes_cm_hmac_sha1(
     mac.update(&roc.to_be_bytes());
     let expected_tag = mac.finalize().into_bytes();
     let received_tag = &datagram[authenticated_len..];
-    if expected_tag[..*authentication_tag_len]
+    if expected_tag[..authentication_tag_len]
         .ct_eq(received_tag)
         .unwrap_u8()
         != 1
@@ -1007,8 +1283,19 @@ fn unprotect_aes_cm_hmac_sha1(
     }
     let mut plaintext = datagram[..authenticated_len].to_vec();
     let iv = srtp_aes_cm_iv(session_salt, header.ssrc, packet_index);
-    let mut cipher = Aes128Ctr::new(encryption_key.into(), (&iv).into());
-    cipher.apply_keystream(&mut plaintext[header.payload_offset..]);
+    match encryption_key.len() {
+        16 => {
+            let key: &[u8; 16] = encryption_key.try_into().expect("16-byte AES-CM key");
+            let mut cipher = Aes128Ctr::new(key.into(), (&iv).into());
+            cipher.apply_keystream(&mut plaintext[header.payload_offset..]);
+        }
+        32 => {
+            let key: &[u8; 32] = encryption_key.try_into().expect("32-byte AES-CM key");
+            let mut cipher = Aes256Ctr::new(key.into(), (&iv).into());
+            cipher.apply_keystream(&mut plaintext[header.payload_offset..]);
+        }
+        _ => unreachable!("AES-CM key is 16 or 32 bytes"),
+    }
     Ok(plaintext)
 }
 
@@ -1066,6 +1353,88 @@ fn srtp_gcm_iv(session_salt: [u8; 12], ssrc: u32, roc: u32, sequence_number: u16
         *target ^= source;
     }
     iv
+}
+
+/// RFC 7714 §9.2 SRTCP GCM IV: salt XOR (SSRC at bytes 2..6, SRTCP index at 6..10).
+fn srtcp_gcm_iv(session_salt: [u8; 12], ssrc: u32, srtcp_index: u32) -> [u8; 12] {
+    let mut iv = session_salt;
+    for (target, source) in iv[2..6].iter_mut().zip(ssrc.to_be_bytes()) {
+        *target ^= source;
+    }
+    for (target, source) in iv[6..10].iter_mut().zip(srtcp_index.to_be_bytes()) {
+        *target ^= source;
+    }
+    iv
+}
+
+/// Builds and SRTCP-protects an RTCP Receiver Report (RFC 3550 §6.4.1) carrying one
+/// report block for `media_ssrc`. GCM layout (RFC 7714 §9): the first 8 bytes stay
+/// cleartext, only the report block is encrypted, then the E|index word and the
+/// truncated auth tag are appended. AAD = cleartext header || E|index.
+#[allow(clippy::too_many_arguments)]
+fn protect_srtcp_receiver_report_gcm(
+    sender_ssrc: u32,
+    media_ssrc: u32,
+    highest_sequence: u32,
+    srtcp_index: u32,
+    encryption_key: &[u8],
+    session_salt: &[u8; 12],
+    tag_len: usize,
+) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(32 + 4 + tag_len);
+    packet.push(0x81); // V=2, P=0, RC=1 (one report block)
+    packet.push(201); // PT=RR
+    packet.extend_from_slice(&7_u16.to_be_bytes()); // length: 8 words - 1
+    packet.extend_from_slice(&sender_ssrc.to_be_bytes());
+    packet.extend_from_slice(&media_ssrc.to_be_bytes());
+    packet.push(0); // fraction lost
+    packet.extend_from_slice(&[0, 0, 0]); // cumulative packets lost (24-bit)
+    packet.extend_from_slice(&highest_sequence.to_be_bytes());
+    packet.extend_from_slice(&0_u32.to_be_bytes()); // interarrival jitter
+    packet.extend_from_slice(&0_u32.to_be_bytes()); // LSR
+    packet.extend_from_slice(&0_u32.to_be_bytes()); // DLSR
+
+    let e_index = SRTCP_ENCRYPTED_FLAG | (srtcp_index & !SRTCP_ENCRYPTED_FLAG);
+    let iv = srtcp_gcm_iv(*session_salt, sender_ssrc, srtcp_index);
+    let mut aad = packet[..8].to_vec();
+    aad.extend_from_slice(&e_index.to_be_bytes());
+    let (_, mut ctr) = aes_gcm_tag_and_ctr(encryption_key, &iv, &aad, &[]);
+    ctr.apply_keystream(&mut packet[8..]);
+    let (tag, _) = aes_gcm_tag_and_ctr(encryption_key, &iv, &aad, &packet[8..]);
+    packet.extend_from_slice(&e_index.to_be_bytes());
+    packet.extend_from_slice(&tag[..tag_len]);
+    packet
+}
+
+/// Builds a plain (unencrypted) RTCP Receiver Report (RFC 3550 §6.4.1) with one
+/// report block for `media_ssrc`. Sent over the `rtcp1` SCTP data channel, which
+/// is already encrypted by DTLS, so no SRTCP layer is applied.
+fn build_rtcp_receiver_report(sender_ssrc: u32, media_ssrc: u32, highest_sequence: u32) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(32);
+    packet.push(0x81); // V=2, P=0, RC=1 (one report block)
+    packet.push(201); // PT=RR
+    packet.extend_from_slice(&7_u16.to_be_bytes()); // length: 8 words - 1
+    packet.extend_from_slice(&sender_ssrc.to_be_bytes());
+    packet.extend_from_slice(&media_ssrc.to_be_bytes());
+    packet.push(0); // fraction lost
+    packet.extend_from_slice(&[0, 0, 0]); // cumulative packets lost (24-bit)
+    packet.extend_from_slice(&highest_sequence.to_be_bytes());
+    packet.extend_from_slice(&0_u32.to_be_bytes()); // interarrival jitter
+    packet.extend_from_slice(&0_u32.to_be_bytes()); // LSR
+    packet.extend_from_slice(&0_u32.to_be_bytes()); // DLSR
+    packet
+}
+
+/// Builds a plain RTCP Picture Loss Indication (RFC 4585 §6.3.1) asking the
+/// sender of `media_ssrc` for a fresh keyframe.
+fn build_rtcp_pli(sender_ssrc: u32, media_ssrc: u32) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(12);
+    packet.push(0x81); // V=2, P=0, FMT=1 (PLI)
+    packet.push(192); // PT=PSFB (payload-specific feedback)
+    packet.extend_from_slice(&2_u16.to_be_bytes()); // length: 3 words - 1
+    packet.extend_from_slice(&sender_ssrc.to_be_bytes());
+    packet.extend_from_slice(&media_ssrc.to_be_bytes());
+    packet
 }
 
 #[derive(Clone, Default)]
@@ -1133,22 +1502,30 @@ struct NvVideoPacket {
     stream_packet_index: u32,
     frame_index: u32,
     flags: u8,
+    is_fec: bool,
 }
 
 impl NvVideoPacket {
-    fn parse(payload: &[u8]) -> Result<(Self, &[u8]), RtpParseError> {
-        if payload.len() < NV_VIDEO_PACKET_LEN {
+    /// Reads the Mjolnir video metadata from the `0x4753` ("GS") RTP extension:
+    /// a 16-byte little-endian block holding the stream packet index, frame index,
+    /// the packet-type nibble (picture data / SOF / EOF), and FEC group
+    /// coordinates. The RTP payload itself is pure H.264 access-unit data.
+    fn parse<'a>(header: &RtpHeader, payload: &'a [u8]) -> Result<(Self, &'a [u8]), RtpParseError> {
+        let Some(extension) = header.gs_video_header else {
             return Err(RtpParseError::MissingNvVideoHeader);
-        }
-        let header = Self {
-            stream_packet_index: (u32::from_le_bytes(
-                payload[0..4].try_into().expect("length checked"),
-            ) >> 8)
-                & STREAM_PACKET_INDEX_MASK,
-            frame_index: u32::from_le_bytes(payload[4..8].try_into().expect("length checked")),
-            flags: payload[8],
         };
-        Ok((header, &payload[NV_VIDEO_PACKET_LEN..]))
+        let packet_word = u32::from_le_bytes(extension[0..4].try_into().expect("length checked"));
+        let flags_word = u32::from_le_bytes(extension[8..12].try_into().expect("length checked"));
+        let fec_word = u32::from_le_bytes(extension[12..16].try_into().expect("length checked"));
+        let fec_index = (fec_word >> 12) & 0x3ff;
+        let fec_source_packets = (fec_word >> 22) & 0x3ff;
+        let packet = Self {
+            stream_packet_index: (packet_word >> 8) & STREAM_PACKET_INDEX_MASK,
+            frame_index: u32::from_le_bytes(extension[4..8].try_into().expect("length checked")),
+            flags: (flags_word & 0x0f) as u8,
+            is_fec: (fec_word >> 8) & 0xff != 0 && fec_index >= fec_source_packets,
+        };
+        Ok((packet, payload))
     }
 
     fn contains_picture_data(self) -> bool {
@@ -1193,7 +1570,7 @@ impl H264AccessUnitAssembler {
         timestamp: u32,
         payload: &[u8],
     ) -> Result<Option<EncodedH264Frame>, NvstDropReason> {
-        if !header.contains_picture_data() {
+        if header.is_fec || !header.contains_picture_data() {
             return Err(NvstDropReason::Unsupported(
                 NvstUnsupportedFeature::FecRepair,
             ));
@@ -1245,6 +1622,61 @@ impl H264AccessUnitAssembler {
         }))
     }
 }
+
+static NVST_DEBUG_DUMP_REMAINING: AtomicU64 = AtomicU64::new(96);
+
+/// Temporary ground-truth dump of decrypted Mjolnir video packets so the
+/// RTP extension + NV_VIDEO_PACKET layout can be verified against live traffic.
+fn debug_dump_nv_packet(path: &str, packet: &[u8], payload_offset: usize) {
+    use std::fmt::Write as _;
+    if NVST_DEBUG_DUMP_REMAINING
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_err()
+    {
+        return;
+    }
+    let dump_len = packet.len().min(56);
+    let mut packet_hex = String::with_capacity(dump_len * 2 + 8);
+    for (index, byte) in packet[..dump_len].iter().enumerate() {
+        if index == 12 || index == payload_offset {
+            let _ = write!(packet_hex, "|");
+        }
+        let _ = write!(packet_hex, "{byte:02x}");
+    }
+        eprintln!(
+            "NVST pkt-dump[{path}] len={} payloadOff={payload_offset} bytes={packet_hex}",
+            packet.len(),
+        );
+    }
+
+    static NVST_DEBUG_FRAME_DUMP_REMAINING: AtomicU64 = AtomicU64::new(24);
+
+    /// Temporary dump of assembled access units to verify NAL layout/keyframe
+    /// detection against live traffic.
+    fn debug_dump_frame(frame: &EncodedH264Frame) {
+        use std::fmt::Write as _;
+        if NVST_DEBUG_FRAME_DUMP_REMAINING
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_err()
+        {
+            return;
+        }
+        let dump_len = frame.bytes.len().min(40);
+        let mut hex = String::with_capacity(dump_len * 2);
+        for byte in &frame.bytes[..dump_len] {
+            let _ = write!(hex, "{byte:02x}");
+        }
+        eprintln!(
+            "NVST frame-dump len={} keyframe={} ts={} bytes={hex}",
+            frame.bytes.len(),
+            frame.keyframe,
+            frame.timestamp,
+        );
+    }
 
 fn h264_picture_payload(payload: &[u8]) -> Option<&[u8]> {
     let search_len = payload.len().min(MAX_GS_FRAME_HEADER_BYTES + 4);
@@ -1370,15 +1802,121 @@ impl RtpReorderBuffer {
     }
 }
 
+/// Sends periodic SRTCP Receiver Reports so the peer keeps the video flowing.
+/// The official client maintains an SRTCP session (hook captures show the 0x03/0x05
+/// KDF labels); without any receiver feedback the server stops video after an
+/// initial burst. Only the GCM profiles are supported (the active Mjolnir policy).
+struct SrtcpSender {
+    encryption_key: SrtcpKey,
+    session_salt: [u8; 12],
+    tag_len: usize,
+    sender_ssrc: u32,
+    next_index: u32,
+    last_sent: Option<Instant>,
+}
+
+enum SrtcpKey {
+    Aes128([u8; 16]),
+    Aes256([u8; 32]),
+}
+
+impl SrtcpKey {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Aes128(key) => key,
+            Self::Aes256(key) => key,
+        }
+    }
+}
+
+impl SrtcpSender {
+    fn from_material(material: &NvstSrtpMaterial) -> Option<Self> {
+        let (encryption_key, session_salt, tag_len) = match material {
+            NvstSrtpMaterial::AeadAes128Gcm {
+                master_key,
+                master_salt,
+                authentication_tag_len,
+            } => (
+                SrtcpKey::Aes128(derive_aes128_cm_key::<16>(
+                    master_key,
+                    master_salt,
+                    GFN_SRTCP_KEY_LABEL,
+                )),
+                derive_aes128_cm_key::<12>(master_key, master_salt, GFN_SRTCP_SALT_LABEL),
+                *authentication_tag_len,
+            ),
+            NvstSrtpMaterial::AeadAes256Gcm {
+                master_key,
+                master_salt,
+                authentication_tag_len,
+            } => (
+                SrtcpKey::Aes256(derive_aes_cm_key::<32>(
+                    master_key,
+                    master_salt,
+                    GFN_SRTCP_KEY_LABEL,
+                )),
+                derive_aes_cm_key::<12>(master_key, master_salt, GFN_SRTCP_SALT_LABEL),
+                *authentication_tag_len,
+            ),
+            _ => return None,
+        };
+        let mut sender_ssrc = [0_u8; 4];
+        if getrandom::fill(&mut sender_ssrc).is_err() {
+            sender_ssrc = 0x4f4e_4f57_u32.to_be_bytes(); // "ONOW"
+        }
+        Some(Self {
+            encryption_key,
+            session_salt,
+            tag_len,
+            sender_ssrc: u32::from_be_bytes(sender_ssrc),
+            next_index: 0,
+            last_sent: None,
+        })
+    }
+
+    /// Returns an SRTCP Receiver Report to send once per interval, after the media
+    /// SSRC is known. Returns `None` when it is not yet time or nothing to report on.
+    fn poll_receiver_report(
+        &mut self,
+        media_ssrc: Option<u32>,
+        highest_sequence: u32,
+        now: Instant,
+    ) -> Option<Vec<u8>> {
+        let media_ssrc = media_ssrc?;
+        if let Some(last) = self.last_sent
+            && now.duration_since(last) < SRTCP_RR_INTERVAL
+        {
+            return None;
+        }
+        self.last_sent = Some(now);
+        let index = self.next_index;
+        self.next_index = self.next_index.wrapping_add(1);
+        Some(protect_srtcp_receiver_report_gcm(
+            self.sender_ssrc,
+            media_ssrc,
+            highest_sequence,
+            index,
+            self.encryption_key.as_bytes(),
+            &self.session_salt,
+            self.tag_len,
+        ))
+    }
+}
+
 /// Stateful, non-blocking NVST video receiver. `process_datagram` is deterministic and testable;
 /// `spawn_nvst_udp_receiver` below is a thin UDP/thread wrapper for the production path.
 pub struct NvstVideoReceiver {
     config: NvstVideoConfig,
     srtp: SrtpReceiver,
+    srtcp: Option<SrtcpSender>,
     reorder: RtpReorderBuffer,
     assembler: H264AccessUnitAssembler,
     state: NvstReceiverState,
     bound_ssrc: Option<u32>,
+    highest_sequence_received: u32,
+    authenticated_packets: u64,
+    fec_packets: u64,
+    frames_emitted: u64,
     timeout_origin: Instant,
     last_authenticated_packet: Option<Instant>,
 }
@@ -1386,15 +1924,21 @@ pub struct NvstVideoReceiver {
 impl NvstVideoReceiver {
     pub fn new(config: NvstVideoConfig) -> Self {
         let srtp = SrtpReceiver::from_material(&config.srtp);
+        let srtcp = SrtcpSender::from_material(&config.srtp);
         let reorder = RtpReorderBuffer::new(config.reorder_window_packets);
         let assembler = H264AccessUnitAssembler::new(config.max_access_unit_bytes);
         Self {
             config,
             srtp,
+            srtcp,
             reorder,
             assembler,
             state: NvstReceiverState::Running,
             bound_ssrc: None,
+            highest_sequence_received: 0,
+            authenticated_packets: 0,
+            fec_packets: 0,
+            frames_emitted: 0,
             timeout_origin: Instant::now(),
             last_authenticated_packet: None,
         }
@@ -1492,6 +2036,7 @@ impl NvstVideoReceiver {
             Ok(packet) => packet,
             Err(reason) => return vec![NvstReceiveEvent::Dropped(reason)],
         };
+        debug_dump_nv_packet("raw", &packet.plaintext, packet.header.payload_offset);
         if let Some(expected) = self.config.expected_payload_type
             && packet.header.payload_type != expected
         {
@@ -1513,6 +2058,12 @@ impl NvstVideoReceiver {
         }
         self.bound_ssrc.get_or_insert(packet.header.ssrc);
         self.last_authenticated_packet = Some(now);
+        self.authenticated_packets += 1;
+        let sequence = u32::try_from(packet.index & 0xffff_ffff).unwrap_or(u32::MAX);
+        self.highest_sequence_received = self.highest_sequence_received.max(sequence);
+        self.config
+            .feedback
+            .publish_stream(packet.header.ssrc, self.highest_sequence_received);
 
         let result = self.reorder.push(packet);
         let mut events = Vec::new();
@@ -1521,6 +2072,9 @@ impl NvstVideoReceiver {
         }
         if let Some(recovery) = result.recovery {
             self.assembler.reset();
+            // A sequence gap breaks the decoder's reference chain; ask (via the
+            // bundle's rtcp1 channel) for a fresh keyframe to recover.
+            self.config.feedback.request_keyframe();
             events.push(NvstReceiveEvent::RecoveryNeeded(recovery));
         }
         for packet in result.ready {
@@ -1533,7 +2087,7 @@ impl NvstVideoReceiver {
                     continue;
                 }
             };
-            let (nv_packet, media) = match NvVideoPacket::parse(payload) {
+            let (nv_packet, media) = match NvVideoPacket::parse(&packet.header, payload) {
                 Ok(value) => value,
                 Err(error) => {
                     events.push(NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
@@ -1546,12 +2100,48 @@ impl NvstVideoReceiver {
                 .assembler
                 .push(nv_packet, packet.header.timestamp, media)
             {
-                Ok(Some(frame)) => events.push(NvstReceiveEvent::Frame(frame)),
+                Ok(Some(frame)) => {
+                    self.frames_emitted += 1;
+                    debug_dump_frame(&frame);
+                    events.push(NvstReceiveEvent::Frame(frame));
+                }
                 Ok(None) => {}
-                Err(reason) => events.push(NvstReceiveEvent::Dropped(reason)),
+                Err(reason) => {
+                    if matches!(reason, NvstDropReason::Unsupported(NvstUnsupportedFeature::FecRepair))
+                    {
+                        self.fec_packets += 1;
+                    }
+                    events.push(NvstReceiveEvent::Dropped(reason));
+                }
             }
         }
         events
+    }
+
+    /// Returns an SRTCP Receiver Report to send to the video peer, at most once per
+    /// interval, once the media SSRC is known. Keeps the peer's video flowing.
+    pub fn poll_receiver_report(&mut self, now: Instant) -> Option<Vec<u8>> {
+        if self.state != NvstReceiverState::Running {
+            return None;
+        }
+        self.srtcp.as_mut()?.poll_receiver_report(
+            self.bound_ssrc,
+            self.highest_sequence_received,
+            now,
+        )
+    }
+
+    /// Elapsed-since-start receive counters for ground-truth timing that does not
+    /// depend on when buffered log lines happen to flush.
+    pub fn stats_line(&self, origin: Instant) -> String {
+        format!(
+            "elapsed={:.1}s auth={} fec={} frames={} ssrc={:?}",
+            origin.elapsed().as_secs_f64(),
+            self.authenticated_packets,
+            self.fec_packets,
+            self.frames_emitted,
+            self.bound_ssrc,
+        )
     }
 
     fn process_mjolnir_payload(
@@ -1575,19 +2165,13 @@ impl NvstVideoReceiver {
         }
         self.bound_ssrc.get_or_insert(ssrc);
         self.last_authenticated_packet = Some(now);
-        let (nv_packet, media) = match NvVideoPacket::parse(payload) {
-            Ok(value) => value,
-            Err(error) => {
-                return vec![NvstReceiveEvent::Dropped(NvstDropReason::MalformedRtp(
-                    error,
-                ))];
-            }
-        };
-        match self.assembler.push(nv_packet, rtp_timestamp, media) {
-            Ok(Some(frame)) => vec![NvstReceiveEvent::Frame(frame)],
-            Ok(None) => Vec::new(),
-            Err(reason) => vec![NvstReceiveEvent::Dropped(reason)],
-        }
+        debug_dump_nv_packet("bundle", payload, 0);
+        // The bundle path cannot assemble video: the Mjolnir frame metadata lives
+        // in the `0x4753` RTP extension, which str0m does not surface. The official
+        // cloud path delivers video exclusively on the raw Mjolnir socket, so bundle
+        // RTP (audio/control) is intentionally ignored here.
+        let _ = rtp_timestamp;
+        Vec::new()
     }
 
     fn reset_media_state(&mut self) {
@@ -2293,6 +2877,10 @@ fn run_nvst_webrtc_bundle(
     let video_peer = config.video_peer;
     let stun_credentials = config.stun_credentials.clone();
     let ping_payload = config.ping_payload.clone();
+    // Feedback plane shared with the Mjolnir video receiver: it publishes the
+    // stream SSRC/sequence and keyframe requests; this bundle sends the RTCP
+    // Receiver Reports / PLI over the `rtcp1` SCTP data channel.
+    let feedback = config.feedback();
     // With a dedicated Mjolnir video socket the bundle only carries
     // control/audio keepalive traffic; the Mjolnir receiver owns the media
     // timeout, so the bundle must not raise a spurious media recovery.
@@ -2309,6 +2897,21 @@ fn run_nvst_webrtc_bundle(
     let mut last_hole_punch = Instant::now() - PING_INTERVAL_BEFORE_CONNECTION;
     let mut seen_ssrcs = HashSet::new();
     let mut dtls_ready = false;
+    // RTCP-over-SCTP (`rtcp1`) feedback channel state.
+    let mut sctp_started = false;
+    let mut rtcp_channel: Option<ChannelId> = None;
+    let mut rtcp_channel_open = false;
+    let mut rtcp_sender_ssrc = 0x4f4e_4f57_u32; // "ONOW"
+    rtcp_sender_ssrc ^= (transport_origin.elapsed().subsec_nanos()) & 0xffff;
+    let mut last_rtcp_send = Instant::now() - SRTCP_RR_INTERVAL;
+    let mut rtcp_reports_sent = 0_u64;
+    // The official client opens `rtcp1` once the RTSP session is established,
+    // not cold during the SCTP handshake (which gets the stream reset). Defer
+    // creation to shortly after the handshake. Do NOT gate on video flowing:
+    // the server may wait for rtcp1 before sending the keyframe, so gating on
+    // video would deadlock.
+    let mut rtcp_create_attempted = false;
+    let mut sctp_started_at: Option<Instant> = None;
     loop {
         loop {
             match commands.try_recv() {
@@ -2378,6 +2981,64 @@ fn run_nvst_webrtc_bundle(
             last_hole_punch = now;
         }
 
+        // Open the rtcp1 channel ~1s after the SCTP handshake, once the RTSP
+        // session has had time to establish on the server.
+        if sctp_started
+            && !rtcp_create_attempted
+            && rtcp_channel.is_none()
+            && sctp_started_at.is_some_and(|t| now.duration_since(t) >= Duration::from_secs(1))
+        {
+            rtcp_create_attempted = true;
+            // The official client's RTCP feedback channel is labelled
+            // `rtcp_on_sctp_private` (not `rtcp1`). The server resets a DCEP open
+            // whose label it doesn't recognize — which is why `rtcp1` was reset on
+            // every stream id. Open candidates across the low even stream ids (client
+            // parity) with the correct label; the server ACKs one with ChannelOpen and
+            // resets the rest, and we adopt whichever opens.
+            for _ in 0..RTCP_STREAM_CANDIDATES {
+                let config = ChannelConfig {
+                    label: "rtcp_on_sctp_private".to_string(),
+                    negotiated: None,
+                    reliability: Reliability::Reliable,
+                    ordered: true,
+                    protocol: String::new(),
+                };
+                let _ = rtc.direct_api().create_data_channel(config);
+            }
+            eprintln!("NVST creating rtcp_on_sctp_private across {RTCP_STREAM_CANDIDATES} stream-id candidates");
+        }
+
+        // Send RTCP feedback over the rtcp1 SCTP channel once it is open and the
+        // Mjolnir receiver has bound the video stream. A Receiver Report goes out
+        // every second; a PLI goes out whenever the receiver flags it needs a
+        // keyframe (rate-limited to the same cadence).
+        if rtcp_channel_open
+            && now.duration_since(last_rtcp_send) >= SRTCP_RR_INTERVAL
+            && let Some(channel_id) = rtcp_channel
+            && let Some((media_ssrc, highest_sequence)) = feedback.stream_snapshot()
+        {
+            let mut channel = rtc.channel(channel_id);
+            if let Some(channel) = channel.as_mut() {
+                let report =
+                    build_rtcp_receiver_report(rtcp_sender_ssrc, media_ssrc, highest_sequence);
+                if channel.write(true, &report).unwrap_or(false) {
+                    rtcp_reports_sent += 1;
+                    if rtcp_reports_sent == 1 || rtcp_reports_sent % 10 == 0 {
+                        eprintln!(
+                            "NVST rtcp1 RR sent={rtcp_reports_sent} mediaSsrc={media_ssrc} highestSeq={highest_sequence}"
+                        );
+                    }
+                }
+                if feedback.take_keyframe_request() {
+                    let pli = build_rtcp_pli(rtcp_sender_ssrc, media_ssrc);
+                    if channel.write(true, &pli).unwrap_or(false) {
+                        eprintln!("NVST rtcp1 PLI sent for mediaSsrc={media_ssrc}");
+                    }
+                }
+            }
+            last_rtcp_send = now;
+        }
+
         let timeout = loop {
             match rtc.poll_output() {
                 Ok(Output::Timeout(timeout)) => break timeout,
@@ -2411,6 +3072,35 @@ fn run_nvst_webrtc_bundle(
                     Event::Connected => {
                         dtls_ready = true;
                         eprintln!("NVST DTLS handshake complete; waiting for SRTP/Mjolnir");
+                        // Bring up SCTP over the established DTLS transport. The server
+                        // opens the `rtcp1` channel itself (matching the official client,
+                        // which receives server-created channels); we just listen for it.
+                        if !sctp_started {
+                            sctp_started = true;
+                            sctp_started_at = Some(Instant::now());
+                            rtc.direct_api().start_sctp(true);
+                            eprintln!("NVST SCTP started; will open rtcp1 after handshake settles");
+                        }
+                    }
+                    Event::ChannelOpen(id, label) => {
+                        eprintln!("NVST data channel open: id={id:?} label={label}");
+                        if label.contains("rtcp") {
+                            rtcp_channel = Some(id);
+                            rtcp_channel_open = true;
+                            // Ask for a keyframe immediately so the decoder can start.
+                            feedback.request_keyframe();
+                        }
+                    }
+                    Event::ChannelData(data) => {
+                        // The server may send Sender Reports / control on rtcp1; log to
+                        // learn the exact on-wire format it expects back.
+                        eprintln!(
+                            "NVST rtcp1 inbound: id={:?} binary={} bytes={} data={:02x?}",
+                            data.id,
+                            data.binary,
+                            data.data.len(),
+                            &data.data[..data.data.len().min(16)]
+                        );
                     }
                     Event::RtpPacket(packet) => {
                         for event in receiver.process_mjolnir_payload(
@@ -2554,6 +3244,9 @@ fn run_nvst_udp_receiver(
     let mut invalid_stun = 0_u64;
     let mut non_stun = 0_u64;
     let mut wrong_source = 0_u64;
+    let mut receiver_reports_sent = 0_u64;
+    let stats_origin = Instant::now();
+    let mut last_stats_log = Instant::now();
     loop {
         loop {
             match commands.try_recv() {
@@ -2650,7 +3343,20 @@ fn run_nvst_udp_receiver(
                 return;
             }
         }
-        let timeout = receiver.poll_timeout(Instant::now());
+        let now = Instant::now();
+        if let Some(report) = receiver.poll_receiver_report(now) {
+            if socket.send_to(&report, receiver.config.video_peer).is_ok() {
+                receiver_reports_sent += 1;
+            }
+        }
+        if now.duration_since(last_stats_log) >= Duration::from_secs(2) {
+            last_stats_log = now;
+            eprintln!(
+                "NVST rx-stats {} inbound={inbound_datagrams} pings={pings_sent} rr={receiver_reports_sent}",
+                receiver.stats_line(stats_origin),
+            );
+        }
+        let timeout = receiver.poll_timeout(now);
         if timeout.is_some() {
             eprintln!(
                 "NVST transport timeout counters: pings={pings_sent}, inbound={inbound_datagrams}, stunHandled={handled_stun}, stunInvalid={invalid_stun}, nonStun={non_stun}, wrongSource={wrong_source}"
@@ -2751,11 +3457,13 @@ mod tests {
     }
 
     fn build_plaintext_rtp(sequence: u16, flags: u8, frame_index: u32, media: &[u8]) -> Vec<u8> {
-        let mut packet = vec![0x80, 0xe0];
+        let mut packet = vec![0x90, 0xe0];
         packet.extend_from_slice(&sequence.to_be_bytes());
         packet.extend_from_slice(&0x01020304u32.to_be_bytes());
         packet.extend_from_slice(&0x11223344u32.to_be_bytes());
-        packet.extend_from_slice(&u32::from(sequence).to_le_bytes());
+        packet.extend_from_slice(&GS_VIDEO_EXTENSION_PROFILE.to_be_bytes());
+        packet.extend_from_slice(&4_u16.to_be_bytes());
+        packet.extend_from_slice(&(u32::from(sequence) << 8).to_le_bytes());
         packet.extend_from_slice(&frame_index.to_le_bytes());
         packet.push(flags);
         packet.extend_from_slice(&[0, 0, 0]);
@@ -2775,28 +3483,30 @@ mod tests {
             SrtpCipher::AeadAes128Gcm {
                 encryption_key,
                 session_salt,
+                authentication_tag_len,
             } => {
                 let iv = srtp_gcm_iv(*session_salt, header.ssrc, roc, header.sequence_number);
-                let cipher = <Aes128Gcm as aes_gcm::aead::KeyInit>::new_from_slice(encryption_key)
-                    .expect("fixed key");
-                let (aad, payload) = packet.split_at_mut(header.payload_offset);
-                let tag = cipher
-                    .encrypt_in_place_detached(Nonce::from_slice(&iv), aad, payload)
-                    .expect("AES-GCM encryption");
-                packet.extend_from_slice(&tag);
+                protect_aes_gcm(
+                    &mut packet,
+                    header.payload_offset,
+                    encryption_key,
+                    &iv,
+                    *authentication_tag_len,
+                );
             }
             SrtpCipher::AeadAes256Gcm {
                 encryption_key,
                 session_salt,
+                authentication_tag_len,
             } => {
                 let iv = srtp_gcm_iv(*session_salt, header.ssrc, roc, header.sequence_number);
-                let cipher = <Aes256Gcm as aes_gcm::aead::KeyInit>::new_from_slice(encryption_key)
-                    .expect("fixed key");
-                let (aad, payload) = packet.split_at_mut(header.payload_offset);
-                let tag = cipher
-                    .encrypt_in_place_detached(Nonce::from_slice(&iv), aad, payload)
-                    .expect("AES-GCM encryption");
-                packet.extend_from_slice(&tag);
+                protect_aes_gcm(
+                    &mut packet,
+                    header.payload_offset,
+                    encryption_key,
+                    &iv,
+                    *authentication_tag_len,
+                );
             }
             SrtpCipher::AesCm128HmacSha1 {
                 encryption_key,
@@ -2806,6 +3516,20 @@ mod tests {
             } => {
                 let iv = srtp_aes_cm_iv(session_salt, header.ssrc, packet_index);
                 let mut cipher = Aes128Ctr::new(encryption_key.into(), (&iv).into());
+                cipher.apply_keystream(&mut packet[header.payload_offset..]);
+                let mut mac = HmacSha1::new_from_slice(authentication_key).expect("fixed key");
+                mac.update(&packet);
+                mac.update(&roc.to_be_bytes());
+                packet.extend_from_slice(&mac.finalize().into_bytes()[..*authentication_tag_len]);
+            }
+            SrtpCipher::AesCm256HmacSha1 {
+                encryption_key,
+                authentication_key,
+                session_salt,
+                authentication_tag_len,
+            } => {
+                let iv = srtp_aes_cm_iv(session_salt, header.ssrc, packet_index);
+                let mut cipher = Aes256Ctr::new(encryption_key.into(), (&iv).into());
                 cipher.apply_keystream(&mut packet[header.payload_offset..]);
                 let mut mac = HmacSha1::new_from_slice(authentication_key).expect("fixed key");
                 mac.update(&packet);
@@ -2832,7 +3556,14 @@ mod tests {
         )
         .expect("salt");
 
-        let dump = std::fs::read("/tmp/opennow-video-dump.bin").expect("read dump");
+        // Diagnostic harness for live captures; skip when no dump was captured this run.
+        let dump = match std::fs::read("/tmp/opennow-video-dump.bin") {
+            Ok(dump) => dump,
+            Err(_) => {
+                eprintln!("no /tmp/opennow-video-dump.bin capture; skipping");
+                return;
+            }
+        };
         assert!(dump.len() > 12 && &dump[0..4] == b"NVST", "dump has a packet");
         let pkt_len = u16::from_be_bytes([dump[10], dump[11]]) as usize;
         let packet = &dump[12..12 + pkt_len];
@@ -2850,6 +3581,7 @@ mod tests {
         let material = NvstSrtpMaterial::AeadAes256Gcm {
             master_key,
             master_salt,
+            authentication_tag_len: SRTP_AEAD_AES_GCM_8_TAG_LEN,
         };
         let mut receiver = SrtpReceiver::from_material(&material);
         match receiver.unprotect(packet) {
@@ -2862,32 +3594,27 @@ mod tests {
         }
 
         // Path B: master key/salt used directly as the session key/salt (no KDF).
-        let iv = srtp_gcm_iv(master_salt, header.ssrc, 0, header.sequence_number);
-        let cipher = <Aes256Gcm as aes_gcm::aead::KeyInit>::new_from_slice(&master_key)
-            .expect("fixed key");
-        let ct_end = packet.len() - SRTP_AEAD_AES_GCM_TAG_LEN;
-        let mut pt = packet[..ct_end].to_vec();
-        let aad = &packet[..header.payload_offset];
-        let tag = &packet[ct_end..];
-        match cipher.decrypt_in_place_detached(
-            Nonce::from_slice(&iv),
-            aad,
-            &mut pt[header.payload_offset..],
-            Tag::from_slice(tag),
+        match unprotect_aes_gcm(
+            packet,
+            header,
+            0,
+            &master_key,
+            &master_salt,
+            SRTP_AEAD_AES_GCM_8_TAG_LEN,
         ) {
-            Ok(()) => eprintln!(
+            Ok(pt) => eprintln!(
                 "NO-KDF-path DECRYPT OK: payload[0..16]={:02x?}",
                 &pt[header.payload_offset..header.payload_offset + 16]
             ),
-            Err(_) => eprintln!("NO-KDF-path DECRYPT FAIL"),
+            Err(error) => eprintln!("NO-KDF-path DECRYPT FAIL: {error:?}"),
         }
     }
 
     #[test]
-    fn legacy_schema_defaults_to_aes_256_gcm_with_explicit_salt() {
+    fn legacy_schema_defaults_to_aes_256_gcm_8_with_explicit_salt() {
         let config = config();
         assert_eq!(config.video_peer(), peer());
-        assert_eq!(config.srtp_profile(), NvstSrtpProfile::AeadAes256Gcm);
+        assert_eq!(config.srtp_profile(), NvstSrtpProfile::AeadAes256Gcm8);
         let NvstSrtpMaterial::AeadAes256Gcm { master_salt, .. } = config.srtp else {
             panic!("legacy handoff must choose AES-256-GCM");
         };
@@ -3050,6 +3777,7 @@ mod tests {
         let SrtpCipher::AeadAes256Gcm {
             encryption_key,
             session_salt,
+            ..
         } = receiver.cipher
         else {
             panic!("legacy handoff must derive an AES-256-GCM session");
@@ -3183,12 +3911,10 @@ mod tests {
             authentication_tag_len: SRTP_AES_CM_HMAC_SHA1_80_TAG_LEN,
         };
         let crypto = SrtpReceiver::from_material(&material);
-        let plaintext = build_plaintext_rtp(
-            0x1234,
-            FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
-            7,
-            &[0, 0, 0, 1, 0x65, 0x88],
-        );
+        // Frozen plaintext so the crypto known-answer vector stays independent of
+        // the RTP packet-layout helper: 12-byte header + 16-byte inline metadata
+        // + 6 bytes of media.
+        let plaintext = hex_bytes("80E01234010203041122334434120000070000000700000000000000000000016588");
         let protected = protect_for_test(&crypto, plaintext.clone(), 0);
         assert_eq!(
             protected,
@@ -3223,6 +3949,7 @@ mod tests {
             cipher: SrtpCipher::AeadAes256Gcm {
                 encryption_key: session_key,
                 session_salt,
+                authentication_tag_len: SRTP_AEAD_AES_GCM_TAG_LEN,
             },
             replay: ReplayWindow::default(),
         };
@@ -3245,6 +3972,7 @@ mod tests {
             cipher: SrtpCipher::AeadAes256Gcm {
                 encryption_key: session_key,
                 session_salt,
+                authentication_tag_len: SRTP_AEAD_AES_GCM_TAG_LEN,
             },
             replay: ReplayWindow::default(),
         };
@@ -3268,6 +3996,7 @@ mod tests {
             cipher: SrtpCipher::AeadAes128Gcm {
                 encryption_key: session_key,
                 session_salt,
+                authentication_tag_len: SRTP_AEAD_AES_GCM_TAG_LEN,
             },
             replay: ReplayWindow::default(),
         };
@@ -3290,6 +4019,7 @@ mod tests {
             cipher: SrtpCipher::AeadAes128Gcm {
                 encryption_key: session_key,
                 session_salt,
+                authentication_tag_len: SRTP_AEAD_AES_GCM_TAG_LEN,
             },
             replay: ReplayWindow::default(),
         };
@@ -3314,16 +4044,42 @@ mod tests {
 
     #[test]
     fn parses_the_wire_stream_packet_index_as_a_24_bit_value() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&(0x12_34_56_u32 << 8).to_le_bytes());
-        payload.extend_from_slice(&7_u32.to_le_bytes());
-        payload.push(FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA);
-        payload.extend_from_slice(&[0; 7]);
+        let packet = build_plaintext_rtp(
+            1,
+            FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            7,
+            &[],
+        );
+        // Point the packet index at a 24-bit value to verify the wire shift.
+        let mut packet = packet;
+        packet[16..20].copy_from_slice(&(0x12_34_56_u32 << 8).to_le_bytes());
 
-        let (header, media) = NvVideoPacket::parse(&payload).expect("NV video header");
-        assert_eq!(header.stream_packet_index, 0x12_34_56);
-        assert_eq!(header.frame_index, 7);
+        let header = RtpHeader::parse(&packet).expect("RTP header");
+        let payload = header.payload(&packet).expect("payload");
+        let (video, media) = NvVideoPacket::parse(&header, payload).expect("NV video header");
+        assert_eq!(video.stream_packet_index, 0x12_34_56);
+        assert_eq!(video.frame_index, 7);
+        assert!(!video.is_fec);
         assert!(media.is_empty());
+    }
+
+    #[test]
+    fn classifies_fec_packets_from_the_extension_group_coordinates() {
+        let mut packet = build_plaintext_rtp(3, FLAG_CONTAINS_PIC_DATA, 7, &[0xaa]);
+        // FecId=3, SrcPkts=3 with the FEC-group marker bits set => correction packet.
+        packet[28..32].copy_from_slice(&0x00c0_3420_u32.to_le_bytes());
+        let header = RtpHeader::parse(&packet).expect("RTP header");
+        let payload = header.payload(&packet).expect("payload");
+        let (video, _) = NvVideoPacket::parse(&header, payload).expect("NV video header");
+        assert!(video.is_fec);
+
+        // Source packet: FecId=2 < SrcPkts=3.
+        let mut packet = build_plaintext_rtp(2, FLAG_CONTAINS_PIC_DATA, 7, &[0xaa]);
+        packet[28..32].copy_from_slice(&0x00c0_2420_u32.to_le_bytes());
+        let header = RtpHeader::parse(&packet).expect("RTP header");
+        let payload = header.payload(&packet).expect("payload");
+        let (video, _) = NvVideoPacket::parse(&header, payload).expect("NV video header");
+        assert!(!video.is_fec);
     }
 
     #[test]
@@ -3332,6 +4088,7 @@ mod tests {
             stream_packet_index: 1,
             frame_index: 9,
             flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            is_fec: false,
         };
         let mut payload = vec![0x01, 0, 0, 2, 0, 0, 0, 0];
         payload.extend_from_slice(&[0, 0, 0, 1, 0x67, 0xaa, 0, 0, 1, 0x65, 0xbb]);
@@ -3352,6 +4109,7 @@ mod tests {
             stream_packet_index: 1,
             frame_index: 9,
             flags: FLAG_SOF | FLAG_EOF | FLAG_CONTAINS_PIC_DATA,
+            is_fec: false,
         };
         let payload = vec![0x81; MAX_GS_FRAME_HEADER_BYTES + 8];
         let mut assembler = H264AccessUnitAssembler::new(4096);

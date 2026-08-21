@@ -26,6 +26,39 @@ use self::video::{DecodedFrame, VideoDecoder};
 
 const MAX_OPUS_PACKET_BYTES: usize = 1_275;
 
+/// Shows a standalone overlay window through the exact production creation path.
+/// Debug-only aid for isolating window-server behavior without a streaming session.
+pub fn debug_show_overlay_window() {
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    surface::debug_overlay_window(main_thread);
+}
+
+/// Drains pending AppKit events and window-server work on the main thread.
+///
+/// The streamer's main thread runs the host command loop instead of `NSApplication.run()`, so
+/// window ordering, compositing, and window controls only make progress when this is called.
+pub fn pump_app_events() {
+    use objc2_app_kit::{NSApplication, NSEventMask};
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    let application = NSApplication::sharedApplication(main_thread);
+    unsafe {
+        while let Some(event) = application.nextEventMatchingMask_untilDate_inMode_dequeue(
+            NSEventMask::Any,
+            None,
+            objc2_foundation::NSDefaultRunLoopMode,
+            true,
+        ) {
+            application.sendEvent(&event);
+        }
+    }
+    application.updateWindows();
+}
+
 #[derive(Debug, Error)]
 pub enum BackendError {
     #[error(transparent)]

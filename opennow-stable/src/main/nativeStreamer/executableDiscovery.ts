@@ -25,9 +25,22 @@ export function resolveNativeStreamerExecutableCandidates(
   if (configuredPath && !isExistingFile(configuredPath)) {
     throw new Error(`Configured native streamer executable was not found: ${configuredPath}`);
   }
+  // On macOS the streamer must run from inside an .app bundle: a bundle-less process is
+  // refused window compositing by the WindowServer, so the video overlay never appears.
+  const bundledMacBinary =
+    options.platform === "darwin"
+      ? resolve(
+          options.mainDir,
+          "../../../native/opennow-streamer/bin",
+          platformKey,
+          "OpenNOWStreamer.app/Contents/MacOS",
+          exeName,
+        )
+      : undefined;
   const checked = [
     configuredPath || undefined,
     options.envExecutablePath,
+    bundledMacBinary,
     join(options.resourcesPath, "native", "opennow-streamer", platformKey, exeName),
     resolve(options.mainDir, "../../../native/opennow-streamer/bin", platformKey, exeName),
     resolve(options.mainDir, "../../../native/opennow-streamer/target/release", exeName),

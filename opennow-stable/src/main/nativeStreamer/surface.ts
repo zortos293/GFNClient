@@ -58,10 +58,12 @@ export function normalizeNativeRenderSurface(
       : null,
     screenRect: visible
       ? {
-          x: contentBounds.x + Math.round(rect.x),
-          y: contentBounds.y + Math.round(rect.y),
-          width: Math.max(2, Math.round(rect.width)),
-          height: Math.max(2, Math.round(rect.height)),
+          // The renderer reports rect in device pixels; AppKit screen
+          // coordinates are points, so convert before adding content bounds.
+          x: contentBounds.x + Math.round(rect.x / deviceScaleFactor),
+          y: contentBounds.y + Math.round(rect.y / deviceScaleFactor),
+          width: Math.max(2, Math.round(rect.width / deviceScaleFactor)),
+          height: Math.max(2, Math.round(rect.height / deviceScaleFactor)),
         }
       : undefined,
   };

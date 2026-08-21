@@ -47,5 +47,5 @@ pub use lifecycle::BackendState;
 #[cfg(target_os = "macos")]
 pub use macos::{
     BackendError, BackendStats, MacOsBackend, NativeSurfaceHandle, StreamSink, SubmitOutcome,
-    probe_h264_hardware,
+    debug_show_overlay_window, probe_h264_hardware, pump_app_events,
 };

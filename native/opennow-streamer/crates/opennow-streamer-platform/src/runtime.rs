@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
@@ -180,6 +180,18 @@ impl MainThreadHost {
                     surface: new_surface,
                     reply,
                 }) => {
+                    static SURFACE_LOG_REMAINING: AtomicU64 = AtomicU64::new(12);
+                    if SURFACE_LOG_REMAINING
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                            remaining.checked_sub(1)
+                        })
+                        .is_ok()
+                    {
+                        eprintln!(
+                            "NVST surface-update visible={} rect={:?}",
+                            new_surface.visible, new_surface.screen_rect
+                        );
+                    }
                     let result = if let Some(output) = active.as_mut() {
                         output.update_surface(&new_surface)
                     } else {
@@ -270,6 +282,10 @@ impl MainThreadHost {
                 active = None;
                 feedback = None;
             }
+            // The host loop replaces `NSApplication.run()`; without draining AppKit's queue the
+            // overlay window never finishes ordering in and its controls stay dead.
+            #[cfg(target_os = "macos")]
+            opennow_streamer_platform_macos::pump_app_events();
         }
     }
 }

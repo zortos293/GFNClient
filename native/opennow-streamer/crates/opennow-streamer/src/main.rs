@@ -54,6 +54,23 @@ fn run_protocol(media_runtime: MediaRuntime) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
+    // Optional verbose tracing of the str0m SCTP/DTLS stack to stderr (stdout is
+    // reserved for the JSON protocol). Enable with OPENNOW_STREAMER_TRACE=1.
+    if std::env::var_os("OPENNOW_STREAMER_TRACE").is_some() {
+        use tracing_subscriber::EnvFilter;
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| EnvFilter::new("str0m=debug,sctp_proto=debug")),
+            )
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init();
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("OPENNOW_DEBUG_WINDOW").is_some() {
+        opennow_streamer_platform::debug_show_overlay_window();
+    }
     let (host, media_runtime) = create_runtime().map_err(io::Error::other)?;
     let shutdown_runtime = media_runtime.clone();
     let protocol = thread::Builder::new()

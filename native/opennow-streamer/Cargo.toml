@@ -24,6 +24,7 @@ base64 = "0.22"
 ctr = "0.9"
 crc32fast = "1"
 getrandom = "0.3"
+ghash = "0.5"
 hmac = "0.12"
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
 opus = "0.3.1"

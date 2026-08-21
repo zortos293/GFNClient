@@ -1,13 +1,13 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSColor, NSPanel, NSScreen, NSView, NSWindow,
-    NSWindowStyleMask, NSWorkspace,
+    NSApplication, NSBackingStoreType, NSColor, NSScreen, NSView, NSWindow, NSWindowStyleMask,
+    NSWorkspace,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_quartz_core::{CALayer, CAMetalLayer};
@@ -49,24 +49,6 @@ define_class!(
     }
 );
 
-define_class!(
-    #[unsafe(super(NSPanel))]
-    #[thread_kind = MainThreadOnly]
-    struct PassiveOverlayWindow;
-
-    impl PassiveOverlayWindow {
-        #[unsafe(method(canBecomeKeyWindow))]
-        fn can_become_key_window(&self) -> bool {
-            false
-        }
-
-        #[unsafe(method(canBecomeMainWindow))]
-        fn can_become_main_window(&self) -> bool {
-            false
-        }
-    }
-);
-
 enum Attachment {
     Dedicated {
         previous_layer: Option<Retained<CALayer>>,
@@ -75,6 +57,31 @@ enum Attachment {
     WindowChild {
         parent: Retained<NSView>,
     },
+}
+
+/// Creates the overlay window exactly as `SurfaceOwner::attach` does for `OwnedOverlay`,
+/// for isolating window-server behavior without a streaming session.
+pub(super) fn debug_overlay_window(main_thread: MainThreadMarker) {
+    let application = NSApplication::sharedApplication(main_thread);
+    application.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+    application.finishLaunching();
+    application.activate();
+    let rect = ScreenRect::new(200.0, 167.0, 1400.0, 868.0);
+    let styles =
+        NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
+    let window: Retained<NSWindow> = unsafe {
+        msg_send![
+            main_thread.alloc::<NSWindow>(),
+            initWithContentRect: appkit_screen_frame(rect, main_thread).expect("screen frame"),
+            styleMask: styles,
+            backing: NSBackingStoreType::Buffered,
+            defer: false
+        ]
+    };
+    window.setTitle(&objc2_foundation::NSString::from_str("OpenNOW Video"));
+    window.orderFrontRegardless();
+    eprintln!("NVST debug-overlay-window created");
+    std::mem::forget(window);
 }
 
 pub(super) struct SurfaceOwner {
@@ -98,15 +105,35 @@ impl SurfaceOwner {
         let (window, view, owns_window, overlay, child_parent, requested_visible, parent_pid) =
             match target {
                 SurfaceTarget::OwnedOverlay(config) => {
-                    let _application = NSApplication::sharedApplication(main_thread);
+                    let application = NSApplication::sharedApplication(main_thread);
+                    // A bare executable defaults to NSApplicationActivationPolicyProhibited,
+                    // which makes the window server refuse to show any of its windows.
+                    // Accessory lets the overlay appear without a dock icon or menu bar.
+                    application.setActivationPolicy(
+                        objc2_app_kit::NSApplicationActivationPolicy::Accessory,
+                    );
+                    application.finishLaunching();
+                    application.activate();
                     config.validate()?;
                     let parent_pid = unsafe { libc::getppid() };
-                    let visible = config.visible && application_is_frontmost(parent_pid);
-                    let styles =
-                        NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
-                    let window: Retained<PassiveOverlayWindow> = unsafe {
+                    let frontmost = application_is_frontmost(parent_pid);
+                    // External-window mode: visibility is driven purely by the
+                    // renderer's requested state; the frontmost-app gate is
+                    // disabled so the video stays visible while debugging.
+                    let visible = config.visible;
+                    eprintln!(
+                        "NVST overlay-attach rect=({},{} {}x{}) config.visible={} parent_pid={parent_pid} frontmost={frontmost} visible={visible}",
+                        config.screen_rect.x, config.screen_rect.y, config.screen_rect.width, config.screen_rect.height, config.visible,
+                    );
+                    let styles = NSWindowStyleMask::Titled
+                        | NSWindowStyleMask::Closable
+                        | NSWindowStyleMask::Resizable;
+                    // A runtime-defined NSWindow/NSPanel subclass never composites in this
+                    // process (the window server lists it but keeps it offscreen and
+                    // unsynced); a plain NSWindow through the same init path works.
+                    let window: Retained<NSWindow> = unsafe {
                         msg_send![
-                            main_thread.alloc::<PassiveOverlayWindow>(),
+                            main_thread.alloc::<NSWindow>(),
                             initWithContentRect: appkit_screen_frame(config.screen_rect, main_thread)?,
                             styleMask: styles,
                             backing: NSBackingStoreType::Buffered,
@@ -114,10 +141,10 @@ impl SurfaceOwner {
                         ]
                     };
                     unsafe { window.setReleasedWhenClosed(false) };
-                    window.setBecomesKeyOnlyIfNeeded(true);
-                    window.setIgnoresMouseEvents(true);
+                    window.setTitle(&objc2_foundation::NSString::from_str("OpenNOW Video"));
+                    window.setIgnoresMouseEvents(false);
                     window.setAcceptsMouseMovedEvents(false);
-                    window.setHasShadow(false);
+                    window.setHasShadow(true);
                     window.setOpaque(true);
                     window.setBackgroundColor(Some(&NSColor::blackColor()));
                     let view = window
@@ -128,8 +155,6 @@ impl SurfaceOwner {
                     } else {
                         window.orderOut(None);
                     }
-                    let panel: Retained<NSPanel> = window.into_super();
-                    let window: Retained<NSWindow> = panel.into_super();
                     (
                         Some(window),
                         view,
@@ -259,7 +284,12 @@ impl SurfaceOwner {
         self.layer.setFrame(self.view.bounds());
         self.layer.setContentsScale(window.backingScaleFactor());
         self.requested_visible = visible;
-        let ordered = visible && self.parent_pid.is_some_and(application_is_frontmost);
+        let frontmost = self.parent_pid.is_some_and(application_is_frontmost);
+        let ordered = visible;
+        eprintln!(
+            "NVST overlay-update rect=({},{} {}x{}) requested_visible={visible} frontmost={frontmost} ordered={ordered}",
+            screen_rect.x, screen_rect.y, screen_rect.width, screen_rect.height,
+        );
         self.visible.store(ordered, Ordering::Release);
         if ordered {
             window.orderFrontRegardless();
@@ -274,14 +304,34 @@ impl SurfaceOwner {
             return Ok(());
         }
         let window = self.window.as_ref().ok_or(BackendError::Stopped)?;
-        let ordered =
-            self.requested_visible && self.parent_pid.is_some_and(application_is_frontmost);
+        let raw_frontmost = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|application| application.processIdentifier());
+        let frontmost = self.parent_pid.is_some_and(application_is_frontmost);
+        let ordered = self.requested_visible;
+        static POLL_LOG: AtomicU64 = AtomicU64::new(0);
+        let tick = POLL_LOG.fetch_add(1, Ordering::Relaxed);
+        if tick % 20 == 0 {
+            eprintln!(
+                "NVST overlay-poll parent={:?} raw_frontmost={raw_frontmost:?} requested_visible={} visible={}",
+                self.parent_pid,
+                self.requested_visible,
+                self.visible.load(Ordering::Acquire),
+            );
+        }
+        // Re-assert ordering every poll: the initial orderFrontRegardless can be lost when it
+        // races the app's launch registration with the window server, and re-ordering is cheap.
+        if ordered {
+            window.orderFrontRegardless();
+        }
         if self.visible.swap(ordered, Ordering::AcqRel) == ordered {
             return Ok(());
         }
-        if ordered {
-            window.orderFrontRegardless();
-        } else {
+        eprintln!(
+            "NVST overlay-ordering-change requested_visible={} frontmost={frontmost} ordered={ordered}",
+            self.requested_visible,
+        );
+        if !ordered {
             window.orderOut(None);
         }
         Ok(())

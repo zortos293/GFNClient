@@ -689,7 +689,7 @@ private fun PrintedWasteOptionsColumn(
                         selected = isCurrent,
                         focused = isCurrent && listFocused,
                         listFocused = listFocused,
-                        liveSelectedOutlines = state.settings.liveSelectionEffectsEnabled,
+                        liveSelectedOutlines = LocalActiveSelectionEnabled.current,
                         onClick = { onSelectZone(zoneOption.zoneId) },
                     )
                 }

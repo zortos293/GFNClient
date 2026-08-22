@@ -1215,7 +1215,7 @@ private fun GameGrid(
                         favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
-                        liveSelectedOutlines = settings.liveSelectionEffectsEnabled,
+                        liveSelectedOutlines = LocalActiveSelectionEnabled.current,
                         showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -1351,7 +1351,7 @@ private fun StoreGameGrid(
                         favorite = game.id in favoriteIds,
                         tvProfile = tvProfile,
                         expressiveUi = settings.expressiveUi,
-                        liveSelectedOutlines = settings.liveSelectionEffectsEnabled,
+                        liveSelectedOutlines = LocalActiveSelectionEnabled.current,
                         showGameStoreLabels = !artworkOnly && shouldShowGameStoreLabels(
                             tvProfile = tvProfile,
                             enabled = settings.showGameStoreLabels,
@@ -1611,7 +1611,7 @@ private fun StoreComingNextCarousel(
         ) { targetPage ->
             val featured = games[targetPage.coerceIn(games.indices)]
             val selected = featured.id == selectedGameId
-            val selectedOutline = shouldShowActiveSelectionOutline(selected, settings.liveSelectionEffectsEnabled)
+            val selectedOutline = shouldShowActiveSelectionOutline(selected, LocalActiveSelectionEnabled.current)
             val shape = RoundedCornerShape(if (settings.expressiveUi) 24.dp else 16.dp)
             Box(
                 Modifier
@@ -1793,7 +1793,7 @@ private fun StoreRailSection(
                             favorite = game.id in favoriteIds,
                             tvProfile = tvProfile,
                             expressiveUi = settings.expressiveUi,
-                            liveSelectedOutlines = settings.liveSelectionEffectsEnabled,
+                            liveSelectedOutlines = LocalActiveSelectionEnabled.current,
                             showFavoriteIcon = shouldShowCatalogFavoriteIcon(settings),
                             width = cardWidth,
                             controllerActionMode = controllerActionMode,

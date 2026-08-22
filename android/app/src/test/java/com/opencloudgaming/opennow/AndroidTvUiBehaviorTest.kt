@@ -37,33 +37,50 @@ class AndroidTvUiBehaviorTest {
 
     @Test
     fun defaultThemeUsesNvidiaStyleGreenAndWhiteSelectionEnergy() {
+        val style = AppSettings().activeSelectionEffectStyle(physicalControllerConnected = false)
+
         assertEquals(OpenNowPalette.AccentDefault, UiAccent.OpenNow.color)
         assertEquals(OpenNowPalette.AccentDefaultSecondary, UiAccent.OpenNow.secondaryColor)
-        assertEquals(Color.White, AppSettings().activeSelectionColor)
-        assertEquals(Color.White, AppSettings().activeSelectionSecondaryColor)
+        assertEquals(Color.White, style.color)
+        assertEquals(Color.White, style.secondaryColor)
+        assertFalse(style.enabled)
+        assertFalse(style.absoluteCinemaActive)
     }
 
     @Test
-    fun absoluteCinemaOverridesOnlyTheRingsAndKeepsTheSelectedAccent() {
+    fun absoluteCinemaRequiresControllerAndKeepsTheSelectedAccent() {
         val hotPink = AppSettings(uiAccent = UiAccent.HotPink)
         val cinema = hotPink.copy(absoluteCinemaEffects = true)
         val switch = AppSettings(uiAccent = UiAccent.Switch)
+        val hotPinkStyle = hotPink.activeSelectionEffectStyle(physicalControllerConnected = false)
+        val cinemaWithoutController = cinema.activeSelectionEffectStyle(physicalControllerConnected = false)
+        val cinemaWithController = cinema.activeSelectionEffectStyle(physicalControllerConnected = true)
+        val switchStyle = switch.activeSelectionEffectStyle(physicalControllerConnected = false)
 
         assertEquals(OpenNowPalette.AccentHotPink, hotPink.uiAccent.color)
-        assertEquals(OpenNowPalette.AccentHotPink, hotPink.activeSelectionColor)
-        assertEquals(OpenNowPalette.AccentCinemaOrange, cinema.activeSelectionColor)
-        assertEquals(OpenNowPalette.AccentCinemaBlue, cinema.activeSelectionSecondaryColor)
+        assertEquals(OpenNowPalette.AccentHotPink, hotPinkStyle.color)
+        assertEquals(OpenNowPalette.AccentHotPink, cinemaWithoutController.color)
+        assertFalse(cinemaWithoutController.absoluteCinemaActive)
+        assertEquals(OpenNowPalette.AccentCinemaOrange, cinemaWithController.color)
+        assertEquals(OpenNowPalette.AccentCinemaBlue, cinemaWithController.secondaryColor)
+        assertTrue(cinemaWithController.absoluteCinemaActive)
         assertEquals(OpenNowPalette.AccentHotPink, cinema.uiAccent.color)
-        assertEquals(OpenNowPalette.AccentSwitchRed, switch.activeSelectionColor)
-        assertEquals(OpenNowPalette.AccentSwitchBlue, switch.activeSelectionSecondaryColor)
+        assertEquals(OpenNowPalette.AccentSwitchRed, switchStyle.color)
+        assertEquals(OpenNowPalette.AccentSwitchBlue, switchStyle.secondaryColor)
     }
 
     @Test
     fun liveSelectionEffectsStayOffForDefaultAndRespectCustomThemeOptOut() {
-        assertFalse(AppSettings().liveSelectionEffectsEnabled)
-        assertTrue(AppSettings(uiAccent = UiAccent.Pixel).liveSelectionEffectsEnabled)
-        assertFalse(AppSettings(uiAccent = UiAccent.Pixel, liveSelectedOutlines = false).liveSelectionEffectsEnabled)
-        assertTrue(AppSettings(liveSelectedOutlines = false, absoluteCinemaEffects = true).liveSelectionEffectsEnabled)
+        assertFalse(AppSettings().activeSelectionEffectStyle(physicalControllerConnected = false).enabled)
+        assertTrue(AppSettings(uiAccent = UiAccent.Pixel).activeSelectionEffectStyle(physicalControllerConnected = false).enabled)
+        assertFalse(
+            AppSettings(uiAccent = UiAccent.Pixel, liveSelectedOutlines = false)
+                .activeSelectionEffectStyle(physicalControllerConnected = true)
+                .enabled,
+        )
+        val absoluteCinema = AppSettings(liveSelectedOutlines = false, absoluteCinemaEffects = true)
+        assertFalse(absoluteCinema.activeSelectionEffectStyle(physicalControllerConnected = false).enabled)
+        assertTrue(absoluteCinema.activeSelectionEffectStyle(physicalControllerConnected = true).enabled)
     }
 
     @Test

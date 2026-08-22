@@ -1069,8 +1069,8 @@ private fun SettingsContent(
                     label = stringResource(R.string.settings_accent),
                     options = accentOptions.map { it.second },
                     selected = accentOptions.firstOrNull { it.first == settings.uiAccent }?.second ?: accentOptions.first().second,
-                    activeOutlineColor = settings.activeSelectionColor.takeIf { settings.liveSelectionEffectsEnabled },
-                    activeOutlineSecondaryColor = settings.activeSelectionSecondaryColor.takeIf { settings.liveSelectionEffectsEnabled },
+                    activeOutlineColor = LocalActiveSelectionColor.current.takeIf { LocalActiveSelectionEnabled.current },
+                    activeOutlineSecondaryColor = LocalActiveSelectionSecondaryColor.current.takeIf { LocalActiveSelectionEnabled.current },
                 ) { label ->
                     accentOptions.firstOrNull { it.second == label }?.first?.let { accent ->
                         viewModel.updateSettings(settings.copy(uiAccent = accent))

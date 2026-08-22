@@ -285,7 +285,6 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
             streamDefaults.streamSharpeningAmount,
         ),
     )
-    val legacyAbsoluteCinemaAccent = uiAccent == UiAccent.AbsoluteCinema
     return copy(
         stream = lowPowerSafe,
         posterSizeScale = posterSizeScale.finiteIn(MIN_GAME_CARD_SCALE, MAX_GAME_CARD_SCALE, 1f),
@@ -326,8 +325,7 @@ internal fun AppSettings.normalizedForAndroid(): AppSettings {
         streamPresentationProfileVersion = streamPresentationProfileVersion.coerceAtLeast(STREAM_PRESENTATION_PROFILE_VERSION),
         nerdCatalogBackgroundUri = nerdCatalogBackgroundUri?.trim()?.takeIf { it.isNotBlank() },
         localAppPackageNames = normalizeLocalAppPackageNames(localAppPackageNames),
-        uiAccent = if (legacyAbsoluteCinemaAccent) UiAccent.OpenNow else uiAccent,
-        absoluteCinemaEffects = absoluteCinemaEffects || legacyAbsoluteCinemaAccent,
+        absoluteCinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere,
         catalogSortId = catalogSortId.trim().ifBlank { "relevance" },
         catalogFilterIds = catalogFilterIds.map(String::trim).filter(String::isNotBlank).distinct(),
         librarySortId = librarySortId.takeIf {

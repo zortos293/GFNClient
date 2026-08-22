@@ -355,25 +355,27 @@ internal data class ActiveSelectionEffectStyle(
     val secondaryColor: Color,
     val enabled: Boolean,
     val absoluteCinemaActive: Boolean,
+    val absoluteCinemaEverywhere: Boolean,
 )
 
 /**
- * Absolute Cinema is a controller-focus treatment, not a default theme. Its preference may stay
- * saved while no controller is connected, but none of its colors or animations become active
- * until Android reports a physical controller. Other explicitly selected accent effects retain
- * their existing behavior.
+ * Absolute Cinema effects are normally a controller-focus treatment, not a color override. The
+ * everywhere suboption deliberately removes that controller gate and broadens the same treatment
+ * to pointer and non-controller interactions. The user's selected accent remains the color owner.
  */
 internal fun AppSettings.activeSelectionEffectStyle(
     physicalControllerConnected: Boolean,
 ): ActiveSelectionEffectStyle {
-    val cinemaActive = absoluteCinemaEffects && physicalControllerConnected
+    val cinemaEverywhere = absoluteCinemaEffects && absoluteCinemaEverywhere
+    val cinemaActive = absoluteCinemaEffects && (physicalControllerConnected || cinemaEverywhere)
     val baseColor = if (uiAccent == UiAccent.OpenNow) Color.White else uiAccent.color
     val baseSecondaryColor = if (uiAccent == UiAccent.OpenNow) Color.White else uiAccent.secondaryColor
     return ActiveSelectionEffectStyle(
-        color = if (cinemaActive) OpenNowPalette.AccentCinemaOrange else baseColor,
-        secondaryColor = if (cinemaActive) OpenNowPalette.AccentCinemaBlue else baseSecondaryColor,
+        color = baseColor,
+        secondaryColor = baseSecondaryColor,
         enabled = cinemaActive || (liveSelectedOutlines && uiAccent != UiAccent.OpenNow),
         absoluteCinemaActive = cinemaActive,
+        absoluteCinemaEverywhere = cinemaEverywhere,
     )
 }
 
@@ -381,6 +383,7 @@ internal val LocalActiveSelectionColor = staticCompositionLocalOf { Color.White 
 internal val LocalActiveSelectionSecondaryColor = staticCompositionLocalOf { Color.White }
 internal val LocalActiveSelectionEnabled = staticCompositionLocalOf { true }
 internal val LocalAbsoluteCinemaEffects = staticCompositionLocalOf { false }
+internal val LocalAbsoluteCinemaEverywhere = staticCompositionLocalOf { false }
 // Leave a full control-height runway below the last item so mobile focus/hover frames do not
 // collide with the viewport edge in Settings, Library, or Store.
 internal val AppScrollEndSpacing = 72.dp
@@ -437,6 +440,7 @@ fun OpenNowTheme(
         LocalActiveSelectionSecondaryColor provides selectionEffectStyle.secondaryColor,
         LocalActiveSelectionEnabled provides selectionEffectStyle.enabled,
         LocalAbsoluteCinemaEffects provides selectionEffectStyle.absoluteCinemaActive,
+        LocalAbsoluteCinemaEverywhere provides selectionEffectStyle.absoluteCinemaEverywhere,
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

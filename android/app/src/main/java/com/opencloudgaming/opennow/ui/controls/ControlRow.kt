@@ -4,7 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -36,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.LocalSettingsControllerNavigationEnabled
+import com.opencloudgaming.opennow.AbsoluteCinemaEverywhereFrame
 import com.opencloudgaming.opennow.handleVerticalDpadFocusMove
 import com.opencloudgaming.opennow.isTvActivateKey
 import com.opencloudgaming.opennow.ui.theme.OpenNowPalette
@@ -154,38 +159,50 @@ internal fun ControlRow(
 ) {
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
+    val hoverInteraction = remember { MutableInteractionSource() }
+    val hovered by hoverInteraction.collectIsHoveredAsState()
     val showFocus = style.showFocusRing && focused
-    Row(
+    Box(
         modifier
             .fillMaxWidth()
-            .padding(start = style.indentStep * indentLevel)
-            .onFocusChanged { focused = style.focusable && (it.isFocused || it.hasFocus) }
-            .border(
-                width = if (showFocus) style.borderFocusWidth else style.borderRestWidth,
-                color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
-                shape = style.shape,
-            )
-            .clip(style.shape)
-            .background(if (showFocus) style.containerFocused else style.containerRest)
-            .then(
-                if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick)
-                else Modifier,
-            )
-            .onPreviewKeyEvent { event ->
-                when {
-                    style.focusable && enabled && onClick != null && isTvActivateKey(event) -> {
-                        onClick()
-                        true
+            .padding(start = style.indentStep * indentLevel),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .hoverable(hoverInteraction, enabled = enabled)
+                .onFocusChanged { focused = style.focusable && (it.isFocused || it.hasFocus) }
+                .border(
+                    width = if (showFocus) style.borderFocusWidth else style.borderRestWidth,
+                    color = if (showFocus) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    shape = style.shape,
+                )
+                .clip(style.shape)
+                .background(if (showFocus) style.containerFocused else style.containerRest)
+                .then(
+                    if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick)
+                    else Modifier,
+                )
+                .onPreviewKeyEvent { event ->
+                    when {
+                        style.focusable && enabled && onClick != null && isTvActivateKey(event) -> {
+                            onClick()
+                            true
+                        }
+                        style.focusable -> handleVerticalDpadFocusMove(event, focusManager)
+                        else -> false
                     }
-                    style.focusable -> handleVerticalDpadFocusMove(event, focusManager)
-                    else -> false
                 }
-            }
-            .focusable(enabled = style.focusable)
-            .padding(horizontal = style.horizontalPadding, vertical = style.verticalPadding),
-        verticalAlignment = verticalAlignment,
-        content = content,
-    )
+                .focusable(enabled = style.focusable)
+                .padding(horizontal = style.horizontalPadding, vertical = style.verticalPadding),
+            verticalAlignment = verticalAlignment,
+            content = content,
+        )
+        AbsoluteCinemaEverywhereFrame(
+            visible = hovered || focused,
+            cornerRadius = SETTINGS_ROW_RADIUS,
+        )
+    }
 }
 
 /**

@@ -338,6 +338,8 @@ data class AppSettings(
     val liveSelectedOutlines: Boolean = true,
     /** Orange/blue live focus rings, independent of the selected interface accent. */
     val absoluteCinemaEffects: Boolean = false,
+    /** Extends Absolute Cinema to pointer hover and non-controller focus surfaces throughout the UI. */
+    val absoluteCinemaEverywhere: Boolean = false,
     val dynamicColor: Boolean = false,
     val uiAccent: UiAccent = UiAccent.OpenNow,
     /** Shows a user-managed shelf of installed Android apps above the cloud Library. */

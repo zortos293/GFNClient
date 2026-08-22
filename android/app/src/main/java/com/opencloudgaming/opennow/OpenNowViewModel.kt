@@ -169,6 +169,8 @@ data class OpenNowUiState(
     val libraryFilterIds: List<String> = emptyList(),
     val librarySortId: String = LIBRARY_SORT_DEFAULT,
     val loadingGames: Boolean = false,
+    /** True only while the selected Store search/sort/filter combination has no cached result. */
+    val catalogQueryLoading: Boolean = false,
     val settingsRefreshing: Boolean = false,
     val settingsRouteTarget: SettingsRouteTarget? = null,
     val settings: AppSettings = AppSettings(),
@@ -215,6 +217,17 @@ internal fun OpenNowUiState.isAndroidUpdateCheckBlockedByStream(): Boolean =
 internal fun OpenNowUiState.isNativeStreamReady(): Boolean =
     streamStatus in setOf("connecting", "streaming") &&
         streamSession?.isReadyForStream() == true
+
+/**
+ * Native-touch capability is a local catalogue filter, so mobile must inspect every server page
+ * before applying it. Other mobile browsing remains bounded, and TV retains its smaller startup
+ * budget even if a saved mobile filter is restored there.
+ */
+internal fun catalogPageLimit(androidTvProfile: Boolean, filterIds: List<String>): Int = when {
+    androidTvProfile -> 1
+    CATALOG_FILTER_TOUCHSCREEN in filterIds -> MAX_CATALOG_REQUEST_PAGES
+    else -> 3
+}
 
 class OpenNowViewModel(application: Application) : AndroidViewModel(application) {
     private val openNowApplication = application as OpenNowApplication
@@ -1276,6 +1289,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         libraryGames = emptyList(),
                         catalogResult = CatalogBrowseResult(emptyList()),
                         libraryFilterIds = emptyList(),
+                        catalogQueryLoading = false,
                         selectedGame = null,
                         activeSession = null,
                         activeSessionDecision = null,
@@ -1318,6 +1332,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 games = emptyList(),
                 libraryGames = emptyList(),
                 libraryFilterIds = emptyList(),
+                catalogQueryLoading = false,
                 streamSession = null,
                 activeStreamSettings = null,
                 activeSession = null,
@@ -1337,7 +1352,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setCatalogSearch(query: String) {
-        _state.update { it.copy(catalogSearch = query) }
+        _state.update { it.copy(catalogSearch = query, catalogQueryLoading = true) }
         if (query.isNotBlank()) {
             OpenNowAnalytics.capture(
                 event = "catalog_searched",
@@ -1373,7 +1388,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setCatalogSort(sortId: String) {
-        _state.update { it.copy(catalogSortId = sortId) }
+        _state.update { it.copy(catalogSortId = sortId, catalogQueryLoading = true) }
         settingsStore.update { it.copy(catalogSortId = sortId) }
         refreshCatalogDebounced()
     }
@@ -1383,7 +1398,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         val nextFilters = state.value.catalogFilterIds.let { current ->
             if (filterId in current) current - filterId else current + filterId
         }
-        _state.update { it.copy(catalogFilterIds = nextFilters) }
+        _state.update { it.copy(catalogFilterIds = nextFilters, catalogQueryLoading = true) }
         settingsStore.update { it.copy(catalogFilterIds = nextFilters) }
         OpenNowAnalytics.capture(
             event = "catalog_filter_applied",
@@ -1396,7 +1411,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearCatalogFilters() {
-        _state.update { it.copy(catalogFilterIds = emptyList()) }
+        _state.update { it.copy(catalogFilterIds = emptyList(), catalogQueryLoading = true) }
         settingsStore.update { it.copy(catalogFilterIds = emptyList()) }
         refreshCatalogDebounced()
     }
@@ -3127,7 +3142,6 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private companion object {
-        const val TV_INITIAL_CATALOG_PAGE_COUNT = 1
         const val TV_INITIAL_CATALOG_GAME_LIMIT = 120
         const val TV_LAYOUT_PROFILE_VERSION = 1
     }
@@ -3157,6 +3171,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
         } else {
             unboundedCachedCatalog
         }
+        val hasScopedCatalogQuery =
+            initialCatalogSearch.isNotBlank() ||
+                initialCatalogFilterIds.isNotEmpty() ||
+                initialCatalogSortId != "relevance"
         if (cachedMain != null || cachedLibrary != null || cachedCatalog != null) {
             val cachedMergedLibrary = withContext(Dispatchers.Default) {
                 mergeKnownLibraryGames(
@@ -3167,10 +3185,23 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             }
             _state.update {
                 it.copy(
-                    games = cachedCatalog?.games ?: it.games.ifEmpty { cachedMain.orEmpty() },
+                    games = cachedCatalog?.games ?: if (hasScopedCatalogQuery) {
+                        emptyList()
+                    } else {
+                        it.games.ifEmpty { cachedMain.orEmpty() }
+                    },
                     libraryGames = cachedMergedLibrary.ifEmpty { cachedLibrary ?: it.libraryGames },
-                    catalogResult = cachedCatalog ?: it.catalogResult,
-                    loadingGames = keepRefreshVisibleWithCache,
+                    catalogResult = cachedCatalog ?: if (hasScopedCatalogQuery) {
+                        it.catalogResult.copy(games = emptyList())
+                    } else {
+                        it.catalogResult
+                    },
+                    loadingGames = if (hasScopedCatalogQuery && cachedCatalog == null) {
+                        true
+                    } else {
+                        keepRefreshVisibleWithCache
+                    },
+                    catalogQueryLoading = hasScopedCatalogQuery && cachedCatalog == null,
                     error = null,
                 )
             }
@@ -3220,7 +3251,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             searchQuery = initialCatalogSearch,
                             sortId = initialCatalogSortId,
                             filterIds = initialCatalogFilterIds,
-                            maxPages = if (androidTvProfile) TV_INITIAL_CATALOG_PAGE_COUNT else 3,
+                            maxPages = catalogPageLimit(
+                                androidTvProfile = androidTvProfile,
+                                filterIds = initialCatalogFilterIds,
+                            ),
                             includeSupplementalPublicVariants = includeSupplementalPublicVariants,
                         ).also { catalog ->
                             _state.update { current ->
@@ -3303,6 +3337,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                             libraryGames = library,
                             catalogResult = catalog,
                             loadingGames = false,
+                            catalogQueryLoading = false,
                             error = null,
                         )
                     } else {
@@ -3322,6 +3357,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         current.catalogResult.games.isNotEmpty()
                     current.copy(
                         loadingGames = false,
+                        catalogQueryLoading = false,
                         error = if (hasUsableGames) null else error.message ?: "Failed to load games",
                     )
                 }
@@ -3354,12 +3390,22 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 unboundedCachedCatalog
             }
-            _state.update {
-                it.copy(
-                    loadingGames = cachedCatalog == null,
-                    catalogResult = cachedCatalog ?: it.catalogResult,
-                    games = cachedCatalog?.games ?: it.games,
-                )
+            _state.update { current ->
+                if (
+                    current.catalogSearch == searchQuery &&
+                    current.catalogSortId == sortId &&
+                    current.catalogFilterIds == filterIds
+                ) {
+                    current.copy(
+                        loadingGames = cachedCatalog == null,
+                        catalogQueryLoading = cachedCatalog == null,
+                        catalogResult = cachedCatalog ?: current.catalogResult.copy(games = emptyList()),
+                        games = cachedCatalog?.games ?: emptyList(),
+                        error = null,
+                    )
+                } else {
+                    current
+                }
             }
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -3369,7 +3415,10 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         searchQuery = searchQuery,
                         sortId = sortId,
                         filterIds = filterIds,
-                        maxPages = if (androidTvProfile) TV_INITIAL_CATALOG_PAGE_COUNT else 3,
+                        maxPages = catalogPageLimit(
+                            androidTvProfile = androidTvProfile,
+                            filterIds = filterIds,
+                        ),
                         includeSupplementalPublicVariants = !androidTvProfile,
                     )
                 }
@@ -3396,6 +3445,7 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                         it.copy(
                             catalogResult = result,
                             loadingGames = false,
+                            catalogQueryLoading = false,
                             games = result.games,
                             libraryGames = mergedLibrary.ifEmpty { it.libraryGames },
                         )
@@ -3405,7 +3455,21 @@ class OpenNowViewModel(application: Application) : AndroidViewModel(application)
                 }
             }.onFailure { error ->
                 if (error is CancellationException) return@onFailure
-                _state.update { it.copy(error = if (cachedCatalog != null) null else error.message ?: "Catalog refresh failed", loadingGames = false) }
+                _state.update { current ->
+                    if (
+                        current.catalogSearch == searchQuery &&
+                        current.catalogSortId == sortId &&
+                        current.catalogFilterIds == filterIds
+                    ) {
+                        current.copy(
+                            error = if (cachedCatalog != null) null else error.message ?: "Catalog refresh failed",
+                            loadingGames = false,
+                            catalogQueryLoading = false,
+                        )
+                    } else {
+                        current
+                    }
+                }
             }
         }
     }

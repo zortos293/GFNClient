@@ -191,6 +191,26 @@ internal fun BoxScope.ControllerFocusFrame(
     }
 }
 
+/**
+ * The opt-in, everywhere variant deliberately stays interaction-driven: only the surface currently
+ * under a pointer or focus receives another animated canvas. This keeps the exuberant look without
+ * running an infinite transition for every visible control at once.
+ */
+@Composable
+internal fun BoxScope.AbsoluteCinemaEverywhereFrame(
+    visible: Boolean,
+    cornerRadius: Dp,
+    verticalInset: Dp = 0.dp,
+) {
+    ControllerFocusFrame(
+        visible = visible && LocalAbsoluteCinemaEverywhere.current,
+        cornerRadius = cornerRadius,
+        tint = LocalActiveSelectionColor.current,
+        secondaryTint = LocalActiveSelectionSecondaryColor.current,
+        verticalInset = verticalInset,
+    )
+}
+
 private fun Color.focusShade(): Color = Color(
     red = red * 0.62f,
     green = green * 0.62f,

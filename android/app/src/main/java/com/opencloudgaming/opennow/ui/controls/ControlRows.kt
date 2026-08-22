@@ -1,6 +1,10 @@
 package com.opencloudgaming.opennow.ui.controls
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,6 +33,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.opencloudgaming.opennow.R
+import com.opencloudgaming.opennow.AbsoluteCinemaEverywhereFrame
 import com.opencloudgaming.opennow.formatSliderValue
 import com.opencloudgaming.opennow.handleSliderDpadInput
 import com.opencloudgaming.opennow.ui.theme.numeric
@@ -173,80 +178,89 @@ internal fun ControlSliderRow(
     var descriptionExpanded by remember(label) { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
+    val hoverInteraction = remember { MutableInteractionSource() }
+    val hovered by hoverInteraction.collectIsHoveredAsState()
     val showFocus = style.showFocusRing && focused
     val quantize = { raw: Float -> ((raw / step).roundToInt() * step).coerceIn(min, max) }
-    Column(
-        modifier
-            .fillMaxWidth()
-            .controlRowContainer(style = style, showFocus = showFocus),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                label,
-                Modifier.weight(1f),
-                color = MaterialTheme.colorScheme.onSurface,
-                style = style.labelStyle,
-                fontWeight = style.labelWeight,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                formatSliderValue(local, min, max, step, unit, valueFormatter),
-                color = style.supportingColor,
-                // Tabular figures so the readout does not reflow while the thumb is dragged.
-                style = MaterialTheme.typography.labelLarge.numeric(),
-            )
-            if (!description.isNullOrBlank()) {
-                IconButton(
-                    onClick = { descriptionExpanded = !descriptionExpanded },
-                    modifier = Modifier.width(40.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_help),
-                        contentDescription = stringResource(
-                            if (descriptionExpanded) R.string.control_hide_description
-                            else R.string.control_show_description,
-                        ),
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
+    Box(modifier.fillMaxWidth()) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .hoverable(hoverInteraction)
+                .controlRowContainer(style = style, showFocus = showFocus),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    label,
+                    Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = style.labelStyle,
+                    fontWeight = style.labelWeight,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    formatSliderValue(local, min, max, step, unit, valueFormatter),
+                    color = style.supportingColor,
+                    // Tabular figures so the readout does not reflow while the thumb is dragged.
+                    style = MaterialTheme.typography.labelLarge.numeric(),
+                )
+                if (!description.isNullOrBlank()) {
+                    IconButton(
+                        onClick = { descriptionExpanded = !descriptionExpanded },
+                        modifier = Modifier.width(40.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_help),
+                            contentDescription = stringResource(
+                                if (descriptionExpanded) R.string.control_hide_description
+                                else R.string.control_show_description,
+                            ),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
-        }
-        if (descriptionExpanded && !description.isNullOrBlank()) {
-            Text(
-                description,
-                color = style.supportingColor.copy(alpha = 0.86f),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Slider(
-            modifier = Modifier
-                .onFocusChanged { focused = style.focusable && it.isFocused }
-                .onPreviewKeyEvent {
-                    handleSliderDpadInput(it, local, min, max, step, focusManager) { next ->
-                        local = quantize(next)
-                        onChange(local)
-                    }
+            if (descriptionExpanded && !description.isNullOrBlank()) {
+                Text(
+                    description,
+                    color = style.supportingColor.copy(alpha = 0.86f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Slider(
+                modifier = Modifier
+                    .onFocusChanged { focused = style.focusable && it.isFocused }
+                    .onPreviewKeyEvent {
+                        handleSliderDpadInput(it, local, min, max, step, focusManager) { next ->
+                            local = quantize(next)
+                            onChange(local)
+                        }
+                    },
+                value = local,
+                onValueChange = {
+                    local = quantize(it)
+                    onChangePreview?.invoke(local)
                 },
-            value = local,
-            onValueChange = {
-                local = quantize(it)
-                onChangePreview?.invoke(local)
-            },
-            onValueChangeFinished = { onChange(local) },
-            valueRange = min..max,
-        )
-        descriptionProvider?.invoke(local)?.let { description ->
-            Spacer(Modifier.height(2.dp))
-            Text(
-                description,
-                color = style.supportingColor.copy(alpha = 0.8f),
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                onValueChangeFinished = { onChange(local) },
+                valueRange = min..max,
             )
+            descriptionProvider?.invoke(local)?.let { description ->
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    description,
+                    color = style.supportingColor.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
+        AbsoluteCinemaEverywhereFrame(
+            visible = hovered || focused,
+            cornerRadius = 14.dp,
+        )
     }
 }

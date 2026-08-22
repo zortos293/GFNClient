@@ -722,7 +722,7 @@ internal fun AndroidUpdatePromptDialog(
                 Text(
                     if (update.status == AndroidUpdateStatus.Downloaded) {
                         "$version is downloaded and ready to install."
-                    } else if (update.installSource.isGooglePlay) {
+                    } else if (update.installSource.usesGooglePlayUpdates) {
                         "You are on build ${update.currentVersionCode}. Google Play has ${version.lowercase()}."
                     } else {
                         "$version is available for this device."
@@ -744,7 +744,7 @@ internal fun AndroidUpdatePromptDialog(
                 Text(
                     when {
                         update.status == AndroidUpdateStatus.Downloaded -> "Install"
-                        update.installSource.isGooglePlay -> "Update"
+                        update.installSource.usesGooglePlayUpdates -> "Update"
                         else -> "Download"
                     },
                 )

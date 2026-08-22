@@ -60,18 +60,22 @@ enum class AndroidUpdateStatus {
 data class AndroidAppInstallSource(
     val installerPackageNames: Set<String> = emptySet(),
     val apkUpdatesSupportedByBuild: Boolean = BuildConfig.APK_UPDATES_SUPPORTED,
+    val playStoreReleaseBuild: Boolean = BuildConfig.PLAY_STORE_RELEASE,
 ) {
     val isGooglePlay: Boolean
         get() = installerPackageNames.any(::isGooglePlayInstallerPackage)
+
+    val usesGooglePlayUpdates: Boolean
+        get() = playStoreReleaseBuild || isGooglePlay
 
     val distributionKind: String
         get() = if (isGooglePlay) "play-store" else "apk"
 
     val buildDistributionKind: String
-        get() = if (apkUpdatesSupportedByBuild) "apk" else "play-release"
+        get() = if (playStoreReleaseBuild) "play-release" else "apk"
 
     val allowsApkUpdates: Boolean
-        get() = apkUpdatesSupportedByBuild && !isGooglePlay
+        get() = apkUpdatesSupportedByBuild && !usesGooglePlayUpdates
 
     val displayName: String
         get() = when {
@@ -118,7 +122,7 @@ data class AndroidUpdateState(
         get() = installSource.allowsApkUpdates
 
     val updateChecksSupported: Boolean
-        get() = apkUpdatesAllowed || installSource.isGooglePlay
+        get() = apkUpdatesAllowed || installSource.usesGooglePlayUpdates
 
     val canCheck: Boolean
         get() = updateChecksSupported && status != AndroidUpdateStatus.Checking && status != AndroidUpdateStatus.Downloading
@@ -130,7 +134,7 @@ data class AndroidUpdateState(
         get() = apkUpdatesAllowed && status == AndroidUpdateStatus.Downloaded
 
     val canOpenPlayStore: Boolean
-        get() = installSource.isGooglePlay && status == AndroidUpdateStatus.Available
+        get() = installSource.usesGooglePlayUpdates && status == AndroidUpdateStatus.Available
 }
 
 internal fun AndroidUpdateState.shouldRunAutomaticCheck(): Boolean {
@@ -161,7 +165,7 @@ internal fun androidUpdateNoticeKey(update: AndroidUpdateState): String? =
 
 internal fun androidUpdateUnavailableMessage(installSource: AndroidAppInstallSource): String =
     when {
-        installSource.isGooglePlay -> "Ready to check Google Play for updates."
+        installSource.usesGooglePlayUpdates -> "Ready to check Google Play for updates."
         !installSource.apkUpdatesSupportedByBuild -> "APK self-updates are disabled in this Play release."
         else -> "Ready to check for sideload APK updates."
     }
@@ -201,7 +205,7 @@ class AndroidAppUpdater(
     private var downloadedApk: File? = null
 
     suspend fun checkForUpdate(sourceUrl: String = ANDROID_UPDATE_SOURCE_URL) {
-        if (_state.value.installSource.isGooglePlay) {
+        if (_state.value.installSource.usesGooglePlayUpdates) {
             checkForPlayStoreUpdate()
             return
         }
@@ -281,7 +285,7 @@ class AndroidAppUpdater(
     }
 
     fun openPlayStoreListing() {
-        if (!_state.value.installSource.isGooglePlay) return
+        if (!_state.value.installSource.usesGooglePlayUpdates) return
         val marketIntent = Intent(
             Intent.ACTION_VIEW,
             Uri.parse("market://details?id=${BuildConfig.APPLICATION_ID}"),

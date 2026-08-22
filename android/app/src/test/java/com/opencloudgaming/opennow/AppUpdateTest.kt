@@ -172,6 +172,7 @@ class AppUpdateTest {
         )
 
         assertTrue(update.installSource.isGooglePlay)
+        assertTrue(update.installSource.usesGooglePlayUpdates)
         assertFalse(update.apkUpdatesAllowed)
         assertTrue(update.updateChecksSupported)
         assertTrue(update.canCheck)
@@ -227,19 +228,28 @@ class AppUpdateTest {
     }
 
     @Test
-    fun playReleaseBuildDisablesApkUpdaterEvenWhenSideloaded() {
+    fun playReleaseBuildUsesPlayChecksEvenWithoutInstallerMetadata() {
         val update = AndroidUpdateState(
             status = AndroidUpdateStatus.Available,
-            installSource = AndroidAppInstallSource(installerPackageNames = emptySet(), apkUpdatesSupportedByBuild = false),
+            installSource = AndroidAppInstallSource(
+                installerPackageNames = emptySet(),
+                apkUpdatesSupportedByBuild = false,
+                playStoreReleaseBuild = true,
+            ),
             availableVersionName = "0.6.7",
             availableVersionCode = 22,
         )
 
         assertFalse(update.installSource.isGooglePlay)
+        assertTrue(update.installSource.usesGooglePlayUpdates)
         assertFalse(update.apkUpdatesAllowed)
+        assertTrue(update.updateChecksSupported)
+        assertTrue(update.canCheck)
         assertFalse(update.canDownload)
+        assertTrue(update.canOpenPlayStore)
         assertFalse(update.shouldRunAutomaticCheck())
-        assertEquals("APK self-updates are disabled in this Play release.", androidUpdateUnavailableMessage(update.installSource))
+        assertTrue(update.copy(status = AndroidUpdateStatus.Idle).shouldRunAutomaticCheck())
+        assertEquals("Ready to check Google Play for updates.", androidUpdateUnavailableMessage(update.installSource))
     }
 
     @Test
@@ -271,6 +281,7 @@ class AppUpdateTest {
             installSource = AndroidAppInstallSource(
                 installerPackageNames = setOf(GOOGLE_PLAY_STORE_PACKAGE),
                 apkUpdatesSupportedByBuild = false,
+                playStoreReleaseBuild = true,
             ),
         )
 

@@ -45,6 +45,7 @@ class AndroidTvUiBehaviorTest {
         assertEquals(Color.White, style.secondaryColor)
         assertFalse(style.enabled)
         assertFalse(style.absoluteCinemaActive)
+        assertFalse(style.absoluteCinemaEverywhere)
     }
 
     @Test
@@ -56,17 +57,21 @@ class AndroidTvUiBehaviorTest {
         val cinemaWithoutController = cinema.activeSelectionEffectStyle(physicalControllerConnected = false)
         val cinemaWithController = cinema.activeSelectionEffectStyle(physicalControllerConnected = true)
         val switchStyle = switch.activeSelectionEffectStyle(physicalControllerConnected = false)
+        val orangeStyle = AppSettings(uiAccent = UiAccent.AbsoluteCinema)
+            .activeSelectionEffectStyle(physicalControllerConnected = false)
 
         assertEquals(OpenNowPalette.AccentHotPink, hotPink.uiAccent.color)
         assertEquals(OpenNowPalette.AccentHotPink, hotPinkStyle.color)
         assertEquals(OpenNowPalette.AccentHotPink, cinemaWithoutController.color)
         assertFalse(cinemaWithoutController.absoluteCinemaActive)
-        assertEquals(OpenNowPalette.AccentCinemaOrange, cinemaWithController.color)
-        assertEquals(OpenNowPalette.AccentCinemaBlue, cinemaWithController.secondaryColor)
+        assertEquals(OpenNowPalette.AccentHotPink, cinemaWithController.color)
+        assertEquals(OpenNowPalette.AccentHotPink, cinemaWithController.secondaryColor)
         assertTrue(cinemaWithController.absoluteCinemaActive)
         assertEquals(OpenNowPalette.AccentHotPink, cinema.uiAccent.color)
         assertEquals(OpenNowPalette.AccentSwitchRed, switchStyle.color)
         assertEquals(OpenNowPalette.AccentSwitchBlue, switchStyle.secondaryColor)
+        assertEquals(OpenNowPalette.AccentCinemaOrange, orangeStyle.color)
+        assertEquals(OpenNowPalette.AccentCinemaBlue, orangeStyle.secondaryColor)
     }
 
     @Test
@@ -81,6 +86,25 @@ class AndroidTvUiBehaviorTest {
         val absoluteCinema = AppSettings(liveSelectedOutlines = false, absoluteCinemaEffects = true)
         assertFalse(absoluteCinema.activeSelectionEffectStyle(physicalControllerConnected = false).enabled)
         assertTrue(absoluteCinema.activeSelectionEffectStyle(physicalControllerConnected = true).enabled)
+    }
+
+    @Test
+    fun crazyCinemaRemovesTheControllerGateButStillRequiresAbsoluteCinema() {
+        val crazy = AppSettings(
+            liveSelectedOutlines = false,
+            absoluteCinemaEffects = true,
+            absoluteCinemaEverywhere = true,
+        ).activeSelectionEffectStyle(physicalControllerConnected = false)
+        val orphanedToggle = AppSettings(
+            absoluteCinemaEffects = false,
+            absoluteCinemaEverywhere = true,
+        ).activeSelectionEffectStyle(physicalControllerConnected = false)
+
+        assertTrue(crazy.enabled)
+        assertTrue(crazy.absoluteCinemaActive)
+        assertTrue(crazy.absoluteCinemaEverywhere)
+        assertFalse(orphanedToggle.absoluteCinemaActive)
+        assertFalse(orphanedToggle.absoluteCinemaEverywhere)
     }
 
     @Test
@@ -326,9 +350,43 @@ class AndroidTvUiBehaviorTest {
     }
 
     @Test
-    fun storeSearchHidesDiscoverySections() {
-        assertTrue(shouldShowStoreDiscoverySections(searchActive = false))
-        assertFalse(shouldShowStoreDiscoverySections(searchActive = true))
+    fun storeSearchAndFiltersHideDiscoverySections() {
+        assertTrue(shouldShowStoreDiscoverySections(searchActive = false, filterActive = false))
+        assertFalse(shouldShowStoreDiscoverySections(searchActive = true, filterActive = false))
+        assertFalse(shouldShowStoreDiscoverySections(searchActive = false, filterActive = true))
+        assertFalse(shouldShowStoreDiscoverySections(searchActive = true, filterActive = true))
+    }
+
+    @Test
+    fun unresolvedCatalogQueryReplacesOldCardsWithShimmerButCachedResultsStayVisible() {
+        assertTrue(
+            shouldShowCatalogLoadingPlaceholder(
+                queryLoading = true,
+                loadingGames = true,
+                hasVisibleGames = true,
+            ),
+        )
+        assertFalse(
+            shouldShowCatalogLoadingPlaceholder(
+                queryLoading = false,
+                loadingGames = false,
+                hasVisibleGames = true,
+            ),
+        )
+        assertFalse(
+            shouldShowCatalogLoadingPlaceholder(
+                queryLoading = false,
+                loadingGames = true,
+                hasVisibleGames = true,
+            ),
+        )
+        assertTrue(
+            shouldShowCatalogLoadingPlaceholder(
+                queryLoading = false,
+                loadingGames = true,
+                hasVisibleGames = false,
+            ),
+        )
     }
 
     @Test

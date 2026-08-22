@@ -18,6 +18,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertTrue(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
+        assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
         assertTrue(settings.localAppPackageNames.isEmpty())
         assertEquals(StreamKeyboardButtonPosition(), settings.streamKeyboardButtonPosition)
@@ -50,6 +51,7 @@ class AppSettingsDefaultsTest {
         assertFalse(settings.showFavoriteIconOnGameCards)
         assertTrue(settings.liveSelectedOutlines)
         assertFalse(settings.absoluteCinemaEffects)
+        assertFalse(settings.absoluteCinemaEverywhere)
         assertFalse(settings.localAppsEnabled)
         assertTrue(settings.localAppPackageNames.isEmpty())
         assertTrue(settings.showSessionReportAfterStream)
@@ -94,13 +96,26 @@ class AppSettingsDefaultsTest {
     }
 
     @Test
-    fun legacyAbsoluteCinemaAccentMigratesToIndependentEffectToggle() {
+    fun absoluteCinemaAccentRemainsIndependentFromEffectToggle() {
         val cinema = OpenNowJson.decodeFromString<AppSettings>("""{"uiAccent":"AbsoluteCinema"}""").normalizedForAndroid()
         val switch = OpenNowJson.decodeFromString<AppSettings>("""{"uiAccent":"Switch"}""")
 
-        assertEquals(UiAccent.OpenNow, cinema.uiAccent)
-        assertTrue(cinema.absoluteCinemaEffects)
+        assertEquals(UiAccent.AbsoluteCinema, cinema.uiAccent)
+        assertFalse(cinema.absoluteCinemaEffects)
         assertEquals(UiAccent.Switch, switch.uiAccent)
+    }
+
+    @Test
+    fun crazyCinemaPersistsOnlyAsAnAbsoluteCinemaSuboption() {
+        val enabled = OpenNowJson.decodeFromString<AppSettings>(
+            """{"absoluteCinemaEffects":true,"absoluteCinemaEverywhere":true}""",
+        ).normalizedForAndroid()
+        val orphaned = OpenNowJson.decodeFromString<AppSettings>(
+            """{"absoluteCinemaEverywhere":true}""",
+        ).normalizedForAndroid()
+
+        assertTrue(enabled.absoluteCinemaEverywhere)
+        assertFalse(orphaned.absoluteCinemaEverywhere)
     }
 
     @Test

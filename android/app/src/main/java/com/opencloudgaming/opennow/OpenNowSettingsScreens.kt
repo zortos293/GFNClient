@@ -1061,9 +1061,7 @@ private fun SettingsContent(
                 NumberSlider("Right controls vertical offset", settings.androidTouch.rightOffsetYDp, -160f, 160f, 2f, unit = "dp") { value -> viewModel.updateSettings(settings.copy(androidTouch = settings.androidTouch.copy(rightOffsetYDp = value))) }
             }
     CategorySettingsSection(selectedCategory, SettingsCategory.Interface, searchQuery, stringResource(R.string.settings_section_appearance), "interface", "ui", "appearance", "dynamic color", "system colors", "accent", "expressive", "catalog", "background", "wallpaper", "image", "custom", "tv", "safe area", "screen padding", "overscan") {
-                val accentOptions = UiAccent.entries
-                    .filterNot { it == UiAccent.AbsoluteCinema }
-                    .map { it to uiAccentLabel(it) }
+                val accentOptions = UiAccent.entries.map { it to uiAccentLabel(it) }
                 SettingSwitch(stringResource(R.string.settings_dynamic_color), settings.dynamicColor) { viewModel.updateSettings(settings.copy(dynamicColor = it)) }
                 ChoiceRow(
                     label = stringResource(R.string.settings_accent),
@@ -1081,7 +1079,21 @@ private fun SettingsContent(
                     checked = settings.absoluteCinemaEffects,
                     description = stringResource(R.string.settings_absolute_cinema_effects_desc),
                 ) { enabled ->
-                    viewModel.updateSettings(settings.copy(absoluteCinemaEffects = enabled))
+                    viewModel.updateSettings(
+                        settings.copy(
+                            absoluteCinemaEffects = enabled,
+                            absoluteCinemaEverywhere = settings.absoluteCinemaEverywhere && enabled,
+                        ),
+                    )
+                }
+                SettingSwitch(
+                    label = stringResource(R.string.settings_im_crazy),
+                    checked = settings.absoluteCinemaEverywhere,
+                    enabled = settings.absoluteCinemaEffects,
+                    description = stringResource(R.string.settings_im_crazy_desc),
+                    indentLevel = 1,
+                ) { enabled ->
+                    viewModel.updateSettings(settings.copy(absoluteCinemaEverywhere = enabled))
                 }
                 SettingSwitch(
                     label = stringResource(R.string.settings_expressive_ui),

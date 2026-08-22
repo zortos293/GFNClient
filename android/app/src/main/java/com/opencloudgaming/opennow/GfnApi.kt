@@ -188,15 +188,16 @@ private val ALLIANCE_CLOUD_MATCH_IDENTITY = CloudMatchClientIdentity(
 // NVIDIA's Browser/WebRTC identity preserves the standard mobile allocation, but CloudMatch limits
 // its mode matrix and rejects HDR requests from that client class. Use the internally consistent
 // desktop-native identity only for explicit gamepad launches that need the high-quality mode
-// matrix. NVIDIA SHIELD is the one TV exception: its Android/native allocation silently provisioned
-// 1080p for a captured 4K request. Other Android TVs retain the Android/native identity. Generic
-// follow-up requests stay on the browser identity so they cannot change an existing allocation.
+// matrix. SHIELD and the third-generation Fire TV Cube are the known TV exceptions whose
+// Android/native allocations silently provisioned 1080p for higher-resolution requests. Other
+// Android TVs retain the Android/native identity. Generic follow-up requests stay on the browser
+// identity so they cannot change an existing allocation.
 private fun cloudMatchClientIdentity(
     streamingBaseUrl: String?,
     appLaunchMode: Int? = null,
     preferNativeDesktopMode: Boolean = false,
     isAndroidTv: Boolean = false,
-    isNvidiaShield: Boolean = false,
+    useDesktopNativeTvIdentity: Boolean = false,
 ): CloudMatchClientIdentity {
     // Touch sessions use the desktop-native CloudMatch identity (NVIDIA-CLASSIC / NATIVE)
     // with Android os + TABLET device type, so the server allocates the full desktop
@@ -207,7 +208,7 @@ private fun cloudMatchClientIdentity(
     }
     val requestedNativeIdentity = when {
         appLaunchMode == null || !preferNativeDesktopMode -> null
-        isAndroidTv && isNvidiaShield -> NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
+        isAndroidTv && useDesktopNativeTvIdentity -> NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
         isAndroidTv -> NVIDIA_NATIVE_TV_CLOUD_MATCH_IDENTITY
         else -> NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY
     }
@@ -232,6 +233,23 @@ internal fun isNvidiaShieldTvDevice(
     androidTvProfile &&
         manufacturer?.trim()?.equals("NVIDIA", ignoreCase = true) == true &&
         model?.contains("SHIELD", ignoreCase = true) == true
+
+internal fun isThirdGenerationFireTvCubeDevice(
+    androidTvProfile: Boolean,
+    manufacturer: String?,
+    model: String?,
+): Boolean =
+    androidTvProfile &&
+        manufacturer?.trim()?.equals("Amazon", ignoreCase = true) == true &&
+        model?.trim()?.equals("AFTGAZL", ignoreCase = true) == true
+
+internal fun usesDesktopNativeTvCloudMatchIdentity(
+    androidTvProfile: Boolean,
+    manufacturer: String?,
+    model: String?,
+): Boolean =
+    isNvidiaShieldTvDevice(androidTvProfile, manufacturer, model) ||
+        isThirdGenerationFireTvCubeDevice(androidTvProfile, manufacturer, model)
 
 /**
  * Server-side values, chosen when the session is created. They decide which virtual input devices
@@ -277,7 +295,7 @@ internal fun gfnLocaleForAndroidLanguageTag(languageTag: String): String {
 }
 private const val DEFAULT_CATALOG_FETCH_COUNT = 120
 private const val MAX_CATALOG_PAGES = 3
-private const val MAX_CATALOG_REQUEST_PAGES = 50
+internal const val MAX_CATALOG_REQUEST_PAGES = 50
 private const val DEFAULT_SORT_ID = "relevance"
 private const val LIBRARY_APPS_FETCH_COUNT = 200
 private const val MAX_LIBRARY_APPS_PAGES = 25
@@ -537,14 +555,14 @@ internal fun buildMinimalClaimRequestBody(
     streamingBaseUrl: String? = null,
     appLaunchMode: Int = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
     isAndroidTv: Boolean = false,
-    isNvidiaShield: Boolean = false,
+    useDesktopNativeTvIdentity: Boolean = false,
 ): JsonObject {
     val identity = cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings?.requiresNativeDesktopCloudMatchMode() == true,
         isAndroidTv = isAndroidTv,
-        isNvidiaShield = isNvidiaShield,
+        useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
     val profile = settings?.requestProfile()
     return buildJsonObject {
@@ -817,14 +835,14 @@ internal fun cloudMatchHeaders(
     appLaunchMode: Int? = null,
     preferNativeDesktopMode: Boolean = false,
     isAndroidTv: Boolean = false,
-    isNvidiaShield: Boolean = false,
+    useDesktopNativeTvIdentity: Boolean = false,
 ): Headers {
     val identity = cloudMatchClientIdentity(
         streamingBaseUrl = streamingBaseUrl,
         appLaunchMode = appLaunchMode,
         preferNativeDesktopMode = preferNativeDesktopMode,
         isAndroidTv = isAndroidTv,
-        isNvidiaShield = isNvidiaShield,
+        useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
     )
     val userAgent = when {
         identity == NVIDIA_NATIVE_CLOUD_MATCH_IDENTITY -> identity.userAgent
@@ -2725,7 +2743,7 @@ class GfnSessionRepository(
     private val physicalDisplayResolutionProvider: () -> Pair<Int, Int>? = { null },
     private val diagnosticsSink: (GfnSessionDiagnosticResponse) -> Unit = {},
     private val isAndroidTv: Boolean = false,
-    private val isNvidiaShield: Boolean = isNvidiaShieldTvDevice(
+    private val useDesktopNativeTvIdentity: Boolean = usesDesktopNativeTvCloudMatchIdentity(
         androidTvProfile = isAndroidTv,
         manufacturer = Build.MANUFACTURER,
         model = Build.MODEL,
@@ -2772,7 +2790,7 @@ class GfnSessionRepository(
                     appLaunchMode = appLaunchMode,
                     preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                     isAndroidTv = isAndroidTv,
-                    isNvidiaShield = isNvidiaShield,
+                    useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                 ),
             )
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
@@ -2959,7 +2977,7 @@ class GfnSessionRepository(
                         appLaunchMode = appLaunchMode,
                         preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
                         isAndroidTv = isAndroidTv,
-                        isNvidiaShield = isNvidiaShield,
+                        useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
                     ),
                 )
                 .put(claimBody.toString().toRequestBody(JSON_MEDIA_TYPE))
@@ -3090,7 +3108,7 @@ class GfnSessionRepository(
             appLaunchMode = appLaunchMode,
             preferNativeDesktopMode = if (appLaunchMode == GfnAppLaunchMode.TOUCH_FRIENDLY) false else settings.requiresNativeDesktopCloudMatchMode(),
             isAndroidTv = isAndroidTv,
-            isNvidiaShield = isNvidiaShield,
+            useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
         )
         val profile = settings.requestProfile()
         return buildJsonObject {
@@ -3145,7 +3163,7 @@ class GfnSessionRepository(
             streamingBaseUrl = streamingBaseUrl,
             appLaunchMode = appLaunchMode,
             isAndroidTv = isAndroidTv,
-            isNvidiaShield = isNvidiaShield,
+            useDesktopNativeTvIdentity = useDesktopNativeTvIdentity,
         )
 
     private suspend fun toSessionInfo(zone: String, base: String, payload: JsonObject, clientId: String, deviceId: String): SessionInfo {

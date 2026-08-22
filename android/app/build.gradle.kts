@@ -60,13 +60,14 @@ android {
         applicationId = "com.opencloudgaming.opennow"
         minSdk = 23
         targetSdk = 36
-        versionCode = 91
-        versionName = "1.3.5"
+        versionCode = 92
+        versionName = "1.3.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "POSTHOG_PROJECT_TOKEN", buildConfigString(postHogProjectToken))
         buildConfigField("String", "POSTHOG_HOST", buildConfigString(postHogHost))
         buildConfigField("boolean", "APK_UPDATES_SUPPORTED", "true")
+        buildConfigField("boolean", "PLAY_STORE_RELEASE", "false")
         buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", "true")
 
         ndk {
@@ -83,6 +84,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             buildConfigField("boolean", "APK_UPDATES_SUPPORTED", (!buildingPlayReleaseBundle).toString())
+            buildConfigField("boolean", "PLAY_STORE_RELEASE", buildingPlayReleaseBundle.toString())
             buildConfigField("boolean", "LOCAL_APP_LAUNCHER_SUPPORTED", (!buildingPlayReleaseBundle).toString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

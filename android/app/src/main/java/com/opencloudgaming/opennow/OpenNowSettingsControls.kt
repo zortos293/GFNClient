@@ -69,6 +69,7 @@ internal fun SettingSwitch(
     checked: Boolean,
     enabled: Boolean = true,
     description: String? = null,
+    indentLevel: Int = 0,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     ControlSwitchRow(
@@ -77,6 +78,7 @@ internal fun SettingSwitch(
         onCheckedChange = onCheckedChange,
         description = description,
         enabled = enabled,
+        indentLevel = indentLevel,
     )
 }
 

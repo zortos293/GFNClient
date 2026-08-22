@@ -49,6 +49,19 @@ class CatalogPresentationTest {
     }
 
     @Test
+    fun mobileTouchFilterScansTheCompleteCatalogWithoutExpandingNormalOrTvLoads() {
+        assertEquals(3, catalogPageLimit(androidTvProfile = false, filterIds = emptyList()))
+        assertEquals(
+            MAX_CATALOG_REQUEST_PAGES,
+            catalogPageLimit(androidTvProfile = false, filterIds = listOf(CATALOG_FILTER_TOUCHSCREEN)),
+        )
+        assertEquals(
+            1,
+            catalogPageLimit(androidTvProfile = true, filterIds = listOf(CATALOG_FILTER_TOUCHSCREEN)),
+        )
+    }
+
+    @Test
     fun libraryCombinesTouchAndLauncherCategoriesInsteadOfBroadeningThem() {
         val touchSteam = GameInfo(
             id = "touch-steam",

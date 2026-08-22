@@ -29,6 +29,23 @@ class GfnApiTest {
     }
 
     @Test
+    fun thirdGenerationFireTvCubeDetectionRequiresTheExactAmazonTvModel() {
+        assertTrue(isThirdGenerationFireTvCubeDevice(true, "Amazon", "AFTGAZL"))
+        assertTrue(isThirdGenerationFireTvCubeDevice(true, " amazon ", " aftgazl "))
+        assertFalse(isThirdGenerationFireTvCubeDevice(false, "Amazon", "AFTGAZL"))
+        assertFalse(isThirdGenerationFireTvCubeDevice(true, "Amazon", "AFTKA"))
+        assertFalse(isThirdGenerationFireTvCubeDevice(true, "Google", "AFTGAZL"))
+    }
+
+    @Test
+    fun desktopNativeTvAllocationIsLimitedToKnownAffectedDevices() {
+        assertTrue(usesDesktopNativeTvCloudMatchIdentity(true, "NVIDIA", "SHIELD Android TV"))
+        assertTrue(usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTGAZL"))
+        assertFalse(usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTKA"))
+        assertFalse(usesDesktopNativeTvCloudMatchIdentity(true, "Google", "Chromecast"))
+    }
+
+    @Test
     fun recoveryClaimDoesNotResumeAnAlreadyReadySession() {
         assertFalse(shouldResumeClaimedSession(status = 1, recoveryMode = false))
         assertTrue(shouldResumeClaimedSession(status = 2, recoveryMode = false))
@@ -491,7 +508,7 @@ class GfnApiTest {
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             preferNativeDesktopMode = true,
             isAndroidTv = true,
-            isNvidiaShield = true,
+            useDesktopNativeTvIdentity = true,
         )
 
         assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
@@ -499,6 +516,27 @@ class GfnApiTest {
         assertEquals("WINDOWS", headers["nv-device-os"])
         assertEquals("DESKTOP", headers["nv-device-type"])
         assertTrue(headers["User-Agent"].orEmpty().contains("Linux; Android"))
+        assertFalse(headers["User-Agent"].orEmpty().contains("Android-Generic-TV"))
+    }
+
+    @Test
+    fun cloudMatchUsesDesktopNativeIdentityForHighQualityFireTvCubeProfile() {
+        val headers = cloudMatchHeaders(
+            token = "token",
+            clientId = "client",
+            deviceId = "device",
+            includeOrigin = true,
+            streamingBaseUrl = "https://np-mia-04.cloudmatchbeta.nvidiagrid.net",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            preferNativeDesktopMode = true,
+            isAndroidTv = true,
+            useDesktopNativeTvIdentity = usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTGAZL"),
+        )
+
+        assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
+        assertEquals("NATIVE", headers["nv-client-type"])
+        assertEquals("WINDOWS", headers["nv-device-os"])
+        assertEquals("DESKTOP", headers["nv-device-type"])
         assertFalse(headers["User-Agent"].orEmpty().contains("Android-Generic-TV"))
     }
 
@@ -513,7 +551,7 @@ class GfnApiTest {
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             preferNativeDesktopMode = true,
             isAndroidTv = true,
-            isNvidiaShield = false,
+            useDesktopNativeTvIdentity = false,
         )
 
         assertEquals("NVIDIA-CLASSIC", headers["nv-client-streamer"])
@@ -974,7 +1012,7 @@ class GfnApiTest {
             streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             isAndroidTv = true,
-            isNvidiaShield = true,
+            useDesktopNativeTvIdentity = true,
         )
         val sessionRequestData = body.getValue("sessionRequestData").jsonObject
         val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
@@ -994,6 +1032,34 @@ class GfnApiTest {
     }
 
     @Test
+    fun fireTvCube1440pClaimUsesDesktopAllocationAndPreservesRequestedProfile() {
+        val sessionRequestData = buildMinimalClaimRequestBody(
+            appId = "123",
+            deviceId = "device",
+            settings = StreamSettings(
+                resolution = "2560x1440",
+                aspectRatio = "16:9",
+                fps = 60,
+                codec = VideoCodec.H265,
+                maxBitrateMbps = 75,
+            ),
+            physicalDisplayResolution = 1920 to 1080,
+            streamingBaseUrl = "https://np-mia-04.cloudmatchbeta.nvidiagrid.net",
+            appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
+            isAndroidTv = true,
+            useDesktopNativeTvIdentity = usesDesktopNativeTvCloudMatchIdentity(true, "Amazon", "AFTGAZL"),
+        ).getValue("sessionRequestData").jsonObject
+        val monitor = sessionRequestData.getValue("clientRequestMonitorSettings").jsonArray.single().jsonObject
+
+        assertEquals("windows", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)
+        assertEquals(true, sessionRequestData.getValue("enablePersistingInGameSettings").jsonPrimitive.boolean)
+        assertEquals(2560, monitor.getValue("widthInPixels").jsonPrimitive.int)
+        assertEquals(1440, monitor.getValue("heightInPixels").jsonPrimitive.int)
+        assertEquals(60, monitor.getValue("framesPerSecond").jsonPrimitive.int)
+        assertEquals(100, monitor.getValue("dpi").jsonPrimitive.int)
+    }
+
+    @Test
     fun otherAndroidTvFourKClaimKeepsAndroidPlatformAllocation() {
         val sessionRequestData = buildMinimalClaimRequestBody(
             appId = "123",
@@ -1002,7 +1068,7 @@ class GfnApiTest {
             streamingBaseUrl = "https://np-sth-04.cloudmatchbeta.nvidiagrid.net",
             appLaunchMode = GfnAppLaunchMode.GAMEPAD_FRIENDLY,
             isAndroidTv = true,
-            isNvidiaShield = false,
+            useDesktopNativeTvIdentity = false,
         ).getValue("sessionRequestData").jsonObject
 
         assertEquals("android", sessionRequestData.getValue("clientPlatformName").jsonPrimitive.content)

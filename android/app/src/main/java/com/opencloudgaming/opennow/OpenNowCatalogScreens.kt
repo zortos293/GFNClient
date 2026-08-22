@@ -38,6 +38,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -180,6 +181,7 @@ internal fun HomeScreen(
     val visibleGames = remember(catalogGames, state.catalogFilterIds) {
         filterCatalogGamesForLocalControls(catalogGames, state.catalogFilterIds)
     }
+    val filterActive = state.catalogFilterIds.isNotEmpty()
     val searchingCatalog = state.loadingGames && state.catalogSearch.isNotBlank()
     val gridState = rememberLazyGridState()
     val searchFocusRequester = remember { FocusRequester() }
@@ -192,6 +194,7 @@ internal fun HomeScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val showSearch = searchRequested || state.catalogSearch.isNotBlank()
+    val resultsOnly = showSearch || filterActive
     val physicalControllerConnected = rememberPhysicalControllerConnected(
         enabled = hideChromeWhenScrolled && !tvProfile,
     )
@@ -263,7 +266,13 @@ internal fun HomeScreen(
                             }
                         },
                 ) {
-                    if (state.loadingGames && visibleGames.isEmpty()) {
+                    if (
+                        shouldShowCatalogLoadingPlaceholder(
+                            queryLoading = state.catalogQueryLoading,
+                            loadingGames = state.loadingGames,
+                            hasVisibleGames = visibleGames.isNotEmpty(),
+                        )
+                    ) {
                         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             StoreScrollableControls(
                                 state = state,
@@ -271,7 +280,7 @@ internal fun HomeScreen(
                                 onFilterToggle = viewModel::toggleCatalogFilter,
                                 showToolbar = !controlsInTopBar,
                             )
-                            if (showSearch) {
+                            if (resultsOnly) {
                                 SectionHeader(
                                     title = stringResource(R.string.store_results),
                                     modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
@@ -280,7 +289,7 @@ internal fun HomeScreen(
                             RefreshingGamesPlaceholder(
                                 settings = state.settings,
                                 tvProfile = tvProfile,
-                                storeLayout = !showSearch,
+                                storeLayout = !resultsOnly,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -305,7 +314,7 @@ internal fun HomeScreen(
                             gridState = gridState,
                             showToolbar = !controlsInTopBar,
                             topFocusRequester = topBarFocusRequester,
-                            searchActive = showSearch,
+                            resultsOnly = resultsOnly,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -1257,13 +1266,13 @@ private fun StoreGameGrid(
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
     showToolbar: Boolean = true,
     topFocusRequester: FocusRequester? = null,
-    searchActive: Boolean = false,
+    resultsOnly: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     if (games.isEmpty()) {
         Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             StoreScrollableControls(state, onSortChange, onFilterToggle, showToolbar = showToolbar)
-            if (searchActive) {
+            if (resultsOnly) {
                 SectionHeader(
                     title = stringResource(R.string.store_results),
                     modifier = Modifier.padding(top = OpenNowSpacing.lg, bottom = OpenNowSpacing.sm),
@@ -1297,7 +1306,10 @@ private fun StoreGameGrid(
     val controllerActionMode = landscapeLayout && !tvProfile && physicalControllerConnected
     val artworkOnly = shouldUseArtworkOnlyCatalogCards(tvProfile, controllerActionMode)
     val showControlsHeader = showToolbar || state.catalogFilterIds.isNotEmpty() || !state.error.isNullOrBlank()
-    val showDiscoverySections = shouldShowStoreDiscoverySections(searchActive)
+    val showDiscoverySections = shouldShowStoreDiscoverySections(
+        searchActive = state.catalogSearch.isNotBlank(),
+        filterActive = state.catalogFilterIds.isNotEmpty(),
+    )
     BoxWithConstraints(modifier.fillMaxSize()) {
         val gridSpec = gameGridSpec(maxWidth, compact, landscapeLayout, settings, handheldLayout = !tvProfile)
         val firstRowGameIds = remember(games, gridSpec.estimatedColumns) {
@@ -1467,7 +1479,14 @@ private fun StoreStartRails(
     }
 }
 
-internal fun shouldShowStoreDiscoverySections(searchActive: Boolean): Boolean = !searchActive
+internal fun shouldShowStoreDiscoverySections(searchActive: Boolean, filterActive: Boolean): Boolean =
+    !searchActive && !filterActive
+
+internal fun shouldShowCatalogLoadingPlaceholder(
+    queryLoading: Boolean,
+    loadingGames: Boolean,
+    hasVisibleGames: Boolean,
+): Boolean = queryLoading || (loadingGames && !hasVisibleGames)
 
 internal fun shouldHideStoreChromeOnScroll(
     hideChromeWhenScrolled: Boolean,
@@ -2793,6 +2812,8 @@ private fun GameDetailsLandscapeContent(
     val sideScrollState = rememberScrollState()
     val detailsSpacing = if (shortHeight) 8.dp else 10.dp
     var gameFocused by remember(game.id) { mutableStateOf(false) }
+    val gameImageInteraction = remember(game.id) { MutableInteractionSource() }
+    val gameImageHovered by gameImageInteraction.collectIsHoveredAsState()
     Row(
         Modifier
             .fillMaxSize()
@@ -2808,6 +2829,7 @@ private fun GameDetailsLandscapeContent(
                 .focusRequester(gameFocusRequester)
                 .focusProperties { right = playFocusRequester }
                 .onFocusChanged { gameFocused = it.isFocused }
+                .hoverable(gameImageInteraction)
                 .clickable {
                     onDismiss()
                     onPlay(game)
@@ -2873,6 +2895,10 @@ private fun GameDetailsLandscapeContent(
                     }
                 }
             }
+            AbsoluteCinemaEverywhereFrame(
+                visible = gameFocused || gameImageHovered,
+                cornerRadius = 20.dp,
+            )
         }
 
         Column(
@@ -2997,6 +3023,8 @@ private fun GameDetailsScrollableContent(
 ) {
     val context = LocalContext.current
     var gameFocused by remember(game.id) { mutableStateOf(false) }
+    val gameImageInteraction = remember(game.id) { MutableInteractionSource() }
+    val gameImageHovered by gameImageInteraction.collectIsHoveredAsState()
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.weight(1f),
@@ -3015,6 +3043,7 @@ private fun GameDetailsScrollableContent(
                         .focusRequester(gameFocusRequester)
                         .focusProperties { down = playFocusRequester }
                         .onFocusChanged { gameFocused = it.isFocused }
+                        .hoverable(gameImageInteraction)
                         .clickable {
                             onDismiss()
                             onPlay(game)
@@ -3052,6 +3081,10 @@ private fun GameDetailsScrollableContent(
                             modifier = Modifier.align(Alignment.BottomStart),
                         )
                     }
+                    AbsoluteCinemaEverywhereFrame(
+                        visible = gameFocused || gameImageHovered,
+                        cornerRadius = OpenNowRadius.lg,
+                    )
                 }
             }
             item {
@@ -3199,6 +3232,8 @@ private fun LongPressPlayButton(
 ) {
     val controllerFocusEnabled = LocalControllerFocusEnabled.current
     var focused by remember { mutableStateOf(false) }
+    val hoverInteraction = remember { MutableInteractionSource() }
+    val hovered by hoverInteraction.collectIsHoveredAsState()
     val controllerFocused = focused && controllerFocusEnabled
     val shape = RoundedCornerShape(999.dp)
     val accent = MaterialTheme.colorScheme.primary
@@ -3227,6 +3262,7 @@ private fun LongPressPlayButton(
                         ?: Modifier,
                 )
                 .onFocusChanged { focusState -> focused = focusState.isFocused }
+                .hoverable(hoverInteraction)
                 .onPreviewKeyEvent { event ->
                     if (isTvActivateKey(event)) {
                         onClick()
@@ -3277,7 +3313,9 @@ private fun LongPressPlayButton(
             }
         }
         ControllerFocusFrame(
-            visible = controllerFocused && LocalAbsoluteCinemaEffects.current,
+            visible =
+                (controllerFocused && LocalAbsoluteCinemaEffects.current) ||
+                    (hovered && LocalAbsoluteCinemaEverywhere.current),
             cornerRadius = 24.dp,
             tint = LocalActiveSelectionColor.current,
             secondaryTint = LocalActiveSelectionSecondaryColor.current,
@@ -3571,18 +3609,30 @@ private fun GameScreenshotGallery(game: GameInfo, compact: Boolean) {
             contentPadding = PaddingValues(end = 8.dp),
         ) {
             items(screenshots, key = { it }) { screenshot ->
-                Surface(
+                val hoverInteraction = remember(screenshot) { MutableInteractionSource() }
+                val hovered by hoverInteraction.collectIsHoveredAsState()
+                Box(
                     modifier = Modifier
                         .width(if (compact) 224.dp else 288.dp)
                         .aspectRatio(16f / 9f),
-                    shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
-                    color = Color.Black,
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
                 ) {
-                    UrlImage(
-                        url = optimizedNvidiaImageUrl(screenshot, requestWidth),
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit,
+                    Surface(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .hoverable(hoverInteraction),
+                        shape = RoundedCornerShape(if (compact) 12.dp else 14.dp),
+                        color = Color.Black,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                    ) {
+                        UrlImage(
+                            url = optimizedNvidiaImageUrl(screenshot, requestWidth),
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit,
+                        )
+                    }
+                    AbsoluteCinemaEverywhereFrame(
+                        visible = hovered,
+                        cornerRadius = if (compact) 12.dp else 14.dp,
                     )
                 }
             }
@@ -3598,12 +3648,15 @@ private fun GameDescriptionDisclosure(
     var expanded by remember(description) { mutableStateOf(true) }
     val text = description?.takeIf { it.isNotBlank() } ?: stringResource(R.string.catalog_no_description)
     var focused by remember { mutableStateOf(false) }
+    val hoverInteraction = remember { MutableInteractionSource() }
+    val hovered by hoverInteraction.collectIsHoveredAsState()
     val shape = RoundedCornerShape(if (compact) 12.dp else 14.dp)
     Box(Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .onFocusChanged { focused = it.isFocused }
+                .hoverable(hoverInteraction)
                 .clickable { expanded = !expanded },
             shape = shape,
             color = if (focused) PanelAlt.copy(alpha = 0.85f) else PanelAlt,
@@ -3645,6 +3698,10 @@ private fun GameDescriptionDisclosure(
                 }
             }
         }
+        AbsoluteCinemaEverywhereFrame(
+            visible = focused || hovered,
+            cornerRadius = if (compact) 12.dp else 14.dp,
+        )
     }
 }
 

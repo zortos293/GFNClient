@@ -220,7 +220,7 @@ internal fun AndroidUpdatePanel(state: OpenNowUiState, viewModel: OpenNowViewMod
                             modifier = Modifier.weight(1f),
                         ) {
                             Text(
-                                if (update.installSource.isGooglePlay) "Update" else "Download",
+                                if (update.installSource.usesGooglePlayUpdates) "Update" else "Download",
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -255,7 +255,7 @@ private fun AndroidUpdateUnavailablePanel(update: AndroidUpdateState) {
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
-                        if (update.installSource.isGooglePlay) "Updates managed by Google Play" else "APK updates unavailable",
+                        if (update.installSource.usesGooglePlayUpdates) "Updates managed by Google Play" else "APK updates unavailable",
                         color = SettingsText,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
@@ -275,7 +275,7 @@ private fun AndroidUpdateUnavailablePanel(update: AndroidUpdateState) {
                     color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f),
                 ) {
                     Text(
-                        if (update.installSource.isGooglePlay) "PLAY" else "LOCKED",
+                        if (update.installSource.usesGooglePlayUpdates) "PLAY" else "LOCKED",
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                         color = MaterialTheme.colorScheme.secondary,
                         style = MaterialTheme.typography.labelMedium,
@@ -426,7 +426,7 @@ private fun updateStatusTitle(update: AndroidUpdateState): String =
 
 private fun updateStatusSubtitle(update: AndroidUpdateState): String =
     when (update.status) {
-        AndroidUpdateStatus.Available -> if (update.installSource.isGooglePlay) {
+        AndroidUpdateStatus.Available -> if (update.installSource.usesGooglePlayUpdates) {
             update.message
         } else {
             update.availableVersionName?.let { "Version $it is available." } ?: "A new build is available."
@@ -434,7 +434,7 @@ private fun updateStatusSubtitle(update: AndroidUpdateState): String =
         AndroidUpdateStatus.Downloading -> "Keep OpenNOW open while the APK downloads."
         AndroidUpdateStatus.Downloaded -> update.availableVersionName?.let { "Version $it has been downloaded." } ?: "The update has been downloaded."
         AndroidUpdateStatus.NotAvailable -> update.message
-        AndroidUpdateStatus.Checking -> if (update.installSource.isGooglePlay) "Checking Google Play." else "Contacting the update source."
+        AndroidUpdateStatus.Checking -> if (update.installSource.usesGooglePlayUpdates) "Checking Google Play." else "Contacting the update source."
         AndroidUpdateStatus.Error -> update.message
         AndroidUpdateStatus.Idle -> update.message
     }
